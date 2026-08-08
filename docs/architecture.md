@@ -116,6 +116,36 @@ review). "Strong" and "fast" tiers are just two model IDs in job config — any 
 pi can reach is valid in either slot. The engine sets the model per-iteration via
 pi's model selection flag/env on the subprocess.
 
+### Self-reflection phase (PRD req 24)
+
+Optional (`reflect: true` in job config, `ralphctl start --reflect`). After the
+job's normal loop (`LoopSupervisor._run_job_core()`) reaches a terminal state
+(`succeeded`/`failed`/`aborted`), the engine runs exactly one extra `reflect`
+iteration (`LoopSupervisor._run_reflection()`), using its own builtin prompt
+(`src/ralphd/prompts/reflect.md`, phase name `reflect`, model resolved per the
+job's model strategy exactly like any other phase). This iteration is *not* part
+of the normal budget accounting gate (`budget_left()`); it always runs once, even
+if the iteration budget was already exhausted when the job reached its terminal
+state.
+
+The reflect prompt instructs the agent to analyze the run's PRD, final
+`tasks.json`, `notes.md`, and iteration records, and write a report plus an
+optional unified diff of proposed prompt/skill improvements to
+`artifacts/reflection/` — and to touch nothing else (workspace files, `tasks.json`,
+`status.json`, `notes.md`, `review-findings.md`, steering files, or any
+`iterations/` content). This is instructed, not sandboxed: the reflect iteration
+runs with the same tool access as any other phase, so it is trusted the same way
+review/verify iterations are trusted to follow their own prompts. The one
+engine-side guarantee is that `run_job()`'s returned final state and the job's
+terminal `status.json` fields (`state`, `verdict`, `endedAt`) are set *before*
+the reflect iteration runs and are never touched by it; the engine does reset
+`status.json`'s `phase` field back to `None` immediately after the reflect
+iteration finishes (it's transiently set to `"reflect"` while it runs, the same
+as every other phase), so a terminal job never appears to still be mid-phase.
+
+With `reflect` absent/`false` (the default), no extra iteration runs at all —
+`run_job()` is a no-op wrapper around the same core loop as before this feature.
+
 ## 3. State model
 
 All run state lives in `/run` inside the container, which is **always a host

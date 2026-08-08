@@ -336,6 +336,32 @@ class LoopSupervisor:
         return approach, True
 
     async def run_job(self) -> str:
+        """Runs the job to a terminal state, then (if `reflect: true`) one
+        extra 'reflect' iteration analyzing the run for prompt/skill
+        improvements (PRD req 24). Returns final state: succeeded | failed |
+        aborted -- unaffected by the reflect iteration, which runs strictly
+        after the state below is already terminal."""
+        state = await self._run_job_core()
+        if self.cfg.reflect:
+            await self._run_reflection()
+        return state
+
+    async def _run_reflection(self) -> None:
+        """One extra 'reflect' iteration after the job has already reached a
+        terminal state (PRD req 24). Runs unconditionally (not gated by
+        budget_left(), which is normally already exhausted by the time a job
+        reaches a terminal state) exactly once. The reflect prompt instructs
+        the agent to write only under artifacts/reflection/ and touch
+        nothing else; the engine's own bookkeeping restores status.json's
+        `phase` field to None afterward so a terminal job never appears to
+        still be "in phase reflect" once this returns."""
+        self.run.emit("phase", phase="reflect")
+        try:
+            await self.run_iteration("reflect")
+        finally:
+            self.run.update_status(phase=None)
+
+    async def _run_job_core(self) -> str:
         """Returns final state: succeeded | failed | aborted."""
         self.run.update_status(state="running", startedAt=utcnow(),
                                iterationsBudget=self.cfg.iterations,

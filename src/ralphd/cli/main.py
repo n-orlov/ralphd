@@ -284,6 +284,7 @@ def cmd_start(args):
         "max_approaches": args.max_approaches,
         "vigilant": args.vigilant,
         "on_complete": args.on_complete,
+        "reflect": args.reflect,
         "model": args.model or (llm_profile.get("model") if llm_profile else None),
         "fast_model": args.fast_model or (llm_profile.get("fast_model") if llm_profile else None),
         "model_strategy": args.model_strategy,
@@ -1310,6 +1311,10 @@ def main() -> None:
     s.add_argument("--iterations", type=int, default=25)
     s.add_argument("--max-approaches", type=int, default=3)
     s.add_argument("--vigilant", action="store_true")
+    s.add_argument("--reflect", action="store_true",
+                   help="run one extra 'reflect' iteration after the job "
+                        "reaches a terminal state, proposing prompt/skill "
+                        "improvements to artifacts/reflection/")
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
     s.add_argument("--fast-model")
     s.add_argument("--model-strategy", default="quality-first",

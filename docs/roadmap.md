@@ -55,7 +55,7 @@ Non-goals for v0.1: resume, web UI, self-reflection, multi-job orchestration.
 
 ## v0.4 — quality-of-life
 
-- Self-reflection phase (post-job analysis proposing prompt/skill improvements as a
+- ✅ Self-reflection phase (post-job analysis proposing prompt/skill improvements as a
   diff in artifacts)
 - Job templates (`ralphctl start --template <name>`) bundling PRD skeleton +
   skills + profile

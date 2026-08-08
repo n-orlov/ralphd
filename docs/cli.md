@@ -64,6 +64,7 @@ ralphctl start --prd <file|-> [options]
 | `--iterations <n>` | 25 | shared iteration budget |
 | `--max-approaches <n>` | 3 | review-loop approach limit |
 | `--vigilant` | off | per-task verification |
+| `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state) |
 | `--model <id>` | profile default | default model (pi model ID) |
 | `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced\|custom` |
 | `--model-<phase> <id>` | — | per-phase override (`planning\|worker\|review\|verify`) |

@@ -73,6 +73,7 @@ class JobConfig:
     max_approaches: int = 3
     vigilant: bool = False
     on_complete: str = "idle"  # idle | exit
+    reflect: bool = False  # run one extra 'reflect' iteration after terminal state
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
     # model tiers: any pi "provider/model" ref; phase → tier via strategy
@@ -84,13 +85,18 @@ class JobConfig:
     api_token: str | None = None
     extra: dict = field(default_factory=dict)
 
+    # "reflect" (post-job self-reflection, PRD req 24) mirrors "review"'s tier
+    # in every strategy -- it's the same kind of post-hoc analysis role.
     STRATEGY_TIERS = {
         "quality-first": {"planning": "strong", "worker": "strong",
-                          "review": "strong", "verify": "strong"},
+                          "review": "strong", "verify": "strong",
+                          "reflect": "strong"},
         "cost-optimized": {"planning": "strong", "worker": "fast",
-                           "review": "fast", "verify": "fast"},
+                           "review": "fast", "verify": "fast",
+                           "reflect": "fast"},
         "balanced": {"planning": "strong", "worker": "fast",
-                     "review": "strong", "verify": "fast"},
+                     "review": "strong", "verify": "fast",
+                     "reflect": "strong"},
     }
 
     @classmethod
@@ -124,6 +130,7 @@ class JobConfig:
             "flags": {
                 "vigilant": self.vigilant,
                 "onComplete": self.on_complete,
+                "reflect": self.reflect,
             },
             "model": {
                 "strategy": self.model_strategy,
