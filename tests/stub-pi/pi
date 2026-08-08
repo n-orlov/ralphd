@@ -13,6 +13,9 @@ from env vars set by the test:
   STUB_HUGE_LINE      if set, the first worker iteration emits one NDJSON line of
                       ~1 MiB (pi emits full message snapshots per event; the
                       engine must not choke on long lines)
+  STUB_VERIFY_FAILS   number of verify invocations to fail before passing
+                      (default 0; each failed invocation writes validation-failed
+                      to tasks.json and does NOT emit the sentinel)
 """
 import json
 import os
@@ -60,9 +63,12 @@ elif "Role: Worker" in prompt:
         sys.exit(0)
     with open(tasks_file) as f:
         d = json.load(f)
+    # Pick validation-failed first (matches worker.md semantics), then pending
+    validation_failed = [t for t in d["tasks"] if t["status"] == "validation-failed"]
     pending = [t for t in d["tasks"] if t["status"] == "pending"]
-    if pending:
-        pending[0]["status"] = "completed"
+    to_work = validation_failed + pending
+    if to_work:
+        to_work[0]["status"] = "completed"
         with open(tasks_file, "w") as f:
             json.dump(d, f)
     # record steering whenever a worker iteration sees it
@@ -86,6 +92,42 @@ elif "Role: Reviewer" in prompt:
         emit_final("requirements unmet")
     else:
         emit_final("all requirements hold\n<promise>VERIFIED</promise>")
+
+elif "Role: Verifier" in prompt:
+    # Extract task id from the injected section: "- **id**: XXX"
+    task_id = None
+    for line in prompt.splitlines():
+        line = line.strip()
+        if line.startswith("- **id**:"):
+            task_id = line.split(":", 1)[1].strip()
+            break
+
+    fails_wanted = int(os.environ.get("STUB_VERIFY_FAILS", "0"))
+    done = 0
+    count_marker = marker("verify-count")
+    if os.path.exists(count_marker):
+        done = int(open(count_marker).read())
+    open(count_marker, "w").write(str(done + 1))
+
+    if done < fails_wanted:
+        # Write validation-failed into tasks.json
+        with open(tasks_file) as f:
+            d = json.load(f)
+        for t in d["tasks"]:
+            if t["id"] == task_id:
+                t["status"] = "validation-failed"
+                t["validationNotes"] = (
+                    f"stub: deliberate failure #{done + 1} for task {task_id}"
+                )
+                break
+        with open(tasks_file, "w") as f:
+            json.dump(d, f)
+        emit_final(f"stub verifier: failing task {task_id} (attempt {done + 1})")
+    else:
+        emit_final(
+            f"stub verifier: task {task_id} looks good\n"
+            f"<task-verified>{task_id}</task-verified>"
+        )
 
 else:
     emit_final("unrecognized phase prompt")

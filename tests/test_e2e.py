@@ -261,6 +261,172 @@ def test_huge_output_line_does_not_kill_job(engine_factory):
     assert status["verdict"] == "verified"
 
 
+def test_vigilant_happy_path(engine_factory):
+    """Vigilant mode: every completed task gets one verify iteration; phases are
+    planning → (worker, verify) × n → review; job succeeds with verdict verified."""
+    e = engine_factory(job={"on_complete": "idle", "vigilant": True})
+    e.wait_api()
+    e.wait_state(("succeeded",), timeout=90)
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+
+    # Phase sequence: planning, worker, verify, worker, verify, review (2 tasks)
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
+    assert phases == ["planning", "worker", "verify", "worker", "verify", "review"]
+
+    # Verify iterations carry task metadata and show passing outcome
+    verify_metas = [m for m in metas if m["phase"] == "verify"]
+    assert len(verify_metas) == 2
+    for vm in verify_metas:
+        assert "verifiedTask" in vm
+        assert vm["verifyOutcome"] == "pass"
+
+    # All tasks completed
+    tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
+    assert all(t["status"] == "completed" for t in tasks)
+
+    # taskVerified signal emitted once per task
+    events_text = (e.run_dir / "events.jsonl").read_text()
+    events = [json.loads(line) for line in events_text.splitlines() if line.strip()]
+    tv_events = [ev for ev in events
+                 if ev.get("type") == "signal" and ev.get("signal") == "taskVerified"]
+    assert len(tv_events) == 2
+
+    # API: /iterations also shows the verify phases
+    _, iterations = e.api("GET", "/iterations")
+    assert [i["phase"] for i in iterations] == phases
+
+    # API: /status works after vigilant run
+    _, api_status = e.api("GET", "/status")
+    assert api_status["state"] == "succeeded" and api_status["verdict"] == "verified"
+
+
+def test_vigilant_verify_fail_then_recovery(engine_factory):
+    """Vigilant mode: one task fails verification once, then the worker retries it
+    and the second verification passes; job ends succeeded."""
+    e = engine_factory(
+        job={"on_complete": "idle", "vigilant": True},
+        stub_env={"STUB_VERIFY_FAILS": "1"},
+    )
+    e.wait_api()
+    e.wait_state(("succeeded",), timeout=120)
+
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+
+    # Phase sequence: planning, worker, verify(fail), worker(retry),
+    # verify(pass), worker(task2+COMPLETE), verify(task2 pass), review
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
+    assert phases == [
+        "planning",
+        "worker", "verify",  # task 1: first verify fails
+        "worker", "verify",  # task 1: worker retries, second verify passes
+        "worker", "verify",  # task 2: worker completes, verify passes
+        "review",
+    ]
+
+    # Failed verify iteration recorded outcome "fail"
+    verify_metas = [m for m in metas if m["phase"] == "verify"]
+    assert len(verify_metas) == 3
+    assert verify_metas[0]["verifyOutcome"] == "fail"
+    assert verify_metas[1]["verifyOutcome"] == "pass"
+    assert verify_metas[2]["verifyOutcome"] == "pass"
+
+    # The retried task (task 1) should show validationAttempts==1 and validationNotes
+    tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
+    assert all(t["status"] == "completed" for t in tasks)
+    retried = [t for t in tasks if t.get("validationAttempts", 0) >= 1]
+    assert len(retried) == 1, "exactly one task should have been retried"
+    rt = retried[0]
+    assert rt["validationAttempts"] == 1
+    assert rt.get("validationNotes"), "validationNotes should be set after failed verify"
+
+    # events.jsonl: exactly 2 taskVerified signals (one for each task's final pass)
+    events_text = (e.run_dir / "events.jsonl").read_text()
+    events = [json.loads(line) for line in events_text.splitlines() if line.strip()]
+    tv_events = [ev for ev in events
+                 if ev.get("type") == "signal" and ev.get("signal") == "taskVerified"]
+    assert len(tv_events) == 2
+
+    # events.jsonl also captured the task going to validation-failed
+    task_events = [ev for ev in events
+                   if ev.get("type") == "task"
+                   and ev.get("newStatus") == "validation-failed"]
+    assert len(task_events) >= 1
+
+
+def test_vigilant_three_strikes(engine_factory):
+    """Vigilant 3-strikes: a task that persistently fails verification is set to
+    `failed` after exactly 3 attempts; the job does not end succeeded."""
+    e = engine_factory(
+        job={"on_complete": "exit", "vigilant": True,
+             "iterations": 20, "max_approaches": 1},
+        stub_env={"STUB_VERIFY_FAILS": "999"},
+    )
+    assert e.proc.wait(timeout=120) != 0
+
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] != "succeeded"
+
+    tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
+    failed_tasks = [t for t in tasks if t["status"] == "failed"]
+    assert len(failed_tasks) >= 1
+    for ft in failed_tasks:
+        assert ft.get("validationAttempts") == 3
+
+    # The first-worked task had exactly 3 verify iterations, all failing
+    first_failed = failed_tasks[0]
+    fid = first_failed["id"]
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    verify_metas_for_fid = [
+        m for m in metas
+        if m.get("phase") == "verify" and m.get("verifiedTask") == fid
+    ]
+    assert len(verify_metas_for_fid) == 3
+    assert all(m["verifyOutcome"] == "fail" for m in verify_metas_for_fid)
+
+    # No taskVerified signals emitted (all verifications failed)
+    events_text = (e.run_dir / "events.jsonl").read_text()
+    events = [json.loads(line) for line in events_text.splitlines() if line.strip()]
+    tv_events = [ev for ev in events
+                 if ev.get("type") == "signal" and ev.get("signal") == "taskVerified"]
+    assert len(tv_events) == 0
+
+
+def test_non_vigilant_no_verify_iterations(engine_factory):
+    """Non-vigilant mode: no verify iterations are produced; the job runs the
+    standard planning → worker×n → review sequence and ends succeeded."""
+    e = engine_factory(job={"on_complete": "exit"})  # vigilant not set
+    assert e.proc.wait(timeout=60) == 0
+
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+
+    # No iteration should have phase 'verify' in meta.json files
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
+    assert "verify" not in phases
+
+    # Standard planning + 2 workers + review
+    assert phases == ["planning", "worker", "worker", "review"]
+
+    # Confirm via API as well
+    e2 = engine_factory(job={"on_complete": "idle"})  # second engine to check API
+    e2.wait_api()
+    e2.wait_state(("succeeded",), timeout=60)
+    _, iterations = e2.api("GET", "/iterations")
+    assert all(i["phase"] != "verify" for i in iterations)
+
+
 def test_api_token_auth(engine_factory, tmp_path):
     os.environ["RALPHD_API_TOKEN"] = "sekret"
     try:

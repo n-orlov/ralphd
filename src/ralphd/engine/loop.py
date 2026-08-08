@@ -51,10 +51,11 @@ class LoopSupervisor:
         path = override if override.exists() else PROMPTS_BUILTIN / f"{name}.md"
         return path.read_text()
 
-    def build_prompt(self, phase: str, extra: str = "") -> str:
+    def build_prompt(self, phase: str, extra: str = "",
+                      prompt_name: str | None = None) -> str:
         prd = self.run.composite_prd_file if self.run.composite_prd_file.exists() \
             else self.run.prd_file
-        parts = [self.prompt_text(phase)]
+        parts = [self.prompt_text(prompt_name or phase)]
         parts.append("\n\n## Job context\n")
         parts.append(f"- Run state directory: {self.run.root}\n"
                      f"- Workspace (code) directory: {self.workspace}\n"
@@ -72,13 +73,14 @@ class LoopSupervisor:
         return "".join(parts)
 
     # -- iteration ----------------------------------------------------------
-    async def run_iteration(self, phase: str, extra: str = ""):
+    async def run_iteration(self, phase: str, extra: str = "",
+                             prompt_name: str | None = None):
         n = self.iterations_used + 1
         self.iterations_used = n
         itdir = self.run.iteration_dir(n)
         model = self.cfg.model_for(phase)
         pending = self.run.pending_steering()
-        prompt = self.build_prompt(phase, extra)
+        prompt = self.build_prompt(phase, extra, prompt_name=prompt_name)
         (itdir / "prompt.md").write_text(prompt)
 
         meta = {"number": n, "phase": phase, "model": model,
@@ -184,8 +186,26 @@ class LoopSupervisor:
                     before = json.dumps(tasks_before, sort_keys=True)
                     result = await self.run_iteration("worker")
                     tasks_after = self.run.read_tasks()
-                    after = json.dumps(tasks_after, sort_keys=True)
                     self._warn_if_batched(tasks_before, tasks_after)
+
+                    if self.cfg.vigilant:
+                        before_statuses = {
+                            t["id"]: t.get("status")
+                            for t in tasks_before.get("tasks", [])
+                        }
+                        newly_completed = [
+                            t for t in tasks_after.get("tasks", [])
+                            if t.get("status") == "completed"
+                            and before_statuses.get(t["id"]) != "completed"
+                        ]
+                        for task in newly_completed:
+                            if self.budget_left():
+                                await self._gate()
+                                await self._verify_task(task)
+                        # Re-read after any verification-driven status updates
+                        tasks_after = self.run.read_tasks()
+
+                    after = json.dumps(tasks_after, sort_keys=True)
                     stagnant = stagnant + 1 if (before == after and not result.saw_complete
                                                 and not result.interrupted) else 0
                     if stagnant >= 3:
@@ -228,6 +248,70 @@ class LoopSupervisor:
                                    phase=None, endedAt=utcnow(),
                                    reason=f"engine error: {exc}")
             return "failed"
+
+    async def _verify_task(self, task: dict) -> bool:
+        """Run one verify iteration for a newly-completed task.
+
+        Returns True when the verifier emits the correct sentinel,
+        False on any failure (status forced to validation-failed or failed).
+        """
+        tid = task["id"]
+        # Skip tasks that have already exhausted their verification budget
+        if task.get("validationAttempts", 0) >= 3:
+            log.warning("task %s already exhausted verification attempts; skipping", tid)
+            return False
+        title = task.get("title", "")
+        criteria = task.get("successCriteria", "")
+        extra = (
+            f"## Task under verification\n\n"
+            f"- **id**: {tid}\n"
+            f"- **title**: {title}\n"
+            f"- **successCriteria**: {criteria}\n"
+        )
+        result = await self.run_iteration("verify", extra=extra,
+                                           prompt_name="task-verify")
+        verify_iter_n = self.iterations_used  # captured after run_iteration increments it
+
+        sentinel = f"<task-verified>{tid}</task-verified>"
+        verified = sentinel in (result.final_text or "")
+
+        # Enrich verify iteration meta.json with verifiedTask + verifyOutcome
+        itdir = self.run.iteration_dir(verify_iter_n)
+        meta_path = itdir / "meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except json.JSONDecodeError:
+                meta = {}
+            meta["verifiedTask"] = tid
+            meta["verifyOutcome"] = "pass" if verified else "fail"
+            atomic_write_json(meta_path, meta)
+
+        if verified:
+            self.run.emit("signal", signal="taskVerified", taskId=tid)
+            log.info("task %s verified", tid)
+            return True
+
+        # Verification failed: ensure status is validation-failed and increment counter
+        tasks_data = self.run.read_tasks()
+        for t in tasks_data.get("tasks", []):
+            if t["id"] == tid:
+                attempts = t.get("validationAttempts", 0) + 1
+                t["validationAttempts"] = attempts
+                if t.get("status") not in ("validation-failed", "failed"):
+                    t["status"] = "validation-failed"
+                    if not t.get("validationNotes"):
+                        t["validationNotes"] = (
+                            "Verifier did not emit the task-verified sentinel."
+                        )
+                if attempts >= 3:
+                    t["status"] = "failed"
+                    log.warning("task %s failed after %d verification attempts",
+                                tid, attempts)
+                break
+        atomic_write_json(self.run.tasks_file, tasks_data)
+        self._emit_task_changes()
+        return False
 
     def _warn_if_batched(self, before: dict, after: dict) -> None:
         """One task per worker iteration is a design invariant (checkpointing,
