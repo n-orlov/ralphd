@@ -16,6 +16,21 @@ class RunDirLocked(Exception):
     """Raised when another live engine already holds the run dir's lock."""
 
 
+class SchemaVersionTooNew(Exception):
+    """Raised when a run dir's recorded schemaVersion is newer than this
+    engine build knows how to run against (PRD req 18)."""
+
+
+# Bump only when the run-dir *on-disk shape* changes in a way older engines
+# cannot safely continue against (new required fields/files, renamed keys,
+# etc). Recorded in status.json's "schemaVersion" field on every startup.
+# Policy: a recorded version newer than this refuses to start (clear
+# diagnostic naming both versions, nothing else touched); a recorded version
+# older than this (or absent -- pre-schema run dirs predating this feature)
+# is accepted and the field is stamped/upgraded to CURRENT_SCHEMA_VERSION.
+CURRENT_SCHEMA_VERSION = 1
+
+
 def utcnow() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -136,6 +151,51 @@ class RunDir:
 
     def read_tasks(self) -> dict:
         return read_json(self.tasks_file, {})
+
+    # -- resume (PRD req 16) ---------------------------------------------
+    def max_iteration_number(self) -> int:
+        """Highest iteration number with a *completed* meta.json (i.e. its
+        "endedAt" field is set) already on disk, or 0 if none.
+
+        Used to resume iteration numbering monotonically when an engine
+        restarts over an existing run dir: LoopSupervisor seeds its
+        iterations_used counter from this so the next iteration continues
+        from N+1 instead of restarting at 1. An iteration dir that exists
+        but never finished (no "endedAt" -- e.g. the previous engine
+        process was killed mid-iteration) is deliberately not counted;
+        that slot's number is reused and its files overwritten by the
+        next attempt.
+        """
+        best = 0
+        itdir = self.root / "iterations"
+        if not itdir.is_dir():
+            return 0
+        for d in itdir.iterdir():
+            if not (d.is_dir() and d.name.isdigit()):
+                continue
+            meta = read_json(d / "meta.json", {})
+            if meta.get("endedAt"):
+                best = max(best, int(d.name))
+        return best
+
+    # -- schema version (PRD req 18) --------------------------------------
+    def check_schema_version(self) -> int:
+        """Read the run dir's recorded schemaVersion (0 if status.json is
+        absent or predates this field -- a pre-schema run dir).
+
+        Raises SchemaVersionTooNew if the recorded version is newer than
+        this engine build's CURRENT_SCHEMA_VERSION. Touches nothing on
+        disk either way -- callers stamp the (possibly upgraded) current
+        version back only once they've decided startup proceeds.
+        """
+        recorded = self.read_status().get("schemaVersion", 0)
+        if recorded > CURRENT_SCHEMA_VERSION:
+            raise SchemaVersionTooNew(
+                f"run dir {self.root} has schemaVersion {recorded}, but this "
+                f"engine build only knows schemaVersion {CURRENT_SCHEMA_VERSION} "
+                f"(older engine, newer run dir); refusing to start"
+            )
+        return recorded
 
     # -- events ----------------------------------------------------------
     def emit(self, type_: str, **data: Any) -> dict:

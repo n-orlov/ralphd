@@ -18,7 +18,7 @@ from .config import CONFIG_DIR, RUN_DIR, WORKSPACE_DIR, JobConfig
 from .creds import place_creds
 from .loop import LoopSupervisor
 from .skills import place_skills
-from .state import RunDir, RunDirLocked, utcnow
+from .state import CURRENT_SCHEMA_VERSION, RunDir, RunDirLocked, SchemaVersionTooNew, utcnow
 
 log = logging.getLogger("ralphd")
 
@@ -26,6 +26,10 @@ log = logging.getLogger("ralphd")
 # run dir's lock" (PRD req 29b). Kept apart from the job-outcome codes used
 # by amain()'s normal return (0 succeeded, 1 not-succeeded, 2 missing PRD).
 EXIT_RUN_DIR_LOCKED = 3
+
+# Distinct, documented exit code for "this run dir's recorded schemaVersion
+# is newer than this engine build knows how to run against" (PRD req 18).
+EXIT_SCHEMA_TOO_NEW = 4
 
 
 def _version() -> str:
@@ -68,6 +72,14 @@ async def amain() -> int:
         print(f"ralphd-engine: {exc}", file=sys.stderr)
         log.error("%s", exc)
         return EXIT_RUN_DIR_LOCKED
+    try:
+        run.check_schema_version()
+    except SchemaVersionTooNew as exc:
+        print(f"ralphd-engine: {exc}", file=sys.stderr)
+        log.error("%s", exc)
+        lock_fh.close()
+        return EXIT_SCHEMA_TOO_NEW
+
     workspace = Path(os.environ.get("RALPHD_WORKSPACE_DIR", str(WORKSPACE_DIR)))
     workspace.mkdir(parents=True, exist_ok=True)
     place_creds(CONFIG_DIR)
@@ -81,7 +93,8 @@ async def amain() -> int:
             log.error("no PRD at %s or %s", run.prd_file, prd_src)
             return 2
 
-    run.update_status(runId=cfg.run_id, state="starting", createdAt=utcnow())
+    run.update_status(runId=cfg.run_id, state="starting", createdAt=utcnow(),
+                      schemaVersion=CURRENT_SCHEMA_VERSION)
     loop = LoopSupervisor(cfg, run, workspace)
     app = create_app(cfg, run, loop)
 

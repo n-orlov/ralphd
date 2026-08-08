@@ -318,6 +318,73 @@ def test_vigilant_happy_path(engine_factory):
     assert api_status["state"] == "succeeded" and api_status["verdict"] == "verified"
 
 
+def test_steering_not_lost_across_verify_phase(engine_factory):
+    """Regression (task 046): steering that arrives while a worker iteration is
+    in flight must be seen by the very next iteration boundary regardless of
+    phase. If that next iteration happens to be a vigilant "verify" (a pure
+    verification role whose prompt never tells the agent to act on operator
+    guidance), the engine must NOT mark the steering consumed there -- doing
+    so would silently discard it forever, since nothing ever acts on it. It
+    must stay pending until an actionable phase (planning/worker) runs."""
+    e = engine_factory(job={"on_complete": "idle", "vigilant": True},
+                       stub_env={"STUB_SLEEP": "0.6"})
+    e.wait_api()
+
+    def iter_meta(n: int) -> dict | None:
+        p = e.run_dir / "iterations" / f"{n:04d}" / "meta.json"
+        return json.loads(p.read_text()) if p.exists() else None
+
+    # Wait for iteration 2 (the first worker iteration) to have started -- by
+    # the time its meta.json exists it has already computed its own pending
+    # steering (there was none yet), so anything we send now is guaranteed to
+    # be missed by iteration 2 and first visible to iteration 3.
+    deadline = time.time() + 30
+    while time.time() < deadline and iter_meta(2) is None:
+        time.sleep(0.05)
+    assert iter_meta(2) is not None, "worker iteration 2 never started"
+    assert iter_meta(2)["phase"] == "worker"
+
+    code, res = e.api("POST", "/steering",
+                      {"message": "double-check the edge cases", "name": "midrun"})
+    assert code == 202 and res["file"] == "001-midrun.md"
+
+    e.wait_state(("succeeded",), timeout=90)
+
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
+    assert phases == ["planning", "worker", "verify", "worker", "verify", "review"]
+
+    # Iteration 3 is the verify iteration that immediately follows the worker
+    # iteration during which we sent steering. It must NOT claim to have
+    # consumed it, and its prompt must not present it as an actionable
+    # instruction (message text withheld -- only a passive notice, if any).
+    verify1_meta = metas[2]
+    verify1_prompt = (iters[2] / "prompt.md").read_text()
+    assert verify1_meta["steeringConsumed"] == []
+    assert "MUST take priority" not in verify1_prompt
+    assert "double-check the edge cases" not in verify1_prompt
+
+    # (verify1_meta["steeringConsumed"] == [] above already proves the verify
+    # iteration itself did not mark it consumed; .consumed.json is checked
+    # for its final state below, once the whole job has finished.)
+
+    # Iteration 4 is the next worker iteration (actionable) -- it must be the
+    # one that finally sees and consumes the steering.
+    worker2_meta = metas[3]
+    worker2_prompt = (iters[3] / "prompt.md").read_text()
+    assert worker2_meta["phase"] == "worker"
+    assert "001-midrun.md" in worker2_meta["steeringConsumed"]
+    assert "MUST take priority" in worker2_prompt
+    assert "double-check the edge cases" in worker2_prompt
+
+    consumed_final = json.loads((e.run_dir / "steering" / ".consumed.json").read_text())
+    assert "001-midrun.md" in consumed_final
+
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded" and status["verdict"] == "verified"
+
+
 def test_vigilant_verify_fail_then_recovery(engine_factory):
     """Vigilant mode: one task fails verification once, then the worker retries it
     and the second verification passes; job ends succeeded."""
@@ -373,6 +440,109 @@ def test_vigilant_verify_fail_then_recovery(engine_factory):
                    if ev.get("type") == "task"
                    and ev.get("newStatus") == "validation-failed"]
     assert len(task_events) >= 1
+
+
+def test_vigilant_verify_transient_error_retries(engine_factory):
+    """Regression (task 050): a verify iteration that errors out mid-stream
+    (agent/provider failure, e.g. a Bedrock 502) before ever emitting a
+    verdict sentinel must NOT be scored as a validation failure -- the
+    engine retries verification instead, leaving the task's status and
+    validationAttempts completely untouched, and the retry succeeds."""
+    e = engine_factory(
+        job={"on_complete": "idle", "vigilant": True},
+        stub_env={"STUB_TASKS": "1", "STUB_VERIFY_ERRORS": "1"},
+    )
+    e.wait_api()
+    e.wait_state(("succeeded",), timeout=90)
+
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+
+    # Phase sequence: planning, worker, verify(error), verify(pass), review
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
+    assert phases == ["planning", "worker", "verify", "verify", "review"]
+
+    verify_metas = [m for m in metas if m["phase"] == "verify"]
+    assert len(verify_metas) == 2
+    assert verify_metas[0]["verifyOutcome"] == "error"
+    assert verify_metas[1]["verifyOutcome"] == "pass"
+
+    # The task was never scored as a validation failure: status went
+    # straight to completed, validationAttempts was never incremented, and
+    # no validationNotes were ever set.
+    tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "completed"
+    assert tasks[0].get("validationAttempts", 0) == 0
+    assert not tasks[0].get("validationNotes")
+
+    # taskVerified signal emitted once (for the retry that actually passed)
+    events_text = (e.run_dir / "events.jsonl").read_text()
+    events = [json.loads(line) for line in events_text.splitlines() if line.strip()]
+    tv_events = [ev for ev in events
+                 if ev.get("type") == "signal" and ev.get("signal") == "taskVerified"]
+    assert len(tv_events) == 1
+
+    # Never recorded as a task validation failure
+    task_events = [ev for ev in events
+                   if ev.get("type") == "task" and ev.get("newStatus") == "validation-failed"]
+    assert task_events == []
+
+    # A warning log names the retry and makes explicit that no validation
+    # attempt was consumed
+    warn_logs = [ev for ev in events
+                 if ev.get("type") == "log" and ev.get("level") == "warning"
+                 and "retrying verification" in ev.get("message", "")]
+    assert len(warn_logs) == 1
+    assert "without consuming a validation attempt" in warn_logs[0]["message"]
+
+
+def test_vigilant_verify_error_exhausts_retries_without_failing_task(engine_factory):
+    """Regression (task 050): if a verify iteration keeps erroring out past
+    the bounded retry budget, the engine still must not mark the task
+    validation-failed or touch validationAttempts -- it just gives up on
+    verifying (for now) and surfaces an error log, leaving the task's status
+    exactly as the worker left it."""
+    e = engine_factory(
+        job={"on_complete": "idle", "vigilant": True},
+        stub_env={"STUB_TASKS": "1", "STUB_VERIFY_ERRORS": "999"},
+    )
+    e.wait_api()
+    e.wait_state(("succeeded",), timeout=90)
+
+    # Phase sequence: planning, worker, verify x4 (1 initial + 3 retries,
+    # all erroring), review -- the un-verified task doesn't block review.
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
+    assert phases == ["planning", "worker", "verify", "verify", "verify", "verify", "review"]
+
+    verify_metas = [m for m in metas if m["phase"] == "verify"]
+    assert len(verify_metas) == 4
+    assert all(m["verifyOutcome"] == "error" for m in verify_metas)
+
+    tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "completed"
+    assert tasks[0].get("validationAttempts", 0) == 0
+    assert not tasks[0].get("validationNotes")
+
+    events_text = (e.run_dir / "events.jsonl").read_text()
+    events = [json.loads(line) for line in events_text.splitlines() if line.strip()]
+    tv_events = [ev for ev in events
+                 if ev.get("type") == "signal" and ev.get("signal") == "taskVerified"]
+    assert tv_events == []
+    task_events = [ev for ev in events
+                   if ev.get("type") == "task" and ev.get("newStatus") == "validation-failed"]
+    assert task_events == []
+    error_logs = [ev for ev in events
+                 if ev.get("type") == "log" and ev.get("level") == "error"
+                 and "kept erroring" in ev.get("message", "")]
+    assert len(error_logs) == 1
+    assert "not a validation failure" in error_logs[0]["message"]
 
 
 def test_vigilant_three_strikes(engine_factory):
@@ -650,5 +820,68 @@ def test_get_logs_follow_streams_across_iteration_boundaries(engine_factory):
     assert seen_iteration_numbers <= set(full_numbers)
 
     # engine stays up (idle mode); shut it down cleanly
+    e.api("POST", "/shutdown")
+    assert e.proc.wait(timeout=10) == 0
+
+
+def test_task_in_progress_visible_while_worker_iteration_running(engine_factory):
+    """The engine must surface pending -> in-progress task transitions as
+    "task" events (and via GET /tasks) at the moment they happen, not only
+    once the whole worker iteration has finished (PRD/task 047: an operator
+    watching events/ralphctl during an iteration must see the exact task
+    being worked). The stub worker writes in-progress, sleeps (simulating
+    real work), then writes completed -- giving this test a real window in
+    which the iteration is still running (no meta.json endedAt yet) but
+    tasks.json already shows in-progress."""
+    e = engine_factory(job={"on_complete": "idle"},
+                       stub_env={"STUB_SLEEP": "2", "STUB_TASKS": "1"})
+    e.wait_api()
+    e.wait_state(("running",))
+
+    # -- poll GET /tasks until we observe in-progress while iteration 2
+    # (the first worker iteration) has not yet ended -----------------------
+    deadline = time.time() + 20
+    observed_in_progress_while_running = False
+    while time.time() < deadline:
+        _code, tasks = e.api("GET", "/tasks")
+        if "tasks" not in tasks:
+            time.sleep(0.1)
+            continue
+        statuses = {t["id"]: t["status"] for t in tasks["tasks"]}
+        meta_path = e.run_dir / "iterations" / "0002" / "meta.json"
+        iteration_still_running = (
+            meta_path.exists()
+            and "endedAt" not in json.loads(meta_path.read_text()))
+        if statuses.get("001") == "in-progress" and iteration_still_running:
+            observed_in_progress_while_running = True
+            break
+        if statuses.get("001") == "completed":
+            break  # too slow to catch it -- fail below with context
+        time.sleep(0.1)
+    assert observed_in_progress_while_running, (
+        f"never observed task 001 as in-progress while its worker iteration "
+        f"was still running; last statuses seen: {statuses}")
+
+    # -- the "task" event stream carries the transition live, before the
+    # iteration.end event for the same iteration -----------------------------
+    req = urllib.request.Request(f"http://127.0.0.1:{e.port}/events?since=0")
+    saw_task_in_progress_idx = saw_iteration_2_end_idx = None
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        for idx, raw in enumerate(resp):
+            line = raw.decode().strip()
+            if not line.startswith("data: "):
+                continue
+            obj = json.loads(line[6:])
+            if (obj.get("type") == "task" and obj.get("taskId") == "001"
+                    and obj.get("newStatus") == "in-progress"):
+                saw_task_in_progress_idx = idx
+            if (obj.get("type") == "iteration.end" and obj.get("number") == 2):
+                saw_iteration_2_end_idx = idx
+                break
+    assert saw_task_in_progress_idx is not None
+    assert saw_iteration_2_end_idx is not None
+    assert saw_task_in_progress_idx < saw_iteration_2_end_idx
+
+    e.wait_state(("succeeded",))
     e.api("POST", "/shutdown")
     assert e.proc.wait(timeout=10) == 0
