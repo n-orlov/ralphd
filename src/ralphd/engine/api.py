@@ -21,7 +21,7 @@ from .creds import (
     list_creds,
     place_creds,
 )
-from .llm import apply_llm
+from .llm import apply_llm, current_env
 from .loop import LoopSupervisor
 from .skills import (
     InvalidSkillTar,
@@ -300,6 +300,20 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         if not f.is_relative_to(run.artifacts_dir.resolve()) or not f.is_file():
             raise problem(404, "no such artifact")
         return Response(f.read_bytes(), media_type="application/octet-stream")
+
+    # -- effective config, redacted (PRD req 10) ---------------------------
+    @app.get("/config")
+    async def config_effective():
+        """Effective job config: budgets, flags, model strategy, prompt
+        sources, and skills/creds *names* only -- never credential values,
+        never LLM env values (only the configured key *names*, if any)."""
+        doc = cfg.effective()
+        doc["prompts"] = list_prompts()
+        doc["skills"] = [{"name": s["name"], "origin": s["origin"]}
+                         for s in list_skills(CONFIG_DIR)]
+        doc["creds"] = [c["name"] for c in list_creds(CONFIG_DIR)]
+        doc["llmEnvKeys"] = sorted(current_env().keys())
+        return doc
 
     # -- prompts CRUD (PRD req 10) -----------------------------------------
     @app.get("/config/prompts")

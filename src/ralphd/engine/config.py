@@ -106,6 +106,34 @@ class JobConfig:
             cfg.api_token = tok
         return cfg
 
+    def effective(self) -> dict:
+        """Effective job config for `GET /config` (PRD req 10): budgets,
+        flags, model strategy, plus (via helpers below, composed by the
+        caller) prompt sources and skills/creds *names*. Deliberately
+        excludes `api_token` and `extra` (operator-supplied, may contain
+        arbitrary/secret-shaped values) -- only the well-known, non-secret
+        fields are surfaced."""
+        return {
+            "runId": self.run_id,
+            "budgets": {
+                "iterations": self.iterations,
+                "maxApproaches": self.max_approaches,
+                "jobTimeoutS": self.job_timeout_s,
+                "iterationTimeoutS": self.iteration_timeout_s,
+            },
+            "flags": {
+                "vigilant": self.vigilant,
+                "onComplete": self.on_complete,
+            },
+            "model": {
+                "strategy": self.model_strategy,
+                "model": self.model,
+                "fastModel": self.fast_model,
+                "overrides": dict(self.model_overrides),
+                "thinking": self.thinking,
+            },
+        }
+
     def model_for(self, phase: str) -> str | None:
         """Resolve the pi model ref for a phase; None = pi's own default."""
         if override := self.model_overrides.get(phase):

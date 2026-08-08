@@ -11,6 +11,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,18 @@ class LiveRun:
         env = {**os.environ, "RALPHD_REGISTRY": str(self.registry)}
         return subprocess.run([str(RALPHCTL), *argv], env=env,
                               capture_output=True, text=True, timeout=60)
+
+    def wait_api(self, timeout=15):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{self.port}/healthz")
+                with urllib.request.urlopen(req, timeout=2):
+                    return
+            except (urllib.error.URLError, ConnectionError, TimeoutError):
+                time.sleep(0.2)
+        raise TimeoutError("engine API never came up")
 
     def stop(self):
         if self.proc.poll() is None:
