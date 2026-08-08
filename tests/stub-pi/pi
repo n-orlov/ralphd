@@ -16,6 +16,13 @@ from env vars set by the test:
   STUB_VERIFY_FAILS   number of verify invocations to fail before passing
                       (default 0; each failed invocation writes validation-failed
                       to tasks.json and does NOT emit the sentinel)
+  STUB_VERIFY_ERRORS  number of verify invocations (from the start, before any
+                      STUB_VERIFY_FAILS counting) that simulate a transient
+                      agent/provider error instead of a real verdict: emits a
+                      message_end with stopReason "error" and an errorMessage,
+                      no sentinel, and does NOT touch tasks.json at all (task
+                      050: infrastructure faults, e.g. a Bedrock 502, must
+                      never be scored as a validation failure)
   STUB_RICH_EVENTS    if set, worker/reviewer/verifier iterations emit a
                       realistic pi NDJSON preamble before their final
                       message_end: a thinking content block (thinking_start/
@@ -43,7 +50,12 @@ import time
 prompt = sys.stdin.read()
 run = os.environ["STUB_RUN_DIR"]
 tasks_file = os.path.join(run, "tasks.json")
-time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
+# Worker iterations sleep *after* writing in-progress (see below) so tests
+# can poll for the pending -> in-progress transition while the iteration is
+# still "running" from the engine's point of view; every other phase keeps
+# the original top-of-invocation sleep.
+if "Role: Worker" not in prompt:
+    time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
 
 
 def marker(name):
@@ -155,9 +167,17 @@ def emit_final(text, tool_call=None, thinking_text=None):
 
 
 if "Role: Planner" in prompt:
-    n = int(os.environ.get("STUB_TASKS", "2"))
-    tasks = [{"id": f"{i:03d}", "title": f"task {i}", "status": "pending",
-              "successCriteria": f"criteria {i}"} for i in range(1, n + 1)]
+    # STUB_TASKS_JSON lets a test hand the planner an exact tasks list
+    # (including optional dependsOn/priority fields) instead of the plain
+    # auto-numbered STUB_TASKS sequence -- needed for deterministic
+    # scheduler-ordering tests (task 048).
+    override = os.environ.get("STUB_TASKS_JSON")
+    if override:
+        tasks = json.loads(override)
+    else:
+        n = int(os.environ.get("STUB_TASKS", "2"))
+        tasks = [{"id": f"{i:03d}", "title": f"task {i}", "status": "pending",
+                  "successCriteria": f"criteria {i}"} for i in range(1, n + 1)]
     with open(tasks_file, "w") as f:
         json.dump({"version": 1, "goal": "stub goal", "tasks": tasks}, f)
     with open(os.path.join(run, "notes.md"), "w") as f:
@@ -178,12 +198,57 @@ elif "Role: Worker" in prompt:
             thinking_text="Picking the next pending task and making it pass.")
     with open(tasks_file) as f:
         d = json.load(f)
-    # Pick validation-failed first (matches worker.md semantics), then pending
-    validation_failed = [t for t in d["tasks"] if t["status"] == "validation-failed"]
-    pending = [t for t in d["tasks"] if t["status"] == "pending"]
-    to_work = validation_failed + pending
-    if to_work:
-        to_work[0]["status"] = "completed"
+    tasks = d["tasks"]
+    # Pick validation-failed first, then in-progress, then apply the
+    # dependsOn/priority-aware scheduler to pending tasks (mirrors
+    # worker.md's documented pick rule -- see task 048). With no
+    # dependsOn/priority fields anywhere in the plan this degenerates to
+    # plain list order (today's behaviour, unchanged).
+    validation_failed = [t for t in tasks if t["status"] == "validation-failed"]
+    in_progress = [t for t in tasks if t["status"] == "in-progress"]
+    picked = None
+    if validation_failed:
+        picked = validation_failed[0]
+    elif in_progress:
+        picked = in_progress[0]
+    else:
+        status_by_id = {t["id"]: t["status"] for t in tasks}
+        candidates = []
+        blocked_notes = []
+        for t in tasks:
+            if t["status"] != "pending":
+                continue
+            deps = t.get("dependsOn") or []
+            unmet = [dep for dep in deps if status_by_id.get(dep) != "completed"]
+            if unmet:
+                dead = [dep for dep in unmet if status_by_id.get(dep) in ("failed", "skipped")]
+                if dead:
+                    blocked_notes.append(
+                        f"task {t['id']} blocked: dependency "
+                        f"{','.join(dead)} failed/skipped, not completed")
+                continue
+            candidates.append(t)
+        if candidates:
+            # highest priority wins (missing = 0); ties broken by list order
+            best_priority = max(c.get("priority", 0) for c in candidates)
+            for c in candidates:
+                if c.get("priority", 0) == best_priority:
+                    picked = c
+                    break
+        if blocked_notes:
+            with open(os.path.join(run, "notes.md"), "a") as f:
+                f.write("\n" + "\n".join(blocked_notes) + "\n")
+    if picked is not None:
+        # Mandatory first write of the iteration (mirrors worker.md's rule):
+        # flip the picked task to in-progress and persist it *before* doing
+        # any "work", then sleep to simulate work time -- this is the window
+        # in which an operator/black-box test can observe the task as
+        # in-progress while the iteration is still running.
+        picked["status"] = "in-progress"
+        with open(tasks_file, "w") as f:
+            json.dump(d, f)
+        time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
+        picked["status"] = "completed"
         with open(tasks_file, "w") as f:
             json.dump(d, f)
     # record steering whenever a worker iteration sees it
@@ -224,12 +289,32 @@ elif "Role: Verifier" in prompt:
             task_id = line.split(":", 1)[1].strip()
             break
 
+    call_marker = marker("verify-call-count")
+    call_n = 0
+    if os.path.exists(call_marker):
+        call_n = int(open(call_marker).read())
+    open(call_marker, "w").write(str(call_n + 1))
+
+    errors_wanted = int(os.environ.get("STUB_VERIFY_ERRORS", "0"))
+    if call_n < errors_wanted:
+        # Simulate a transient agent/provider error (e.g. Bedrock 502) mid-
+        # verify: a message_end with stopReason "error", no sentinel, and no
+        # tasks.json mutation at all -- proves the engine must not score
+        # this as a validation failure (task 050).
+        print(json.dumps({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "error",
+                "errorMessage": "stub: transient provider error (bedrock 502)",
+                "content": [],
+                "usage": {"input": 10, "output": 0, "totalTokens": 10},
+            },
+        }))
+        sys.exit(0)
+
     fails_wanted = int(os.environ.get("STUB_VERIFY_FAILS", "0"))
-    done = 0
-    count_marker = marker("verify-count")
-    if os.path.exists(count_marker):
-        done = int(open(count_marker).read())
-    open(count_marker, "w").write(str(done + 1))
+    done = call_n - errors_wanted
 
     if done < fails_wanted:
         # Write validation-failed into tasks.json

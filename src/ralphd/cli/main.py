@@ -6,6 +6,7 @@ Deliberately stdlib-only (argparse + urllib) so `pipx install ralphd` is light.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import random
@@ -16,12 +17,15 @@ import socket
 import stat as stat_mod
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from .. import __version__
+from . import llm_profiles
 
 DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
 DEFAULT_IMAGE = os.environ.get("RALPHD_IMAGE", "ralphd:dev")
@@ -79,7 +83,8 @@ def _read_json(path: Path, default=None):
 
 
 def api(run_id: str, method: str, path: str, body: dict | None = None,
-        raw: bool = False, timeout: int = 30):
+        data: bytes | None = None, content_type: str | None = None,
+        raw: bool = False, binary: bool = False, timeout: int = 30):
     meta = host_meta(run_id)
     if not meta.get("apiUrl"):
         die(4, f"no API endpoint recorded for run {run_id}")
@@ -87,18 +92,44 @@ def api(run_id: str, method: str, path: str, body: dict | None = None,
     token_file = run_root(run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
-    if body is not None:
+    if data is not None:
+        req.add_header("Content-Type", content_type or "application/octet-stream")
+        req.data = data
+    elif body is not None:
         req.add_header("Content-Type", "application/json")
         req.data = json.dumps(body).encode()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-            return data.decode() if raw else (json.loads(data) if data else {})
+            resp_data = resp.read()
+            if binary:
+                return resp_data
+            return resp_data.decode() if raw else (json.loads(resp_data) if resp_data else {})
     except urllib.error.HTTPError as e:
-        detail = e.read().decode()[:500]
+        detail = e.read().decode(errors="replace")[:500]
         die(5 if e.code == 409 else 1, f"API {e.code}: {detail}")
     except (urllib.error.URLError, TimeoutError) as e:
         die(4, f"API unreachable: {e}")
+
+
+def _require_run(run_id: str) -> None:
+    """Exit 3 (documented 'run not found') before ever touching the API,
+    distinct from exit 4 ('container/API unreachable') for a run that
+    exists but whose container/API is currently down."""
+    if not run_root(run_id).exists():
+        die(3, f"run {run_id} not found")
+
+
+def _tar_skill_dir(src: Path) -> bytes:
+    """Tar a skill directory's *contents* at the archive root (no wrapping
+    folder) for `PUT /config/skills/{name}` -- mirrors the engine's own
+    tar_dir() so round-tripping via `get`/`add` is byte-for-byte shaped the
+    same way."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for p in sorted(src.rglob("*")):
+            if p.is_file():
+                tf.add(p, arcname=str(p.relative_to(src)))
+    return buf.getvalue()
 
 
 def die(code: int, msg: str):
@@ -233,14 +264,25 @@ def cmd_start(args):
         tf.write_text(token)
         os.chmod(tf, 0o600)
 
+    # Named LLM profile (docs/llm-profiles.md): resolved once, here, before
+    # anything else touches it -- job.yaml's model/fast_model defaults and
+    # the later env/mounts/pi wiring both read from this single resolution
+    # so a `${cmd:...}` reference is never shelled out twice.
+    llm_profile = None
+    if args.llm not in ("host", "none"):
+        try:
+            llm_profile = llm_profiles.resolve_profile(args.llm, registry())
+        except llm_profiles.ProfileError as e:
+            die(2, str(e))
+
     job = {
         "run_id": run_id,
         "iterations": args.iterations,
         "max_approaches": args.max_approaches,
         "vigilant": args.vigilant,
         "on_complete": args.on_complete,
-        "model": args.model,
-        "fast_model": args.fast_model,
+        "model": args.model or (llm_profile.get("model") if llm_profile else None),
+        "fast_model": args.fast_model or (llm_profile.get("fast_model") if llm_profile else None),
         "model_strategy": args.model_strategy,
         "thinking": args.thinking,
         "iteration_timeout_s": args.iteration_timeout * 60,
@@ -305,7 +347,16 @@ def cmd_start(args):
         if aws.is_dir():
             mounts += ["-v", f"{aws}:/home/agent/.aws:ro"]
     elif args.llm != "none":
-        die(2, f"unknown LLM profile '{args.llm}' (v0.1 supports: host, none)")
+        assert llm_profile is not None  # resolved (or died) above
+        for k, v in llm_profile["env"].items():
+            env_args += ["-e", f"{k}={v}"]
+        for m in llm_profile["mounts"]:
+            mounts += ["-v", m]
+        if llm_profile["pi"]:
+            dest = cdir / "pi"
+            dest.mkdir(exist_ok=True)
+            (dest / "models.json").write_text(json.dumps(llm_profile["pi"], indent=1))
+            os.chmod(dest / "models.json", 0o600)
     for pattern in args.forward_env or []:
         if pattern.endswith("*"):
             names = [k for k in os.environ if k.startswith(pattern[:-1])]
@@ -337,6 +388,10 @@ def cmd_start(args):
             "apiUrl": f"http://{args.api_bind}:{port}",
             "image": args.image, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                             time.gmtime())}
+    if ws is not None:
+        # host path only -- never mounted into the container -- so `resume`
+        # can remount the same workspace over a fresh container later.
+        meta["workspace"] = str(ws)
     (rdir / "host.json").write_text(json.dumps(meta, indent=2))
     out(args, {**meta, "authenticated": bool(token)},
         f"{run_id}\n  container: {container[:12]}\n  api: {meta['apiUrl']}")
@@ -406,6 +461,135 @@ def _follow_events(args, run_id: str, fatal: bool = True):
                 time.sleep(1 + attempt * 0.5)
     if fatal:
         die(4, "could not connect to event stream")
+
+
+def _read_job_yaml(path: Path) -> dict:
+    """Parse the `key: json.dumps(value)`-per-line format `job.yaml` is
+    written in (see cmd_start) -- not real YAML, just JSON-per-line, kept
+    simple since the engine's own loader treats it the same way."""
+    job: dict = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        key, _, val = line.partition(": ")
+        job[key] = json.loads(val)
+    return job
+
+
+def _write_job_yaml(path: Path, job: dict) -> None:
+    path.write_text(
+        "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))
+
+
+def _apply_iterations_topup(job: dict, spec: str) -> None:
+    """`--iterations +N` bumps the existing budget by N; a bare integer sets
+    it absolutely (documented as `+N` but an absolute value is harmless and
+    occasionally convenient)."""
+    spec = spec.strip()
+    try:
+        if spec.startswith("+"):
+            job["iterations"] = int(job.get("iterations", 25)) + int(spec[1:])
+        else:
+            job["iterations"] = int(spec)
+    except ValueError:
+        die(2, f"--iterations: invalid value {spec!r} (expected e.g. +10 or 30)")
+
+
+def _container_running(name: str) -> bool | None:
+    """True/False if the container exists (running or not); None if no
+    container by that name exists at all."""
+    res = sh([DOCKER, "inspect", "--format", "{{.State.Running}}", name])
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() == "true"
+
+
+def cmd_resume(args):
+    """PRD req 16: start a fresh container over an *existing* run dir. The
+    engine side (task 028, src/ralphd/engine/loop.py:_resume_point) detects
+    pre-existing `tasks.json`/iterations and continues instead of
+    re-planning; this only has to reproduce cmd_start's docker-run wiring
+    for the same mounts (run dir, config dir, workspace-if-any) plus an
+    optional `--iterations +N` budget top-up written into the existing
+    job.yaml before the container starts."""
+    run_id = args.run_id
+    _require_run(run_id)
+    rdir = run_root(run_id)
+    cdir = config_root(run_id)
+    name = f"ralphd-{run_id}"
+
+    running = _container_running(name)
+    if running:
+        die(5, f"container {name} is still running -- a live engine already "
+               f"holds this run dir's lock; `abort` or `stop` it first")
+    if running is False:
+        # exited/stopped container occupying the name -- `docker run --name`
+        # refuses to reuse a name already in use by any container.
+        sh([DOCKER, "rm", "-f", name])
+
+    job_path = cdir / "job.yaml"
+    job = _read_job_yaml(job_path)
+    if args.iterations:
+        _apply_iterations_topup(job, args.iterations)
+        _write_job_yaml(job_path, job)
+
+    prev_meta = host_meta(run_id)
+    ws = prev_meta.get("workspace")
+    port = args.port or free_port()
+    mounts = ["-v", f"{rdir}:/run/ralphd", "-v", f"{cdir}:/config:ro"]
+    if ws:
+        mounts += ["-v", f"{ws}:/workspace"]
+
+    env_args: list[str] = []
+    token_file = rdir / ".api-token"
+    if token_file.exists():
+        env_args += ["-e", f"RALPHD_API_TOKEN={token_file.read_text().strip()}"]
+
+    docker_args = ["--label", f"ralphd.run={run_id}"]
+    if args.allow_docker:
+        sock = docker_sock()
+        try:
+            st = os.stat(sock)
+        except OSError:
+            die(2, f"--allow-docker: docker socket {sock} not found")
+        if not stat_mod.S_ISSOCK(st.st_mode):
+            die(2, f"--allow-docker: {sock} is not a socket")
+        docker_args += ["-v", f"{sock}:/var/run/docker.sock",
+                        "--group-add", str(st.st_gid)]
+        if ws:
+            env_args += ["-e", f"RALPHD_HOST_WORKSPACE={ws}"]
+        env_args += ["-e", f"RALPHD_HOST_RUN_DIR={rdir}",
+                     "-e", f"RALPHD_RUN_ID={run_id}"]
+        print("ralphctl: WARNING: --allow-docker mounts the host docker socket "
+              "into the job container. The docker socket is ROOT-EQUIVALENT "
+              "access to this host. Only use with PRDs you trust.",
+              file=sys.stderr)
+
+    cmd = [DOCKER, "run", "-d", "--name", name, "--init",
+           "-p", f"{args.api_bind}:{port}:7777",
+           *docker_args, *mounts, *env_args, args.image]
+    res = sh(cmd)
+    if res.returncode != 0:
+        die(1, f"docker run failed: {res.stderr.strip()}")
+    container = res.stdout.strip()
+    meta = {"runId": run_id, "container": container, "port": port,
+            "apiUrl": f"http://{args.api_bind}:{port}",
+            "image": args.image,
+            "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if ws:
+        meta["workspace"] = ws
+    (rdir / "host.json").write_text(json.dumps(meta, indent=2))
+    out(args, meta,
+        f"{run_id} resumed\n  container: {container[:12]}\n  api: {meta['apiUrl']}")
+    if not args.detach:
+        _follow_events(args, run_id, fatal=False)
+        try:
+            status = api(run_id, "GET", "/status")
+        except SystemExit:
+            status = _read_json(rdir / "status.json", {})
+        except (ConnectionError, OSError, TimeoutError):
+            status = _read_json(rdir / "status.json", {})
+        sys.exit(0 if status.get("verdict") == "verified" else 1)
 
 
 # ---------------------------------------------------------------- observation
@@ -606,6 +790,236 @@ def cmd_watch(args):
     _follow_events(args, args.run_id)
 
 
+# ---------------------------------------------------------------- skills
+def cmd_skills(args):
+    _require_run(args.run_id)
+    if args.action == "ls":
+        skills = api(args.run_id, "GET", "/config/skills")
+        if args.json:
+            print(json.dumps(skills, indent=2))
+        else:
+            for s in skills:
+                print(f"{s.get('name'):<24} {s.get('origin'):<8} "
+                     f"{s.get('fileCount', '?')} file(s)")
+            if not skills:
+                print("(no skills)")
+    elif args.action == "get":
+        body = api(args.run_id, "GET", f"/config/skills/{args.name}", binary=True)
+        dest = Path(args.dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:*") as tf:
+            tf.extractall(dest)
+        out(args, {"name": args.name, "dest": str(dest)},
+            f"skill '{args.name}' written to {dest}")
+    elif args.action == "add":
+        src = Path(args.dir).expanduser().resolve()
+        if not (src / "SKILL.md").is_file():
+            die(2, f"skills add: {src} has no SKILL.md")
+        body = _tar_skill_dir(src)
+        api(args.run_id, "PUT", f"/config/skills/{src.name}", data=body,
+           content_type="application/x-tar")
+        out(args, {"added": src.name}, f"skill '{src.name}' uploaded")
+    elif args.action == "rm":
+        api(args.run_id, "DELETE", f"/config/skills/{args.name}")
+        out(args, {"removed": args.name}, f"skill '{args.name}' removed")
+
+
+# ---------------------------------------------------------------- creds
+def cmd_creds(args):
+    _require_run(args.run_id)
+    if args.action == "ls":
+        creds = api(args.run_id, "GET", "/config/creds")
+        if args.json:
+            print(json.dumps(creds, indent=2))
+        else:
+            for c in creds:
+                print(f"{c.get('name'):<24} {c.get('size', '?')} byte(s)")
+            if not creds:
+                print("(no creds)")
+    elif args.action == "get":
+        body = api(args.run_id, "GET", f"/config/creds/{args.name}", raw=True)
+        print(body, end="" if body.endswith("\n") else "\n")
+    elif args.action == "add":
+        src = Path(args.file).expanduser().resolve()
+        if src.suffix != ".env":
+            die(2, f"creds add: {src} is not a *.env file")
+        if not src.is_file():
+            die(2, f"creds add: {src} does not exist")
+        name = src.stem
+        api(args.run_id, "PUT", f"/config/creds/{name}", data=src.read_bytes(),
+           content_type="text/plain")
+        out(args, {"added": name}, f"credential '{name}' uploaded")
+    elif args.action == "rm":
+        api(args.run_id, "DELETE", f"/config/creds/{args.name}")
+        out(args, {"removed": args.name}, f"credential '{args.name}' removed")
+
+
+# ---------------------------------------------------------------- prompts
+# Kept in sync with `PROMPT_NAMES` in `src/ralphd/engine/config.py` -- the
+# CLI validates client-side *before* any HTTP call (exit 2, mirrors the
+# skills/creds local-validation style), while the engine also enforces the
+# same set server-side (422). Deliberately not importing the engine package
+# here: ralphctl runs on the host, the engine runs inside the job container.
+PROMPT_NAMES = ("planning", "worker", "review", "task-verify")
+
+
+def cmd_prompts(args):
+    _require_run(args.run_id)
+    if args.action == "ls":
+        prompts = api(args.run_id, "GET", "/config/prompts")
+        if args.json:
+            print(json.dumps(prompts, indent=2))
+        else:
+            for p in prompts:
+                print(f"{p.get('name'):<12} {p.get('source')}")
+    elif args.action == "set":
+        if args.phase not in PROMPT_NAMES:
+            die(2, f"prompts set: invalid phase '{args.phase}' -- must be one "
+                   f"of: {', '.join(PROMPT_NAMES)}")
+        src = Path(args.file).expanduser().resolve()
+        if not src.is_file():
+            die(2, f"prompts set: {src} does not exist")
+        text = src.read_bytes()
+        if not text.strip():
+            die(2, f"prompts set: {src} is empty")
+        api(args.run_id, "PUT", f"/config/prompts/{args.phase}", data=text,
+           content_type="text/plain")
+        out(args, {"phase": args.phase}, f"prompt '{args.phase}' overridden")
+
+
+# ---------------------------------------------------------------- llm
+def cmd_llm(args):
+    if args.llm_action == "profiles":
+        names = ["host", "none", *llm_profiles.list_profile_names(registry())]
+        if args.json:
+            print(json.dumps(
+                [{"name": n, "builtin": n in ("host", "none")} for n in names],
+                indent=2))
+        else:
+            for n in names:
+                print(f"{n}{' (builtin)' if n in ('host', 'none') else ''}")
+    elif args.llm_action == "show":
+        if args.name in ("host", "none"):
+            doc = {"name": args.name, "builtin": True}
+            out(args, doc,
+                f"'{args.name}' is a built-in profile (see docs/llm-profiles.md) "
+                f"-- nothing to resolve.")
+            return
+        path = llm_profiles.profile_path(registry(), args.name)
+        if not path.is_file():
+            die(3, f"llm profile '{args.name}' not found (looked for {path})")
+        try:
+            resolved = llm_profiles.resolve_profile(args.name, registry(), redact=True)
+        except llm_profiles.ProfileError as e:
+            die(1, str(e))
+        doc = {"name": args.name, "builtin": False, **resolved}
+        if args.json:
+            print(json.dumps(doc, indent=2))
+        else:
+            print(f"profile: {args.name}")
+            print(f"description: {doc.get('description') or '(none)'}")
+            print(f"model: {doc.get('model') or '(unset)'}")
+            print(f"fast_model: {doc.get('fast_model') or '(unset)'}")
+            print("env:")
+            for k, v in doc["env"].items():
+                print(f"  {k} = {v}")
+            if not doc["env"]:
+                print("  (none)")
+            print("mounts:")
+            for m in doc["mounts"]:
+                print(f"  {m}")
+            if not doc["mounts"]:
+                print("  (none)")
+            print("pi:")
+            print(json.dumps(doc["pi"], indent=2) if doc["pi"] else "  (none)")
+    elif args.llm_action == "test":
+        _cmd_llm_test(args)
+
+
+def _llm_test_resolve(name: str):
+    """Resolve profile `name` for `ralphctl llm test`, unredacted (this runs
+    entirely on the host, same trust level as `start`). Returns
+    ``(model, env, mounts, pi_fragment)``. Built-ins never fail to resolve
+    (nothing to read); a named profile dies exactly like `start`/`show`
+    (exit 3 unknown name, exit 1 unresolvable reference) with the same
+    diagnostic."""
+    if name == "none":
+        return None, {}, [], None
+    if name == "host":
+        env = {var: os.environ[var] for var in HOST_LLM_ENV if os.environ.get(var)}
+        mounts = []
+        aws = Path.home() / ".aws"
+        if aws.is_dir():
+            mounts.append(f"{aws}:/home/agent/.aws:ro")
+        pi_fragment = None
+        models_json = Path.home() / ".pi" / "agent" / "models.json"
+        if models_json.is_file():
+            try:
+                pi_fragment = json.loads(models_json.read_text())
+            except (OSError, json.JSONDecodeError):
+                pi_fragment = None
+        return None, env, mounts, pi_fragment
+    path = llm_profiles.profile_path(registry(), name)
+    if not path.is_file():
+        die(3, f"llm profile '{name}' not found (looked for {path})")
+    try:
+        resolved = llm_profiles.resolve_profile(name, registry())
+    except llm_profiles.ProfileError as e:
+        die(1, str(e))
+    return resolved["model"], resolved["env"], resolved["mounts"], resolved["pi"]
+
+
+def _cmd_llm_test(args):
+    """`ralphctl llm test <profile>`: resolve on the host (dies with the
+    exact diagnostic `start`/`show` would on a missing/unresolvable
+    profile -- no docker needed for this part). If resolution succeeds and
+    docker is reachable (and `--no-ping` wasn't given), follow up with a
+    real one-token completion in a throwaway `--rm`, labeled container
+    (entrypoint overridden straight to `pi`, bypassing ralphd-engine)."""
+    model, env, mounts, pi_fragment = _llm_test_resolve(args.name)
+    try:
+        docker_ok = sh([DOCKER, "version", "--format", "{{.Server.Version}}"]) \
+            .returncode == 0
+    except OSError:
+        docker_ok = False
+    if args.no_ping or not docker_ok:
+        reason = " (--no-ping)" if args.no_ping else \
+            ("" if docker_ok else " (docker unavailable -- skipped ping)")
+        out(args, {"profile": args.name, "resolved": True, "pinged": False},
+            f"llm profile '{args.name}' resolves OK{reason}")
+        return
+    env_args: list[str] = []
+    for k, v in env.items():
+        env_args += ["-e", f"{k}={v}"]
+    mount_args: list[str] = []
+    for m in mounts:
+        mount_args += ["-v", m]
+    tmp_pi: Path | None = None
+    if pi_fragment:
+        tmp_pi = Path(tempfile.mkdtemp(prefix="ralphd-llm-test-"))
+        pi_file = tmp_pi / "models.json"
+        pi_file.write_text(json.dumps(pi_fragment))
+        os.chmod(pi_file, 0o600)
+        mount_args += ["-v", f"{pi_file}:/home/agent/.pi/agent/models.json:ro"]
+    ping_model = args.model or model
+    cmd = [DOCKER, "run", "--rm", "-i", "--entrypoint", "pi",
+           "--label", f"ralphd.llm-test={args.name}",
+           *env_args, *mount_args, args.image,
+           "-p", "--mode", "json", "--no-session"]
+    if ping_model:
+        cmd += ["--model", ping_model]
+    try:
+        res = sh(cmd, input="Reply with exactly the single word: ok\n")
+    finally:
+        if tmp_pi is not None:
+            shutil.rmtree(tmp_pi, ignore_errors=True)
+    if res.returncode != 0:
+        die(1, f"llm profile '{args.name}': ping container failed (exit "
+               f"{res.returncode}): {(res.stderr or res.stdout).strip()[:400]}")
+    out(args, {"profile": args.name, "resolved": True, "pinged": True},
+        f"llm profile '{args.name}' resolves OK and the container ping succeeded")
+
+
 # ---------------------------------------------------------------- control
 def cmd_steer(args):
     message = args.message or (Path(args.file).read_text() if args.file
@@ -629,8 +1043,8 @@ def cmd_pause(args):
     out(args, api(args.run_id, "POST", "/pause"), "pausing at iteration boundary")
 
 
-def cmd_resume(args):
-    out(args, api(args.run_id, "POST", "/resume"), "resumed")
+def cmd_unpause(args):
+    out(args, api(args.run_id, "POST", "/resume"), "unpaused")
 
 
 def cmd_abort(args):
@@ -785,7 +1199,9 @@ def main() -> None:
     s.add_argument("--model-strategy", default="quality-first",
                    choices=["quality-first", "cost-optimized", "balanced"])
     s.add_argument("--thinking", help="pi thinking level")
-    s.add_argument("--llm", default="host", help="LLM profile (v0.1: host|none)")
+    s.add_argument("--llm", default="host",
+                   help="LLM profile: host|none, or a name from "
+                        "<registry>/llm-profiles/<name>.yaml (docs/llm-profiles.md)")
     s.add_argument("--llm-env", action="append", metavar="KEY=VAL")
     s.add_argument("--forward-env", action="append", metavar="NAME|PREFIX_*",
                    help="forward host env var(s) into the container (repeatable)")
@@ -814,11 +1230,26 @@ def main() -> None:
     for name, fn, extra in [
         ("status", cmd_status, None), ("tasks", cmd_tasks, None),
         ("watch", cmd_watch, None), ("interrupt", cmd_interrupt, None),
-        ("pause", cmd_pause, None), ("resume", cmd_resume, None),
+        ("pause", cmd_pause, None), ("unpause", cmd_unpause, None),
     ]:
         s = sub.add_parser(name)
         s.add_argument("run_id")
         s.set_defaults(func=fn)
+
+    s = sub.add_parser("resume", help="start a fresh container over an "
+                       "existing run dir (crash recovery / budget top-up)")
+    s.add_argument("run_id")
+    s.add_argument("--iterations", metavar="+N",
+                   help="budget top-up, e.g. +10 (adds to the existing "
+                        "budget); a bare integer sets it absolutely")
+    s.add_argument("--image", default=DEFAULT_IMAGE)
+    s.add_argument("--port", type=int)
+    s.add_argument("--api-bind", default="127.0.0.1")
+    s.add_argument("--allow-docker", action="store_true",
+                   help="remount the host docker socket (ROOT-EQUIVALENT "
+                        "host access -- trusted PRDs only)")
+    s.add_argument("--no-detach", dest="detach", action="store_false")
+    s.set_defaults(func=cmd_resume, detach=True)
 
     s = sub.add_parser("logs", help="agent transcript (tail-style: -N, -Nf, -f)")
     s.add_argument("run_id")
@@ -830,6 +1261,55 @@ def main() -> None:
     s.set_defaults(func=cmd_logs)
     # `logsf <id>` is a pure alias for `logs <id> -f`, rewritten in
     # _preprocess_logs_argv() before argparse ever sees "logsf".
+
+    s = sub.add_parser("skills", help="inspect or hot-swap skills on a running job")
+    s.add_argument("run_id")
+    sksub = s.add_subparsers(dest="action", required=True)
+    sksub.add_parser("ls", help="list skills with origin")
+    g = sksub.add_parser("get", help="download a skill directory")
+    g.add_argument("name")
+    g.add_argument("dest")
+    a = sksub.add_parser("add", help="tar + upload a skill directory")
+    a.add_argument("dir")
+    r = sksub.add_parser("rm", help="delete a skill")
+    r.add_argument("name")
+    s.set_defaults(func=cmd_skills)
+
+    s = sub.add_parser("creds", help="inspect or hot-swap credentials on a running job")
+    s.add_argument("run_id")
+    crsub = s.add_subparsers(dest="action", required=True)
+    crsub.add_parser("ls", help="list credential names (no values)")
+    g = crsub.add_parser("get", help="print a credential file's contents")
+    g.add_argument("name")
+    a = crsub.add_parser("add", help="upload/replace a *.env credential file")
+    a.add_argument("file")
+    r = crsub.add_parser("rm", help="delete a credential")
+    r.add_argument("name")
+    s.set_defaults(func=cmd_creds)
+
+    s = sub.add_parser("prompts", help="inspect or hot-swap phase prompts on a running job")
+    s.add_argument("run_id")
+    prsub = s.add_subparsers(dest="action", required=True)
+    prsub.add_parser("ls", help="list every phase with its effective source")
+    st = prsub.add_parser("set", help="override a phase prompt for the next iteration")
+    st.add_argument("phase")
+    st.add_argument("file")
+    s.set_defaults(func=cmd_prompts)
+
+    s = sub.add_parser("llm", help="inspect LLM profiles (~/.ralphd/llm-profiles)")
+    llmsub = s.add_subparsers(dest="llm_action", required=True)
+    llmsub.add_parser("profiles", help="list built-in + file profiles")
+    sh_ = llmsub.add_parser("show", help="resolved profile, secret values masked")
+    sh_.add_argument("name")
+    te_ = llmsub.add_parser("test", help="validate a profile resolves; optional "
+                            "1-token ping in a throwaway container")
+    te_.add_argument("name")
+    te_.add_argument("--image", default=DEFAULT_IMAGE)
+    te_.add_argument("--model", help="override the model used for the ping")
+    te_.add_argument("--no-ping", action="store_true",
+                      help="only validate resolution; skip the container ping "
+                           "even if docker is available")
+    s.set_defaults(func=cmd_llm)
 
     s = sub.add_parser("steer", help="send steering guidance")
     s.add_argument("run_id")

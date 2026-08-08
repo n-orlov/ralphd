@@ -45,9 +45,27 @@ The one-call summary. Response:
   "tasks": {"total": 9, "completed": 4, "inProgress": 1,
             "pending": 3, "validationFailed": 1, "failed": 0},
   "steering": {"pending": 0, "consumed": 2},
-  "usage": {"inputTokens": 812345, "outputTokens": 90123, "costUSD": 14.20}
+  "usage": {
+    "input": 812345, "output": 90123, "totalTokens": 902468, "costUSD": 14.20,
+    "byPhase": {
+      "planning": {"input": 40000, "output": 4000, "totalTokens": 44000, "costUSD": 0.60},
+      "worker": {"input": 700000, "output": 80000, "totalTokens": 780000, "costUSD": 12.00},
+      "review": {"input": 72345, "output": 6123, "totalTokens": 78468, "costUSD": 1.60}
+    },
+    "byApproach": {
+      "1": {"input": 812345, "output": 90123, "totalTokens": 902468, "costUSD": 14.20}
+    }
+  }
 }
 ```
+
+`usage.byPhase` breaks the same running totals down by iteration phase
+(`planning`/`worker`/`verify`/`review`) and `usage.byApproach` by approach
+number (as a string key, since JSON object keys are always strings) — both
+are accumulated alongside the top-level totals on every iteration, so for
+any token/cost field `sum(byPhase[*][field]) == sum(byApproach[*][field])
+== usage[field]`. A phase/approach only appears once at least one iteration
+for it has ended.
 
 ### `GET /tasks`
 Full `tasks.json`.
@@ -98,7 +116,7 @@ then follows. Event types:
 | `state` | lifecycle transition |
 | `phase` | phase entered (planning/worker/verify/review), approach number |
 | `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, usage |
-| `task` | task id + old/new status |
+| `task` | task id + old/new status — emitted live while a worker iteration is still running (polled every ~0.25s against `tasks.json`), not only after the iteration ends, so `pending -> in-progress` is observable in real time |
 | `steering.received` / `steering.consumed` | steering file name |
 | `signal` | COMPLETE / VERIFIED / task-verified detected |
 | `log` | engine-level notices (timeouts, retries, failures) |
@@ -141,7 +159,25 @@ container. `409` while running — use `/abort` first.
 ## Runtime configuration
 
 ### `GET /config`
-Effective job config (redacted — no secret values, no credential file contents).
+Effective job config (redacted — no secret values, no credential file
+contents, no LLM env values):
+
+```json
+{
+  "runId": "...",
+  "budgets": {"iterations": 25, "maxApproaches": 3, "jobTimeoutS": 28800, "iterationTimeoutS": 2700},
+  "flags": {"vigilant": false, "onComplete": "idle"},
+  "model": {"strategy": "quality-first", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
+  "prompts": [{"name": "planning", "source": "builtin"}, ...],
+  "skills": [{"name": "...", "origin": "mounted"}, ...],
+  "creds": ["github", ...],
+  "llmEnvKeys": ["..."]
+}
+```
+
+`creds` lists credential *names* only (no values, no sizes here — see
+`GET /config/creds` for that); `llmEnvKeys` lists the *names* of any env
+overrides set via `PUT /config/llm`, never their values.
 
 ### Prompts — override + listing
 

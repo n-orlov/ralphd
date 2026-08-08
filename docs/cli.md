@@ -201,7 +201,7 @@ Exit `0` accepted · `5` job already finished.
 
 SIGINT the current iteration without adding steering.
 
-### `ralphctl pause <run-id>` / `ralphctl resume <run-id>`
+### `ralphctl pause <run-id>` / `ralphctl unpause <run-id>`
 
 Hold/release the loop at the next iteration boundary.
 
@@ -230,16 +230,57 @@ works with dead containers.
 Inspect or hot-swap skills on a running job (API-backed; `add` tars and uploads,
 `get` downloads one back). Changes take effect next iteration.
 
-### `ralphctl creds <run-id> [ls|get <name>|add <file>|rm <name>]`
+```
+ralphctl skills <run-id> ls                 # name, origin (mounted/api), file count
+ralphctl skills <run-id> get <name> <dest>  # write the skill dir to <dest>
+ralphctl skills <run-id> add <dir>          # <dir> must contain SKILL.md; uploaded as <dir>'s basename
+ralphctl skills <run-id> rm <name>
+```
 
-Runtime credential management (API-backed, env-file convention). `add github.env`
-uploads/replaces `~/.creds/github.env` in the container; `get` prints the file
-(read-back is by design — the API token *is* the cred boundary); `rm` deletes.
-The agent sees the updated inventory at the next iteration.
+`add` validates locally that `<dir>/SKILL.md` exists before tarring/uploading
+(exit `2` otherwise, naming the dir); the skill's name is `<dir>`'s basename.
+`--json` on `ls` emits the raw `GET /config/skills` list. Exit `3` if `<run-id>`
+has no run dir at all; exit `4` if the run exists but its container/API is
+unreachable.
+
+### `ralphctl creds <run-id> [ls|get <name>|add <file>.env|rm <name>]`
+
+Runtime credential management (API-backed, env-file convention).
+
+```
+ralphctl creds <run-id> ls                # name, size, mtime -- never values
+ralphctl creds <run-id> get <name>        # prints the file contents to stdout
+ralphctl creds <run-id> add <file>.env    # uploads/replaces; name is <file>'s stem
+ralphctl creds <run-id> rm <name>
+```
+
+`add` requires a `*.env` file (exit `2` otherwise, naming the file); the
+credential's name is the file's stem (`github.env` -> `github`), and it lands
+at `~/.creds/<name>.env` (mode 0600) in the container immediately, no restart
+needed. `get` prints the file (read-back is by design — the API token *is*
+the cred boundary); `rm` deletes. `--json` on `ls` emits the raw
+`GET /config/creds` list (never a `value` field). Exit `3` if `<run-id>` has
+no run dir at all; exit `4` if the run exists but its container/API is
+unreachable. The agent sees the updated inventory at the next iteration.
 
 ### `ralphctl prompts <run-id> [ls|set <phase> <file>]`
 
 Inspect or hot-swap phase prompts.
+
+```
+ralphctl prompts <run-id> ls                    # name, effective source: builtin/mounted/api
+ralphctl prompts <run-id> set <phase> <file>    # override <phase>'s prompt, effective next iteration
+```
+
+`<phase>` must be one of `planning`, `worker`, `review`, `task-verify` (exit
+`2` otherwise, naming the valid set, checked locally before any HTTP call);
+`<file>` must exist and be non-empty (exit `2` otherwise). `set` uploads the
+file's raw text to `PUT /config/prompts/{phase}`, which takes effect the next
+time that phase's prompt is built (never retroactive to an in-flight
+iteration). `ls` reflects the new source as `api` immediately after `set`.
+`--json` on `ls` emits the raw `GET /config/prompts` list. Exit `3` if
+`<run-id>` has no run dir at all; exit `4` if the run exists but its
+container/API is unreachable.
 
 ### `ralphctl llm`
 
@@ -252,11 +293,64 @@ ralphctl llm test <profile>           # spin up a throwaway container, 1-token p
 ralphctl llm set <run-id> --profile <p>   # rotate a running job's endpoint/key
 ```
 
-### `ralphctl resume <run-id>` *(v0.2)*
+`profiles` lists the two built-ins (`host`, `none`, tagged `(builtin)`) followed
+by every `<name>.yaml` under `<registry>/llm-profiles/`, in that order.
+`--json` emits `[{"name": ..., "builtin": true|false}, ...]`.
 
-Start a fresh container against an existing run dir; the loop continues from
-`tasks.json` (crash recovery, or continuing an exited job with more budget via
-`--iterations +10`).
+`show <profile>` fully resolves the profile (same resolution `start --llm
+<profile>` performs) and prints it with every `env:` value replaced by
+`***REDACTED***` and every `pi:` field that came from a
+`${env:}`/`${file:}`/`${cmd:}` reference likewise masked -- literal `pi:`
+fields (e.g. `baseUrl`) stay visible so the resolved shape is still useful
+for diagnosis. `host`/`none` have no file to resolve; `show` reports them as
+built-in with nothing to redact. Exit `3` for an unknown profile name (no such
+`<name>.yaml`); a profile that fails to *resolve* (unset `${env:}` var,
+unreadable `${file:}`, failing `${cmd:}`) exits `1` with the same diagnostic
+`start` would show. `--json` emits the full resolved (redacted) document.
+
+`test <profile>` first resolves the profile on the host exactly like `start`
+/ `show` (same exit codes: `3` unknown name, `1` unresolvable reference,
+unredacted since nothing is printed) -- no docker needed for this part. If
+resolution succeeds and a docker daemon answers `docker version`, it follows
+up with a real one-token completion in a throwaway container: `docker run
+--rm --label ralphd.llm-test=<name> --entrypoint pi <resolved env/mounts>
+<image> -p --mode json --no-session [--model <model>]`, piping a one-line
+prompt on stdin (entrypoint overridden straight to `pi`, bypassing
+`ralphd-engine` entirely -- this never touches a run dir). Exit `1` with the
+container's stderr/stdout on a failed ping. When docker isn't reachable (or
+`--no-ping` is given), the ping is skipped and resolution success alone is
+reported (exit `0`). `--image`/`--model` override the image/model used for
+the ping.
+
+### `ralphctl resume <run-id> [--iterations +N]`
+
+Start a fresh container against an existing run dir (PRD req 16). The engine
+detects pre-existing `tasks.json`/completed iterations on startup and
+continues the job instead of re-planning; `resume` just has to reproduce
+`start`'s docker-run wiring for the *same* mounts:
+
+- `<run-dir>` and `<config-dir>` (creds/skills/pi config already staged
+  there from the original `start` survive as-is — nothing to re-derive).
+- The workspace, if the original `start` used `--workspace` (the host path
+  is recorded in `host.json` at `start` time and reused verbatim; the
+  positional resume command never needs `--workspace` itself).
+- The recorded `.api-token`, if any (`-e RALPHD_API_TOKEN=...`), so the
+  same client-side token keeps working against the new container.
+
+`--iterations +10` adds 10 to the existing budget in `job.yaml` before the
+container starts (a bare integer, e.g. `--iterations 30`, sets it
+absolutely instead); omit it to just continue with whatever budget remains.
+`--allow-docker`, `--image`, `--port`, `--api-bind`, `--no-detach` mirror
+`start`'s flags of the same name (docker-sibling access, host env forwarding
+for LLM auth, and the `-e`/mount wiring those don't touch are **not**
+automatically restored — only what's durably staged on disk via the config
+dir; the resolved `pi` config and creds/skills already are, since the
+container entrypoint re-copies `/config/pi` and the engine re-places
+`/config/creds` + `/config/skills` on every startup).
+
+Exit codes: `3` unknown run, `5` the run's container is still alive (a live
+engine already holds the run dir's flock; `abort`/`stop` it first), `2` a
+malformed `--iterations` value, `1` the underlying `docker run` failed.
 
 ### `ralphctl config`
 

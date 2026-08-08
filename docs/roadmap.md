@@ -23,7 +23,8 @@ decision:
   + bearer token; ⏳ `GET /logs` whole-job stream, prompts/skills/creds/llm runtime
   CRUD
 - `ralphctl`: ✅ `start`, `runs`, `status`, `watch`, `tasks`, `steer`, `interrupt`,
-  `pause/resume`, `abort`, `stop`, `rm`, `artifacts`, `doctor`; ⏳ pretty `logs`
+  `pause/unpause`, `abort`, `stop`, `rm`, `artifacts`, `doctor`; ✅ `resume`
+  (fresh container over an existing run dir); ⏳ pretty `logs`
   (tail-style, whole-job console), `skills`, `creds`, `prompts`, `llm`, `config`
 - ⏳ Credentials: env-file convention (`--creds <dir>` of `<name>.env` files →
   `~/.creds/` in-container; prompts advertise the inventory; agent sources on

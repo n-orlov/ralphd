@@ -22,12 +22,30 @@ iteration is to read the PRD and produce a task plan. You do NOT implement anyth
       "id": "001",
       "title": "<imperative, one deliverable>",
       "status": "pending",
-      "successCriteria": "<natural language, independently checkable by someone who did not do the work>"
+      "successCriteria": "<natural language, independently checkable by someone who did not do the work>",
+      "dependsOn": ["<optional: ids of tasks that must be completed first>"],
+      "priority": 0
     }
   ],
   "discovered": {}
 }
 ```
+
+`dependsOn` and `priority` are OPTIONAL per-task fields. The worker picks the
+first pending task in list order whose `dependsOn` (if present) are all
+`completed`, breaking ties among candidates by highest `priority` (missing =
+0, ties by list order). Only add these fields when the plan genuinely needs
+them:
+
+- `dependsOn`: real cross-task dependencies where one task's work is
+  meaningless or unsafe to attempt before another lands (e.g. "add the
+  migration" before "write code that reads the new column").
+- `priority`: the plan has tasks whose importance/urgency doesn't match
+  their position in the list (e.g. a late-discovered blocking bug fix that
+  should jump ahead of already-listed cosmetic work).
+
+A clear, linear plan (most plans) should omit both fields entirely — plain
+list order is the default and requires no annotation.
 
 4. Write brief handoff notes to the notes file (max 50 lines): key facts about the
    workspace a fresh worker needs (test command, entry points, gotchas).

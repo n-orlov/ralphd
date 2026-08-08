@@ -10,6 +10,10 @@ just enough behavior for ralphctl to proceed. Knobs:
                               `docker inspect --format ...` (exit 1 if id absent)
   STUB_DOCKER_INSPECT_OK      if set, plain `docker inspect <name>` exits 0
                               (default: exit 1 = container does not exist)
+  STUB_DOCKER_CONTAINERS      comma-separated names/ids that "exist" (for
+                              `docker inspect --format {{.State.Running}}`)
+  STUB_DOCKER_RUNNING         subset of STUB_DOCKER_CONTAINERS that are
+                              currently running (rest are exited/stopped)
   STUB_DOCKER_LIVE_ENGINE     if set, `docker run` actually launches a real
                               `ralphd-engine` process (via
                               live_engine_supervisor.py) against the mounted
@@ -87,11 +91,19 @@ elif cmd == "ps":
         print("\n".join(ids.split(",")))
 elif cmd == "inspect":
     if "--format" in argv:
-        labels = json.loads(os.environ.get("STUB_DOCKER_INSPECT_LABELS", "{}"))
+        fmt = argv[argv.index("--format") + 1]
         cid = argv[-1]
-        if cid not in labels:
-            sys.exit(1)
-        print(labels[cid])
+        if fmt == "{{.State.Running}}":
+            containers = set(os.environ.get("STUB_DOCKER_CONTAINERS", "").split(",")) - {""}
+            running = set(os.environ.get("STUB_DOCKER_RUNNING", "").split(",")) - {""}
+            if cid not in containers:
+                sys.exit(1)
+            print("true" if cid in running else "false")
+        else:
+            labels = json.loads(os.environ.get("STUB_DOCKER_INSPECT_LABELS", "{}"))
+            if cid not in labels:
+                sys.exit(1)
+            print(labels[cid])
     elif not os.environ.get("STUB_DOCKER_INSPECT_OK"):
         sys.exit(1)
 elif cmd == "version":

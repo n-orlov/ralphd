@@ -66,6 +66,17 @@ Design invariants:
   exhaustion, an explicit abort, or an unrecoverable engine bug ends the job.
   The runner must never leave an orphaned agent process behind (kill the
   process group on any exit path).
+- **Task status transitions are visible live, not just at iteration end.**
+  The worker prompt makes flipping the picked task to `in-progress` in
+  `tasks.json` the mandatory first write of the iteration — before any other
+  file edit or shell command. While the agent subprocess for a worker
+  iteration is running, the engine runs a lightweight background poller
+  (`LoopSupervisor._poll_task_changes`, ~4/s) that re-reads `tasks.json` and
+  emits `task` events for any status change immediately, instead of only
+  once via the post-iteration `_emit_task_changes()` call. An operator
+  watching `GET /events` or `GET /tasks` (or `ralphctl`) therefore sees
+  `pending -> in-progress` for the exact task being worked while that
+  iteration is still in flight, not only after it ends.
 
 ### Phase prompts
 
@@ -83,6 +94,18 @@ diffs task statuses; each newly `completed` task gets a verification iteration
 against its `successCriteria`. Failures set `status: validation-failed` with
 `validationNotes`; the worker treats those like `pending` and reads the notes. Three
 failed validations of the same task mark it `failed` (budget protection).
+
+A verify iteration that errors out mid-stream (agent/provider failure -- e.g. a
+Bedrock 502 -- surfaced as an assistant `message_end` with `stopReason: "error"`)
+before ever emitting the `<task-verified>{id}</task-verified>` sentinel is an
+infrastructure fault, not a verdict, and must never be scored as a validation
+failure: the engine retries verification (bounded, `MAX_VERIFY_ERROR_RETRIES = 3`)
+without touching the task's `status` or `validationAttempts`. If every retry also
+errors (or the iteration budget runs out first), the engine gives up on verifying
+that task for now, logs an error event, and leaves its status exactly as the
+worker left it -- it is not marked `validation-failed`, `failed`, or otherwise
+penalized. The verify iteration's `meta.json` records `verifyOutcome: "error"`
+for these attempts (distinct from `"pass"`/`"fail"`).
 
 ### Model strategy
 
@@ -134,12 +157,28 @@ container and lets the CLI read state even when the container is dead.
       "status": "pending|in-progress|completed|validation-failed|failed|skipped",
       "successCriteria": "natural-language, independently checkable",
       "validationNotes": "present when validation-failed",
-      "validationAttempts": 0
+      "validationAttempts": 0,
+      "dependsOn": ["000"],
+      "priority": 0
     }
   ],
   "discovered": {}
 }
 ```
+
+`dependsOn` (list of task ids) and `priority` (number, higher = more
+important) are OPTIONAL per task, added by the planner only when the plan
+genuinely needs cross-task ordering or prioritisation (see
+`prompts/planning.md`). The worker's pick rule (`prompts/worker.md`): among
+`pending` tasks whose `dependsOn` are all `completed`, pick the highest
+`priority` (missing = 0), ties broken by list order; a task blocked by a
+`failed`/`skipped` dependency is never silently ground against — the worker
+notes the blockage in the handoff notes file and moves on. With no
+`dependsOn`/`priority` fields anywhere in the plan this is identical to
+plain sequential list-order picking. This rule lives entirely in the phase
+prompts (the engine does not parse or enforce it in code) — it is the agent
+reading `tasks.json` and the prompt's instructions, same as task selection
+always has been.
 
 The **workspace** (`/workspace`) is separate from `/run`: it is the repo checkout the
 agent edits. Two modes, chosen per job:
@@ -222,8 +261,20 @@ timeout, fails the job.
 ### Steering
 
 Steering files are markdown notes dropped into `steering/` (via API or by writing
-the mounted dir directly). At each iteration start the engine includes all *unconsumed*
-steering files in the prompt and marks them consumed (recorded in `meta.json`).
+the mounted dir directly). At each iteration start the engine checks for
+*unconsumed* steering files, but only **actionable** phases -- `planning` and
+`worker`, whose prompts explicitly instruct the agent to act on operator
+guidance -- include the full steering text and mark it consumed (recorded in
+`meta.json`'s `steeringConsumed` and in `steering/.consumed.json`). The
+`review` and `verify` phases are pure verification roles ("Do NOT fix
+anything yourself"; nothing in their prompts tells the agent to act on
+steering), so if a steering file arrives while a worker iteration is in
+flight and the very next iteration boundary happens to be a review or verify
+iteration, that iteration only sees a passive notice (file names, no content,
+not marked consumed) and leaves it pending -- it is picked up and consumed by
+the next planning/worker iteration instead. This prevents steering from being
+silently discarded (recorded as "consumed" yet never actually acted on) when
+it happens to land just before a non-worker-bound phase.
 `POST /interrupt` gives the "right now" variant: SIGINT the current iteration so the
 next one starts immediately with the new guidance. Steering is guidance for the
 agent; it does not mutate `tasks.json` directly.
@@ -250,6 +301,77 @@ pointed at the same `RALPHD_RUN_DIR`, must never double-write `events.jsonl` /
   *existence* is checked), it is released automatically on any process exit —
   including `SIGKILL` — so a killed engine never leaves a stale false-positive
   lock behind; a fresh engine started immediately after can acquire it.
+
+### Run-dir schema version (PRD req 18)
+
+`status.json` carries a `schemaVersion` integer, stamped by the engine on every
+startup (`RunDir.check_schema_version()` + the `update_status(...,
+schemaVersion=CURRENT_SCHEMA_VERSION)` call in `engine/main.py`). It tracks the
+run-dir *on-disk shape* (files/fields the engine relies on), not the job or
+software version. Policy, checked immediately after the run-dir lock is
+acquired and before anything else in the run dir is touched (no workspace
+creation, no PRD copy, no `status.json`/`tasks.json` write):
+
+- **Recorded version newer than this engine build's `CURRENT_SCHEMA_VERSION`**
+  (an older engine pointed at a run dir a newer engine already advanced) →
+  refuses to start: prints a diagnostic naming *both* versions to stderr/log
+  and exits **`4`** (`EXIT_SCHEMA_TOO_NEW` in `engine/main.py`), touching
+  nothing else.
+- **Recorded version older than current, or absent** (a pre-schema run dir
+  from before this feature existed reads as version `0`) → accepted; the
+  engine proceeds normally and stamps `schemaVersion: CURRENT_SCHEMA_VERSION`
+  into `status.json` on its first status update. There is currently only one
+  schema version (`1`), so "upgrading" an older run dir is just this stamp;
+  the check exists so a future on-disk shape change has a documented,
+  enforced upgrade/refusal point to hang real migration logic off.
+- **Recorded version equal to current** → no-op, same stamp is rewritten.
+
+### Engine resume-from-existing-state (PRD req 16, engine side)
+
+A container is disposable; the run dir is not. `ralphd-engine` can always be
+started fresh over an *existing* run dir (same mounted `<run-dir>`, same or
+adjusted `job.yaml` iteration budget) and picks up where the previous process
+left off, instead of re-planning from scratch. This is what backs
+`ralphctl resume <run-id>` (task 029, CLI side) and recovery after a killed
+container (task 030, crash-consistency), but the detection and resumption
+logic itself lives entirely engine-side and needs no CLI/API cooperation.
+
+- **Iteration numbering.** `LoopSupervisor.__init__` seeds
+  `self.iterations_used` from `RunDir.max_iteration_number()` -- the highest
+  `iterations/<NNNN>/` directory whose `meta.json` already has an `endedAt`
+  field (a genuinely *completed* iteration; a half-written directory left by
+  a process killed mid-iteration is not counted and its number is reused).
+  On a fresh run dir this is `0`, so numbering is unaffected; on a run dir
+  with `N` completed iterations already on disk, the very next iteration is
+  numbered `N+1`. This one seed is what makes numbering monotonic across
+  restarts with no other change needed.
+- **Skipping planning.** `LoopSupervisor._resume_point()` decides where
+  `run_job()` starts: if `tasks.json` already has tasks *and* at least one
+  completed iteration is on disk, it resumes the approach recorded in
+  `status.json`'s `approach` field (that field persists across restarts --
+  `update_status()` merges, it never resets fields it isn't given) and skips
+  straight into the worker loop for that approach, emitting a `log` event
+  ('resuming existing run-dir state: approach N, K iteration(s) already
+  recorded; skipping planning') so the resume is operator-visible. A
+  genuinely fresh run dir (no tasks yet, or `max_iteration_number() == 0`)
+  is completely unaffected -- planning still runs first, exactly as before.
+- **Budget accounting.** Because `iterations_used` starts from the prior
+  count, `budget_left()`'s `iterations_used < cfg.iterations` check
+  automatically reflects prior usage -- a bumped `iterations` value in the
+  freshly-loaded `job.yaml` (the CLI-side top-up) is *remaining* budget on
+  top of what was already spent, not a brand new allowance. The wall-clock
+  `job_timeout_s` deadline, by contrast, is a fresh per-process guard
+  (`self.deadline = time.monotonic() + cfg.job_timeout_s` in `__init__`) --
+  each container invocation gets its own timeout window, it does not
+  accumulate across restarts.
+- This also covers resuming a *terminal* (e.g. `failed`/`aborted`) run dir
+  after the operator increases the iteration budget and restarts: the same
+  detection (`tasks.json` has tasks + completed iterations exist) applies
+  regardless of what `state` the previous process left in `status.json`,
+  since that field is unconditionally overwritten to `"running"` at the top
+  of `run_job()` before the resume decision is made.
+- Tests: `tests/test_resume.py` (no Docker, real `ralphd-engine` twice over
+  the same run dir via `test_e2e.py`'s `engine_factory` fixture).
 
 ## 5. Configuration & injection
 
@@ -316,6 +438,18 @@ Everything the job needs is mapped in by the CLI. Three mount points:
   `git-credentials`, `netrc`, `ssh/`), and an executable `setup.sh` still runs
   once at container start as the escape hatch. Nothing credential-shaped is
   ever written to `/run` (which is host-visible history) or logged.
+  **The prompt-level rule that makes this hold in practice**: every tool
+  call's arguments and stdout land verbatim in the run's iteration
+  transcript, so the creds note (`loop.py:_creds_note()`) and the worker
+  prompt's dedicated "Credential handling" section both explicitly forbid
+  printing/`cat`-ing/`echo`-ing a credential file's contents or pasting a
+  secret value into a command's arguments (query strings, `--token` flags,
+  inline `Authorization:` headers) — either would permanently persist the
+  secret in that transcript. The sanctioned pattern is exactly `set -a; .
+  ~/.creds/<name>.env; set +a` followed by letting the tool read `$VARNAME`
+  from its own environment. The same guidance forbids token-bearing git
+  remote URLs (`https://<token>@host/...`, which leaks via `git remote -v`
+  and `.git/config`) in favor of a credential helper / `~/.git-credentials`.
   Creds are full CRUD at runtime via the API (`GET/PUT/DELETE
   /config/creds/{name}`) — including read-back of values, an explicit design
   choice: **holding the API bearer token is defined as equivalent to holding the
