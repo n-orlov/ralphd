@@ -255,7 +255,9 @@ UI reading the same registry is planned (v0.3, [roadmap.md](roadmap.md)).
 
 ## 8. Docker image
 
-`ghcr.io/…/ralphd` (multi-arch), containing: Python 3.12 (engine), Node 20 + pi CLI,
+`ghcr.io/…/ralphd` (multi-arch), containing: Python 3.12 (engine), Node 22 +
+a **pinned** pi CLI version (npm silently resolves an old pi when the node
+engine requirement isn't met — pin both, upgrade deliberately),
 git, ripgrep, curl/jq, build essentials, and a non-root `agent` user. Deliberately
 **thin on toolchains** — language runtimes beyond Python/Node are the operator's
 business via `--image` (derived images `FROM ralphd`) or a job-level
