@@ -183,12 +183,93 @@ def test_steering_post_unknown_run_404(tmp_path, ui):
     assert code == 404
 
 
-def test_static_path_404s_cleanly_before_bundle_exists(tmp_path, ui):
+def _get_raw(server, path):
+    """Fetch a (possibly non-JSON) path, returning (status, content-type, body bytes)."""
+    try:
+        with urllib.request.urlopen(f"{server.base}{path}", timeout=5) as resp:
+            return resp.status, resp.headers.get("Content-Type", ""), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", ""), e.read()
+
+
+def test_static_bundle_serves_index_html_at_root_and_by_name(tmp_path, ui):
+    """Task 034: the static hub bundle is now packaged -- `/` and
+    `/index.html` both serve it with a text/html content type."""
     registry = tmp_path / "registry"
     server = ui(registry)
-    with pytest.raises(urllib.error.HTTPError) as exc_info:
-        urllib.request.urlopen(f"{server.base}/index.html", timeout=5)
-    assert exc_info.value.code == 404
+    for path in ("/", "/index.html"):
+        code, ctype, body = _get_raw(server, path)
+        assert code == 200, (path, code, body[:200])
+        assert "text/html" in ctype
+        assert b"<html" in body.lower()
+        assert b"ralphd hub" in body.lower()
+
+
+def test_static_bundle_serves_js_and_css_with_correct_content_types(tmp_path, ui):
+    registry = tmp_path / "registry"
+    server = ui(registry)
+    code, ctype, body = _get_raw(server, "/app.js")
+    assert code == 200
+    assert "javascript" in ctype
+    assert b"fetch(" in body  # the JS talks to the JSON endpoints only
+
+    code, ctype, body = _get_raw(server, "/style.css")
+    assert code == 200
+    assert "text/css" in ctype
+    assert len(body) > 0
+
+
+def test_static_bundle_js_has_no_npm_or_node_build_artifacts(tmp_path):
+    """No build step: plain hand-written files only, no package.json /
+    node_modules / bundler output shipped alongside the hub bundle."""
+    from ralphd.cli.ui_server import STATIC_DIR
+    assert STATIC_DIR.is_dir()
+    names = {p.name for p in STATIC_DIR.iterdir()}
+    assert "node_modules" not in names
+    assert "package.json" not in names
+    assert "package-lock.json" not in names
+    for js_file in STATIC_DIR.glob("*.js"):
+        text = js_file.read_text()
+        assert "//# sourceMappingURL" not in text  # bundler fingerprint
+        assert "webpack" not in text.lower()
+
+
+def test_static_bundle_unknown_path_falls_back_to_spa_index(tmp_path, ui):
+    """A path that isn't a real asset (e.g. `/run/some-id` client-side hash
+    route rendered without a hash by a non-JS client) still serves
+    index.html rather than a bare 404, matching an SPA's routing model."""
+    registry = tmp_path / "registry"
+    server = ui(registry)
+    code, ctype, body = _get_raw(server, "/run/does-not-exist-as-a-file")
+    assert code == 200
+    assert "text/html" in ctype
+    assert b"ralphd hub" in body.lower()
+
+
+def test_wheel_packages_the_static_bundle():
+    """Successcriteria: verified by building the wheel and listing its
+    contents -- proves task 034's files aren't merely present in the repo
+    but actually ship inside the installable artifact."""
+    import subprocess
+    import sys
+    import tempfile
+    import zipfile
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as td:
+        res = subprocess.run(
+            [sys.executable, "-m", "build", "--wheel", "-o", td],
+            cwd=repo_root, capture_output=True, text=True, timeout=180)
+        assert res.returncode == 0, res.stdout + res.stderr
+        wheels = list(Path(td).glob("*.whl"))
+        assert wheels, "no wheel produced"
+        with zipfile.ZipFile(wheels[0]) as zf:
+            names = set(zf.namelist())
+    web_files = {n for n in names if "/cli/web/" in n}
+    assert any(n.endswith("index.html") for n in web_files), web_files
+    assert any(n.endswith("app.js") for n in web_files), web_files
+    assert any(n.endswith("style.css") for n in web_files), web_files
 
 
 def test_ui_server_module_never_imports_fastapi_or_uvicorn():

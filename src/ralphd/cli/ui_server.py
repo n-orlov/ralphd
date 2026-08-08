@@ -11,8 +11,11 @@ Serves two things:
     gracefully (never raising into a 500, never hanging past a short
     timeout) when it is not.
   - The static hub bundle (plain HTML/JS/CSS, no build step) from the
-    `web/` directory next to this file, once task 034 populates it. Until
-    then, non-`/api` paths 404 with a clear message.
+    `web/` directory next to this file (task 034: run list, run detail
+    with task table/iteration timeline/live log tail/steering
+    form/usage-cost, packaged in the wheel). Non-`/api` paths that don't
+    match a real file fall back to `index.html` (SPA-style client-side
+    routing).
 
 See docs/cli.md's "ralphctl ui" section for the exact endpoint shapes.
 """

@@ -424,8 +424,34 @@ JSON endpoints served under `/api/`:
   response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`
   if the run's API is unreachable or rejects it; `404` for an unknown run id.
 - Any other path is served from the static hub bundle packaged in the
-  wheel (task 034); until that bundle exists, non-`/api` paths `404` with a
-  plain-text "static hub bundle not installed in this build" message.
+  wheel (`src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css` — plain
+  HTML/JS/CSS, no npm/node build step). A path that doesn't match a real
+  file under `web/` falls back to `index.html` (SPA-style client-side
+  routing via `location.hash`), so e.g. a raw browser refresh on a run's
+  detail view still loads the app shell. If the bundle is somehow absent
+  from the installed build, non-`/api` paths `404` with a plain-text
+  "static hub bundle not installed in this build" message instead of
+  crashing.
+
+The bundle itself (open `http://<bind>:<port>/` in a browser):
+
+- **Run list** (`#/`) — table of every run under the registry with state,
+  verdict, phase, approach, iteration count and start time, auto-refreshed
+  every 4s; click a run id to open its detail view.
+- **Run detail** (`#/run/<id>`) — summary card (state/verdict/phase/
+  approach/iterations/live-vs-snapshot/duration), a usage/cost panel
+  (total tokens+cost plus the `byPhase`/`byApproach` breakdowns from PRD
+  req 19 when present), a task table, an iteration timeline (number,
+  phase, model, duration once ended), a live log tail rendered with the
+  *same* pretty rules as `ralphctl logs` (iteration boundaries, streamed
+  text, compact tool one-liners, elided thinking, malformed-line
+  markers — reimplemented in `app.js`, not shared code, since the CLI is
+  Python and the bundle is browser JS), and a steering form that `POST`s
+  to `/api/runs/<id>/steer` and reports the created file name back.
+- No build step: the JS is hand-written, talks only to the JSON endpoints
+  above via `fetch()`, and ships as-is inside the wheel (verified by
+  building the wheel and listing its contents — no `package.json`/
+  `node_modules`/bundler output anywhere in the tree).
 
 ## Notes for AI agents driving ralphctl
 

@@ -1,0 +1,187 @@
+:root {
+  --fg: #1b1f23;
+  --bg: #ffffff;
+  --muted: #6a737d;
+  --border: #d1d5da;
+  --accent: #0366d6;
+  --ok: #22863a;
+  --err: #d73a49;
+  --warn: #b08800;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+header a {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.muted { color: var(--muted); font-size: 0.85rem; }
+
+main {
+  padding: 1rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th { color: var(--muted); font-weight: 600; }
+
+tr:hover td { background: #f6f8fa; }
+
+a { color: var(--accent); }
+
+.pill {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+
+.pill-succeeded, .pill-completed, .pill-verified, .pill-ok { color: var(--ok); border-color: var(--ok); }
+.pill-failed, .pill-error { color: var(--err); border-color: var(--err); }
+.pill-running, .pill-in-progress { color: var(--accent); border-color: var(--accent); }
+.pill-pending, .pill-unknown, .pill-paused { color: var(--warn); border-color: var(--warn); }
+
+section {
+  margin-bottom: 1.5rem;
+}
+
+h2 {
+  font-size: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3rem;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.6rem;
+  background: #fafbfc;
+}
+
+.card.error { border-color: var(--err); }
+
+.timeline-item {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.25rem 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.85rem;
+}
+
+.timeline-item .num { color: var(--muted); width: 2.5rem; flex: none; }
+.timeline-item .phase { font-weight: 600; width: 6rem; flex: none; }
+.timeline-item .dur { color: var(--muted); width: 4.5rem; flex: none; text-align: right; }
+
+#logbox {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.75rem;
+  border-radius: 6px;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+#logbox .lg-boundary-start { color: #79c0ff; font-weight: 600; }
+#logbox .lg-boundary-end { color: #8b949e; }
+#logbox .lg-error { color: #ff7b72; font-weight: 600; }
+#logbox .lg-tool { color: #d2a8ff; }
+#logbox .lg-tool-err { color: #ff7b72; }
+#logbox .lg-thinking { color: #8b949e; font-style: italic; }
+#logbox .lg-malformed { color: #d29922; }
+#logbox .lg-text { color: #c9d1d9; }
+
+form.steer {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+form.steer input[type=text] {
+  flex: 1;
+  min-width: 12rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+form.steer input[type=checkbox] { margin-right: 0.25rem; }
+
+button {
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+button:hover { opacity: 0.9; }
+
+#steer-status { font-size: 0.85rem; margin-top: 0.4rem; }
+
+.usage-grid {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.usage-grid .stat {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.8rem;
+  min-width: 8rem;
+}
+
+.usage-grid .stat .k { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
+.usage-grid .stat .v { font-size: 1.1rem; font-weight: 600; }
+
+footer.autorefresh {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 0.5rem;
+}
