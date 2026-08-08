@@ -303,6 +303,40 @@ Everything the job needs is mapped in by the CLI. Three mount points:
   loopback-only bind unless the token is set, and treat `--api-bind 0.0.0.0`
   + token as granting whoever holds the token everything the job can do.
 
+### Docker socket opt-in (`--allow-docker`)
+
+By default the job container has **no docker socket** (§8) — that stays the
+baseline. `ralphctl start --allow-docker` is an explicit, per-job trust
+escalation for PRDs that need to build/run containers (integration tests,
+image builds):
+
+- **Trust model: root-equivalent.** The mounted socket lets the job
+  `docker run --privileged -v /:/host …` and own the machine; the non-root
+  `agent` user and any container hardening are irrelevant once it holds the
+  socket. There is no partial-trust variant (socket proxies that allow `run`
+  at all still allow arbitrary mounts). ralphctl prints a loud warning at
+  launch; use only with PRDs you trust as much as your own shell.
+- **Mechanics.** ralphctl mounts the socket (default `/var/run/docker.sock`,
+  overridable via `RALPHD_DOCKER_SOCK`) and adds the socket's group via
+  `--group-add <gid>` (computed at launch — the gid differs per host). The
+  containers the job starts are **siblings** on the host daemon, not children.
+- **Path translation gotcha.** A sibling's `-v` is resolved by the *host*
+  daemon: container-local paths (`/workspace`, `/run/ralphd`) mount as empty
+  dirs and the daemon may auto-create them root-owned on the host. ralphctl
+  therefore injects the host-side equivalents as env vars —
+  `RALPHD_HOST_WORKSPACE` (when `--workspace` was given), `RALPHD_HOST_RUN_DIR`,
+  and `RALPHD_RUN_ID` — and the engine appends a "Docker siblings" section to
+  every phase prompt telling the agent to use them. (`docker build` contexts
+  are exempt: the CLI streams the context itself.)
+- **Label + reap lifecycle.** The job container always carries
+  `--label ralphd.run=<run-id>` (with or without `--allow-docker`); prompts
+  instruct the agent to put the same label on every sibling and prefer `--rm`.
+  `ralphctl stop` and `ralphctl rm` best-effort `docker rm -f` everything
+  matching the label (idempotent, never fails the command); `ralphctl doctor`
+  reports stray labeled containers whose run id no longer has a registry dir
+  (report-only). Anything unlabeled and detached outlives the job — the daemon
+  has no parentage notion between a job and its siblings.
+
 ## 7. Host-side: CLI and registry
 
 `ralphctl` (see [cli.md](cli.md)) is stateless except for `~/.ralphd/`:
@@ -329,7 +363,9 @@ git, ripgrep, curl/jq, build essentials, and a non-root `agent` user. Deliberate
 **thin on toolchains** — language runtimes beyond Python/Node are the operator's
 business via `--image` (derived images `FROM ralphd`) or a job-level
 `setup.sh`. Engine and API run as the non-root user; no docker socket, no host
-network.
+network. The image does ship the static docker **client** binary (pinned
+`DOCKER_VERSION`), but it is inert without the socket — which is only mounted
+by the explicit `--allow-docker` opt-in (§6).
 
 ## 9. Failure containment
 

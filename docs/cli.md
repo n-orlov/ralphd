@@ -72,6 +72,7 @@ ralphctl start --prd <file|-> [options]
 | `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
 | `--skills <dir>` | — | mount a skills directory (repeatable) |
 | `--creds <dir>` | — | mount a credentials directory (see below) |
+| `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below |
 | `--prompt-override <dir>` | — | phase-prompt override directory |
 | `--image <ref>` | bundled default | alternative/derived engine image |
 | `--on-complete idle\|exit` | idle | post-completion behavior |
@@ -107,7 +108,29 @@ it expands to the children — so both `--skills ./skills/git` and
 Skills are copied at start (later host edits don't affect the running job) and
 scoped per job — there is deliberately no "forward all host skills" mode.
 
-Exit: `0` started · `1` container failed to start · `2` bad options.
+Docker siblings (`--allow-docker`) — default **off**. Mounts the host docker
+socket (default `/var/run/docker.sock`; override with `RALPHD_DOCKER_SOCK`)
+and adds the socket's group to the container so the agent can run
+`docker build` / `docker run`. **Warning: the docker socket is root-equivalent
+access to the host** — the job can mount any host path and start privileged
+containers; grant it only to PRDs you trust as much as your own shell. ralphctl
+prints this warning to stderr at launch. Sibling rules the agent is told (and
+you should know):
+
+- Containers the job starts are **siblings on the host daemon** — their `-v`
+  paths are *host* paths. ralphctl injects `RALPHD_HOST_WORKSPACE`,
+  `RALPHD_HOST_RUN_DIR`, and `RALPHD_RUN_ID` so the agent can mount the right
+  dirs; container-local paths mount empty and can litter root-owned dirs on
+  the host.
+- Siblings should carry `--label ralphd.run=<run-id>` (the job container
+  always does) — `ralphctl stop`/`rm` reap everything with that label,
+  best-effort. `ralphctl doctor` lists stray labeled containers whose run no
+  longer exists.
+- Prefer `--rm` for short-lived siblings; detached unlabeled containers,
+  built images, and volumes outlive the job.
+
+Exit: `0` started · `1` container failed to start · `2` bad options (including
+a missing/invalid docker socket with `--allow-docker`).
 
 ### `ralphctl runs`
 
@@ -243,8 +266,10 @@ Get/set registry defaults (`ralphctl config set image ghcr.io/...`,
 ### `ralphctl doctor`
 
 Preflight: docker reachable, image present/pullable, registry writable, default LLM
-profile resolves and (with `--ping`) answers. Designed as the first command an AI
-agent should run.
+profile resolves and (with `--ping`) answers. Also reports (non-fatal) any stray
+containers labeled `ralphd.run=*` whose run id has no registry dir — leftovers
+from `--allow-docker` jobs that were never reaped. Designed as the first command
+an AI agent should run.
 
 ## Notes for AI agents driving ralphctl
 

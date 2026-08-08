@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Recording stub `docker` for black-box ralphctl tests.
+
+Appends every invocation's argv (JSON, one line) to $STUB_DOCKER_LOG and fakes
+just enough behavior for ralphctl to proceed. Knobs:
+
+  STUB_DOCKER_LOG             file to append argv lines to
+  STUB_DOCKER_PS_IDS          comma-separated ids printed by `docker ps`
+  STUB_DOCKER_INSPECT_LABELS  JSON {container_id: label_value} answered by
+                              `docker inspect --format ...` (exit 1 if id absent)
+  STUB_DOCKER_INSPECT_OK      if set, plain `docker inspect <name>` exits 0
+                              (default: exit 1 = container does not exist)
+"""
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+log = os.environ.get("STUB_DOCKER_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(json.dumps(argv) + "\n")
+
+cmd = argv[0] if argv else ""
+
+if cmd == "run":
+    print("f" * 64)  # fake container id
+elif cmd == "ps":
+    ids = os.environ.get("STUB_DOCKER_PS_IDS", "")
+    if ids:
+        print("\n".join(ids.split(",")))
+elif cmd == "inspect":
+    if "--format" in argv:
+        labels = json.loads(os.environ.get("STUB_DOCKER_INSPECT_LABELS", "{}"))
+        cid = argv[-1]
+        if cid not in labels:
+            sys.exit(1)
+        print(labels[cid])
+    elif not os.environ.get("STUB_DOCKER_INSPECT_OK"):
+        sys.exit(1)
+elif cmd == "version":
+    print("29.5.3")
+sys.exit(0)

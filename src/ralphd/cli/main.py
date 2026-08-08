@@ -12,6 +12,7 @@ import random
 import secrets
 import shutil
 import socket
+import stat as stat_mod
 import subprocess
 import sys
 import time
@@ -115,6 +116,24 @@ def sh(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
+def docker_sock() -> str:
+    """Host docker socket path (RALPHD_DOCKER_SOCK overrides for tests/podman)."""
+    return os.environ.get("RALPHD_DOCKER_SOCK", "/var/run/docker.sock")
+
+
+def _reap_siblings(run_id: str) -> None:
+    """Best-effort removal of containers labeled ralphd.run=<run_id>.
+
+    Sibling containers started by the job via the host docker socket carry
+    this label (the job container always does too). Never fails the caller.
+    """
+    res = sh([DOCKER, "ps", "-aq", "--filter", f"label=ralphd.run={run_id}"])
+    if res.returncode != 0:
+        return
+    for cid in res.stdout.split():
+        sh([DOCKER, "rm", "-f", cid])
+
+
 def _resolve_pi_apikeys(models_json: Path) -> None:
     """pi supports `apiKey: "!command args"` (shell-out per request). Such
     helpers exist on the host, not in the container — resolve them here and
@@ -182,11 +201,33 @@ def cmd_start(args):
         "-v", f"{rdir}:/run/ralphd",
         "-v", f"{cdir}:/config:ro",
     ]
+    ws: Path | None = None
     if args.workspace:
         ws = Path(args.workspace).expanduser().resolve()
         if not ws.is_dir():
             die(2, f"workspace {ws} is not a directory")
         mounts += ["-v", f"{ws}:/workspace"]
+
+    docker_args: list[str] = ["--label", f"ralphd.run={run_id}"]
+    if args.allow_docker:
+        sock = docker_sock()
+        try:
+            st = os.stat(sock)
+        except OSError:
+            die(2, f"--allow-docker: docker socket {sock} not found")
+        if not stat_mod.S_ISSOCK(st.st_mode):
+            die(2, f"--allow-docker: {sock} is not a socket")
+        docker_args += ["-v", f"{sock}:/var/run/docker.sock",
+                        "--group-add", str(st.st_gid)]
+        if ws is not None:
+            env_args += ["-e", f"RALPHD_HOST_WORKSPACE={ws}"]
+        env_args += ["-e", f"RALPHD_HOST_RUN_DIR={rdir}",
+                     "-e", f"RALPHD_RUN_ID={run_id}"]
+        print("ralphctl: WARNING: --allow-docker mounts the host docker socket "
+              "into the job container. The docker socket is ROOT-EQUIVALENT "
+              "access to this host — the job can mount any host path and run "
+              "privileged containers. Only use with PRDs you trust.",
+              file=sys.stderr)
     for sdir in args.skills or []:
         (cdir / "skills").mkdir(exist_ok=True)
         src = Path(sdir).expanduser().resolve()
@@ -230,7 +271,7 @@ def cmd_start(args):
     cmd = [DOCKER, "run", "-d", "--name", f"ralphd-{run_id}",
            "--init",
            "-p", f"{args.api_bind}:{port}:7777",
-           *mounts, *env_args, args.image]
+           *docker_args, *mounts, *env_args, args.image]
     res = sh(cmd)
     if res.returncode != 0:
         shutil.rmtree(rdir, ignore_errors=True)
@@ -405,6 +446,7 @@ def cmd_stop(args):
     name = f"ralphd-{args.run_id}"
     time.sleep(1)
     sh([DOCKER, "rm", "-f", name])
+    _reap_siblings(args.run_id)
     out(args, {"stopped": args.run_id}, f"stopped {args.run_id} (run dir kept)")
 
 
@@ -418,6 +460,7 @@ def cmd_rm(args):
         reply = input(f"delete all state for {args.run_id}? [y/N] ")
         if reply.lower() != "y":
             sys.exit(1)
+    _reap_siblings(args.run_id)
     shutil.rmtree(run_root(args.run_id), ignore_errors=True)
     shutil.rmtree(config_root(args.run_id), ignore_errors=True)
     out(args, {"removed": args.run_id}, f"removed {args.run_id}")
@@ -446,10 +489,33 @@ def cmd_doctor(args):
     reg.mkdir(parents=True, exist_ok=True)
     checks["registry"] = os.access(reg, os.W_OK)
     checks["pi_host_config"] = (Path.home() / ".pi" / "agent" / "settings.json").exists()
-    ok = all(checks.values())
-    out(args, {"ok": ok, "checks": checks},
-        "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items()))
+    strays = _stray_sibling_containers()
+    ok = all(checks.values())  # strays are report-only, never affect the verdict
+    report = "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items())
+    if strays:
+        report += "\n! stray ralphd.run containers (no matching run dir):"
+        for s in strays:
+            report += f"\n    {s['id'][:12]}  ralphd.run={s['runId']}"
+        report += "\n  clean up with: docker rm -f <id>"
+    out(args, {"ok": ok, "checks": checks, "strayContainers": strays}, report)
     sys.exit(0 if ok else 1)
+
+
+def _stray_sibling_containers() -> list[dict]:
+    """Containers labeled ralphd.run=<id> whose run id has no registry dir."""
+    res = sh([DOCKER, "ps", "-aq", "--filter", "label=ralphd.run"])
+    if res.returncode != 0 or not res.stdout.strip():
+        return []
+    strays = []
+    for cid in res.stdout.split():
+        insp = sh([DOCKER, "inspect", "--format",
+                   '{{index .Config.Labels "ralphd.run"}}', cid])
+        if insp.returncode != 0:
+            continue
+        rid = insp.stdout.strip()
+        if rid and not run_root(rid).exists():
+            strays.append({"id": cid, "runId": rid})
+    return strays
 
 
 # ---------------------------------------------------------------- parser
@@ -478,6 +544,9 @@ def main() -> None:
                    help="forward host env var(s) into the container (repeatable)")
     s.add_argument("--env", action="append", metavar="KEY=VAL")
     s.add_argument("--skills", action="append", metavar="DIR")
+    s.add_argument("--allow-docker", action="store_true",
+                   help="mount the host docker socket into the job container "
+                        "(ROOT-EQUIVALENT host access — trusted PRDs only)")
     s.add_argument("--image", default=DEFAULT_IMAGE)
     s.add_argument("--on-complete", default="idle", choices=["idle", "exit"])
     s.add_argument("--timeout", type=int, default=480, metavar="MINUTES")

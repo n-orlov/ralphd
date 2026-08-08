@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -63,6 +64,9 @@ class LoopSupervisor:
                      f"- Task state file: {self.run.tasks_file}\n"
                      f"- Handoff notes file: {self.run.notes_file}\n"
                      f"- Artifacts directory: {self.run.artifacts_dir}\n")
+        docker_note = self._docker_siblings_note()
+        if docker_note:
+            parts.append(docker_note)
         pending = self.run.pending_steering()
         if pending:
             parts.append("\n## Operator steering (MUST take priority)\n")
@@ -71,6 +75,34 @@ class LoopSupervisor:
         if extra:
             parts.append("\n" + extra)
         return "".join(parts)
+
+    @staticmethod
+    def _docker_siblings_note() -> str:
+        """Guidance appended when the operator granted docker socket access
+        (ralphctl start --allow-docker sets the RALPHD_HOST_* env vars)."""
+        host_ws = os.environ.get("RALPHD_HOST_WORKSPACE")
+        host_run = os.environ.get("RALPHD_HOST_RUN_DIR")
+        if not host_ws and not host_run:
+            return ""
+        run_id = os.environ.get("RALPHD_RUN_ID", "")
+        lines = ["\n## Docker siblings\n",
+                 ("The host docker socket is mounted: `docker` starts SIBLING "
+                  "containers on the HOST daemon, not children of this container.\n"),
+                 ("- `-v` paths for siblings are HOST paths. This container's "
+                  "paths (/workspace, /run/ralphd) are meaningless to the host "
+                  "daemon — mounting them yields EMPTY dirs and can create "
+                  "root-owned dirs on the host. Use these host-side equivalents:\n")]
+        if host_ws:
+            lines.append(f"  - workspace: `$RALPHD_HOST_WORKSPACE` = `{host_ws}`\n")
+        if host_run:
+            lines.append(f"  - run dir: `$RALPHD_HOST_RUN_DIR` = `{host_run}`\n")
+        lines.append(
+            f"- Label every sibling `--label ralphd.run=$RALPHD_RUN_ID` "
+            f"(= `{run_id}`) so it gets reaped with this job; prefer `--rm` "
+            "for anything short-lived.\n"
+            "- Images you build and volumes you create live on the HOST and "
+            "are reaped by that same label — label them too.\n")
+        return "".join(lines)
 
     # -- iteration ----------------------------------------------------------
     async def run_iteration(self, phase: str, extra: str = "",

@@ -12,6 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g --registry https://registry.npmjs.org \
         "@earendil-works/pi-coding-agent@${PI_VERSION}"
 
+# static docker CLI (client only — no daemon, no containerd, no buildx).
+# Used with `ralphctl start --allow-docker`, which mounts the host docker
+# socket; siblings run on the HOST daemon (volume paths resolve host-side).
+ARG DOCKER_VERSION=29.7.2
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+      | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
+    && docker --version
+
 RUN useradd -m -u 1000 -s /bin/bash agent \
     && mkdir -p /workspace /run/ralphd /config \
     && chown -R agent:agent /workspace /run/ralphd /home/agent

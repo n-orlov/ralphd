@@ -427,6 +427,28 @@ def test_non_vigilant_no_verify_iterations(engine_factory):
     assert all(i["phase"] != "verify" for i in iterations)
 
 
+def test_docker_siblings_guidance_in_prompt(engine_factory):
+    """With RALPHD_HOST_WORKSPACE set (ralphctl --allow-docker), every prompt
+    carries a Docker siblings section pointing the agent at HOST paths."""
+    e = engine_factory(job={"on_complete": "exit"},
+                       stub_env={"RALPHD_HOST_WORKSPACE": "/host/path/ws",
+                                 "RALPHD_HOST_RUN_DIR": "/host/path/run",
+                                 "RALPHD_RUN_ID": "e2e"})
+    assert e.proc.wait(timeout=60) == 0
+    prompt = (e.run_dir / "iterations" / "0001" / "prompt.md").read_text()
+    assert "## Docker siblings" in prompt
+    assert "/host/path/ws" in prompt
+    assert "/host/path/run" in prompt
+    assert "ralphd.run=$RALPHD_RUN_ID" in prompt
+
+
+def test_no_docker_siblings_guidance_without_env(engine_factory):
+    e = engine_factory(job={"on_complete": "exit"})
+    assert e.proc.wait(timeout=60) == 0
+    prompt = (e.run_dir / "iterations" / "0001" / "prompt.md").read_text()
+    assert "Docker siblings" not in prompt
+
+
 def test_api_token_auth(engine_factory, tmp_path):
     os.environ["RALPHD_API_TOKEN"] = "sekret"
     try:
