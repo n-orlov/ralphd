@@ -30,10 +30,14 @@ ANIMALS = ("otter", "lynx", "heron", "badger", "finch", "marten", "newt",
            "osprey", "pika", "stoat", "swift", "tern", "vole", "wren")
 
 # env vars forwarded into the container by `--llm host` when set on the host
+# Standard, vendor-documented credential vars forwarded by `--llm host` when
+# set. Anything beyond these (endpoint overrides, gateway tokens, exotic SDK
+# knobs) is the operator's business: pass `--forward-env NAME` or
+# `--forward-env 'PREFIX_*'` explicitly.
 HOST_LLM_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
                 "GOOGLE_API_KEY", "AWS_REGION", "AWS_DEFAULT_REGION",
                 "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK")
+                "AWS_SESSION_TOKEN")
 # host pi config files copied into the container's pi config by `--llm host`
 HOST_PI_FILES = ("settings.json", "models.json", "auth.json")
 
@@ -206,6 +210,16 @@ def cmd_start(args):
             mounts += ["-v", f"{aws}:/home/agent/.aws:ro"]
     elif args.llm != "none":
         die(2, f"unknown LLM profile '{args.llm}' (v0.1 supports: host, none)")
+    for pattern in args.forward_env or []:
+        if pattern.endswith("*"):
+            names = [k for k in os.environ if k.startswith(pattern[:-1])]
+        else:
+            names = [pattern] if os.environ.get(pattern) else []
+            if not names:
+                print(f"ralphctl: warning: --forward-env {pattern} not set on host",
+                      file=sys.stderr)
+        for name in names:
+            env_args += ["-e", f"{name}={os.environ[name]}"]
     for kv in args.llm_env or []:
         env_args += ["-e", kv]
     for kv in args.env or []:
@@ -460,6 +474,8 @@ def main() -> None:
     s.add_argument("--thinking", help="pi thinking level")
     s.add_argument("--llm", default="host", help="LLM profile (v0.1: host|none)")
     s.add_argument("--llm-env", action="append", metavar="KEY=VAL")
+    s.add_argument("--forward-env", action="append", metavar="NAME|PREFIX_*",
+                   help="forward host env var(s) into the container (repeatable)")
     s.add_argument("--env", action="append", metavar="KEY=VAL")
     s.add_argument("--skills", action="append", metavar="DIR")
     s.add_argument("--image", default=DEFAULT_IMAGE)

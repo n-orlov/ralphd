@@ -69,6 +69,7 @@ ralphctl start --prd <file|-> [options]
 | `--model-<phase> <id>` | — | per-phase override (`planning\|worker\|review\|verify`) |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)) |
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
+| `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
 | `--skills <dir>` | — | mount a skills directory (repeatable) |
 | `--creds <dir>` | — | mount a credentials directory (see below) |
 | `--prompt-override <dir>` | — | phase-prompt override directory |

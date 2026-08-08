@@ -19,6 +19,7 @@ class IterationResult:
     interrupted: bool = False
     timed_out: bool = False
     final_text: str = ""
+    error_message: str = ""
     usage: dict = field(default_factory=dict)
 
     @property
@@ -121,6 +122,8 @@ class PiRunner:
         if event.get("type") == "message_end":
             msg = event.get("message", {})
             if msg.get("role") == "assistant":
+                if msg.get("stopReason") == "error":
+                    result.error_message = msg.get("errorMessage", "unknown agent error")
                 text = "".join(c.get("text", "") for c in msg.get("content", [])
                                if c.get("type") == "text")
                 if text.strip():

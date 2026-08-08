@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 from .config import CONFIG_DIR, PROMPTS_BUILTIN, JobConfig
 from .runner import PiRunner
 from .state import RunDir, atomic_write_json, utcnow
+
+log = logging.getLogger("ralphd.loop")
 
 
 class LoopSupervisor:
@@ -84,6 +87,7 @@ class LoopSupervisor:
                 "steeringConsumed": [p.name for p in pending]}
         atomic_write_json(itdir / "meta.json", meta)
         self.run.emit("iteration.start", number=n, phase=phase, model=model)
+        log.info("iteration %d start: phase=%s model=%s", n, phase, model)
         self.run.update_status(phase=phase, iteration=n,
                                iterationsUsed=n,
                                currentIteration={"number": n, "phase": phase,
@@ -101,12 +105,20 @@ class LoopSupervisor:
         meta.update(endedAt=utcnow(), exitCode=result.exit_code,
                     interrupted=result.interrupted, timedOut=result.timed_out,
                     sawComplete=result.saw_complete, sawVerified=result.saw_verified,
+                    error=result.error_message or None,
                     usage=result.usage)
         atomic_write_json(itdir / "meta.json", meta)
         self._accumulate_usage(result.usage)
         self.run.emit("iteration.end", number=n, phase=phase,
                       exitCode=result.exit_code, interrupted=result.interrupted,
-                      sawComplete=result.saw_complete, sawVerified=result.saw_verified)
+                      sawComplete=result.saw_complete, sawVerified=result.saw_verified,
+                      error=result.error_message or None)
+        log.info("iteration %d end: exit=%s complete=%s verified=%s%s",
+                 n, result.exit_code, result.saw_complete, result.saw_verified,
+                 f" ERROR: {result.error_message}" if result.error_message else "")
+        if result.error_message:
+            self.run.emit("log", level="error",
+                          message=f"iteration {n} agent error: {result.error_message}")
         self._emit_task_changes()
         self.run.update_status(currentIteration=None)
         return result

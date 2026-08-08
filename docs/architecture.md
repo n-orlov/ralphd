@@ -152,6 +152,19 @@ Because both share a process, "interrupt" is a plain `SIGINT` to the `pi` child
 process group; the supervisor records the iteration as interrupted and proceeds to
 the next one (which will see any newly arrived steering).
 
+### Diagnosability requirements
+
+Failures must be visible without digging into transcripts:
+
+- **Agent-level errors surface upward.** When an iteration's agent reports an
+  error (pi `message_end` with `stopReason: "error"`), the engine records the
+  `errorMessage` in the iteration's `meta.json`, in the `iteration.end` event,
+  and as an error-level `log` event. A job that failed because of provider/auth
+  errors must say so in `/status`-adjacent surfaces, not just exit silently.
+- **`docker logs` is informative on its own**: the engine logs each iteration's
+  start (phase, model) and end (exit code, sentinels, error summary) to stdout,
+  so a dead-in-2-seconds job is diagnosable from container logs alone.
+
 ### Container lifecycle
 
 ```

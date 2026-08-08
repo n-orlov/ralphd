@@ -55,14 +55,37 @@ Two names are always available without a profile file:
 
 Forward the host's existing LLM setup into the container:
 
-1. Copy the host's pi provider/model configuration (`~/.pi` settings relevant to
-   providers) into `/config/pi/`.
-2. Forward the well-known credential env vars that are actually set on the host
-   (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, AWS_* vars, and the
-   documented pi provider vars).
-3. If the host pi config references Bedrock, also mount `~/.aws` read-only.
+1. Copy the host's pi provider/model configuration (`~/.pi/agent/settings.json`,
+   `models.json`, `auth.json`) into `/config/pi/`.
+2. **Resolve `!command` apiKey references.** pi supports
+   `apiKey: "!some-command args"` (shell out per request). Such helper commands
+   exist on the host, not in the container, so `ralphctl start` executes them
+   on the host and injects the literal resolved value into the copied
+   `models.json` (mode 0600, in the job's config dir — never the run dir).
+   Trade-off: the value is frozen at start time; for long jobs with
+   short-lived tokens, rotate mid-run via `PUT /config/llm` / `ralphctl llm set`.
+3. Forward ONLY standard, vendor-documented credential env vars when set:
+   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+   `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`,
+   `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`.
+4. Mount `~/.aws` read-only when it exists.
 
-"Whatever works in `pi` on your laptop works in the container."
+**Design rule: no environment-specific vars are ever baked into ralphd code.**
+Anything beyond the standard list — endpoint overrides, gateway bearer tokens,
+SDK tuning knobs — must be forwarded explicitly per job:
+
+```bash
+ralphctl start ... --forward-env AWS_BEARER_TOKEN_BEDROCK \
+                   --forward-env AWS_ENDPOINT_URL_BEDROCK_RUNTIME
+# or wholesale by prefix:
+ralphctl start ... --forward-env 'AWS_*'
+```
+
+Forward related vars **together**: a bearer token whose endpoint-override
+variable is left behind will be sent to the vendor's real endpoint and
+rejected (observed failure mode: `AccessDeniedException: Invalid API Key
+format`). Prefix globs (`AWS_*`) are the safe way to keep a family of vars
+intact. For a recurring setup, promote the flags into a named profile.
 
 ### `none`
 
