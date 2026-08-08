@@ -20,6 +20,20 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
       | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
     && docker --version
 
+# playwright-cli browser automation (web-UI e2e verification).
+# Gotcha: playwright-cli's DEFAULT browser channel is 'chrome', not chromium —
+# bare `playwright-cli open` needs Google Chrome at /opt/google/chrome/chrome,
+# so `install chrome` is mandatory; `install-deps chromium` pulls the shared
+# system libs. Run npx from the package dir so it resolves the playwright
+# bundled with @playwright/cli instead of downloading another copy.
+ARG PLAYWRIGHT_CLI_VERSION=0.1.14
+RUN npm install -g --registry https://registry.npmjs.org \
+        "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" \
+    && cd "$(npm root -g)/@playwright/cli" \
+    && npx playwright install-deps chromium \
+    && npx playwright install chrome \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd -m -u 1000 -s /bin/bash agent \
     && mkdir -p /workspace /run/ralphd /config \
     && chown -R agent:agent /workspace /run/ralphd /home/agent

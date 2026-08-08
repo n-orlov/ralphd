@@ -365,7 +365,11 @@ business via `--image` (derived images `FROM ralphd`) or a job-level
 `setup.sh`. Engine and API run as the non-root user; no docker socket, no host
 network. The image does ship the static docker **client** binary (pinned
 `DOCKER_VERSION`), but it is inert without the socket — which is only mounted
-by the explicit `--allow-docker` opt-in (§6).
+by the explicit `--allow-docker` opt-in (§6). It also bundles **playwright-cli** (pinned
+`PLAYWRIGHT_CLI_VERSION`) with headless Google Chrome so jobs can drive real
+web UIs — e2e verification of frontend changes, screenshots as artifacts.
+Chrome, not chromium, because playwright-cli's default channel is `chrome`;
+only that channel ships (chromium would add ~500 MB for no default-path gain).
 
 ## 9. Failure containment
 
