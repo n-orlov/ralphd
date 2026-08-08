@@ -73,6 +73,7 @@ class JobConfig:
     max_approaches: int = 3
     vigilant: bool = False
     on_complete: str = "idle"  # idle | exit
+    on_complete_cmd: str | None = None  # shell hook run once at terminal state
     reflect: bool = False  # run one extra 'reflect' iteration after terminal state
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
@@ -130,6 +131,7 @@ class JobConfig:
             "flags": {
                 "vigilant": self.vigilant,
                 "onComplete": self.on_complete,
+                "onCompleteCmd": self.on_complete_cmd,
                 "reflect": self.reflect,
             },
             "model": {

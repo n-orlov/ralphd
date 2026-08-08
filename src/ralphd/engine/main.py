@@ -61,6 +61,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+async def _run_on_complete_cmd(cfg: JobConfig, run: RunDir, final_state: str) -> None:
+    """Run the operator-supplied `on_complete_cmd` shell hook exactly once,
+    after the job has reached a terminal state (PRD req 26). Receives
+    RALPHD_RUN_ID / RALPHD_STATE / RALPHD_VERDICT env vars alongside the
+    process's own environment. Never raises: any failure (nonzero exit,
+    command not found, etc.) is logged as an event and otherwise ignored --
+    it must never affect the job's verdict or this engine's own exit code."""
+    if not cfg.on_complete_cmd:
+        return
+    verdict = run.read_status().get("verdict")
+    env = dict(os.environ)
+    env["RALPHD_RUN_ID"] = cfg.run_id
+    env["RALPHD_STATE"] = final_state
+    env["RALPHD_VERDICT"] = "" if verdict is None else str(verdict)
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cfg.on_complete_cmd, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            log.info("on_complete_cmd finished (rc=0)")
+            run.emit("log", message="on_complete_cmd finished (rc=0)")
+        else:
+            tail = (stderr or stdout or b"").decode(errors="replace")[-500:]
+            log.error("on_complete_cmd exited %d: %s", proc.returncode, tail)
+            run.emit("log", level="error",
+                     message=f"on_complete_cmd exited {proc.returncode}: {tail}")
+    except Exception as exc:  # e.g. shell/exec failure -- never propagate
+        log.error("on_complete_cmd failed to run: %r", exc)
+        run.emit("log", level="error",
+                 message=f"on_complete_cmd failed to run: {exc!r}")
+
+
 async def amain() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -113,6 +146,8 @@ async def amain() -> int:
     final_state = await job_task
     log.info("job finished: %s", final_state)
     run.emit("state", state=final_state)
+
+    await _run_on_complete_cmd(cfg, run, final_state)
 
     if cfg.on_complete == "idle" and not stop.is_set():
         log.info("idling (on_complete=idle); POST /shutdown or stop the container")

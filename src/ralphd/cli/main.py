@@ -253,7 +253,7 @@ def _copy_skills(sdir: str, cdir: Path) -> None:
 # always win over the template.
 _TEMPLATE_SCALAR_FIELDS = {
     "iterations": 25, "max_approaches": 3, "vigilant": False,
-    "reflect": False, "on_complete": "idle", "timeout": 480,
+    "reflect": False, "on_complete": "idle", "on_complete_cmd": None, "timeout": 480,
     "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
     "model": None, "fast_model": None, "thinking": None,
     "image": DEFAULT_IMAGE,
@@ -350,6 +350,7 @@ def cmd_start(args):
         "max_approaches": args.max_approaches,
         "vigilant": args.vigilant,
         "on_complete": args.on_complete,
+        "on_complete_cmd": args.on_complete_cmd,
         "reflect": args.reflect,
         "model": args.model or (llm_profile.get("model") if llm_profile else None),
         "fast_model": args.fast_model or (llm_profile.get("fast_model") if llm_profile else None),
@@ -1445,6 +1446,11 @@ def main() -> None:
                         "(ROOT-EQUIVALENT host access — trusted PRDs only)")
     s.add_argument("--image", default=None)
     s.add_argument("--on-complete", default=None, choices=["idle", "exit"])
+    s.add_argument("--on-complete-cmd", default=None, metavar="CMD",
+                   help="shell command run once by the engine (in-container) "
+                        "on reaching a terminal state, with RALPHD_RUN_ID/"
+                        "RALPHD_STATE/RALPHD_VERDICT set; failures are logged, "
+                        "never affect the job's verdict")
     s.add_argument("--timeout", type=int, default=None, metavar="MINUTES")
     s.add_argument("--iteration-timeout", type=int, default=None, metavar="MINUTES")
     s.add_argument("--port", type=int)

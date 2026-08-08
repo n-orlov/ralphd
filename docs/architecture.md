@@ -284,6 +284,24 @@ created ─ starting ─ running ─┬─ succeeded ─┐
 - `on_complete: exit` — container exits with 0 (succeeded) / 1 (failed/aborted).
   Suits scripted/batch use; state remains in the run dir either way.
 
+### Completion hook (PRD req 26)
+
+Optional `on_complete_cmd: <shell command>` job option (`ralphctl start
+--on-complete-cmd '<cmd>'`, or a job.yaml field a template can supply). The
+engine runs the command exactly once, in-container, via `asyncio.create_
+subprocess_shell`, strictly after the job has reached a terminal state
+(`succeeded`/`failed`/`aborted`) — including after the reflect iteration
+(PRD req 24) when `reflect: true`, since both share the single point in
+`ralphd-engine`'s `amain()` right after `loop.run_job()` returns. The hook
+receives the process's own environment plus three vars: `RALPHD_RUN_ID` (the
+job's configured run id), `RALPHD_STATE` (the final state string), and
+`RALPHD_VERDICT` (`status.json`'s `verdict`, `"verified"`/`"unverified"`, or
+empty string if somehow absent). A nonzero exit, or the command failing to
+spawn at all, is recorded as an `events.jsonl` `log` event at `level: error`
+(with a tail of stderr/stdout) — it is purely observational: the hook can
+never change the job's `state`/`verdict` or the engine process's own exit
+code. With `on_complete_cmd` unset (the default), nothing extra runs.
+
 A **job timeout** (wall clock, default 8h) and per-iteration timeout (default 45m)
 bound runaway runs; hitting either aborts the current iteration and, for the job
 timeout, fails the job.

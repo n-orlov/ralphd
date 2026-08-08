@@ -78,6 +78,7 @@ ralphctl start --prd <file|-> [options]
 | `--prompt-override <dir>` | — | phase-prompt override directory |
 | `--image <ref>` | bundled default | alternative/derived engine image; falls back to the registry's `image` (`ralphctl config`) if set |
 | `--on-complete idle\|exit` | idle | post-completion behavior; falls back to the registry's `on_complete` (`ralphctl config`) if set |
+| `--on-complete-cmd <cmd>` | — | shell command run once by the engine (in-container) on reaching a terminal state; receives `RALPHD_RUN_ID`/`RALPHD_STATE`/`RALPHD_VERDICT` env vars; failures are logged (`events.jsonl`, `level: error`) but never affect the job's verdict or the engine's exit code |
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
 | `--iteration-timeout <dur>` | 45m | per-iteration limit |
 | `--port <n>` | auto | host port for the API |
@@ -123,7 +124,7 @@ templates/<name>/
 ```
 
 `job.yaml` may set any of: `iterations`, `max_approaches`, `vigilant`,
-`reflect`, `on_complete`, `timeout`, `iteration_timeout`, `model_strategy`,
+`reflect`, `on_complete`, `on_complete_cmd`, `timeout`, `iteration_timeout`, `model_strategy`,
 `llm`, `model`, `fast_model`, `thinking`, `skills` (a list of directory names
 relative to the template dir), `creds` (a directory name relative to the
 template dir), and `prd` (a filename relative to the template dir, default
