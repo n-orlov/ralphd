@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Stub `pi` for black-box engine tests.
+
+Reads the phase prompt on stdin, emits pi-shaped NDJSON on stdout, and mutates
+run-dir state files the way a real agent iteration would. Scenario knobs come
+from env vars set by the test:
+
+  STUB_RUN_DIR        run dir (required)
+  STUB_TASKS          number of tasks the planner creates (default 2)
+  STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
+  STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
+  STUB_SLEEP          seconds each invocation sleeps before answering (default 0)
+"""
+import json
+import os
+import sys
+import time
+
+prompt = sys.stdin.read()
+run = os.environ["STUB_RUN_DIR"]
+tasks_file = os.path.join(run, "tasks.json")
+time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
+
+
+def emit_final(text):
+    print(json.dumps({
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "usage": {"input": 100, "output": 10, "totalTokens": 110,
+                      "cost": {"total": 0.01}},
+        },
+    }))
+
+
+def marker(name):
+    return os.path.join(run, f".stub-{name}")
+
+
+if "Role: Planner" in prompt:
+    n = int(os.environ.get("STUB_TASKS", "2"))
+    tasks = [{"id": f"{i:03d}", "title": f"task {i}", "status": "pending",
+              "successCriteria": f"criteria {i}"} for i in range(1, n + 1)]
+    with open(tasks_file, "w") as f:
+        json.dump({"version": 1, "goal": "stub goal", "tasks": tasks}, f)
+    with open(os.path.join(run, "notes.md"), "w") as f:
+        f.write("planned by stub\n")
+    emit_final("planning done")
+
+elif "Role: Worker" in prompt:
+    if os.environ.get("STUB_WORKER_STALLS"):
+        emit_final("spinning wheels, no progress")
+        sys.exit(0)
+    with open(tasks_file) as f:
+        d = json.load(f)
+    pending = [t for t in d["tasks"] if t["status"] == "pending"]
+    if pending:
+        pending[0]["status"] = "completed"
+        with open(tasks_file, "w") as f:
+            json.dump(d, f)
+    # record steering whenever a worker iteration sees it
+    if "Operator steering" in prompt:
+        with open(marker("saw-steering"), "a") as f:
+            f.write(prompt[prompt.index("Operator steering"):][:2000])
+    if all(t["status"] == "completed" for t in d["tasks"]):
+        emit_final("everything finished\n<promise>COMPLETE</promise>")
+    else:
+        emit_final("completed one task")
+
+elif "Role: Reviewer" in prompt:
+    fails_wanted = int(os.environ.get("STUB_REVIEW_FAILS", "0"))
+    done = 0
+    if os.path.exists(marker("review-count")):
+        done = int(open(marker("review-count")).read())
+    open(marker("review-count"), "w").write(str(done + 1))
+    if done < fails_wanted:
+        with open(os.path.join(run, "review-findings.md"), "w") as f:
+            f.write(f"- finding from review #{done + 1}\n")
+        emit_final("requirements unmet")
+    else:
+        emit_final("all requirements hold\n<promise>VERIFIED</promise>")
+
+else:
+    emit_final("unrecognized phase prompt")
