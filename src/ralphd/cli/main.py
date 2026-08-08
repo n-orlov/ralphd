@@ -256,18 +256,29 @@ _TEMPLATE_SCALAR_FIELDS = {
     "reflect": False, "on_complete": "idle", "timeout": 480,
     "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
     "model": None, "fast_model": None, "thinking": None,
+    "image": DEFAULT_IMAGE,
 }
+
+# For these `start` scalar fields, `ralphctl config set <regkey> ...` (task
+# 038) supplies a registry-wide fallback that sits BETWEEN a template's
+# value and the hardcoded fallback above: explicit CLI flag > template >
+# `<registry>/config.yaml` > hardcoded default. `llm`'s registry key is
+# named `default_llm_profile` (matches doctor's existing read of it);
+# the others share their field name.
+_REGISTRY_CONFIG_FIELD_KEYS = {"image": "image", "on_complete": "on_complete",
+                               "llm": "default_llm_profile"}
 
 
 def _apply_template(args) -> Path | None:
     """Load `<registry>/templates/<name>/` (PRD req 25) and fill in any
     `start` flag the caller left at its argparse default with the
-    template's value, then the hardcoded fallback -- run unconditionally
-    (even with no `--template`) since these flags now default to None in
-    the argparse `start` subparser, so this is the single place that fills
-    in their real hardcoded defaults. Mutates `args` in place; returns the
-    template dir (for `--prd`/`--skills`/`--creds` defaulting below) or
-    None if no `--template` was given.
+    template's value, then any registry-wide default (`ralphctl config`,
+    task 038), then the hardcoded fallback -- run unconditionally (even
+    with no `--template`) since these flags now default to None in the
+    argparse `start` subparser, so this is the single place that fills in
+    their real defaults. Mutates `args` in place; returns the template dir
+    (for `--prd`/`--skills`/`--creds` defaulting below) or None if no
+    `--template` was given.
     """
     tdir = None
     cfg = {}
@@ -280,9 +291,12 @@ def _apply_template(args) -> Path | None:
             cfg = yaml.safe_load(cfg_file.read_text()) or {}
             if not isinstance(cfg, dict):
                 die(2, f"template {args.template}: job.yaml must be a mapping")
+    reg_cfg = _registry_config(registry())
     for key, hard_default in _TEMPLATE_SCALAR_FIELDS.items():
         if getattr(args, key) is None:
-            setattr(args, key, cfg.get(key, hard_default))
+            reg_key = _REGISTRY_CONFIG_FIELD_KEYS.get(key)
+            fallback = reg_cfg.get(reg_key, hard_default) if reg_key else hard_default
+            setattr(args, key, cfg.get(key, fallback))
     if not args.skills:
         skill_names = cfg.get("skills") or []
         args.skills = [str(tdir / s) for s in skill_names] or None
@@ -1177,6 +1191,42 @@ def cmd_ui(args):
         server.server_close()
 
 
+# Keys `ralphctl config get/set` (task 038, PRD req 25) knows about, and any
+# extra validation applied on `set`. Mirrors the registry-wide defaults
+# `_apply_template()` layers between a template and the hardcoded fallback
+# (see `_REGISTRY_CONFIG_FIELD_KEYS` above) plus `default_llm_profile`,
+# which doctor already reads independently.
+_CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
+                "default_llm_profile": None}
+
+
+def cmd_config(args):
+    """Registry-wide defaults at `<registry>/config.yaml` (PRD req 25):
+    `image`, `on_complete`, `default_llm_profile`. `start` layers these in
+    between a `--template`'s value and the hardcoded fallback (see
+    `_apply_template`); `doctor` reads `default_llm_profile` directly."""
+    if args.key not in _CONFIG_KEYS:
+        die(2, f"unknown config key: {args.key} (expected one of "
+                f"{', '.join(sorted(_CONFIG_KEYS))})")
+    reg = registry()
+    if args.action == "get":
+        cfg = _registry_config(reg)
+        val = cfg.get(args.key)
+        out(args, {"key": args.key, "value": val},
+            f"{args.key}: {val}" if val is not None else f"{args.key}: (unset)")
+        return
+    choices = _CONFIG_KEYS[args.key]
+    if choices is not None and args.value not in choices:
+        die(2, f"{args.key} must be one of {', '.join(choices)}")
+    reg.mkdir(parents=True, exist_ok=True)
+    cfg = _registry_config(reg)
+    cfg[args.key] = args.value
+    (reg / "config.yaml").write_text(
+        yaml.safe_dump(cfg, default_flow_style=False, sort_keys=True))
+    out(args, {"key": args.key, "value": args.value},
+        f"{args.key}: {args.value}")
+
+
 def cmd_doctor(args):
     checks = {}
     checks["docker"] = sh([DOCKER, "version", "--format", "{{.Server.Version}}"]) \
@@ -1393,7 +1443,7 @@ def main() -> None:
     s.add_argument("--allow-docker", action="store_true",
                    help="mount the host docker socket into the job container "
                         "(ROOT-EQUIVALENT host access — trusted PRDs only)")
-    s.add_argument("--image", default=DEFAULT_IMAGE)
+    s.add_argument("--image", default=None)
     s.add_argument("--on-complete", default=None, choices=["idle", "exit"])
     s.add_argument("--timeout", type=int, default=None, metavar="MINUTES")
     s.add_argument("--iteration-timeout", type=int, default=None, metavar="MINUTES")
@@ -1524,6 +1574,17 @@ def main() -> None:
     s = sub.add_parser("doctor", help="preflight checks")
     s.add_argument("--image", default=DEFAULT_IMAGE)
     s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("config", help="registry-wide defaults "
+                       "(image, on_complete, default_llm_profile)")
+    consub = s.add_subparsers(dest="action", required=True)
+    g = consub.add_parser("get", help="print a registry default (or (unset))")
+    g.add_argument("key")
+    st = consub.add_parser("set", help="persist a registry default to "
+                           "<registry>/config.yaml")
+    st.add_argument("key")
+    st.add_argument("value")
+    s.set_defaults(func=cmd_config)
 
     s = sub.add_parser("ui", help="local web hub (run list, run detail, steering)")
     s.add_argument("--port", type=int, help="defaults to a free ephemeral port")

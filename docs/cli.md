@@ -69,15 +69,15 @@ ralphctl start --prd <file|-> [options]
 | `--model <id>` | profile default | default model (pi model ID) |
 | `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced\|custom` |
 | `--model-<phase> <id>` | — | per-phase override (`planning\|worker\|review\|verify`) |
-| `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)) |
+| `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
 | `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
 | `--skills <dir>` | — | mount a skills directory (repeatable) |
 | `--creds <dir>` | — | mount a credentials directory (see below) |
 | `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below |
 | `--prompt-override <dir>` | — | phase-prompt override directory |
-| `--image <ref>` | bundled default | alternative/derived engine image |
-| `--on-complete idle\|exit` | idle | post-completion behavior |
+| `--image <ref>` | bundled default | alternative/derived engine image; falls back to the registry's `image` (`ralphctl config`) if set |
+| `--on-complete idle\|exit` | idle | post-completion behavior; falls back to the registry's `on_complete` (`ralphctl config`) if set |
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
 | `--iteration-timeout <dur>` | 45m | per-iteration limit |
 | `--port <n>` | auto | host port for the API |
@@ -129,9 +129,11 @@ relative to the template dir), `creds` (a directory name relative to the
 template dir), and `prd` (a filename relative to the template dir, default
 `prd.md`). Every one of these has a corresponding `start` flag; **an explicit
 flag on the command line always overrides the template's value** for that
-field (`--skills`/`--creds` override wholesale, not merge). Fields the
-template doesn't set, and that weren't passed explicitly either, fall back to
-the same hardcoded defaults `start` has always had. An unknown `--template`
+field (`--skills`/`--creds` override wholesale, not merge). For `image`,
+`on_complete`, and `llm`, fields the template doesn't set fall back next to
+any matching `ralphctl config` registry default (`image`/`on_complete`/
+`default_llm_profile`), and only then to the hardcoded default; every other
+field falls straight back to its hardcoded default. An unknown `--template`
 name exits `3` naming the expected path; a malformed `job.yaml` (not a
 mapping) exits `2`.
 
@@ -379,10 +381,29 @@ Exit codes: `3` unknown run, `5` the run's container is still alive (a live
 engine already holds the run dir's flock; `abort`/`stop` it first), `2` a
 malformed `--iterations` value, `1` the underlying `docker run` failed.
 
-### `ralphctl config`
+### `ralphctl config get <key>` / `ralphctl config set <key> <value>`
 
-Get/set registry defaults (`ralphctl config set image ghcr.io/...`,
-`default_llm_profile`, `on_complete`, …).
+Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
+(created on first `set`). Recognized keys: `image`, `on_complete`
+(`idle`/`exit` — validated on `set`), `default_llm_profile` (any string;
+`ralphctl doctor` resolves it as an LLM profile name, see below).
+
+- `get` prints `<key>: <value>`, or `<key>: (unset)` if the key has never
+  been `set` — this is not an error (exit `0` either way).
+- `set` overwrites just that one key in `config.yaml`, leaving any other
+  keys already set untouched.
+- An unrecognized key exits `2` (both `get` and `set`) naming the expected
+  keys; an invalid `on_complete` value on `set` also exits `2` and leaves
+  `config.yaml` unchanged.
+- `--json` on `get`/`set` prints `{"key": ..., "value": ...}` (`value` is
+  `null` for an unset `get`).
+
+`ralphctl start` layers these in as the **registry-wide fallback** for the
+same-named flags (`--image`, `--on-complete`) and for `--llm` (via
+`default_llm_profile`), between an explicit flag/`--template` value and the
+hardcoded built-in default: explicit flag > `--template` > `ralphctl
+config` default > hardcoded default. `resume`/`llm test`/`doctor`'s own
+`--image` flags are unaffected (still default to the hardcoded image).
 
 ### `ralphctl doctor`
 
