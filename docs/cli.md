@@ -58,7 +58,8 @@ ralphctl start --prd <file|-> [options]
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `--prd <file\|->` | required | PRD markdown (`-` = stdin) |
+| `--prd <file\|->` | required* | PRD markdown (`-` = stdin); *not required if `--template` supplies a `prd.md` skeleton |
+| `--template <name>` | none | load job defaults + optional `prd.md`/skills/creds from `<registry>/templates/<name>/` (see below); any explicit flag on this command overrides the template's value |
 | `--workspace <dir>` | none | bind-mount an existing checkout at `/workspace`; without it the agent clones PRD-listed repos into the run dir |
 | `--run-id <id>` | generated | explicit run ID |
 | `--iterations <n>` | 25 | shared iteration budget |
@@ -108,6 +109,31 @@ it expands to the children — so both `--skills ./skills/git` and
 `--skills ./skills` (a folder of skills) work; anything else is a usage error.
 Skills are copied at start (later host edits don't affect the running job) and
 scoped per job — there is deliberately no "forward all host skills" mode.
+
+Job templates (`--template <name>`, PRD req 25): a directory
+`<registry>/templates/<name>/` (e.g. `~/.ralphd/templates/<name>/`, or under
+`RALPHD_REGISTRY` if set) may contain:
+
+```
+templates/<name>/
+├── job.yaml     # optional: scalar job defaults (see below)
+├── prd.md       # optional: PRD skeleton, used when --prd is omitted
+├── creds/       # optional: default --creds directory (same env-file convention)
+└── <skill-dir>/ # optional: default skill(s), referenced by job.yaml's `skills:` list
+```
+
+`job.yaml` may set any of: `iterations`, `max_approaches`, `vigilant`,
+`reflect`, `on_complete`, `timeout`, `iteration_timeout`, `model_strategy`,
+`llm`, `model`, `fast_model`, `thinking`, `skills` (a list of directory names
+relative to the template dir), `creds` (a directory name relative to the
+template dir), and `prd` (a filename relative to the template dir, default
+`prd.md`). Every one of these has a corresponding `start` flag; **an explicit
+flag on the command line always overrides the template's value** for that
+field (`--skills`/`--creds` override wholesale, not merge). Fields the
+template doesn't set, and that weren't passed explicitly either, fall back to
+the same hardcoded defaults `start` has always had. An unknown `--template`
+name exits `3` naming the expected path; a malformed `job.yaml` (not a
+mapping) exits `2`.
 
 Docker siblings (`--allow-docker`) — default **off**. Mounts the host docker
 socket (default `/var/run/docker.sock`; override with `RALPHD_DOCKER_SOCK`)

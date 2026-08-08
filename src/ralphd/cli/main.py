@@ -247,7 +247,59 @@ def _copy_skills(sdir: str, cdir: Path) -> None:
 
 
 # ---------------------------------------------------------------- start
+# job-config fields a template's job.yaml may default; explicit CLI flags
+# (checked via `is not None`/falsy, since every one of these argparse
+# options defaults to None/empty when omitted -- see the `start` subparser)
+# always win over the template.
+_TEMPLATE_SCALAR_FIELDS = {
+    "iterations": 25, "max_approaches": 3, "vigilant": False,
+    "reflect": False, "on_complete": "idle", "timeout": 480,
+    "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
+    "model": None, "fast_model": None, "thinking": None,
+}
+
+
+def _apply_template(args) -> Path | None:
+    """Load `<registry>/templates/<name>/` (PRD req 25) and fill in any
+    `start` flag the caller left at its argparse default with the
+    template's value, then the hardcoded fallback -- run unconditionally
+    (even with no `--template`) since these flags now default to None in
+    the argparse `start` subparser, so this is the single place that fills
+    in their real hardcoded defaults. Mutates `args` in place; returns the
+    template dir (for `--prd`/`--skills`/`--creds` defaulting below) or
+    None if no `--template` was given.
+    """
+    tdir = None
+    cfg = {}
+    if args.template:
+        tdir = registry() / "templates" / args.template
+        if not tdir.is_dir():
+            die(3, f"unknown template: {args.template} (expected {tdir})")
+        cfg_file = tdir / "job.yaml"
+        if cfg_file.is_file():
+            cfg = yaml.safe_load(cfg_file.read_text()) or {}
+            if not isinstance(cfg, dict):
+                die(2, f"template {args.template}: job.yaml must be a mapping")
+    for key, hard_default in _TEMPLATE_SCALAR_FIELDS.items():
+        if getattr(args, key) is None:
+            setattr(args, key, cfg.get(key, hard_default))
+    if not args.skills:
+        skill_names = cfg.get("skills") or []
+        args.skills = [str(tdir / s) for s in skill_names] or None
+    if not args.creds and cfg.get("creds"):
+        args.creds = str(tdir / cfg["creds"])
+    if args.prd is None and tdir is not None:
+        prd_name = cfg.get("prd", "prd.md")
+        prd_path = tdir / prd_name
+        if prd_path.is_file():
+            args.prd = str(prd_path)
+    return tdir
+
+
 def cmd_start(args):
+    _apply_template(args)
+    if args.prd is None:
+        die(2, "--prd is required (or use --template with a prd.md skeleton)")
     run_id = args.run_id or gen_run_id()
     rdir = run_root(run_id)
     if rdir.exists() and any(rdir.iterdir()):
@@ -1305,24 +1357,31 @@ def main() -> None:
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("start", help="launch a job container")
-    s.add_argument("--prd", required=True, help="PRD markdown file, or - for stdin")
+    s.add_argument("--prd", default=None,
+                   help="PRD markdown file, or - for stdin (optional if "
+                        "--template supplies a prd.md skeleton)")
+    s.add_argument("--template", metavar="NAME",
+                   help="load job defaults + optional prd.md/skills/creds from "
+                        "<registry>/templates/<name>/ (docs/cli.md); explicit "
+                        "flags on this command override the template's values")
     s.add_argument("--workspace", help="host dir to mount at /workspace")
     s.add_argument("--run-id")
-    s.add_argument("--iterations", type=int, default=25)
-    s.add_argument("--max-approaches", type=int, default=3)
-    s.add_argument("--vigilant", action="store_true")
-    s.add_argument("--reflect", action="store_true",
+    s.add_argument("--iterations", type=int, default=None)
+    s.add_argument("--max-approaches", type=int, default=None)
+    s.add_argument("--vigilant", action="store_true", default=None)
+    s.add_argument("--reflect", action="store_true", default=None,
                    help="run one extra 'reflect' iteration after the job "
                         "reaches a terminal state, proposing prompt/skill "
                         "improvements to artifacts/reflection/")
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
     s.add_argument("--fast-model")
-    s.add_argument("--model-strategy", default="quality-first",
+    s.add_argument("--model-strategy", default=None,
                    choices=["quality-first", "cost-optimized", "balanced"])
     s.add_argument("--thinking", help="pi thinking level")
-    s.add_argument("--llm", default="host",
+    s.add_argument("--llm", default=None,
                    help="LLM profile: host|none, or a name from "
-                        "<registry>/llm-profiles/<name>.yaml (docs/llm-profiles.md)")
+                        "<registry>/llm-profiles/<name>.yaml (docs/llm-profiles.md) "
+                        "[default: host, or the template's value]")
     s.add_argument("--llm-env", action="append", metavar="KEY=VAL")
     s.add_argument("--forward-env", action="append", metavar="NAME|PREFIX_*",
                    help="forward host env var(s) into the container (repeatable)")
@@ -1335,9 +1394,9 @@ def main() -> None:
                    help="mount the host docker socket into the job container "
                         "(ROOT-EQUIVALENT host access — trusted PRDs only)")
     s.add_argument("--image", default=DEFAULT_IMAGE)
-    s.add_argument("--on-complete", default="idle", choices=["idle", "exit"])
-    s.add_argument("--timeout", type=int, default=480, metavar="MINUTES")
-    s.add_argument("--iteration-timeout", type=int, default=45, metavar="MINUTES")
+    s.add_argument("--on-complete", default=None, choices=["idle", "exit"])
+    s.add_argument("--timeout", type=int, default=None, metavar="MINUTES")
+    s.add_argument("--iteration-timeout", type=int, default=None, metavar="MINUTES")
     s.add_argument("--port", type=int)
     s.add_argument("--api-bind", default="127.0.0.1")
     s.add_argument("--api-token", help="token value, or 'auto'")
