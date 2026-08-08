@@ -143,9 +143,12 @@ container. `409` while running — use `/abort` first.
 ### `GET /config`
 Effective job config (redacted — no secret values, no credential file contents).
 
-### `PUT /config/prompts/{name}`
-`text/markdown` body. Replaces a phase prompt override
-(`planning|worker|review|task-verify|agent`). Effective next iteration.
+### Prompts — override + listing
+
+| Method & path | Body / response |
+|---------------|-----------------|
+| `GET /config/prompts` | list: `{"name": ..., "source": ...}` for every phase (`planning`, `worker`, `review`, `task-verify`); `source` is `builtin` / `mounted` (`/config/prompts/{name}.md`) / `api` (after a `PUT`) |
+| `PUT /config/prompts/{name}` | `text/markdown` body. Replaces a phase prompt override; `name` must be one of the four phase names above, else `422`; `204` on success. Effective next iteration that builds this phase's prompt. |
 
 ### Skills — full CRUD
 

@@ -8,25 +8,18 @@ if [ -d /config/pi ]; then
     cp /config/pi/* ~/.pi/agent/ 2>/dev/null || true
 fi
 
-# recognized credential files
-if [ -d /config/creds ]; then
-    [ -f /config/creds/gitconfig ] && cp /config/creds/gitconfig ~/.gitconfig
-    [ -f /config/creds/git-credentials ] && {
-        cp /config/creds/git-credentials ~/.git-credentials
-        chmod 600 ~/.git-credentials
-        git config --global credential.helper store
-    }
-    [ -f /config/creds/netrc ] && { cp /config/creds/netrc ~/.netrc; chmod 600 ~/.netrc; }
-    [ -d /config/creds/ssh ] && { mkdir -p ~/.ssh; cp -r /config/creds/ssh/* ~/.ssh/; chmod -R go-rwx ~/.ssh; }
-    [ -x /config/creds/setup.sh ] && /config/creds/setup.sh
-fi
+# NOTE: credential placement (*.env -> ~/.creds/, gitconfig, git-credentials,
+# netrc, ssh/, setup.sh) is done by the engine itself at startup
+# (src/ralphd/engine/creds.py:place_creds), not here -- this keeps secret
+# handling inside the process that already promises never to leak values to
+# /run, events, stdout, or job.json, instead of a second implementation in
+# shell.
 
-# skills → pi skill discovery location
-if [ -d /config/skills ]; then
-    mkdir -p ~/.pi/agent/skills
-    for s in /config/skills/*/; do
-        [ -d "$s" ] && ln -sfn "$s" ~/.pi/agent/skills/"$(basename "$s")"
-    done
-fi
+# skills -> pi skill discovery: placed by the engine itself at startup and
+# kept live by the runtime skills CRUD API (src/ralphd/engine/skills.py:
+# place_skills), not here -- mirrors the creds discipline above (one place
+# that knows the precedence rules: api overlay > mounted /config/skills,
+# tombstones for API deletes), instead of a second implementation in shell
+# that can only ever see the mounted set at container start.
 
 exec ralphd-engine

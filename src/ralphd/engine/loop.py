@@ -10,7 +10,8 @@ import shutil
 import time
 from pathlib import Path
 
-from .config import CONFIG_DIR, PROMPTS_BUILTIN, JobConfig
+from .config import PROMPTS_BUILTIN, JobConfig, overlay_or_config
+from .llm import current_env
 from .runner import IterationResult, PiRunner
 from .state import RunDir, atomic_write_json, utcnow
 
@@ -48,8 +49,11 @@ class LoopSupervisor:
 
     # -- prompts -----------------------------------------------------------
     def prompt_text(self, name: str) -> str:
-        override = CONFIG_DIR / "prompts" / f"{name}.md"
-        path = override if override.exists() else PROMPTS_BUILTIN / f"{name}.md"
+        # Preference order: runtime overlay (API PUT, writable) > mounted
+        # /config (operator-provided, read-only in real containers) > builtin.
+        path = overlay_or_config(f"prompts/{name}.md")
+        if not path.exists():
+            path = PROMPTS_BUILTIN / f"{name}.md"
         return path.read_text()
 
     def build_prompt(self, phase: str, extra: str = "",
@@ -67,6 +71,9 @@ class LoopSupervisor:
         docker_note = self._docker_siblings_note()
         if docker_note:
             parts.append(docker_note)
+        creds_note = self._creds_note()
+        if creds_note:
+            parts.append(creds_note)
         pending = self.run.pending_steering()
         if pending:
             parts.append("\n## Operator steering (MUST take priority)\n")
@@ -75,6 +82,31 @@ class LoopSupervisor:
         if extra:
             parts.append("\n" + extra)
         return "".join(parts)
+
+    @staticmethod
+    def _creds_note() -> str:
+        """List the credential *.env file names currently placed at
+        ~/.creds (never values) plus the sourcing rule, so every phase
+        prompt knows what's available without any secret ever appearing
+        in the prompt text (PRD req 7). Read fresh each call so runtime
+        creds CRUD (PUT /config/creds/{name}) is reflected next iteration.
+        """
+        home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
+        creds_dir = home / ".creds"
+        if not creds_dir.is_dir():
+            return ""
+        names = sorted(p.name for p in creds_dir.glob("*.env"))
+        if not names:
+            return ""
+        lines = ["\n## Credentials\n",
+                 "Available credential files (values withheld from this prompt):\n"]
+        for name in names:
+            lines.append(f"- `~/.creds/{name}`\n")
+        lines.append(
+            "\nSource only the file(s) you need, in the shell command where "
+            "you need them: `set -a; . ~/.creds/<name>.env; set +a`. Values "
+            "are never auto-exported into your environment.\n")
+        return "".join(lines)
 
     @staticmethod
     def _docker_siblings_note() -> str:
@@ -135,7 +167,8 @@ class LoopSupervisor:
         try:
             result = await self.runner.run(
                 prompt, itdir / "output.jsonl", model=model,
-                thinking=self.cfg.thinking, timeout_s=timeout)
+                thinking=self.cfg.thinking, timeout_s=timeout,
+                extra_env=current_env())
         except Exception as exc:
             # an engine-side iteration failure (stream error, OS error) must
             # cost one iteration, not the whole job

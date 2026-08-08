@@ -228,6 +228,29 @@ steering files in the prompt and marks them consumed (recorded in `meta.json`).
 next one starts immediately with the new guidance. Steering is guidance for the
 agent; it does not mutate `tasks.json` directly.
 
+### Self-protection
+
+`ralphd-engine` is defensive about being invoked accidentally against a run dir
+that is already live (a bare `ralphd-engine --help`, or a stray second process
+pointed at the same `RALPHD_RUN_DIR`, must never double-write `events.jsonl` /
+`status.json` into a running job):
+
+- **`--help` / `--version` are argument-parsed up front** (`argparse`, in
+  `build_arg_parser()`) and exit `0` via `SystemExit` *before* `amain()` runs —
+  no config load, no directory creation, no server, no lock. This makes them
+  safe to run bare, with no `RALPHD_*` env, from any cwd.
+- **At startup the engine takes an exclusive, non-blocking `flock` on
+  `<run-dir>/.lock`** (`RunDir.acquire_lock()` in `engine/state.py`). If another
+  live engine already holds it, the new process prints a diagnostic naming the
+  run dir to stderr/log and exits **`3`** (`EXIT_RUN_DIR_LOCKED` in
+  `engine/main.py`) without touching any other state file; the holder is
+  unaffected and keeps serving. The lock file records the holder's PID for
+  diagnosis but the flock itself (not the PID content) is what's authoritative.
+  Because `flock` is process-lifetime (kernel-held, not a lock file whose mere
+  *existence* is checked), it is released automatically on any process exit —
+  including `SIGKILL` — so a killed engine never leaves a stale false-positive
+  lock behind; a fresh engine started immediately after can acquire it.
+
 ## 5. Configuration & injection
 
 Everything the job needs is mapped in by the CLI. Three mount points:
@@ -257,20 +280,33 @@ Everything the job needs is mapped in by the CLI. Three mount points:
   one directory per skill. There is deliberately no "forward all host skills"
   mode: the operator picks exactly what a job needs. Each named dir is *copied*
   into the job's config dir at start (so later host edits don't leak into a
-  running job), mounted at `/config/skills/<name>`, and symlinked by the
-  entrypoint into the location pi discovers skills from (`~/.pi/agent/skills/`).
+  running job), mounted at `/config/skills/<name>`. **The engine itself**
+  (`engine/skills.py:place_skills()`, run at startup from `engine/main.py`,
+  before the job loop starts — not the container entrypoint script, mirroring
+  the creds discipline below) symlinks the effective skill set into the
+  location pi discovers skills from (`~/.pi/agent/skills/`).
   Gotcha: `--skills` treats its argument as *one* skill — passing a parent
   directory of many skills forwards it as a single mis-named skill. `ralphctl`
   rejects a `--skills` dir that has no `SKILL.md` unless every immediate child
   has one, in which case it expands to the children.
   Skills are full CRUD at runtime via the API (`GET/PUT/DELETE
-  /config/skills/{name}`, tar bodies); changes appear at the next iteration.
+  /config/skills/{name}`, tar bodies) — `PUT`/`DELETE` land in the writable
+  overlay (`<overlay>/skills/<name>/`, an "api"-origin skill always wins over
+  a same-named mounted one; `DELETE` writes a tombstone in
+  `<overlay>/skills-deleted/<name>` so a mounted skill of that name isn't
+  resurrected) and call `place_skills()` again immediately, so the mutation
+  is live for the very next iteration without a container restart.
 - **Credentials — env-file convention.** This mirrors the original Ralph's AWS
   Secrets Manager approach, made file-based: every credential set the job needs
   is prepared by the operator as one `<name>.env` file (`KEY=value` lines, `#`
   comments), e.g. `github.env`, `jenkins.env`, `sonarqube.env`. `ralphctl start
-  --creds <dir>` copies `<dir>/*.env` into the job config; the entrypoint places
-  them at **`~/.creds/*.env`** (agent-owned, mode `0600`) inside the container.
+  --creds <dir>` copies `<dir>/*.env` into the job config; **the engine itself**
+  (`engine/creds.py:place_creds()`, run at startup from `engine/main.py`, before
+  the job loop starts) places them at **`~/.creds/*.env`** (agent-owned, mode
+  `0600`) inside the container -- not the container entrypoint script, so that
+  secret handling stays inside the same process that already guarantees
+  values never reach `/run`, `events.jsonl`, stdout, or `job.json` (only file
+  *names* are ever logged).
   **The agent knows where to look**: every phase prompt lists the available cred
   file names and the usage rule — *source the file you need, in the shell where
   you need it* (`set -a; . ~/.creds/github.env; set +a`). Values are **not**
@@ -289,6 +325,40 @@ Everything the job needs is mapped in by the CLI. Three mount points:
   resolution — see [llm-profiles.md](llm-profiles.md). The engine merges
   `/config/pi/*` into the container-local pi settings at startup and again on API
   update.
+
+### Writable config overlay
+
+In real containers `/config` is mounted **read-only** (`ro`) from the host, by
+design: the operator-provided config is immutable job input, and the run dir
+(`/run`) must never carry credential-shaped content. But the runtime
+config-CRUD API (`/config/*` PUT/DELETE routes — skills, creds, prompts, llm)
+needs *somewhere* writable to land mutations that must survive for the rest
+of the job and be visible to the next iteration.
+
+That somewhere is a **container-local writable overlay**,
+`$HOME/.ralphd/config-overlay/` by default (override via
+`RALPHD_CONFIG_OVERLAY_DIR`) — deliberately neither `/config` (read-only, and
+host-visible input shouldn't be mutated by the running job) nor the run dir
+(host-visible history; also where creds must never appear). It lives entirely
+in the container's own writable filesystem layer and disappears with the
+container.
+
+Every config-relative read goes through a single resolution order, implemented
+once in `engine/config.py`:
+
+1. `$HOME/.ralphd/config-overlay/<rel>` — a runtime mutation via the API, if any.
+2. `/config/<rel>` — the operator-mounted (possibly read-only) config.
+3. A builtin default, if the caller has one (e.g. `src/ralphd/prompts/*.md`).
+
+`engine/config.py:overlay_or_config(rel)` implements steps 1–2;
+`overlay_write_path(rel)` is what API handlers call to get a writable
+destination for step 1, creating parent directories as needed. The one
+running example today is prompt overrides: `PUT /config/prompts/{name}`
+writes to the overlay, and `LoopSupervisor.prompt_text()` resolves through
+the order above on every iteration, so an override is effective starting with
+the next iteration that builds that phase's prompt — without ever touching
+the read-only `/config` mount. Skills CRUD follows the same pattern (see
+above); creds/llm CRUD are a later milestone.
 
 ## 6. API security
 

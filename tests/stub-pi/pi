@@ -16,6 +16,24 @@ from env vars set by the test:
   STUB_VERIFY_FAILS   number of verify invocations to fail before passing
                       (default 0; each failed invocation writes validation-failed
                       to tasks.json and does NOT emit the sentinel)
+  STUB_RICH_EVENTS    if set, worker/reviewer/verifier iterations emit a
+                      realistic pi NDJSON preamble before their final
+                      message_end: a thinking content block (thinking_start/
+                      thinking_delta/thinking_end), a tool call (toolcall_
+                      start/delta/end plus top-level tool_execution_start/
+                      tool_execution_end events), and the final assistant
+                      text streamed as multiple text_start/text_delta/
+                      text_end chunks. Shapes match real `pi --mode json`
+                      output (see pi's docs/json.md and
+                      docs/custom-provider.md "Event Types"/"Content Blocks").
+  STUB_BAD_LINE       if set, emit exactly one malformed (non-JSON) line
+                      during the first iteration that emits rich events, to
+                      exercise malformed-line tolerance in log consumers.
+
+Every invocation unconditionally records the exact prompt it received to
+`<run>/.stub-last-prompt` (overwritten) and appends it to
+`<run>/.stub-all-prompts` (delimited by `===PROMPT===`), for tests that need
+to inspect job-context content across phases/iterations.
 """
 import json
 import os
@@ -28,20 +46,112 @@ tasks_file = os.path.join(run, "tasks.json")
 time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
 
 
-def emit_final(text):
+def marker(name):
+    return os.path.join(run, f".stub-{name}")
+
+
+# Always record the full prompt this invocation received (never gated by a
+# knob -- tests inspect this to prove job-context content such as the creds
+# inventory reaches every phase, with no dependency on stub-only behaviour).
+with open(marker("last-prompt"), "w") as _f:
+    _f.write(prompt)
+with open(marker("all-prompts"), "a") as _f:
+    _f.write("\n===PROMPT===\n")
+    _f.write(prompt)
+
+# Likewise, always record the skill *names* currently visible under
+# ~/.pi/agent/skills (never contents) -- black-box proof that runtime
+# skills CRUD (PUT/DELETE /config/skills/{name}) is visible to the very
+# next iteration without a container restart.
+_skills_dir = os.path.join(os.environ.get("HOME", os.path.expanduser("~")),
+                           ".pi", "agent", "skills")
+with open(marker("skills"), "w") as _f:
+    if os.path.isdir(_skills_dir):
+        _f.write("\n".join(sorted(os.listdir(_skills_dir))))
+
+# Always dump this invocation's full environment (names AND values) to a
+# JSON marker -- black-box proof that runtime LLM env rotation (PUT
+# /config/llm) reaches the very next `pi` subprocess without a container
+# restart. Overwritten every invocation, never gated by a knob.
+with open(marker("env.json"), "w") as _f:
+    json.dump(dict(os.environ), _f)
+
+
+def _chunks(s, n=6):
+    """Split s into ~n pieces, for delta-style streaming."""
+    if not s:
+        return [s]
+    size = max(1, len(s) // n)
+    return [s[i:i + size] for i in range(0, len(s), size)]
+
+
+def emit_rich_preamble(tool_name="bash", tool_args=None, thinking_text=None):
+    """Emit a realistic pi `--mode json` event sequence: a streamed thinking
+    content block, a streamed tool call (with matching top-level
+    tool_execution_* events), and -- once per run, if STUB_BAD_LINE is set --
+    one malformed line. Returns the (toolCall, thinking_text) content blocks
+    for the caller to fold into its authoritative message_end.
+    """
+    thinking_text = thinking_text or "Considering the best approach to this task."
+    tool_args = tool_args if tool_args is not None else {"command": "ls -la"}
+
+    print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                       {"type": "thinking_start", "contentIndex": 0}}))
+    for piece in _chunks(thinking_text):
+        print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                           {"type": "thinking_delta", "contentIndex": 0, "delta": piece}}))
+    print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                       {"type": "thinking_end", "contentIndex": 0, "content": thinking_text}}))
+
+    if os.environ.get("STUB_BAD_LINE") and not os.path.exists(marker("bad-line-sent")):
+        open(marker("bad-line-sent"), "w").write("1")
+        print("not json at all -- malformed line for tolerance testing")
+
+    tool_call_id = "call_0001"
+    args_json = json.dumps(tool_args)
+    print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                       {"type": "toolcall_start", "contentIndex": 1}}))
+    for piece in _chunks(args_json):
+        print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                           {"type": "toolcall_delta", "contentIndex": 1, "delta": piece}}))
+    tool_call = {"type": "toolCall", "id": tool_call_id, "name": tool_name, "arguments": tool_args}
+    print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                       {"type": "toolcall_end", "contentIndex": 1, "toolCall": tool_call}}))
+    print(json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
+                       "toolName": tool_name, "args": tool_args}))
+    print(json.dumps({"type": "tool_execution_end", "toolCallId": tool_call_id,
+                       "toolName": tool_name, "result": "ok", "isError": False}))
+    return tool_call, thinking_text
+
+
+def emit_final(text, tool_call=None, thinking_text=None):
+    rich = os.environ.get("STUB_RICH_EVENTS")
+    if rich:
+        # Stream the final assistant text as multiple text_start/delta/end
+        # chunks (matching real pi json-mode message_update events) before
+        # the authoritative message_end snapshot.
+        print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                           {"type": "text_start", "contentIndex": 2}}))
+        for piece in _chunks(text):
+            print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                               {"type": "text_delta", "contentIndex": 2, "delta": piece}}))
+        print(json.dumps({"type": "message_update", "assistantMessageEvent":
+                           {"type": "text_end", "contentIndex": 2, "content": text}}))
+    content = []
+    if thinking_text is not None:
+        content.append({"type": "thinking", "thinking": thinking_text})
+    if tool_call is not None:
+        content.append(tool_call)
+    content.append({"type": "text", "text": text})
     print(json.dumps({
         "type": "message_end",
         "message": {
             "role": "assistant",
-            "content": [{"type": "text", "text": text}],
+            "content": content,
             "usage": {"input": 100, "output": 10, "totalTokens": 110,
                       "cost": {"total": 0.01}},
         },
     }))
-
-
-def marker(name):
-    return os.path.join(run, f".stub-{name}")
 
 
 if "Role: Planner" in prompt:
@@ -61,6 +171,11 @@ elif "Role: Worker" in prompt:
     if os.environ.get("STUB_WORKER_STALLS"):
         emit_final("spinning wheels, no progress")
         sys.exit(0)
+    tool_call = thinking_text = None
+    if os.environ.get("STUB_RICH_EVENTS"):
+        tool_call, thinking_text = emit_rich_preamble(
+            tool_name="bash", tool_args={"command": "python -m pytest tests/ -q"},
+            thinking_text="Picking the next pending task and making it pass.")
     with open(tasks_file) as f:
         d = json.load(f)
     # Pick validation-failed first (matches worker.md semantics), then pending
@@ -76,9 +191,10 @@ elif "Role: Worker" in prompt:
         with open(marker("saw-steering"), "a") as f:
             f.write(prompt[prompt.index("Operator steering"):][:2000])
     if all(t["status"] == "completed" for t in d["tasks"]):
-        emit_final("everything finished\n<promise>COMPLETE</promise>")
+        emit_final("everything finished\n<promise>COMPLETE</promise>",
+                    tool_call=tool_call, thinking_text=thinking_text)
     else:
-        emit_final("completed one task")
+        emit_final("completed one task", tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Reviewer" in prompt:
     fails_wanted = int(os.environ.get("STUB_REVIEW_FAILS", "0"))
@@ -86,12 +202,18 @@ elif "Role: Reviewer" in prompt:
     if os.path.exists(marker("review-count")):
         done = int(open(marker("review-count")).read())
     open(marker("review-count"), "w").write(str(done + 1))
+    tool_call = thinking_text = None
+    if os.environ.get("STUB_RICH_EVENTS"):
+        tool_call, thinking_text = emit_rich_preamble(
+            tool_name="bash", tool_args={"command": "git diff --stat"},
+            thinking_text="Checking whether the reviewed requirements are met.")
     if done < fails_wanted:
         with open(os.path.join(run, "review-findings.md"), "w") as f:
             f.write(f"- finding from review #{done + 1}\n")
-        emit_final("requirements unmet")
+        emit_final("requirements unmet", tool_call=tool_call, thinking_text=thinking_text)
     else:
-        emit_final("all requirements hold\n<promise>VERIFIED</promise>")
+        emit_final("all requirements hold\n<promise>VERIFIED</promise>",
+                    tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Verifier" in prompt:
     # Extract task id from the injected section: "- **id**: XXX"
@@ -128,6 +250,34 @@ elif "Role: Verifier" in prompt:
             f"stub verifier: task {task_id} looks good\n"
             f"<task-verified>{task_id}</task-verified>"
         )
+
+elif "Role: Reflector" in prompt:
+    # Post-job self-reflection: writes a report + a unified diff to
+    # artifacts/reflection/, never touching workspace or run state (tasks.json,
+    # status.json, notes.md, review-findings.md are left alone).
+    reflection_dir = os.path.join(run, "artifacts", "reflection")
+    os.makedirs(reflection_dir, exist_ok=True)
+    with open(os.path.join(reflection_dir, "report.md"), "w") as f:
+        f.write(
+            "# Reflection report\n\n"
+            "Stub self-reflection: no workspace or run-state files were "
+            "modified by this phase.\n"
+        )
+    with open(os.path.join(reflection_dir, "suggestions.diff"), "w") as f:
+        f.write(
+            "--- a/src/ralphd/prompts/worker.md\n"
+            "+++ b/src/ralphd/prompts/worker.md\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-# Role: Worker\n"
+            "+# Role: Worker (stub-suggested tweak, not applied)\n"
+        )
+    tool_call = thinking_text = None
+    if os.environ.get("STUB_RICH_EVENTS"):
+        tool_call, thinking_text = emit_rich_preamble(
+            tool_name="write", tool_args={"path": "artifacts/reflection/report.md"},
+            thinking_text="Summarizing what worked and what could improve next run.")
+    emit_final("reflection complete\n<promise>REFLECTED</promise>",
+                tool_call=tool_call, thinking_text=thinking_text)
 
 else:
     emit_final("unrecognized phase prompt")

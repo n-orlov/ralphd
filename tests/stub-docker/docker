@@ -10,9 +10,19 @@ just enough behavior for ralphctl to proceed. Knobs:
                               `docker inspect --format ...` (exit 1 if id absent)
   STUB_DOCKER_INSPECT_OK      if set, plain `docker inspect <name>` exits 0
                               (default: exit 1 = container does not exist)
+  STUB_DOCKER_LIVE_ENGINE     if set, `docker run` actually launches a real
+                              `ralphd-engine` process (via
+                              live_engine_supervisor.py) against the mounted
+                              run/config/workspace dirs and the mapped port,
+                              instead of only faking a container id. The
+                              supervisor SIGKILLs the engine the instant its
+                              status.json reaches a terminal state, so tests
+                              can deterministically reproduce the API
+                              dying right at job completion.
 """
 import json
 import os
+import subprocess
 import sys
 
 argv = sys.argv[1:]
@@ -22,6 +32,52 @@ if log:
         f.write(json.dumps(argv) + "\n")
 
 cmd = argv[0] if argv else ""
+
+
+def _parse_run_argv(argv):
+    """Extract -v mounts, -p host port, and -e env from a `docker run` argv."""
+    mounts = {}
+    port = None
+    env = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "-v" and i + 1 < len(argv):
+            host, cont = argv[i + 1].split(":")[0], argv[i + 1].split(":")[1]
+            mounts[cont] = host
+            i += 2
+            continue
+        if a == "-p" and i + 1 < len(argv):
+            bits = argv[i + 1].split(":")
+            port = bits[-2]
+            i += 2
+            continue
+        if a == "-e" and i + 1 < len(argv):
+            k, _, v = argv[i + 1].partition("=")
+            env[k] = v
+            i += 2
+            continue
+        i += 1
+    return mounts, port, env
+
+
+if cmd == "run" and os.environ.get("STUB_DOCKER_LIVE_ENGINE"):
+    mounts, port, extra_env = _parse_run_argv(argv)
+    run_dir = mounts["/run/ralphd"]
+    config_dir = mounts.get("/config", run_dir)
+    workspace_dir = mounts.get("/workspace")
+    supervisor = os.path.join(os.path.dirname(__file__), "live_engine_supervisor.py")
+    sup_cmd = [sys.executable, supervisor, "--run-dir", run_dir,
+               "--config-dir", config_dir, "--port", port or "0"]
+    if workspace_dir:
+        sup_cmd += ["--workspace-dir", workspace_dir]
+    sup_env = {**os.environ, **extra_env}
+    log_path = os.path.join(run_dir, ".stub-live-engine.log")
+    with open(log_path, "ab") as logf:
+        subprocess.Popen(sup_cmd, env=sup_env, stdout=logf, stderr=logf,
+                          start_new_session=True)
+    print("f" * 64)  # fake container id
+    sys.exit(0)
 
 if cmd == "run":
     print("f" * 64)  # fake container id

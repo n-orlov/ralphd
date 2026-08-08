@@ -14,6 +14,57 @@ WORKSPACE_DIR = Path(os.environ.get("RALPHD_WORKSPACE_DIR", "/workspace"))
 PROMPTS_BUILTIN = Path(os.environ.get("RALPHD_PROMPTS_DIR",
                                       str(Path(__file__).parent.parent / "prompts")))
 
+# Container-local writable overlay for runtime config mutations (PRD req 11).
+# `/config` is mounted read-only from the host in real containers, so any
+# config CRUD driven by the API (skills/creds/prompts/llm PUTs) must land
+# somewhere else that's actually writable inside the container -- never under
+# the mounted /config path, and never under the run dir (which is
+# host-visible history, and where creds must never appear). Defaults under
+# $HOME so it lives entirely inside the container's own filesystem layer and
+# is gone when the container is removed.
+OVERLAY_DIR = Path(os.environ.get(
+    "RALPHD_CONFIG_OVERLAY_DIR",
+    str(Path(os.environ.get("HOME") or os.path.expanduser("~")) /
+        ".ralphd" / "config-overlay")))
+
+
+def overlay_or_config(rel: str) -> Path:
+    """Resolve a `/config`-relative path, preferring a runtime overlay entry
+    (written via the API) over the corresponding path under the (possibly
+    read-only) mounted `/config`. Callers still need to check `.exists()` and
+    fall back further (e.g. to a builtin default) themselves."""
+    overlay = OVERLAY_DIR / rel
+    return overlay if overlay.exists() else CONFIG_DIR / rel
+
+
+def overlay_write_path(rel: str) -> Path:
+    """Path under the writable overlay for a config-relative name, creating
+    its parent directory. Never write under CONFIG_DIR (read-only mount) or
+    RUN_DIR (host-visible run state) for config mutations."""
+    dest = OVERLAY_DIR / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+# Phase names with a builtin prompt (see src/ralphd/prompts/); the only names
+# accepted by the prompts CRUD API (PRD req 10).
+PROMPT_NAMES = ("planning", "worker", "review", "task-verify")
+
+
+def prompt_source(name: str) -> str:
+    """Effective origin for a phase prompt: 'api' (runtime overlay PUT) >
+    'mounted' (/config/prompts/{name}.md, operator-provided) > 'builtin'."""
+    if (OVERLAY_DIR / f"prompts/{name}.md").exists():
+        return "api"
+    if (CONFIG_DIR / f"prompts/{name}.md").exists():
+        return "mounted"
+    return "builtin"
+
+
+def list_prompts() -> list[dict]:
+    """Every known phase prompt with its effective source (PRD req 10)."""
+    return [{"name": n, "source": prompt_source(n)} for n in PROMPT_NAMES]
+
 
 @dataclass
 class JobConfig:

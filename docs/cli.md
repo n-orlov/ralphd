@@ -166,7 +166,7 @@ Syntax matches `tail`:
 ralphctl logs <id>            # last 50 rendered lines
 ralphctl logs <id> -100       # last 100 lines
 ralphctl logs <id> -150f      # last 150 lines, then follow live
-ralphctl logs <id> -f         # follow from now
+ralphctl logs <id> -f         # unbounded backlog, then follow live
 ralphctl logsf <id>           # alias for logs -f
 ```
 

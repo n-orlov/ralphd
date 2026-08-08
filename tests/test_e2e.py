@@ -42,8 +42,16 @@ class EngineProc:
         (self.config_dir / "job.yaml").write_text(
             "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items()))
         self.port = free_port()
+        base_env = {
+            k: v for k, v in os.environ.items()
+            if k not in ("RALPHD_HOST_WORKSPACE", "RALPHD_HOST_RUN_DIR", "RALPHD_RUN_ID")
+        }
+        # These docker-siblings vars may be set in the ambient environment
+        # (e.g. this very test suite running inside a docker-enabled ralphd
+        # job); strip them so tests are deterministic regardless of the host
+        # environment, and only set them via explicit stub_env.
         env = {
-            **os.environ,
+            **base_env,
             "PATH": f"{STUB_PI}:{Path(sys.executable).parent}:{os.environ['PATH']}",
             "STUB_RUN_DIR": str(self.run_dir),
             "RALPHD_RUN_DIR": str(self.run_dir),
@@ -72,6 +80,12 @@ class EngineProc:
             if not expect_error:
                 raise
             return e.code, json.loads(e.read() or b"{}")
+
+    def api_raw(self, path: str) -> str:
+        """GET a non-JSON (e.g. NDJSON) route and return the decoded body."""
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read().decode()
 
     def wait_api(self, timeout=15):
         deadline = time.time() + timeout
@@ -463,3 +477,178 @@ def test_api_token_auth(engine_factory, tmp_path):
             assert resp.status == 200
     finally:
         del os.environ["RALPHD_API_TOKEN"]
+
+
+# -- self-protection: --help/--version must be pristine (PRD req 29a) -----
+def _snapshot(path: Path) -> set[str]:
+    return {str(p.relative_to(path)) for p in path.rglob("*")}
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h", "--version"])
+def test_engine_help_version_pristine_and_exit_zero(tmp_path, flag):
+    """In an empty tmp dir with no RALPHD_* env, --help/--version must exit 0,
+    print usage/version, and leave the cwd byte-identical: no dirs/files
+    created, no server started, no port bound."""
+    workdir = tmp_path / "pristine"
+    workdir.mkdir()
+    before = _snapshot(workdir)
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RALPHD_")}
+    env["PATH"] = f"{Path(sys.executable).parent}:{os.environ['PATH']}"
+
+    proc = subprocess.run(
+        ["ralphd-engine", flag], cwd=workdir, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
+
+    assert proc.returncode == 0
+    if flag == "--version":
+        assert "ralphd-engine" in proc.stdout
+    else:
+        assert "usage:" in proc.stdout
+
+    after = _snapshot(workdir)
+    assert before == after, f"pristine-dir violated: created {after - before}"
+
+    # No server was started / port bound: subprocess.run() only returns
+    # because the process exited on its own (a bound uvicorn server would
+    # block forever serving, not return within the timeout), and the
+    # "API listening" log line the real startup path emits is absent.
+    assert "API listening" not in proc.stdout
+
+
+# -- self-protection: exclusive run-dir lock (PRD req 29b) ----------------
+
+def test_second_engine_on_locked_run_dir_refused_first_keeps_serving(
+        engine_factory):
+    """A second ralphd-engine pointed at a run dir a live engine already
+    holds must exit with a documented distinct exit code and a clear
+    diagnostic on stderr, while the first engine keeps serving /healthz."""
+    e1 = engine_factory(job={"on_complete": "idle"})
+    e1.wait_api()
+
+    # engine_factory() reuses the same tmp_path -> same run_dir/config_dir,
+    # so e2 points at the exact run dir e1 already holds the flock on.
+    e2 = engine_factory(job={"on_complete": "idle"})
+    rc = e2.proc.wait(timeout=15)
+    out = e2.proc.stdout.read()
+
+    assert rc == 3, f"expected documented lock-refused exit code 3, got {rc}: {out}"
+    assert "locked by another live engine" in out
+    assert str(e1.run_dir) in out
+
+    # e1 is unaffected and still serving.
+    status, _ = e1.api("GET", "/healthz")
+    assert status == 200
+
+
+def test_locked_run_dir_available_again_after_sigkill(engine_factory):
+    """flock releases on process death: after SIGKILL of the holder, a new
+    engine started against the same run dir must NOT see a stale-lock false
+    positive."""
+    e1 = engine_factory(job={"on_complete": "idle"})
+    e1.wait_api()
+
+    e1.proc.kill()  # SIGKILL, not a pattern-based pkill; we own this PID
+    assert e1.proc.wait(timeout=10) == -9 or e1.proc.returncode is not None
+
+    e2 = engine_factory(job={"on_complete": "idle"})
+    e2.wait_api(timeout=15)
+    status, _body = e2.api("GET", "/healthz")
+    assert status == 200
+
+
+def test_get_logs_whole_job_merge_and_tail(engine_factory):
+    """GET /logs merges every iteration's transcript in order, bracketed by
+    synthetic ralphd.iteration start/end boundary lines carrying
+    number/phase/model/approach (end also exit/error/usage); ?tail=N bounds
+    transcript lines only, boundaries are not counted."""
+    e = engine_factory(job={"on_complete": "idle"})
+    e.wait_api()
+    e.wait_state(("succeeded",), timeout=60)
+
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    transcripts = [(d / "output.jsonl").read_text().splitlines() for d in iters]
+
+    raw = e.api_raw("/logs")
+    lines = [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+    # boundaries frame every iteration, in order, carrying the right fields
+    boundary_pairs = []
+    idx = 0
+    for meta, transcript in zip(metas, transcripts):
+        start = lines[idx]
+        assert start["type"] == "ralphd.iteration" and start["event"] == "start"
+        assert start["number"] == meta["number"]
+        assert start["phase"] == meta["phase"]
+        assert start["model"] == meta["model"]
+        assert start["approach"] == meta["approach"]
+        idx += 1
+        for raw_line in transcript:
+            assert lines[idx] == json.loads(raw_line)
+            idx += 1
+        end = lines[idx]
+        assert end["type"] == "ralphd.iteration" and end["event"] == "end"
+        assert end["number"] == meta["number"]
+        assert end["exitCode"] == meta["exitCode"]
+        assert end["error"] == meta.get("error")
+        assert end["usage"] == meta.get("usage")
+        idx += 1
+        boundary_pairs.append((start, end))
+    assert idx == len(lines)  # nothing extra, nothing missing
+
+    total_content_lines = sum(len(t) for t in transcripts)
+    assert total_content_lines >= len(iters)  # sanity: every iteration produced output
+
+    # ?tail=N bounds transcript (non-boundary) lines only
+    tail_n = 3
+    tail_raw = e.api_raw(f"/logs?tail={tail_n}")
+    tail_lines = [json.loads(line) for line in tail_raw.splitlines() if line.strip()]
+    content = [l for l in tail_lines if l.get("type") != "ralphd.iteration"]
+    assert len(content) == tail_n
+    # the tailed content lines are exactly the last tail_n transcript lines
+    all_content_raw = [json.loads(l) for t in transcripts for l in t]
+    assert content == all_content_raw[-tail_n:]
+
+
+def test_get_logs_follow_streams_across_iteration_boundaries(engine_factory):
+    """GET /logs?follow=true&tail=N opened early on a slow multi-iteration
+    job delivers lines from at least two different iterations on the same
+    open connection, and the stream closes once the job reaches a terminal
+    state (never hangs forever, never truncates before the job finishes)."""
+    e = engine_factory(job={"on_complete": "idle"},
+                       stub_env={"STUB_SLEEP": "1.5", "STUB_TASKS": "3"})
+    e.wait_api()
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{e.port}/logs?follow=true&tail=5")
+    seen_iteration_numbers = set()
+    saw_end_of_stream = False
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        for raw in resp:
+            line = raw.decode().strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if obj.get("type") == "ralphd.iteration":
+                seen_iteration_numbers.add(obj["number"])
+        saw_end_of_stream = True  # the generator returned -> server closed cleanly
+
+    assert saw_end_of_stream
+    assert len(seen_iteration_numbers) >= 2
+    # the stream only closed because the job had already reached a terminal
+    # state by then (never truncates mid-job)
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded"
+
+    # a plain (non-follow) /logs now matches: every iteration present, in order
+    full_raw = e.api_raw("/logs")
+    full_numbers = [json.loads(l)["number"] for l in full_raw.splitlines()
+                    if json.loads(l).get("type") == "ralphd.iteration"
+                    and json.loads(l)["event"] == "start"]
+    assert full_numbers == sorted(full_numbers)
+    assert seen_iteration_numbers <= set(full_numbers)
+
+    # engine stays up (idle mode); shut it down cleanly
+    e.api("POST", "/shutdown")
+    assert e.proc.wait(timeout=10) == 0

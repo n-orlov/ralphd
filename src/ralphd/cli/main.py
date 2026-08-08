@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import random
+import re
 import secrets
 import shutil
 import socket
@@ -158,6 +159,59 @@ def _resolve_pi_apikeys(models_json: Path) -> None:
         os.chmod(models_json, 0o600)
 
 
+# recognized creds extras copied verbatim alongside *.env files
+_CREDS_EXTRA_FILES = ("gitconfig", "git-credentials", "netrc", "setup.sh")
+
+
+def _copy_creds(src: Path, cdir: Path) -> None:
+    """Copy `*.env` plus recognized extras (gitconfig, git-credentials,
+    netrc, ssh/, setup.sh) from `src` into the job config dir's `creds/`.
+    Anything else in `src` is ignored. The engine (not this CLI) places
+    these under $HOME/.creds etc. at container startup -- this only stages
+    the config-dir copy that gets mounted read-only at /config.
+    """
+    src = src.expanduser().resolve()
+    if not src.is_dir():
+        die(2, f"--creds: {src} is not a directory")
+    dest = cdir / "creds"
+    dest.mkdir(exist_ok=True)
+    for env_file in sorted(src.glob("*.env")):
+        shutil.copy2(env_file, dest / env_file.name)
+    for name in _CREDS_EXTRA_FILES:
+        f = src / name
+        if f.is_file():
+            shutil.copy2(f, dest / name)
+            if name == "setup.sh":
+                (dest / name).chmod((dest / name).stat().st_mode | 0o100)
+    ssh_src = src / "ssh"
+    if ssh_src.is_dir():
+        shutil.copytree(ssh_src, dest / "ssh", dirs_exist_ok=True)
+
+
+def _copy_skills(sdir: str, cdir: Path) -> None:
+    """Validate and copy one --skills argument into the job config dir's
+    `skills/`. `src` must either:
+      - contain a `SKILL.md` itself (one skill), or
+      - be a directory whose every immediate subdirectory contains a
+        `SKILL.md` (a directory-of-skills, expanded to one copy per child).
+    Anything else is a usage error (exit 2), naming the offending path.
+    """
+    src = Path(sdir).expanduser().resolve()
+    if not src.is_dir():
+        die(2, f"--skills: {src} is not a directory")
+    (cdir / "skills").mkdir(exist_ok=True)
+    if (src / "SKILL.md").is_file():
+        shutil.copytree(src, cdir / "skills" / src.name, dirs_exist_ok=True)
+        return
+    children = sorted(p for p in src.iterdir() if p.is_dir())
+    if children and all((c / "SKILL.md").is_file() for c in children):
+        for c in children:
+            shutil.copytree(c, cdir / "skills" / c.name, dirs_exist_ok=True)
+        return
+    die(2, f"--skills: {src} is neither a skill (no SKILL.md) nor a directory "
+           f"of skills (not every immediate child has a SKILL.md)")
+
+
 # ---------------------------------------------------------------- start
 def cmd_start(args):
     run_id = args.run_id or gen_run_id()
@@ -229,9 +283,10 @@ def cmd_start(args):
               "privileged containers. Only use with PRDs you trust.",
               file=sys.stderr)
     for sdir in args.skills or []:
-        (cdir / "skills").mkdir(exist_ok=True)
-        src = Path(sdir).expanduser().resolve()
-        shutil.copytree(src, cdir / "skills" / src.name, dirs_exist_ok=True)
+        _copy_skills(sdir, cdir)
+
+    if args.creds:
+        _copy_creds(Path(args.creds), cdir)
 
     # LLM wiring
     if args.llm == "host":
@@ -286,21 +341,40 @@ def cmd_start(args):
     out(args, {**meta, "authenticated": bool(token)},
         f"{run_id}\n  container: {container[:12]}\n  api: {meta['apiUrl']}")
     if not args.detach:
-        _follow_events(args, run_id)
-        status = api(run_id, "GET", "/status")
+        # fatal=False: if the container/API dies right at job completion
+        # (on_complete=exit tears the server down immediately after emitting
+        # the final event), a request racing that shutdown can see the
+        # stream cut off before the terminal event is fully delivered. Don't
+        # let that crash or hang the CLI — fall through to the status.json
+        # fallback below instead of a hard failure.
+        _follow_events(args, run_id, fatal=False)
+        # The final /status poll can hit that very same race (a fresh
+        # connection right as the server is torn down): fall back to the
+        # run dir's status.json, which the engine writes before emitting the
+        # terminal event, rather than raising/crashing on a reset/refused
+        # connection.
+        try:
+            status = api(run_id, "GET", "/status")
+        except SystemExit:
+            status = _read_json(rdir / "status.json", {})
+        except (ConnectionError, OSError, TimeoutError):
+            status = _read_json(rdir / "status.json", {})
         sys.exit(0 if status.get("verdict") == "verified" else 1)
 
 
-def _follow_events(args, run_id: str):
+def _follow_events(args, run_id: str, fatal: bool = True):
     meta = host_meta(run_id)
     url = meta["apiUrl"] + "/events?since=0"
     req = urllib.request.Request(url)
     token_file = run_root(run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
+    connected = False
+    post_connect_failures = 0
     for attempt in range(30):
         try:
             with urllib.request.urlopen(req, timeout=3600) as resp:
+                connected = True
                 for line in resp:
                     line = line.decode().strip()
                     if not line.startswith("data: "):
@@ -318,8 +392,20 @@ def _follow_events(args, run_id: str):
                         return
             return
         except (urllib.error.URLError, TimeoutError, ConnectionError):
-            time.sleep(1 + attempt * 0.5)
-    die(4, "could not connect to event stream")
+            if connected:
+                # We were already receiving events — the API almost
+                # certainly died right at job completion, most likely after
+                # emitting (but not fully delivering) the terminal event.
+                # A couple of quick retries is enough; no need for the full
+                # container-startup backoff below.
+                post_connect_failures += 1
+                if post_connect_failures >= 3:
+                    break
+                time.sleep(0.2)
+            else:
+                time.sleep(1 + attempt * 0.5)
+    if fatal:
+        die(4, "could not connect to event stream")
 
 
 # ---------------------------------------------------------------- observation
@@ -376,21 +462,144 @@ def cmd_tasks(args):
         print(f"[{t.get('status'):<17}] {t.get('id')} {t.get('title')}")
 
 
+def _ansi(tty: bool, code: str, text: str) -> str:
+    return f"\x1b[{code}m{text}\x1b[0m" if tty else text
+
+
+def _fmt_args(obj) -> str:
+    if not isinstance(obj, dict):
+        s = json.dumps(obj)
+        return s if len(s) <= 60 else s[:57] + "..."
+    parts = []
+    for k, v in list(obj.items())[:3]:
+        s = json.dumps(v)
+        if len(s) > 40:
+            s = s[:37] + "..."
+        parts.append(f"{k}={s}")
+    return ", ".join(parts)
+
+
+def _render_boundary(ev: dict, tty: bool) -> None:
+    n, phase, model, approach = (ev.get("number"), ev.get("phase"),
+                                  ev.get("model"), ev.get("approach"))
+    if ev.get("event") == "start":
+        print(_ansi(tty, "1;36",
+              f"── iteration {n} · phase={phase} · model={model} · "
+              f"approach={approach} ──"))
+        return
+    usage = ev.get("usage") or {}
+    bits = [f"iteration {n} done"]
+    if ev.get("exitCode") is not None:
+        bits.append(f"exit={ev['exitCode']}")
+    if usage:
+        bits.append(f"tokens={usage.get('totalTokens', 0)}")
+        if usage.get("costUSD") is not None:
+            bits.append(f"cost=${usage['costUSD']}")
+    print(_ansi(tty, "2", "  " + ", ".join(bits)))
+    if ev.get("error"):
+        print(_ansi(tty, "1;31", f"!! iteration {n} error: {ev['error']}"))
+
+
+def _render_message_update(evt: dict, state: dict, tty: bool) -> None:
+    t = evt.get("type")
+    if t == "text_delta":
+        sys.stdout.write(evt.get("delta", ""))
+        sys.stdout.flush()
+        state["text_open"] = True
+        state["text_seen"] = True
+    elif t == "text_end":
+        if state["text_open"]:
+            print()
+            state["text_open"] = False
+    elif t in ("thinking_start", "thinking_delta"):
+        if not state["thinking_seen"]:
+            print(_ansi(tty, "2;3", "  [thinking…]"))
+            state["thinking_seen"] = True
+
+
+def _render_tool_result(ev: dict, tty: bool) -> None:
+    name = ev.get("toolName", "?")
+    fargs = _fmt_args(ev.get("args") or ev.get("arguments") or {})
+    is_error = bool(ev.get("isError"))
+    outcome = _ansi(tty, "1;31", "✗ error") if is_error else _ansi(tty, "1;32", "✓ ok")
+    result = ev.get("result")
+    tail = f" ({str(result)[:60]})" if isinstance(result, str) and result and not is_error else ""
+    print(f"  → {name}({fargs}) {outcome}{tail}")
+
+
+def _render_message_end(message: dict, state: dict, tty: bool) -> None:
+    for item in message.get("content") or []:
+        kind = item.get("type") if isinstance(item, dict) else None
+        if kind == "text":
+            if not state["text_seen"]:
+                print(item.get("text", ""))
+        elif kind == "thinking":
+            if not state["thinking_seen"]:
+                print(_ansi(tty, "2;3", "  [thinking…]"))
+        elif kind == "toolCall" and not state["toolcall_seen"]:
+            print(f"  → {item.get('name', '?')}({_fmt_args(item.get('arguments') or {})})")
+
+
+def _render_logs(raw: str, tty: bool) -> None:
+    """Render merged/per-iteration NDJSON: iteration headers, streamed
+    assistant text, compact tool one-liners, elided thinking, usage/cost
+    footers, error highlights. Unknown event types are silently skipped;
+    a malformed (non-JSON) line prints a one-line marker and is skipped."""
+    state = {"text_open": False, "text_seen": False, "thinking_seen": False,
+             "toolcall_seen": False}
+    for raw_line in raw.splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            ev = json.loads(raw_line)
+        except json.JSONDecodeError:
+            print(_ansi(tty, "33", f"! [malformed log line, {len(raw_line)} bytes]"))
+            continue
+        if not isinstance(ev, dict):
+            print(_ansi(tty, "33", "! [malformed log line: not a JSON object]"))
+            continue
+        etype = ev.get("type")
+        if etype == "ralphd.iteration":
+            _render_boundary(ev, tty)
+            state.update(text_open=False, text_seen=False, thinking_seen=False,
+                        toolcall_seen=False)
+        elif etype == "message_update":
+            _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)
+        elif etype == "tool_execution_end":
+            _render_tool_result(ev, tty)
+            state["toolcall_seen"] = True
+        elif etype == "message_end":
+            _render_message_end(ev.get("message") or {}, state, tty)
+        # everything else (tool_execution_start, unrecognized/future event
+        # types) is silently skipped by design.
+
+
 def cmd_logs(args):
-    n = args.iteration
-    if n is None:
-        status = api(args.run_id, "GET", "/status")
-        cur = status.get("currentIteration") or {}
-        n = cur.get("number") or status.get("iterationsUsed") or 1
+    tty = sys.stdout.isatty()
+    # `--tail` has no default: bare `logs <id>` (no --follow) falls back to
+    # tail 50; bare `-f`/`--follow` with no explicit count follows the
+    # unbounded log from now on (no fixed snapshot size).
+    tail = args.tail
+    if tail is None and not args.follow:
+        tail = 50
     qs = []
-    if args.tail:
-        qs.append(f"tail={args.tail}")
+    if tail:
+        qs.append(f"tail={tail}")
     if args.follow:
         qs.append("follow=true")
-    text = api(args.run_id, "GET",
-               f"/iterations/{n}/output" + ("?" + "&".join(qs) if qs else ""),
-               raw=True, timeout=3600 if args.follow else 30)
-    print(text)
+    query = ("?" + "&".join(qs)) if qs else ""
+    if args.iteration is not None:
+        path = f"/iterations/{args.iteration}/output{query}"
+    else:
+        path = f"/logs{query}"
+    text = api(args.run_id, "GET", path, raw=True,
+               timeout=3600 if args.follow else 30)
+    if args.raw:
+        sys.stdout.write(text)
+        if text and not text.endswith("\n"):
+            print()
+        return
+    _render_logs(text, tty)
 
 
 def cmd_watch(args):
@@ -519,6 +728,44 @@ def _stray_sibling_containers() -> list[dict]:
 
 
 # ---------------------------------------------------------------- parser
+_TAIL_SYNTAX_RE = re.compile(r"^-(\d+)(f)?$")
+
+
+def _preprocess_logs_argv(argv: list[str]) -> list[str]:
+    """Rewrite `tail`-style `logs` syntax (`-N`, `-Nf`, `-f`) and the
+    `logsf` alias into `--tail`/`--follow` before argparse sees them, since
+    argparse cannot parse a bare `-100`-style token as a positional value.
+    Anything that doesn't match a recognized form is left untouched, so
+    argparse's own "unrecognized arguments" error (exit 2) handles it."""
+    out = list(argv)
+    idx = next((i for i, t in enumerate(out) if not t.startswith("-")), None)
+    if idx is None:
+        return out
+    cmd = out[idx]
+    force_follow = False
+    if cmd == "logsf":
+        out[idx] = "logs"
+        force_follow = True
+    elif cmd != "logs":
+        return out
+    result = out[:idx + 1]
+    for tok in out[idx + 1:]:
+        if tok == "-f":
+            result.append("--follow")
+            continue
+        m = _TAIL_SYNTAX_RE.match(tok)
+        if m:
+            result.append("--tail")
+            result.append(m.group(1))
+            if m.group(2):
+                result.append("--follow")
+            continue
+        result.append(tok)
+    if force_follow:
+        result.append("--follow")
+    return result
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="ralphctl",
                                 description="Operate ralphd autonomous coding jobs")
@@ -544,6 +791,9 @@ def main() -> None:
                    help="forward host env var(s) into the container (repeatable)")
     s.add_argument("--env", action="append", metavar="KEY=VAL")
     s.add_argument("--skills", action="append", metavar="DIR")
+    s.add_argument("--creds", metavar="DIR",
+                   help="copy *.env + recognized extras from DIR into the job's"
+                        " config dir creds/")
     s.add_argument("--allow-docker", action="store_true",
                    help="mount the host docker socket into the job container "
                         "(ROOT-EQUIVALENT host access — trusted PRDs only)")
@@ -570,12 +820,16 @@ def main() -> None:
         s.add_argument("run_id")
         s.set_defaults(func=fn)
 
-    s = sub.add_parser("logs", help="agent transcript")
+    s = sub.add_parser("logs", help="agent transcript (tail-style: -N, -Nf, -f)")
     s.add_argument("run_id")
-    s.add_argument("--iteration", type=int)
-    s.add_argument("--tail", type=int)
+    s.add_argument("--iteration", type=int, help="restrict to a single iteration")
+    s.add_argument("--tail", type=int, help="defaults to 50 unless --follow given alone")
     s.add_argument("--follow", action="store_true")
+    s.add_argument("--raw", action="store_true",
+                   help="raw NDJSON passthrough (no pretty rendering)")
     s.set_defaults(func=cmd_logs)
+    # `logsf <id>` is a pure alias for `logs <id> -f`, rewritten in
+    # _preprocess_logs_argv() before argparse ever sees "logsf".
 
     s = sub.add_parser("steer", help="send steering guidance")
     s.add_argument("run_id")
@@ -611,7 +865,7 @@ def main() -> None:
     s.add_argument("--image", default=DEFAULT_IMAGE)
     s.set_defaults(func=cmd_doctor)
 
-    args = p.parse_args()
+    args = p.parse_args(_preprocess_logs_argv(sys.argv[1:]))
     args.func(args)
 
 

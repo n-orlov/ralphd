@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
+
+
+class RunDirLocked(Exception):
+    """Raised when another live engine already holds the run dir's lock."""
 
 
 def utcnow() -> str:
@@ -83,6 +88,35 @@ class RunDir:
     @property
     def artifacts_dir(self) -> Path:
         return self.root / "artifacts"
+
+    @property
+    def lock_file(self) -> Path:
+        return self.root / ".lock"
+
+    def acquire_lock(self) -> TextIO:
+        """Take an exclusive, non-blocking flock on <run-dir>/.lock.
+
+        Returns the open file object; the caller MUST keep a reference to it
+        for the lifetime of the process (closing it, or process exit/SIGKILL,
+        releases the flock automatically -- this is relied on for crash
+        recovery: a killed engine never leaves a stale false-positive lock).
+
+        Raises RunDirLocked if another live process already holds it.
+        """
+        fh = open(self.lock_file, "a+")  # noqa: SIM115 - kept open for process lifetime
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            raise RunDirLocked(
+                f"run dir {self.root} is locked by another live engine "
+                f"(exclusive flock held on {self.lock_file})"
+            ) from None
+        fh.seek(0)
+        fh.truncate()
+        fh.write(f"{os.getpid()}\n")
+        fh.flush()
+        return fh
 
     def iteration_dir(self, n: int) -> Path:
         d = self.root / "iterations" / f"{n:04d}"
