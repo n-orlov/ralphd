@@ -3,24 +3,36 @@
 Versions are milestones, not promises of dates. Each version is releasable on its
 own; scope may shift between minors, not the ordering of the big rocks.
 
+> **Status (2026-08-08):** the v0.1 core loop is built and proven — engine
+> (planning → worker → review, approaches, vigilant mode, model strategies),
+> observation/steering API, `ralphctl` core commands, 17 black-box e2e tests, and
+> two real-LLM runs including ralphd building its own vigilant mode. The
+> remaining scope below (v0.1 gaps through v0.4) is consolidated into a single
+> self-development PRD executed by ralphd itself with vigilant mode on.
+
 ## v0.1 — the working loop (MVP)
 
 The smallest thing that is genuinely useful and proves every load-bearing design
 decision:
 
-- Engine: planning → worker → review loop, approaches + composite PRD, sentinels,
+- ✅ Engine: planning → worker → review loop, approaches + composite PRD, sentinels,
   atomic `tasks.json`, iteration records, `events.jsonl`
-- Vigilant mode and model strategies (they are cheap once per-phase model resolution
+- ✅ Vigilant mode and model strategies (they are cheap once per-phase model resolution
   exists, and were designed in from the start)
-- Container API: status/tasks/iterations/events/steering/interrupt/abort/shutdown,
-  prompts/skills/creds/llm runtime config; optional bearer token
-- `ralphctl`: `start`, `runs`, `status`, `watch` (TUI + `--json` stream), `logs`,
-  `tasks`, `steer`, `interrupt`, `pause/resume`, `abort`, `stop`, `rm`,
-  `artifacts`, `skills`, `prompts`, `llm`, `config`, `doctor` — all with `--json`
-- LLM profiles: format + `host`/`none` built-ins + bedrock and gateway example
-  profiles **with acceptance tests proving both**
-- Docker image (amd64/arm64), published; `pipx install ralphctl`
-- Docs: the four design docs kept in sync with reality + a tutorial
+- Container API: ✅ status/tasks/iterations/events/steering/interrupt/abort/shutdown
+  + bearer token; ⏳ `GET /logs` whole-job stream, prompts/skills/creds/llm runtime
+  CRUD
+- `ralphctl`: ✅ `start`, `runs`, `status`, `watch`, `tasks`, `steer`, `interrupt`,
+  `pause/resume`, `abort`, `stop`, `rm`, `artifacts`, `doctor`; ⏳ pretty `logs`
+  (tail-style, whole-job console), `skills`, `creds`, `prompts`, `llm`, `config`
+- ⏳ Credentials: env-file convention (`--creds <dir>` of `<name>.env` files →
+  `~/.creds/` in-container; prompts advertise the inventory; agent sources on
+  demand) — the file-based analogue of original Ralph's AWS Secrets approach
+- ⏳ LLM profiles: format + `host`/`none` built-ins + bedrock and gateway example
+  profiles **with acceptance tests proving both** (today: `host`/`none` +
+  `--forward-env` proven against Bedrock and a corporate gateway)
+- ⏳ Docker image published (amd64/arm64); `pipx install ralphctl`
+- Docs: the design docs kept in sync with reality (ongoing) + a tutorial
 
 Non-goals for v0.1: resume, web UI, self-reflection, multi-job orchestration.
 

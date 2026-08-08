@@ -180,6 +180,27 @@ Failures must be visible without digging into transcripts:
   start (phase, model) and end (exit code, sentinels, error summary) to stdout,
   so a dead-in-2-seconds job is diagnosable from container logs alone.
 
+### Live job log (pretty console)
+
+The per-iteration transcripts are raw pi NDJSON — correct as a record, unreadable
+as a console. The engine therefore exposes a **whole-job log view** that spans
+iteration boundaries (`GET /logs`, see [api.md](api.md)): a merged stream of every
+iteration's transcript in order, with iteration/phase boundary markers, that can
+be fetched as a bounded tail or followed live across iterations (no re-attach
+dance when a new iteration starts). The engine serves **raw NDJSON**; making it
+pretty is the CLI's job:
+
+- `ralphctl logs` renders the stream human-first by default, Jenkins-console
+  style: iteration/phase headers, assistant text as it streams, tool calls as
+  one-liners (name + compact args + outcome), thinking elided to a marker,
+  per-iteration usage/cost footers, agent errors highlighted.
+- `--raw` emits the underlying NDJSON untouched (for machines and debugging).
+- The syntax follows `tail`: `logs -100` (last 100 rendered lines), `-150f`
+  (last 150, then follow), `logsf` (follow from now). See [cli.md](cli.md).
+
+The renderer is pure presentation over the same events — nothing is stored
+pretty; the run dir stays raw and replayable.
+
 ### Container lifecycle
 
 ```
@@ -224,19 +245,46 @@ Everything the job needs is mapped in by the CLI. Three mount points:
 ├── job.yaml            # job config (PRD ref, budgets, mode flags, model strategy)
 ├── prompts/            # optional phase-prompt overrides
 ├── skills/             # agent skills, exposed to pi as workspace skills
-├── creds/              # operator-provided credential files (git creds, netrc, …)
-│   └── setup.sh        # optional: sourced/run before first iteration
+├── creds/              # operator-prepared credential env files + extras
+│   ├── github.env      # KEY=value lines → placed at ~/.creds/github.env (0600)
+│   ├── jenkins.env     # …one file per credential set, any names
+│   └── setup.sh        # optional: run once before first iteration
 └── pi/                 # pi settings fragments (models.json, provider config)
 ```
 
-- **Skills**: directories of instruction files (`SKILL.md` convention). The engine
-  links `/config/skills/*` into the location pi discovers skills from. New skills
-  can be added mid-run via `PUT /config/skills/{name}` (tar upload); they appear at
-  the next iteration.
-- **Credentials**: opaque files; the engine copies them to conventional locations
-  when recognized (`gitconfig`, `git-credentials`, `netrc`, `ssh/`) and otherwise
-  leaves them for `setup.sh` / prompts to reference. Nothing credential-shaped is
+- **Skills**: directories of instruction files (`SKILL.md` convention), forwarded
+  **explicitly and scoped per job** — `ralphctl start --skills <dir>` (repeatable),
+  one directory per skill. There is deliberately no "forward all host skills"
+  mode: the operator picks exactly what a job needs. Each named dir is *copied*
+  into the job's config dir at start (so later host edits don't leak into a
+  running job), mounted at `/config/skills/<name>`, and symlinked by the
+  entrypoint into the location pi discovers skills from (`~/.pi/agent/skills/`).
+  Gotcha: `--skills` treats its argument as *one* skill — passing a parent
+  directory of many skills forwards it as a single mis-named skill. `ralphctl`
+  rejects a `--skills` dir that has no `SKILL.md` unless every immediate child
+  has one, in which case it expands to the children.
+  Skills are full CRUD at runtime via the API (`GET/PUT/DELETE
+  /config/skills/{name}`, tar bodies); changes appear at the next iteration.
+- **Credentials — env-file convention.** This mirrors the original Ralph's AWS
+  Secrets Manager approach, made file-based: every credential set the job needs
+  is prepared by the operator as one `<name>.env` file (`KEY=value` lines, `#`
+  comments), e.g. `github.env`, `jenkins.env`, `sonarqube.env`. `ralphctl start
+  --creds <dir>` copies `<dir>/*.env` into the job config; the entrypoint places
+  them at **`~/.creds/*.env`** (agent-owned, mode `0600`) inside the container.
+  **The agent knows where to look**: every phase prompt lists the available cred
+  file names and the usage rule — *source the file you need, in the shell where
+  you need it* (`set -a; . ~/.creds/github.env; set +a`). Values are **not**
+  auto-exported into the engine or agent process environment; a credential is
+  visible only to commands that explicitly source its file. Recognized
+  non-env extras keep their conventional placement (`gitconfig`,
+  `git-credentials`, `netrc`, `ssh/`), and an executable `setup.sh` still runs
+  once at container start as the escape hatch. Nothing credential-shaped is
   ever written to `/run` (which is host-visible history) or logged.
+  Creds are full CRUD at runtime via the API (`GET/PUT/DELETE
+  /config/creds/{name}`) — including read-back of values, an explicit design
+  choice: **holding the API bearer token is defined as equivalent to holding the
+  job's credentials** (see §6). Prompts see updated inventories at the next
+  iteration.
 - **LLM config**: env vars + pi config fragments produced by the CLI's LLM-profile
   resolution — see [llm-profiles.md](llm-profiles.md). The engine merges
   `/config/pi/*` into the container-local pi settings at startup and again on API
@@ -249,7 +297,11 @@ Everything the job needs is mapped in by the CLI. Three mount points:
   engine require `Authorization: Bearer <t>` on every route; combine with
   `--api-bind 0.0.0.0` for LAN/remote access. The CLI stores the token in the run
   registry (`~/.ralphd/runs/<id>/.api-token`, mode 0600) and sends it automatically.
-- The API never returns credential material; `job.json` is stored redacted.
+- `job.json` is stored redacted (no secret values). The creds API, however, is
+  full CRUD **including read-back** — by design, the API bearer token *is* the
+  job's credential boundary. Protect it accordingly: keep the default
+  loopback-only bind unless the token is set, and treat `--api-bind 0.0.0.0`
+  + token as granting whoever holds the token everything the job can do.
 
 ## 7. Host-side: CLI and registry
 

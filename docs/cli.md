@@ -83,10 +83,29 @@ ralphctl start --prd <file|-> [options]
 | `--env KEY=VAL` | — | extra container env (repeatable) |
 | `--detach/--no-detach` | detach | `--no-detach` streams events until completion, exit code mirrors job verdict (0 verified / 1 otherwise) |
 
-Credentials (`--creds <dir>`): the directory is mounted read-only; recognized names
-(`gitconfig`, `git-credentials`, `netrc`, `ssh/`) are placed conventionally inside
-the container; an executable `setup.sh` is run once before the first iteration.
-Nothing from this directory is copied into the run dir or logged.
+Credentials (`--creds <dir>`) — **env-file convention**: prepare every credential
+set the job needs as a `<name>.env` file (`KEY=value` lines) in one directory:
+
+```
+creds/
+├── github.env        # GITHUB_TOKEN=ghp_…
+├── jenkins.env       # JENKINS_URL=… JENKINS_USER=… JENKINS_TOKEN=…
+└── sonarqube.env     # SONAR_TOKEN=…
+```
+
+These land at `~/.creds/*.env` (mode 0600) inside the container, and the phase
+prompts tell the agent which files exist and to source the one it needs
+(`set -a; . ~/.creds/github.env; set +a`) — values are never auto-exported into
+every process. Recognized extras (`gitconfig`, `git-credentials`, `netrc`,
+`ssh/`) are placed conventionally; an executable `setup.sh` runs once before the
+first iteration. Nothing from this directory is copied into the run dir or logged.
+
+Skills (`--skills <dir>`, repeatable): one directory per skill (must contain
+`SKILL.md`). If the given dir has no `SKILL.md` but every immediate child does,
+it expands to the children — so both `--skills ./skills/git` and
+`--skills ./skills` (a folder of skills) work; anything else is a usage error.
+Skills are copied at start (later host edits don't affect the running job) and
+scoped per job — there is deliberately no "forward all host skills" mode.
 
 Exit: `0` started · `1` container failed to start · `2` bad options.
 
@@ -112,9 +131,33 @@ Live TUI: task table, phase/approach/iteration header, budget + cost gauges,
 scrolling tail of agent output, pending steering. Read-only; `q` quits.
 Non-TTY/`--json`: streams SSE events as NDJSON instead (usable by agents).
 
-### `ralphctl logs <run-id> [--iteration n] [--follow] [--tail n]`
+### `ralphctl logs <run-id> [-N[f]]` / `ralphctl logsf <run-id>`
 
-Agent transcript(s). Default: current/last iteration.
+The **whole-job console** (backed by `GET /logs`): all iterations merged in
+order, following across iteration boundaries — the Jenkins-console equivalent.
+**Pretty rendering is the default**; `--raw` gives the underlying NDJSON.
+
+Syntax matches `tail`:
+
+```
+ralphctl logs <id>            # last 50 rendered lines
+ralphctl logs <id> -100       # last 100 lines
+ralphctl logs <id> -150f      # last 150 lines, then follow live
+ralphctl logs <id> -f         # follow from now
+ralphctl logsf <id>           # alias for logs -f
+```
+
+| Option | Meaning |
+|--------|---------|
+| `-N` / `-Nf` | tail N lines / tail N then follow (tail-style) |
+| `-f`, `--follow` | follow live across iterations until the job ends |
+| `--raw` | raw NDJSON passthrough (implies no rendering; for machines) |
+| `--iteration n` | restrict to a single iteration's transcript |
+
+Pretty rendering shows: iteration/phase boundary headers (number, phase, model),
+assistant text as it streams, tool calls as compact one-liners (name, key args,
+outcome), thinking elided to a marker, per-iteration usage/cost footer, agent
+errors highlighted. When stdout is not a TTY, output is identical minus color.
 
 ### `ralphctl tasks <run-id>`
 
@@ -159,9 +202,17 @@ the container to be gone. Asks confirmation unless `--yes`.
 List or download artifacts. `pull` copies from the (host-mounted) run dir directly;
 works with dead containers.
 
-### `ralphctl skills <run-id> [ls|add <dir>|rm <name>]`
+### `ralphctl skills <run-id> [ls|get <name> <dest>|add <dir>|rm <name>]`
 
-Inspect or hot-swap skills on a running job (API-backed; `add` tars and uploads).
+Inspect or hot-swap skills on a running job (API-backed; `add` tars and uploads,
+`get` downloads one back). Changes take effect next iteration.
+
+### `ralphctl creds <run-id> [ls|get <name>|add <file>|rm <name>]`
+
+Runtime credential management (API-backed, env-file convention). `add github.env`
+uploads/replaces `~/.creds/github.env` in the container; `get` prints the file
+(read-back is by design — the API token *is* the cred boundary); `rm` deletes.
+The agent sees the updated inventory at the next iteration.
 
 ### `ralphctl prompts <run-id> [ls|set <phase> <file>]`
 

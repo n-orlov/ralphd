@@ -71,6 +71,24 @@ One iteration's `meta.json`.
 `?tail=<lines>`. For the in-flight iteration, `?follow=true` streams new lines until
 the iteration ends (chunked).
 
+### `GET /logs`
+`application/x-ndjson` — the **whole-job log**: every iteration's transcript
+merged in order, with a synthetic boundary line injected between iterations:
+
+```json
+{"type":"ralphd.iteration","number":7,"phase":"worker","event":"start",
+ "model":"...","approach":1}
+```
+
+(and a matching `"event":"end"` line carrying exit code, sentinels, error, usage).
+All other lines are pi transcript lines passed through verbatim.
+
+Query params: `?tail=<lines>` bounds the initial backlog (counted over transcript
+lines, boundaries not counted); `?follow=true` keeps streaming **across iteration
+boundaries** until the job reaches a terminal state (then closes). `tail` and
+`follow` combine (tail backlog, then live). This endpoint serves raw NDJSON only —
+pretty rendering is `ralphctl logs`' job.
+
 ### `GET /events`
 `text/event-stream` (SSE). Replays from `?since=<eventId>` (default: live only),
 then follows. Event types:
@@ -129,17 +147,33 @@ Effective job config (redacted — no secret values, no credential file contents
 `text/markdown` body. Replaces a phase prompt override
 (`planning|worker|review|task-verify|agent`). Effective next iteration.
 
-### `PUT /config/skills/{name}`
-`application/x-tar` body — a skill directory (must contain `SKILL.md`). Unpacked
-into the skills dir; visible to the agent next iteration. `DELETE` removes it.
+### Skills — full CRUD
 
-### `GET /config/skills`
-Lists installed skills and their origin (baked / mounted / api).
+| Method & path | Body / response |
+|---------------|-----------------|
+| `GET /config/skills` | list: name, origin (`mounted` / `api`), file count |
+| `GET /config/skills/{name}` | `application/x-tar` — the skill directory |
+| `PUT /config/skills/{name}` | `application/x-tar` — a skill directory (must contain `SKILL.md`); unpacked, visible next iteration; `204` |
+| `DELETE /config/skills/{name}` | removes the skill (mounted or api-added); `204`, `404` if absent |
 
-### `PUT /config/creds/{name}`
-`application/octet-stream` — drops a credential file into the creds dir (mode 0600)
-and re-runs recognized-placement (gitconfig/netrc/ssh). Never echoed back by any
-endpoint. `204`.
+### Credentials — full CRUD (env-file convention)
+
+Credential files follow the env-file convention (see architecture §5): each
+`{name}.env` is `KEY=value` lines placed at `~/.creds/{name}.env` (0600) inside
+the container; prompts tell the agent to source the file it needs. **Read-back is
+allowed by design**: the API bearer token is defined as equivalent to holding the
+job's credentials — protect the token, not individual routes.
+
+| Method & path | Body / response |
+|---------------|-----------------|
+| `GET /config/creds` | list: name, size, mtime — no values |
+| `GET /config/creds/{name}` | `text/plain` — the env file contents |
+| `PUT /config/creds/{name}` | `text/plain` env-file body → `~/.creds/{name}.env` (0600); recognized extras (`gitconfig`, `netrc`, `ssh/`) get conventional re-placement; `204` |
+| `DELETE /config/creds/{name}` | removes the file from `~/.creds/`; `204` |
+
+Changes to skills and creds take effect at the next iteration (prompts embed the
+current inventory at iteration start). Credential values never appear in
+`/run`, events, or engine logs.
 
 ### `PUT /config/llm`
 Body: `{"env": {"KEY": "value", ...}, "pi": { ...models.json fragment... }}`.
