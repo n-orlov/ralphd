@@ -448,6 +448,16 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   markers — reimplemented in `app.js`, not shared code, since the CLI is
   Python and the bundle is browser JS), and a steering form that `POST`s
   to `/api/runs/<id>/steer` and reports the created file name back.
+
+Browser e2e coverage (PRD req 23a): `tests/test_browser_hub.py`, marked
+`@pytest.mark.browser`, drives a real Chromium via the external
+`playwright-cli` tool (shelled out to, never imported) against a real
+`ralphctl ui` server, proving the run list renders fixture runs, the run
+detail view renders a real task table and iteration timeline from a live
+test engine, and submitting the steering form creates a real file under
+the run's `steering/` directory. Screenshots of each view are saved to
+`artifacts/screenshots/hub/`. The whole module skips cleanly (all tests
+`SKIPPED`, not errored) if the `playwright-cli` binary isn't on `PATH`.
 - No build step: the JS is hand-written, talks only to the JSON endpoints
   above via `fetch()`, and ships as-is inside the wheel (verified by
   building the wheel and listing its contents — no `package.json`/

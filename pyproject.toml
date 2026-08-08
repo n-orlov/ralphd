@@ -42,3 +42,7 @@ ignore = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "browser: playwright-cli browser e2e tests for the hub (skip cleanly if playwright-cli is absent)",
+    "docker: docker-sibling container-level e2e tests (skip cleanly if the docker socket is absent)",
+]
