@@ -359,11 +359,39 @@ Get/set registry defaults (`ralphctl config set image ghcr.io/...`,
 
 ### `ralphctl doctor`
 
-Preflight: docker reachable, image present/pullable, registry writable, default LLM
-profile resolves and (with `--ping`) answers. Also reports (non-fatal) any stray
-containers labeled `ralphd.run=*` whose run id has no registry dir — leftovers
-from `--allow-docker` jobs that were never reaped. Designed as the first command
-an AI agent should run.
+Preflight checks (`checks` in `--json` output; overall `ok` is the AND of all
+of them, exit code `0`/`1` accordingly):
+
+- `docker` — the docker daemon is reachable.
+- `image` — the job image (`--image`, default `ghcr.io/.../ralphd:latest`) is
+  present locally.
+- `registry` — `~/.ralphd` (or `$RALPHD_REGISTRY`) is writable.
+- `pi_host_config` — `~/.pi/agent/settings.json` exists (needed for `--llm host`).
+- `default_llm_profile` — the registry's `default_llm_profile` (set via
+  `ralphctl config set default_llm_profile <name>`; defaults to the builtin
+  `host`, which — like `none` — always trivially "resolves") resolves
+  cleanly on the host: every `${env:}`/`${file:}`/`${cmd:}` reference in
+  `<registry>/llm-profiles/<name>.yaml` succeeds. On failure, `--json`'s
+  `defaultLlmProfileError` names the profile and the offending reference.
+- `registry_schema` — no malformed registry entries: every
+  `<registry>/llm-profiles/*.yaml` parses as YAML, and every run's
+  `status.json` parses as JSON with a `schemaVersion` this build recognizes
+  (not newer than the engine's own, PRD req 18). Failures are listed in
+  `--json`'s `registryIssues` (also the human report, under `! registry
+  schema issues:`).
+
+Two dangling-container checks, in both directions — always **non-fatal**
+(report-only; never affect `ok`/the exit code):
+
+- `strayContainers` — containers labeled `ralphd.run=<id>` with no matching
+  run dir at all (leftovers from `--allow-docker` jobs that were never
+  reaped, or a manually deleted run dir).
+- `danglingRegistryEntries` — the reverse: a run dir whose `status.json`
+  says `state: running` but whose container no longer exists at all (killed
+  or `docker rm`'d outside `ralphctl`). Reported as `{runId, container}`;
+  suggested remedy is `ralphctl resume <run-id>`.
+
+Designed as the first command an AI agent should run.
 
 ## Notes for AI agents driving ralphctl
 

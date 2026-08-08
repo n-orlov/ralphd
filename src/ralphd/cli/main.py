@@ -24,7 +24,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import yaml
+
 from .. import __version__
+from ..engine.state import CURRENT_SCHEMA_VERSION
 from . import llm_profiles
 
 DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
@@ -1112,16 +1115,93 @@ def cmd_doctor(args):
     reg.mkdir(parents=True, exist_ok=True)
     checks["registry"] = os.access(reg, os.W_OK)
     checks["pi_host_config"] = (Path.home() / ".pi" / "agent" / "settings.json").exists()
+
+    default_profile_name = _registry_config(reg).get("default_llm_profile", "host")
+    default_llm_profile_error = None
+    if default_profile_name in ("host", "none"):
+        checks["default_llm_profile"] = True
+    else:
+        try:
+            llm_profiles.resolve_profile(default_profile_name, reg, redact=True)
+            checks["default_llm_profile"] = True
+        except llm_profiles.ProfileError as e:
+            checks["default_llm_profile"] = False
+            default_llm_profile_error = str(e)
+
+    registry_issues = _registry_schema_issues(reg)
+    checks["registry_schema"] = not registry_issues
+
     strays = _stray_sibling_containers()
-    ok = all(checks.values())  # strays are report-only, never affect the verdict
+    dangling = _dangling_registry_entries()
+    # strays/dangling registry entries are report-only, never affect the verdict
+    ok = all(checks.values())
     report = "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items())
+    if default_llm_profile_error:
+        report += f"\n    default LLM profile ({default_profile_name!r}): {default_llm_profile_error}"
+    if registry_issues:
+        report += "\n! registry schema issues:"
+        for issue in registry_issues:
+            report += f"\n    {issue}"
     if strays:
         report += "\n! stray ralphd.run containers (no matching run dir):"
         for s in strays:
             report += f"\n    {s['id'][:12]}  ralphd.run={s['runId']}"
         report += "\n  clean up with: docker rm -f <id>"
-    out(args, {"ok": ok, "checks": checks, "strayContainers": strays}, report)
+    if dangling:
+        report += "\n! registry entries recorded running with no matching container:"
+        for d in dangling:
+            report += f"\n    {d['runId']}  container={d['container']}"
+        report += "\n  the container likely died/was removed outside ralphctl; " \
+                  "try `ralphctl resume <run-id>`"
+    out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
+               "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
+               "defaultLlmProfile": default_profile_name,
+               "defaultLlmProfileError": default_llm_profile_error}, report)
     sys.exit(0 if ok else 1)
+
+
+def _registry_config(reg: Path) -> dict:
+    """Registry-wide defaults (`ralphctl config`, task 038) at
+    `<registry>/config.yaml`. Missing/malformed -> {} (doctor's registry
+    schema check reports malformed separately; this just degrades quietly
+    since callers only ever read a single optional key with a fallback)."""
+    p = reg / "config.yaml"
+    if not p.is_file():
+        return {}
+    try:
+        return yaml.safe_load(p.read_text()) or {}
+    except yaml.YAMLError:
+        return {}
+
+
+def _registry_schema_issues(reg: Path) -> list[str]:
+    """Malformed registry entries: llm-profile YAML that won't parse, a run's
+    status.json that won't parse, or a run's recorded schemaVersion newer
+    than this build knows (mirrors the engine's own refusal, task 027)."""
+    issues = []
+    pdir = llm_profiles.profiles_dir(reg)
+    if pdir.is_dir():
+        for p in sorted(pdir.glob("*.yaml")):
+            try:
+                yaml.safe_load(p.read_text())
+            except yaml.YAMLError as e:
+                issues.append(f"malformed llm profile {p.name}: {e}")
+    runs_dir = reg / "runs"
+    if runs_dir.is_dir():
+        for d in sorted(runs_dir.iterdir()):
+            sp = d / "status.json"
+            if not sp.is_file():
+                continue
+            try:
+                doc = json.loads(sp.read_text())
+            except json.JSONDecodeError as e:
+                issues.append(f"malformed status.json for run {d.name}: {e}")
+                continue
+            sv = doc.get("schemaVersion", 0)
+            if sv > CURRENT_SCHEMA_VERSION:
+                issues.append(f"run {d.name}: schemaVersion {sv} is newer than "
+                              f"this build knows ({CURRENT_SCHEMA_VERSION})")
+    return issues
 
 
 def _stray_sibling_containers() -> list[dict]:
@@ -1139,6 +1219,24 @@ def _stray_sibling_containers() -> list[dict]:
         if rid and not run_root(rid).exists():
             strays.append({"id": cid, "runId": rid})
     return strays
+
+
+def _dangling_registry_entries() -> list[dict]:
+    """The reverse of `_stray_sibling_containers`: a run dir whose status.json
+    says `state: running` but whose container no longer exists at all
+    (crashed/removed outside ralphctl, e.g. `docker rm -f` by hand)."""
+    runs_dir = registry() / "runs"
+    if not runs_dir.is_dir():
+        return []
+    dangling = []
+    for d in sorted(runs_dir.iterdir()):
+        status = _read_json(d / "status.json", {})
+        if status.get("state") != "running":
+            continue
+        name = f"ralphd-{d.name}"
+        if _container_running(name) is None:
+            dangling.append({"runId": d.name, "container": name})
+    return dangling
 
 
 # ---------------------------------------------------------------- parser
