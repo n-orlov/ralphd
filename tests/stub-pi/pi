@@ -10,6 +10,9 @@ from env vars set by the test:
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
   STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
   STUB_SLEEP          seconds each invocation sleeps before answering (default 0)
+  STUB_HUGE_LINE      if set, the first worker iteration emits one NDJSON line of
+                      ~1 MiB (pi emits full message snapshots per event; the
+                      engine must not choke on long lines)
 """
 import json
 import os
@@ -49,6 +52,9 @@ if "Role: Planner" in prompt:
     emit_final("planning done")
 
 elif "Role: Worker" in prompt:
+    if os.environ.get("STUB_HUGE_LINE") and not os.path.exists(marker("huge-sent")):
+        open(marker("huge-sent"), "w").write("1")
+        print(json.dumps({"type": "message_update", "padding": "x" * (1024 * 1024)}))
     if os.environ.get("STUB_WORKER_STALLS"):
         emit_final("spinning wheels, no progress")
         sys.exit(0)

@@ -12,6 +12,10 @@ from pathlib import Path
 COMPLETE = "<promise>COMPLETE</promise>"
 VERIFIED = "<promise>VERIFIED</promise>"
 
+# pi emits full message snapshots per NDJSON event — single lines routinely
+# exceed asyncio's 64 KiB default readline limit
+STREAM_LIMIT = 16 * 1024 * 1024
+
 
 @dataclass
 class IterationResult:
@@ -77,39 +81,49 @@ class PiRunner:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(self.workspace),
             env=env,
+            limit=STREAM_LIMIT,
             start_new_session=True,  # own pgid so SIGINT hits pi, not the engine
         )
         try:
-            self._proc.stdin.write(prompt.encode())
-            self._proc.stdin.write_eof()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-        async def pump() -> None:
-            with open(transcript, "a") as out:
-                while True:
-                    line = await self._proc.stdout.readline()
-                    if not line:
-                        break
-                    out.write(line.decode(errors="replace"))
-                    out.flush()
-                    self._scan_line(line, result)
-
-        try:
-            await asyncio.wait_for(pump(), timeout=timeout_s)
-        except TimeoutError:
-            result.timed_out = True
-            self.interrupt()
             try:
-                await asyncio.wait_for(self._proc.wait(), timeout=30)
+                self._proc.stdin.write(prompt.encode())
+                self._proc.stdin.write_eof()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+            async def pump() -> None:
+                with open(transcript, "a") as out:
+                    while True:
+                        line = await self._proc.stdout.readline()
+                        if not line:
+                            break
+                        out.write(line.decode(errors="replace"))
+                        out.flush()
+                        self._scan_line(line, result)
+
+            try:
+                await asyncio.wait_for(pump(), timeout=timeout_s)
             except TimeoutError:
-                self._proc.kill()
-        result.exit_code = await self._proc.wait()
+                result.timed_out = True
+                self.interrupt()
+                try:
+                    await asyncio.wait_for(self._proc.wait(), timeout=30)
+                except TimeoutError:
+                    self._proc.kill()
+            result.exit_code = await self._proc.wait()
+        finally:
+            # whatever went wrong above, never leave an orphaned agent running
+            if self._proc is not None and self._proc.returncode is None:
+                try:
+                    os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await self._proc.wait()
+            self._proc = None
         if result.exit_code and result.exit_code < 0:
             result.interrupted = True
         if result.exit_code == -signal.SIGINT or result.exit_code == 130:
             result.interrupted = True
-        self._proc = None
         return result
 
     @staticmethod

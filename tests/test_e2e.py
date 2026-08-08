@@ -249,6 +249,18 @@ def test_abort_via_api(engine_factory):
     assert e.proc.wait(timeout=10) == 1
 
 
+def test_huge_output_line_does_not_kill_job(engine_factory):
+    """pi emits full message snapshots per NDJSON event; a single line can be
+    hundreds of KiB. Regression: this used to raise 'Separator is not found'
+    and fail the entire job instead of at most one iteration."""
+    e = engine_factory(job={"on_complete": "exit"},
+                       stub_env={"STUB_HUGE_LINE": "1"})
+    assert e.proc.wait(timeout=60) == 0
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+
+
 def test_api_token_auth(engine_factory, tmp_path):
     os.environ["RALPHD_API_TOKEN"] = "sekret"
     try:

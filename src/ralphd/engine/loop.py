@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from .config import CONFIG_DIR, PROMPTS_BUILTIN, JobConfig
-from .runner import PiRunner
+from .runner import IterationResult, PiRunner
 from .state import RunDir, atomic_write_json, utcnow
 
 log = logging.getLogger("ralphd.loop")
@@ -98,9 +98,15 @@ class LoopSupervisor:
 
         timeout = min(self.cfg.iteration_timeout_s,
                       max(60, int(self.deadline - time.monotonic())))
-        result = await self.runner.run(
-            prompt, itdir / "output.jsonl", model=model,
-            thinking=self.cfg.thinking, timeout_s=timeout)
+        try:
+            result = await self.runner.run(
+                prompt, itdir / "output.jsonl", model=model,
+                thinking=self.cfg.thinking, timeout_s=timeout)
+        except Exception as exc:
+            # an engine-side iteration failure (stream error, OS error) must
+            # cost one iteration, not the whole job
+            result = IterationResult(exit_code=None)
+            result.error_message = f"engine iteration failure: {exc!r}"
 
         meta.update(endedAt=utcnow(), exitCode=result.exit_code,
                     interrupted=result.interrupted, timedOut=result.timed_out,
@@ -174,9 +180,12 @@ class LoopSupervisor:
                 verdict_ready = False
                 while self.budget_left():
                     await self._gate()
-                    before = json.dumps(self.run.read_tasks(), sort_keys=True)
+                    tasks_before = self.run.read_tasks()
+                    before = json.dumps(tasks_before, sort_keys=True)
                     result = await self.run_iteration("worker")
-                    after = json.dumps(self.run.read_tasks(), sort_keys=True)
+                    tasks_after = self.run.read_tasks()
+                    after = json.dumps(tasks_after, sort_keys=True)
+                    self._warn_if_batched(tasks_before, tasks_after)
                     stagnant = stagnant + 1 if (before == after and not result.saw_complete
                                                 and not result.interrupted) else 0
                     if stagnant >= 3:
@@ -219,6 +228,20 @@ class LoopSupervisor:
                                    phase=None, endedAt=utcnow(),
                                    reason=f"engine error: {exc}")
             return "failed"
+
+    def _warn_if_batched(self, before: dict, after: dict) -> None:
+        """One task per worker iteration is a design invariant (checkpointing,
+        steering, and vigilant verification all key off iteration boundaries).
+        The engine can't roll back extra completions, but it must make the
+        violation visible."""
+        was = {t["id"]: t.get("status") for t in before.get("tasks", [])}
+        newly = [t["id"] for t in after.get("tasks", [])
+                 if t.get("status") == "completed" and was.get(t["id"]) != "completed"]
+        if len(newly) > 1:
+            msg = (f"worker completed {len(newly)} tasks in one iteration "
+                   f"({', '.join(newly)}); design is one task per iteration")
+            log.warning(msg)
+            self.run.emit("log", level="warning", message=msg)
 
     def _archive_approach(self, approach: int) -> None:
         dest = self.run.root / "approaches" / f"{approach:02d}"

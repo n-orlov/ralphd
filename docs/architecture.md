@@ -51,6 +51,21 @@ Design invariants:
   `<promise>VERIFIED</promise>`, `<task-verified>id</task-verified>`) scanned from
   the agent's final output; prompts instruct the agent to emit them only as its
   last line.
+- **One task per worker iteration.** Checkpointing, steering application, and
+  vigilant verification all key off iteration boundaries; a worker that batches
+  several tasks into one iteration silently bypasses all three. The worker
+  prompt makes this the headline rule (with the *why*, since capable models
+  treat unexplained rules as optional efficiency advice), and the engine
+  detects violations by diffing task statuses around each worker iteration,
+  emitting a warning `log` event when more than one task completed. The engine
+  cannot roll extra completions back — detection is for operator visibility
+  and prompt regression testing.
+- **Iteration failures are contained.** Any engine-side error while running an
+  iteration (stream overflow, OS error, agent crash) fails that iteration —
+  recorded in its `meta.json` and events — and the loop continues; only budget
+  exhaustion, an explicit abort, or an unrecoverable engine bug ends the job.
+  The runner must never leave an orphaned agent process behind (kill the
+  process group on any exit path).
 
 ### Phase prompts
 
