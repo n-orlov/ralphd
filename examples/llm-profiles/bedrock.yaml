@@ -1,0 +1,17 @@
+# examples/llm-profiles/bedrock.yaml
+#
+# AWS Bedrock, auth via the standard AWS credential chain (host AWS CLI
+# credentials/SSO). Copy this file to ~/.ralphd/llm-profiles/bedrock.yaml
+# (or any other name) and use `--llm bedrock` on `ralphctl start`.
+#
+# No secrets live in this file: AWS_REGION/AWS_PROFILE are read from the
+# host environment at container-start time, and ~/.aws (config +
+# SSO/credential cache) is mounted read-only. Works with static keys, SSO
+# sessions, and assumed roles.
+description: AWS Bedrock, auth via host AWS CLI credentials/SSO
+model: amazon-bedrock/anthropic.claude-opus-5
+env:
+  AWS_REGION: ${env:AWS_REGION}
+  AWS_PROFILE: ${env:AWS_PROFILE}    # optional; omit to use the default chain
+mounts:
+  - ~/.aws:/home/agent/.aws:ro

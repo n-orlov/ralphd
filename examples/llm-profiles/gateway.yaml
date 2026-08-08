@@ -1,0 +1,26 @@
+# examples/llm-profiles/gateway.yaml
+#
+# Any bearer-token gateway exposing an Anthropic- or OpenAI-style API
+# (e.g. a corporate AI gateway). Copy this file to
+# ~/.ralphd/llm-profiles/gateway.yaml (or any other name), fill in
+# baseUrl/model ids for your gateway, and use `--llm gateway` on
+# `ralphctl start`.
+#
+# The API key is never a literal in this file: it is resolved on the host
+# at container-start time (here via a secrets-manager command; swap for
+# ${env:...} or ${file:...} as appropriate) and travels only as container
+# env, never through the run dir or image.
+description: any bearer-token gateway exposing an Anthropic- or OpenAI-style API
+model: my-gateway/big-model
+fast_model: my-gateway/small-model
+env:
+  GW_API_KEY: ${cmd:aws secretsmanager get-secret-value --secret-id my-gw-key --query SecretString --output text}
+pi:
+  providers:
+    my-gateway:
+      baseUrl: https://my-gateway.example.com/api/v1
+      api: anthropic-messages          # or openai-completions
+      apiKey: ${env:GW_API_KEY}
+      models:
+        - id: big-model
+        - id: small-model
