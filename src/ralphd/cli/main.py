@@ -28,7 +28,7 @@ import yaml
 
 from .. import __version__
 from ..engine.state import CURRENT_SCHEMA_VERSION
-from . import llm_profiles
+from . import llm_profiles, ui_server
 
 DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
 DEFAULT_IMAGE = os.environ.get("RALPHD_IMAGE", "ralphd:dev")
@@ -1106,6 +1106,24 @@ def cmd_artifacts(args):
         out(args, {"pulled": str(dest)}, f"artifacts copied to {dest}")
 
 
+def cmd_ui(args):
+    """Local hub HTTP server (PRD reqs 21-22): JSON endpoints reading the
+    registry's run dirs and proxying live container APIs, plus (once task
+    034 populates it) the static bundle. Runs in the foreground until
+    interrupted -- same shape as any other long-lived dev server."""
+    reg = registry()
+    port = args.port or free_port()
+    server = ui_server.make_server(reg, args.bind, port)
+    print(f"ralphctl: serving hub at http://{args.bind}:{port} "
+          f"(registry: {reg})", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
 def cmd_doctor(args):
     checks = {}
     checks["docker"] = sh([DOCKER, "version", "--format", "{{.Server.Version}}"]) \
@@ -1442,6 +1460,11 @@ def main() -> None:
     s = sub.add_parser("doctor", help="preflight checks")
     s.add_argument("--image", default=DEFAULT_IMAGE)
     s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("ui", help="local web hub (run list, run detail, steering)")
+    s.add_argument("--port", type=int, help="defaults to a free ephemeral port")
+    s.add_argument("--bind", default="127.0.0.1")
+    s.set_defaults(func=cmd_ui)
 
     args = p.parse_args(_preprocess_logs_argv(sys.argv[1:]))
     args.func(args)

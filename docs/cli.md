@@ -393,6 +393,40 @@ Two dangling-container checks, in both directions — always **non-fatal**
 
 Designed as the first command an AI agent should run.
 
+### `ralphctl ui [--port N] [--bind ADDR]`
+
+Starts the local web hub server (PRD reqs 21-22) in the foreground: a
+stdlib-only HTTP server (`http.server`/`urllib`; no `fastapi`/`uvicorn` on
+this path, even though those are dependencies of the engine side of this
+same package) that reads `~/.ralphd/runs/*` and proxies each run's *live*
+container API when reachable. `--port` defaults to a free ephemeral port;
+prints `serving hub at http://<bind>:<port>` on startup. Ctrl-C to stop.
+
+JSON endpoints served under `/api/`:
+
+- `GET /api/runs` — run list (PRD req 21): `{"runs": [{runId, state,
+  verdict, phase, approach, iterationsUsed, iterationsBudget, startedAt},
+  ...]}`, read straight from every `runs/*/status.json` (no live proxy calls,
+  so listing stays cheap regardless of how many runs are dead).
+- `GET /api/runs/<id>` — run detail: `{runId, live, status, tasks,
+  iterations}`. `status`/`tasks` are proxied live from the run's container
+  API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
+  `host.json`) answers; otherwise falls back to the on-disk
+  `status.json`/`tasks.json` snapshot with `live: false` — a dead run never
+  produces an error, just stale-but-valid data. `iterations` is always read
+  from disk (`iterations/*/meta.json`). `404` for an unknown run id.
+- `GET /api/runs/<id>/logs?tail=N` — proxies `GET /logs?tail=N` (see the
+  `logs` command above) from the live container API: `{"live": bool,
+  "text": "<ndjson>"}`. `text` is `""` and `live` is `false` if the run's
+  API isn't reachable, never an error.
+- `POST /api/runs/<id>/steer` — body `{"message": ..., "name": ...}`,
+  forwarded to the run's live `POST /steering`. Returns the API's own
+  response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`
+  if the run's API is unreachable or rejects it; `404` for an unknown run id.
+- Any other path is served from the static hub bundle packaged in the
+  wheel (task 034); until that bundle exists, non-`/api` paths `404` with a
+  plain-text "static hub bundle not installed in this build" message.
+
 ## Notes for AI agents driving ralphctl
 
 - Always pass `--json`; parse stdout only.

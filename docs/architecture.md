@@ -555,8 +555,14 @@ image builds):
 Run IDs are generated (`adjective-animal-HHMM` style) or supplied with `--run-id`.
 `ralphctl runs` lists history by scanning `runs/*/status.json`; live status merges
 in the container API when the container is up. `ralphctl watch` renders a TUI:
-task table, current phase/iteration, tail of agent output, budget gauge. A web hub
-UI reading the same registry is planned (v0.3, [roadmap.md](roadmap.md)).
+task table, current phase/iteration, tail of agent output, budget gauge.
+`ralphctl ui [--port N]` (PRD reqs 21-22) serves the same registry over a
+stdlib-only HTTP server (`http.server`; no `fastapi`/`uvicorn` on this path):
+`GET /api/runs` (run list) and `GET /api/runs/<id>` (`/logs`, `/steer`) proxy
+to each run's live container API when reachable and fall back to the on-disk
+`status.json`/`tasks.json` snapshot otherwise, so a dead run degrades
+gracefully instead of erroring (see [cli.md](cli.md)). The static bundle
+served at non-`/api` paths is still pending (v0.3, task 034).
 
 ## 8. Docker image
 
