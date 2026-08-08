@@ -26,8 +26,8 @@ immediately starts the next iteration.
      among those, pick the one with the highest `priority` (a plain number;
      treat a missing `priority` as 0); break ties by plain list order (the
      first such task in `tasks.json`). If no task in the plan has a
-     `dependsOn` or `priority` field, this is exactly "the first pending
-     task in list order" — unchanged from before.
+     `dependsOn` or `priority` field, this degenerates to exactly "the
+     first pending task in list order".
    - If a pending task's `dependsOn` includes a task that is `failed` or
      `skipped` (not merely still pending — genuinely dead), it can never
      become unblocked. Do not silently grind against it or skip it forever
