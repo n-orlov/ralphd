@@ -881,38 +881,54 @@ def _render_message_end(message: dict, state: dict, tty: bool) -> None:
             print(f"  → {item.get('name', '?')}({_fmt_args(item.get('arguments') or {})})")
 
 
+def _new_render_state() -> dict:
+    return {"text_open": False, "text_seen": False, "thinking_seen": False,
+            "toolcall_seen": False}
+
+
+def _render_log_line(raw_line: str, tty: bool, state: dict) -> None:
+    """Render a single merged/per-iteration NDJSON line into the pretty
+    format (iteration headers, streamed assistant text, compact tool
+    one-liners, elided thinking, usage/cost footers, error highlights).
+    Shared by both the bounded (`_render_logs`) and live-streaming
+    (`_stream_logs`) render paths so a line is rendered identically
+    regardless of whether the whole response was buffered first or is
+    arriving incrementally off an open connection. Unknown event types are
+    silently skipped; a malformed (non-JSON) line prints a one-line marker
+    and is skipped."""
+    if not raw_line.strip():
+        return
+    try:
+        ev = json.loads(raw_line)
+    except json.JSONDecodeError:
+        print(_ansi(tty, "33", f"! [malformed log line, {len(raw_line)} bytes]"))
+        return
+    if not isinstance(ev, dict):
+        print(_ansi(tty, "33", "! [malformed log line: not a JSON object]"))
+        return
+    etype = ev.get("type")
+    if etype == "ralphd.iteration":
+        _render_boundary(ev, tty)
+        state.update(text_open=False, text_seen=False, thinking_seen=False,
+                    toolcall_seen=False)
+    elif etype == "message_update":
+        _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)
+    elif etype == "tool_execution_end":
+        _render_tool_result(ev, tty)
+        state["toolcall_seen"] = True
+    elif etype == "message_end":
+        _render_message_end(ev.get("message") or {}, state, tty)
+    # everything else (tool_execution_start, unrecognized/future event
+    # types) is silently skipped by design.
+
+
 def _render_logs(raw: str, tty: bool) -> None:
-    """Render merged/per-iteration NDJSON: iteration headers, streamed
-    assistant text, compact tool one-liners, elided thinking, usage/cost
-    footers, error highlights. Unknown event types are silently skipped;
-    a malformed (non-JSON) line prints a one-line marker and is skipped."""
-    state = {"text_open": False, "text_seen": False, "thinking_seen": False,
-             "toolcall_seen": False}
+    """Render a full, already-buffered merged/per-iteration NDJSON blob
+    (the bounded, non-follow case) by feeding each line through
+    `_render_log_line` with a fresh render state."""
+    state = _new_render_state()
     for raw_line in raw.splitlines():
-        if not raw_line.strip():
-            continue
-        try:
-            ev = json.loads(raw_line)
-        except json.JSONDecodeError:
-            print(_ansi(tty, "33", f"! [malformed log line, {len(raw_line)} bytes]"))
-            continue
-        if not isinstance(ev, dict):
-            print(_ansi(tty, "33", "! [malformed log line: not a JSON object]"))
-            continue
-        etype = ev.get("type")
-        if etype == "ralphd.iteration":
-            _render_boundary(ev, tty)
-            state.update(text_open=False, text_seen=False, thinking_seen=False,
-                        toolcall_seen=False)
-        elif etype == "message_update":
-            _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)
-        elif etype == "tool_execution_end":
-            _render_tool_result(ev, tty)
-            state["toolcall_seen"] = True
-        elif etype == "message_end":
-            _render_message_end(ev.get("message") or {}, state, tty)
-        # everything else (tool_execution_start, unrecognized/future event
-        # types) is silently skipped by design.
+        _render_log_line(raw_line, tty, state)
 
 
 def cmd_logs(args):
@@ -933,14 +949,55 @@ def cmd_logs(args):
         path = f"/iterations/{args.iteration}/output{query}"
     else:
         path = f"/logs{query}"
-    text = api(args.run_id, "GET", path, raw=True,
-               timeout=3600 if args.follow else 30)
+    if args.follow:
+        # Stream line-by-line as the engine emits it -- reading the whole
+        # HTTP response body first (as the bounded path below does) would
+        # only return once the underlying connection closes, which for
+        # follow=true is when the JOB ends, defeating the entire point of
+        # follow (task 056). Render (or print raw) each line the moment it
+        # arrives instead of buffering the full body.
+        _stream_logs(args, path, tty)
+        return
+    text = api(args.run_id, "GET", path, raw=True, timeout=30)
     if args.raw:
         sys.stdout.write(text)
         if text and not text.endswith("\n"):
             print()
         return
     _render_logs(text, tty)
+
+
+def _stream_logs(args, path: str, tty: bool) -> None:
+    """Open `path` (a `/logs...follow=true...` or
+    `/iterations/N/output...follow=true...` URL) and render/print each
+    NDJSON line as it arrives off the open connection, instead of waiting
+    for the response body to finish (which -- for follow=true -- only
+    happens once the job itself terminates). Iterating the urllib response
+    object line-by-line (rather than calling `.read()`) is what makes this
+    genuinely live: each `yield` on the engine's StreamingResponse side is
+    delivered as its own HTTP chunk, and `http.client`'s line iteration
+    returns a line as soon as it has one, not only at EOF."""
+    meta = host_meta(args.run_id)
+    if not meta.get("apiUrl"):
+        die(4, f"no API endpoint recorded for run {args.run_id}")
+    req = urllib.request.Request(meta["apiUrl"] + path)
+    token_file = run_root(args.run_id) / ".api-token"
+    if token_file.exists():
+        req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
+    state = _new_render_state()
+    try:
+        with urllib.request.urlopen(req, timeout=3600) as resp:
+            for raw_bytes in resp:
+                line = raw_bytes.decode().rstrip("\n")
+                if not line:
+                    continue
+                if args.raw:
+                    print(line, flush=True)
+                else:
+                    _render_log_line(line, tty, state)
+                    sys.stdout.flush()
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        die(4, f"API unreachable: {e}")
 
 
 def cmd_watch(args):

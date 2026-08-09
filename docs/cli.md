@@ -222,6 +222,14 @@ ralphctl logsf <id>           # alias for logs -f
 | `--raw` | raw NDJSON passthrough (implies no rendering; for machines) |
 | `--iteration n` | restrict to a single iteration's transcript |
 
+With `--follow`, `ralphctl` reads and renders/prints each line off the open
+connection as it arrives (both `--raw` and pretty modes) — it does not wait
+for the underlying HTTP response to close, which for a running job only
+happens once the job itself terminates. `ralphctl watch` streams the same
+way (it never buffered). Redirect to a file/pager as usual if you want to
+capture the live output while still watching it (e.g. `ralphctl logs <id> -f
+| tee out.ndjson`).
+
 Pretty rendering shows: iteration/phase boundary headers (number, phase, model),
 assistant text as it streams, tool calls as compact one-liners (name, key args,
 outcome), thinking elided to a marker, per-iteration usage/cost footer, agent
