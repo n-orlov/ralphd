@@ -155,11 +155,13 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
     def _boundary(meta: dict, event: str) -> str:
         line: dict = {"type": "ralphd.iteration", "event": event,
                      "number": meta.get("number"), "phase": meta.get("phase"),
-                     "model": meta.get("model"), "approach": meta.get("approach")}
+                     "model": meta.get("model"), "approach": meta.get("approach"),
+                     "startedAt": meta.get("startedAt")}
         if event == "end":
             line["exitCode"] = meta.get("exitCode")
             line["error"] = meta.get("error")
             line["usage"] = meta.get("usage")
+            line["endedAt"] = meta.get("endedAt")
         return json.dumps(line) + "\n"
 
     def _merge_logs():

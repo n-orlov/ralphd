@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import fcntl
 import json
 import os
@@ -35,6 +36,43 @@ CURRENT_SCHEMA_VERSION = 1
 
 def utcnow() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def parse_utc(ts: str) -> float:
+    """Parse a utcnow()-format timestamp into UTC epoch seconds."""
+    return calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+
+
+def elapsed_seconds(start_ts: str | None, end_ts: str | None = None) -> float | None:
+    """Seconds between `start_ts` and `end_ts` (or now, if `end_ts` is
+    falsy) -- the single source of truth PRD-051 duration fields/lines are
+    derived from everywhere (status, logs pretty renderer). Returns None
+    when `start_ts` itself is missing/falsy (nothing to measure yet)."""
+    if not start_ts:
+        return None
+    start = parse_utc(start_ts)
+    end = parse_utc(end_ts) if end_ts else time.time()
+    return max(0.0, end - start)
+
+
+def format_duration(seconds: float | None) -> str:
+    """Compact human duration string with no millisecond noise, e.g.
+    '45s', '3h 12m', '2d 1h'. The one shared formatter every duration
+    display (status text, --json helpers that render text, logs pretty
+    renderer) goes through -- no copy-pasted arithmetic anywhere else."""
+    if seconds is None:
+        return "n/a"
+    total = max(0, round(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, s = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {s}s" if s else f"{minutes}m"
+    hours, m = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {m}m" if m else f"{hours}h"
+    days, h = divmod(hours, 24)
+    return f"{days}d {h}h" if h else f"{days}d"
 
 
 def atomic_write(path: Path, data: str) -> None:

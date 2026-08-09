@@ -178,6 +178,21 @@ Columns: run ID, state, verdict, phase, iterations used/budget, started, workspa
 Full status (mirrors `GET /status`; falls back to the run dir's `status.json` when
 the container is gone — indicated by `"live": false` in `--json` mode).
 
+Human output includes a `duration:` line: while the job is still running this
+is the **elapsed-so-far** time since `startedAt` (labeled `(elapsed)`); once
+the job has reached a terminal state it is the **total run time** from
+`startedAt` to `endedAt` (labeled `(total)`). While an iteration is in flight,
+an additional `iteration elapsed:` line shows that iteration's own elapsed
+time. Both are rendered in a compact human format (`45s`, `3h 12m`, `2d 1h` —
+no millisecond noise) via one shared formatting helper used everywhere
+durations are shown.
+
+`--json` adds machine-usable duration fields alongside the existing timestamp
+fields (nothing existing is removed or renamed): a top-level `durationSeconds`
+(elapsed-so-far or total, numeric seconds, same rule as the human line above),
+and, when `currentIteration` is present, an `elapsedSeconds` field nested
+inside it for that iteration's own elapsed time.
+
 ### `ralphctl watch <run-id>`
 
 Live TUI: task table, phase/approach/iteration header, budget + cost gauges,
@@ -211,6 +226,14 @@ Pretty rendering shows: iteration/phase boundary headers (number, phase, model),
 assistant text as it streams, tool calls as compact one-liners (name, key args,
 outcome), thinking elided to a marker, per-iteration usage/cost footer, agent
 errors highlighted. When stdout is not a TTY, output is identical minus color.
+Once an iteration has ended, its "done" summary line includes a `took <duration>`
+field (same compact human format as `status`, computed from that iteration's
+`startedAt`/`endedAt`); an iteration still in flight has no "done" line yet
+(it only appears once the iteration boundary's `end` event exists), so there is
+nothing to omit or fake an in-progress duration for. `--raw` mode is unchanged
+by this: the underlying `ralphd.iteration` boundary events simply carry the raw
+`startedAt`/(on `end`) `endedAt` fields the pretty renderer derives the duration
+from.
 
 ### `ralphctl tasks <run-id>`
 

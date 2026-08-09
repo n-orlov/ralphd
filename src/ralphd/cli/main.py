@@ -27,7 +27,7 @@ from pathlib import Path
 import yaml
 
 from .. import __version__
-from ..engine.state import CURRENT_SCHEMA_VERSION
+from ..engine.state import CURRENT_SCHEMA_VERSION, elapsed_seconds, format_duration
 from . import llm_profiles, ui_server
 
 DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
@@ -759,14 +759,36 @@ def cmd_status(args):
         if status is None:
             die(3, f"run {args.run_id} not found")
     status["live"] = live
-    out(args, status,
-        f"run:       {status.get('runId')}\n"
-        f"state:     {status.get('state')}  (live api: {live})\n"
-        f"verdict:   {status.get('verdict')}\n"
-        f"phase:     {status.get('phase')}  approach {status.get('approach')}\n"
-        f"iteration: {status.get('iterationsUsed')}/{status.get('iterationsBudget')}\n"
-        f"tasks:     {json.dumps(status.get('tasks', {}))}\n"
-        f"usage:     {json.dumps(status.get('usage', {}))}")
+
+    # Duration fields (PRD steering 051): a single `durationSeconds` covers
+    # both "elapsed so far" (state still running, no endedAt yet) and "total
+    # run time" (terminal state, endedAt set) -- same measurement, the only
+    # thing that changes is whether the end bound is `endedAt` or now.
+    # Additive: existing timestamp fields (startedAt/endedAt/...) are left
+    # untouched, this only adds new numeric-seconds fields alongside them.
+    duration_s = elapsed_seconds(status.get("startedAt"), status.get("endedAt"))
+    status["durationSeconds"] = duration_s
+    cur_it = status.get("currentIteration")
+    it_duration_s = None
+    if isinstance(cur_it, dict):
+        it_duration_s = elapsed_seconds(cur_it.get("startedAt"))
+        cur_it["elapsedSeconds"] = it_duration_s
+
+    duration_label = "total" if status.get("endedAt") else "elapsed"
+    lines = [
+        f"run:       {status.get('runId')}",
+        f"state:     {status.get('state')}  (live api: {live})",
+        f"verdict:   {status.get('verdict')}",
+        f"duration:  {format_duration(duration_s)}  ({duration_label})",
+        f"phase:     {status.get('phase')}  approach {status.get('approach')}",
+        f"iteration: {status.get('iterationsUsed')}/{status.get('iterationsBudget')}",
+    ]
+    if isinstance(cur_it, dict):
+        lines.append(f"iteration elapsed: {format_duration(it_duration_s)} "
+                     f"(iteration {cur_it.get('number')}, phase={cur_it.get('phase')})")
+    lines.append(f"tasks:     {json.dumps(status.get('tasks', {}))}")
+    lines.append(f"usage:     {json.dumps(status.get('usage', {}))}")
+    out(args, status, "\n".join(lines))
 
 
 def cmd_tasks(args):
@@ -805,6 +827,9 @@ def _render_boundary(ev: dict, tty: bool) -> None:
         return
     usage = ev.get("usage") or {}
     bits = [f"iteration {n} done"]
+    dur = elapsed_seconds(ev.get("startedAt"), ev.get("endedAt"))
+    if dur is not None:
+        bits.append(f"took {format_duration(dur)}")
     if ev.get("exitCode") is not None:
         bits.append(f"exit={ev['exitCode']}")
     if usage:
