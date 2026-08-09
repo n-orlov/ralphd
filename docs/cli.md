@@ -83,6 +83,7 @@ ralphctl start --prd <file|-> [options]
 | `--iteration-timeout <dur>` | 45m | per-iteration limit |
 | `--port <n>` | auto | host port for the API |
 | `--api-bind <addr>` | 127.0.0.1 | host interface to publish on |
+| `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. |
 | `--api-token <t\|auto>` | none | require bearer auth (`auto` generates + stores) |
 | `--env KEY=VAL` | — | extra container env (repeatable) |
 | `--detach/--no-detach` | detach | `--no-detach` streams events until completion, exit code mirrors job verdict (0 verified / 1 otherwise) |
@@ -549,7 +550,8 @@ continues the job instead of re-planning; `resume` just has to reproduce
 `--iterations +10` adds 10 to the existing budget in `job.yaml` before the
 container starts (a bare integer, e.g. `--iterations 30`, sets it
 absolutely instead); omit it to just continue with whatever budget remains.
-`--allow-docker`, `--image`, `--port`, `--api-bind`, `--no-detach` mirror
+`--allow-docker`, `--image`, `--port`, `--api-bind`, `--network` (defaults
+to the network recorded at start time), `--no-detach` mirror
 `start`'s flags of the same name. The resolved `pi` config and creds/skills
 are restored too, since the container entrypoint re-copies `/config/pi`
 and the engine re-places `/config/creds` + `/config/skills` on every

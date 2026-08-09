@@ -137,10 +137,15 @@ async def amain() -> int:
     app = create_app(cfg, run, loop)
 
     port = int(os.environ.get("RALPHD_PORT", "7777"))
-    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port,
+    # RALPHD_BIND is set by `ralphctl start --network host`: with the host's
+    # network namespace there is no docker port-publish boundary, so binding
+    # 0.0.0.0 would expose the API on every host interface -- bind only the
+    # address the operator asked for instead.
+    bind = os.environ.get("RALPHD_BIND", "0.0.0.0")
+    server = uvicorn.Server(uvicorn.Config(app, host=bind, port=port,
                                            log_level="warning"))
     api_task = asyncio.create_task(server.serve())
-    log.info("API listening on :%d (auth=%s)", port, bool(cfg.api_token))
+    log.info("API listening on %s:%d (auth=%s)", bind, port, bool(cfg.api_token))
 
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):

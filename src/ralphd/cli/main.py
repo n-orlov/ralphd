@@ -93,6 +93,29 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def _network_args(network: str | None, api_bind: str, port: int,
+                  docker_args: list[str], env_args: list[str]) -> list[str]:
+    """Docker networking wiring shared by start/resume.
+
+    Default (no --network): bridge network, publish the engine's :7777 on
+    the host via `-p`. `--network host`: the container shares the host's
+    network namespace -- port publishing is meaningless there (docker
+    ignores -p with a warning), so instead the engine itself is told to
+    listen on the chosen host port (RALPHD_PORT) and, because 0.0.0.0 on
+    the host netns would expose the API on every interface, to bind to the
+    requested --api-bind address (RALPHD_BIND). Any other value is passed
+    through as a named docker network with normal port publishing.
+    """
+    if network == "host":
+        docker_args += ["--network", "host"]
+        env_args += ["-e", f"RALPHD_PORT={port}",
+                     "-e", f"RALPHD_BIND={api_bind}"]
+        return []
+    if network:
+        docker_args += ["--network", network]
+    return ["-p", f"{api_bind}:{port}:7777"]
+
+
 def host_meta(run_id: str) -> dict:
     return _read_json(run_root(run_id) / "host.json", {})
 
@@ -470,6 +493,8 @@ def cmd_start(args):
             env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
 
     docker_args: list[str] = ["--label", f"ralphd.run={run_id}"]
+    port_args = _network_args(args.network, args.api_bind, port,
+                              docker_args, env_args)
     if args.allow_docker:
         sock = docker_sock()
         try:
@@ -551,8 +576,7 @@ def cmd_start(args):
         env_args += ["-e", f"RALPHD_API_TOKEN={token}"]
 
     cmd = [DOCKER, "run", "-d", "--name", f"ralphd-{run_id}",
-           "--init",
-           "-p", f"{args.api_bind}:{port}:7777",
+           "--init", *port_args,
            *docker_args, *mounts, *env_args, args.image]
     res = sh(cmd)
     if res.returncode != 0:
@@ -564,6 +588,8 @@ def cmd_start(args):
             "apiUrl": f"http://{args.api_bind}:{port}",
             "image": args.image, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                             time.gmtime())}
+    if args.network:
+        meta["network"] = args.network
     if ws is not None:
         # host path only -- never mounted into the container -- so `resume`
         # can remount the same workspace over a fresh container later.
@@ -750,6 +776,11 @@ def cmd_resume(args):
         mounts += ["-v", m]
 
     docker_args = ["--label", f"ralphd.run={run_id}"]
+    # --network on resume overrides; otherwise reuse what start recorded so a
+    # resumed job keeps the same connectivity its PRD was written against.
+    network = args.network or prev_meta.get("network")
+    port_args = _network_args(network, args.api_bind, port,
+                              docker_args, env_args)
     if args.allow_docker:
         sock = docker_sock()
         try:
@@ -773,8 +804,7 @@ def cmd_resume(args):
     if ws_named:
         env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
 
-    cmd = [DOCKER, "run", "-d", "--name", name, "--init",
-           "-p", f"{args.api_bind}:{port}:7777",
+    cmd = [DOCKER, "run", "-d", "--name", name, "--init", *port_args,
            *docker_args, *mounts, *env_args, args.image]
     res = sh(cmd)
     if res.returncode != 0:
@@ -784,6 +814,8 @@ def cmd_resume(args):
             "apiUrl": f"http://{args.api_bind}:{port}",
             "image": args.image,
             "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if network:
+        meta["network"] = network
     if ws:
         meta["workspace"] = ws
     elif ws_named:
@@ -1810,6 +1842,11 @@ def main() -> None:
     s.add_argument("--iteration-timeout", type=int, default=None, metavar="MINUTES")
     s.add_argument("--port", type=int)
     s.add_argument("--api-bind", default="127.0.0.1")
+    s.add_argument("--network", default=None, metavar="NET",
+                   help="docker network for the job container (e.g. 'host' "
+                        "to share the host network namespace -- lets the job "
+                        "reach host-only/VPN/tailnet services; the API then "
+                        "binds --api-bind directly instead of -p publishing)")
     s.add_argument("--api-token", help="token value, or 'auto'")
     s.add_argument("--no-detach", dest="detach", action="store_false")
     s.set_defaults(func=cmd_start, detach=True)
@@ -1836,6 +1873,9 @@ def main() -> None:
     s.add_argument("--image", default=DEFAULT_IMAGE)
     s.add_argument("--port", type=int)
     s.add_argument("--api-bind", default="127.0.0.1")
+    s.add_argument("--network", default=None, metavar="NET",
+                   help="docker network override; defaults to the network "
+                        "recorded at start time")
     s.add_argument("--allow-docker", action="store_true",
                    help="remount the host docker socket (ROOT-EQUIVALENT "
                         "host access -- trusted PRDs only)")
