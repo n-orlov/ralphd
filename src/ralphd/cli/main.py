@@ -6,6 +6,7 @@ Deliberately stdlib-only (argparse + urllib) so `pipx install ralphd` is light.
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import io
 import json
@@ -14,6 +15,7 @@ import random
 import re
 import secrets
 import shutil
+import signal
 import socket
 import stat as stat_mod
 import subprocess
@@ -27,6 +29,7 @@ import tty as tty_module
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Self
 
 import yaml
 
@@ -918,8 +921,16 @@ def cmd_logs(args):
             # Python's default handler) so it exits with no traceback at
             # the single documented code (docs/cli.md), instead of a
             # traceback + implicit exit code 1.
+            #
+            # Task 016: `_TerminalModeGuard` owns termios save/restore for
+            # the whole follow, in this (main) thread, so restoration
+            # happens on every exit path -- including this very
+            # `KeyboardInterrupt` -- not just the ones a background
+            # thread's `finally` might have gotten to run before the
+            # process died.
             try:
-                _stream_logs(args, path, tty)
+                with _TerminalModeGuard():
+                    _stream_logs(args, path, tty)
             except KeyboardInterrupt:
                 sys.exit(_SIGINT_EXIT_CODE)
             return
@@ -949,9 +960,97 @@ def cmd_logs(args):
         return
 
     try:
-        _stream_logs_pretty_tailed(args, base_path, tty, tail)
+        with _TerminalModeGuard():
+            _stream_logs_pretty_tailed(args, base_path, tty, tail)
     except KeyboardInterrupt:
         sys.exit(_SIGINT_EXIT_CODE)
+
+
+class _TerminalModeGuard:
+    """Task 016: owns termios save/restore for `ralphctl logs -f` on a
+    TTY, in the MAIN thread, for the entire duration of the follow loop.
+
+    Before this existed, save/restore lived inside `_QuitWatcher`, a
+    background daemon thread -- but a main-thread `KeyboardInterrupt` (or
+    `SystemExit`) can unwind and terminate the process before that
+    thread's own `finally` ever gets scheduled to run, stranding the
+    terminal in cbreak/no-echo mode after Ctrl+C. Termios state is a
+    property of the terminal, not of any one thread, so ownership belongs
+    to whichever code path is guaranteed to run to completion around the
+    whole follow -- that is the main thread's `with` block here, entered
+    once before `_QuitWatcher` (or anything else) touches stdin and
+    exited via `finally` semantics on ANY exit path: normal return,
+    `KeyboardInterrupt`, `SystemExit`, or an arbitrary exception.
+
+    SIGTERM (e.g. a plain `kill <pid>`) is also handled: a handler is
+    installed for the guard's lifetime that raises `SystemExit` so the
+    signal turns into an ordinary Python exception unwinding through this
+    `with` block's `__exit__`, instead of the default SIGTERM action
+    (immediate process termination with zero Python-level cleanup, which
+    would strand the terminal exactly like the old thread-owned design).
+
+    `restore()` is idempotent -- safe to call more than once (guarded by
+    `_active`) -- because an `atexit` hook is ALSO registered as a
+    belt-and-braces last resort in case some future exit path manages to
+    skip `__exit__` entirely (e.g. `os._exit`); calling both `__exit__`
+    and the atexit hook in the ordinary case must not double-apply or
+    error.
+
+    Never activates on a non-TTY stdin: `sys.stdin.isatty()` is checked
+    once up front, matching `_QuitWatcher`'s own longstanding rule that a
+    piped/redirected follow never touches stdin at all."""
+
+    def __init__(self) -> None:
+        self._fd: int | None = None
+        self._old_attrs = None
+        self._active = False
+        self._prev_sigterm = None
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def __enter__(self) -> Self:
+        if not sys.stdin.isatty():
+            return self
+        fd = sys.stdin.fileno()
+        try:
+            old_attrs = termios.tcgetattr(fd)
+        except (termios.error, OSError):
+            return self
+        self._fd = fd
+        self._old_attrs = old_attrs
+        self._active = True
+        atexit.register(self.restore)
+        with contextlib.suppress(termios.error, OSError):
+            tty_module.setcbreak(fd)
+        with contextlib.suppress(ValueError):
+            # ValueError: signal only works in the main thread -- if this
+            # is ever entered off-thread, skip SIGTERM handling rather
+            # than crash; termios restore below still applies.
+            self._prev_sigterm = signal.signal(signal.SIGTERM, self._on_sigterm)
+        return self
+
+    @staticmethod
+    def _on_sigterm(signum, frame) -> None:
+        raise SystemExit(128 + signal.SIGTERM)
+
+    def restore(self) -> None:
+        """Idempotent: a second call (e.g. from the belt-and-braces
+        `atexit` hook after `__exit__` already ran) is a safe no-op."""
+        if not self._active:
+            return
+        self._active = False
+        with contextlib.suppress(termios.error, OSError):
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.restore()
+        if self._prev_sigterm is not None:
+            with contextlib.suppress(ValueError):
+                signal.signal(signal.SIGTERM, self._prev_sigterm)
+            self._prev_sigterm = None
+        return False
 
 
 class _QuitWatcher:
@@ -965,11 +1064,13 @@ class _QuitWatcher:
     piped `logs -f` never touches stdin and can never block waiting for a
     key that will never come.
 
-    cbreak mode (via `tty.setcbreak`) is used rather than raw mode so a
-    single keypress is delivered without waiting for Enter, while still
-    leaving signal generation (Ctrl+C -> SIGINT) to the terminal driver
-    exactly as normal -- this watcher does not need to handle Ctrl+C
-    itself, the ordinary KeyboardInterrupt path (see `cmd_logs`) does."""
+    Task 016: this thread no longer owns or restores termios state at
+    all -- cbreak mode is entered once, up front, by `_TerminalModeGuard`
+    in the main thread (which also owns restoring it on every exit path),
+    so this watcher's only job is reading keys. Leaving signal generation
+    (Ctrl+C -> SIGINT) to the terminal driver exactly as normal, this
+    watcher does not need to handle Ctrl+C itself -- the ordinary
+    KeyboardInterrupt path (see `cmd_logs`) does."""
 
     def __init__(self, resp):
         self.resp = resp
@@ -984,13 +1085,7 @@ class _QuitWatcher:
         self._stop.set()
 
     def _run(self) -> None:
-        fd = sys.stdin.fileno()
         try:
-            old_attrs = termios.tcgetattr(fd)
-        except (termios.error, OSError):
-            return
-        try:
-            tty_module.setcbreak(fd)
             while not self._stop.is_set():
                 ch = sys.stdin.read(1)
                 if not ch:
@@ -1002,9 +1097,6 @@ class _QuitWatcher:
                     return
         except Exception:
             return
-        finally:
-            with contextlib.suppress(termios.error, OSError):
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
 
 def _stream_logs(args, path: str, tty: bool, state: dict | None = None,

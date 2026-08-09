@@ -250,6 +250,21 @@ Interactive exit from `-f`/`--follow` (task 002):
   Python traceback on stderr — at the single documented exit code
   **`130`** (the standard `128+SIGINT` shell convention), whether or not
   stdin is a TTY.
+- **SIGTERM** (e.g. a plain `kill <pid>`) during a follow is handled the
+  same way: no traceback, terminal left exactly as it was found, exit
+  code `128+SIGTERM` (task 016).
+
+Terminal-mode ownership (task 016): on a TTY, `logs -f` puts stdin into
+cbreak mode (no echo, single-keypress reads, so `q` doesn't need Enter)
+for the duration of the follow, and restores the terminal's prior mode on
+*every* exit path — normal completion, `q`, Ctrl+C, SIGTERM, or any other
+exception — from a context manager that wraps the whole follow loop in
+the main thread. (An earlier version of this saved/restored termios state
+from the background key-watcher thread instead; that thread can be torn
+down by a main-thread `KeyboardInterrupt` before its own cleanup runs,
+which could strand the terminal in no-echo mode after Ctrl+C. Restoration
+now happens from code guaranteed to run to completion around the follow,
+not from the thread that merely reads keys.)
 
 Pretty rendering shows: iteration/phase boundary headers (number, phase, model),
 assistant text as it streams, tool calls as compact one-liners, thinking
