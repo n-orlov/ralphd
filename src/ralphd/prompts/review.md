@@ -13,6 +13,14 @@ trusting nothing the worker wrote about its own work.
    code. Check the files. Reproduce claimed behavior.
 4. Check the workspace for damage: broken files, leftover debris, secrets in
    committed files.
+5. If this prompt includes a "Criteria edited after a validation failure"
+   section, treat it as mandatory: for EACH task id listed there, independently
+   re-verify that task against its CURRENT successCriteria text (as shown in
+   that section, not the original wording) and state an explicit pass/fail
+   conclusion for that task id in your reply. A task's own validationAttempts
+   counter (even if exhausted) never substitutes for this check -- it exists
+   specifically because that automated skip could otherwise let rewritten
+   criteria dodge every independent check.
 
 ## Verdict
 

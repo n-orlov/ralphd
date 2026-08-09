@@ -509,7 +509,8 @@ class LoopSupervisor:
                 # review
                 await self._gate()
                 self.run.emit("phase", phase="review", approach=approach)
-                review = await self.run_iteration("review")
+                review = await self.run_iteration(
+                    "review", extra=self._flagged_criteria_review_context())
                 while review.saw_verified and self.run.pending_steering():
                     # Refuse to let a VERIFIED verdict make the run terminal
                     # while operator steering still sits unconsumed. review
@@ -535,7 +536,8 @@ class LoopSupervisor:
                         break
                     await self._gate()
                     self.run.emit("phase", phase="review", approach=approach)
-                    review = await self.run_iteration("review")
+                    review = await self.run_iteration(
+                        "review", extra=self._flagged_criteria_review_context())
                 if review.saw_verified and not self.run.pending_steering():
                     self.run.emit("signal", signal="VERIFIED")
                     self.run.update_status(state="succeeded", verdict="verified",
@@ -686,6 +688,44 @@ class LoopSupervisor:
                 changed = True
         if changed:
             atomic_write_json(self.run.tasks_file, tasks_data)
+
+    def _flagged_criteria_review_context(self) -> str:
+        """Task 009: render the explicit list of tasks flagged
+        criteriaEditedAfterValidationFailure (task 008) as extra review-
+        prompt context, instructing the reviewer to independently re-verify
+        each such task's CURRENT successCriteria text against the PRD and
+        state a conclusion per task. This exists because _verify_task's own
+        validationAttempts >= 3 skip would otherwise let a worker dodge
+        every future automated check simply by rewriting the bar after a
+        failure -- the review phase is the one place left that still sees
+        every flagged task, every time, regardless of validationAttempts.
+        Returns '' when no task is flagged (the common case), so review
+        prompts are unaffected until this ever actually triggers.
+        """
+        data = self.run.read_tasks()
+        flagged = [t for t in data.get("tasks", [])
+                   if t.get("criteriaEditedAfterValidationFailure")]
+        if not flagged:
+            return ""
+        lines = [
+            "\n## Criteria edited after a validation failure (task 009)\n",
+            ("The following task(s) had their `successCriteria` text rewritten "
+             "AFTER at least one validation failure, before being re-marked "
+             "`completed`. A worker doing this may have quietly moved the bar "
+             "instead of doing the work. Before this review can emit "
+             "`<promise>VERIFIED</promise>`, you MUST independently re-verify "
+             "EACH task listed below against its CURRENT successCriteria text "
+             "as written now -- not the original text, not what the worker's "
+             "notes claim -- and state an explicit pass/fail conclusion for "
+             "that task id. Do not let validationAttempts count (even if >= 3) "
+             "substitute for this check; that automated skip is exactly what "
+             "this manual re-verification exists to cover.\n"),
+        ]
+        for t in flagged:
+            lines.append(
+                f"\n- **{t['id']}** ({t.get('title', '')}): current "
+                f"successCriteria: {t.get('successCriteria', '')}\n")
+        return "".join(lines)
 
     async def _verify_task(self, task: dict) -> bool:
         """Run one verify iteration (with bounded retry on transient agent/

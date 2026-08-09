@@ -143,6 +143,23 @@ independent re-verification of the new text happens before a `VERIFIED`
 verdict, closing the gap where `_verify_task`'s `validationAttempts >= 3` skip
 would otherwise let repeatedly-rewritten criteria dodge every check.
 
+### Feeding flagged tasks into the review prompt (task 009)
+
+`LoopSupervisor._flagged_criteria_review_context()` reads `tasks.json` fresh
+before every `review` iteration (both the initial one and any re-review after
+deferred steering is consumed) and, when at least one task carries
+`criteriaEditedAfterValidationFailure: true`, renders a `## Criteria edited
+after a validation failure` section listing each such task's id, title, and
+CURRENT `successCriteria` text as `extra` context passed to `build_prompt`.
+When no task is flagged, the context is the empty string and the review
+prompt is byte-for-byte unaffected. `prompts/review.md` itself always carries
+a standing instruction (present regardless of whether the section is
+present this iteration) that when that section IS present, the reviewer
+MUST independently re-verify each listed task id against its current
+criteria text and state an explicit pass/fail conclusion per id before
+emitting `VERIFIED` -- a task's own exhausted `validationAttempts` (the
+`_verify_task` `>= 3` skip) never substitutes for this manual check.
+
 ### No-progress escalation guard vs. instant startup/infra failures (task 059)
 
 The worker loop's stagnation guard (3 consecutive worker iterations with no
