@@ -330,7 +330,7 @@ def _parse_workspace_specs(specs: list[str]) -> list[tuple[str | None, Path]]:
 # always win over the template.
 _TEMPLATE_SCALAR_FIELDS = {
     "iterations": 25, "max_approaches": 3, "vigilant": False,
-    "reflect": False, "on_complete": "idle", "on_complete_cmd": None, "timeout": 480,
+    "reflect": False, "on_complete": "exit", "on_complete_cmd": None, "timeout": 480,
     "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
     "model": None, "fast_model": None, "thinking": None,
     "image": DEFAULT_IMAGE,
@@ -2014,7 +2014,9 @@ def main() -> None:
                    help="mount the host docker socket into the job container "
                         "(ROOT-EQUIVALENT host access — trusted PRDs only)")
     s.add_argument("--image", default=None)
-    s.add_argument("--on-complete", default=None, choices=["idle", "exit"])
+    s.add_argument("--on-complete", default=None, choices=["idle", "exit"],
+                   help="post-completion behavior (default: exit; idle is an "
+                        "explicit debugging opt-in)")
     s.add_argument("--on-complete-cmd", default=None, metavar="CMD",
                    help="shell command run once by the engine (in-container) "
                         "on reaching a terminal state, with RALPHD_RUN_ID/"

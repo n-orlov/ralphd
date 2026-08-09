@@ -112,6 +112,30 @@ def test_start_uses_registry_default_on_complete(ctl):
     assert job["on_complete"] == "exit"
 
 
+def test_start_default_on_complete_is_exit(ctl):
+    """Product default (no --on-complete flag, no registry config, no
+    template) is `exit` -- `idle` is an explicit debugging opt-in (task 010).
+    """
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-on-complete-default")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "cfg-on-complete-default")
+    assert job["on_complete"] == "exit"
+
+
+def test_registry_default_on_complete_idle_overrides_product_default(ctl):
+    """A registry-wide `on_complete: idle` still wins over the hardcoded
+    `exit` product default (precedence: CLI flag > template > registry >
+    hardcoded default is preserved after task 010's default flip).
+    """
+    ctl.run("config", "set", "on_complete", "idle")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-on-complete-registry-idle")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "cfg-on-complete-registry-idle")
+    assert job["on_complete"] == "idle"
+
+
 def test_template_still_overrides_registry_default(ctl):
     ctl.run("config", "set", "on_complete", "exit")
     tdir = ctl.registry / "templates" / "quick"

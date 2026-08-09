@@ -374,15 +374,16 @@ pretty; the run dir stays raw and replayable.
 
 ```
 created ─ starting ─ running ─┬─ succeeded ─┐
-                              ├─ failed ────┼─ idle (default) … until stopped
-                              └─ aborted ───┘        └─ or exit (on_complete: exit)
+                              ├─ failed ────┼─ exit (default) — container exits
+                              └─ aborted ───┘        └─ or idle (on_complete: idle, debugging opt-in)
 ```
 
-- `on_complete: idle` (default) — engine stays up, API remains queryable, agent is
-  never spawned again. The operator collects outputs / post-mortems, then
-  `ralphctl stop`.
-- `on_complete: exit` — container exits with 0 (succeeded) / 1 (failed/aborted).
-  Suits scripted/batch use; state remains in the run dir either way.
+- `on_complete: exit` (default) — container exits with 0 (succeeded) / 1
+  (failed/aborted). Suits scripted/batch use; state remains in the run dir
+  either way.
+- `on_complete: idle` — engine stays up, API remains queryable, agent is
+  never spawned again. An explicit debugging opt-in: the operator collects
+  outputs / post-mortems, then `ralphctl stop`.
 
 ### Completion hook (PRD req 26)
 

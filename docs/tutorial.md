@@ -188,8 +188,9 @@ Treat `verdict: "verified"` (visible in `ralphctl status --json`) as the only
 real success signal. If the job ended `failed`, read `review-findings.md` and
 `notes.md` in the pulled artifacts before retrying.
 
-The container idles by default after completion (`--on-complete idle`), so
-you can still query it. Shut it down when you're done:
+The container exits by default after completion (`--on-complete exit`); pass
+`--on-complete idle` to keep it up (explicit debugging opt-in) so you can
+still query it before shutting it down:
 
 ```bash
 ralphctl stop brisk-otter-1408

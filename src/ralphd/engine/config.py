@@ -72,7 +72,7 @@ class JobConfig:
     iterations: int = 25
     max_approaches: int = 3
     vigilant: bool = False
-    on_complete: str = "idle"  # idle | exit
+    on_complete: str = "exit"  # idle | exit (idle is an explicit debugging opt-in)
     on_complete_cmd: str | None = None  # shell hook run once at terminal state
     reflect: bool = False  # run one extra 'reflect' iteration after terminal state
     job_timeout_s: int = 8 * 3600

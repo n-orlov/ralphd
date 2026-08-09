@@ -26,7 +26,7 @@ ralphctl watch brisk-otter-1408
 # Nudge it
 ralphctl steer brisk-otter-1408 "Skip the docs task; focus on tests"
 
-# Collect results when done (container idles by default)
+# Collect results when done (container exits by default; add --on-complete idle to keep it up for debugging)
 ralphctl status brisk-otter-1408
 ralphctl artifacts pull brisk-otter-1408 ./out/
 ralphctl stop brisk-otter-1408
@@ -77,7 +77,7 @@ ralphctl start --prd <file|-> [options]
 | `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below |
 | `--prompt-override <dir>` | — | phase-prompt override directory |
 | `--image <ref>` | bundled default | alternative/derived engine image; falls back to the registry's `image` (`ralphctl config`) if set |
-| `--on-complete idle\|exit` | idle | post-completion behavior; falls back to the registry's `on_complete` (`ralphctl config`) if set |
+| `--on-complete idle\|exit` | exit | post-completion behavior; `idle` is an explicit debugging opt-in; falls back to the registry's `on_complete` (`ralphctl config`) if set |
 | `--on-complete-cmd <cmd>` | — | shell command run once by the engine (in-container) on reaching a terminal state; receives `RALPHD_RUN_ID`/`RALPHD_STATE`/`RALPHD_VERDICT` env vars; failures are logged (`events.jsonl`, `level: error`) but never affect the job's verdict or the engine's exit code |
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
 | `--iteration-timeout <dur>` | 45m | per-iteration limit |
