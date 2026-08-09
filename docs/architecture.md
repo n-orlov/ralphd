@@ -126,6 +126,41 @@ worker left it -- it is not marked `validation-failed`, `failed`, or otherwise
 penalized. The verify iteration's `meta.json` records `verifyOutcome: "error"`
 for these attempts (distinct from `"pass"`/`"fail"`).
 
+### No-progress escalation guard vs. instant startup/infra failures (task 059)
+
+The worker loop's stagnation guard (3 consecutive worker iterations with no
+`tasks.json` change and no `COMPLETE`/interrupt ⇒ fail the approach) and
+planning's "produced no `tasks.json`" check exist to detect a stuck
+*approach* — an agent that keeps genuinely attempting the task and failing
+or spinning. They must not fire on a completely different failure class:
+the agent process itself never starting at all (missing/broken LLM
+credentials, a provider outage before the first token, any startup fault),
+which the engine can tell apart from a genuine attempt because it leaves no
+observable work signal whatsoever — no assistant text, no token usage — and
+returns in well under the time any real model call could ever take.
+
+`LoopSupervisor._check_instant_failure()` classifies an iteration result as
+an **instant failure** when all of: exit code nonzero, not interrupted, not
+timed out, no `final_text`, no `usage`, and wall-clock duration under
+`INSTANT_FAILURE_MAX_DURATION_S` (5s). Each instant failure increments an
+engine-instance counter (`_instant_failure_streak`, reset to 0 the moment a
+non-instant-failure result occurs, in *any* phase); an iteration classified
+this way is excluded entirely from the stagnation guard's before/after diff
+and from planning's empty-`tasks.json` approach-advance — it neither counts
+as progress nor as no-progress, and the current approach is retried in
+place rather than abandoned. Once the streak reaches
+`MAX_CONSECUTIVE_INSTANT_FAILURES` (3), the engine gives up immediately:
+it sets the job's abort reason to a diagnostic naming the likely cause
+("... likely missing or broken LLM credentials, or an agent-startup
+fault ... failing fast instead of burning through approaches via the
+no-progress escalation guard"), which makes `budget_left()` false job-wide
+— the job reaches a terminal state in exactly 3 iterations (`state:
+aborted`, `verdict: unverified`, `reason: <the diagnostic>`), never having
+switched approaches and never having been scored as an ordinary no-progress
+failure. A worker that runs to completion every iteration but never
+changes `tasks.json` (a genuine stall, not a crash) is unaffected and still
+trips the ordinary 3-iterations-no-progress guard exactly as before.
+
 ### Model strategy
 
 Each phase resolves its model independently: per-phase override → strategy preset →

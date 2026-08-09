@@ -42,6 +42,7 @@ class LoopSupervisor:
         self._pause = asyncio.Event()
         self._pause.set()  # set = not paused
         self._abort_reason: str | None = None
+        self._instant_failure_streak = 0
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
 
@@ -399,8 +400,23 @@ class LoopSupervisor:
                 if not skip_planning:
                     self.run.emit("phase", phase="planning", approach=approach)
 
-                    await self._gate()
-                    await self.run_iteration("planning")
+                    # Retry planning in place (same approach, task 059)
+                    # for as long as it keeps hitting instant startup/infra
+                    # failures -- an empty tasks.json produced by a crashed
+                    # planning invocation is not a genuine "planning
+                    # produced nothing useful" situation that should cost
+                    # an approach; it's the same class of fault the worker
+                    # loop's stagnation guard must not score either.
+                    while True:
+                        await self._gate()
+                        presult = await self.run_iteration("planning")
+                        if self._check_instant_failure(presult, self.iterations_used):
+                            break  # abort_reason set; budget_left() now False
+                        if self._instant_failure_streak and self.budget_left():
+                            continue
+                        break
+                    if not self.budget_left():
+                        break
                     if not self.run.read_tasks().get("tasks"):
                         self.run.emit("log", level="error",
                                       message="planning produced no tasks.json")
@@ -445,6 +461,15 @@ class LoopSupervisor:
                                 await self._verify_task(task)
                         # Re-read after any verification-driven status updates
                         tasks_after = self.run.read_tasks()
+
+                    if self._check_instant_failure(result, self.iterations_used):
+                        break
+                    if self._instant_failure_streak:
+                        # An instant startup/infra failure that hasn't yet
+                        # hit the abort threshold: must not count as either
+                        # progress or no-progress evidence (task 059) --
+                        # skip stagnation bookkeeping entirely this pass.
+                        continue
 
                     after = json.dumps(tasks_after, sort_keys=True)
                     stagnant = stagnant + 1 if (before == after and not result.saw_complete
@@ -496,6 +521,66 @@ class LoopSupervisor:
     # faults must never be scored as work failures (task 050) -- retry
     # verification instead of touching the task's status/validationAttempts.
     MAX_VERIFY_ERROR_RETRIES = 3
+
+    # Task 059: an iteration whose agent process exits nonzero within a few
+    # seconds having produced no observable work signal at all (no
+    # assistant text, no usage) is almost certainly a provider/auth/infra
+    # startup fault (e.g. missing or broken LLM credentials) rather than a
+    # genuine attempted-but-failed work iteration. A run of these must
+    # never be scored by -- or allowed to advance -- the "no progress"
+    # stagnation guard, which exists to detect a stuck APPROACH, not a
+    # broken environment; consuming approaches/attempts for them would burn
+    # the whole job's budget in seconds without a single real attempt ever
+    # having been made (the live incident behind this task: 11 consecutive
+    # ~0.6s nonzero-exit iterations burned all 3 approaches in 7 seconds).
+    INSTANT_FAILURE_MAX_DURATION_S = 5.0
+    MAX_CONSECUTIVE_INSTANT_FAILURES = 3
+
+    def _check_instant_failure(self, result: IterationResult, n: int) -> bool:
+        """Update the running consecutive-instant-failure streak for
+        `result` (any phase: planning or worker). Returns True once
+        MAX_CONSECUTIVE_INSTANT_FAILURES has just been reached, in which
+        case self._abort_reason has been set with a clear diagnostic --
+        budget_left() is now False and every caller's existing "ran out of
+        budget" exit path takes over from here, so the job fails fast with
+        state=aborted (not state=failed via the no-progress path) and a
+        reason naming the likely cause. A non-instant-failure result resets
+        the streak to 0 (self._instant_failure_streak is also readable by
+        callers that need to know whether *this* result was an instant
+        failure below the abort threshold, to exclude it from their own
+        progress bookkeeping without aborting yet).
+        """
+        is_instant = (
+            result.exit_code not in (0, None)
+            and not result.interrupted
+            and not result.timed_out
+            and not result.final_text
+            and not result.usage
+            and result.duration_s is not None
+            and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
+        )
+        if not is_instant:
+            self._instant_failure_streak = 0
+            return False
+        self._instant_failure_streak += 1
+        self.run.emit(
+            "log", level="error",
+            message=(f"iteration {n} agent process exited instantly "
+                      f"(exit={result.exit_code}, {result.duration_s:.1f}s) "
+                      "with no observable work signal -- likely missing or "
+                      "broken LLM credentials, or an agent-startup fault "
+                      f"({self._instant_failure_streak}/"
+                      f"{self.MAX_CONSECUTIVE_INSTANT_FAILURES} consecutive)"))
+        if self._instant_failure_streak < self.MAX_CONSECUTIVE_INSTANT_FAILURES:
+            return False
+        diag = (f"{self._instant_failure_streak} consecutive iterations had "
+                "the agent process exit instantly with no observable work "
+                "(likely missing or broken LLM credentials, or an "
+                "agent-startup fault) -- failing fast instead of burning "
+                "through approaches via the no-progress escalation guard")
+        self.run.emit("log", level="error", message=diag)
+        self._abort_reason = diag
+        return True
 
     async def _verify_task(self, task: dict) -> bool:
         """Run one verify iteration (with bounded retry on transient agent/

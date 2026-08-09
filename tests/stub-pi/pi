@@ -36,6 +36,15 @@ from env vars set by the test:
   STUB_BAD_LINE       if set, emit exactly one malformed (non-JSON) line
                       during the first iteration that emits rich events, to
                       exercise malformed-line tolerance in log consumers.
+  STUB_INSTANT_FAIL_COUNT  after the first STUB_INSTANT_FAIL_SKIP
+                      invocations (default 0), the next N invocations of
+                      the stub (any phase) exit nonzero immediately with
+                      no NDJSON output at all, simulating a
+                      provider/auth/infra startup fault such as missing
+                      LLM credentials (task 059: proves the no-progress
+                      escalation guard does not burn through approaches on
+                      these before failing fast with a clear diagnostic
+                      instead)
   STUB_ECHO_SECRET    comma-separated literal secret value(s) for the stub
                       worker to deliberately echo into its final assistant
                       text AND into a tool call's arguments/result (task
@@ -69,6 +78,29 @@ if "Role: Worker" not in prompt:
 
 def marker(name):
     return os.path.join(run, f".stub-{name}")
+
+
+# STUB_INSTANT_FAIL_COUNT simulates a provider/auth/infra startup fault
+# (e.g. no LLM credentials): after the first STUB_INSTANT_FAIL_SKIP
+# invocations behave normally (default 0), the next N invocations of the
+# stub, across ANY phase, exit nonzero immediately without emitting a
+# single valid pi NDJSON event -- mirroring the real incident behind task
+# 059 where pi errored out before doing any observable work at all.
+# Counted globally (all phases share the marker) since a real credential
+# failure would happen on process start regardless of which phase invoked
+# it.
+_instant_fail_count = int(os.environ.get("STUB_INSTANT_FAIL_COUNT", "0"))
+_instant_fail_skip = int(os.environ.get("STUB_INSTANT_FAIL_SKIP", "0"))
+if _instant_fail_count:
+    _fail_marker = marker("instant-fail-count")
+    _seen = 0
+    if os.path.exists(_fail_marker):
+        _seen = int(open(_fail_marker).read())
+    with open(_fail_marker, "w") as _f:
+        _f.write(str(_seen + 1))
+    if _instant_fail_skip <= _seen < _instant_fail_skip + _instant_fail_count:
+        sys.stderr.write("stub: simulated instant startup failure (no LLM credentials)\n")
+        sys.exit(1)
 
 
 # Always record the full prompt this invocation received (never gated by a

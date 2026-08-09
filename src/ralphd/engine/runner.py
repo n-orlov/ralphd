@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import signal
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +28,13 @@ class IterationResult:
     final_text: str = ""
     error_message: str = ""
     usage: dict = field(default_factory=dict)
+    # Wall-clock seconds the agent subprocess ran for, start to exit (task
+    # 059: used to distinguish an instant startup/infra failure -- e.g. no
+    # LLM credentials, the process errors out before doing any work at all
+    # -- from a genuine attempted-but-failed work iteration). None only if
+    # the subprocess was never actually spawned (engine-side failure before
+    # create_subprocess_exec).
+    duration_s: float | None = None
 
     @property
     def saw_complete(self) -> bool:
@@ -76,6 +84,7 @@ class PiRunner:
         env = {**os.environ, **(extra_env or {})}
 
         result = IterationResult()
+        _t0 = time.monotonic()
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -126,6 +135,7 @@ class PiRunner:
                     pass
                 await self._proc.wait()
             self._proc = None
+        result.duration_s = time.monotonic() - _t0
         if result.exit_code and result.exit_code < 0:
             result.interrupted = True
         if result.exit_code == -signal.SIGINT or result.exit_code == 130:
