@@ -243,6 +243,30 @@ by this: the underlying `ralphd.iteration` boundary events simply carry the raw
 `startedAt`/(on `end`) `endedAt` fields the pretty renderer derives the duration
 from.
 
+**`-N` means N RENDERED lines in pretty mode, N raw events in `--raw` mode.**
+The engine's `GET /logs?tail=N` (and `GET /iterations/{n}/output?tail=N`)
+always trims RAW NDJSON events — that's the wire contract and it never
+changes. In pretty mode a raw `tail=N` would be the wrong thing to hand the
+renderer: the renderer collapses/skips many raw event types (e.g. a whole
+burst of `text_delta`/`toolcall_delta` events becomes one streamed-text
+block or one tool one-liner), so trimming raw events *before* rendering
+produces a wildly variable, much-smaller-than-N number of *visible* lines.
+So the trim is owned by different layers depending on mode:
+- `--raw`: the **engine** trims (raw `tail=N`, 1 raw line == 1 line of
+  output, unchanged from the wire contract).
+- pretty (default): **`ralphctl` itself** trims. It always fetches the full
+  untailed transcript from the engine, renders every line, and only then
+  keeps the last N *rendered* lines — so `logs <id> -100` always means
+  "the last 100 lines you'd actually see", full stop.
+- Iteration/phase boundary headers (`── iteration N · ... ──` / the "done"
+  summary line) count toward N like any other rendered line — they are not
+  given special exemption.
+- `-Nf`/`logsf -N` (follow + pretty with a tail): shows exactly N rendered
+  lines of backlog first, then keeps following live as normal — the
+  backlog fetch/render/trim happens the same way as the non-follow case,
+  then a live connection picks up from there without re-showing or
+  dropping a line.
+
 ### `ralphctl tasks <run-id>`
 
 Task table (or full `tasks.json` with `--json`).

@@ -6,6 +6,7 @@ Deliberately stdlib-only (argparse + urllib) so `pipx install ralphd` is light.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
@@ -886,12 +887,20 @@ def _new_render_state() -> dict:
             "toolcall_seen": False}
 
 
+# A tail value far larger than any real transcript can ever be: used to
+# force both `GET /logs` and `GET /iterations/{n}/output` to replay their
+# FULL current backlog when opening a follow connection for the pretty,
+# rendered-line-trimmed follow path (task 057) -- see
+# `_stream_logs_pretty_tailed`.
+_FULL_BACKLOG_TAIL = 10**9
+
+
 def _render_log_line(raw_line: str, tty: bool, state: dict) -> None:
     """Render a single merged/per-iteration NDJSON line into the pretty
     format (iteration headers, streamed assistant text, compact tool
     one-liners, elided thinking, usage/cost footers, error highlights).
-    Shared by both the bounded (`_render_logs`) and live-streaming
-    (`_stream_logs`) render paths so a line is rendered identically
+    Shared by every bounded, live-streaming, and rendered-line-capturing
+    (`_render_to_lines`) path so a line is rendered identically
     regardless of whether the whole response was buffered first or is
     arriving incrementally off an open connection. Unknown event types are
     silently skipped; a malformed (non-JSON) line prints a one-line marker
@@ -922,13 +931,23 @@ def _render_log_line(raw_line: str, tty: bool, state: dict) -> None:
     # types) is silently skipped by design.
 
 
-def _render_logs(raw: str, tty: bool) -> None:
-    """Render a full, already-buffered merged/per-iteration NDJSON blob
-    (the bounded, non-follow case) by feeding each line through
-    `_render_log_line` with a fresh render state."""
-    state = _new_render_state()
-    for raw_line in raw.splitlines():
-        _render_log_line(raw_line, tty, state)
+def _render_to_lines(raw_text: str, tty: bool, state: dict) -> list[str]:
+    """Render every line of `raw_text` (a merged/per-iteration NDJSON blob)
+    through `_render_log_line`, capturing the printed output instead of
+    writing it directly, and return it split into a list of terminal
+    lines -- i.e. exactly what the operator would SEE, one rendered line
+    per list entry, as opposed to one raw NDJSON event per entry (task
+    057). `state` is mutated in place (boundary/text/thinking/toolcall
+    flags) so a caller can keep rendering a live continuation with the
+    same running state afterwards (see `_stream_logs_pretty_tailed`)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        for raw_line in raw_text.splitlines():
+            _render_log_line(raw_line, tty, state)
+    text = buf.getvalue()
+    if not text:
+        return []
+    return text.removesuffix("\n").split("\n")
 
 
 def cmd_logs(args):
@@ -939,35 +958,55 @@ def cmd_logs(args):
     tail = args.tail
     if tail is None and not args.follow:
         tail = 50
-    qs = []
-    if tail:
-        qs.append(f"tail={tail}")
-    if args.follow:
-        qs.append("follow=true")
-    query = ("?" + "&".join(qs)) if qs else ""
-    if args.iteration is not None:
-        path = f"/iterations/{args.iteration}/output{query}"
-    else:
-        path = f"/logs{query}"
-    if args.follow:
-        # Stream line-by-line as the engine emits it -- reading the whole
-        # HTTP response body first (as the bounded path below does) would
-        # only return once the underlying connection closes, which for
-        # follow=true is when the JOB ends, defeating the entire point of
-        # follow (task 056). Render (or print raw) each line the moment it
-        # arrives instead of buffering the full body.
-        _stream_logs(args, path, tty)
-        return
-    text = api(args.run_id, "GET", path, raw=True, timeout=30)
+    base_path = (f"/iterations/{args.iteration}/output" if args.iteration is not None
+                 else "/logs")
+
     if args.raw:
+        # --raw semantics are unchanged from before task 057: 1 raw NDJSON
+        # event == 1 line, and `tail`/`follow` are applied engine-side to
+        # raw events exactly as `GET /logs?tail=N` already does -- this is
+        # the machine-facing contract and must stay 1:1 with the wire
+        # format, so there is nothing to trim CLI-side here.
+        qs = []
+        if tail:
+            qs.append(f"tail={tail}")
+        if args.follow:
+            qs.append("follow=true")
+        query = ("?" + "&".join(qs)) if qs else ""
+        path = base_path + query
+        if args.follow:
+            _stream_logs(args, path, tty)
+            return
+        text = api(args.run_id, "GET", path, raw=True, timeout=30)
         sys.stdout.write(text)
         if text and not text.endswith("\n"):
             print()
         return
-    _render_logs(text, tty)
+
+    # Pretty mode: `-N`/`--tail N` means N RENDERED lines -- what the
+    # operator actually sees -- not N raw NDJSON events (task 057). The
+    # renderer collapses/skips many raw event types (e.g. a burst of
+    # `toolcall_delta` events becomes one one-liner), so trimming raw
+    # events BEFORE rendering (as the engine's own `tail=` query param
+    # does) yields a wildly variable, much-smaller-than-N visible line
+    # count. Fix: always fetch the FULL raw transcript from the engine
+    # (no tail param), render every line, THEN trim to exactly N rendered
+    # lines. Iteration/phase boundary headers count toward N like any
+    # other rendered line (see docs/cli.md).
+    if not args.follow:
+        full_text = api(args.run_id, "GET", base_path, raw=True, timeout=30)
+        lines = _render_to_lines(full_text, tty, _new_render_state())
+        if tail:
+            lines = lines[-tail:]
+        for line in lines:
+            print(line)
+        return
+
+    _stream_logs_pretty_tailed(args, base_path, tty, tail)
 
 
-def _stream_logs(args, path: str, tty: bool) -> None:
+def _stream_logs(args, path: str, tty: bool, state: dict | None = None,
+                  skip_lines: int = 0) -> None:
     """Open `path` (a `/logs...follow=true...` or
     `/iterations/N/output...follow=true...` URL) and render/print each
     NDJSON line as it arrives off the open connection, instead of waiting
@@ -976,7 +1015,15 @@ def _stream_logs(args, path: str, tty: bool) -> None:
     object line-by-line (rather than calling `.read()`) is what makes this
     genuinely live: each `yield` on the engine's StreamingResponse side is
     delivered as its own HTTP chunk, and `http.client`'s line iteration
-    returns a line as soon as it has one, not only at EOF."""
+    returns a line as soon as it has one, not only at EOF.
+
+    `skip_lines`, if given, discards that many raw lines off the front of
+    the stream before rendering/printing anything -- used by
+    `_stream_logs_pretty_tailed` (task 057) to resume a live follow right
+    after a backlog that was already fetched/rendered/printed separately,
+    without re-showing (or losing) a single line: the transcript only
+    ever grows, so a fresh snapshot's first `skip_lines` raw lines are
+    always identical to the ones already consumed."""
     meta = host_meta(args.run_id)
     if not meta.get("apiUrl"):
         die(4, f"no API endpoint recorded for run {args.run_id}")
@@ -984,10 +1031,15 @@ def _stream_logs(args, path: str, tty: bool) -> None:
     token_file = run_root(args.run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
-    state = _new_render_state()
+    if state is None:
+        state = _new_render_state()
+    skipped = 0
     try:
         with urllib.request.urlopen(req, timeout=3600) as resp:
             for raw_bytes in resp:
+                if skipped < skip_lines:
+                    skipped += 1
+                    continue
                 line = raw_bytes.decode().rstrip("\n")
                 if not line:
                     continue
@@ -998,6 +1050,36 @@ def _stream_logs(args, path: str, tty: bool) -> None:
                     sys.stdout.flush()
     except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
         die(4, f"API unreachable: {e}")
+
+
+def _stream_logs_pretty_tailed(args, base_path: str, tty: bool, tail: int | None) -> None:
+    """Follow+pretty (task 057): show exactly `tail` RENDERED backlog lines
+    -- computed by fetching the FULL raw transcript, rendering it, and
+    trimming AFTER rendering, same as the bounded path -- then keep the
+    SAME render state and continue live from a fresh follow=true
+    connection, skipping the raw lines already consumed by the backlog
+    fetch so nothing is double-rendered or dropped (see `_stream_logs`).
+
+    The follow connection is opened with an explicit huge `tail=` value
+    (`_FULL_BACKLOG_TAIL`) rather than no `tail` param at all: `GET /logs`
+    replays its full untailed snapshot either way, but `GET
+    /iterations/{n}/output` has the OPPOSITE default -- no `tail` param
+    there means "seek straight to EOF, replay nothing" -- so a bare
+    `follow=true` would silently skip straight to only-new-lines and the
+    `skip_lines` accounting above would eat genuinely-new content. A tail
+    value far larger than any real transcript forces both endpoints to
+    replay their full current backlog uniformly before continuing live."""
+    full_text = api(args.run_id, "GET", base_path, raw=True, timeout=30)
+    already_raw_lines = len(full_text.splitlines()) if full_text else 0
+    state = _new_render_state()
+    backlog = _render_to_lines(full_text, tty, state)
+    if tail:
+        backlog = backlog[-tail:]
+    for line in backlog:
+        print(line)
+    sys.stdout.flush()
+    _stream_logs(args, f"{base_path}?follow=true&tail={_FULL_BACKLOG_TAIL}", tty,
+                 state=state, skip_lines=already_raw_lines)
 
 
 def cmd_watch(args):
