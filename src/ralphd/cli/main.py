@@ -1158,11 +1158,21 @@ def _stream_logs(args, path: str, tty: bool, state: dict | None = None,
                 if watcher is not None:
                     watcher.stop()
     except (urllib.error.URLError, TimeoutError, ConnectionError,
-            OSError, ValueError) as e:
+            OSError, ValueError, AttributeError) as e:
         if watcher is not None and watcher.quit:
             return  # 'q' pressed -- closing resp to unblock the loop
                     # above is expected to surface as exactly this kind
-                    # of "connection/file closed" exception; not an error.
+                    # of "connection/file closed" exception -- including,
+                    # per Python's chunked-transfer decoder, a bare
+                    # AttributeError (`self.fp` -- the underlying socket
+                    # file object -- can already be None by the time the
+                    # main thread's blocking `for raw_bytes in resp:`
+                    # loop notices the close, if the watcher thread's
+                    # `resp.close()` lands mid-chunk-read) -- not an
+                    # error. AttributeError is only ever swallowed here
+                    # when `watcher.quit` is set, i.e. genuinely caused by
+                    # OUR OWN 'q'-triggered close; any other AttributeError
+                    # still surfaces below via `die`.
         die(4, f"API unreachable: {e}")
 
 

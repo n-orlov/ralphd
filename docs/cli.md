@@ -245,7 +245,12 @@ Interactive exit from `-f`/`--follow` (task 002):
 - On a TTY, press **`q`** to stop following and return — no error, no
   extra output, exit code `0`. This never touches stdin on a non-TTY
   stdin (piped/redirected): a piped `logs -f` is never blocked waiting
-  for a key that will never arrive.
+  for a key that will never arrive. (The key-watcher thread closes the
+  open HTTP response to unblock the main thread's blocking read; the
+  main thread's exception handling around that read treats the resulting
+  connection-closed error — including a bare `AttributeError` from
+  Python's chunked-transfer decoder if the close lands mid-chunk — as
+  the expected, non-error `q` outcome, never a traceback.)
 - **Ctrl+C** (SIGINT) during a follow always exits cleanly — no
   Python traceback on stderr — at the single documented exit code
   **`130`** (the standard `128+SIGINT` shell convention), whether or not
