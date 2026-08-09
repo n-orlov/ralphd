@@ -292,6 +292,76 @@ def test_terminal_status_surfaces_unconsumed_steering(engine_factory):
     assert e.proc.wait(timeout=10) == 1
 
 
+def test_steering_during_review_iteration_never_silently_dropped(engine_factory):
+    """Task 007: steering that lands WHILE a review iteration that would
+    otherwise verify the run is still in flight (i.e. before its
+    ``saw_verified``/pending-steering check even runs, per task 005) must
+    never be silently dropped. The only two acceptable outcomes are: (a) a
+    subsequent worker iteration consumes it before the run goes terminal, or
+    (b) it is loudly reported via the terminal status.json
+    ``unconsumedSteering`` field (task 006). What must NEVER happen is the
+    run going terminal ``succeeded``/``verified`` with the steering file
+    present on disk but absent from BOTH the consumed-steering record AND
+    the terminal status's ``unconsumedSteering`` list -- that would be a
+    silent drop."""
+    e = engine_factory(stub_env={"STUB_SLEEP": "2", "STUB_TASKS": "1"})
+    e.wait_api()
+    e.wait_state(("running",))
+
+    # Wait until the review iteration has actually started (status.json's
+    # phase flips to "review" at the top of run_iteration, before the
+    # stub's own STUB_SLEEP-second sleep at the top of its invocation --
+    # see tests/stub-pi/pi's "if 'Role: Worker' not in prompt: sleep(...)").
+    # This lands the steering POST strictly inside that open window, i.e.
+    # while the review iteration is still running and has not yet reached
+    # the saw_verified/pending_steering check in loop.py.
+    deadline = time.time() + 30
+    phase = None
+    while time.time() < deadline:
+        status = json.loads((e.run_dir / "status.json").read_text()) \
+            if (e.run_dir / "status.json").exists() else {}
+        phase = status.get("phase")
+        if phase == "review":
+            break
+        time.sleep(0.05)
+    assert phase == "review", f"never observed the review iteration start; last phase: {phase}"
+
+    code, res = e.api("POST", "/steering",
+                      {"message": "land mid-review", "name": "mid-review"})
+    assert code == 202
+    steering_file = res["file"]
+    assert steering_file == "001-mid-review.md"
+
+    status = e.wait_state(("succeeded", "failed", "aborted"), timeout=90)
+
+    consumed = json.loads((e.run_dir / "steering" / ".consumed.json").read_text()) \
+        if (e.run_dir / "steering" / ".consumed.json").exists() else []
+    unconsumed = status.get("unconsumedSteering") or []
+
+    consumed_it = steering_file in consumed
+    reported_it = steering_file in unconsumed
+    # explicit non-silent-drop assertion: it must be one or the other, never
+    # neither (the pre-task-005/006 behaviour: a VERIFIED run that simply
+    # never looked at the file again).
+    assert consumed_it or reported_it, (
+        f"steering {steering_file} silently dropped: not consumed "
+        f"({consumed}) and not reported as unconsumed ({unconsumed}) at "
+        f"terminal state {status['state']!r}")
+    # in this scenario (review passes on the first real attempt, worker has
+    # nothing left to do once its one task is already completed) the fix in
+    # task 005 routes the run back to a worker iteration specifically to
+    # consume the steering before re-reviewing, so the expected concrete
+    # outcome is full consumption and a clean VERIFIED success -- assert
+    # that too, not just the weaker either/or.
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+    assert consumed_it, f"expected steering to be consumed, not merely reported: {status}"
+    assert not reported_it
+
+    e.api("POST", "/shutdown")
+    e.proc.wait(timeout=10)
+
+
 def test_huge_output_line_does_not_kill_job(engine_factory):
     """pi emits full message snapshots per NDJSON event; a single line can be
     hundreds of KiB. Regression: this used to raise 'Separator is not found'
