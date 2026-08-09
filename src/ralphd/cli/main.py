@@ -1004,24 +1004,73 @@ def _tool_outcome_and_tail(ev: dict, tty: bool) -> tuple[str, str]:
     return outcome, tail
 
 
-def _render_tool_start(name: str, args, tty: bool) -> None:
+def _render_tool_start(name: str, args, tty: bool, state: dict | None = None,
+                       tool_call_id=None) -> None:
     """Print the invocation line the moment `tool_execution_start`
     arrives (task 003 / PRD req A3), with NO ✓/✗ status yet -- the
     outcome isn't known until `tool_execution_end`. Used only for live
     (follow) rendering; buffered rendering waits for the end event and
     calls `_render_tool_result` so a finished call still renders as
-    exactly one line, never a start+end duplicate."""
-    print(f"  → {_fmt_invocation(name, args)}")
+    exactly one line, never a start+end duplicate.
+
+    On a TTY (task 004) the line is written WITHOUT a trailing newline
+    and `state['open_tool_line']` is set to `tool_call_id` -- the cursor
+    is deliberately left sitting at the end of the invocation text so
+    `tool_execution_end` can later rewrite it in place (`\r` + ANSI
+    erase-line) into the exact same one-liner the buffered/non-live
+    renderer would have produced, rather than appending a second line.
+    On a non-TTY (piped) stream there is no cursor to rewind, so this
+    prints a plain, complete line (with a trailing newline) and leaves
+    `open_tool_line` unset -- the matching `tool_execution_end` then
+    prints a short, separate completion line (`_render_tool_completion`)
+    instead of attempting any in-place rewrite, and the piped bytes never
+    contain `\r` or ANSI control sequences."""
+    line = f"  → {_fmt_invocation(name, args)}"
+    if tty and state is not None:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        state["open_tool_line"] = tool_call_id
+    else:
+        print(line)
 
 
-def _render_tool_completion(ev: dict, tty: bool) -> None:
-    """Print just the outcome (✓/✗ + optional short excerpt) for a tool
-    call whose invocation line was already shown live by
-    `_render_tool_start` -- together the two lines carry the same
-    information as the single-line buffered form, without ever repeating
-    the invocation text."""
+def _finalize_open_tool_line(state: dict, tty: bool) -> None:
+    """If a TTY tool-invocation line is currently left open (cursor still
+    sitting at its end, task 004), close it out with a plain newline
+    before any other renderable content is printed -- e.g. if streamed
+    assistant text or a new iteration boundary interleaves before the
+    open call's `tool_execution_end` arrives. The eventual (or already
+    happened) completion for that call then renders as its own short
+    line via `_render_tool_completion` rather than an in-place rewrite,
+    since the cursor has moved on."""
+    if tty and state.get("open_tool_line") is not None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        state["open_tool_line"] = None
+
+
+def _render_tool_completion(ev: dict, tty: bool, args=None, state: dict | None = None) -> None:
+    """Render the outcome of a completed tool call in live (follow) mode.
+
+    If `state['open_tool_line']` still matches this call's `toolCallId`
+    (i.e. its invocation line is still open on a TTY, cursor sitting at
+    its end, nothing else printed in between) this REWRITES that line in
+    place -- `\r` + ANSI erase-to-end-of-line, then the full
+    `invocation outcome (excerpt)` text -- so the finished TTY stream is
+    byte-for-byte identical to the buffered one-line-per-tool rendering
+    (`_render_tool_result`). Otherwise (non-TTY, or the line was already
+    finalized by an interleaving event) this prints just the outcome as
+    a short, separate completion line, never repeating the invocation
+    text."""
     outcome, tail = _tool_outcome_and_tail(ev, tty)
-    print(f"  ↳ {outcome}{tail}")
+    tcid = ev.get("toolCallId")
+    if tty and state is not None and state.get("open_tool_line") == tcid:
+        invocation = _fmt_invocation(ev.get("toolName", "?"), args or {})
+        sys.stdout.write(f"\r\x1b[2K  → {invocation} {outcome}{tail}\n")
+        sys.stdout.flush()
+        state["open_tool_line"] = None
+    else:
+        print(f"  ↳ {outcome}{tail}")
 
 
 def _render_message_end(message: dict, state: dict, tty: bool) -> None:
@@ -1039,7 +1088,7 @@ def _render_message_end(message: dict, state: dict, tty: bool) -> None:
 
 def _new_render_state() -> dict:
     return {"text_open": False, "text_seen": False, "thinking_seen": False,
-            "toolcall_seen": False, "tool_args": {}}
+            "toolcall_seen": False, "tool_args": {}, "open_tool_line": None}
 
 
 # A tail value far larger than any real transcript can ever be: used to
@@ -1082,6 +1131,13 @@ def _render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) 
         print(_ansi(tty, "33", "! [malformed log line: not a JSON object]"))
         return
     etype = ev.get("type")
+    # task 004: any event OTHER than the matching tool_execution_end must
+    # first close out a still-open live TTY invocation line (cursor left
+    # sitting at its end by `_render_tool_start`) with a plain newline --
+    # otherwise iteration boundaries / streamed text / a new tool call
+    # would print into the middle of that line instead of below it.
+    if etype != "tool_execution_end":
+        _finalize_open_tool_line(state, tty)
     if etype == "ralphd.iteration":
         _render_boundary(ev, tty)
         state.update(text_open=False, text_seen=False, thinking_seen=False,
@@ -1102,13 +1158,13 @@ def _render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) 
         if tcid is not None:
             state["tool_args"][tcid] = args
         if live:
-            _render_tool_start(ev.get("toolName", "?"), args, tty)
+            _render_tool_start(ev.get("toolName", "?"), args, tty, state, tcid)
             state["toolcall_seen"] = True
     elif etype == "tool_execution_end":
         tcid = ev.get("toolCallId")
         args = state["tool_args"].pop(tcid, None) if tcid is not None else None
         if live:
-            _render_tool_completion(ev, tty)
+            _render_tool_completion(ev, tty, args, state)
         else:
             _render_tool_result(ev, tty, args)
         state["toolcall_seen"] = True

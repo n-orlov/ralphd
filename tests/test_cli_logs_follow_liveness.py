@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
 import sys
 import time
@@ -143,3 +144,68 @@ def test_logsf_alias_also_streams_live(live):
         text=True, bufsize=1)
     full = _assert_liveness_and_drain(run, proc, raw=False)
     assert "iteration 1" in full and "phase=planning" in full
+
+
+def _try_read_line(proc: subprocess.Popen, timeout: float) -> str | None:
+    """Non-blocking (up to `timeout`) readline off `proc.stdout` -- `None`
+    means nothing arrived within the window, as opposed to `readline()`
+    itself which blocks indefinitely. Used by the task-004 test below to
+    prove a real timing gap rather than just an event ORDER."""
+    r, _, _ = select.select([proc.stdout], [], [], timeout)
+    if not r:
+        return None
+    return proc.stdout.readline()
+
+
+def test_logs_follow_shows_tool_invocation_before_tool_ends(live):
+    """task 004: the live invocation line for a tool call must be visible
+    in the follow stream strictly BEFORE the matching `tool_execution_end`
+    is even emitted by the stub job, i.e. while the tool call is still
+    genuinely in flight -- not merely rendered-before-printed-completion
+    due to buffering. `STUB_TOOL_SLEEP` (tests/stub-pi/pi) opens a real,
+    multi-second wall-clock window between `tool_execution_start` and
+    `tool_execution_end` so this is a genuine timing proof: after seeing
+    the invocation line we assert no completion/outcome line arrives
+    within a window comfortably shorter than STUB_TOOL_SLEEP."""
+    stub_env = {"STUB_RICH_EVENTS": "1", "STUB_TOOL_SLEEP": "4"}
+    run = live(run_id="followtest-toolopen", job={"iterations": 3},
+               stub_env=stub_env)
+    run.wait_api()
+
+    proc = _spawn(run)
+    try:
+        invocation_line = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            line = _try_read_line(proc, 1.0)
+            if line is None:
+                if proc.poll() is not None:
+                    break
+                continue
+            if line == "" and proc.poll() is not None:
+                break
+            if "bash $" in line and "→" in line:
+                invocation_line = line
+                break
+        assert invocation_line is not None, "tool invocation line never appeared"
+        # No outcome yet -- the matching tool_execution_end has not been
+        # emitted (this is the plain-non-TTY start line, task 004).
+        assert "✓" not in invocation_line and "✗" not in invocation_line
+
+        # The real proof: give the stub comfortably less time than
+        # STUB_TOOL_SLEEP to produce a completion line -- if the renderer
+        # (or the stub) were instead buffering until the tool call ended,
+        # this window would consistently show the outcome too.
+        next_line = _try_read_line(proc, 1.5)
+        assert next_line is None or (
+            "✓" not in next_line and "✗" not in next_line and "↳" not in next_line
+        ), f"tool completion appeared before STUB_TOOL_SLEEP elapsed: {next_line!r}"
+
+        run.wait_terminal(timeout=60)
+        rc = proc.wait(timeout=15)
+        assert rc == 0, (rc, proc.stderr.read())
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+

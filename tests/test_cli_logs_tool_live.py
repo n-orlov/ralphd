@@ -114,3 +114,101 @@ def test_buffered_start_with_no_end_renders_nothing(capsys):
 
     out = capsys.readouterr().out
     assert out == ""
+
+
+# --- task 004: TTY in-place rewrite / piped fallback / interleaving -----
+
+
+def test_live_tty_start_leaves_line_open_with_no_newline(capsys):
+    """On a TTY the invocation line is written WITHOUT a trailing newline
+    -- `state['open_tool_line']` records which call's line is still open
+    so `tool_execution_end` can rewrite it in place."""
+    state = _new_render_state()
+    start = {"type": "tool_execution_start", "toolCallId": "call_1",
+             "toolName": "bash", "args": {"command": "true"}}
+    _render_log_line(_line(start), tty=True, state=state, live=True)
+
+    out = capsys.readouterr().out
+    assert out == "  → bash $ true"  # no trailing newline
+    assert state["open_tool_line"] == "call_1"
+
+
+def test_live_tty_end_rewrites_open_line_in_place_matching_buffered_form(capsys):
+    """The TTY rewrite (`\\r` + ANSI erase + full line) must produce the
+    exact same `invocation outcome(tail)` text the buffered/non-live
+    one-liner (`_render_tool_result`) would have -- i.e. once the control
+    bytes are stripped, a completed TTY follow stream is byte-for-byte
+    identical to the buffered rendering (this task's core contract)."""
+    live_state = _new_render_state()
+    start = {"type": "tool_execution_start", "toolCallId": "call_1",
+             "toolName": "bash", "args": {"command": "true"}}
+    end = {"type": "tool_execution_end", "toolCallId": "call_1",
+           "toolName": "bash", "result": "done", "isError": False}
+    _render_log_line(_line(start), tty=True, state=live_state, live=True)
+    capsys.readouterr()  # discard the open invocation write, isolate the rewrite
+    _render_log_line(_line(end), tty=True, state=live_state, live=True)
+    live_out = capsys.readouterr().out
+
+    # The rewrite carries a leading \r + ANSI erase-to-end-of-line, and a
+    # single trailing newline, wrapped around the same content.
+    assert live_out.startswith("\r\x1b[2K")
+    assert live_out.endswith("\n")
+    rewritten_content = live_out[len("\r\x1b[2K"):-1]
+
+    buffered_state = _new_render_state()
+    _render_log_line(_line(start), tty=True, state=buffered_state)
+    _render_log_line(_line(end), tty=True, state=buffered_state)
+    buffered_out = capsys.readouterr().out.rstrip("\n")
+
+    assert rewritten_content == buffered_out
+    assert live_state["open_tool_line"] is None  # closed out after rewrite
+
+
+def test_live_piped_start_and_end_never_contain_control_bytes(capsys):
+    """On a non-TTY (piped) stream there is no cursor to rewind: the
+    invocation prints as a plain complete line and the completion prints
+    as a short separate line -- neither ever contains \\r or an ANSI
+    escape sequence."""
+    state = _new_render_state()
+    start = {"type": "tool_execution_start", "toolCallId": "call_1",
+             "toolName": "bash", "args": {"command": "true"}}
+    end = {"type": "tool_execution_end", "toolCallId": "call_1",
+           "toolName": "bash", "result": "done", "isError": False}
+    _render_log_line(_line(start), tty=False, state=state, live=True)
+    _render_log_line(_line(end), tty=False, state=state, live=True)
+
+    out = capsys.readouterr().out
+    assert "\r" not in out
+    assert "\x1b" not in out
+    assert state["open_tool_line"] is None
+
+
+def test_live_tty_interleaving_event_finalizes_open_line_then_short_completion(capsys):
+    """If another renderable event (e.g. streamed assistant text closing
+    out, task 003's `text_end`) arrives while a TTY tool line is still
+    open, the open line is finalized with a plain newline immediately --
+    the LATER completion then renders as its own short line rather than
+    an in-place rewrite, since the cursor has already moved on."""
+    state = _new_render_state()
+    start = {"type": "tool_execution_start", "toolCallId": "call_1",
+             "toolName": "bash", "args": {"command": "sleep 5"}}
+    _render_log_line(_line(start), tty=True, state=state, live=True)
+    assert state["open_tool_line"] == "call_1"
+    capsys.readouterr()  # discard the open invocation write itself
+
+    text_delta = {"type": "message_update", "assistantMessageEvent":
+                  {"type": "text_end", "contentIndex": 0}}
+    _render_log_line(_line(text_delta), tty=True, state=state, live=True)
+    # the open line was closed out with a bare newline, no rewrite bytes
+    interleave_out = capsys.readouterr().out
+    assert interleave_out == "\n"
+    assert state["open_tool_line"] is None
+
+    end = {"type": "tool_execution_end", "toolCallId": "call_1",
+           "toolName": "bash", "result": "done", "isError": False}
+    _render_log_line(_line(end), tty=True, state=state, live=True)
+    completion_out = capsys.readouterr().out
+    assert "\r" not in completion_out
+    assert "\x1b[2K" not in completion_out  # no in-place rewrite, only color codes
+    assert completion_out.startswith("  ↳ ")
+    assert "ok" in completion_out

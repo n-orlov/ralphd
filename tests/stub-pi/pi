@@ -9,7 +9,15 @@ from env vars set by the test:
   STUB_TASKS          number of tasks the planner creates (default 2)
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
   STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
-  STUB_SLEEP          seconds each invocation sleeps before answering (default 0)
+  STUB_TOOL_SLEEP     seconds to sleep AFTER emitting `tool_execution_start`
+                      but BEFORE emitting the matching `tool_execution_end`
+                      inside `emit_rich_preamble` (default 0; only takes
+                      effect when STUB_RICH_EVENTS is also set). Used by
+                      task 004's black-box liveness test to open a real,
+                      observable window in which a follow subprocess can
+                      read the live invocation line off `ralphctl logs -f`
+                      strictly before the tool call's completion event
+                      exists at all.
   STUB_HUGE_LINE      if set, the first worker iteration emits one NDJSON line of
                       ~1 MiB (pi emits full message snapshots per event; the
                       engine must not choke on long lines)
@@ -173,6 +181,10 @@ def emit_rich_preamble(tool_name="bash", tool_args=None, thinking_text=None,
                        {"type": "toolcall_end", "contentIndex": 1, "toolCall": tool_call}}))
     print(json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
                        "toolName": tool_name, "args": tool_args}))
+    sys.stdout.flush()
+    _tool_sleep = float(os.environ.get("STUB_TOOL_SLEEP", "0"))
+    if _tool_sleep:
+        time.sleep(_tool_sleep)
     print(json.dumps({"type": "tool_execution_end", "toolCallId": tool_call_id,
                        "toolName": tool_name, "result": tool_result, "isError": False}))
     return tool_call, thinking_text

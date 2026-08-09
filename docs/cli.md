@@ -264,18 +264,34 @@ command or file path shown here is exactly what a `--raw` reader already
 sees -- rendering it is not a new exposure surface (see
 tests/test_secret_redaction.py, which asserts this stays true).
 
-**Live tool start-lines (task 003).** In a `-f`/`--follow` (live) session
-the invocation line above prints the MOMENT the tool call starts (`→ bash
-$ <command>`, no outcome yet) rather than only once it finishes -- a
-long-running tool (e.g. a multi-minute `bash` command) is no longer
-silent for its whole duration. The matching `✓ ok`/`✗ error` (plus error
-excerpt) then prints as a short separate completion line (`↳ ✓ ok`) once
-the call ends, rather than repeating the invocation a second time. In
-non-follow (buffered) rendering -- `ralphctl logs <id>` without `--follow`,
-where the whole transcript is already in hand -- a completed tool call
-still renders as exactly the single one-liner it always has; only a call
-with no matching end yet (still running when the transcript was fetched)
-would show just the invocation line with no completion.
+**Live tool start-lines (task 003) and in-place TTY rewrite (task 004).**
+In a `-f`/`--follow` (live) session the invocation line above prints the
+MOMENT the tool call starts (`→ bash $ <command>`, no outcome yet) rather
+than only once it finishes -- a long-running tool (e.g. a multi-minute
+`bash` command) is no longer silent for its whole duration.
+
+- **On a TTY**, that invocation line is left open with no trailing
+  newline (the cursor sits right after it), and once the matching
+  `tool_execution_end` arrives the SAME line is rewritten in place
+  (`\r` + ANSI erase-to-end-of-line, then the full text again) into the
+  final `→ bash $ <cmd> ✓ ok (<excerpt>)` form -- so a finished TTY
+  follow session ends up byte-for-byte identical (once those control
+  bytes are accounted for) to the buffered one-line-per-tool rendering.
+  If any other renderable event (streamed text, a new iteration boundary,
+  another tool call) arrives before the outcome does, the open line is
+  finalized with a plain newline first and the eventual outcome instead
+  prints as its own short completion line (`↳ ✓ ok`), never mid-line.
+- **On a non-TTY (piped) stream** there is no cursor to rewind: the
+  invocation prints as a plain, complete line immediately, and the
+  outcome later prints as its own short completion line (`↳ ✓ ok`,
+  plus error excerpt on `✗`) -- piped `logs -f` output never contains a
+  `\r` or an ANSI control byte.
+
+In non-follow (buffered) rendering -- `ralphctl logs <id>` without
+`--follow`, where the whole transcript is already in hand -- a completed
+tool call still renders as exactly the single one-liner it always has;
+only a call with no matching end yet (still running when the transcript
+was fetched) would show just the invocation line with no completion.
 Once an iteration has ended, its "done" summary line includes a `took <duration>`
 field (same compact human format as `status`, computed from that iteration's
 `startedAt`/`endedAt`); an iteration still in flight has no "done" line yet
