@@ -263,6 +263,19 @@ transcript at write/serve time, upstream of rendering, so a full `bash`
 command or file path shown here is exactly what a `--raw` reader already
 sees -- rendering it is not a new exposure surface (see
 tests/test_secret_redaction.py, which asserts this stays true).
+
+**Live tool start-lines (task 003).** In a `-f`/`--follow` (live) session
+the invocation line above prints the MOMENT the tool call starts (`→ bash
+$ <command>`, no outcome yet) rather than only once it finishes -- a
+long-running tool (e.g. a multi-minute `bash` command) is no longer
+silent for its whole duration. The matching `✓ ok`/`✗ error` (plus error
+excerpt) then prints as a short separate completion line (`↳ ✓ ok`) once
+the call ends, rather than repeating the invocation a second time. In
+non-follow (buffered) rendering -- `ralphctl logs <id>` without `--follow`,
+where the whole transcript is already in hand -- a completed tool call
+still renders as exactly the single one-liner it always has; only a call
+with no matching end yet (still running when the transcript was fetched)
+would show just the invocation line with no completion.
 Once an iteration has ended, its "done" summary line includes a `took <duration>`
 field (same compact human format as `status`, computed from that iteration's
 `startedAt`/`endedAt`); an iteration still in flight has no "done" line yet

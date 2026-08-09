@@ -975,18 +975,53 @@ def _render_tool_result(ev: dict, tty: bool, args: dict | None = None) -> None:
     the invocation line would always render bare (`bash ✓ ok`, the exact
     defect this task fixes). Callers that have no start event to key off
     of (e.g. legacy/buffered call sites) may pass `None` / omit it and
-    fall back to whatever `ev` itself carries, if anything."""
+    fall back to whatever `ev` itself carries, if anything.
+
+    This is the BUFFERED/one-shot rendering of a completed tool call --
+    invocation + outcome on a single line. Live/follow rendering (task
+    003) instead splits this into two calls: `_render_tool_start` at
+    `tool_execution_start` time and `_render_tool_completion` at
+    `tool_execution_end` time, so the operator sees the invocation the
+    moment the call starts rather than only once it finishes."""
     name = ev.get("toolName", "?")
     if args is None:
         args = ev.get("args") or ev.get("arguments") or {}
     invocation = _fmt_invocation(name, args)
+    outcome, tail = _tool_outcome_and_tail(ev, tty)
+    print(f"  → {invocation} {outcome}{tail}")
+
+
+def _tool_outcome_and_tail(ev: dict, tty: bool) -> tuple[str, str]:
+    """Shared ✓/✗-plus-excerpt formatting used by both the buffered
+    one-line form (`_render_tool_result`) and the live completion-only
+    line (`_render_tool_completion`, task 003)."""
     is_error = bool(ev.get("isError"))
     outcome = _ansi(tty, "1;31", "✗ error") if is_error else _ansi(tty, "1;32", "✓ ok")
     result = ev.get("result")
     # On failure show a short error excerpt when the result carries one; on
     # success show a short result excerpt too (unchanged from before).
     tail = f" ({str(result)[:60]})" if isinstance(result, str) and result else ""
-    print(f"  → {invocation} {outcome}{tail}")
+    return outcome, tail
+
+
+def _render_tool_start(name: str, args, tty: bool) -> None:
+    """Print the invocation line the moment `tool_execution_start`
+    arrives (task 003 / PRD req A3), with NO ✓/✗ status yet -- the
+    outcome isn't known until `tool_execution_end`. Used only for live
+    (follow) rendering; buffered rendering waits for the end event and
+    calls `_render_tool_result` so a finished call still renders as
+    exactly one line, never a start+end duplicate."""
+    print(f"  → {_fmt_invocation(name, args)}")
+
+
+def _render_tool_completion(ev: dict, tty: bool) -> None:
+    """Print just the outcome (✓/✗ + optional short excerpt) for a tool
+    call whose invocation line was already shown live by
+    `_render_tool_start` -- together the two lines carry the same
+    information as the single-line buffered form, without ever repeating
+    the invocation text."""
+    outcome, tail = _tool_outcome_and_tail(ev, tty)
+    print(f"  ↳ {outcome}{tail}")
 
 
 def _render_message_end(message: dict, state: dict, tty: bool) -> None:
@@ -1015,16 +1050,27 @@ def _new_render_state() -> dict:
 _FULL_BACKLOG_TAIL = 10**9
 
 
-def _render_log_line(raw_line: str, tty: bool, state: dict) -> None:
+def _render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -> None:
     """Render a single merged/per-iteration NDJSON line into the pretty
     format (iteration headers, streamed assistant text, compact tool
     one-liners, elided thinking, usage/cost footers, error highlights).
     Shared by every bounded, live-streaming, and rendered-line-capturing
     (`_render_to_lines`) path so a line is rendered identically
     regardless of whether the whole response was buffered first or is
-    arriving incrementally off an open connection. Unknown event types are
-    silently skipped; a malformed (non-JSON) line prints a one-line marker
-    and is skipped."""
+    arriving incrementally off an open connection -- with ONE deliberate
+    exception: tool-call rendering (task 003). When `live` is true (only
+    `_stream_logs`'s genuinely-live follow path passes this) the
+    invocation line prints immediately at `tool_execution_start`, before
+    the outcome is known, so an operator watching a follow never waits on
+    a long-running tool with no feedback; the matching
+    `tool_execution_end` then prints a short completion-only line rather
+    than repeating the invocation. When `live` is false (the default --
+    every buffered/bounded rendering path, e.g. `_render_to_lines`) a
+    completed call still renders as exactly the single one-liner it always
+    has, since the whole transcript is already in hand and there is
+    nothing 'live' to show early. Unknown event types are silently
+    skipped; a malformed (non-JSON) line prints a one-line marker and is
+    skipped."""
     if not raw_line.strip():
         return
     try:
@@ -1046,15 +1092,25 @@ def _render_log_line(raw_line: str, tty: bool, state: dict) -> None:
         # `tool_execution_end` (docs/json.md) carries no `args`/`arguments`
         # field, only `tool_execution_start` does -- stash them here keyed
         # by toolCallId so the end event's one-liner can still show the
-        # salient argument (task 001 / PRD req A1). Printing an immediate
-        # invocation line for the start event itself is task 003's job.
+        # salient argument (task 001 / PRD req A1). In live rendering
+        # (task 003) the invocation line is ALSO printed right now, since
+        # there is no guarantee the matching end event ever arrives before
+        # the follow connection itself ends (e.g. the process is still
+        # mid-tool-call when the operator is watching).
         tcid = ev.get("toolCallId")
+        args = ev.get("args") or ev.get("arguments") or {}
         if tcid is not None:
-            state["tool_args"][tcid] = ev.get("args") or ev.get("arguments") or {}
+            state["tool_args"][tcid] = args
+        if live:
+            _render_tool_start(ev.get("toolName", "?"), args, tty)
+            state["toolcall_seen"] = True
     elif etype == "tool_execution_end":
         tcid = ev.get("toolCallId")
         args = state["tool_args"].pop(tcid, None) if tcid is not None else None
-        _render_tool_result(ev, tty, args)
+        if live:
+            _render_tool_completion(ev, tty)
+        else:
+            _render_tool_result(ev, tty, args)
         state["toolcall_seen"] = True
     elif etype == "message_end":
         _render_message_end(ev.get("message") or {}, state, tty)
@@ -1253,7 +1309,7 @@ def _stream_logs(args, path: str, tty: bool, state: dict | None = None,
                     if args.raw:
                         print(line, flush=True)
                     else:
-                        _render_log_line(line, tty, state)
+                        _render_log_line(line, tty, state, live=True)
                         sys.stdout.flush()
             finally:
                 if watcher is not None:
