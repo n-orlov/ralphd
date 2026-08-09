@@ -23,6 +23,7 @@ from .creds import (
 )
 from .llm import apply_llm, current_env
 from .loop import LoopSupervisor
+from .redact import refresh_redaction_map, scrub_text
 from .skills import (
     InvalidSkillTar,
     api_skills_dir,
@@ -162,7 +163,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         return json.dumps(line) + "\n"
 
     def _merge_logs():
-        """Yield (is_boundary, line) for every iteration transcript in order."""
+        """Yield (is_boundary, line) for every iteration transcript in order.
+        Lines are scrubbed again here (defense-in-depth, task 060) on top of
+        the write-time scrub in runner.py/state.py -- catches a value that
+        is only *recognized* as a secret after the transcript line was
+        originally written (e.g. a cred added mid-run, using the same
+        literal value an earlier iteration happened to echo)."""
         for d in _iteration_dirs():
             meta_path = d / "meta.json"
             if not meta_path.exists():
@@ -171,13 +177,14 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                 meta = json.loads(meta_path.read_text())
             except json.JSONDecodeError:
                 continue
-            yield True, _boundary(meta, "start")
+            yield True, scrub_text(_boundary(meta, "start"))
             out = d / "output.jsonl"
             if out.exists():
                 for line in out.read_text().splitlines(keepends=True):
-                    yield False, line if line.endswith("\n") else line + "\n"
+                    line = line if line.endswith("\n") else line + "\n"
+                    yield False, scrub_text(line)
             if meta.get("endedAt"):
-                yield True, _boundary(meta, "end")
+                yield True, scrub_text(_boundary(meta, "end"))
 
     def _apply_tail(entries: list[tuple[bool, str]], tail: int) -> list[tuple[bool, str]]:
         """Keep only the last `tail` non-boundary (transcript) lines, plus any
@@ -241,7 +248,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                     continue
                 meta = json.loads(meta_path.read_text())
                 if not start_emitted:
-                    yield _boundary(meta, "start")
+                    yield scrub_text(_boundary(meta, "start"))
                     start_emitted = True
                 out = d / "output.jsonl"
                 if out.exists():
@@ -249,10 +256,11 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                         f.seek(pos)
                         while line := f.readline():
                             pos = f.tell()
-                            yield line if line.endswith("\n") else line + "\n"
+                            line = line if line.endswith("\n") else line + "\n"
+                            yield scrub_text(line)
                 meta = json.loads(meta_path.read_text())
                 if meta.get("endedAt"):
-                    yield _boundary(meta, "end")
+                    yield scrub_text(_boundary(meta, "end"))
                     idx += 1
                     pos = 0
                     start_emitted = False
@@ -405,6 +413,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         dest.write_bytes(body)
         clear_creds_tombstone(name)
         place_creds(CONFIG_DIR)
+        refresh_redaction_map()
         run.emit("log", message=f"credential added via API: {name}")
         return Response(status_code=204)
 
@@ -419,6 +428,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         ddir.mkdir(parents=True, exist_ok=True)
         (ddir / f"{name}.env").touch()
         place_creds(CONFIG_DIR)
+        refresh_redaction_map()
         run.emit("log", message=f"credential removed via API: {name}")
         return Response(status_code=204)
 
@@ -442,6 +452,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         if pi_fragment is not None and not isinstance(pi_fragment, dict):
             raise problem(422, "invalid pi fragment", "pi must be an object")
         apply_llm(env, pi_fragment)
+        refresh_redaction_map()
         run.emit("log", message="LLM config replaced via API")
         return Response(status_code=204)
 

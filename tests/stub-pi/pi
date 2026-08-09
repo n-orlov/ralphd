@@ -36,6 +36,15 @@ from env vars set by the test:
   STUB_BAD_LINE       if set, emit exactly one malformed (non-JSON) line
                       during the first iteration that emits rich events, to
                       exercise malformed-line tolerance in log consumers.
+  STUB_ECHO_SECRET    comma-separated literal secret value(s) for the stub
+                      worker to deliberately echo into its final assistant
+                      text AND into a tool call's arguments/result (task
+                      060: proves the engine's mechanical redaction catches
+                      secrets an agent leaks this way, e.g. `cat`-ing a
+                      cred file or `docker inspect`-ing a container's env).
+                      A distinctive non-secret marker is always appended
+                      alongside it so tests can prove ordinary text passes
+                      through untouched.
 
 Every invocation unconditionally records the exact prompt it received to
 `<run>/.stub-last-prompt` (overwritten) and appends it to
@@ -97,7 +106,8 @@ def _chunks(s, n=6):
     return [s[i:i + size] for i in range(0, len(s), size)]
 
 
-def emit_rich_preamble(tool_name="bash", tool_args=None, thinking_text=None):
+def emit_rich_preamble(tool_name="bash", tool_args=None, thinking_text=None,
+                        tool_result="ok"):
     """Emit a realistic pi `--mode json` event sequence: a streamed thinking
     content block, a streamed tool call (with matching top-level
     tool_execution_* events), and -- once per run, if STUB_BAD_LINE is set --
@@ -132,7 +142,7 @@ def emit_rich_preamble(tool_name="bash", tool_args=None, thinking_text=None):
     print(json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
                        "toolName": tool_name, "args": tool_args}))
     print(json.dumps({"type": "tool_execution_end", "toolCallId": tool_call_id,
-                       "toolName": tool_name, "result": "ok", "isError": False}))
+                       "toolName": tool_name, "result": tool_result, "isError": False}))
     return tool_call, thinking_text
 
 
@@ -192,7 +202,20 @@ elif "Role: Worker" in prompt:
         emit_final("spinning wheels, no progress")
         sys.exit(0)
     tool_call = thinking_text = None
-    if os.environ.get("STUB_RICH_EVENTS"):
+    echo_secrets = [s for s in os.environ.get("STUB_ECHO_SECRET", "").split(",") if s]
+    if echo_secrets:
+        # Deliberately leak the planted secret value(s) into a tool call's
+        # arguments AND its result -- mirrors the two real incidents behind
+        # task 060 (cat-ing a cred file's contents; `docker inspect` dumping
+        # a container's env), so the black-box test can prove the engine's
+        # mechanical redaction catches this regardless of *how* an agent
+        # leaks a known secret value.
+        tool_call, thinking_text = emit_rich_preamble(
+            tool_name="bash",
+            tool_args={"command": "echo " + " ".join(echo_secrets)},
+            thinking_text="Echoing configuration for debugging.",
+            tool_result="\n".join(echo_secrets))
+    elif os.environ.get("STUB_RICH_EVENTS"):
         tool_call, thinking_text = emit_rich_preamble(
             tool_name="bash", tool_args={"command": "python -m pytest tests/ -q"},
             thinking_text="Picking the next pending task and making it pass.")
@@ -256,10 +279,16 @@ elif "Role: Worker" in prompt:
         with open(marker("saw-steering"), "a") as f:
             f.write(prompt[prompt.index("Operator steering"):][:2000])
     if all(t["status"] == "completed" for t in d["tasks"]):
-        emit_final("everything finished\n<promise>COMPLETE</promise>",
-                    tool_call=tool_call, thinking_text=thinking_text)
+        text = "everything finished"
+        if echo_secrets:
+            text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
+        text += "\n<promise>COMPLETE</promise>"
+        emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
     else:
-        emit_final("completed one task", tool_call=tool_call, thinking_text=thinking_text)
+        text = "completed one task"
+        if echo_secrets:
+            text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
+        emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Reviewer" in prompt:
     fails_wanted = int(os.environ.get("STUB_REVIEW_FAILS", "0"))

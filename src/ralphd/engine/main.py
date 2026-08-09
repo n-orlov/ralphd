@@ -17,6 +17,7 @@ from .api import create_app
 from .config import CONFIG_DIR, RUN_DIR, WORKSPACE_DIR, JobConfig
 from .creds import place_creds
 from .loop import LoopSupervisor
+from .redact import refresh_redaction_map
 from .skills import place_skills
 from .state import CURRENT_SCHEMA_VERSION, RunDir, RunDirLocked, SchemaVersionTooNew, utcnow
 
@@ -117,6 +118,10 @@ async def amain() -> int:
     workspace.mkdir(parents=True, exist_ok=True)
     place_creds(CONFIG_DIR)
     place_skills(CONFIG_DIR)
+    # Build the in-memory-only secret-redaction set (task 060) now that
+    # creds are placed -- covers both process/LLM env and placed cred file
+    # values from the very first iteration onward.
+    refresh_redaction_map()
 
     if not run.prd_file.exists():
         prd_src = CONFIG_DIR / "prd.md"

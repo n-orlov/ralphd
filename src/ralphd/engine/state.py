@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
+from .redact import scrub_text
+
 
 class RunDirLocked(Exception):
     """Raised when another live engine already holds the run dir's lock."""
@@ -202,8 +204,12 @@ class RunDir:
         with self._events_lock:
             self._event_id += 1
             event = {"id": self._event_id, "ts": utcnow(), "type": type_, **data}
+            # Mechanical secret redaction (task 060): scrub the persisted
+            # line -- never the in-memory dict returned to the caller, which
+            # isn't written anywhere else.
+            line = scrub_text(json.dumps(event))
             with open(self.root / "events.jsonl", "a") as f:
-                f.write(json.dumps(event) + "\n")
+                f.write(line + "\n")
         return event
 
     # -- steering --------------------------------------------------------

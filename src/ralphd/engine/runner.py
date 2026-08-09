@@ -9,6 +9,8 @@ import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .redact import scrub_text
+
 COMPLETE = "<promise>COMPLETE</promise>"
 VERIFIED = "<promise>VERIFIED</promise>"
 
@@ -97,9 +99,13 @@ class PiRunner:
                         line = await self._proc.stdout.readline()
                         if not line:
                             break
-                        out.write(line.decode(errors="replace"))
-                        out.flush()
                         self._scan_line(line, result)
+                        # Mechanical secret redaction (task 060): scrub any
+                        # known secret value before it ever touches disk --
+                        # scanning above uses the raw bytes so sentinel/usage
+                        # extraction is unaffected either way.
+                        out.write(scrub_text(line.decode(errors="replace")))
+                        out.flush()
 
             try:
                 await asyncio.wait_for(pump(), timeout=timeout_s)

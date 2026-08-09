@@ -554,6 +554,56 @@ the next iteration that builds that phase's prompt — without ever touching
 the read-only `/config` mount. Skills CRUD follows the same pattern (see
 above); creds/llm CRUD are a later milestone.
 
+### Security: mechanical secret redaction
+
+Prompt-level guidance (the creds note's "never `cat`/`echo`/paste a secret"
+rule, task 049) is necessary but not sufficient: it has already failed twice
+in this project's own self-hosted run — a worker `cat`-ed
+`~/.git-credentials`, and a separate iteration ran `docker inspect` on the
+*production* engine container and got back its real `AWS_BEARER_TOKEN_BEDROCK`
+in the output. Both happened *after* the prompt guidance already existed, so
+the engine also enforces this mechanically (`engine/redact.py`), the same
+principle as Jenkins credential masking: scrub every known secret *value*
+from everything the engine persists or serves, regardless of how an agent's
+command happened to produce it.
+
+**Redaction-set sources** (rebuilt fresh at engine startup, and again after
+any `PUT`/`DELETE /config/creds/{name}` or `PUT /config/llm` — never
+persisted, never returned by any API route, in-memory only for this process's
+lifetime):
+- process/LLM-forwarded env vars whose *name* matches `TOKEN`/`KEY`/`SECRET`/
+  `PASSWORD` (case-insensitive) or is a known LLM provider var (e.g.
+  `ANTHROPIC_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`) — covers both the
+  process's own environment and any `PUT /config/llm` env override;
+- values parsed best-effort from placed creds files: `~/.creds/*.env` (`KEY=
+  value` lines), `~/.git-credentials` (the URL password), `~/.netrc`
+  (`password` fields). Unparseable files are simply skipped.
+
+**Scrub points** (defense-in-depth, several independent layers): every line
+of a `pi` subprocess's stdout is scrubbed before being appended to that
+iteration's `output.jsonl` (`runner.py`); every event is scrubbed as its
+serialized JSON text before being appended to `events.jsonl`
+(`state.py:RunDir.emit()`); `GET /logs` (both tail and follow modes) scrubs
+again as it serves content, so a value only *recognized* as a secret after a
+transcript line was originally written (e.g. a cred added mid-run) is still
+caught retroactively when served.
+
+**Length floor**: only values at least 8 characters long are ever redacted,
+so short/common substrings (region codes, single words) are never mangled —
+deliberately trading a narrow gap in coverage for never corrupting ordinary
+transcript text.
+
+**Memory-only guarantee**: the redaction set itself is exactly as sensitive
+as the secrets it holds, so it is never written to disk (not even under the
+writable overlay) and no API route (`GET /config`, `GET /config/creds`,
+etc.) ever exposes it — those routes already only ever return credential
+*names*, never values, and that discipline is unchanged by this feature.
+
+**Non-goals** (recorded as roadmap notes, not implemented here — see
+[roadmap.md](roadmap.md)): PID-namespace isolation of agent iterations from
+in-container kill signals, and a `ralphctl repair` command for hand-fixing
+corrupted run state.
+
 ## 6. API security
 
 - Default: container port published to `127.0.0.1` only, **no auth**.
