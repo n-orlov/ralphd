@@ -601,6 +601,51 @@ def test_vigilant_verify_fail_then_recovery(engine_factory):
     assert len(task_events) >= 1
 
 
+def test_criteria_edited_after_validation_failure_is_flagged(engine_factory):
+    """Task 008: a task that fails verification once, then gets its
+    successCriteria rewritten by the worker instead of the actual work being
+    fixed, must be flagged with a persistent
+    criteriaEditedAfterValidationFailure marker that survives in tasks.json
+    -- while a sibling task whose criteria never change, and never fails
+    verification, must NOT be flagged (negative case)."""
+    e = engine_factory(
+        job={"on_complete": "idle", "vigilant": True},
+        stub_env={"STUB_TASKS": "2", "STUB_VERIFY_FAILS": "1",
+                  "STUB_REWRITE_CRITERIA": "1"},
+    )
+    e.wait_api()
+    e.wait_state(("succeeded",), timeout=120)
+
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+
+    tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
+    assert len(tasks) == 2
+    assert all(t["status"] == "completed" for t in tasks)
+
+    retried = [t for t in tasks if t.get("validationAttempts", 0) >= 1]
+    assert len(retried) == 1, "exactly one task should have been retried"
+    rewritten = retried[0]
+    assert rewritten["validationAttempts"] == 1
+    assert "(rewritten by worker)" in rewritten["successCriteria"]
+    assert rewritten.get("criteriaEditedAfterValidationFailure") is True
+    # the fingerprint on disk matches the CURRENT (post-rewrite) text --
+    # it isn't stuck comparing against the original forever
+    import hashlib
+    assert rewritten["criteriaFingerprint"] == hashlib.sha256(
+        rewritten["successCriteria"].encode("utf-8")).hexdigest()
+
+    # Negative case: the other task's criteria never changed and it never
+    # failed verification -- no flag, even though a fingerprint is recorded.
+    untouched = [t for t in tasks if t["id"] != rewritten["id"]]
+    assert len(untouched) == 1
+    other = untouched[0]
+    assert other.get("validationAttempts", 0) == 0
+    assert "criteriaEditedAfterValidationFailure" not in other
+    assert "criteriaFingerprint" in other
+
+
 def test_vigilant_verify_transient_error_retries(engine_factory):
     """Regression (task 050): a verify iteration that errors out mid-stream
     (agent/provider failure, e.g. a Bedrock 502) before ever emitting a

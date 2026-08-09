@@ -126,6 +126,23 @@ worker left it -- it is not marked `validation-failed`, `failed`, or otherwise
 penalized. The verify iteration's `meta.json` records `verifyOutcome: "error"`
 for these attempts (distinct from `"pass"`/`"fail"`).
 
+### Criteria fingerprinting and edited-after-failure detection (task 008)
+
+Every task gets a `criteriaFingerprint` (sha256 of its `successCriteria` text)
+recorded in `tasks.json`: a baseline on first sight (right after planning, or
+on first observation for a task discovered mid-run), silently refreshed on
+any subsequent edit -- *unless* the task already has `validationAttempts >= 1`
+at the moment the text is observed to differ from the stored fingerprint, in
+which case the engine also sets a persistent `criteriaEditedAfterValidationFailure:
+true` marker on the task before refreshing the fingerprint. This catches a
+worker that quietly rewrites the bar it just failed instead of doing the work,
+without flagging ordinary criteria refinement that happens before any failure
+or a task's untouched criteria. The marker, once set, is never cleared. Task
+009 feeds the list of flagged tasks to the review prompt so at least one
+independent re-verification of the new text happens before a `VERIFIED`
+verdict, closing the gap where `_verify_task`'s `validationAttempts >= 3` skip
+would otherwise let repeatedly-rewritten criteria dodge every check.
+
 ### No-progress escalation guard vs. instant startup/infra failures (task 059)
 
 The worker loop's stagnation guard (3 consecutive worker iterations with no

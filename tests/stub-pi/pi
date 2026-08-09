@@ -24,6 +24,13 @@ from env vars set by the test:
   STUB_VERIFY_FAILS   number of verify invocations to fail before passing
                       (default 0; each failed invocation writes validation-failed
                       to tasks.json and does NOT emit the sentinel)
+  STUB_REWRITE_CRITERIA  if set, a worker iteration that picks up a
+                      validation-failed task rewrites its successCriteria
+                      (appending " (rewritten by worker)") before marking it
+                      completed again, instead of leaving the criteria text
+                      untouched -- used by task 008's test to prove the
+                      engine flags criteria edited after a validation
+                      failure.
   STUB_VERIFY_ERRORS  number of verify invocations (from the start, before any
                       STUB_VERIFY_FAILS counting) that simulate a transient
                       agent/provider error instead of a real verdict: emits a
@@ -306,6 +313,9 @@ elif "Role: Worker" in prompt:
             with open(os.path.join(run, "notes.md"), "a") as f:
                 f.write("\n" + "\n".join(blocked_notes) + "\n")
     if picked is not None:
+        if os.environ.get("STUB_REWRITE_CRITERIA") and picked["status"] == "validation-failed":
+            picked["successCriteria"] = (
+                picked.get("successCriteria", "") + " (rewritten by worker)")
         # Mandatory first write of the iteration (mirrors worker.md's rule):
         # flip the picked task to in-progress and persist it *before* doing
         # any "work", then sleep to simulate work time -- this is the window

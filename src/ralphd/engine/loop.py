@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -422,6 +423,14 @@ class LoopSupervisor:
                                       message="planning produced no tasks.json")
                         continue
 
+                # Task 008: establish (or backfill, for a run resumed from
+                # before this feature existed) a criteriaFingerprint
+                # baseline for every task before the worker loop's first
+                # before/after diff -- otherwise the fingerprint field
+                # appearing for the first time inside that diff would look
+                # like spurious task progress.
+                self._ensure_criteria_baseline()
+
                 # worker loop
                 stagnant = 0
                 verdict_ready = False
@@ -461,6 +470,13 @@ class LoopSupervisor:
                                 await self._verify_task(task)
                         # Re-read after any verification-driven status updates
                         tasks_after = self.run.read_tasks()
+
+                    # Task 008: a worker that rewrites a task's successCriteria
+                    # after that task has already failed verification at
+                    # least once is quietly moving the bar instead of doing
+                    # the work -- flag it persistently so review (task 009)
+                    # can demand independent re-verification of the new text.
+                    self._check_criteria_edits(tasks_after)
 
                     if self._check_instant_failure(result, self.iterations_used):
                         break
@@ -621,6 +637,55 @@ class LoopSupervisor:
         self.run.emit("log", level="error", message=diag)
         self._abort_reason = diag
         return True
+
+    @staticmethod
+    def _criteria_fingerprint(text: str) -> str:
+        return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+    def _ensure_criteria_baseline(self) -> None:
+        """Task 008: give every task a criteriaFingerprint (sha256 of its
+        successCriteria text) if it doesn't already have one -- true for a
+        freshly planned task, and also backfills a run resumed from before
+        this feature existed. Never flags anything: there is nothing yet to
+        compare a first-sight fingerprint against."""
+        data = self.run.read_tasks()
+        changed = False
+        for t in data.get("tasks", []):
+            if "criteriaFingerprint" not in t:
+                t["criteriaFingerprint"] = self._criteria_fingerprint(t.get("successCriteria", ""))
+                changed = True
+        if changed:
+            atomic_write_json(self.run.tasks_file, data)
+
+    def _check_criteria_edits(self, tasks_data: dict) -> None:
+        """Task 008: compare each task's current successCriteria against its
+        stored criteriaFingerprint. A task seen for the first time (no
+        stored fingerprint, e.g. a task discovered mid-run) just gets a
+        baseline recorded -- never flagged. A change observed while
+        validationAttempts is still 0 (no validation failure has ever
+        happened yet) silently updates the baseline -- also not flagged,
+        per the negative case in task 008's successCriteria. Only a change
+        observed once validationAttempts >= 1 sets the persistent
+        criteriaEditedAfterValidationFailure marker, which -- once set --
+        is never cleared (a worker doing this even once is the signal task
+        009's review re-verification exists to catch, however the criteria
+        keep evolving afterwards)."""
+        changed = False
+        for t in tasks_data.get("tasks", []):
+            current = self._criteria_fingerprint(t.get("successCriteria", ""))
+            stored = t.get("criteriaFingerprint")
+            if stored is None:
+                t["criteriaFingerprint"] = current
+                changed = True
+                continue
+            if stored != current:
+                if (t.get("validationAttempts", 0) >= 1
+                        and not t.get("criteriaEditedAfterValidationFailure")):
+                    t["criteriaEditedAfterValidationFailure"] = True
+                t["criteriaFingerprint"] = current
+                changed = True
+        if changed:
+            atomic_write_json(self.run.tasks_file, tasks_data)
 
     async def _verify_task(self, task: dict) -> bool:
         """Run one verify iteration (with bounded retry on transient agent/
