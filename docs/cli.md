@@ -267,7 +267,19 @@ tell one `bash` call from another instead of seeing nine identical
 - any other/unknown tool → `→ <tool> <first scalar argument value>`
   (best-effort; whatever the first plain string/number/bool argument is).
 The `✓ ok` / `✗ error` outcome is unchanged; on `✗` a short excerpt of the
-tool's result is shown when the result is a string, same as on success.
+tool's result is shown when one can be extracted, same as on success
+(errors get a bit more room -- ~120 chars -- than success excerpts,
+~60 chars, since the detail matters more when something failed).
+A plain-string result is used verbatim (as before). A STRUCTURED
+(non-string) result -- e.g. the standard
+`{"content": [{"type": "text", "text": ...}]}` shape tool results
+commonly use, including structured error payloads under an `error`/
+`detail` key -- is walked for its first non-empty `text` item to produce
+the same short excerpt (task 015). An unrecognized/unknown structured
+shape yields NO excerpt at all: this deliberately never falls back to
+stringifying or JSON-dumping the whole result object, which would dump
+arbitrary structured noise into the pretty renderer instead of a short,
+readable line.
 This does not change what secrets can leak: redaction
 (`src/ralphd/engine/redact.py`) scrubs known secret values out of the
 transcript at write/serve time, upstream of rendering, so a full `bash`

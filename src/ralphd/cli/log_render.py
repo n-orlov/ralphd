@@ -170,16 +170,73 @@ def _render_tool_result(ev: dict, tty: bool, args: dict | None = None) -> None:
     print(f"  → {invocation} {outcome}{tail}")
 
 
+def _text_from_content_item(item) -> str | None:
+    """A single content-list entry's text, if it is (or resembles) the
+    standard `{"type": "text", "text": "..."}` shape -- tolerant of a
+    missing/other `type` as long as a non-empty string `text` is present,
+    since some tool results omit the discriminator."""
+    if not isinstance(item, dict):
+        return None
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text
+    return None
+
+
+def _extract_structured_excerpt(result, limit: int) -> str | None:
+    """Best-effort short text excerpt out of a STRUCTURED (non-string)
+    `tool_execution_end.result` value (task 015 / PRD req), by walking the
+    standard MCP/pi content-list shape
+    `{"content": [{"type": "text", "text": ...}, ...]}` for the first
+    non-empty text item, truncated to `limit` chars. Also tolerates a
+    bare top-level content LIST (no wrapping `content` key) and an
+    `error`/`detail` field carrying the same shape (structured error
+    payloads). Returns `None` for any shape this doesn't recognize --
+    deliberately never falls back to stringifying/JSON-dumping the whole
+    object, since that would defeat the point of a SHORT excerpt (and
+    could dump arbitrary structured noise into the pretty renderer)."""
+    if isinstance(result, str):
+        return _truncate(result, limit) if result else None
+    candidates: list = []
+    if isinstance(result, dict):
+        for key in ("content", "error", "detail"):
+            val = result.get(key)
+            if isinstance(val, list):
+                candidates = val
+                break
+            text = _text_from_content_item(val)
+            if text is not None:
+                return _truncate(text, limit)
+    elif isinstance(result, list):
+        candidates = result
+    for item in candidates:
+        text = _text_from_content_item(item)
+        if text is not None:
+            return _truncate(text, limit)
+    return None
+
+
 def _tool_outcome_and_tail(ev: dict, tty: bool) -> tuple[str, str]:
     """Shared ✓/✗-plus-excerpt formatting used by both the buffered
     one-line form (`_render_tool_result`) and the live completion-only
-    line (`_render_tool_completion`, task 003)."""
+    line (`_render_tool_completion`, task 003), and by both TTY and piped
+    rendering paths (task 004) since it never touches the cursor itself.
+
+    On success the excerpt is truncated to 60 chars (unchanged from
+    before); on failure it is allowed a bit more room (120 chars) since
+    error text is where an operator most needs the detail (task 015).
+    A plain string result is used as-is (unchanged behavior). A
+    STRUCTURED (non-string) result -- e.g. the standard
+    `{"content": [{"type": "text", "text": ...}]}` shape -- is walked by
+    `_extract_structured_excerpt` for its first non-empty text item; an
+    unrecognized/unknown structured shape yields NO excerpt at all (never
+    a stringified JSON dump of the whole result)."""
     is_error = bool(ev.get("isError"))
     outcome = _ansi(tty, "1;31", "✗ error") if is_error else _ansi(tty, "1;32", "✓ ok")
     result = ev.get("result")
-    # On failure show a short error excerpt when the result carries one; on
-    # success show a short result excerpt too (unchanged from before).
-    tail = f" ({str(result)[:60]})" if isinstance(result, str) and result else ""
+    limit = 120 if is_error else 60
+    excerpt = _extract_structured_excerpt(result, limit)
+    tail = f" ({excerpt})" if excerpt else ""
     return outcome, tail
 
 
