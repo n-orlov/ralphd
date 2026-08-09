@@ -192,6 +192,30 @@ class RunDir:
     def read_tasks(self) -> dict:
         return read_json(self.tasks_file, {})
 
+    # -- vigilant-mode verification tracking (task 052) -------------------
+    # A record, engine-owned and never touched by the agent (unlike
+    # tasks.json), of which task ids have already received a passing
+    # ("taskVerified") verify iteration under vigilant mode. This is what
+    # lets a resumed engine tell "this task is still 'completed' because it
+    # was already verified" apart from "this task is still 'completed'
+    # because the prior process crashed between the worker iteration that
+    # completed it and the verify iteration that was supposed to check it"
+    # -- a per-process before/after tasks.json diff can't distinguish those
+    # two cases across a crash/resume boundary, since both leave the task
+    # showing status "completed" in the very first snapshot the new process
+    # ever reads.
+    @property
+    def vigilant_verified_file(self) -> Path:
+        return self.root / "vigilant-verified.json"
+
+    def read_verified_tasks(self) -> set[str]:
+        return set(read_json(self.vigilant_verified_file, []))
+
+    def mark_task_verified(self, task_id: str) -> None:
+        verified = self.read_verified_tasks()
+        verified.add(task_id)
+        atomic_write_json(self.vigilant_verified_file, sorted(verified))
+
     # -- resume (PRD req 16) ---------------------------------------------
     def max_iteration_number(self) -> int:
         """Highest iteration number with a *completed* meta.json (i.e. its

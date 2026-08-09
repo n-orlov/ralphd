@@ -418,16 +418,28 @@ class LoopSupervisor:
                     self._warn_if_batched(tasks_before, tasks_after)
 
                     if self.cfg.vigilant:
-                        before_statuses = {
-                            t["id"]: t.get("status")
-                            for t in tasks_before.get("tasks", [])
-                        }
-                        newly_completed = [
+                        # Do NOT gate this on a before/after diff scoped to
+                        # this single run_iteration() call (task 052): if
+                        # the engine crashed after a prior worker iteration
+                        # completed a task but before (or during) its verify
+                        # iteration, a resumed process's very first snapshot
+                        # already shows that task as "completed", so a
+                        # before/after diff taken *this* process would never
+                        # see it as newly-completed again and its mandatory
+                        # verification would be silently skipped forever.
+                        # Instead, consult the engine-owned, disk-persisted
+                        # verified-task record (survives crash/resume) --
+                        # anything currently "completed" that isn't in it
+                        # still needs a verify iteration, whether it just
+                        # completed in this process or was left over from a
+                        # killed prior one.
+                        verified_ids = self.run.read_verified_tasks()
+                        pending_verify = [
                             t for t in tasks_after.get("tasks", [])
                             if t.get("status") == "completed"
-                            and before_statuses.get(t["id"]) != "completed"
+                            and t["id"] not in verified_ids
                         ]
-                        for task in newly_completed:
+                        for task in pending_verify:
                             if self.budget_left():
                                 await self._gate()
                                 await self._verify_task(task)
@@ -538,6 +550,7 @@ class LoopSupervisor:
                 atomic_write_json(meta_path, meta)
 
             if verified:
+                self.run.mark_task_verified(tid)
                 self.run.emit("signal", signal="taskVerified", taskId=tid)
                 log.info("task %s verified", tid)
                 return True

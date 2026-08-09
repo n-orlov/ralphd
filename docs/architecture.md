@@ -90,10 +90,29 @@ Prompts are authored fresh for this project.
 ### Vigilant mode
 
 Optional (`vigilant: true` in job config). After a worker iteration, the engine
-diffs task statuses; each newly `completed` task gets a verification iteration
-against its `successCriteria`. Failures set `status: validation-failed` with
+checks which tasks are currently `completed` and haven't yet received a passing
+verify iteration; each such task gets a verification iteration against its
+`successCriteria`. Failures set `status: validation-failed` with
 `validationNotes`; the worker treats those like `pending` and reads the notes. Three
 failed validations of the same task mark it `failed` (budget protection).
+
+**Crash/resume-safe tracking (task 052).** "Hasn't yet received a passing verify
+iteration" is answered from an engine-owned, disk-persisted record --
+`<run-dir>/vigilant-verified.json`, a JSON list of task ids that have passed a
+verify iteration (`RunDir.read_verified_tasks()` / `mark_task_verified()`) -- not
+from an in-process before/after diff of `tasks.json` scoped to a single
+`run_iteration("worker")` call. The earlier before/after-diff design had a gap: if
+the engine crashed after a worker iteration wrote a task as `completed` but before
+(or during) its verify iteration, a resumed process's very first `tasks.json`
+snapshot already showed that task as `completed`, so the diff never fired for it
+again and its mandatory verification was silently skipped for the rest of the job.
+Because the verified-task record survives the crash (it's just a file in the run
+dir, read fresh on every check) and is checked against every currently-`completed`
+task -- not only ones that changed status inside this process -- a resumed engine
+always still catches and runs the pending verify iteration for such a task before
+the job can reach a terminal verdict. The record is purely a derived cache, never
+edited by the agent (unlike `tasks.json`) and rebuildable in principle by rescanning
+iteration `meta.json` files for `verifyOutcome: "pass"`.
 
 A verify iteration that errors out mid-stream (agent/provider failure -- e.g. a
 Bedrock 502 -- surfaced as an assistant `message_end` with `stopReason: "error"`)
@@ -432,6 +451,19 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   of `run_job()` before the resume decision is made.
 - Tests: `tests/test_resume.py` (no Docker, real `ralphd-engine` twice over
   the same run dir via `test_e2e.py`'s `engine_factory` fixture).
+- **Vigilant-mode verification across a crash (task 052).** Resuming into an
+  existing approach's worker loop (skipping planning) does not, by itself,
+  re-derive which tasks still need a verify iteration from an in-process
+  diff -- see "Crash/resume-safe tracking" under Vigilant mode above.
+  Instead every pass through the worker loop (including the very first one
+  after a resume) re-reads `<run-dir>/vigilant-verified.json` and verifies
+  any currently-`completed` task not yet in it, so a task whose completion
+  survived a crash but whose verify iteration never ran (or never finished)
+  still gets verified before the job can reach a terminal verdict. Tests:
+  `tests/test_vigilant_crash_resume.py` (SIGKILL a specific PID after a
+  task is durably `completed` but its verify iteration's `meta.json` has
+  `startedAt` and no `endedAt`; resume proves a `taskVerified` signal and a
+  passing verify iteration for that task eventually appear).
 
 ## 5. Configuration & injection
 
