@@ -193,6 +193,17 @@ fields (nothing existing is removed or renamed): a top-level `durationSeconds`
 and, when `currentIteration` is present, an `elapsedSeconds` field nested
 inside it for that iteration's own elapsed time.
 
+A terminal run (`succeeded`/`failed`/`aborted`) also carries an
+`unconsumedSteering` field: a list of steering filenames that were still
+pending when the run went terminal (task 006 -- empty in the common,
+fully-consumed case, since a terminal run never reads pending steering
+again). The human output does not bury this in the JSON: if the list is
+non-empty, `ralphctl status` prints an extra `!! UNCONSUMED STEERING: ...`
+line (bold red on a TTY) naming the stranded file(s), so an operator running
+the plain human command still notices without having to remember `--json`.
+The hub run-detail view shows the same fact as a `.steering-warning` banner
+on the run summary card.
+
 ### `ralphctl watch <run-id>`
 
 Live TUI: task table, phase/approach/iteration header, budget + cost gauges,

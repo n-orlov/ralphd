@@ -401,6 +401,23 @@ still pending, the verdict is discarded, one more (actionable) worker
 iteration runs to consume it, and the approach is re-reviewed. Only a
 `VERIFIED` verdict observed with no pending steering left is allowed to end
 the job successfully.
+
+**Any terminal state still surfaces unconsumed steering, belt-and-braces
+(task 006).** The `VERIFIED`-refusal above closes the most common silent-drop
+window, but other terminal paths -- an aborted run, a run that exhausts its
+iteration/approach budget while a worker-bound iteration never comes back
+round, or an unhandled engine error -- can still end with steering files
+that were accepted (`POST /steering` returned `202`) but never marked
+consumed. Every terminal `update_status(...)` call in `_run_job_core`
+(succeeded, failed, and aborted alike) is patched with
+`_unconsumed_steering_patch()`, which adds an `unconsumedSteering` field to
+`status.json` listing the basenames of whatever `Run.pending_steering()`
+still returns at that instant (empty list in the common, fully-consumed
+case). This is a *reporting* guarantee, not a consumption one: it does not
+retry or re-open a terminal run, it just makes the stranded-steering fact
+impossible to miss from `status.json` alone -- surfaced further by
+`ralphctl status` (a loud warning line, not just a `--json` field) and the
+hub run-detail view (a `.steering-warning` banner).
 `POST /interrupt` gives the "right now" variant: SIGINT the current iteration so the
 next one starts immediately with the new guidance. Steering is guidance for the
 agent; it does not mutate `tasks.json` directly.

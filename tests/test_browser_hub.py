@@ -139,6 +139,35 @@ def test_run_list_renders_fixture_runs(tmp_path, pw):
         server.stop()
 
 
+def test_run_detail_shows_unconsumed_steering_warning(tmp_path, pw):
+    """Task 006: the hub run-detail view must loudly surface a terminal
+    run's unconsumedSteering field (not silently omit it the way a plain
+    key/value dump of status.json's other fields would if a caller forgot
+    to look)."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-stranded", state="aborted", verdict="unverified",
+                    unconsumedSteering=["001-stranded.md"])
+    _write_dead_run(registry, "run-clean", state="succeeded", verdict="verified",
+                    unconsumedSteering=[])
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-stranded")
+        body_text = _wait_for(pw, "document.body.innerText", "UNCONSUMED STEERING")
+        assert "001-stranded.md" in body_text
+        n_warn = int(pw.eval_js("document.querySelectorAll('.steering-warning').length"))
+        assert n_warn == 1
+
+        pw.open(f"{server.base}/#/run/run-clean")
+        body_text = _wait_for(pw, "document.body.innerText", "succeeded")
+        assert "UNCONSUMED STEERING" not in body_text
+        n_warn = int(pw.eval_js("document.querySelectorAll('.steering-warning').length"))
+        assert n_warn == 0
+    finally:
+        server.stop()
+
+
 def test_run_detail_shows_task_table_and_iteration_timeline(tmp_path, pw, live):
     run = live(run_id="browser-detail",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},

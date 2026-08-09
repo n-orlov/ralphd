@@ -263,6 +263,35 @@ def test_abort_via_api(engine_factory):
     assert e.proc.wait(timeout=10) == 1
 
 
+def test_terminal_status_surfaces_unconsumed_steering(engine_factory):
+    """Task 006: a run that goes terminal (aborted here, but the same
+    ``_unconsumed_steering_patch`` call covers failed/succeeded) with a
+    steering file that never got consumed must not bury that fact -- it
+    must be loudly discoverable straight from status.json's
+    ``unconsumedSteering`` field, since a terminal run never reads pending
+    steering again."""
+    e = engine_factory(stub_env={"STUB_SLEEP": "5", "STUB_TASKS": "10"})
+    e.wait_api()
+    e.wait_state(("running",))
+    code, res = e.api("POST", "/steering",
+                      {"message": "never gets acted on", "name": "stranded"})
+    assert code == 202 and res["file"] == "001-stranded.md"
+    code, _ = e.api("POST", "/abort", {"reason": "test abort with pending steering"})
+    assert code == 200
+    status = e.wait_state(("aborted",), timeout=30)
+    assert status["unconsumedSteering"] == ["001-stranded.md"]
+
+    status_file = json.loads((e.run_dir / "status.json").read_text())
+    assert status_file["unconsumedSteering"] == ["001-stranded.md"]
+
+    consumed = json.loads((e.run_dir / "steering" / ".consumed.json").read_text()) \
+        if (e.run_dir / "steering" / ".consumed.json").exists() else []
+    assert "001-stranded.md" not in consumed
+
+    e.api("POST", "/shutdown")
+    assert e.proc.wait(timeout=10) == 1
+
+
 def test_huge_output_line_does_not_kill_job(engine_factory):
     """pi emits full message snapshots per NDJSON event; a single line can be
     hundreds of KiB. Regression: this used to raise 'Separator is not found'

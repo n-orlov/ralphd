@@ -242,6 +242,16 @@ function renderSummary(el, detail) {
     p.appendChild(line);
   }
   el.appendChild(p);
+  // Task 006: a terminal run that still has unconsumed steering files is a
+  // silent-drop hazard -- a terminal run never reads pending steering
+  // again, so this is the only remaining place the operator can notice.
+  const unconsumed = s.unconsumedSteering || [];
+  if (unconsumed.length > 0) {
+    el.classList.add("error");
+    el.appendChild(h("p", { class: "steering-warning" }, [
+      "⚠ UNCONSUMED STEERING (run ended without acting on): " + unconsumed.join(", "),
+    ]));
+  }
 }
 
 function renderUsage(el, usage) {

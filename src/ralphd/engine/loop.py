@@ -523,7 +523,8 @@ class LoopSupervisor:
                 if review.saw_verified and not self.run.pending_steering():
                     self.run.emit("signal", signal="VERIFIED")
                     self.run.update_status(state="succeeded", verdict="verified",
-                                           phase=None, endedAt=utcnow())
+                                           phase=None, endedAt=utcnow(),
+                                           **self._unconsumed_steering_patch())
                     return "succeeded"
                 self.run.emit("log", message=f"review rejected approach {approach}")
                 self._archive_approach(approach)
@@ -532,14 +533,27 @@ class LoopSupervisor:
             state = "aborted" if self._abort_reason else "failed"
             self.run.update_status(state=state, verdict="unverified", phase=None,
                                    endedAt=utcnow(),
-                                   reason=self._abort_reason)
+                                   reason=self._abort_reason,
+                                   **self._unconsumed_steering_patch())
             return state
         except Exception as exc:  # engine bug — record, don't vanish
             self.run.emit("log", level="error", message=f"engine error: {exc!r}")
             self.run.update_status(state="failed", verdict="unverified",
                                    phase=None, endedAt=utcnow(),
-                                   reason=f"engine error: {exc}")
+                                   reason=f"engine error: {exc}",
+                                   **self._unconsumed_steering_patch())
             return "failed"
+
+    def _unconsumed_steering_patch(self) -> dict:
+        """status.json patch (task 006) applied at every terminal-state write:
+        names any steering files still unconsumed when the run went
+        terminal, so a run that ends failed/aborted/succeeded with steering
+        stranded (e.g. budget exhausted right after a rejected review that
+        left a just-landed steering file pending, with no further
+        actionable iteration to consume it) is loudly discoverable from
+        status.json alone -- not just from combing steering/.consumed.json
+        by hand. Empty list when nothing is stranded (the common case)."""
+        return {"unconsumedSteering": [p.name for p in self.run.pending_steering()]}
 
     # Bounded retries for a verify iteration that errors out mid-stream
     # (agent/provider failure such as a Bedrock 502, message stopReason ==

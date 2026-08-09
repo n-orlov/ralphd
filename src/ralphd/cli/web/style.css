@@ -97,6 +97,7 @@ h2 {
 }
 
 .card.error { border-color: var(--err); }
+.steering-warning { color: var(--err); font-weight: 600; }
 
 .timeline-item {
   display: flex;

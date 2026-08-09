@@ -858,6 +858,19 @@ def cmd_status(args):
                      f"(iteration {cur_it.get('number')}, phase={cur_it.get('phase')})")
     lines.append(f"tasks:     {json.dumps(status.get('tasks', {}))}")
     lines.append(f"usage:     {json.dumps(status.get('usage', {}))}")
+    # Task 006: a terminal run (failed/aborted/succeeded) that still has
+    # unconsumed steering files is a silent-drop hazard -- a terminal run
+    # never reads pending steering again, so this is the operator's only
+    # remaining chance to notice and act (e.g. re-steer a resumed run).
+    # Surfaced loudly (not buried in --json) rather than left to be spotted
+    # by combing steering/.consumed.json by hand.
+    unconsumed = status.get("unconsumedSteering") or []
+    if unconsumed:
+        tty = sys.stdout.isatty()
+        names = ", ".join(unconsumed)
+        lines.append(_ansi(tty, "1;31",
+                            f"!! UNCONSUMED STEERING: {names} "
+                            "(run ended without acting on this steering)"))
     out(args, status, "\n".join(lines))
 
 
