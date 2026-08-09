@@ -864,17 +864,56 @@ def _ansi(tty: bool, code: str, text: str) -> str:
     return f"\x1b[{code}m{text}\x1b[0m" if tty else text
 
 
-def _fmt_args(obj) -> str:
+# Tool-name groupings used by `_fmt_invocation` to pick which argument is
+# "the salient one" for a compact one-liner. These are pi's built-in tool
+# names (docs/extensions.md: read, bash, edit, write, grep, find, ls) but
+# the unknown-tool fallback below means an unrecognized/custom tool name
+# still renders something useful rather than nothing.
+_PATH_TOOLS = {"read", "write", "edit"}
+_PATTERN_TOOLS = {"grep", "glob", "find"}
+
+
+def _truncate(s: str, limit: int) -> str:
+    return s if len(s) <= limit else s[: limit - 3] + "..."
+
+
+def _first_scalar(obj) -> str | None:
+    """Best-effort first scalar value out of a tool-call argument mapping,
+    for unknown tools we have no dedicated rendering rule for."""
+    if isinstance(obj, (str, int, float, bool)):
+        return str(obj)
     if not isinstance(obj, dict):
-        s = json.dumps(obj)
-        return s if len(s) <= 60 else s[:57] + "..."
-    parts = []
-    for k, v in list(obj.items())[:3]:
-        s = json.dumps(v)
-        if len(s) > 40:
-            s = s[:37] + "..."
-        parts.append(f"{k}={s}")
-    return ", ".join(parts)
+        return None
+    for v in obj.values():
+        if isinstance(v, (str, int, float, bool)):
+            return str(v)
+    return None
+
+
+def _fmt_invocation(name: str, args) -> str:
+    """Render a tool call's salient argument into a single-line
+    `<tool> <arg>` invocation string (task 001 / PRD req A1): bash shows
+    its command (newlines collapsed, generously truncated at ~300 chars so
+    the operator sees enough to know what ran); read/write/edit show the
+    path; grep/glob/find-style tools show the pattern; anything else falls
+    back to the first scalar argument value, truncated. Redaction happens
+    at write/serve time (src/ralphd/engine/redact.py), not here, so
+    rendering the full command/path/pattern does not widen the
+    secret-exposure surface -- it only shows what the transcript already
+    contains once scrubbed."""
+    if not isinstance(args, dict):
+        args = {}
+    if name == "bash":
+        cmd = " ".join(str(args.get("command", "")).split())
+        return f"bash $ {_truncate(cmd, 300)}" if cmd else "bash"
+    if name in _PATH_TOOLS:
+        path = args.get("path")
+        return f"{name} {_truncate(str(path), 300)}" if path else name
+    if name in _PATTERN_TOOLS:
+        pattern = args.get("pattern")
+        return f"{name} {_truncate(str(pattern), 300)}" if pattern else name
+    val = _first_scalar(args)
+    return f"{name} {_truncate(val, 300)}" if val is not None else name
 
 
 def _render_boundary(ev: dict, tty: bool) -> None:
@@ -918,14 +957,26 @@ def _render_message_update(evt: dict, state: dict, tty: bool) -> None:
             state["thinking_seen"] = True
 
 
-def _render_tool_result(ev: dict, tty: bool) -> None:
+def _render_tool_result(ev: dict, tty: bool, args: dict | None = None) -> None:
+    """`args` is the tool call's arguments as captured off the earlier
+    `tool_execution_start` event for the same `toolCallId` -- the wire
+    format's `tool_execution_end` event (docs/json.md) carries only
+    `toolName`/`result`/`isError`, never the arguments, so without this
+    the invocation line would always render bare (`bash ✓ ok`, the exact
+    defect this task fixes). Callers that have no start event to key off
+    of (e.g. legacy/buffered call sites) may pass `None` / omit it and
+    fall back to whatever `ev` itself carries, if anything."""
     name = ev.get("toolName", "?")
-    fargs = _fmt_args(ev.get("args") or ev.get("arguments") or {})
+    if args is None:
+        args = ev.get("args") or ev.get("arguments") or {}
+    invocation = _fmt_invocation(name, args)
     is_error = bool(ev.get("isError"))
     outcome = _ansi(tty, "1;31", "✗ error") if is_error else _ansi(tty, "1;32", "✓ ok")
     result = ev.get("result")
-    tail = f" ({str(result)[:60]})" if isinstance(result, str) and result and not is_error else ""
-    print(f"  → {name}({fargs}) {outcome}{tail}")
+    # On failure show a short error excerpt when the result carries one; on
+    # success show a short result excerpt too (unchanged from before).
+    tail = f" ({str(result)[:60]})" if isinstance(result, str) and result else ""
+    print(f"  → {invocation} {outcome}{tail}")
 
 
 def _render_message_end(message: dict, state: dict, tty: bool) -> None:
@@ -938,12 +989,12 @@ def _render_message_end(message: dict, state: dict, tty: bool) -> None:
             if not state["thinking_seen"]:
                 print(_ansi(tty, "2;3", "  [thinking…]"))
         elif kind == "toolCall" and not state["toolcall_seen"]:
-            print(f"  → {item.get('name', '?')}({_fmt_args(item.get('arguments') or {})})")
+            print(f"  → {_fmt_invocation(item.get('name', '?'), item.get('arguments') or {})}")
 
 
 def _new_render_state() -> dict:
     return {"text_open": False, "text_seen": False, "thinking_seen": False,
-            "toolcall_seen": False}
+            "toolcall_seen": False, "tool_args": {}}
 
 
 # A tail value far larger than any real transcript can ever be: used to
@@ -978,16 +1029,27 @@ def _render_log_line(raw_line: str, tty: bool, state: dict) -> None:
     if etype == "ralphd.iteration":
         _render_boundary(ev, tty)
         state.update(text_open=False, text_seen=False, thinking_seen=False,
-                    toolcall_seen=False)
+                    toolcall_seen=False, tool_args={})
     elif etype == "message_update":
         _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)
+    elif etype == "tool_execution_start":
+        # `tool_execution_end` (docs/json.md) carries no `args`/`arguments`
+        # field, only `tool_execution_start` does -- stash them here keyed
+        # by toolCallId so the end event's one-liner can still show the
+        # salient argument (task 001 / PRD req A1). Printing an immediate
+        # invocation line for the start event itself is task 003's job.
+        tcid = ev.get("toolCallId")
+        if tcid is not None:
+            state["tool_args"][tcid] = ev.get("args") or ev.get("arguments") or {}
     elif etype == "tool_execution_end":
-        _render_tool_result(ev, tty)
+        tcid = ev.get("toolCallId")
+        args = state["tool_args"].pop(tcid, None) if tcid is not None else None
+        _render_tool_result(ev, tty, args)
         state["toolcall_seen"] = True
     elif etype == "message_end":
         _render_message_end(ev.get("message") or {}, state, tty)
-    # everything else (tool_execution_start, unrecognized/future event
-    # types) is silently skipped by design.
+    # everything else (unrecognized/future event types) is silently
+    # skipped by design.
 
 
 def _render_to_lines(raw_text: str, tty: bool, state: dict) -> list[str]:

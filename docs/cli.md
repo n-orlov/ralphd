@@ -231,9 +231,28 @@ capture the live output while still watching it (e.g. `ralphctl logs <id> -f
 | tee out.ndjson`).
 
 Pretty rendering shows: iteration/phase boundary headers (number, phase, model),
-assistant text as it streams, tool calls as compact one-liners (name, key args,
-outcome), thinking elided to a marker, per-iteration usage/cost footer, agent
-errors highlighted. When stdout is not a TTY, output is identical minus color.
+assistant text as it streams, tool calls as compact one-liners, thinking
+elided to a marker, per-iteration usage/cost footer, agent errors
+highlighted. When stdout is not a TTY, output is identical minus color.
+
+Each tool one-liner shows the tool's salient argument (task 001), not just
+its name -- generously truncated (~300 chars) so the operator can actually
+tell one `bash` call from another instead of seeing nine identical
+`bash() ✓ ok` lines:
+- `bash` → `→ bash $ <command>` -- newlines in the command are collapsed so
+  one invocation always stays one line.
+- `read`/`write`/`edit` → `→ <tool> <path>`.
+- `grep`/`glob`/`find`-style tools → `→ <tool> <pattern>`.
+- any other/unknown tool → `→ <tool> <first scalar argument value>`
+  (best-effort; whatever the first plain string/number/bool argument is).
+The `✓ ok` / `✗ error` outcome is unchanged; on `✗` a short excerpt of the
+tool's result is shown when the result is a string, same as on success.
+This does not change what secrets can leak: redaction
+(`src/ralphd/engine/redact.py`) scrubs known secret values out of the
+transcript at write/serve time, upstream of rendering, so a full `bash`
+command or file path shown here is exactly what a `--raw` reader already
+sees -- rendering it is not a new exposure surface (see
+tests/test_secret_redaction.py, which asserts this stays true).
 Once an iteration has ended, its "done" summary line includes a `took <duration>`
 field (same compact human format as `status`, computed from that iteration's
 `startedAt`/`endedAt`); an iteration still in flight has no "done" line yet

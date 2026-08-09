@@ -40,8 +40,9 @@ def test_logs_pretty_rendering_default(live):
     assert "Picking the next pending task" not in out
     assert "Considering the best approach" not in out
 
-    # tool calls render as compact one-liners with an outcome
-    assert "bash(" in out
+    # tool calls render as compact one-liners with an outcome and the
+    # salient argument (task 001 / PRD req A1): bash shows its command
+    assert "bash $ python -m pytest tests/ -q" in out
     assert "ok" in out
 
     # malformed line -> tolerant marker, no crash
