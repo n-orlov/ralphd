@@ -381,6 +381,13 @@ Send steering. Message from arg, `--file <f>`, or stdin.
 | `--now` | also SIGINT the current iteration so guidance applies immediately |
 | `--name <slug>` | steering file slug |
 
+The on-disk filename is always `NNN-<slug>.md`, where `NNN` is an
+engine-assigned monotonic sequence (never supplied by the caller). If
+`--name` already carries its own `NNN-` prefix (e.g. copy-pasted from a
+prior steering filename), that prefix is stripped before appending the
+engine's own, so the result is never doubled (e.g. `--name 019-steering`
+does not yield `022-019-steering.md`).
+
 Exit `0` accepted · `5` job already finished.
 
 ### `ralphctl interrupt <run-id>`

@@ -6,6 +6,7 @@ import calendar
 import fcntl
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -278,7 +279,15 @@ class RunDir:
     def add_steering(self, message: str, name: str | None = None) -> str:
         existing = sorted(self.steering_dir.glob("[0-9][0-9][0-9]-*.md"))
         seq = int(existing[-1].name[:3]) + 1 if existing else 1
-        fname = f"{seq:03d}-{name or 'steering'}.md"
+        suffix = name or "steering"
+        # The sequence prefix is always engine-assigned. If the caller's
+        # --name already carries its own NNN- prefix (e.g. copy-pasted from
+        # a previous steering filename), strip it so we don't double up
+        # into "022-019-steering.md"; a bare name is left untouched.
+        m = re.match(r"^\d{3}-(.+)$", suffix)
+        if m:
+            suffix = m.group(1)
+        fname = f"{seq:03d}-{suffix}.md"
         atomic_write(self.steering_dir / fname, message.rstrip() + "\n")
         self.emit("steering.received", file=fname)
         return fname
