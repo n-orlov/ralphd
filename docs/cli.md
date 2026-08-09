@@ -43,7 +43,7 @@ ralphctl stop brisk-otter-1408
 
 Global exit codes: `0` success · `1` generic error · `2` usage error ·
 `3` run not found · `4` container/API unreachable · `5` operation invalid in
-current job state.
+current job state · `130` follow interrupted by Ctrl+C (see `logs -f` below).
 
 ## Commands
 
@@ -229,6 +229,16 @@ happens once the job itself terminates. `ralphctl watch` streams the same
 way (it never buffered). Redirect to a file/pager as usual if you want to
 capture the live output while still watching it (e.g. `ralphctl logs <id> -f
 | tee out.ndjson`).
+
+Interactive exit from `-f`/`--follow` (task 002):
+- On a TTY, press **`q`** to stop following and return — no error, no
+  extra output, exit code `0`. This never touches stdin on a non-TTY
+  stdin (piped/redirected): a piped `logs -f` is never blocked waiting
+  for a key that will never arrive.
+- **Ctrl+C** (SIGINT) during a follow always exits cleanly — no
+  Python traceback on stderr — at the single documented exit code
+  **`130`** (the standard `128+SIGINT` shell convention), whether or not
+  stdin is a TTY.
 
 Pretty rendering shows: iteration/phase boundary headers (number, phase, model),
 assistant text as it streams, tool calls as compact one-liners, thinking

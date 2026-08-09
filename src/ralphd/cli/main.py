@@ -20,7 +20,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import termios
+import threading
 import time
+import tty as tty_module
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -33,6 +36,13 @@ from . import llm_profiles, ui_server
 
 DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
 DEFAULT_IMAGE = os.environ.get("RALPHD_IMAGE", "ralphd:dev")
+
+# `ralphctl logs -f`/`logsf` Ctrl+C exit code (task 002, docs/cli.md): the
+# shell convention for "terminated by signal N" is 128+N, so SIGINT (2)
+# is 130. Chosen (over 0) so a script piping `logs -f` into something else
+# can still tell a genuine user interrupt apart from a clean end-of-stream
+# exit -- and documented once, here, so nothing else has to guess.
+_SIGINT_EXIT_CODE = 130
 
 ADJECTIVES = ("brisk", "calm", "deft", "eager", "fond", "glad", "keen",
               "merry", "nimble", "proud", "quick", "spry", "vivid", "warm")
@@ -1096,7 +1106,15 @@ def cmd_logs(args):
         query = ("?" + "&".join(qs)) if qs else ""
         path = base_path + query
         if args.follow:
-            _stream_logs(args, path, tty)
+            # Task 002: Ctrl+C during a follow is a normal user-requested
+            # stop, not a crash -- caught here (rather than left to
+            # Python's default handler) so it exits with no traceback at
+            # the single documented code (docs/cli.md), instead of a
+            # traceback + implicit exit code 1.
+            try:
+                _stream_logs(args, path, tty)
+            except KeyboardInterrupt:
+                sys.exit(_SIGINT_EXIT_CODE)
             return
         text = api(args.run_id, "GET", path, raw=True, timeout=30)
         sys.stdout.write(text)
@@ -1123,7 +1141,63 @@ def cmd_logs(args):
             print(line)
         return
 
-    _stream_logs_pretty_tailed(args, base_path, tty, tail)
+    try:
+        _stream_logs_pretty_tailed(args, base_path, tty, tail)
+    except KeyboardInterrupt:
+        sys.exit(_SIGINT_EXIT_CODE)
+
+
+class _QuitWatcher:
+    """Task 002: while `ralphctl logs -f` follows on a TTY, watch stdin in
+    a background thread for a single 'q' keypress and, on seeing one,
+    close the open HTTP response to unblock the main thread's blocking
+    line-iteration loop -- a clean, user-requested stop, not an error.
+
+    Deliberately never started on a non-TTY stdin (piped/redirected): the
+    caller only constructs/starts this when `sys.stdin.isatty()`, so a
+    piped `logs -f` never touches stdin and can never block waiting for a
+    key that will never come.
+
+    cbreak mode (via `tty.setcbreak`) is used rather than raw mode so a
+    single keypress is delivered without waiting for Enter, while still
+    leaving signal generation (Ctrl+C -> SIGINT) to the terminal driver
+    exactly as normal -- this watcher does not need to handle Ctrl+C
+    itself, the ordinary KeyboardInterrupt path (see `cmd_logs`) does."""
+
+    def __init__(self, resp):
+        self.resp = resp
+        self.quit = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        fd = sys.stdin.fileno()
+        try:
+            old_attrs = termios.tcgetattr(fd)
+        except (termios.error, OSError):
+            return
+        try:
+            tty_module.setcbreak(fd)
+            while not self._stop.is_set():
+                ch = sys.stdin.read(1)
+                if not ch:
+                    return
+                if ch in ("q", "Q"):
+                    self.quit = True
+                    with contextlib.suppress(Exception):
+                        self.resp.close()
+                    return
+        except Exception:
+            return
+        finally:
+            with contextlib.suppress(termios.error, OSError):
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
 
 def _stream_logs(args, path: str, tty: bool, state: dict | None = None,
@@ -1144,7 +1218,14 @@ def _stream_logs(args, path: str, tty: bool, state: dict | None = None,
     after a backlog that was already fetched/rendered/printed separately,
     without re-showing (or losing) a single line: the transcript only
     ever grows, so a fresh snapshot's first `skip_lines` raw lines are
-    always identical to the ones already consumed."""
+    always identical to the ones already consumed.
+
+    Task 002: on a TTY, a background `_QuitWatcher` lets 'q' end the
+    follow cleanly (return, no error) by closing `resp`; on a non-TTY
+    stdin no watcher is ever started, so piped/redirected follows never
+    touch stdin. Ctrl+C (KeyboardInterrupt) is deliberately NOT caught
+    here -- it propagates to `cmd_logs`, which turns it into a clean,
+    traceback-free exit at the documented `_SIGINT_EXIT_CODE`."""
     meta = host_meta(args.run_id)
     if not meta.get("apiUrl"):
         die(4, f"no API endpoint recorded for run {args.run_id}")
@@ -1155,21 +1236,34 @@ def _stream_logs(args, path: str, tty: bool, state: dict | None = None,
     if state is None:
         state = _new_render_state()
     skipped = 0
+    watcher: _QuitWatcher | None = None
     try:
         with urllib.request.urlopen(req, timeout=3600) as resp:
-            for raw_bytes in resp:
-                if skipped < skip_lines:
-                    skipped += 1
-                    continue
-                line = raw_bytes.decode().rstrip("\n")
-                if not line:
-                    continue
-                if args.raw:
-                    print(line, flush=True)
-                else:
-                    _render_log_line(line, tty, state)
-                    sys.stdout.flush()
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if sys.stdin.isatty():
+                watcher = _QuitWatcher(resp)
+                watcher.start()
+            try:
+                for raw_bytes in resp:
+                    if skipped < skip_lines:
+                        skipped += 1
+                        continue
+                    line = raw_bytes.decode().rstrip("\n")
+                    if not line:
+                        continue
+                    if args.raw:
+                        print(line, flush=True)
+                    else:
+                        _render_log_line(line, tty, state)
+                        sys.stdout.flush()
+            finally:
+                if watcher is not None:
+                    watcher.stop()
+    except (urllib.error.URLError, TimeoutError, ConnectionError,
+            OSError, ValueError) as e:
+        if watcher is not None and watcher.quit:
+            return  # 'q' pressed -- closing resp to unblock the loop
+                    # above is expected to surface as exactly this kind
+                    # of "connection/file closed" exception; not an error.
         die(4, f"API unreachable: {e}")
 
 
