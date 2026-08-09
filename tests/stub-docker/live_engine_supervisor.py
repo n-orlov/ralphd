@@ -51,14 +51,26 @@ def main() -> None:
         # env) needs this to know which run dir to mutate.
         "STUB_RUN_DIR": str(run_dir),
     }
+    events_file = run_dir / "events.jsonl"
+    # A `resume`-style invocation over an existing run dir can already have
+    # a terminal `state` event in events.jsonl from a PRIOR engine process
+    # (e.g. the run already succeeded once, then got its iteration budget
+    # topped up). Only lines appended AFTER this specific engine process
+    # starts count as "this invocation reached a terminal state" -- start
+    # `seen` at the pre-existing line count, not 0, so a stale old terminal
+    # event never causes an instant false-positive kill before the new
+    # engine process has done any work at all.
+    try:
+        seen = len(events_file.read_text().splitlines())
+    except FileNotFoundError:
+        seen = 0
+
     proc = subprocess.Popen(["ralphd-engine"], env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True)
 
-    events_file = run_dir / "events.jsonl"
     killed = False
     deadline = time.monotonic() + 120
-    seen = 0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             break

@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 from test_cli_docker import Ctl, ctl, unix_sock
+from test_cli_start_nodetach import _live_env, _wait_for_supervisor
 
 __all__ = ["ctl", "unix_sock"]
 
@@ -158,3 +160,96 @@ def test_llm_none_leaves_no_wiring_file(ctl):
                   "--run-id", "tst-nonewiring")
     assert res.returncode == 0, res.stderr
     assert not (ctl.registry / "configs" / "tst-nonewiring" / "llm-wiring.json").exists()
+
+
+def test_resume_llm_wiring_secret_never_lands_in_run_dir(ctl, tmp_path):
+    """Gap #1 from the validation-failed review of this task: a codified,
+    repeatable negative proof (mirroring tests/test_secret_redaction.py and
+    tests/test_creds_placement.py's rglob-over-run_dir style) that the
+    persisted `--llm` wiring secret lands ONLY in the job's CONFIG dir
+    (`<cdir>/llm-wiring.json`, mode 0600, mounted read-only at /config --
+    already asserted above), never anywhere under the run dir proper --
+    across both the original `start` and a subsequent `resume`."""
+    secret = "sk-never-in-rundir-zzz789"
+    res = ctl.run("start", "--prd", str(ctl.prd), "--run-id", "tst-rundirsafe",
+                  env={"ANTHROPIC_API_KEY": secret, "AWS_REGION": "us-east-1"})
+    assert res.returncode == 0, res.stderr
+    _stop_container(ctl)
+    res = ctl.run("resume", "tst-rundirsafe", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-rundirsafe",
+        "STUB_DOCKER_RUNNING": "",
+    })
+    assert res.returncode == 0, res.stderr
+
+    run_dir = ctl.registry / "runs" / "tst-rundirsafe"
+    assert run_dir.is_dir()
+    for p in run_dir.rglob("*"):
+        if p.is_file():
+            assert secret not in p.read_text(errors="ignore"), \
+                f"secret leaked into run dir at {p}"
+    # ...and confirm it DID land (mode-0600) in the config dir, so this
+    # negative proof isn't vacuously true because nothing was ever written.
+    wiring_path = ctl.registry / "configs" / "tst-rundirsafe" / "llm-wiring.json"
+    assert secret in wiring_path.read_text()
+    assert oct(wiring_path.stat().st_mode)[-3:] == "600"
+
+
+def test_resume_reproduces_env_seen_by_real_pi_subprocess(ctl):
+    """Gap #2 from the validation-failed review of this task: assert the
+    reproduced wiring via the stub's `.stub-env.json` marker (mirroring
+    tests/test_llm_api.py), i.e. prove a REAL `pi` subprocess invocation
+    inside a resumed engine actually observes the original `start`-time
+    env -- not just that the recorded `docker run` argv looks right.
+
+    Uses the STUB_DOCKER_LIVE_ENGINE knob (tests/stub-docker/docker +
+    live_engine_supervisor.py, same mechanism as
+    tests/test_cli_start_nodetach.py): `docker run` really launches a
+    `ralphd-engine` process wired to the mounted run/config dirs, and the
+    supervisor SIGKILLs it the instant status.json reaches a terminal
+    state -- so both the original run and the resumed one terminate
+    deterministically without any pattern-based kill of this job's own
+    production engine.
+    """
+    run_id = "tst-liveresume"
+    secret = "sk-live-resume-secret-42"
+    res = ctl.run("start", "--prd", str(ctl.prd), "--run-id", run_id,
+                  "--llm", "host", "--on-complete", "idle",
+                  "--iterations", "10", "--max-approaches", "1",
+                  env={**_live_env(), "ANTHROPIC_API_KEY": secret,
+                       "STUB_TASKS": "1", "STUB_SLEEP": "0.1"})
+    assert res.returncode == 0, res.stderr
+    run_dir = ctl.registry / "runs" / run_id
+    sup1 = _wait_for_supervisor(run_dir)
+    assert sup1["killed"] is True  # the original run really did reach terminal
+
+    env_marker = run_dir / ".stub-env.json"
+    assert env_marker.exists()
+    assert json.loads(env_marker.read_text()).get("ANTHROPIC_API_KEY") == secret
+
+    # Simulate a resume from a shell/environment where the credential is
+    # completely absent -- the ONLY source left for it is the persisted
+    # llm-wiring.json, reproduced by cmd_resume regardless.
+    assert "ANTHROPIC_API_KEY" not in os.environ
+    (run_dir / ".stub-supervisor-done").unlink()
+    env_marker.unlink()
+
+    res = ctl.run("resume", run_id, "--iterations", "+5",
+                  env={**_live_env()})
+    assert res.returncode == 0, res.stderr
+
+    _wait_for_supervisor(run_dir)  # resumed engine also reaches a terminal state
+
+    deadline = time.time() + 20
+    seen: dict = {}
+    while time.time() < deadline:
+        if env_marker.exists():
+            try:
+                seen = json.loads(env_marker.read_text())
+            except json.JSONDecodeError:
+                seen = {}
+            if seen.get("ANTHROPIC_API_KEY"):
+                break
+        time.sleep(0.2)
+    assert seen.get("ANTHROPIC_API_KEY") == secret, (
+        "resumed engine's real `pi` subprocess never observed the original "
+        f"start-time env (saw: {seen.get('ANTHROPIC_API_KEY')!r})")
