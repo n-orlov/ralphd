@@ -288,9 +288,14 @@ def _container_running(name: str) -> bool | None:
 # --------------------------------------------------------------------------
 def test_creds_placed_skills_symlinked_api_reachable_rundir_files_appear(ctl, work_root):
     run_id = _unique_run_id("e041-happy")
+    # This test inspects the container after it reaches a terminal state
+    # (docker exec for creds/skills checks), so it needs the container kept
+    # alive rather than the product default of tearing itself down on
+    # completion (task 010 flipped the default on_complete to "exit").
     res = ctl.start(run_id, extra_env={"STUB_TASKS": "2", "STUB_SLEEP": "0"},
                     extra=("--creds", str(work_root / "creds-src"),
-                           "--skills", str(work_root / "skills-src")))
+                           "--skills", str(work_root / "skills-src"),
+                           "--on-complete", "idle"))
     assert res.returncode == 0, res.stderr
     meta = json.loads(res.stdout)
     api_url = meta["apiUrl"]
@@ -324,7 +329,11 @@ def test_creds_placed_skills_symlinked_api_reachable_rundir_files_appear(ctl, wo
 
 def test_stop_reaps_container_and_keeps_run_dir(ctl):
     run_id = _unique_run_id("e041-stop")
-    res = ctl.start(run_id, extra_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"})
+    # Needs the container to still be alive at terminal state so the
+    # explicit "ralphctl stop --force" below is the thing that reaps it,
+    # not the on_complete=exit default (task 010).
+    res = ctl.start(run_id, extra_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"},
+                    extra=("--on-complete", "idle"))
     assert res.returncode == 0, res.stderr
     meta = json.loads(res.stdout)
     container = f"ralphd-{run_id}"
@@ -344,7 +353,11 @@ def test_resume_continues_after_container_stop(ctl):
     run_id = _unique_run_id("e041-resume")
     # STUB_SLEEP gives a wide window to catch the job genuinely mid-run
     # (not yet terminal) before stopping the container out from under it.
-    res = ctl.start(run_id, extra_env={"STUB_TASKS": "2", "STUB_SLEEP": "4"})
+    # This test explicitly stops the container mid-run itself (that's the
+    # scenario under test), so on_complete's default doesn't matter for the
+    # first container -- but keep it explicit for clarity/stability.
+    res = ctl.start(run_id, extra_env={"STUB_TASKS": "2", "STUB_SLEEP": "4"},
+                    extra=("--on-complete", "idle"))
     assert res.returncode == 0, res.stderr
     meta = json.loads(res.stdout)
     container = f"ralphd-{run_id}"
