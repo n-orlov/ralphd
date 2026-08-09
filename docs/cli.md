@@ -606,10 +606,22 @@ JSON endpoints served under `/api/`:
   `status.json`/`tasks.json` snapshot with `live: false` — a dead run never
   produces an error, just stale-but-valid data. `iterations` is always read
   from disk (`iterations/*/meta.json`). `404` for an unknown run id.
-- `GET /api/runs/<id>/logs?tail=N` — proxies `GET /logs?tail=N` (see the
-  `logs` command above) from the live container API: `{"live": bool,
-  "text": "<ndjson>"}`. `text` is `""` and `live` is `false` if the run's
-  API isn't reachable, never an error.
+- `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
+  fetches the run's FULL raw NDJSON backlog from the live container API
+  (`GET /logs`, no `tail` param there), renders it through the exact same
+  `ralphd.cli.log_render.render_to_lines` function `ralphctl logs` uses
+  (plain text, no ANSI — `tty=False`), THEN trims to the last `tail`
+  *rendered* lines (matching the `ralphctl logs` non-follow tail contract:
+  `N` means N rendered lines, not N raw events, same as the `-N`/`--tail N`
+  syntax below). Returns `{"live": bool, "lines": ["<rendered line>", ...]}`
+  — `lines` is `[]` and `live` is `false` if the run's API isn't reachable,
+  never an error. The static hub bundle's `app.js` just displays these
+  lines (one per DOM element, via `textContent`); it does not reimplement
+  any event-to-text rendering rules of its own, so it always renders
+  identically to `ralphctl logs` (including collapsing a many-delta
+  thinking block to exactly one `[thinking…]` line, the defect this task
+  fixed — the pre-014 client-side renderer appended one element per
+  `thinking_delta` event with no dedup).
 - `POST /api/runs/<id>/steer` — body `{"message": ..., "name": ...}`,
   forwarded to the run's live `POST /steering`. Returns the API's own
   response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`

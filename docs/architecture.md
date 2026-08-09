@@ -807,6 +807,27 @@ to each run's live container API when reachable and fall back to the on-disk
 gracefully instead of erroring (see [cli.md](cli.md)). The static bundle
 served at non-`/api` paths is still pending (v0.3, task 034).
 
+**Shared server-side log renderer (task 014).** `GET /api/runs/<id>/logs`
+does not proxy the run's raw NDJSON `/logs` transcript verbatim to the
+browser: it fetches the FULL raw backlog from the run's live API, then
+renders it through `ralphd.cli.log_render.render_to_lines` -- the exact
+same function `ralphctl logs` uses -- with `tty=False` (plain text, no
+ANSI), and only THEN trims to the requested `tail` count of *rendered*
+lines (mirroring the `ralphctl logs` non-follow tail contract, task 057:
+`N` means N rendered lines, not N raw events). The response is
+`{"live": bool, "lines": [str, ...]}`. `log_render` was pulled out of
+`main.py` into its own module specifically so both `main.py` (the CLI)
+and `ui_server.py` (the hub) can import it without a circular import
+(`main.py` already imports `ui_server` for the `ralphctl ui` subcommand).
+The static hub bundle's `app.js` no longer reimplements event-to-HTML
+rendering client-side -- it just displays the lines the server already
+rendered, one per DOM element. This is a correctness fix, not just a
+DRY one: the pre-task-014 client-side renderer had no `thinking_seen`
+guard, so a thinking block streamed across many `thinking_delta` events
+flooded the tail with one element per delta; the shared renderer's
+guard (already exercised by the CLI) collapses each thinking block to
+exactly one `[thinking…]` line.
+
 ## 8. Docker image
 
 `ghcr.io/…/ralphd` (multi-arch), containing: Python 3.12 (engine), Node 22 +

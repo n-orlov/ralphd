@@ -125,14 +125,7 @@ h2 {
   overflow-y: auto;
 }
 
-#logbox .lg-boundary-start { color: #79c0ff; font-weight: 600; }
-#logbox .lg-boundary-end { color: #8b949e; }
-#logbox .lg-error { color: #ff7b72; font-weight: 600; }
-#logbox .lg-tool { color: #d2a8ff; }
-#logbox .lg-tool-err { color: #ff7b72; }
-#logbox .lg-thinking { color: #8b949e; font-style: italic; }
-#logbox .lg-malformed { color: #d29922; }
-#logbox .lg-text { color: #c9d1d9; }
+#logbox .lg-line { color: #c9d1d9; }
 
 form.steer {
   display: flex;

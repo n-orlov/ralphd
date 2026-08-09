@@ -30,6 +30,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .log_render import new_render_state, render_to_lines
+
 STATIC_DIR = Path(__file__).parent / "web"
 
 DEFAULT_LOG_TAIL = 200
@@ -118,6 +120,43 @@ def _proxy_text(reg: Path, run_id: str, path: str, timeout: float = 5.0):
         return False, ""
 
 
+def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, list[str]]:
+    """Server-side pretty-render of a run's log tail (task 014), through
+    the EXACT SAME `log_render.render_to_lines` function `ralphctl logs`
+    uses -- so the hub UI never reimplements event-to-text rendering and
+    a many-delta thinking block collapses to exactly one '[thinking…]'
+    line here too (the `thinking_seen` guard lives in `log_render`, not
+    in this function or in JS).
+
+    Mirrors the CLI's non-follow `cmd_logs` tail contract (task 057): `N`
+    means N RENDERED lines, not N raw NDJSON events -- trimming raw events
+    before rendering (as the engine's own `GET /logs?tail=` does) would
+    yield a much-smaller, wildly variable visible line count once the
+    renderer collapses/skips event types. So this always fetches the FULL
+    raw backlog from the run's live API (no `tail` query param -- the
+    engine's own default, `tail=0`, means unlimited), renders every line,
+    THEN trims to the last `tail` rendered lines.
+
+    `tty=False` is passed to `render_to_lines` unconditionally: the hub
+    displays plain text via the DOM (each line becomes its own text node,
+    task 014), so ANSI color codes would just be inserted as visible
+    garbage -- and passing `tty=False` also guarantees the returned lines
+    never contain `\r`/ANSI control bytes (task 004's piped-output
+    contract extends naturally to this server-side non-TTY caller).
+
+    Returns `(live, lines)`; `live=False` (dead/unreachable run) yields an
+    empty list, matching the previous `{"live": false, "text": ""}` shape
+    callers already handled.
+    """
+    ok, raw_text = _proxy_text(reg, run_id, "/logs")
+    if not ok:
+        return False, []
+    lines = render_to_lines(raw_text, tty=False, state=new_render_state())
+    if tail:
+        lines = lines[-tail:]
+    return True, lines
+
+
 def run_detail(reg: Path, run_id: str) -> dict | None:
     """Run detail view (PRD req 21): task table + iteration timeline data,
     live where possible, falling back to the on-disk snapshot for a dead
@@ -199,8 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"error": f"run {run_id} not found"}, 404)
                     return
                 tail = qs.get("tail", [str(DEFAULT_LOG_TAIL)])[0]
-                ok, text = _proxy_text(reg, run_id, f"/logs?tail={tail}")
-                self._send_json({"live": ok, "text": text})
+                try:
+                    tail_n = int(tail)
+                except ValueError:
+                    tail_n = DEFAULT_LOG_TAIL
+                live, lines = rendered_log_lines(reg, run_id, tail_n)
+                self._send_json({"live": live, "lines": lines})
                 return
             if len(segs) == 3 and segs[:2] == ["api", "runs"]:
                 run_id = segs[2]

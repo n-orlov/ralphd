@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from ralphd.cli.main import _fmt_invocation, _render_tool_result
+from ralphd.cli.log_render import _fmt_invocation, _render_tool_result
 
 # -- _fmt_invocation: pure argument-shape rendering -------------------------
 

@@ -229,3 +229,67 @@ def test_module_reports_playwright_cli_present():
     """Sanity check the environment actually has the tool (this suite's
     success criteria requires the tests be run for real, not skipped)."""
     assert PLAYWRIGHT_CLI is not None, "playwright-cli must be on PATH for this run"
+
+
+def test_run_detail_log_tail_collapses_many_delta_thinking_block(tmp_path, pw, live):
+    """Task 014: the hub run-detail log tail is server-rendered through
+    the shared `log_render` module `ralphctl logs` uses, rather than
+    `app.js` reimplementing event-to-HTML rendering client-side. The
+    pre-fix `app.js` (see git history: the `renderLogText` function this
+    task deleted) appended a fresh `.lg-thinking` element for EVERY
+    `thinking_start`/`thinking_delta` event with no `thinking_seen` guard
+    -- so a thinking block streamed across N deltas (`STUB_RICH_EVENTS`'s
+    `emit_rich_preamble` chunks its thinking text into multiple deltas,
+    see tests/stub-pi/pi) flooded the tail with N '[thinking…]'
+    elements. This negative-proof is documented here rather than kept
+    runnable against the old code: reverting `app.js`'s `loadLogs`/
+    `renderLogLines` to the deleted `renderLogText` implementation (and
+    pointing it at the old `body.text` field) reproduces a per-delta line
+    count for this same fixture (many more than the 2 rich iterations
+    below), which this test's exact-count assertion would fail on.
+
+    The fix collapses each rich iteration's thinking burst to EXACTLY ONE
+    line server-side (the same `thinking_seen` guard
+    `_render_message_update`/`_render_message_end` in `log_render.py`
+    already applied for the CLI), and `app.js` merely displays the lines
+    the server decided on."""
+    run = live(run_id="browser-thinking",
+               job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "1"})
+    run.wait_api()
+
+    server = UiServer(run.registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/{run.run_id}")
+        _wait_for_count_ge(
+            pw,
+            "Array.from(document.querySelectorAll('#logbox .lg-line'))"
+            ".filter(e => e.textContent.includes('[thinking')).length",
+            1, timeout=30)
+
+        n_thinking = int(pw.eval_js(
+            "Array.from(document.querySelectorAll('#logbox .lg-line'))"
+            ".filter(e => e.textContent.includes('[thinking')).length"))
+        n_boundaries_with_thinking = int(pw.eval_js(
+            "Array.from(document.querySelectorAll('#logbox .lg-line'))"
+            ".filter(e => e.textContent.includes('── iteration')).length - 1"))
+        # This stub run's worker + review iterations each emit ONE rich
+        # thinking block (`STUB_RICH_EVENTS`, see tests/stub-pi/pi) chunked
+        # across MULTIPLE `thinking_delta` events (`_chunks` in stub-pi) --
+        # the planning iteration emits none. So the correctly-collapsed
+        # count is exactly one '[thinking…]' line per rich iteration (2
+        # here: worker, review), NOT one per delta (which `_chunks`' chunk
+        # count for these thinking strings would make considerably higher
+        # than 2 if the pre-fix per-delta-append bug were still present).
+        body_text = pw.eval_js("document.body.innerText")
+        assert n_thinking == 2, (
+            f"expected exactly one collapsed '[thinking…]' line per rich "
+            f"iteration (2: worker + review), got {n_thinking}; "
+            f"body={body_text!r}")
+        assert n_boundaries_with_thinking >= 0  # sanity: didn't miscount
+
+        pw.screenshot(SCREENSHOTS_DIR / "04-thinking-collapse.png")
+    finally:
+        run.wait_terminal(timeout=60)
+        server.stop()

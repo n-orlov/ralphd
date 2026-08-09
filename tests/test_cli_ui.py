@@ -152,9 +152,50 @@ def test_run_detail_proxies_live_status_tasks_and_logs(tmp_path, live, ui):
     code, logs = server.get(f"/api/runs/{run.run_id}/logs?tail=50")
     assert code == 200
     assert logs["live"] is True
-    assert isinstance(logs["text"], str)
+    # task 014: server-rendered lines (through the same `log_render`
+    # module `ralphctl logs` uses), not raw NDJSON text -- so app.js
+    # doesn't need to reimplement event-to-text rendering.
+    assert isinstance(logs["lines"], list)
+    assert all(isinstance(line, str) for line in logs["lines"])
 
     run.wait_terminal()
+
+
+def test_ui_log_endpoint_matches_cli_pretty_rendering(tmp_path, live, ui):
+    """Task 014: the hub's `/api/runs/<id>/logs` endpoint must render
+    through the EXACT SAME `log_render.render_to_lines` function
+    `ralphctl logs` uses -- so this asserts the endpoint's `lines` list,
+    joined with newlines, is byte-for-byte identical to what a real
+    `ralphctl logs <id> --tail 0` subprocess prints (both non-TTY: the
+    subprocess's stdout is captured, not a real terminal, matching this
+    endpoint's `tty=False` rendering), modulo the CLI's own trailing
+    newline, which `logs` prints and a list-of-lines representation has
+    no equivalent slot for."""
+    run = live(run_id="hubparity", job={"iterations": 12, "max_approaches": 3,
+                                        "on_complete": "idle"},
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "1"})
+    run.wait_api()
+    run.wait_terminal()
+
+    server = ui(run.registry)
+    code, logs = server.get(f"/api/runs/{run.run_id}/logs?tail=0")
+    assert code == 200
+    assert logs["live"] is True
+
+    cli = run.ralphctl("logs", run.run_id, "--tail", "0")
+    assert cli.returncode == 0, (cli.stdout, cli.stderr)
+    cli_lines = cli.stdout.split("\n")
+    if cli_lines and cli_lines[-1] == "":
+        cli_lines = cli_lines[:-1]  # `print()`'s trailing newline
+
+    assert logs["lines"] == cli_lines
+    # sanity: this fixture actually exercises the thinking-collapse path
+    # this task fixes (each iteration collapses its own thinking-delta
+    # burst to exactly one '[thinking…]' line, not one per delta), and
+    # both renderings agree on how many such lines resulted.
+    ui_thinking = sum(1 for line in logs["lines"] if "[thinking" in line)
+    cli_thinking = sum(1 for line in cli_lines if "[thinking" in line)
+    assert ui_thinking == cli_thinking >= 1
 
 
 def test_steering_post_proxies_and_creates_steering_file(tmp_path, live, ui):

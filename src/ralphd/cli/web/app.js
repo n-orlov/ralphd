@@ -20,11 +20,6 @@ function h(tag, attrs, children) {
   return el;
 }
 
-function esc(s) {
-  return String(s == null ? "" : s)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 async function getJSON(path) {
   const resp = await fetch(path, { cache: "no-store" });
   const body = await resp.json().catch(() => ({}));
@@ -346,129 +341,29 @@ async function loadLogs(runId) {
   if (!ok || !body.live) {
     box.innerHTML = "";
     box.appendChild(h("span", { class: "muted" }, [
-      body && body.text ? "" : "(run's API is not reachable — no live log tail)",
+      body && body.lines && body.lines.length ? "" : "(run's API is not reachable — no live log tail)",
     ]));
-    if (body && body.text) renderLogText(box, body.text);
+    if (body && body.lines) renderLogLines(box, body.lines);
     return;
   }
-  renderLogText(box, body.text || "");
+  renderLogLines(box, body.lines || []);
 }
 
-// -- NDJSON pretty renderer, mirroring ralphctl's `_render_logs` rules
-// (docs/cli.md `logs` section / src/ralphd/cli/main.py) -------------------
-
-function renderLogText(box, raw) {
+// task 014: the server (`ui_server.py`'s `/api/runs/<id>/logs`) already
+// rendered the NDJSON transcript into plain text lines through the exact
+// same `log_render` module `ralphctl logs` uses -- this used to
+// reimplement that event-to-HTML mapping client-side (and, notably,
+// lacked the CLI's `thinking_seen` guard, so a many-delta thinking block
+// flooded the tail with one `[thinking…]` element per delta). Now this
+// just displays the lines the server already decided on, one per DOM
+// element, via `textContent` (never `innerHTML`) so nothing here needs to
+// HTML-escape anything itself -- the browser does that for free for text
+// nodes, and there is no per-event-type branching left to keep in sync
+// with the CLI's rendering rules.
+function renderLogLines(box, lines) {
   box.innerHTML = "";
-  const lines = raw.split("\n");
-  let textOpen = false, textBuf = "";
-  const flushText = () => {
-    if (textOpen && textBuf) {
-      box.appendChild(h("span", { class: "lg-text", html: esc(textBuf) }));
-      box.appendChild(document.createElement("br"));
-    }
-    textOpen = false;
-    textBuf = "";
-  };
-  for (const raw_line of lines) {
-    if (!raw_line.trim()) continue;
-    let ev;
-    try {
-      ev = JSON.parse(raw_line);
-    } catch {
-      flushText();
-      box.appendChild(h("div", { class: "lg-malformed" },
-        [`! [malformed log line, ${raw_line.length} bytes]`]));
-      continue;
-    }
-    if (typeof ev !== "object" || ev === null || Array.isArray(ev)) {
-      flushText();
-      box.appendChild(h("div", { class: "lg-malformed" }, ["! [malformed log line: not a JSON object]"]));
-      continue;
-    }
-    const etype = ev.type;
-    if (etype === "ralphd.iteration") {
-      flushText();
-      renderBoundary(box, ev);
-    } else if (etype === "message_update") {
-      const inner = ev.assistantMessageEvent || {};
-      if (inner.type === "text_delta") {
-        textOpen = true;
-        textBuf += inner.delta || "";
-      } else if (inner.type === "text_end") {
-        flushText();
-      } else if (inner.type === "thinking_start" || inner.type === "thinking_delta") {
-        box.appendChild(h("div", { class: "lg-thinking" }, ["[thinking…]"]));
-      }
-    } else if (etype === "tool_execution_end") {
-      flushText();
-      renderToolResult(box, ev);
-    } else if (etype === "message_end") {
-      flushText();
-      renderMessageEnd(box, ev.message || {});
-    }
-    // everything else silently skipped, matching the CLI renderer.
+  for (const line of lines) {
+    box.appendChild(h("div", { class: "lg-line" }, [line]));
   }
-  flushText();
   box.scrollTop = box.scrollHeight;
-}
-
-function fmtArgs(obj) {
-  if (typeof obj !== "object" || obj === null) {
-    const s = JSON.stringify(obj);
-    return s.length > 60 ? s.slice(0, 57) + "..." : s;
-  }
-  const parts = [];
-  for (const [k, v] of Object.entries(obj).slice(0, 3)) {
-    let s = JSON.stringify(v);
-    if (s && s.length > 40) s = s.slice(0, 37) + "...";
-    parts.push(`${k}=${s}`);
-  }
-  return parts.join(", ");
-}
-
-function renderBoundary(box, ev) {
-  const { number: n, phase, model, approach } = ev;
-  if (ev.event === "start") {
-    box.appendChild(h("div", { class: "lg-boundary-start" },
-      [`── iteration ${n} · phase=${phase} · model=${model} · approach=${approach} ──`]));
-    return;
-  }
-  const usage = ev.usage || {};
-  const bits = [`iteration ${n} done`];
-  if (ev.exitCode !== undefined && ev.exitCode !== null) bits.push(`exit=${ev.exitCode}`);
-  if (usage && Object.keys(usage).length) {
-    bits.push(`tokens=${usage.totalTokens ?? 0}`);
-    if (usage.costUSD != null) bits.push(`cost=$${usage.costUSD}`);
-  }
-  box.appendChild(h("div", { class: "lg-boundary-end" }, ["  " + bits.join(", ")]));
-  if (ev.error) {
-    box.appendChild(h("div", { class: "lg-error" }, [`!! iteration ${n} error: ${ev.error}`]));
-  }
-}
-
-function renderToolResult(box, ev) {
-  const name = ev.toolName || "?";
-  const fargs = fmtArgs(ev.args || ev.arguments || {});
-  const isError = !!ev.isError;
-  const outcome = isError ? "✗ error" : "✓ ok";
-  let tail = "";
-  if (typeof ev.result === "string" && ev.result && !isError) {
-    tail = " (" + ev.result.slice(0, 60) + ")";
-  }
-  box.appendChild(h("div", { class: isError ? "lg-tool-err" : "lg-tool" },
-    [`  → ${name}(${fargs}) ${outcome}${tail}`]));
-}
-
-function renderMessageEnd(box, message) {
-  for (const item of message.content || []) {
-    if (!item || typeof item !== "object") continue;
-    if (item.type === "text") {
-      box.appendChild(h("div", { class: "lg-text", html: esc(item.text || "") }));
-    } else if (item.type === "thinking") {
-      box.appendChild(h("div", { class: "lg-thinking" }, ["[thinking…]"]));
-    } else if (item.type === "toolCall") {
-      box.appendChild(h("div", { class: "lg-tool" },
-        [`  → ${item.name || "?"}(${fmtArgs(item.arguments || {})})`]));
-    }
-  }
 }
