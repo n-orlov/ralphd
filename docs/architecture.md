@@ -219,6 +219,18 @@ agent edits. Two modes, chosen per job:
   (`runs/<id>/workspace/`) and the planning iteration clones the PRD-listed repos
   using whatever git credentials were injected
 
+**Multi-workspace jobs** (PRD req 27): `--workspace` is repeatable. A single
+bare `--workspace <dir>` keeps the single-mode behavior above (mounted at
+`/workspace`). Two or more `--workspace` flags each require a `:name`
+(`--workspace <dir>:<name>`) and are mounted at `/workspace/<name>` side by
+side instead — one job container, several checked-out repos. The container
+gets `RALPHD_WORKSPACES=<comma-separated names>`, which every phase prompt's
+"Job context" section reads to list each mounted name/path explicitly, so
+the agent never has to guess what's under `/workspace` from a directory
+listing. `host.json` records the mapping as `workspaces` (name→host path)
+instead of the single-mode `workspace` key, and `ralphctl resume` remounts
+every named workspace the same way on the fresh container.
+
 ## 4. Container engine
 
 Single Python process (`ralphd.engine`), PID 1 in the container, two concerns:
@@ -576,10 +588,12 @@ image builds):
   daemon: container-local paths (`/workspace`, `/run/ralphd`) mount as empty
   dirs and the daemon may auto-create them root-owned on the host. ralphctl
   therefore injects the host-side equivalents as env vars —
-  `RALPHD_HOST_WORKSPACE` (when `--workspace` was given), `RALPHD_HOST_RUN_DIR`,
-  and `RALPHD_RUN_ID` — and the engine appends a "Docker siblings" section to
-  every phase prompt telling the agent to use them. (`docker build` contexts
-  are exempt: the CLI streams the context itself.)
+  `RALPHD_HOST_WORKSPACE` (when a single unnamed `--workspace` was given) or
+  `RALPHD_HOST_WORKSPACES` (a name→host-path JSON object, for the
+  multi-workspace case above), plus `RALPHD_HOST_RUN_DIR` and `RALPHD_RUN_ID`
+  — and the engine appends a "Docker siblings" section to every phase prompt
+  telling the agent to use them. (`docker build` contexts are exempt: the
+  CLI streams the context itself.)
 - **Label + reap lifecycle.** The job container always carries
   `--label ralphd.run=<run-id>` (with or without `--allow-docker`); prompts
   instruct the agent to put the same label on every sibling and prefer `--rm`.

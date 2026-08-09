@@ -60,7 +60,7 @@ Non-goals for v0.1: resume, web UI, self-reflection, multi-job orchestration.
 - Job templates (`ralphctl start --template <name>`) bundling PRD skeleton +
   skills + profile
 - Pluggable notifications on completion (shell hook: `on_complete_cmd`)
-- Multi-workspace jobs (multiple repos mounted side by side)
+- Multi-workspace jobs (multiple repos mounted side by side) ✅
 
 ## Later / explicitly deferred
 

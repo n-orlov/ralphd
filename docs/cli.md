@@ -60,7 +60,7 @@ ralphctl start --prd <file|-> [options]
 |--------|---------|---------|
 | `--prd <file\|->` | required* | PRD markdown (`-` = stdin); *not required if `--template` supplies a `prd.md` skeleton |
 | `--template <name>` | none | load job defaults + optional `prd.md`/skills/creds from `<registry>/templates/<name>/` (see below); any explicit flag on this command overrides the template's value |
-| `--workspace <dir>` | none | bind-mount an existing checkout at `/workspace`; without it the agent clones PRD-listed repos into the run dir |
+| `--workspace <dir>[:name]` | none | bind-mount an existing checkout at `/workspace` (a bare `<dir>` with no `:name`); without any `--workspace` the agent clones PRD-listed repos into the run dir. Repeatable for multi-repo jobs (PRD req 27): every entry beyond the first must carry a `:name`, mounted at `/workspace/<name>` instead (e.g. `--workspace ~/src/api:api --workspace ~/src/web:web`); prompts list every mounted workspace name/path so the agent doesn't have to guess |
 | `--run-id <id>` | generated | explicit run ID |
 | `--iterations <n>` | 25 | shared iteration budget |
 | `--max-approaches <n>` | 3 | review-loop approach limit |
@@ -361,9 +361,11 @@ continues the job instead of re-planning; `resume` just has to reproduce
 
 - `<run-dir>` and `<config-dir>` (creds/skills/pi config already staged
   there from the original `start` survive as-is — nothing to re-derive).
-- The workspace, if the original `start` used `--workspace` (the host path
-  is recorded in `host.json` at `start` time and reused verbatim; the
-  positional resume command never needs `--workspace` itself).
+- The workspace(s), if the original `start` used `--workspace` (the host
+  path(s) are recorded in `host.json` at `start` time — as `workspace` for a
+  single unnamed mount, `workspaces` (name→path) for the multi-repo case —
+  and reused verbatim; the positional resume command never needs
+  `--workspace` itself).
 - The recorded `.api-token`, if any (`-e RALPHD_API_TOKEN=...`), so the
   same client-side token keeps working against the new container.
 

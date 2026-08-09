@@ -76,9 +76,9 @@ class LoopSupervisor:
             else self.run.prd_file
         parts = [self.prompt_text(prompt_name or phase)]
         parts.append("\n\n## Job context\n")
-        parts.append(f"- Run state directory: {self.run.root}\n"
-                     f"- Workspace (code) directory: {self.workspace}\n"
-                     f"- PRD file: {prd}\n"
+        parts.append(f"- Run state directory: {self.run.root}\n")
+        parts.append(self._workspace_note())
+        parts.append(f"- PRD file: {prd}\n"
                      f"- Task state file: {self.run.tasks_file}\n"
                      f"- Handoff notes file: {self.run.notes_file}\n"
                      f"- Artifacts directory: {self.run.artifacts_dir}\n")
@@ -108,6 +108,23 @@ class LoopSupervisor:
         if extra:
             parts.append("\n" + extra)
         return "".join(parts)
+
+    def _workspace_note(self) -> str:
+        """Single-workspace jobs (the common case) get the original one-line
+        form. Multi-workspace jobs (repeatable `ralphctl start --workspace
+        DIR:NAME`, PRD req 27) mount each repo at /workspace/<name> and set
+        RALPHD_WORKSPACES=<comma-separated names> on the container; list
+        each mounted name/path so the agent knows what's there without
+        having to guess from a directory listing."""
+        names_env = os.environ.get("RALPHD_WORKSPACES", "")
+        names = [n for n in names_env.split(",") if n]
+        if not names:
+            return f"- Workspace (code) directory: {self.workspace}\n"
+        lines = [(f"- Workspaces (code directories), {len(names)} mounted "
+                  f"under {self.workspace}:\n")]
+        for name in names:
+            lines.append(f"  - {name}: {self.workspace / name}\n")
+        return "".join(lines)
 
     @staticmethod
     def _creds_note() -> str:
@@ -154,8 +171,9 @@ class LoopSupervisor:
         """Guidance appended when the operator granted docker socket access
         (ralphctl start --allow-docker sets the RALPHD_HOST_* env vars)."""
         host_ws = os.environ.get("RALPHD_HOST_WORKSPACE")
+        host_wss = os.environ.get("RALPHD_HOST_WORKSPACES")
         host_run = os.environ.get("RALPHD_HOST_RUN_DIR")
-        if not host_ws and not host_run:
+        if not host_ws and not host_wss and not host_run:
             return ""
         run_id = os.environ.get("RALPHD_RUN_ID", "")
         lines = ["\n## Docker siblings\n",
@@ -167,6 +185,10 @@ class LoopSupervisor:
                   "root-owned dirs on the host. Use these host-side equivalents:\n")]
         if host_ws:
             lines.append(f"  - workspace: `$RALPHD_HOST_WORKSPACE` = `{host_ws}`\n")
+        elif host_wss:
+            for name, path in json.loads(host_wss).items():
+                lines.append(f"  - workspace `{name}` (mounted at /workspace/{name} "
+                             f"in this container): host path `{path}`\n")
         if host_run:
             lines.append(f"  - run dir: `$RALPHD_HOST_RUN_DIR` = `{host_run}`\n")
         lines.append(

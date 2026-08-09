@@ -246,6 +246,30 @@ def _copy_skills(sdir: str, cdir: Path) -> None:
            f"of skills (not every immediate child has a SKILL.md)")
 
 
+_WORKSPACE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _parse_workspace_specs(specs: list[str]) -> list[tuple[str | None, Path]]:
+    """Parse repeatable `--workspace DIR[:NAME]` values into (name-or-None,
+    resolved host path) pairs, validating each dir exists. A bare `DIR` (no
+    `:NAME`) is unnamed -- when it is the *only* entry it mounts at
+    /workspace exactly as before; two or more entries each require a name
+    (enforced by the caller, since a single named entry is legal too).
+    """
+    out: list[tuple[str | None, Path]] = []
+    for spec in specs:
+        raw, name = spec, None
+        if ":" in spec:
+            head, _, tail = spec.rpartition(":")
+            if head and _WORKSPACE_NAME_RE.match(tail):
+                raw, name = head, tail
+        ws = Path(raw).expanduser().resolve()
+        if not ws.is_dir():
+            die(2, f"workspace {ws} is not a directory")
+        out.append((name, ws))
+    return out
+
+
 # ---------------------------------------------------------------- start
 # job-config fields a template's job.yaml may default; explicit CLI flags
 # (checked via `is not None`/falsy, since every one of these argparse
@@ -368,12 +392,21 @@ def cmd_start(args):
         "-v", f"{rdir}:/run/ralphd",
         "-v", f"{cdir}:/config:ro",
     ]
-    ws: Path | None = None
-    if args.workspace:
-        ws = Path(args.workspace).expanduser().resolve()
-        if not ws.is_dir():
-            die(2, f"workspace {ws} is not a directory")
+    ws: Path | None = None          # single-unnamed workspace (legacy path)
+    ws_named: dict[str, Path] = {}  # name -> host path (multi-workspace)
+    ws_specs = _parse_workspace_specs(args.workspace or [])
+    if len(ws_specs) == 1 and ws_specs[0][0] is None:
+        ws = ws_specs[0][1]
         mounts += ["-v", f"{ws}:/workspace"]
+    else:
+        for name, path in ws_specs:
+            if name is None:
+                die(2, "when more than one --workspace is given, every one "
+                       "needs a name: --workspace DIR:NAME")
+            mounts += ["-v", f"{path}:/workspace/{name}"]
+            ws_named[name] = path
+        if ws_named:
+            env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
 
     docker_args: list[str] = ["--label", f"ralphd.run={run_id}"]
     if args.allow_docker:
@@ -388,6 +421,9 @@ def cmd_start(args):
                         "--group-add", str(st.st_gid)]
         if ws is not None:
             env_args += ["-e", f"RALPHD_HOST_WORKSPACE={ws}"]
+        elif ws_named:
+            hostwss = json.dumps({n: str(p) for n, p in ws_named.items()})
+            env_args += ["-e", f"RALPHD_HOST_WORKSPACES={hostwss}"]
         env_args += ["-e", f"RALPHD_HOST_RUN_DIR={rdir}",
                      "-e", f"RALPHD_RUN_ID={run_id}"]
         print("ralphctl: WARNING: --allow-docker mounts the host docker socket "
@@ -463,6 +499,8 @@ def cmd_start(args):
         # host path only -- never mounted into the container -- so `resume`
         # can remount the same workspace over a fresh container later.
         meta["workspace"] = str(ws)
+    elif ws_named:
+        meta["workspaces"] = {n: str(p) for n, p in ws_named.items()}
     (rdir / "host.json").write_text(json.dumps(meta, indent=2))
     out(args, {**meta, "authenticated": bool(token)},
         f"{run_id}\n  container: {container[:12]}\n  api: {meta['apiUrl']}")
@@ -606,10 +644,13 @@ def cmd_resume(args):
 
     prev_meta = host_meta(run_id)
     ws = prev_meta.get("workspace")
+    ws_named: dict[str, str] = prev_meta.get("workspaces") or {}
     port = args.port or free_port()
     mounts = ["-v", f"{rdir}:/run/ralphd", "-v", f"{cdir}:/config:ro"]
     if ws:
         mounts += ["-v", f"{ws}:/workspace"]
+    for name, path in ws_named.items():
+        mounts += ["-v", f"{path}:/workspace/{name}"]
 
     env_args: list[str] = []
     token_file = rdir / ".api-token"
@@ -629,12 +670,16 @@ def cmd_resume(args):
                         "--group-add", str(st.st_gid)]
         if ws:
             env_args += ["-e", f"RALPHD_HOST_WORKSPACE={ws}"]
+        elif ws_named:
+            env_args += ["-e", f"RALPHD_HOST_WORKSPACES={json.dumps(ws_named)}"]
         env_args += ["-e", f"RALPHD_HOST_RUN_DIR={rdir}",
                      "-e", f"RALPHD_RUN_ID={run_id}"]
         print("ralphctl: WARNING: --allow-docker mounts the host docker socket "
               "into the job container. The docker socket is ROOT-EQUIVALENT "
               "access to this host. Only use with PRDs you trust.",
               file=sys.stderr)
+    if ws_named:
+        env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
 
     cmd = [DOCKER, "run", "-d", "--name", name, "--init",
            "-p", f"{args.api_bind}:{port}:7777",
@@ -649,6 +694,8 @@ def cmd_resume(args):
             "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if ws:
         meta["workspace"] = ws
+    elif ws_named:
+        meta["workspaces"] = ws_named
     (rdir / "host.json").write_text(json.dumps(meta, indent=2))
     out(args, meta,
         f"{run_id} resumed\n  container: {container[:12]}\n  api: {meta['apiUrl']}")
@@ -1415,7 +1462,11 @@ def main() -> None:
                    help="load job defaults + optional prd.md/skills/creds from "
                         "<registry>/templates/<name>/ (docs/cli.md); explicit "
                         "flags on this command override the template's values")
-    s.add_argument("--workspace", help="host dir to mount at /workspace")
+    s.add_argument("--workspace", action="append", metavar="DIR[:NAME]",
+                   help="host dir to mount at /workspace (repeatable; each "
+                        "extra one needs :NAME, mounted at /workspace/NAME "
+                        "-- a single unnamed --workspace mounts at /workspace "
+                        "exactly as before)")
     s.add_argument("--run-id")
     s.add_argument("--iterations", type=int, default=None)
     s.add_argument("--max-approaches", type=int, default=None)
