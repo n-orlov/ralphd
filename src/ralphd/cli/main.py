@@ -535,7 +535,19 @@ def _follow_events(args, run_id: str, fatal: bool = True):
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     connected = False
     post_connect_failures = 0
-    for attempt in range(30):
+    # fatal=False callers (the --no-detach post-completion fall-through in
+    # cmd_start/cmd_resume) always have a status.json fallback right after
+    # this call, so a never-connected retry there only needs to cover a
+    # normal container/API startup window, not the generous backoff a truly
+    # fatal `ralphctl watch`/`logs -f` needs while waiting on an operator's
+    # possibly-slow image pull. Without this bound, a job that finishes (and
+    # tears its API down) before the CLI's very first connection attempt —
+    # e.g. a near-instant stub job, observed for real against a docker
+    # sibling — burns tens of seconds retrying a connection that will never
+    # succeed, instead of falling straight through to the already-correct
+    # status.json fallback.
+    max_attempts = 30 if fatal else 12
+    for attempt in range(max_attempts):
         try:
             with urllib.request.urlopen(req, timeout=3600) as resp:
                 connected = True
@@ -566,8 +578,10 @@ def _follow_events(args, run_id: str, fatal: bool = True):
                 if post_connect_failures >= 3:
                     break
                 time.sleep(0.2)
-            else:
+            elif fatal:
                 time.sleep(1 + attempt * 0.5)
+            else:
+                time.sleep(0.3)
     if fatal:
         die(4, "could not connect to event stream")
 

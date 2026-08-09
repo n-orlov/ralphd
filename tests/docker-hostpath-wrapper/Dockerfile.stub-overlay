@@ -1,0 +1,18 @@
+# Test-only overlay for the docker-sibling e2e tier (task 041):
+# `container/Dockerfile` is built unmodified first (see test_image fixture in
+# tests/test_docker_sibling_e2e.py), then this thin layer bakes the stub
+# `pi` in *permanently* (replacing the real npm-installed binary) instead of
+# relying on a `PATH`/`STUB_RUN_DIR` override passed via `docker run -e`.
+# That matters specifically because `ralphctl resume` (unlike `start`) does
+# not currently re-apply arbitrary `--env` values from the original `start`
+# invocation (see task 041's discovered-gap note) -- baking the stub into
+# the image itself means every container made from it, including ones
+# created by `resume`, resolves `pi` to the stub with no env dependency at
+# all. Never used for anything except this test file's own throwaway image.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+COPY stub-pi/pi /usr/bin/pi
+RUN chmod 755 /usr/bin/pi
+ENV STUB_RUN_DIR=/run/ralphd
+USER agent

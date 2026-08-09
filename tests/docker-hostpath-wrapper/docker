@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Path-translating `docker` wrapper for the container-level e2e tier
+(tests/test_docker_sibling_e2e.py, task 041).
+
+Why this exists: those tests are themselves executed *inside* a ralphd job
+container (this repo's own selfdev job), not on a bare host. `ralphctl`
+computes bind-mount sources (run dir, config dir, workspace) from
+`RALPHD_REGISTRY` and passes that exact string to `docker run -v SRC:DST`.
+For the *real* docker daemon (running on the true host, a sibling from our
+point of view) to resolve SRC correctly, SRC must be a path that exists on
+the host's own filesystem -- but our own container only has `/workspace`
+(bind-mounted from `$RALPHD_HOST_WORKSPACE`) and `/run/ralphd` (from
+`$RALPHD_HOST_RUN_DIR`) in its filesystem namespace. A single path string
+can't be both "readable by our own process" and "resolvable by the host
+daemon" unless something translates between the two views.
+
+This wrapper is that something: pointed at by `RALPHD_DOCKER` (an env var
+`ralphctl` already respects everywhere it shells out to `docker`), it
+rewrites the SOURCE half of every `-v`/`--volume` argument that starts with
+a configured container-side prefix to the corresponding host-side prefix,
+then execs the real `docker` binary with the rewritten argv. Everything
+else (subcommand, flags, image names, `--label`, positional args) passes
+through completely untouched -- this is not a stub or a fake: the real
+`docker` binary still does 100% of the actual work.
+
+Env vars:
+  RALPHD_HOSTPATH_MAP   JSON object {"container-prefix": "host-prefix", ...}
+  RALPHD_REAL_DOCKER    absolute path to the real docker binary (required;
+                        deliberately not looked up via PATH here, to avoid
+                        ever recursing into this same wrapper)
+"""
+import json
+import os
+import sys
+
+MAP: dict[str, str] = json.loads(os.environ.get("RALPHD_HOSTPATH_MAP", "{}"))
+REAL_DOCKER = os.environ["RALPHD_REAL_DOCKER"]
+
+
+def translate(path: str) -> str:
+    for cprefix, hprefix in MAP.items():
+        if path == cprefix:
+            return hprefix
+        if path.startswith(cprefix + "/"):
+            return hprefix + path[len(cprefix):]
+    return path
+
+
+def rewrite_volume_value(val: str) -> str:
+    # SRC:DST[:MODE] -- only absolute-path sources are ever translated;
+    # named volumes (no leading '/') are left alone.
+    parts = val.split(":")
+    if parts and parts[0].startswith("/"):
+        parts[0] = translate(parts[0])
+    return ":".join(parts)
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-v", "--volume") and i + 1 < len(argv):
+            out.append(a)
+            out.append(rewrite_volume_value(argv[i + 1]))
+            i += 2
+            continue
+        if a.startswith("--volume="):
+            out.append("--volume=" + rewrite_volume_value(a[len("--volume="):]))
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    os.execv(REAL_DOCKER, [REAL_DOCKER, *out])
+
+
+if __name__ == "__main__":
+    main()
