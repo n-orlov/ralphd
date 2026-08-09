@@ -99,7 +99,12 @@ merged in order, with a synthetic boundary line injected between iterations:
 ```
 
 (and a matching `"event":"end"` line carrying exit code, sentinels, error, usage).
-All other lines are pi transcript lines passed through verbatim.
+All other lines are pi transcript lines passed through as-is, except that any
+known secret value (LLM env vars, placed creds file values) is mechanically
+scrubbed and replaced with `[REDACTED:<source>]` as a defense-in-depth layer
+on top of the same scrubbing already applied when `output.jsonl`/`events.jsonl`
+were written (see `docs/architecture.md`'s "Security: mechanical secret
+redaction" section).
 
 Query params: `?tail=<lines>` bounds the initial backlog (counted over transcript
 lines, boundaries not counted); `?follow=true` keeps streaming **across iteration

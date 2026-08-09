@@ -3,14 +3,16 @@
 Versions are milestones, not promises of dates. Each version is releasable on its
 own; scope may shift between minors, not the ordering of the big rocks.
 
-> **Status (2026-08-09):** v0.1 through v0.4's engine/CLI/hub-UI feature scope is
-> implemented and covered by black-box tests (226 passing, including a real
-> docker-sibling e2e tier and a real browser e2e tier for the hub) — see
-> `artifacts/reports/traceability.md` for the full requirement-to-test mapping.
-> What remains outside that scope: publishing a built Docker image + `pipx`
-> packaging (never attempted, no CI to do it from), and the process/hardening
-> follow-ups tracked as discovered tasks (051–059) on top of the numbered PRD
-> requirements.
+> **Status (2026-08-09, refreshed by task 054):** v0.1 through v0.4's engine/
+> CLI/hub-UI feature scope is implemented and covered by black-box tests (237
+> passing, including a real docker-sibling e2e tier and a real browser e2e
+> tier for the hub) — see `artifacts/reports/traceability.md` for the full
+> requirement-to-test mapping. What remains outside that scope: publishing a
+> built Docker image + `pipx` packaging (never attempted, no CI to do it
+> from), and a handful of still-open process/hardening follow-ups (054, 057,
+> 058, 059) tracked as discovered tasks on top of the numbered PRD
+> requirements — the rest of that discovered-task series (045–053, 055, 056,
+> 060) is done.
 
 ## v0.1 — the working loop (MVP)
 
@@ -50,13 +52,6 @@ Non-goals for v0.1: resume, web UI, self-reflection, multi-job orchestration.
 - ✅ Run-dir schema version + migration story
 - ✅ `ralphctl llm test` hardening; richer `doctor`
 - ✅ Cost/usage accounting surfaced per phase and per approach
-
-Known residual gap (tracked as task 052, still open): a task's mandatory
-vigilant-mode verify iteration can be silently skipped forever if the engine
-crashes between a worker completing that task and its verify iteration
-running — resume's `newly_completed` diff only compares snapshots taken
-within the current process, not against what a prior (crashed) process
-already completed.
 
 ## v0.3 — hub UI
 
