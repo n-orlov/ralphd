@@ -389,6 +389,18 @@ not marked consumed) and leaves it pending -- it is picked up and consumed by
 the next planning/worker iteration instead. This prevents steering from being
 silently discarded (recorded as "consumed" yet never actually acted on) when
 it happens to land just before a non-worker-bound phase.
+
+**A `VERIFIED` verdict is refused while steering sits unconsumed.** Passive
+notice at review time is not enough on its own: if a steering file arrives
+while the worker is in flight and the very next iteration boundary is the
+review that would otherwise end the job, the engine must not let the run go
+terminal-succeeded with that steering permanently stranded (a terminal run
+never reads pending steering again). So `_run_job_core` checks
+`Run.pending_steering()` after every `VERIFIED` review verdict: if steering is
+still pending, the verdict is discarded, one more (actionable) worker
+iteration runs to consume it, and the approach is re-reviewed. Only a
+`VERIFIED` verdict observed with no pending steering left is allowed to end
+the job successfully.
 `POST /interrupt` gives the "right now" variant: SIGINT the current iteration so the
 next one starts immediately with the new guidance. Steering is guidance for the
 agent; it does not mutate `tasks.json` directly.

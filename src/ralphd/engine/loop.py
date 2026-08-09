@@ -494,7 +494,33 @@ class LoopSupervisor:
                 await self._gate()
                 self.run.emit("phase", phase="review", approach=approach)
                 review = await self.run_iteration("review")
-                if review.saw_verified:
+                while review.saw_verified and self.run.pending_steering():
+                    # Refuse to let a VERIFIED verdict make the run terminal
+                    # while operator steering still sits unconsumed. review
+                    # and verify are pure verification phases that never act
+                    # on steering (STEERING_ACTIONABLE_PHASES); if steering
+                    # lands just before what would otherwise be the final
+                    # VERIFIED review, going terminal here would strand it
+                    # forever -- nothing after a terminal-succeeded run ever
+                    # reads pending steering again. Instead: discard this
+                    # verdict, run one more (actionable) worker iteration so
+                    # the steering actually gets consumed, then re-review.
+                    names = ", ".join(p.name for p in self.run.pending_steering())
+                    self.run.emit(
+                        "log", level="warning",
+                        message=(f"steering pending ({names}) at VERIFIED verdict; "
+                                 "deferring, routing back to worker to consume it"))
+                    if not self.budget_left():
+                        break
+                    await self._gate()
+                    self.run.emit("phase", phase="worker", approach=approach)
+                    await self.run_iteration("worker")
+                    if not self.budget_left():
+                        break
+                    await self._gate()
+                    self.run.emit("phase", phase="review", approach=approach)
+                    review = await self.run_iteration("review")
+                if review.saw_verified and not self.run.pending_steering():
                     self.run.emit("signal", signal="VERIFIED")
                     self.run.update_status(state="succeeded", verdict="verified",
                                            phase=None, endedAt=utcnow())

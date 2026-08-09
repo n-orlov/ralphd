@@ -385,6 +385,66 @@ def test_steering_not_lost_across_verify_phase(engine_factory):
     assert status["state"] == "succeeded" and status["verdict"] == "verified"
 
 
+def test_verified_review_refused_while_steering_pending(engine_factory):
+    """Task 005 regression: steering that lands during the review iteration of
+    what would otherwise be the final VERIFIED verdict must not be silently
+    stranded by a terminal-succeeded run. The engine must discard that verdict,
+    route back through one more (actionable) worker iteration to actually
+    consume the steering, then re-review -- only succeeding once no steering
+    is left pending."""
+    e = engine_factory(job={"on_complete": "idle"},
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.0"})
+    e.wait_api()
+
+    def iter_meta(n: int) -> dict | None:
+        p = e.run_dir / "iterations" / f"{n:04d}" / "meta.json"
+        return json.loads(p.read_text()) if p.exists() else None
+
+    # Iteration 3 is the first review (1=planning, 2=worker with a single
+    # task -> COMPLETE). It sleeps STUB_SLEEP seconds before doing anything,
+    # giving us a real window to land steering while it's in flight, strictly
+    # before the engine's post-review pending-steering check can run.
+    deadline = time.time() + 30
+    while time.time() < deadline and iter_meta(3) is None:
+        time.sleep(0.05)
+    assert iter_meta(3) is not None, "review iteration 3 never started"
+    assert iter_meta(3)["phase"] == "review"
+
+    code, res = e.api("POST", "/steering",
+                      {"message": "hold on, check one more thing", "name": "lastcall"})
+    assert code == 202 and res["file"] == "001-lastcall.md"
+
+    status = e.wait_state(("succeeded", "failed", "aborted"), timeout=90)
+    assert status["state"] == "succeeded" and status["verdict"] == "verified"
+
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
+    # The engine must NOT go terminal after the first review: it has to
+    # insert one more worker+review pair to actually consume the steering.
+    assert phases == ["planning", "worker", "review", "worker", "review"]
+
+    review1_meta = metas[2]
+    assert review1_meta["steeringConsumed"] == []
+
+    worker2_meta = metas[3]
+    assert worker2_meta["phase"] == "worker"
+    assert "001-lastcall.md" in worker2_meta["steeringConsumed"]
+
+    # It was never silently discarded: recorded consumed, and the run only
+    # went terminal-succeeded once it was.
+    consumed_final = json.loads((e.run_dir / "steering" / ".consumed.json").read_text())
+    assert "001-lastcall.md" in consumed_final
+
+    events_text = (e.run_dir / "events.jsonl").read_text()
+    events = [json.loads(line) for line in events_text.splitlines() if line.strip()]
+    warnings = [ev for ev in events
+                if ev.get("type") == "log" and ev.get("level") == "warning"
+                and "deferring" in ev.get("message", "")]
+    assert warnings, "expected a deferred-VERIFIED warning log event"
+    assert "001-lastcall.md" in warnings[0]["message"]
+
+
 def test_vigilant_verify_fail_then_recovery(engine_factory):
     """Vigilant mode: one task fails verification once, then the worker retries it
     and the second verification passes; job ends succeeded."""
