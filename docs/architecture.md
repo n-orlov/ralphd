@@ -734,3 +734,37 @@ only that channel ships (chromium would add ~500 MB for no default-path gain).
   `ralphctl resume <run-id>` starts a fresh container against the same run dir and
   the loop continues from `tasks.json` (v0.2).
 - Host reboot ⇒ same as engine crash; nothing lives only in container memory.
+
+### CLI-side resume: reproducing `--llm` wiring (task 058)
+
+Everything above is engine/run-dir-side: the run dir and config dir survive
+a container's death untouched, and the engine picks up `tasks.json` where
+it left off. But `ralphctl resume` still has to launch a *new* container
+with the *same* docker-run wiring `start` used, and part of that wiring
+(the `--llm`-derived env vars + extra mounts) never lived in a file at all
+before task 058 -- it only ever existed as `-e KEY=VALUE` flags on the
+original `docker run` invocation, resolved from whatever the *operator's
+shell at `start` time* happened to have. A resumed container launched from
+a *different* shell (a different terminal, a different day, a machine
+that's since restarted its own shell env) had no way to see those values
+again -- `resume` silently started the new container with zero LLM
+credentials, and every iteration failed instantly with a provider/auth
+error (operator steering 018, defect 1).
+
+The fix: `ralphctl start` now persists whatever it resolved for `--llm`
+wiring -- `--llm host`'s forwarded `HOST_LLM_ENV` values and its `~/.aws`
+mount path if present, or a named profile's fully-resolved `env`/`mounts`
+(after every `${env:}`/`${file:}`/`${cmd:}` reference has already been
+evaluated) -- to `<config-dir>/llm-wiring.json`, mode `0600`. This reuses
+the exact secret-at-rest pattern already established by
+`<config-dir>/pi/models.json` (task 013/023-026's resolved `apiKey`) and
+`<run-dir>/.api-token`: a private file under the job's own directories,
+never served by any HTTP route, mounted read-only into the container like
+everything else under `<config-dir>` -- no new secret-storage mechanism was
+invented. `ralphctl resume` reads that file (if present -- a run started
+before task 058 simply has none, and resumes exactly as it always did) and
+adds its `env`/`mounts` to the new `docker run` invocation verbatim, before
+ever consulting the resuming shell's own environment. `--forward-env`/
+`--llm-env`/`--env` (generic, not `--llm`-derived) are unaffected -- those
+were never part of this gap and still need to be passed again on `resume`
+if wanted.

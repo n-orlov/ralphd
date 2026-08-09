@@ -423,17 +423,33 @@ continues the job instead of re-planning; `resume` just has to reproduce
   `--workspace` itself).
 - The recorded `.api-token`, if any (`-e RALPHD_API_TOKEN=...`), so the
   same client-side token keeps working against the new container.
+- The `--llm` wiring resolved at `start` time (task 058, operator steering
+  018): whichever env vars and extra mounts `start` added on top of the
+  base wiring above — `--llm host`'s forwarded `HOST_LLM_ENV` vars
+  (`ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`, ...) and its `~/.aws` mount if
+  present, or a named profile's fully-resolved `env:`/`mounts:` (including
+  anything that came from a `${env:}`/`${file:}`/`${cmd:}` reference) — are
+  persisted at `start` time to `<config-dir>/llm-wiring.json` (mode `0600`,
+  never under the run dir proper, never returned by any HTTP route — the
+  same at-rest pattern already used for `<config-dir>/pi/models.json` and
+  `<run-dir>/.api-token`) and reproduced byte-for-byte by `resume`,
+  regardless of what the operator's *current* shell has (or lacks) at
+  resume time. A run started before this existed (no `llm-wiring.json` on
+  disk) resumes exactly as it did before — no error, just nothing extra to
+  reproduce.
 
 `--iterations +10` adds 10 to the existing budget in `job.yaml` before the
 container starts (a bare integer, e.g. `--iterations 30`, sets it
 absolutely instead); omit it to just continue with whatever budget remains.
 `--allow-docker`, `--image`, `--port`, `--api-bind`, `--no-detach` mirror
-`start`'s flags of the same name (docker-sibling access, host env forwarding
-for LLM auth, and the `-e`/mount wiring those don't touch are **not**
-automatically restored — only what's durably staged on disk via the config
-dir; the resolved `pi` config and creds/skills already are, since the
-container entrypoint re-copies `/config/pi` and the engine re-places
-`/config/creds` + `/config/skills` on every startup).
+`start`'s flags of the same name. The resolved `pi` config and creds/skills
+are restored too, since the container entrypoint re-copies `/config/pi`
+and the engine re-places `/config/creds` + `/config/skills` on every
+startup. Anything from a bare `--forward-env`/`--llm-env`/`--env` (as
+opposed to `--llm` itself) at the *original* `start` is not re-derived by
+`resume` — pass those again explicitly on the `resume` invocation if
+needed (`resume` has no such flags of its own; use `start`'s wiring only
+for `--llm`-derived env/mounts, which now survives automatically).
 
 Exit codes: `3` unknown run, `5` the run's container is still alive (a live
 engine already holds the run dir's flock; `abort`/`stop` it first), `2` a

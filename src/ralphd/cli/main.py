@@ -194,6 +194,48 @@ def _resolve_pi_apikeys(models_json: Path) -> None:
         os.chmod(models_json, 0o600)
 
 
+def _llm_wiring_path(cdir: Path) -> Path:
+    return cdir / "llm-wiring.json"
+
+
+def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
+                      mounts: list[str]) -> None:
+    """Persist the *resolved* env vars + extra mounts contributed by
+    `--llm` wiring at `start` time (task 058, operator steering 018) so
+    `ralphctl resume` can reproduce the exact same wiring on a fresh
+    container later, regardless of the operator's current shell env at
+    resume time (which may lack the credentials entirely, or have
+    different ones). `mode` is `"host"`, a named profile, or `"none"`
+    -- informational only, not read back by resume.
+
+    These values are genuinely secret (the same class of value already
+    written unencrypted-but-mode-0600 to `<cdir>/pi/models.json` for
+    `--llm host`'s resolved `apiKey`, or to `<run-dir>/.api-token`) -- this
+    reuses that same at-rest pattern (private file under the job's own
+    config dir, 0600, never under the run dir proper, never returned by
+    any HTTP route, mounted read-only into the container like everything
+    else under `<cdir>`) rather than inventing a new secret-at-rest
+    mechanism.
+    """
+    path = _llm_wiring_path(cdir)
+    if not env and not mounts:
+        # nothing --llm-wiring-specific to remember (e.g. `--llm none`, or
+        # a profile/host env that set nothing) -- leave no file rather
+        # than writing an empty one.
+        path.unlink(missing_ok=True)
+        return
+    path.write_text(json.dumps({"mode": mode, "env": env, "mounts": mounts}, indent=2))
+    os.chmod(path, 0o600)
+
+
+def _read_llm_wiring(cdir: Path) -> dict:
+    """The `{"env", "mounts"}` `--llm` wiring persisted by `_write_llm_wiring`
+    at `start` time, or empty defaults for a run started before task 058 (no
+    file at all) or with nothing to reproduce."""
+    doc = _read_json(_llm_wiring_path(cdir), {}) or {}
+    return {"env": doc.get("env") or {}, "mounts": doc.get("mounts") or []}
+
+
 # recognized creds extras copied verbatim alongside *.env files
 _CREDS_EXTRA_FILES = ("gitconfig", "git-credentials", "netrc", "setup.sh")
 
@@ -448,12 +490,17 @@ def cmd_start(args):
             if f.exists():
                 shutil.copy2(f, dest / name)
         _resolve_pi_apikeys(dest / "models.json")
+        host_env = {}
         for var in HOST_LLM_ENV:
             if os.environ.get(var):
                 env_args += ["-e", f"{var}={os.environ[var]}"]
+                host_env[var] = os.environ[var]
         aws = Path.home() / ".aws"
+        host_mounts = []
         if aws.is_dir():
             mounts += ["-v", f"{aws}:/home/agent/.aws:ro"]
+            host_mounts.append(f"{aws}:/home/agent/.aws:ro")
+        _write_llm_wiring(cdir, "host", host_env, host_mounts)
     elif args.llm != "none":
         assert llm_profile is not None  # resolved (or died) above
         for k, v in llm_profile["env"].items():
@@ -465,6 +512,9 @@ def cmd_start(args):
             dest.mkdir(exist_ok=True)
             (dest / "models.json").write_text(json.dumps(llm_profile["pi"], indent=1))
             os.chmod(dest / "models.json", 0o600)
+        _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"])
+    else:
+        _write_llm_wiring(cdir, "none", {}, [])
     for pattern in args.forward_env or []:
         if pattern.endswith("*"):
             names = [k for k in os.environ if k.startswith(pattern[:-1])]
@@ -671,6 +721,15 @@ def cmd_resume(args):
     token_file = rdir / ".api-token"
     if token_file.exists():
         env_args += ["-e", f"RALPHD_API_TOKEN={token_file.read_text().strip()}"]
+
+    # Reproduce the exact `--llm` wiring (env vars + extra mounts) resolved
+    # at `start` time (task 058, operator steering 018) -- never re-derived
+    # from the resuming shell's own (possibly absent/different) environment.
+    wiring = _read_llm_wiring(cdir)
+    for k, v in wiring["env"].items():
+        env_args += ["-e", f"{k}={v}"]
+    for m in wiring["mounts"]:
+        mounts += ["-v", m]
 
     docker_args = ["--label", f"ralphd.run={run_id}"]
     if args.allow_docker:
