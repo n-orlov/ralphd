@@ -945,6 +945,14 @@ def cmd_status(args):
     if isinstance(cur_it, dict):
         lines.append(f"iteration elapsed: {format_duration(it_duration_s)} "
                      f"(iteration {cur_it.get('number')}, phase={cur_it.get('phase')})")
+        # Task 001a criterion 4: while an infra-fault retry is backing off,
+        # currentIteration.note carries a human-readable
+        # "retrying after infra fault (attempt N/max, next in Xs): <error>"
+        # message -- surface it here so plain `ralphctl status` (not just
+        # --json) shows it, matching docs/architecture.md's claim.
+        note = cur_it.get("note")
+        if note:
+            lines.append(f"           note: {note}")
     lines.append(f"tasks:     {json.dumps(status.get('tasks', {}))}")
     lines.append(f"usage:     {json.dumps(status.get('usage', {}))}")
     # Task 006: a terminal run (failed/aborted/succeeded) that still has

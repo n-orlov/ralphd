@@ -168,6 +168,39 @@ def test_run_detail_shows_unconsumed_steering_warning(tmp_path, pw):
         server.stop()
 
 
+def test_run_detail_shows_infra_retry_note(tmp_path, pw):
+    """Task 001a criterion 4: while an infra-fault retry is backing off,
+    `currentIteration.note` must be rendered on the hub run-detail card
+    (not just present in the raw JSON the page fetches), so an operator
+    watching a live job via the hub sees the same 'retrying after infra
+    fault...' message `ralphctl status` shows."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-retrying", state="running", verdict="unverified",
+                    currentIteration={
+                        "phase": "worker",
+                        "note": ("retrying after infra fault (attempt 1/3, "
+                                 "next in 60s): getaddrinfo ENOTFOUND"),
+                    })
+    _write_dead_run(registry, "run-clean", state="succeeded", verdict="verified")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-retrying")
+        body_text = _wait_for(pw, "document.body.innerText", "retrying after infra fault")
+        assert "ENOTFOUND" in body_text
+        n_note = int(pw.eval_js("document.querySelectorAll('.infra-retry-note').length"))
+        assert n_note == 1
+
+        pw.open(f"{server.base}/#/run/run-clean")
+        body_text = _wait_for(pw, "document.body.innerText", "succeeded")
+        assert "retrying after infra fault" not in body_text
+        n_note = int(pw.eval_js("document.querySelectorAll('.infra-retry-note').length"))
+        assert n_note == 0
+    finally:
+        server.stop()
+
+
 def test_run_detail_shows_task_table_and_iteration_timeline(tmp_path, pw, live):
     run = live(run_id="browser-detail",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},

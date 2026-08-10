@@ -237,6 +237,17 @@ function renderSummary(el, detail) {
     p.appendChild(line);
   }
   el.appendChild(p);
+  // Task 001a criterion 4: while an infra-fault retry is backing off,
+  // currentIteration.note carries a human-readable "retrying after infra
+  // fault (attempt N/max, next in Xs): <error>" message -- surface it on
+  // the run-detail card so a hub operator sees the same thing plain
+  // `ralphctl status` shows, not just the raw --json blob.
+  const curIt = s.currentIteration;
+  if (curIt && curIt.note) {
+    el.appendChild(h("p", { class: "infra-retry-note" }, [
+      "\u23F3 " + String(curIt.note),
+    ]));
+  }
   // Task 006: a terminal run that still has unconsumed steering files is a
   // silent-drop hazard -- a terminal run never reads pending steering
   // again, so this is the only remaining place the operator can notice.
