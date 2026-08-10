@@ -1804,6 +1804,13 @@ def cmd_repair(args):
     state -- it overwrites status.json's 'state' field directly, bypassing
     diagnosis, after validating the requested value against the same
     `_STATUS_STATES` list diagnosis checks against.
+
+    `--env KEY=VAL` (task 010) adds/updates a recorded value in the
+    persisted env wiring (`env-wiring.json`, task 001's
+    `_write_extra_env_wiring`/`_read_extra_env_wiring`) -- the exact
+    hand-edit the operator performed live before this feature existed,
+    done safely: 0600 preserved, the value never echoed to stdout/stderr
+    or written into the audit event (only the KEY name is recorded).
     """
     run_id = args.run_id
     _require_run(run_id)
@@ -1839,6 +1846,37 @@ def cmd_repair(args):
         result = {"runId": run_id, "action": "set-state", "old": old_state,
                   "new": set_state}
         out(args, result, f"{run_id}: state {old_state!r} -> {set_state!r}")
+        sys.exit(0)
+
+    env_updates = getattr(args, "env", None)
+    if env_updates:
+        cdir = config_root(run_id)
+        pairs = _read_extra_env_wiring(cdir)
+        # ordered dict of name -> value so "add or update" replaces an
+        # existing key in place (rather than appending a shadowing
+        # duplicate) -- keeps env-wiring.json's list one entry per name.
+        by_name: dict[str, str] = {}
+        order: list[str] = []
+        for kv in pairs:
+            k, _, v = kv.partition("=")
+            if k not in by_name:
+                order.append(k)
+            by_name[k] = v
+        updated_keys: list[str] = []
+        for kv in env_updates:
+            k, sep, v = kv.partition("=")
+            if not sep or not k:
+                die(2, f"--env: expected KEY=VAL, got {kv!r}")
+            if k not in by_name:
+                order.append(k)
+            by_name[k] = v
+            updated_keys.append(k)
+        new_pairs = [f"{k}={by_name[k]}" for k in order]
+        _write_extra_env_wiring(cdir, new_pairs)
+        _append_run_event(rdir, "repair", action="env", keys=updated_keys)
+        result = {"runId": run_id, "action": "env", "keys": updated_keys}
+        out(args, result, f"{run_id}: updated env wiring key(s): "
+                          f"{', '.join(updated_keys)}")
         sys.exit(0)
 
     checked = ["status.json", "tasks.json", "host.json"]
@@ -2304,6 +2342,10 @@ def main() -> None:
                    "hatch: overwrite status.json's 'state' for a run "
                    "whose container died without writing a terminal "
                    f"state (one of: {', '.join(_STATUS_STATES)})")
+    s.add_argument("--env", action="append", metavar="KEY=VAL",
+                   help="add/update a recorded value in the persisted env "
+                        "wiring (repeatable); never echoed, audit event "
+                        "records the KEY only")
     s.set_defaults(func=cmd_repair)
 
     s = sub.add_parser("artifacts")

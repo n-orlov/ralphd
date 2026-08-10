@@ -478,6 +478,22 @@ other field in `status.json` is left untouched. `--json` prints
 values. Exit `2` for an unrecognized state value (no write, no audit
 event), `5` if the container is running.
 
+**`--env KEY=VAL`** (task 010, repeatable) adds or updates a recorded
+value in the persisted env wiring (`env-wiring.json` under the job's
+config dir -- the mechanism from task 001/requirement A that lets
+`resume` reproduce `--forward-env`/`--llm-env`/`--env` byte-for-byte).
+This is the exact hand-edit the operator performed live before this
+feature existed, done safely: an existing key is replaced in place
+(preserving the file's key order), a new key is appended, the file stays
+mode `0600`, and the value is never echoed to stdout/stderr or written
+into the audit event -- only the `KEY` name is recorded. A subsequent
+`resume` carries the updated value into the container exactly like any
+other recorded env wiring. `--json` prints `{"runId", "action": "env",
+"keys"}` (the list of key names touched, never values); the audit event
+(`type: repair`, `action: "env"`) records the same `keys` list. Exit `2`
+for a malformed `KEY=VAL` argument (no `=`; no write, no audit event),
+`5` if the container is running.
+
 ### `ralphctl artifacts <run-id> [ls|pull <dest>]`
 
 List or download artifacts. `pull` copies from the (host-mounted) run dir directly;

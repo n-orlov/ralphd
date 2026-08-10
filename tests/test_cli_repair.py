@@ -181,3 +181,100 @@ def test_repair_set_state_appends_audit_event_with_old_and_new(ctl: Ctl):
     assert ev["action"] == "set-state"
     assert ev["old"] == "starting"
     assert ev["new"] == "aborted"
+
+
+# --- task 010: `repair --env KEY=VAL` -- safely edit persisted env wiring -
+
+
+def test_repair_env_adds_new_key_to_fresh_wiring_file(ctl: Ctl):
+    rdir, cdir = _seed_run(ctl, "tst-envadd")
+    (rdir / "status.json").write_text(json.dumps({"state": "failed"}))
+    assert not (cdir / "env-wiring.json").exists()
+    res = ctl.run("--json", "repair", "tst-envadd", "--env",
+                  "AWS_BEARER_TOKEN_BEDROCK=sekrit-tok-123")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["action"] == "env"
+    assert doc["keys"] == ["AWS_BEARER_TOKEN_BEDROCK"]
+
+    wiring_path = cdir / "env-wiring.json"
+    assert wiring_path.is_file()
+    assert oct(wiring_path.stat().st_mode)[-3:] == "600"
+    wdoc = json.loads(wiring_path.read_text())
+    assert wdoc["extra_env"] == ["AWS_BEARER_TOKEN_BEDROCK=sekrit-tok-123"]
+
+
+def test_repair_env_updates_existing_key_in_place(ctl: Ctl):
+    rdir, cdir = _seed_run(ctl, "tst-envupd")
+    (rdir / "status.json").write_text(json.dumps({"state": "failed"}))
+    wiring_path = cdir / "env-wiring.json"
+    wiring_path.write_text(json.dumps(
+        {"extra_env": ["FIRST=one", "SECOND=orig-val", "THIRD=three"]}))
+    wiring_path.chmod(0o600)
+
+    res = ctl.run("--json", "repair", "tst-envupd", "--env",
+                  "SECOND=new-val")
+    assert res.returncode == 0, res.stderr
+
+    wdoc = json.loads(wiring_path.read_text())
+    # replaced in place, order preserved, no shadowing duplicate appended
+    assert wdoc["extra_env"] == ["FIRST=one", "SECOND=new-val", "THIRD=three"]
+    assert oct(wiring_path.stat().st_mode)[-3:] == "600"
+
+
+def test_repair_env_resume_carries_updated_value(ctl: Ctl):
+    from test_cli_resume_llm_wiring import _stop_container, docker_run_argv, env_vars
+
+    rdir, _cdir = _seed_run(ctl, "tst-envresume")
+    (rdir / "status.json").write_text(json.dumps({"state": "failed"}))
+    res = ctl.run("repair", "tst-envresume", "--env", "MY_KEY=fixed-value")
+    assert res.returncode == 0, res.stderr
+
+    _stop_container(ctl)
+    res = ctl.run("resume", "tst-envresume", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-envresume",
+        "STUB_DOCKER_RUNNING": "",
+    })
+    assert res.returncode == 0, res.stderr
+    ev = env_vars(docker_run_argv(ctl))
+    assert "MY_KEY=fixed-value" in ev
+
+
+def test_repair_env_value_never_echoed_or_in_events(ctl: Ctl):
+    rdir, _cdir = _seed_run(ctl, "tst-envsecret")
+    (rdir / "status.json").write_text(json.dumps({"state": "failed"}))
+    secret = "sk-repair-env-never-leaked-42"
+    res = ctl.run("repair", "tst-envsecret", "--env", f"MY_TOKEN={secret}")
+    assert res.returncode == 0, res.stderr
+    assert secret not in res.stdout
+    assert secret not in res.stderr
+
+    events = _events(rdir)
+    repairs = [e for e in events if e.get("type") == "repair"]
+    assert len(repairs) == 1
+    ev = repairs[0]
+    assert ev["action"] == "env"
+    assert ev["keys"] == ["MY_TOKEN"]
+    assert secret not in json.dumps(events)
+
+
+def test_repair_env_invalid_kv_rejected(ctl: Ctl):
+    rdir, cdir = _seed_run(ctl, "tst-envbad")
+    (rdir / "status.json").write_text(json.dumps({"state": "failed"}))
+    res = ctl.run("repair", "tst-envbad", "--env", "NOEQUALSIGN")
+    assert res.returncode == 2, res.stderr
+    assert "KEY=VAL" in res.stderr
+    assert not (cdir / "env-wiring.json").exists()
+    assert _events(rdir) == []
+
+
+def test_repair_env_refuses_while_container_running(ctl: Ctl):
+    rdir, cdir = _seed_run(ctl, "tst-envalive")
+    (rdir / "status.json").write_text(json.dumps({"state": "running"}))
+    res = ctl.run("repair", "tst-envalive", "--env", "K=v", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-envalive",
+        "STUB_DOCKER_RUNNING": "ralphd-tst-envalive",
+    })
+    assert res.returncode == 5, res.stderr
+    assert not (cdir / "env-wiring.json").exists()
+    assert _events(rdir) == []
