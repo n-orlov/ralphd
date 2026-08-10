@@ -212,7 +212,12 @@ Human output also renders (task 003):
   infra-fault exhaustion or an engine bug, and on budget-exhaustion grace
   reviews per task 002). Long reasons wrap across multiple lines rather
   than one unreadable line. Omitted entirely when there is no reason to
-  show (still running, or a terminal state that never set one).
+  show (still running, or a terminal state that never set one). Task 004:
+  the hub run-detail view surfaces the same `reason` prominently for
+  terminal `failed`/`aborted` runs as a `.run-reason` banner on the run
+  summary card (mirroring the `.steering-warning` banner above), so an
+  operator watching a run through the hub sees why it failed without
+  fetching `--json`.
 - `tasks:` -- a one-line summary of the `tasks` counts dict, e.g.
   `7/7 completed` when everything is done, or `5/7 completed (1
   in-progress, 1 pending)` when it is not, instead of a raw JSON dump of

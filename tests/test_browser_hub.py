@@ -201,6 +201,35 @@ def test_run_detail_shows_infra_retry_note(tmp_path, pw):
         server.stop()
 
 
+def test_run_detail_shows_reason_for_terminal_failed_run(tmp_path, pw):
+    """Task 004: the engine's high-quality `reason` string (e.g. the
+    no-progress fail-fast explanation) must be prominently visible on the
+    hub run-detail page for terminal failed/aborted runs, not buried in
+    raw JSON the page fetches but never displays."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-failed-reason", state="failed", verdict="unverified",
+                    reason="no-progress guard tripped: 3 consecutive instant exits "
+                           "(No API key found for amazon-bedrock)")
+    _write_dead_run(registry, "run-clean", state="succeeded", verdict="verified")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-failed-reason")
+        body_text = _wait_for(pw, "document.body.innerText", "no-progress guard tripped")
+        assert "amazon-bedrock" in body_text
+        n_reason = int(pw.eval_js("document.querySelectorAll('.run-reason').length"))
+        assert n_reason == 1
+
+        pw.open(f"{server.base}/#/run/run-clean")
+        body_text = _wait_for(pw, "document.body.innerText", "succeeded")
+        assert "no-progress guard tripped" not in body_text
+        n_reason = int(pw.eval_js("document.querySelectorAll('.run-reason').length"))
+        assert n_reason == 0
+    finally:
+        server.stop()
+
+
 def test_run_detail_shows_task_table_and_iteration_timeline(tmp_path, pw, live):
     run = live(run_id="browser-detail",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},

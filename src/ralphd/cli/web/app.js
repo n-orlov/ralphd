@@ -248,6 +248,17 @@ function renderSummary(el, detail) {
       "\u23F3 " + String(curIt.note),
     ]));
   }
+  // Task 004: the engine writes a high-quality `reason` into status.json
+  // on terminal failed/aborted states (e.g. the no-progress fail-fast
+  // explanation) -- surface it prominently on the run-detail card rather
+  // than leaving the operator to fetch --json to learn why.
+  const terminalFailed = s.state === "failed" || s.state === "aborted";
+  if (terminalFailed && s.reason) {
+    el.classList.add("error");
+    el.appendChild(h("p", { class: "run-reason" }, [
+      "reason: " + String(s.reason),
+    ]));
+  }
   // Task 006: a terminal run that still has unconsumed steering files is a
   // silent-drop hazard -- a terminal run never reads pending steering
   // again, so this is the only remaining place the operator can notice.
