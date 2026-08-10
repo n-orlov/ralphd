@@ -86,3 +86,10 @@ Non-goals for v0.1: resume, web UI, self-reflection, multi-job orchestration.
   revisit once the pi-only loop is stable
 - Parallel jobs orchestration/queueing — out of scope; the CLI's `--json` interface
   is deliberately sufficient for an external orchestrator (human, script, or agent)
+- First-class named env-wiring profiles (reusable `--forward-env`/creds bundles
+  referenced by name at `start`, analogous to LLM profiles) — operators
+  currently repeat the same multi-flag `--forward-env`/`--llm-env`/`--env`
+  incantation on every run; the per-run env-wiring persistence added for
+  resume (roadmap-4 requirement A) only records what was resolved for *that*
+  run, it doesn't let an operator name and reuse a bundle across runs. Worth
+  revisiting once there's a second real profile-shaped use case.
