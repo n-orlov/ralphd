@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from .config import PROMPTS_BUILTIN, JobConfig, overlay_or_config
+from .faults import classify_fault
 from .llm import current_env
 from .runner import IterationResult, PiRunner
 from .state import RunDir, atomic_write_json, utcnow
@@ -44,6 +45,13 @@ class LoopSupervisor:
         self._pause.set()  # set = not paused
         self._abort_reason: str | None = None
         self._instant_failure_streak = 0
+        # Task 001a: iterations refunded because they were retried after an
+        # infra-classified fault (see _run_iteration_with_infra_retry) --
+        # subtracted from self.iterations_used when checking budget_left()
+        # so a hung/broken-endpoint retry never costs the job an iteration,
+        # while self.iterations_used itself keeps monotonically increasing
+        # (so every attempt still gets its own iteration directory/number).
+        self._infra_refunded = 0
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
 
@@ -202,8 +210,90 @@ class LoopSupervisor:
         return "".join(lines)
 
     # -- iteration ----------------------------------------------------------
+    # Phases protected by the infra-fault retry-with-backoff wrapper (task
+    # 001a): planning and worker are the two phases the real incident hit
+    # (an LLM-endpoint DNS/gateway glitch can strike either), and are the
+    # same two phases task 059's instant-failure carve-out already covers.
+    # review/verify/reflect keep their own existing, phase-specific retry
+    # logic (steering-aware review loop, MAX_VERIFY_ERROR_RETRIES) and are
+    # deliberately left out here to avoid two retry mechanisms colliding.
+    INFRA_RETRY_PHASES = ("planning", "worker")
+
     async def run_iteration(self, phase: str, extra: str = "",
                              prompt_name: str | None = None):
+        if phase not in self.INFRA_RETRY_PHASES:
+            return await self._run_iteration_once(phase, extra, prompt_name)
+        return await self._run_iteration_with_infra_retry(phase, extra, prompt_name)
+
+    # Task 001a: escalating backoff/retry cap defaults live on JobConfig
+    # (cfg.infra_retry_backoff_s / cfg.infra_retry_max), overridable via
+    # RALPHD_INFRA_RETRY_BACKOFF_S / RALPHD_INFRA_RETRY_MAX so tests (and
+    # operators) don't need a job.yaml edit for every run.
+    async def _run_iteration_with_infra_retry(self, phase: str, extra: str,
+                                              prompt_name: str | None):
+        """Runs `phase` via _run_iteration_once(), retrying THE SAME
+        phase/iteration with escalating backoff whenever the result
+        classifies as an infra fault (broken LLM endpoint/provider/network
+        -- see .faults.classify_fault) rather than a genuine work failure.
+
+        Each infra-classified attempt is refunded (never counted against
+        cfg.iterations, see budget_left()) and does NOT touch
+        self._instant_failure_streak / the no-progress stagnation guard --
+        callers (the planning/worker loops in _run_job_core) see a fully
+        resolved IterationResult exactly as before, either a genuine
+        success/work-failure or (once cfg.infra_retry_max is exhausted) the
+        last failing attempt with self._abort_reason already set to a
+        diagnostic naming the infra fault plainly.
+
+        An infra fault that is ALSO an *instant* failure (sub-
+        INSTANT_FAILURE_MAX_DURATION_S exit with no traffic) is left
+        entirely to the pre-existing streak-based carve-out
+        (_check_instant_failure) instead -- returning immediately here --
+        so the two mechanisms never race or double-count the same failure.
+        """
+        attempt = 0
+        while True:
+            result = await self._run_iteration_once(phase, extra, prompt_name)
+            fault = classify_fault(
+                error_text=result.error_message or "",
+                exit_code=result.exit_code,
+                interrupted=result.interrupted,
+                timed_out=result.timed_out,
+                no_traffic_timeout=result.no_traffic_timeout,
+                produced_traffic=bool(result.final_text) or bool(result.usage))
+            is_instant = (result.duration_s is not None
+                         and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
+                         and not result.no_traffic_timeout)
+            if fault != "infra" or is_instant:
+                return result
+
+            self._infra_refunded += 1
+            attempt += 1
+            error_desc = result.error_message or "no LLM traffic within startup window"
+            self.run.emit("infra_retry", phase=phase, attempt=attempt,
+                          maxAttempts=self.cfg.infra_retry_max, error=error_desc,
+                          noTrafficTimeout=result.no_traffic_timeout)
+            log.warning("iteration %s classified infra fault (attempt %d/%d): %s",
+                       phase, attempt, self.cfg.infra_retry_max, error_desc)
+            self.run.update_status(
+                iterationsUsed=self.iterations_used - self._infra_refunded)
+            if attempt >= self.cfg.infra_retry_max:
+                self._abort_reason = (
+                    f"infra fault: {phase} iteration failed after "
+                    f"{self.cfg.infra_retry_max} attempts ({error_desc})")
+                self.run.emit("log", level="error", message=self._abort_reason)
+                return result
+            backoff_schedule = self.cfg.infra_retry_backoff_s or [60.0, 300.0, 900.0]
+            backoff = backoff_schedule[min(attempt - 1, len(backoff_schedule) - 1)]
+            self.run.update_status(currentIteration={
+                "phase": phase,
+                "note": (f"retrying after infra fault (attempt {attempt}/"
+                         f"{self.cfg.infra_retry_max}, next in {backoff:.0f}s): "
+                         f"{error_desc}")})
+            await asyncio.sleep(backoff)
+
+    async def _run_iteration_once(self, phase: str, extra: str = "",
+                                  prompt_name: str | None = None):
         n = self.iterations_used + 1
         self.iterations_used = n
         itdir = self.run.iteration_dir(n)
@@ -230,6 +320,12 @@ class LoopSupervisor:
 
         timeout = min(self.cfg.iteration_timeout_s,
                       max(60, int(self.deadline - time.monotonic())))
+        # Task 001a: the startup-window watchdog only applies to phases the
+        # infra-retry wrapper protects (planning/worker) -- other phases
+        # (review/verify/reflect) are unaffected, keeping their existing
+        # timing/behavior exactly as before.
+        startup_timeout_s = (min(self.cfg.infra_startup_timeout_s, timeout)
+                             if phase in self.INFRA_RETRY_PHASES else None)
         # Poll tasks.json while the agent subprocess is running so status
         # transitions (e.g. pending -> in-progress) are emitted as "task"
         # events the moment the agent writes them, not only after the whole
@@ -241,7 +337,7 @@ class LoopSupervisor:
                 result = await self.runner.run(
                     prompt, itdir / "output.jsonl", model=model,
                     thinking=self.cfg.thinking, timeout_s=timeout,
-                    extra_env=current_env())
+                    extra_env=current_env(), startup_timeout_s=startup_timeout_s)
             except Exception as exc:
                 # an engine-side iteration failure (stream error, OS error)
                 # must cost one iteration, not the whole job
@@ -254,6 +350,7 @@ class LoopSupervisor:
 
         meta.update(endedAt=utcnow(), exitCode=result.exit_code,
                     interrupted=result.interrupted, timedOut=result.timed_out,
+                    noTrafficTimeout=result.no_traffic_timeout,
                     sawComplete=result.saw_complete, sawVerified=result.saw_verified,
                     error=result.error_message or None,
                     usage=result.usage)
@@ -325,7 +422,11 @@ class LoopSupervisor:
 
     # -- budget/limits -------------------------------------------------------
     def budget_left(self) -> bool:
-        return (self.iterations_used < self.cfg.iterations
+        # Task 001a: iterations refunded after an infra-classified retry
+        # (see _run_iteration_with_infra_retry) never count against the
+        # configured budget.
+        charged = self.iterations_used - self._infra_refunded
+        return (charged < self.cfg.iterations
                 and time.monotonic() < self.deadline
                 and self._abort_reason is None)
 

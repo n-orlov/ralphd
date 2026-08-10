@@ -195,6 +195,76 @@ failure. A worker that runs to completion every iteration but never
 changes `tasks.json` (a genuine stall, not a crash) is unaffected and still
 trips the ordinary 3-iterations-no-progress guard exactly as before.
 
+### Infra-fault fail-fast + retry with backoff (task 001a)
+
+Filed after a live incident distinct from task 059's: two consecutive
+*worker* iterations each hung the **full** `iteration_timeout_s` (45 minutes
+by default) on a transient `getaddrinfo ENOTFOUND` gateway-DNS glitch before
+the process finally died with `exit=-2`, burning ~90 minutes of wall clock
+and 2 iterations of budget. Task 059's instant-failure carve-out never saw
+it: that guard only classifies exits under `INSTANT_FAILURE_MAX_DURATION_S`
+(5s), and this failure mode is the opposite shape — the process doesn't
+exit quickly, it *hangs*.
+
+**1. Startup-window watchdog (fail fast on zero LLM traffic).** `PiRunner.run()`
+accepts a `startup_timeout_s` argument; while the agent subprocess's stdout is
+being pumped, a concurrent watchdog task waits for the first line that parses
+as a pi NDJSON event at all (`PiRunner._scan_line()`'s return value — any
+event, not specifically a `message_end`) inside that window. If none arrives,
+the watchdog sets `IterationResult.no_traffic_timeout = True` and SIGINTs the
+process immediately, rather than waiting for the full `timeout_s` to elapse.
+`LoopSupervisor._run_iteration_once()` only passes a real `startup_timeout_s`
+(`cfg.infra_startup_timeout_s`, default 150s, overridable via
+`RALPHD_INFRA_STARTUP_TIMEOUT` or the `infra_startup_timeout_s` job.yaml key)
+for the two phases most exposed to this (`planning`, `worker`); other phases
+(`review`, `verify`, `reflect`) are unaffected.
+
+**2. Classification.** `.faults.classify_fault()` is a pure function (no
+engine state) that maps a finished iteration's failure signal to `"infra"`,
+`"work"`, or `None` (not a failure at all): `no_traffic_timeout=True` is
+always `"infra"`; a captured error string matching a known infra signature
+(DNS/`ENOTFOUND`, `ECONNREFUSED`/`ECONNRESET`, TLS/SSL handshake failure, or
+a gateway 5xx) is `"infra"` regardless of whether some traffic preceded it;
+an iteration that produced real LLM traffic (assistant text or token usage)
+and then exited nonzero/timed out/was interrupted with no recognized infra
+text is `"work"`; any other no-traffic failure defaults to `"infra"` too
+(deliberately — an unclassifiable no-traffic failure is far more likely to
+be an environment/startup fault than genuine agent work).
+
+**3. Retry with backoff, not escalation.** `LoopSupervisor._run_iteration_with_infra_retry()`
+wraps `_run_iteration_once()` for `planning`/`worker` calls. An infra-classified
+result that is *also* an instant failure (sub-`INSTANT_FAILURE_MAX_DURATION_S`,
+no `no_traffic_timeout`) is returned immediately, unhandled — left entirely
+to task 059's pre-existing streak-based carve-out, so the two mechanisms never
+race or double-count the same failure. Any other infra-classified result
+retries the *same* phase/iteration in place with escalating backoff
+(`cfg.infra_retry_backoff_s`, default `[60, 300, 900]` — 1/5/15 minutes,
+overridable via `RALPHD_INFRA_RETRY_BACKOFF_S="s1,s2,..."`), capped at
+`cfg.infra_retry_max` attempts (default 3, `RALPHD_INFRA_RETRY_MAX`) before
+giving up as a terminal infra failure. Each infra-classified attempt
+increments `LoopSupervisor._infra_refunded`, which `budget_left()` subtracts
+from `iterations_used` — an infra retry never counts against the job's
+iteration budget (the attempt still gets its own iteration directory/number,
+since `iterations_used` itself keeps incrementing monotonically; only the
+*budget comparison* is adjusted). It also never touches
+`_instant_failure_streak` or the worker loop's stagnation counter.
+
+**4. Surfacing.** Each attempt emits a `type: infra_retry` event
+(`phase`, `attempt`, `maxAttempts`, `error`, `noTrafficTimeout`) to
+`events.jsonl`. While waiting out the backoff between attempts,
+`status.json`'s `currentIteration.note` reads `"retrying after infra fault
+(attempt N/max, next in Xs): <error>"` (visible via `ralphctl status`/the
+hub). If retries exhaust, `LoopSupervisor._abort_reason` is set to
+`"infra fault: <phase> iteration failed after <max> attempts (<error>)"` —
+picked up by the same `budget_left() == False` → `state: aborted` path task
+059 uses, so the terminal `reason` names the infra fault plainly (e.g. the
+literal `getaddrinfo ENOTFOUND` text, when the failure surfaced one) rather
+than a generic timeout message.
+
+A traceability row for this requirement belongs alongside task 013's
+requirement→test table (see `artifacts/reports/traceability.md`, built by
+that task) once it exists.
+
 ### Model strategy
 
 Each phase resolves its model independently: per-phase override → strategy preset →

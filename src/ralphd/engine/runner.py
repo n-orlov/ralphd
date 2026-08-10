@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -35,6 +36,11 @@ class IterationResult:
     # the subprocess was never actually spawned (engine-side failure before
     # create_subprocess_exec).
     duration_s: float | None = None
+    # True when the engine's own startup-window watchdog (task 001a) killed
+    # this iteration because it observed zero LLM traffic (no parseable pi
+    # NDJSON event at all) within the configured startup window -- distinct
+    # from `timed_out`, which is the *full* iteration_timeout_s firing.
+    no_traffic_timeout: bool = False
 
     @property
     def saw_complete(self) -> bool:
@@ -75,6 +81,7 @@ class PiRunner:
         thinking: str | None = None,
         timeout_s: int = 2700,
         extra_env: dict | None = None,
+        startup_timeout_s: float | None = None,
     ) -> IterationResult:
         cmd = [self.pi_bin, "-p", "--mode", "json", "--no-session"]
         if model:
@@ -102,13 +109,17 @@ class PiRunner:
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+            first_traffic = asyncio.Event()
+
             async def pump() -> None:
                 with open(transcript, "a") as out:
                     while True:
                         line = await self._proc.stdout.readline()
                         if not line:
                             break
-                        self._scan_line(line, result)
+                        saw_event = self._scan_line(line, result)
+                        if saw_event and not first_traffic.is_set():
+                            first_traffic.set()
                         # Mechanical secret redaction (task 060): scrub any
                         # known secret value before it ever touches disk --
                         # scanning above uses the raw bytes so sentinel/usage
@@ -116,16 +127,42 @@ class PiRunner:
                         out.write(scrub_text(line.decode(errors="replace")))
                         out.flush()
 
+            async def startup_watchdog() -> None:
+                # Task 001a: fail fast on a hang with zero LLM traffic --
+                # e.g. a DNS/gateway glitch the process blocks on
+                # internally -- instead of waiting out the full iteration
+                # timeout (the live incident this guards against: a
+                # transient "getaddrinfo ENOTFOUND" hung the *entire*
+                # 45-minute iteration timeout before finally dying).
+                if not startup_timeout_s:
+                    return
+                try:
+                    await asyncio.wait_for(first_traffic.wait(), timeout=startup_timeout_s)
+                except TimeoutError:
+                    result.no_traffic_timeout = True
+                    self.interrupt()
+
+            pump_task = asyncio.ensure_future(pump())
+            watchdog_task = asyncio.ensure_future(startup_watchdog())
             try:
-                await asyncio.wait_for(pump(), timeout=timeout_s)
+                await asyncio.wait_for(pump_task, timeout=timeout_s)
             except TimeoutError:
                 result.timed_out = True
                 self.interrupt()
                 try:
-                    await asyncio.wait_for(self._proc.wait(), timeout=30)
+                    await asyncio.wait_for(pump_task, timeout=30)
                 except TimeoutError:
-                    self._proc.kill()
-            result.exit_code = await self._proc.wait()
+                    pass
+            finally:
+                watchdog_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watchdog_task
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=30)
+            except TimeoutError:
+                self._proc.kill()
+                await self._proc.wait()
+            result.exit_code = self._proc.returncode
         finally:
             # whatever went wrong above, never leave an orphaned agent running
             if self._proc is not None and self._proc.returncode is None:
@@ -143,12 +180,18 @@ class PiRunner:
         return result
 
     @staticmethod
-    def _scan_line(line: bytes, result: IterationResult) -> None:
-        """Extract final assistant text + usage from pi's NDJSON events."""
+    def _scan_line(line: bytes, result: IterationResult) -> bool:
+        """Extract final assistant text + usage from pi's NDJSON events.
+
+        Returns True iff `line` parsed as JSON at all -- i.e. this is the
+        first observable sign of LLM/agent traffic (task 001a's startup-
+        window watchdog uses this to distinguish a hang that produces
+        nothing at all from an agent that's genuinely streaming).
+        """
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            return
+            return False
         if event.get("type") == "message_end":
             msg = event.get("message", {})
             if msg.get("role") == "assistant":
@@ -163,3 +206,4 @@ class PiRunner:
                     result.usage[key] = result.usage.get(key, 0) + (usage.get(key) or 0)
                 cost = (usage.get("cost") or {}).get("total") or 0
                 result.usage["costUSD"] = round(result.usage.get("costUSD", 0) + cost, 6)
+        return True

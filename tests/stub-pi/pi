@@ -60,6 +60,20 @@ from env vars set by the test:
                       escalation guard does not burn through approaches on
                       these before failing fast with a clear diagnostic
                       instead)
+  STUB_INFRA_HANG_COUNT  after the first STUB_INFRA_HANG_SKIP invocations
+                      (default 0), the next N invocations of the stub (any
+                      phase) HANG -- sleep for a very long time producing
+                      ZERO stdout/NDJSON output at all -- before eventually
+                      exiting, simulating a transient LLM-endpoint/gateway
+                      fault (e.g. a DNS glitch the process blocks on
+                      internally) that never resolves on its own within any
+                      reasonable time. Unlike STUB_INSTANT_FAIL_COUNT, this
+                      does NOT exit quickly: the engine's own startup-window
+                      watchdog (task 001a, RALPHD_INFRA_STARTUP_TIMEOUT)
+                      must SIGINT the stub well before it would ever reach
+                      the sleep's end, proving the engine fails fast on a
+                      hang instead of waiting out the full iteration
+                      timeout.
   STUB_ECHO_SECRET    comma-separated literal secret value(s) for the stub
                       worker to deliberately echo into its final assistant
                       text AND into a tool call's arguments/result (task
@@ -115,6 +129,31 @@ if _instant_fail_count:
         _f.write(str(_seen + 1))
     if _instant_fail_skip <= _seen < _instant_fail_skip + _instant_fail_count:
         sys.stderr.write("stub: simulated instant startup failure (no LLM credentials)\n")
+        sys.exit(1)
+
+
+# STUB_INFRA_HANG_COUNT simulates a transient LLM-endpoint/gateway fault
+# (task 001a's live incident: a "getaddrinfo ENOTFOUND" DNS glitch that hung
+# the *entire* 45-minute iteration timeout before finally dying) -- after
+# the first STUB_INFRA_HANG_SKIP invocations behave normally (default 0),
+# the next N invocations of the stub, across ANY phase, sleep for a very
+# long time producing ZERO stdout output before this process would ever
+# print a single byte. The engine's own startup-window watchdog is what's
+# supposed to SIGINT this well before the sleep ever completes; if it
+# didn't, this stub would otherwise hang for the full test timeout too.
+_infra_hang_count = int(os.environ.get("STUB_INFRA_HANG_COUNT", "0"))
+_infra_hang_skip = int(os.environ.get("STUB_INFRA_HANG_SKIP", "0"))
+if _infra_hang_count:
+    _hang_marker = marker("infra-hang-count")
+    _seen = 0
+    if os.path.exists(_hang_marker):
+        _seen = int(open(_hang_marker).read())
+    with open(_hang_marker, "w") as _f:
+        _f.write(str(_seen + 1))
+    if _infra_hang_skip <= _seen < _infra_hang_skip + _infra_hang_count:
+        sys.stderr.write("stub: simulated infra hang (zero LLM traffic)\n")
+        sys.stderr.flush()
+        time.sleep(9999)
         sys.exit(1)
 
 

@@ -84,6 +84,21 @@ class JobConfig:
     model_overrides: dict = field(default_factory=dict)  # phase → model ref
     thinking: str | None = None       # pi --thinking level
     api_token: str | None = None
+    # Infra-fault fail-fast/retry knobs (task 001a). Startup window: how long
+    # a planning/worker iteration may run with ZERO observed LLM traffic
+    # (no parseable pi NDJSON event at all) before the engine kills it as an
+    # infra fault rather than waiting for the full iteration_timeout_s.
+    # Backoff schedule: escalating sleep between retries of the SAME
+    # phase/iteration after an infra-classified failure (default ~1/5/15
+    # min); infra_retry_max caps how many such failures are tolerated
+    # before giving up as a terminal infra failure. All three are
+    # overridable via env vars (RALPHD_INFRA_STARTUP_TIMEOUT,
+    # RALPHD_INFRA_RETRY_BACKOFF_S, RALPHD_INFRA_RETRY_MAX) so tests (and
+    # operators who want a tighter/looser policy) don't need a job.yaml
+    # edit for every run.
+    infra_startup_timeout_s: float = 150.0
+    infra_retry_backoff_s: list = field(default_factory=lambda: [60.0, 300.0, 900.0])
+    infra_retry_max: int = 3
     extra: dict = field(default_factory=dict)
 
     # "reflect" (post-job self-reflection, PRD req 24) mirrors "review"'s tier
@@ -111,6 +126,12 @@ class JobConfig:
         cfg = cls(**kwargs, extra={k: v for k, v in raw.items() if k not in known})
         if tok := os.environ.get("RALPHD_API_TOKEN"):
             cfg.api_token = tok
+        if v := os.environ.get("RALPHD_INFRA_STARTUP_TIMEOUT"):
+            cfg.infra_startup_timeout_s = float(v)
+        if v := os.environ.get("RALPHD_INFRA_RETRY_BACKOFF_S"):
+            cfg.infra_retry_backoff_s = [float(x) for x in v.split(",") if x]
+        if v := os.environ.get("RALPHD_INFRA_RETRY_MAX"):
+            cfg.infra_retry_max = int(v)
         return cfg
 
     def effective(self) -> dict:
@@ -127,6 +148,9 @@ class JobConfig:
                 "maxApproaches": self.max_approaches,
                 "jobTimeoutS": self.job_timeout_s,
                 "iterationTimeoutS": self.iteration_timeout_s,
+                "infraStartupTimeoutS": self.infra_startup_timeout_s,
+                "infraRetryBackoffS": list(self.infra_retry_backoff_s),
+                "infraRetryMax": self.infra_retry_max,
             },
             "flags": {
                 "vigilant": self.vigilant,
