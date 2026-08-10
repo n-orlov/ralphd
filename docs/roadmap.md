@@ -79,12 +79,6 @@ Non-goals for v0.1: resume, web UI, self-reflection, multi-job orchestration.
   there; rationale: prompt rules alone did not prevent the iteration-103
   pkill incident, so engine-level self-protection is needed, not just
   prompt-level guidance.
-- A `ralphctl repair` command for hand-fixing corrupted run-dir state (e.g. a
-  `tasks.json`/`status.json` left in an inconsistent shape by a crash outside
-  the paths task 030's crash-consistency tests already cover) — noted during
-  task 060's operator escalation, not attempted there; rationale: the
-  previous incident's recovery required hand-editing `status.json` directly,
-  which should be sanctioned tooling instead of an ad hoc operator edit.
 - Remote/daemon mode (running ralphd on a server, CLI over the network) — the
   token+bind options already make this *possible*; making it *nice* (TLS, discovery)
   is deferred
