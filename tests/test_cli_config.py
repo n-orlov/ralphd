@@ -136,6 +136,36 @@ def test_registry_default_on_complete_idle_overrides_product_default(ctl):
     assert job["on_complete"] == "idle"
 
 
+def test_set_network_persists_to_registry_config_yaml(ctl):
+    res = ctl.run("config", "set", "network", "host")
+    assert res.returncode == 0, res.stderr
+    assert _config_yaml(ctl)["network"] == "host"
+
+
+def test_start_uses_registry_default_network(ctl):
+    ctl.run("config", "set", "network", "tailnet0")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-network")
+    assert res.returncode == 0, res.stderr
+    argv = docker_run_argv(ctl)
+    i = argv.index("--network")
+    assert argv[i + 1] == "tailnet0"
+    host_json = json.loads(
+        (ctl.registry / "runs" / "cfg-network" / "host.json").read_text())
+    assert host_json["network"] == "tailnet0"
+
+
+def test_explicit_network_flag_overrides_registry_default(ctl):
+    ctl.run("config", "set", "network", "tailnet0")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-network-override",
+                  "--network", "host")
+    assert res.returncode == 0, res.stderr
+    argv = docker_run_argv(ctl)
+    i = argv.index("--network")
+    assert argv[i + 1] == "host"
+
+
 def test_template_still_overrides_registry_default(ctl):
     ctl.run("config", "set", "on_complete", "exit")
     tdir = ctl.registry / "templates" / "quick"

@@ -398,7 +398,7 @@ _TEMPLATE_SCALAR_FIELDS = {
     "reflect": False, "on_complete": "exit", "on_complete_cmd": None, "timeout": 480,
     "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
     "model": None, "fast_model": None, "thinking": None,
-    "image": DEFAULT_IMAGE,
+    "image": DEFAULT_IMAGE, "network": None,
 }
 
 # For these `start` scalar fields, `ralphctl config set <regkey> ...` (task
@@ -408,7 +408,7 @@ _TEMPLATE_SCALAR_FIELDS = {
 # named `default_llm_profile` (matches doctor's existing read of it);
 # the others share their field name.
 _REGISTRY_CONFIG_FIELD_KEYS = {"image": "image", "on_complete": "on_complete",
-                               "llm": "default_llm_profile"}
+                               "llm": "default_llm_profile", "network": "network"}
 
 
 def _apply_template(args) -> Path | None:
@@ -1705,13 +1705,13 @@ def cmd_ui(args):
 # (see `_REGISTRY_CONFIG_FIELD_KEYS` above) plus `default_llm_profile`,
 # which doctor already reads independently.
 _CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
-                "default_llm_profile": None}
+                "default_llm_profile": None, "network": None}
 
 
 def cmd_config(args):
     """Registry-wide defaults at `<registry>/config.yaml` (PRD req 25):
-    `image`, `on_complete`, `default_llm_profile`. `start` layers these in
-    between a `--template`'s value and the hardcoded fallback (see
+    `image`, `on_complete`, `default_llm_profile`, `network`. `start` layers
+    these in between a `--template`'s value and the hardcoded fallback (see
     `_apply_template`); `doctor` reads `default_llm_profile` directly."""
     if args.key not in _CONFIG_KEYS:
         die(2, f"unknown config key: {args.key} (expected one of "

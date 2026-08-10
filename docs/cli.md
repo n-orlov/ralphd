@@ -83,7 +83,7 @@ ralphctl start --prd <file|-> [options]
 | `--iteration-timeout <dur>` | 45m | per-iteration limit |
 | `--port <n>` | auto | host port for the API |
 | `--api-bind <addr>` | 127.0.0.1 | host interface to publish on |
-| `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. |
+| `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. Falls back to the registry's `network` (`ralphctl config`) if set. |
 | `--api-token <t\|auto>` | none | require bearer auth (`auto` generates + stores) |
 | `--env KEY=VAL` | — | extra container env (repeatable) |
 | `--detach/--no-detach` | detach | `--no-detach` streams events until completion, exit code mirrors job verdict (0 verified / 1 otherwise) |
@@ -132,10 +132,11 @@ template dir), and `prd` (a filename relative to the template dir, default
 `prd.md`). Every one of these has a corresponding `start` flag; **an explicit
 flag on the command line always overrides the template's value** for that
 field (`--skills`/`--creds` override wholesale, not merge). For `image`,
-`on_complete`, and `llm`, fields the template doesn't set fall back next to
-any matching `ralphctl config` registry default (`image`/`on_complete`/
-`default_llm_profile`), and only then to the hardcoded default; every other
-field falls straight back to its hardcoded default. An unknown `--template`
+`on_complete`, `network`, and `llm`, fields the template doesn't set fall
+back next to any matching `ralphctl config` registry default
+(`image`/`on_complete`/`network`/`default_llm_profile`), and only then to
+the hardcoded default; every other field falls straight back to its
+hardcoded default. An unknown `--template`
 name exits `3` naming the expected path; a malformed `job.yaml` (not a
 mapping) exits `2`.
 
@@ -608,7 +609,8 @@ malformed `--iterations` value, `1` the underlying `docker run` failed.
 Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
 (created on first `set`). Recognized keys: `image`, `on_complete`
 (`idle`/`exit` — validated on `set`), `default_llm_profile` (any string;
-`ralphctl doctor` resolves it as an LLM profile name, see below).
+`ralphctl doctor` resolves it as an LLM profile name, see below), `network`
+(any string; same values `--network` accepts, e.g. `host`).
 
 - `get` prints `<key>: <value>`, or `<key>: (unset)` if the key has never
   been `set` — this is not an error (exit `0` either way).
@@ -621,9 +623,9 @@ Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
   `null` for an unset `get`).
 
 `ralphctl start` layers these in as the **registry-wide fallback** for the
-same-named flags (`--image`, `--on-complete`) and for `--llm` (via
-`default_llm_profile`), between an explicit flag/`--template` value and the
-hardcoded built-in default: explicit flag > `--template` > `ralphctl
+same-named flags (`--image`, `--on-complete`, `--network`) and for `--llm`
+(via `default_llm_profile`), between an explicit flag/`--template` value and
+the hardcoded built-in default: explicit flag > `--template` > `ralphctl
 config` default > hardcoded default. `resume`/`llm test`/`doctor`'s own
 `--image` flags are unaffected (still default to the hardcoded image).
 
