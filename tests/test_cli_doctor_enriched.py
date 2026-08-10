@@ -163,8 +163,33 @@ def test_doctor_running_registry_entry_with_live_container_not_dangling(ctl):
 def test_doctor_json_shape_stable(ctl):
     doc = ctl.doctor(env=_base_env())
     for key in ("ok", "checks", "strayContainers", "danglingRegistryEntries",
-                "registryIssues", "defaultLlmProfile", "defaultLlmProfileError"):
+                "registryIssues", "defaultLlmProfile", "defaultLlmProfileError",
+                "hostNetworkApiBindNote"):
         assert key in doc
     for key in ("docker", "image", "registry", "pi_host_config",
                 "default_llm_profile", "registry_schema"):
         assert key in doc["checks"]
+
+
+def test_doctor_notes_host_network_api_bind_exposure_when_configured(ctl):
+    """task 006: registry config `network: host` -> doctor's report notes
+    the API binds --api-bind directly with no docker port-publish
+    isolation. Report-only, never affects `ok`."""
+    (ctl.registry / "config.yaml").write_text(yaml.safe_dump({"network": "host"}))
+    doc = ctl.doctor(env=_base_env())
+    assert doc["hostNetworkApiBindNote"] is not None
+    assert "host" in doc["hostNetworkApiBindNote"]
+    assert "--api-bind" in doc["hostNetworkApiBindNote"]
+    assert doc["ok"] == all(doc["checks"].values())
+
+    res = ctl.run("doctor", env=_base_env())
+    assert "--api-bind" in res.stdout
+
+
+def test_doctor_no_host_network_note_when_not_configured(ctl):
+    doc = ctl.doctor(env=_base_env())
+    assert doc["hostNetworkApiBindNote"] is None
+
+    (ctl.registry / "config.yaml").write_text(yaml.safe_dump({"network": "my-tailnet"}))
+    doc = ctl.doctor(env=_base_env())
+    assert doc["hostNetworkApiBindNote"] is None

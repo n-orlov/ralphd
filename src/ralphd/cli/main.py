@@ -1762,11 +1762,25 @@ def cmd_doctor(args):
 
     strays = _stray_sibling_containers()
     dangling = _dangling_registry_entries()
+    # host-network jobs share the host's network namespace, so docker's
+    # normal port-publish isolation (`-p host:container`) doesn't apply --
+    # the API binds `--api-bind` directly on the host. Report-only, never
+    # affects the verdict (mirrors strays/dangling below).
+    configured_network = _registry_config(reg).get("network")
+    host_network_note = None
+    if configured_network == "host":
+        host_network_note = (
+            "registry default network is 'host': jobs share the host "
+            "network namespace, so the API binds --api-bind directly on "
+            "the host with no docker port-publish isolation"
+        )
     # strays/dangling registry entries are report-only, never affect the verdict
     ok = all(checks.values())
     report = "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items())
     if default_llm_profile_error:
         report += f"\n    default LLM profile ({default_profile_name!r}): {default_llm_profile_error}"
+    if host_network_note:
+        report += f"\n! {host_network_note}"
     if registry_issues:
         report += "\n! registry schema issues:"
         for issue in registry_issues:
@@ -1785,7 +1799,8 @@ def cmd_doctor(args):
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
                "defaultLlmProfile": default_profile_name,
-               "defaultLlmProfileError": default_llm_profile_error}, report)
+               "defaultLlmProfileError": default_llm_profile_error,
+               "hostNetworkApiBindNote": host_network_note}, report)
     sys.exit(0 if ok else 1)
 
 
