@@ -884,7 +884,24 @@ everything else under `<config-dir>` -- no new secret-storage mechanism was
 invented. `ralphctl resume` reads that file (if present -- a run started
 before task 058 simply has none, and resumes exactly as it always did) and
 adds its `env`/`mounts` to the new `docker run` invocation verbatim, before
-ever consulting the resuming shell's own environment. `--forward-env`/
-`--llm-env`/`--env` (generic, not `--llm`-derived) are unaffected -- those
-were never part of this gap and still need to be passed again on `resume`
-if wanted.
+ever consulting the resuming shell's own environment.
+
+`--forward-env`/`--llm-env`/`--env` (generic, not `--llm`-derived) had the
+same gap for the same reason (task 001, live incident: a job authenticated
+via `--forward-env 'AWS_*'` -- a Bedrock bearer token -- resumed into a
+credential-less container and died instantly on every iteration). `start`
+now also persists the *resolved* `name=value` pairs those three flags
+produced, in the exact order they were applied, to a second file next to
+`llm-wiring.json`: `<config-dir>/env-wiring.json`, mode `0600`, same
+at-rest pattern (private, config-dir-only, read-only mount, never served
+over HTTP). `resume` replays `llm-wiring.json`'s `env`/`mounts` first, then
+`env-wiring.json`'s pairs in their original order, so precedence on
+replay matches `start`'s (a later duplicate name still wins, exactly as
+the original `docker -e` flags did). A run started before task 001 has no
+`env-wiring.json` and resumes exactly as before -- no error, no extra
+`-e` flags.
+
+`resume` currently has no per-invocation `--forward-env`/`--llm-env`/
+`--env`/`--llm` override flags of its own -- only the persisted values are
+replayed. If such an override flag is ever added, it must win over the
+recorded value for that run (never silently ignored).

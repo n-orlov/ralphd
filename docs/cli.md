@@ -546,6 +546,19 @@ continues the job instead of re-planning; `resume` just has to reproduce
   resume time. A run started before this existed (no `llm-wiring.json` on
   disk) resumes exactly as it did before — no error, just nothing extra to
   reproduce.
+- The resolved `--forward-env`/`--llm-env`/`--env` pairs from `start` time
+  (task 001): these three generic, non-`--llm`-derived flags are resolved
+  once at `start` and persisted, in the exact order applied, to
+  `<config-dir>/env-wiring.json` (mode `0600`, same at-rest pattern as
+  `llm-wiring.json`) — so a job whose LLM credentials arrived via e.g.
+  `--forward-env 'AWS_*'` resumes with those *original* values, never
+  re-read from the resuming shell's own (possibly absent or different)
+  environment. `resume` replays `llm-wiring.json`'s env/mounts first, then
+  `env-wiring.json`'s pairs, matching `start`'s own precedence (a later
+  duplicate name wins). A run started before this existed (no
+  `env-wiring.json`) resumes exactly as before — no error, no extra `-e`
+  flags. `resume` has no override flags of its own for these yet; only the
+  recorded values are replayed.
 
 `--iterations +10` adds 10 to the existing budget in `job.yaml` before the
 container starts (a bare integer, e.g. `--iterations 30`, sets it

@@ -277,6 +277,39 @@ def _read_llm_wiring(cdir: Path) -> dict:
     return {"env": doc.get("env") or {}, "mounts": doc.get("mounts") or []}
 
 
+def _extra_env_wiring_path(cdir: Path) -> Path:
+    return cdir / "env-wiring.json"
+
+
+def _write_extra_env_wiring(cdir: Path, pairs: list[str]) -> None:
+    """Persist the *resolved* `name=value` pairs contributed by
+    `--forward-env`, `--llm-env`, and `--env` at `start` time (task 001,
+    same defect class as `_write_llm_wiring`/task 058) so `ralphctl resume`
+    can reproduce them byte-for-byte later regardless of the resuming
+    shell's own environment. `pairs` is kept in the exact order the flags
+    were applied at `start` (forward-env, then llm-env, then env) so a
+    later duplicate name wins on replay exactly as it did the first time
+    (docker `-e NAME=A -e NAME=B` -- last one wins).
+
+    Same at-rest pattern as `llm-wiring.json`: private file under the job's
+    own config dir, 0600, never under the run dir proper, never returned by
+    any HTTP route.
+    """
+    path = _extra_env_wiring_path(cdir)
+    if not pairs:
+        path.unlink(missing_ok=True)
+        return
+    path.write_text(json.dumps({"extra_env": pairs}, indent=2))
+    os.chmod(path, 0o600)
+
+
+def _read_extra_env_wiring(cdir: Path) -> list[str]:
+    """The ordered `name=value` list persisted by `_write_extra_env_wiring`,
+    or an empty list for a run started before task 001 (no file at all)."""
+    doc = _read_json(_extra_env_wiring_path(cdir), {}) or {}
+    return list(doc.get("extra_env") or [])
+
+
 # recognized creds extras copied verbatim alongside *.env files
 _CREDS_EXTRA_FILES = ("gitconfig", "git-credentials", "netrc", "setup.sh")
 
@@ -558,6 +591,11 @@ def cmd_start(args):
         _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"])
     else:
         _write_llm_wiring(cdir, "none", {}, [])
+    # Resolved `name=value` pairs from --forward-env/--llm-env/--env, in
+    # the exact order applied below -- persisted so `resume` can reproduce
+    # them byte-for-byte later regardless of the resuming shell's own
+    # environment (task 001, same defect class as the --llm wiring above).
+    extra_env: list[str] = []
     for pattern in args.forward_env or []:
         if pattern.endswith("*"):
             names = [k for k in os.environ if k.startswith(pattern[:-1])]
@@ -567,11 +605,16 @@ def cmd_start(args):
                 print(f"ralphctl: warning: --forward-env {pattern} not set on host",
                       file=sys.stderr)
         for name in names:
-            env_args += ["-e", f"{name}={os.environ[name]}"]
+            entry = f"{name}={os.environ[name]}"
+            env_args += ["-e", entry]
+            extra_env.append(entry)
     for kv in args.llm_env or []:
         env_args += ["-e", kv]
+        extra_env.append(kv)
     for kv in args.env or []:
         env_args += ["-e", kv]
+        extra_env.append(kv)
+    _write_extra_env_wiring(cdir, extra_env)
     if token:
         env_args += ["-e", f"RALPHD_API_TOKEN={token}"]
 
@@ -774,6 +817,12 @@ def cmd_resume(args):
         env_args += ["-e", f"{k}={v}"]
     for m in wiring["mounts"]:
         mounts += ["-v", m]
+
+    # Reproduce the resolved --forward-env/--llm-env/--env pairs from
+    # `start` time (task 001) in the same order/precedence, never re-read
+    # from this resuming shell's own (possibly absent/different) env.
+    for entry in _read_extra_env_wiring(cdir):
+        env_args += ["-e", entry]
 
     docker_args = ["--label", f"ralphd.run={run_id}"]
     # --network on resume overrides; otherwise reuse what start recorded so a
