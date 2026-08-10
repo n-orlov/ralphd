@@ -72,8 +72,16 @@ def test_no_detach_exits_nonzero_when_stub_never_verifies(ctl):
     res = ctl.run("start", "--prd", str(ctl.prd), "--run-id", run_id,
                   "--llm", "none", "--on-complete", "exit", "--no-detach",
                   "--iterations", "2", "--max-approaches", "1",
+                  # STUB_REVIEW_FAILS is set alongside STUB_VERIFY_FAILS (task
+                  # 002): budget exhausts exactly as the sole task completes,
+                  # which since task 002 now grants a single off-budget grace
+                  # review (Reviewer role) rather than going straight to a
+                  # terminal unverified state -- this test's "stub never
+                  # verifies" premise must hold across that pathway too, or
+                  # the always-satisfied stub Reviewer would flip this run to
+                  # verified despite the deliberately-failing Verifier.
                   env={**_live_env(), "STUB_TASKS": "1", "STUB_VERIFY_FAILS": "99",
-                       "STUB_SLEEP": "0.6"})
+                       "STUB_REVIEW_FAILS": "99", "STUB_SLEEP": "0.6"})
     run_dir = ctl.registry / "runs" / run_id
     _wait_for_supervisor(run_dir)
     status = json.loads((run_dir / "status.json").read_text())
