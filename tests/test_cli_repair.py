@@ -122,3 +122,62 @@ def test_repair_stdout_never_contains_running_container_command_output(ctl: Ctl)
     assert res.returncode == 1, res.stderr
     assert "issue(s) found" in res.stdout
     assert "status.json" in res.stdout
+
+
+# --- task 009: `repair --set-state <state>` guarded escape hatch --------
+
+
+def test_repair_set_state_success(ctl: Ctl):
+    rdir, _cdir = _seed_run(ctl, "tst-setstate")
+    (rdir / "status.json").write_text(json.dumps(
+        {"state": "running", "schemaVersion": 1}))
+    res = ctl.run("--json", "repair", "tst-setstate", "--set-state", "failed")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["old"] == "running"
+    assert doc["new"] == "failed"
+    on_disk = json.loads((rdir / "status.json").read_text())
+    assert on_disk["state"] == "failed"
+    # schemaVersion and other fields survive untouched
+    assert on_disk["schemaVersion"] == 1
+
+
+def test_repair_set_state_invalid_value_rejected(ctl: Ctl):
+    rdir, _cdir = _seed_run(ctl, "tst-setstate-bad")
+    (rdir / "status.json").write_text(json.dumps({"state": "running"}))
+    res = ctl.run("repair", "tst-setstate-bad", "--set-state", "bogus")
+    assert res.returncode == 2, res.stderr
+    assert "invalid state" in res.stderr
+    # nothing was written -- status.json unchanged, no audit event
+    on_disk = json.loads((rdir / "status.json").read_text())
+    assert on_disk["state"] == "running"
+    assert _events(rdir) == []
+
+
+def test_repair_set_state_refuses_while_container_running(ctl: Ctl):
+    rdir, _cdir = _seed_run(ctl, "tst-setstate-alive")
+    (rdir / "status.json").write_text(json.dumps({"state": "running"}))
+    res = ctl.run("repair", "tst-setstate-alive", "--set-state", "failed",
+                  env={
+                      "STUB_DOCKER_CONTAINERS": "ralphd-tst-setstate-alive",
+                      "STUB_DOCKER_RUNNING": "ralphd-tst-setstate-alive",
+                  })
+    assert res.returncode == 5, res.stderr
+    on_disk = json.loads((rdir / "status.json").read_text())
+    assert on_disk["state"] == "running"
+    assert _events(rdir) == []
+
+
+def test_repair_set_state_appends_audit_event_with_old_and_new(ctl: Ctl):
+    rdir, _cdir = _seed_run(ctl, "tst-setstate-audit")
+    (rdir / "status.json").write_text(json.dumps({"state": "starting"}))
+    res = ctl.run("--json", "repair", "tst-setstate-audit", "--set-state",
+                  "aborted")
+    assert res.returncode == 0, res.stderr
+    events = _events(rdir)
+    repairs = [e for e in events if e.get("type") == "repair"]
+    assert len(repairs) == 1
+    ev = repairs[0]
+    assert ev["action"] == "set-state"
+    assert ev["old"] == "starting"
+    assert ev["new"] == "aborted"

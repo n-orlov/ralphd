@@ -466,6 +466,18 @@ for.
 
 Exit codes: `3` unknown run, `5` container still running.
 
+**`--set-state <state>`** (task 009) is a guarded escape hatch for a run
+whose container died without the engine ever writing a terminal state to
+`status.json`. It skips diagnosis and directly overwrites `status.json`'s
+`state` field, after validating the requested value against the same
+recognized-state list diagnosis checks (`starting`, `running`, `succeeded`,
+`failed`, `aborted`) and after the same refuse-while-running check. Every
+other field in `status.json` is left untouched. `--json` prints
+`{"runId", "action": "set-state", "old", "new"}`; the audit event
+(`type: repair`, `action: "set-state"`) records the `old`/`new` state
+values. Exit `2` for an unrecognized state value (no write, no audit
+event), `5` if the container is running.
+
 ### `ralphctl artifacts <run-id> [ls|pull <dest>]`
 
 List or download artifacts. `pull` copies from the (host-mounted) run dir directly;

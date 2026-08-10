@@ -1791,13 +1791,19 @@ def _diagnose_host_json(rdir: Path) -> list[str]:
 
 
 def cmd_repair(args):
-    """PRD requirement E: non-interactive diagnosis (and, in later tasks,
-    guarded fixes) for a run dir left in an inconsistent shape by a crash
-    outside the paths the engine's own crash-consistency handling already
-    covers. Refuses to touch any run whose container is currently running
-    -- a live engine already owns that run dir's on-disk state -- and
-    appends a `type: repair` audit line to events.jsonl for every
-    invocation, describing what was checked (never any secret value).
+    """PRD requirement E: non-interactive diagnosis (and, guarded, fixes)
+    for a run dir left in an inconsistent shape by a crash outside the
+    paths the engine's own crash-consistency handling already covers.
+    Refuses to touch any run whose container is currently running -- a
+    live engine already owns that run dir's on-disk state -- and appends
+    a `type: repair` audit line to events.jsonl for every invocation,
+    describing what was checked/changed (never any secret value).
+
+    `--set-state <state>` (task 009) is a guarded escape hatch for a run
+    whose container died without the engine ever writing a terminal
+    state -- it overwrites status.json's 'state' field directly, bypassing
+    diagnosis, after validating the requested value against the same
+    `_STATUS_STATES` list diagnosis checks against.
     """
     run_id = args.run_id
     _require_run(run_id)
@@ -1807,6 +1813,33 @@ def cmd_repair(args):
     if running:
         die(5, f"container {name} is running -- repair refuses to touch a "
                f"live run; `abort` or `stop` it first")
+
+    set_state = getattr(args, "set_state", None)
+    if set_state is not None:
+        if set_state not in _STATUS_STATES:
+            die(2, f"--set-state: invalid state {set_state!r} (expected "
+                   f"one of {', '.join(_STATUS_STATES)})")
+        status_path = rdir / "status.json"
+        try:
+            doc = json.loads(status_path.read_text()) if status_path.is_file() else {}
+        except json.JSONDecodeError as e:
+            die(1, f"status.json: malformed JSON ({e}) -- fix it by hand "
+                   f"before --set-state")
+        if not isinstance(doc, dict):
+            die(1, "status.json: expected a JSON object")
+        old_state = doc.get("state")
+        doc["state"] = set_state
+        status_path.write_text(json.dumps(doc, indent=2))
+        try:
+            status_path.chmod(0o600)
+        except OSError:
+            pass
+        _append_run_event(rdir, "repair", action="set-state",
+                          old=old_state, new=set_state)
+        result = {"runId": run_id, "action": "set-state", "old": old_state,
+                  "new": set_state}
+        out(args, result, f"{run_id}: state {old_state!r} -> {set_state!r}")
+        sys.exit(0)
 
     checked = ["status.json", "tasks.json", "host.json"]
     issues = (_diagnose_status_json(rdir) + _diagnose_tasks_json(rdir)
@@ -2267,6 +2300,10 @@ def main() -> None:
     s = sub.add_parser("repair", help="diagnose (and, guarded, fix) "
                        "inconsistent run-dir state")
     s.add_argument("run_id")
+    s.add_argument("--set-state", metavar="STATE", help="guarded escape "
+                   "hatch: overwrite status.json's 'state' for a run "
+                   "whose container died without writing a terminal "
+                   f"state (one of: {', '.join(_STATUS_STATES)})")
     s.set_defaults(func=cmd_repair)
 
     s = sub.add_parser("artifacts")
