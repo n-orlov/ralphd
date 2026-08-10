@@ -35,7 +35,12 @@ from typing import Self
 import yaml
 
 from .. import __version__
-from ..engine.state import CURRENT_SCHEMA_VERSION, elapsed_seconds, format_duration
+from ..engine.state import (
+    CURRENT_SCHEMA_VERSION,
+    elapsed_seconds,
+    format_duration,
+    utcnow,
+)
 from . import llm_profiles, ui_server
 from .log_render import FULL_BACKLOG_TAIL as _FULL_BACKLOG_TAIL
 from .log_render import _ansi
@@ -1667,6 +1672,158 @@ def cmd_rm(args):
     out(args, {"removed": args.run_id}, f"removed {args.run_id}")
 
 
+def _append_run_event(rdir: Path, type_: str, **data) -> dict:
+    """CLI-side sibling of RunDir.emit() (src/ralphd/engine/state.py) for
+    tooling that must append to a run's events.jsonl without a live engine
+    holding the run dir's lock -- `repair`'s audit trail (PRD requirement
+    E) being the first user. Deliberately never passed a secret value by
+    any caller (repair only ever records file/field/key *names*, task ids,
+    and issue descriptions -- never credential contents), so unlike
+    RunDir.emit() this does not need scrub_text().
+    """
+    events_path = rdir / "events.jsonl"
+    last = 0
+    if events_path.is_file():
+        for line in events_path.read_text().splitlines():
+            try:
+                last = max(last, json.loads(line).get("id", 0))
+            except json.JSONDecodeError:
+                continue
+    event = {"id": last + 1, "ts": utcnow(), "type": type_, **data}
+    with open(events_path, "a") as f:
+        f.write(json.dumps(event) + "\n")
+    return event
+
+
+_TASK_STATUSES = ("pending", "in-progress", "completed", "validation-failed",
+                  "failed", "skipped")
+_STATUS_STATES = ("starting", "running", "succeeded", "failed", "aborted")
+
+
+def _diagnose_status_json(rdir: Path) -> list[str]:
+    """Schema issues in status.json (docs/architecture.md 'State model'):
+    must parse as a JSON object, carry a recognized 'state', and a
+    schemaVersion this build actually knows (mirrors the engine's own
+    refusal / doctor's registry_schema check, task 027/020)."""
+    p = rdir / "status.json"
+    if not p.is_file():
+        return ["status.json: missing"]
+    try:
+        doc = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        return [f"status.json: malformed JSON ({e})"]
+    if not isinstance(doc, dict):
+        return ["status.json: expected a JSON object"]
+    issues = []
+    state = doc.get("state")
+    if state is None:
+        issues.append("status.json: missing 'state' field")
+    elif state not in _STATUS_STATES:
+        issues.append(f"status.json: unrecognized state {state!r}")
+    sv = doc.get("schemaVersion")
+    if sv is not None and not isinstance(sv, int):
+        issues.append("status.json: 'schemaVersion' should be an integer")
+    elif isinstance(sv, int) and sv > CURRENT_SCHEMA_VERSION:
+        issues.append(f"status.json: schemaVersion {sv} is newer than this "
+                      f"build knows ({CURRENT_SCHEMA_VERSION})")
+    return issues
+
+
+def _diagnose_tasks_json(rdir: Path) -> list[str]:
+    """Schema issues in tasks.json (docs/architecture.md 'tasks.json schema
+    (v1)'). Absent entirely is normal for a run that hasn't finished
+    planning yet -- not an error."""
+    p = rdir / "tasks.json"
+    if not p.is_file():
+        return []
+    try:
+        doc = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        return [f"tasks.json: malformed JSON ({e})"]
+    if not isinstance(doc, dict):
+        return ["tasks.json: expected a JSON object"]
+    tasks = doc.get("tasks")
+    if tasks is None:
+        return ["tasks.json: missing 'tasks' list"]
+    if not isinstance(tasks, list):
+        return ["tasks.json: 'tasks' should be a list"]
+    issues = []
+    seen_ids: set[str] = set()
+    for i, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            issues.append(f"tasks.json: tasks[{i}] is not an object")
+            continue
+        tid = t.get("id")
+        label = tid if tid else f"tasks[{i}]"
+        if not tid:
+            issues.append(f"tasks.json: tasks[{i}] missing 'id'")
+        elif tid in seen_ids:
+            issues.append(f"tasks.json: duplicate task id {tid!r}")
+        else:
+            seen_ids.add(tid)
+        if not t.get("title"):
+            issues.append(f"tasks.json: task {label} missing 'title'")
+        status = t.get("status")
+        if status not in _TASK_STATUSES:
+            issues.append(f"tasks.json: task {label} has unrecognized "
+                          f"status {status!r}")
+    return issues
+
+
+def _diagnose_host_json(rdir: Path) -> list[str]:
+    """Schema issues in host.json (cmd_start's/cmd_resume's meta dict).
+    Absent entirely means the container was never successfully launched
+    (or the file was deleted) -- worth reporting, not fatal to diagnose."""
+    p = rdir / "host.json"
+    if not p.is_file():
+        return ["host.json: missing"]
+    try:
+        doc = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        return [f"host.json: malformed JSON ({e})"]
+    if not isinstance(doc, dict):
+        return ["host.json: expected a JSON object"]
+    issues = []
+    for key in ("runId", "container", "port", "apiUrl", "image", "startedAt"):
+        if key not in doc:
+            issues.append(f"host.json: missing '{key}' field")
+    return issues
+
+
+def cmd_repair(args):
+    """PRD requirement E: non-interactive diagnosis (and, in later tasks,
+    guarded fixes) for a run dir left in an inconsistent shape by a crash
+    outside the paths the engine's own crash-consistency handling already
+    covers. Refuses to touch any run whose container is currently running
+    -- a live engine already owns that run dir's on-disk state -- and
+    appends a `type: repair` audit line to events.jsonl for every
+    invocation, describing what was checked (never any secret value).
+    """
+    run_id = args.run_id
+    _require_run(run_id)
+    rdir = run_root(run_id)
+    name = f"ralphd-{run_id}"
+    running = _container_running(name)
+    if running:
+        die(5, f"container {name} is running -- repair refuses to touch a "
+               f"live run; `abort` or `stop` it first")
+
+    checked = ["status.json", "tasks.json", "host.json"]
+    issues = (_diagnose_status_json(rdir) + _diagnose_tasks_json(rdir)
+              + _diagnose_host_json(rdir))
+    _append_run_event(rdir, "repair", action="diagnose", checked=checked,
+                      issueCount=len(issues), issues=issues)
+    result = {"runId": run_id, "checked": checked, "issues": issues,
+              "ok": not issues}
+    if issues:
+        human = (f"{run_id}: {len(issues)} issue(s) found\n"
+                  + "\n".join(f"  - {i}" for i in issues))
+    else:
+        human = f"{run_id}: no issues found ({', '.join(checked)})"
+    out(args, result, human)
+    sys.exit(0 if not issues else 1)
+
+
 def cmd_artifacts(args):
     adir = run_root(args.run_id) / "artifacts"
     if args.action == "ls":
@@ -2106,6 +2263,11 @@ def main() -> None:
     s.add_argument("run_id")
     s.add_argument("--yes", action="store_true")
     s.set_defaults(func=cmd_rm)
+
+    s = sub.add_parser("repair", help="diagnose (and, guarded, fix) "
+                       "inconsistent run-dir state")
+    s.add_argument("run_id")
+    s.set_defaults(func=cmd_repair)
 
     s = sub.add_parser("artifacts")
     s.add_argument("run_id")

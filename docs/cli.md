@@ -440,6 +440,32 @@ abort+stop in one step. Run dir is never deleted by `stop`.
 Delete a run's registry dir (history, artifacts, workspace-if-internal). Requires
 the container to be gone. Asks confirmation unless `--yes`.
 
+### `ralphctl repair <run-id>`
+
+Non-interactive diagnosis (task 008; PRD requirement E) for a run dir left in
+an inconsistent shape by a crash outside the paths the engine's own
+crash-consistency handling already covers. Validates `status.json`,
+`tasks.json`, and `host.json` against their expected schemas
+(docs/architecture.md's "State model" / "tasks.json schema (v1)") and
+reports every issue found (malformed JSON, missing required fields,
+unrecognized `state`/task `status` values, a `schemaVersion` newer than
+this build knows, duplicate task ids) -- it never guesses at a fix on its
+own; that's what the (separate, guarded) `--set-state`/`--env` flags are
+for.
+
+- Refuses to touch a run whose container is currently running (a live
+  engine already owns that run dir's on-disk state) -- exit `5`, nothing
+  written, same as `resume`'s refusal.
+- Every invocation appends a `type: repair` audit line to the run's
+  `events.jsonl` (`action`, which files were `checked`, the issue count/
+  list) -- never a secret value, since diagnosis only ever names files,
+  fields, and task ids.
+- `--json` prints `{"runId", "checked", "issues", "ok"}`; plain output
+  prints a readable one-issue-per-line summary. Exit `0` if no issues were
+  found, `1` otherwise (mirrors `doctor`'s `ok`-based exit code).
+
+Exit codes: `3` unknown run, `5` container still running.
+
 ### `ralphctl artifacts <run-id> [ls|pull <dest>]`
 
 List or download artifacts. `pull` copies from the (host-mounted) run dir directly;
