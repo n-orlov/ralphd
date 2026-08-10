@@ -23,6 +23,7 @@ import sys
 import tarfile
 import tempfile
 import termios
+import textwrap
 import threading
 import time
 import tty as tty_module
@@ -908,6 +909,70 @@ def cmd_runs(args):
             print(fmt.format(**{k: str(v) for k, v in r.items()}))
 
 
+def _format_reason_lines(reason) -> list[str]:
+    """Task 003: human `reason:` line(s) for status.json's `reason` field --
+    wrapped readably across a few lines rather than one giant line, and
+    simply omitted (empty list) when there is no reason to show (still
+    running, or a terminal state that never set one)."""
+    if not reason:
+        return []
+    text = str(reason)
+    wrapped = textwrap.wrap(text, width=76) or [text]
+    lines = [f"reason:    {wrapped[0]}"]
+    lines.extend(f"           {extra}" for extra in wrapped[1:])
+    return lines
+
+
+_TASK_STATUS_LABELS = {"inProgress": "in-progress", "validationFailed": "validation-failed"}
+
+
+def _summarize_tasks(tasks: dict) -> str:
+    """Task 003: render the /status `tasks` counts dict (e.g.
+    {"total": 7, "completed": 7, "pending": 0, ...}, see api.py's
+    GET /status) as a short human summary like '7/7 completed' or, when
+    not everything is done, '5/7 completed (1 in-progress, 1 pending)' --
+    instead of dumping the raw counts dict as JSON."""
+    if not tasks:
+        return "(none)"
+    total = tasks.get("total", 0)
+    completed = tasks.get("completed", 0)
+    others = []
+    for key, value in tasks.items():
+        if key in ("total", "completed") or not value:
+            continue
+        others.append(f"{value} {_TASK_STATUS_LABELS.get(key, key)}")
+    summary = f"{completed}/{total} completed"
+    if others:
+        summary += " (" + ", ".join(others) + ")"
+    return summary
+
+
+def _format_token_count(n) -> str:
+    n = n or 0
+    if n >= 10_000:
+        return f"{n / 1000:.0f}k tokens"
+    if n >= 1_000:
+        return f"{n / 1000:.1f}k tokens"
+    return f"{n} tokens"
+
+
+def _summarize_usage(usage: dict) -> str:
+    """Task 003: render the /status `usage` dict (costUSD/totalTokens plus
+    a byPhase breakdown, see loop.py's `_accumulate_usage`) as a short
+    human summary like '$0.56, 625k tokens (planning $0.10 / worker $0.40
+    / review $0.06)' -- instead of dumping the raw usage dict as JSON."""
+    if not usage:
+        return "(none)"
+    cost = usage.get("costUSD", 0) or 0
+    summary = f"${cost:.2f}, {_format_token_count(usage.get('totalTokens'))}"
+    by_phase = usage.get("byPhase") or {}
+    phase_bits = [f"{phase} ${(by_phase[phase].get('costUSD', 0) or 0):.2f}"
+                 for phase in ("planning", "worker", "review") if phase in by_phase]
+    if phase_bits:
+        summary += " (" + " / ".join(phase_bits) + ")"
+    return summary
+
+
 def cmd_status(args):
     live = True
     try:
@@ -953,8 +1018,12 @@ def cmd_status(args):
         note = cur_it.get("note")
         if note:
             lines.append(f"           note: {note}")
-    lines.append(f"tasks:     {json.dumps(status.get('tasks', {}))}")
-    lines.append(f"usage:     {json.dumps(status.get('usage', {}))}")
+    # Task 003: a `reason:` line whenever status.json carries a non-empty
+    # `reason` (set by the engine on terminal failed/aborted states, or the
+    # engine-error path) -- previously only visible via --json.
+    lines.extend(_format_reason_lines(status.get("reason")))
+    lines.append(f"tasks:     {_summarize_tasks(status.get('tasks') or {})}")
+    lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
     # Task 006: a terminal run (failed/aborted/succeeded) that still has
     # unconsumed steering files is a silent-drop hazard -- a terminal run
     # never reads pending steering again, so this is the operator's only

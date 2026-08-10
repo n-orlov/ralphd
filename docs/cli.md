@@ -205,6 +205,26 @@ the plain human command still notices without having to remember `--json`.
 The hub run-detail view shows the same fact as a `.steering-warning` banner
 on the run summary card.
 
+Human output also renders (task 003):
+
+- `reason:` -- shown only when status.json carries a non-empty `reason`
+  (the engine sets this on terminal `failed`/`aborted` states, e.g. an
+  infra-fault exhaustion or an engine bug, and on budget-exhaustion grace
+  reviews per task 002). Long reasons wrap across multiple lines rather
+  than one unreadable line. Omitted entirely when there is no reason to
+  show (still running, or a terminal state that never set one).
+- `tasks:` -- a one-line summary of the `tasks` counts dict, e.g.
+  `7/7 completed` when everything is done, or `5/7 completed (1
+  in-progress, 1 pending)` when it is not, instead of a raw JSON dump of
+  the counts.
+- `usage:` -- a one-line summary of the `usage` dict, e.g. `$0.56, 625k
+  tokens (planning $0.10 / worker $0.40 / review $0.06)`, instead of a raw
+  JSON dump. The per-phase breakdown only lists phases that actually
+  accrued usage.
+
+`--json` output is untouched by any of this: it still carries the full,
+unsummarized `reason`/`tasks`/`usage` detail straight from status.json.
+
 ### `ralphctl watch <run-id>`
 
 Live TUI: task table, phase/approach/iteration header, budget + cost gauges,
