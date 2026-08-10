@@ -265,6 +265,55 @@ A traceability row for this requirement belongs alongside task 013's
 requirement→test table (see `artifacts/reports/traceability.md`, built by
 that task) once it exists.
 
+### Grace review at budget exhaustion (task 002)
+
+Live incident this closes: a job exhausted its 8-iteration budget with
+**all 7 tasks completed** but no review slot ever ran (the last worker
+iteration finished the final task and burned the last budgeted iteration
+doing it) → terminal `failed/unverified` despite the work being done. The
+operator had to `ralphctl resume +3` just to get a review.
+
+**Invariant:** a job whose tasks are all `completed` should get a review
+verdict if at all possible, even if the iteration budget has already run
+out.
+
+**Design choice:** rather than reserving the final budget slot ahead of
+time (which would require the loop to predict exhaustion before it
+happens — tricky given the worker loop's own budget check runs *before*
+each iteration, not after), the engine grants a single **off-budget**
+review iteration at the moment `budget_left()` is discovered to be
+`False`, if and only if every task in `tasks.json` is already `completed`.
+This is simpler to reason about than slot-reservation bookkeeping earlier
+in the loop, and is checked at both places the worker loop can exit with
+budget exhausted: the top of the per-approach `for` loop (covers a
+resumed run whose tasks were already all completed by a prior process)
+and right after the worker `while budget_left()` loop exits (covers the
+live incident's exact shape: the final iteration both completes the last
+task and exhausts the budget in the same step, whether or not the worker
+happened to also emit `COMPLETE` that iteration).
+
+`LoopSupervisor._maybe_grace_review()` implements it: `_grace_review_granted`
+(a set of approach numbers) guarantees **at most one grace review per
+approach** — never a loop, never a second free review. The review
+iteration itself increments `iterations_used` (gets its own iteration
+directory/number) exactly like any other iteration, but also increments
+`_grace_refunded`, which `budget_left()` subtracts alongside
+`_infra_refunded` — the same refund mechanism task 001a uses for
+infra-retry attempts — so it never counts against `cfg.iterations`. If the
+grace review comes back `VERIFIED` (and no operator steering is left
+pending unconsumed), the job goes terminal `succeeded`/`verified` with
+`status.json`'s `graceReview: true` and a `reason` stating the grace
+review ran and verified. If it does not verify, the job still ends
+failed/aborted exactly as it would without this feature — no second
+approach is attempted once budget is exhausted — except the terminal
+`reason` now says a grace review ran and did not verify (via
+`_terminal_reason_note`, kept separate from `_abort_reason` so a plain
+unsatisfied grace review doesn't relabel the terminal `state` from
+`failed` to `aborted`). The negative case (tasks NOT all completed when
+budget exhausts) is unaffected: `_maybe_grace_review()` returns
+immediately without touching anything, and the job fails exactly as
+before this feature.
+
 ### Model strategy
 
 Each phase resolves its model independently: per-phase override → strategy preset →

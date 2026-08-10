@@ -52,6 +52,18 @@ class LoopSupervisor:
         # while self.iterations_used itself keeps monotonically increasing
         # (so every attempt still gets its own iteration directory/number).
         self._infra_refunded = 0
+        # Task 002: at most one grace review per approach (set of approach
+        # numbers that have already had one), and a matching refund counter
+        # (same mechanism as _infra_refunded) so a grace review never counts
+        # against the job's iteration budget.
+        self._grace_review_granted: set[int] = set()
+        self._grace_refunded = 0
+        # Descriptive note for the terminal `reason` when a grace review ran
+        # but did NOT result in a VERIFIED verdict -- kept separate from
+        # self._abort_reason so the terminal `state` (aborted vs failed)
+        # keeps its existing meaning (aborted == an actual abort/infra
+        # condition set _abort_reason); this is purely informational text.
+        self._terminal_reason_note: str | None = None
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
 
@@ -425,7 +437,7 @@ class LoopSupervisor:
         # Task 001a: iterations refunded after an infra-classified retry
         # (see _run_iteration_with_infra_retry) never count against the
         # configured budget.
-        charged = self.iterations_used - self._infra_refunded
+        charged = self.iterations_used - self._infra_refunded - self._grace_refunded
         return (charged < self.cfg.iterations
                 and time.monotonic() < self.deadline
                 and self._abort_reason is None)
@@ -495,9 +507,15 @@ class LoopSupervisor:
         start_approach, resuming = self._resume_point()
         try:
             for approach in range(start_approach, self.cfg.max_approaches + 1):
-                if not self.budget_left():
-                    break
                 self.run.update_status(approach=approach)
+                if not self.budget_left():
+                    # Task 002: covers the resume edge case where a prior
+                    # process already completed every task for this
+                    # approach but the process died/ran out of budget
+                    # before any review ran at all.
+                    if await self._maybe_grace_review(approach):
+                        return "succeeded"
+                    break
                 skip_planning = resuming and approach == start_approach
                 if not skip_planning:
                     self.run.emit("phase", phase="planning", approach=approach)
@@ -601,9 +619,17 @@ class LoopSupervisor:
                         self.run.emit("signal", signal="COMPLETE")
                         break
 
-                if not verdict_ready or not self.budget_left():
-                    if not self.budget_left():
-                        break
+                if not self.budget_left():
+                    # Task 002: a job whose worker loop ran out of budget
+                    # with every task already completed -- whether or not
+                    # the worker happened to signal COMPLETE on that final
+                    # iteration -- gets exactly one off-budget grace review
+                    # rather than going terminal failed/unverified with all
+                    # work done and no reviewer ever having looked at it.
+                    if await self._maybe_grace_review(approach):
+                        return "succeeded"
+                    break
+                if not verdict_ready:
                     self._archive_approach(approach)
                     continue
 
@@ -652,7 +678,7 @@ class LoopSupervisor:
             state = "aborted" if self._abort_reason else "failed"
             self.run.update_status(state=state, verdict="unverified", phase=None,
                                    endedAt=utcnow(),
-                                   reason=self._abort_reason,
+                                   reason=self._abort_reason or self._terminal_reason_note,
                                    **self._unconsumed_steering_patch())
             return state
         except Exception as exc:  # engine bug — record, don't vanish
@@ -673,6 +699,79 @@ class LoopSupervisor:
         status.json alone -- not just from combing steering/.consumed.json
         by hand. Empty list when nothing is stranded (the common case)."""
         return {"unconsumedSteering": [p.name for p in self.run.pending_steering()]}
+
+    def _all_tasks_completed(self) -> bool:
+        """True iff tasks.json exists, is non-empty, and every task's
+        `status` is `completed`. Task 002's grace-review gate: an empty or
+        missing tasks list (e.g. planning never ran/produced nothing) must
+        never be treated as "all done"."""
+        tasks = self.run.read_tasks().get("tasks") or []
+        return bool(tasks) and all(t.get("status") == "completed" for t in tasks)
+
+    async def _maybe_grace_review(self, approach: int) -> bool:
+        """Task 002: invariant -- a job whose tasks are ALL completed by the
+        time the iteration budget exhausts should still get a review
+        verdict if at all possible, rather than going terminal
+        failed/unverified with e.g. 7/7 tasks done and no reviewer ever
+        having looked at it (the live incident this closes: the operator
+        had to `ralphctl resume +3` just to get a review slot).
+
+        Design choice (stated here and in docs/architecture.md): rather
+        than reserving the final budget slot ahead of time (which would
+        require predicting exhaustion before it happens), grant a single
+        OFF-BUDGET review iteration at the moment budget is discovered to
+        be exhausted, if and only if every task is already completed and
+        this approach hasn't already had one. This is simpler to reason
+        about (no speculative slot-reservation bookkeeping earlier in the
+        loop) and bounded by construction: `_grace_review_granted` records
+        one entry per approach, so this can never run twice for the same
+        approach, and it never loops back into the worker -- exactly one
+        review, then the job's fate is decided.
+
+        Returns True iff the grace review came back VERIFIED and
+        status.json has already been written terminal-succeeded (caller
+        should return "succeeded" immediately). Returns False otherwise,
+        having set `self._terminal_reason_note` to explain what happened
+        (grace review didn't run because tasks weren't all complete, or it
+        ran but did not verify) for the normal failed/aborted terminal
+        write that follows in the caller.
+        """
+        if approach in self._grace_review_granted:
+            return False
+        if not self._all_tasks_completed():
+            return False
+        self._grace_review_granted.add(approach)
+        self.run.emit("log", message=(
+            "iteration budget exhausted with all tasks completed; granting "
+            "a single off-budget grace review before ending the job "
+            "(task 002)"))
+        await self._gate()
+        self.run.emit("phase", phase="review", approach=approach)
+        review = await self.run_iteration(
+            "review", extra=self._flagged_criteria_review_context())
+        # Off-budget: this attempt must never count against the job's
+        # iteration budget (same mechanism as the infra-retry refund).
+        self._grace_refunded += 1
+        if review.saw_verified and not self.run.pending_steering():
+            self.run.emit("signal", signal="VERIFIED")
+            self.run.update_status(
+                state="succeeded", verdict="verified", phase=None,
+                endedAt=utcnow(), graceReview=True,
+                reason=("budget exhausted with all tasks completed; the "
+                        "grace review ran and VERIFIED"),
+                **self._unconsumed_steering_patch())
+            return True
+        if review.saw_verified:
+            self._terminal_reason_note = (
+                "budget exhausted with all tasks completed; the grace "
+                "review VERIFIED but operator steering was still pending "
+                "unconsumed, so the run cannot go terminal-succeeded")
+        else:
+            self._terminal_reason_note = (
+                "budget exhausted with all tasks completed; a grace "
+                "review ran but did not verify")
+        self.run.emit("log", message=f"grace review did not verify approach {approach}")
+        return False
 
     # Bounded retries for a verify iteration that errors out mid-stream
     # (agent/provider failure such as a Bedrock 502, message stopReason ==
