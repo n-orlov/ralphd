@@ -867,6 +867,59 @@ corrupted run state.
   loopback-only bind unless the token is set, and treat `--api-bind 0.0.0.0`
   + token as granting whoever holds the token everything the job can do.
 
+### Host-network jobs (`--network host`, task 007)
+
+`ralphctl start --network host` (and the `ralphctl config set network host`
+registry-wide fallback, §7) puts the job container into the host's network
+namespace instead of the default bridge network. Use it when the job's
+workload needs to reach host-only, VPN, or tailnet services that aren't
+routable from a bridged container — e.g. an internal LLM gateway only
+reachable on the host's tailnet interface, or a database bound to
+`localhost` on the host outside docker entirely. Prefer the default bridge
+network (no `--network`) whenever the job's own network needs are already
+satisfiable through it; `host` is a wider trust boundary and should be
+opted into deliberately, per job.
+
+**Mechanism.** Docker's `-p`/port-publish flags are meaningless once a
+container shares the host's network namespace (docker ignores them with a
+warning), so `--network host` swaps that mechanism out for two env vars the
+CLI injects instead of a `-p` flag (see `_network_args` in
+`src/ralphd/cli/main.py`):
+
+- `RALPHD_PORT` — the host TCP port the engine's HTTP API should listen on
+  directly (chosen the same way as the bridge-network case: an explicit
+  `--port`, or an ephemeral free port otherwise).
+- `RALPHD_BIND` — the address the engine binds that port on, taken directly
+  from `--api-bind` (default `127.0.0.1`).
+
+The engine reads both at startup and binds accordingly; every other aspect
+of the job (container lifecycle, run-dir schema, resume) is unaffected by
+which network mode was used to reach the API.
+
+**Security posture: the API bind address is the only boundary.** With the
+default bridge network, docker's own `-p 127.0.0.1:<port>:7777` publish
+rule is a second layer of isolation independent of what the engine binds
+to internally. `--network host` removes that layer entirely — the
+container's listening socket *is* a socket on the host's own network
+stack, reachable by anything that can reach the host on that port. This
+makes `--api-bind` (→ `RALPHD_BIND`) the *only* thing standing between the
+job's HTTP API and the network, exactly as if the engine process ran
+directly on the host outside any container:
+
+- Leave `--api-bind 127.0.0.1` (the default) unless the job genuinely needs
+  the API itself reachable from elsewhere — `--network host` alone does not
+  widen who can reach the API; only combining it with a non-loopback
+  `--api-bind` does.
+- If the API must be reachable beyond loopback on a host-network job, set
+  `--api-token` (or `auto`) too — the same rule as the bridge-network case
+  in §6, just with a narrower safety net (no docker-level port isolation to
+  fall back on if the bind address is misconfigured).
+- `ralphctl doctor` (task 006) proactively flags this: when the
+  configured/requested network is `host`, its report notes that the API
+  binds `--api-bind` directly with no docker port-publish isolation, so an
+  operator auditing a run's exposure sees the caveat without having to
+  reconstruct the reasoning above.
+
 ### Docker socket opt-in (`--allow-docker`)
 
 By default the job container has **no docker socket** (§8) — that stays the
