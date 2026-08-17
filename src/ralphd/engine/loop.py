@@ -213,12 +213,43 @@ class LoopSupervisor:
                              f"in this container): host path `{path}`\n")
         if host_run:
             lines.append(f"  - run dir: `$RALPHD_HOST_RUN_DIR` = `{host_run}`\n")
+        ws_mount = ("$RALPHD_HOST_WORKSPACE" if host_ws
+                    else "<host workspace path from above>")
         lines.append(
             f"- Label every sibling `--label ralphd.run=$RALPHD_RUN_ID` "
             f"(= `{run_id}`) so it gets reaped with this job; prefer `--rm` "
             "for anything short-lived.\n"
             "- Images you build and volumes you create live on the HOST and "
-            "are reaped by that same label — label them too.\n")
+            "outlive this job (`ralphctl stop`/`rm` reap labeled *containers* "
+            "only) — label them too, and delete any you did not mean to keep.\n"
+            "- **Need a toolchain this image lacks?** Run it in a sibling "
+            "instead of trying to install it: this image is deliberately thin "
+            "(Python/Node) and `agent` cannot `apt-get`. Proven working this "
+            "way: Go build/test, real `tmux` (private `-L` socket + "
+            "`capture-pane`), and pty-driven TUI tests.\n"
+            "  - Commit a small `ci/Dockerfile` (base image + just that "
+            "toolchain) and a `ci/run.sh` wrapper in the target repo, so the "
+            "setup is reproducible without you, then build it here: "
+            "`docker build -t <repo>-ci --label ralphd.run=$RALPHD_RUN_ID ci/`\n"
+            "  - Run each command in a throwaway sibling: `docker run --rm "
+            "--user 1000:1000 --label ralphd.run=$RALPHD_RUN_ID "
+            f"-v {ws_mount}:/workspace -w /workspace <repo>-ci <cmd>`\n"
+            "  - `--user 1000:1000` is mandatory (this container and the host "
+            "user are both uid 1000): a root sibling leaves root-owned files "
+            "in the workspace that you can then neither edit nor delete.\n"
+            "  - Mount a **named volume** for the toolchain's caches and point "
+            "the cache env vars at it (`-v <vol>:/cache -e HOME=/tmp -e "
+            "GOMODCACHE=/cache/gomod -e GOCACHE=/cache/gobuild`), or every "
+            "run re-downloads its dependencies. Name it after the "
+            "repo+toolchain (`<repo>-gocache`) so runs and later jobs share "
+            "it, and leave the run label off it; a per-run volume is fine "
+            "only if you `docker volume rm` it before finishing. Never make a "
+            "shared volume's use conditional on `$RALPHD_RUN_ID` — that "
+            "breaks the next run.\n"
+            "  - Siblings run on docker's default bridge network with normal "
+            "internet (image pulls, dependency downloads) whatever network "
+            "this container is on, and need no LLM/gateway access — do not "
+            "pass any. Workspace writes are visible both ways immediately.\n")
         return "".join(lines)
 
     # -- iteration ----------------------------------------------------------

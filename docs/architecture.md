@@ -954,7 +954,60 @@ image builds):
   matching the label (idempotent, never fails the command); `ralphctl doctor`
   reports stray labeled containers whose run id no longer has a registry dir
   (report-only). Anything unlabeled and detached outlives the job — the daemon
-  has no parentage notion between a job and its siblings.
+  has no parentage notion between a job and its siblings. Reaping is
+  container-only: labeled *images* and *volumes* survive `stop`/`rm` and are
+  the operator's (or the job's own) cleanup.
+
+### Toolchain in a sibling
+
+The engine image is deliberately thin (§8) and the agent runs as non-root
+`agent`, so a job cannot `apt-get install` a missing toolchain. Deriving a
+new engine image per job is the heavyweight answer; the general one is
+**run the toolchain work in a sibling container with the host workspace
+bind-mounted**. This is the standing pattern for anything the image lacks —
+Go, Rust, a JDK, tmux, a database — and the phase prompts teach it verbatim
+whenever `--allow-docker` is in effect, so a PRD never has to explain it.
+
+Shape (both files live in the *target* repo, not in ralphd, so the setup is
+reproducible without the agent):
+
+- `ci/Dockerfile` — a base image plus just that toolchain, built by the job
+  itself (`docker build -t <repo>-ci --label ralphd.run=$RALPHD_RUN_ID ci/`;
+  build contexts are exempt from the path-translation gotcha above because the
+  CLI streams the context).
+- `ci/run.sh` — a thin wrapper that runs an arbitrary command in a `--rm`
+  sibling with the mounts/user/caches below. `examples/skills/toolchain-sibling/`
+  ships a generic one as a mountable skill (`--skills`).
+
+Load-bearing details, each of them a failure mode when omitted:
+
+1. **Host paths only.** Every sibling `-v` source must be the host-side path
+   (`$RALPHD_HOST_WORKSPACE` / `$RALPHD_HOST_WORKSPACES`); mounting the
+   container-local `/workspace` silently mounts an *empty* directory. This is
+   the single most common mistake.
+2. **`--user 1000:1000`.** The job container's `agent` and the host user are
+   both uid 1000; a default-root sibling leaves root-owned files in the
+   workspace that the agent can afterwards neither modify nor clean up.
+3. **A named cache volume** for the toolchain's download/build dirs
+   (`GOMODCACHE`/`GOCACHE`, `~/.cargo`, `~/.m2`) — without it every iteration
+   re-downloads dependencies. Name it after the repo+toolchain
+   (`<repo>-gocache`) and leave the run label off it, so it is deliberately
+   shared across runs; a per-run volume is acceptable only if the job removes
+   it before finishing. Naming or gating a shared volume on `$RALPHD_RUN_ID`
+   makes the repo's own `run.sh` fail for every subsequent run — the trade-off
+   is "shared and long-lived" vs "per-run and explicitly deleted", never
+   "shared but run-id-checked".
+4. **Networking.** Siblings get docker's default bridge network and normal
+   internet (image pulls, dependency downloads) regardless of the job
+   container's own `--network` (which may be `host`). They neither need nor
+   should be given the job's LLM gateway access.
+
+Verified empirically inside such a sibling (not aspirational): Go 1.25
+`go build` and `go test` pass; real `tmux` 3.5a on a private `-L` socket
+creates sessions and `capture-pane` reads them back; a real bubbletea TUI
+spawned in a pty is driven with keystrokes and its rendered frames asserted;
+and file visibility between the sibling and the job container's `/workspace`
+is bidirectional and immediate.
 
 ## 7. Host-side: CLI and registry
 
@@ -1008,7 +1061,9 @@ engine requirement isn't met — pin both, upgrade deliberately),
 git, ripgrep, curl/jq, build essentials, and a non-root `agent` user. Deliberately
 **thin on toolchains** — language runtimes beyond Python/Node are the operator's
 business via `--image` (derived images `FROM ralphd`) or a job-level
-`setup.sh`. Engine and API run as the non-root user; no docker socket, no host
+`setup.sh`, or the job's own via the *toolchain-in-a-sibling* pattern (§6),
+which is the preferred answer because it keeps this image unchanged.
+Engine and API run as the non-root user; no docker socket, no host
 network. The image does ship the static docker **client** binary (pinned
 `DOCKER_VERSION`), but it is inert without the socket — which is only mounted
 by the explicit `--allow-docker` opt-in (§6). It also bundles **playwright-cli** (pinned

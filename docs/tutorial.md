@@ -89,6 +89,12 @@ ralphctl start ... --skills ./skills/my-skill        # one skill
 ralphctl start ... --skills ./skills                 # a folder of skills, expands to each child
 ```
 
+One skill ships with ralphd: `examples/skills/toolchain-sibling/` teaches the job
+to run work needing a toolchain the image lacks (Go, Rust, a JDK, tmux) in a
+sibling container. Add it with `--skills examples/skills/toolchain-sibling`
+alongside `--allow-docker` — the phase prompts already carry the short version of
+that recipe, the skill adds the copy-pasteable `run.sh`.
+
 **Credentials** follow an env-file convention: one `<name>.env` file per
 credential set (`KEY=value` lines), in a directory:
 

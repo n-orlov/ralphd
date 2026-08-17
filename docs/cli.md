@@ -159,7 +159,16 @@ you should know):
   best-effort. `ralphctl doctor` lists stray labeled containers whose run no
   longer exists.
 - Prefer `--rm` for short-lived siblings; detached unlabeled containers,
-  built images, and volumes outlive the job.
+  built images, and volumes outlive the job (only *containers* are reaped).
+- **Toolchain in a sibling** — the intended answer whenever a job needs a
+  toolchain the engine image doesn't ship (Go, Rust, a JDK, tmux, a database):
+  the job builds a small image from a `ci/Dockerfile` it commits to the target
+  repo and runs each command in a `--rm --user 1000:1000` sibling with the
+  *host* workspace path bind-mounted. The prompts spell the recipe out; see
+  [architecture.md §6](architecture.md#toolchain-in-a-sibling) for the
+  verified facts and failure modes, and `examples/skills/toolchain-sibling/`
+  for a ready-made skill (`--skills examples/skills/toolchain-sibling`) with a
+  copy-pasteable `run.sh` wrapper.
 
 Exit: `0` started · `1` container failed to start · `2` bad options (including
 a missing/invalid docker socket with `--allow-docker`).
