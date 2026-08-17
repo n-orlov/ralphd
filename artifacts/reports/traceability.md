@@ -132,6 +132,35 @@ the bullet. Verified by:
 |---|---|
 | `tests/test_docs_consistency.py::test_tutorial_exists_and_covers_required_steps_in_order` | docs structural consistency sweep (roadmap/tutorial cross-checks) still green after the docs-only edit |
 
+## G — "toolchain in a sibling" as a prompt-level capability
+
+Outside the selfdev-roadmap-4 PRD (operator request, added after that wave):
+any job whose work needs a toolchain the engine image lacks must learn from
+the prompts alone to run that work in a sibling container with the HOST
+workspace bind-mounted. `src/ralphd/engine/loop.py`
+(`_docker_siblings_note()`); `docs/architecture.md` "Toolchain in a sibling";
+`docs/cli.md` `--allow-docker` section; `examples/skills/toolchain-sibling/`.
+
+| Test node ID | Covers |
+|---|---|
+| `tests/test_toolchain_sibling_guidance.py::test_every_prompt_carries_the_sibling_toolchain_recipe` | every phase prompt of an `--allow-docker` job carries the full recipe (repo-committed `ci/Dockerfile`+`ci/run.sh`, `--rm --user 1000:1000`, HOST workspace mount, named cache volume, bridge network) |
+| `tests/test_toolchain_sibling_guidance.py::test_no_sibling_toolchain_recipe_without_docker_access` | none of the guidance is spent when the capability is off (no docker socket granted) |
+| `tests/test_toolchain_sibling_guidance.py::test_prompt_warns_against_run_id_locked_cache_volume` | the run-id-locked cache-volume anti-pattern is warned against and the sanctioned alternative stated |
+| `tests/test_toolchain_sibling_guidance.py::test_example_skill_is_a_valid_mountable_skill` | shipped skill has frontmatter + executable `run.sh` and states the rules |
+| `tests/test_toolchain_sibling_guidance.py::test_example_run_sh_cache_volume_is_shared_not_run_scoped` | the example wrapper's cache volume is shared across runs, unlabeled, never run-scoped |
+| `tests/test_toolchain_sibling_guidance.py::test_docs_name_the_pattern_and_its_failure_modes` | `docs/architecture.md` names the pattern with its failure modes; `docs/cli.md` cross-references it |
+| `tests/test_e2e.py::test_docker_siblings_guidance_in_prompt` (pre-existing) | host-path guidance + run label still rendered |
+| `tests/test_e2e.py::test_no_docker_siblings_guidance_without_env` (pre-existing) | section absent without the socket |
+
+Suite evidence for this change: `.venv/bin/python -m pytest -q -m "not docker"`
+→ **385 passed, 4 deselected** (docker tier) with 4 browser-tier failures that
+are a host-environment artifact only — `tests/test_browser_hub.py` writes
+screenshots to `RALPHD_ARTIFACTS_DIR`, defaulting to the container path
+`/run/ralphd/artifacts`, which a bare host cannot create; re-running
+`RALPHD_ARTIFACTS_DIR=/tmp/... pytest -m browser -q` → **8 passed**.
+`.venv/bin/ruff check .` → clean. Docker tier not run (no attempt made to
+build `container/Dockerfile` here); nothing in this change touches it.
+
 ## Suite/tier execution evidence (this run)
 
 - `.venv/bin/python -m pytest -q` → **379 passed, 8 skipped** in ~6m10s.
