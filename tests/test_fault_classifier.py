@@ -170,7 +170,7 @@ def test_zero_token_no_traffic_termination_with_error_is_a_fault():
 
 
 @pytest.mark.parametrize("error_text", ["", "   ", "\n"],
-                         ids=["empty", "spaces", "newline"])
+                        ids=["empty", "spaces", "newline"])
 def test_error_free_exit_zero_is_still_not_a_failure(error_text):
     # The guard against over-reaching: a clean iteration (no error text, or
     # only whitespace) must keep returning None whether or not it produced
@@ -178,3 +178,121 @@ def test_error_free_exit_zero_is_still_not_a_failure(error_text):
     assert classify_fault(error_text=error_text, exit_code=0) is None
     assert classify_fault(error_text=error_text, exit_code=0,
                           produced_traffic=True) is None
+
+
+# -- task 002 (#11): the infra text-signature table, family by family ------
+#
+# Every case below is passed with produced_traffic=True and exit_code=1, so
+# the *only* thing that can make the verdict "infra" is the error text
+# matching `faults._INFRA_TEXT_PATTERNS` (a no-traffic failure would be
+# classified infra regardless, which would make these assertions vacuous).
+# Strings are the real-world shapes seen from the gateway / Bedrock stack.
+_INFRA_FAMILY_CASES = [
+    # (id, error_text)
+    ("dns-enotfound", "Error: getaddrinfo ENOTFOUND aigw.internal.example"),
+    ("dns-eai-again",
+     ("request to https://aigw.internal/v1 failed, "
+      "reason: getaddrinfo EAI_AGAIN aigw.internal")),
+    ("tcp-econnrefused", "connect ECONNREFUSED 127.0.0.1:8080"),
+    ("tcp-econnreset", "read ECONNRESET"),
+    ("tcp-etimedout", "connect ETIMEDOUT 10.4.2.9:443"),
+    ("tcp-ehostunreach", "connect EHOSTUNREACH 10.4.2.9:443"),
+    ("tcp-enetunreach", "connect ENETUNREACH 2600:1f18::1:443"),
+    ("stream-epipe", "write EPIPE"),
+    ("stream-socket-hang-up", "Error: socket hang up"),
+    ("stream-premature-close", "Error: aborted: Premature close"),
+    ("tls-handshake", "TLS handshake timeout talking to the gateway"),
+    ("ssl-handshake", "SSL handshake failure (alert 40)"),
+    ("tls-certificate", "unable to get local issuer certificate: certificate verify failed"),
+    # The single most common live shape: the SDK's opaque transport error.
+    ("sdk-connection-error", "Connection error."),
+    ("http-502", "upstream request failed: 502 Bad Gateway"),
+    ("http-504", "504 Gateway Timeout"),
+    ("http-503", "503 Service Unavailable"),
+    ("bedrock-serviceunavailable", "ServiceUnavailableException: Bedrock is unavailable"),
+    ("http-500-internal", "API error: Internal server error"),
+    ("backpressure-429", "429 Too Many Requests"),
+    ("backpressure-529", "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}"),
+    ("backpressure-rate-limit", "Rate limit reached for model eu.anthropic.claude-opus-5"),
+    ("backpressure-ratelimit-oneword", "ratelimit_exceeded: slow down"),
+    ("backpressure-throttling", "ThrottlingException: Too many requests, please wait"),
+    ("backpressure-overloaded", "Overloaded"),
+    ("backpressure-overloaded-error", "{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}"),
+    ("bedrock-model-stream-error", "ModelStreamErrorException: stream terminated by upstream"),
+    ("quota-exhausted", "You exceeded your current quota for this model"),
+    ("capacity-exhausted", "No capacity available in this region, retry later"),
+]
+
+
+@pytest.mark.parametrize("error_text",
+                        [case[1] for case in _INFRA_FAMILY_CASES],
+                        ids=[case[0] for case in _INFRA_FAMILY_CASES])
+def test_infra_signature_family_classifies_infra(error_text):
+    assert classify_fault(
+        error_text=error_text,
+        exit_code=1,
+        produced_traffic=True,
+    ) == "infra", f"expected an infra signature match for: {error_text!r}"
+
+
+def test_regression_deck_phase1_getaddrinfo_eai_again():
+    # deck-phase1, worker iteration that hung the full iteration timeout on a
+    # transient gateway-DNS glitch before dying: temp-failure DNS text with
+    # traffic already observed must still be infra, never "work".
+    assert classify_fault(
+        error_text="request to https://aigw.internal/v1/messages failed, "
+                   "reason: getaddrinfo EAI_AGAIN aigw.internal",
+        exit_code=-2,
+        timed_out=True,
+        produced_traffic=True,
+    ) == "infra"
+
+
+def test_regression_deck_phase1_econnreset_exit0_zero_tokens():
+    # deck-phase1, in-band error shape: pi recorded the gateway reset as an
+    # assistant error and exited 0 with zero token usage.
+    assert classify_fault(
+        error_text="read ECONNRESET",
+        exit_code=0,
+        produced_traffic=False,
+    ) == "infra"
+
+
+def test_regression_deck_phase1_connection_error_exit0_zero_tokens():
+    # Same shape, the other observed text: pi's bare "Connection error.".
+    # Asserted with produced_traffic=True as well, so the verdict comes from
+    # the signature table rather than from the no-traffic default.
+    assert classify_fault(
+        error_text="Connection error.",
+        exit_code=0,
+        produced_traffic=False,
+    ) == "infra"
+    assert classify_fault(
+        error_text="Connection error.",
+        exit_code=0,
+        produced_traffic=True,
+    ) == "infra"
+
+
+_NON_INFRA_ERROR_TEXTS = [
+    ("pytest-failure", "pytest exited 1: 3 failed, 12 passed in 41.2s"),
+    ("assertion-failure",
+     "AssertionError: expected task 004 status 'completed', got 'pending'"),
+    ("agent-gave-up",
+     "the agent could not reconcile the merge conflict in src/app.py and gave up"),
+    ("ruff-failure", "ruff check failed: 2 errors (line-too-long, unused-import)"),
+]
+
+
+@pytest.mark.parametrize("error_text",
+                        [case[1] for case in _NON_INFRA_ERROR_TEXTS],
+                        ids=[case[0] for case in _NON_INFRA_ERROR_TEXTS])
+def test_ordinary_agent_failure_text_is_not_infra(error_text):
+    # The table must not swallow genuine work failures: with traffic
+    # observed, an ordinary agent failure stays "work" so it keeps consuming
+    # the approach/task-failure bookkeeping instead of being retried forever.
+    assert classify_fault(
+        error_text=error_text,
+        exit_code=1,
+        produced_traffic=True,
+    ) == "work", f"unexpected infra signature match in: {error_text!r}"

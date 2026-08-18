@@ -23,25 +23,53 @@ import re
 FaultClass = str  # "infra" | "work"
 
 # Text signatures that mean "the fault is in reaching/using the LLM
-# endpoint itself", independent of whether any traffic was ever observed:
-# DNS resolution failures, refused/reset connections, TLS handshake
-# failures, and a gateway-level 5xx returned before any tokens streamed.
+# endpoint itself", independent of whether any traffic was ever observed.
+#
+# Task 002 (#11): one reviewable table, one commented line per *family*,
+# covering every shape observed against the real gateway/Bedrock stack in
+# the deck-phase1 incidents on top of the pre-existing network families.
+# This table is the whole contract for "is this the provider's fault"; it is
+# asserted family-by-family (plus negative cases) in
+# tests/test_fault_classifier.py.
 _INFRA_TEXT_PATTERNS = (
+    # DNS: name never resolved, or resolver reported a temporary failure.
     r"ENOTFOUND",
+    r"EAI_AGAIN",
+    r"getaddrinfo",
+    # TCP connect/teardown: refused, reset, timed out, unreachable host/net.
     r"ECONNREFUSED",
     r"ECONNRESET",
-    r"EAI_AGAIN",
     r"ETIMEDOUT",
     r"EHOSTUNREACH",
     r"ENETUNREACH",
-    r"getaddrinfo",
+    # Half-closed/broken socket while a response was streaming.
+    r"EPIPE",
+    r"socket hang up",
+    r"premature close",
+    # TLS: handshake and certificate validation failures.
     r"TLS handshake",
     r"SSL handshake",
     r"certificate verify failed",
+    # The client SDK's own opaque transport failure -- pi surfaces a gateway
+    # outage verbatim as "Connection error." with zero token usage.
+    r"connection error",
+    # HTTP gateway/proxy 5xx returned instead of a model response.
     r"\bbad gateway\b",
     r"\bgateway timeout\b",
     r"\bservice unavailable\b",
+    r"ServiceUnavailable",  # AWS/Bedrock exception naming (no space)
+    r"internal server error",
     r"\b50[234]\b",
+    # Provider back-pressure: HTTP 429, Anthropic's 529, throttling.
+    r"\b429\b",
+    r"\b529\b",
+    r"rate[ _-]?limit",  # rate limit / rate-limit / ratelimit
+    r"throttl",  # throttled / throttling / ThrottlingException
+    r"overloaded",  # Overloaded / overloaded_error
+    # Bedrock mid-stream fault, and capacity/quota exhaustion upstream.
+    r"ModelStreamErrorException",
+    r"quota",
+    r"capacity",
 )
 _INFRA_TEXT_RE = re.compile("|".join(_INFRA_TEXT_PATTERNS), re.IGNORECASE)
 
@@ -81,9 +109,12 @@ def classify_fault(
       (`no_traffic_timeout=True`) -- always infra, regardless of exit code
       or error text (task 001a's core scenario: a hang, not an instant
       exit);
-    - the captured error text matches a known infra signature (DNS/
-      ENOTFOUND, ECONNREFUSED/ECONNRESET, TLS/SSL handshake failure, or a
-      gateway 5xx) -- infra even if some traffic happened to precede it;
+    - the captured error text matches a known infra signature from
+      ``_INFRA_TEXT_PATTERNS`` (DNS, TCP connect/reset, broken stream, TLS,
+      the SDK's "Connection error.", a gateway 5xx, provider back-pressure
+      like 429/529/throttling/overloaded, a Bedrock stream fault, or
+      capacity/quota exhaustion) -- infra even if some traffic happened to
+      precede it;
     - any other failure that produced no LLM traffic at all and doesn't
       match a recognized infra signature is *still* classified infra
       (deliberately -- an unclassifiable no-traffic failure is far more
