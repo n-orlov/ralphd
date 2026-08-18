@@ -46,6 +46,21 @@ def overlay_write_path(rel: str) -> Path:
     return dest
 
 
+# Task 006 (#5): the default infra-fault backoff schedule, in seconds, with
+# the LAST value repeating for every further attempt (capped at
+# infra_retry_backoff_max_s). Fast at the start on purpose: a 30-second
+# gateway blip should cost seconds of delay, not the minute-plus the old
+# [60, 300, 900] schedule imposed on the very first retry.
+DEFAULT_INFRA_RETRY_BACKOFF_S = [2.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0]
+# Longest single backoff wait; the repeating tail of the schedule is clamped
+# to it so a long outage keeps polling at a sane 5-minute cadence.
+DEFAULT_INFRA_RETRY_BACKOFF_MAX_S = 300.0
+# Wall-clock budget for ONE fault episode: retries continue while the
+# cumulative wait for this episode stays under it (4 hours by default --
+# long enough to sit out a real provider outage), and the episode clock
+# resets on any successful iteration.
+DEFAULT_INFRA_OUTAGE_BUDGET_S = 4 * 3600.0
+
 # Phase names with a builtin prompt (see src/ralphd/prompts/); the only names
 # accepted by the prompts CRUD API (PRD req 10).
 PROMPT_NAMES = ("planning", "worker", "review", "task-verify")
@@ -89,16 +104,29 @@ class JobConfig:
     # (no parseable pi NDJSON event at all) before the engine kills it as an
     # infra fault rather than waiting for the full iteration_timeout_s.
     # Backoff schedule: escalating sleep between retries of the SAME
-    # phase/iteration after an infra-classified failure (default ~1/5/15
-    # min); infra_retry_max caps how many such failures are tolerated
-    # before giving up as a terminal infra failure. All three are
-    # overridable via env vars (RALPHD_INFRA_STARTUP_TIMEOUT,
-    # RALPHD_INFRA_RETRY_BACKOFF_S, RALPHD_INFRA_RETRY_MAX) so tests (and
-    # operators who want a tighter/looser policy) don't need a job.yaml
-    # edit for every run.
+    # phase/iteration after an infra-classified failure (task 006/#5:
+    # 2/5/15/30/60/120/300s, last value repeating up to
+    # infra_retry_backoff_max_s).
+    #
+    # infra_outage_budget_s is the real stopping rule: retries continue
+    # while the cumulative wait for one fault episode stays under it.
+    # infra_retry_max is a back-compat ATTEMPT CAP that is honoured ONLY
+    # when set explicitly (job.yaml key or RALPHD_INFRA_RETRY_MAX) -- the
+    # default `None` sentinel means "no attempt cap, retry as long as the
+    # outage budget allows". Existing job.yaml files and tests that pin a
+    # cap keep their old behaviour; nothing new should introduce one.
+    #
+    # All of these are overridable via env vars
+    # (RALPHD_INFRA_STARTUP_TIMEOUT, RALPHD_INFRA_RETRY_BACKOFF_S,
+    # RALPHD_INFRA_RETRY_BACKOFF_MAX_S, RALPHD_INFRA_RETRY_MAX,
+    # RALPHD_INFRA_OUTAGE_BUDGET_S) so tests (and operators who want a
+    # tighter/looser policy) don't need a job.yaml edit for every run.
     infra_startup_timeout_s: float = 150.0
-    infra_retry_backoff_s: list = field(default_factory=lambda: [60.0, 300.0, 900.0])
-    infra_retry_max: int = 3
+    infra_retry_backoff_s: list = field(
+        default_factory=lambda: list(DEFAULT_INFRA_RETRY_BACKOFF_S))
+    infra_retry_backoff_max_s: float = DEFAULT_INFRA_RETRY_BACKOFF_MAX_S
+    infra_retry_max: int | None = None
+    infra_outage_budget_s: float = DEFAULT_INFRA_OUTAGE_BUDGET_S
     extra: dict = field(default_factory=dict)
 
     # "reflect" (post-job self-reflection, PRD req 24) mirrors "review"'s tier
@@ -130,8 +158,12 @@ class JobConfig:
             cfg.infra_startup_timeout_s = float(v)
         if v := os.environ.get("RALPHD_INFRA_RETRY_BACKOFF_S"):
             cfg.infra_retry_backoff_s = [float(x) for x in v.split(",") if x]
+        if v := os.environ.get("RALPHD_INFRA_RETRY_BACKOFF_MAX_S"):
+            cfg.infra_retry_backoff_max_s = float(v)
         if v := os.environ.get("RALPHD_INFRA_RETRY_MAX"):
             cfg.infra_retry_max = int(v)
+        if v := os.environ.get("RALPHD_INFRA_OUTAGE_BUDGET_S"):
+            cfg.infra_outage_budget_s = float(v)
         return cfg
 
     def effective(self) -> dict:
@@ -150,7 +182,10 @@ class JobConfig:
                 "iterationTimeoutS": self.iteration_timeout_s,
                 "infraStartupTimeoutS": self.infra_startup_timeout_s,
                 "infraRetryBackoffS": list(self.infra_retry_backoff_s),
+                "infraRetryBackoffMaxS": self.infra_retry_backoff_max_s,
+                # null = no explicit attempt cap (retry within the budget).
                 "infraRetryMax": self.infra_retry_max,
+                "infraOutageBudgetS": self.infra_outage_budget_s,
             },
             "flags": {
                 "vigilant": self.vigilant,

@@ -238,10 +238,16 @@ no `no_traffic_timeout`) is returned immediately, unhandled — left entirely
 to task 059's pre-existing streak-based carve-out, so the two mechanisms never
 race or double-count the same failure. Any other infra-classified result
 retries the *same* phase/iteration in place with escalating backoff
-(`cfg.infra_retry_backoff_s`, default `[60, 300, 900]` — 1/5/15 minutes,
-overridable via `RALPHD_INFRA_RETRY_BACKOFF_S="s1,s2,..."`), capped at
-`cfg.infra_retry_max` attempts (default 3, `RALPHD_INFRA_RETRY_MAX`) before
-giving up as a terminal infra failure. Each infra-classified attempt
+(`cfg.infra_retry_backoff_s`, default `[2, 5, 15, 30, 60, 120, 300]` seconds
+with the last value repeating, clamped to `cfg.infra_retry_backoff_max_s`
+(default 300s); overridable via `RALPHD_INFRA_RETRY_BACKOFF_S="s1,s2,..."` /
+`RALPHD_INFRA_RETRY_BACKOFF_MAX_S`). `cfg.infra_outage_budget_s` (default 4h,
+`RALPHD_INFRA_OUTAGE_BUDGET_S`) is the intended wall-clock stopping rule for a
+fault episode, and `cfg.infra_retry_max` (`RALPHD_INFRA_RETRY_MAX`) is an
+optional attempt cap honoured only when set explicitly — while it is unset the
+wrapper still applies the historical 3-attempt cap
+(`LoopSupervisor._LEGACY_INFRA_RETRY_MAX`) before giving up as a terminal infra
+failure. Each infra-classified attempt
 increments `LoopSupervisor._infra_refunded`, which `budget_left()` subtracts
 from `iterations_used` — an infra retry never counts against the job's
 iteration budget (the attempt still gets its own iteration directory/number,

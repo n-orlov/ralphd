@@ -93,6 +93,13 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
     # Budgets / flags / model strategy.
     assert doc["budgets"]["iterations"] == 3
     assert doc["budgets"]["maxApproaches"] == 1
+    # Task 006 (#5): the infra-resilience knobs are part of the budgets
+    # contract -- fast escalating schedule, per-wait cap, outage budget, and
+    # infraRetryMax as an opt-in cap (null when not set explicitly).
+    assert doc["budgets"]["infraRetryBackoffS"] == [2, 5, 15, 30, 60, 120, 300]
+    assert doc["budgets"]["infraRetryBackoffMaxS"] == 300
+    assert doc["budgets"]["infraOutageBudgetS"] == 14400
+    assert doc["budgets"]["infraRetryMax"] is None
     assert doc["flags"]["vigilant"] is True
     assert doc["flags"]["onComplete"] == "idle"
     assert doc["model"]["strategy"] == "balanced"
