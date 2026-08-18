@@ -290,14 +290,34 @@ class LoopSupervisor:
         return "".join(lines)
 
     # -- iteration ----------------------------------------------------------
-    # Phases protected by the infra-fault retry-with-backoff wrapper (task
-    # 001a): planning and worker are the two phases the real incident hit
-    # (an LLM-endpoint DNS/gateway glitch can strike either), and are the
-    # same two phases task 059's instant-failure carve-out already covers.
-    # review/verify/reflect keep their own existing, phase-specific retry
-    # logic (steering-aware review loop, MAX_VERIFY_ERROR_RETRIES) and are
-    # deliberately left out here to avoid two retry mechanisms colliding.
-    INFRA_RETRY_PHASES = ("planning", "worker")
+    # Phases protected by the infra-fault retry-with-backoff wrapper.
+    #
+    # Task 009 (#5): ALL five phases. A gateway/endpoint outage does not
+    # care which prompt the engine happens to be running -- task 001a only
+    # covered planning/worker because those are the two phases the original
+    # incident hit, which left the other three scoring an outage as work:
+    # an infra-shaped `review` failure rejected the approach and archived
+    # it, an infra-shaped `verify` failure ate the task's bounded
+    # error-retry budget (and, once that ran out, risked its
+    # validationAttempts), and `reflect` simply lost the reflection report.
+    #
+    # Precedence (truthfully, as implemented): an infra-classified failure
+    # is handled *here* -- retried in place, refunded, the episode clock
+    # deciding when to give up -- and consumes none of the phase-local
+    # error budgets. `run_iteration()` only returns to the phase's own
+    # logic once the result is no longer an infra fault (a success or a
+    # genuine work failure), or once the wrapper gave up, in which case
+    # `_abort_reason` is set and `budget_left()` is already False -- so
+    # `_verify_task`'s MAX_VERIFY_ERROR_RETRIES loop and the review
+    # steering loop both exit at once instead of re-charging the same
+    # outage against their own budgets. Nothing here touches a task's
+    # `validationAttempts` (only an explicit non-error verdict miss in
+    # `_verify_task` does) or `_instant_failure_streak`. The single
+    # exception, deliberately unchanged: an infra fault that is also an
+    # *instant* failure is returned unhandled to the caller, leaving task
+    # 059's broken-environment carve-out (and, for verify, its bounded
+    # error retries) in charge of that shape.
+    INFRA_RETRY_PHASES = ("planning", "worker", "review", "verify", "reflect")
 
     async def run_iteration(self, phase: str, extra: str = "",
                              prompt_name: str | None = None):
@@ -324,8 +344,9 @@ class LoopSupervisor:
         Each infra-classified attempt is refunded (never counted against
         cfg.iterations, see budget_left()) and does NOT touch
         self._instant_failure_streak / the no-progress stagnation guard --
-        callers (the planning/worker loops in _run_job_core) see a fully
-        resolved IterationResult exactly as before, either a genuine
+        callers (the planning/worker/review/verify/reflect call sites in
+        _run_job_core) see a fully resolved IterationResult exactly as
+        before, either a genuine
         success/work-failure or (once the episode ran out of stopping room,
         see below) the last failing attempt with self._abort_reason already
         set to a diagnostic naming the infra fault plainly.
@@ -490,10 +511,13 @@ class LoopSupervisor:
 
         timeout = min(self.cfg.iteration_timeout_s,
                       max(60, int(self.deadline - time.monotonic())))
-        # Task 001a: the startup-window watchdog only applies to phases the
-        # infra-retry wrapper protects (planning/worker) -- other phases
-        # (review/verify/reflect) are unaffected, keeping their existing
-        # timing/behavior exactly as before.
+        # Task 001a: the startup-window watchdog applies to exactly the
+        # phases the infra-retry wrapper protects -- a phase whose zero-
+        # traffic hang nobody would retry should not be killed early
+        # either. Since task 009 that is every phase: a hung `review`/
+        # `verify`/`reflect` invocation is now cut short at
+        # cfg.infra_startup_timeout_s (default 150s) and retried, instead
+        # of hanging out the full iteration timeout.
         startup_timeout_s = (min(self.cfg.infra_startup_timeout_s, timeout)
                              if phase in self.INFRA_RETRY_PHASES else None)
         # Poll tasks.json while the agent subprocess is running so status
@@ -945,6 +969,14 @@ class LoopSupervisor:
     # "error") before ever emitting a verdict sentinel. Infrastructure
     # faults must never be scored as work failures (task 050) -- retry
     # verification instead of touching the task's status/validationAttempts.
+    #
+    # Task 009 (#5): since `verify` runs through the infra-retry wrapper,
+    # this budget is only reached by an error the wrapper did NOT handle --
+    # an instant (sub-INSTANT_FAILURE_MAX_DURATION_S) in-band error, or a
+    # non-infra one. An infra fault the wrapper retried never lands here at
+    # all, so an outage cannot consume these retries; and when the wrapper
+    # gives up it sets _abort_reason, so budget_left() ends the loop below
+    # instead of double-counting the same outage against this budget.
     MAX_VERIFY_ERROR_RETRIES = 3
 
     # Task 059: an iteration whose agent process exits nonzero within a few
