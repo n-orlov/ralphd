@@ -505,6 +505,10 @@ def cmd_start(args):
         "thinking": args.thinking,
         "iteration_timeout_s": args.iteration_timeout * 60,
         "job_timeout_s": args.timeout * 60,
+        # omitted when the flag is absent (the `if v is not None` filter
+        # below), so the engine's JobConfig default applies -- the default
+        # lives in engine/config.py alone, never duplicated here.
+        "infra_outage_budget_s": args.infra_outage_budget,
     }
     (cdir / "job.yaml").write_text(
         "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))
@@ -2209,6 +2213,12 @@ def main() -> None:
                         "never affect the job's verdict")
     s.add_argument("--timeout", type=int, default=None, metavar="MINUTES")
     s.add_argument("--iteration-timeout", type=int, default=None, metavar="MINUTES")
+    s.add_argument("--infra-outage-budget", type=int, default=None, metavar="SECONDS",
+                   help="wall-clock budget for riding out one LLM-endpoint "
+                        "outage: infra-classified faults keep being retried "
+                        "while the accumulated wait of an outage episode is "
+                        "under this many seconds (engine default 14400 = 4h). "
+                        "Waiting costs no iterations and no approaches")
     s.add_argument("--port", type=int)
     s.add_argument("--api-bind", default="127.0.0.1")
     s.add_argument("--network", default=None, metavar="NET",
