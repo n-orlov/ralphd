@@ -114,6 +114,11 @@ class LoopSupervisor:
         self._deadline_epoch = time.time() + cfg.job_timeout_s
         self._infra_wait_total_s = float(
             run.read_status().get("infraWaitTotalS") or 0.0)
+        # Task 012 (#5): does status.json currently say health "degraded"?
+        # Tracked in memory so the transition back to "ok" is emitted (and
+        # written) exactly once, on the iteration that proves the endpoint is
+        # back, instead of on every non-infra result of a healthy run.
+        self._infra_degraded = False
 
     # -- control surface (called from API) --------------------------------
     @property
@@ -495,9 +500,55 @@ class LoopSupervisor:
                 "note": (f"retrying after infra fault (attempt {attempt}"
                          f"{cap_note}, next in {backoff:.0f}s): "
                          f"{error_desc}")})
+            self._begin_infra_wait(phase=phase, attempt=attempt,
+                                   error=error_desc, waited_s=waited,
+                                   backoff_s=backoff, budget_s=budget)
             await asyncio.sleep(backoff)
             self._infra_episode_waited_s = waited + backoff
             self._account_infra_wait(backoff, phase, attempt)
+            self._end_infra_wait()
+
+    def _begin_infra_wait(self, *, phase: str, attempt: int, error: str,
+                          waited_s: float, backoff_s: float,
+                          budget_s: float) -> None:
+        """Publishes the degraded half of the status contract (task 012, #5)
+        for the backoff wait that is about to start.
+
+        ``state`` deliberately stays ``running`` -- adding a "degraded" state
+        value would break every consumer's terminal-state logic (``ralphctl
+        watch`` included). The degraded case is carried by two new fields
+        instead: ``health`` ("ok" | "degraded") and ``infraWait``, which is
+        ``null`` whenever the run is not actually sitting in a backoff wait
+        and otherwise says since when, which attempt, the error, the phase,
+        when the next attempt is due, and how much of the outage budget is
+        spent/left. The same payload goes out as an ``infra_wait`` event so
+        the wait is visible in the event stream `ralphctl watch` follows,
+        not only to whoever polls /status at the right moment.
+        """
+        now = time.time()
+        remaining = max(0.0, budget_s - waited_s)
+        wait = {
+            "since": utc_from_epoch(now),
+            "attempt": attempt,
+            "error": error,
+            "phase": phase,
+            "nextAttemptAt": utc_from_epoch(now + backoff_s),
+            "waitedS": round(waited_s, 3),
+            "budgetS": budget_s,
+            "remainingS": round(remaining, 3),
+        }
+        self._infra_degraded = True
+        self.run.update_status(health="degraded", infraWait=wait)
+        self.run.emit("infra_wait", **wait, backoffS=backoff_s)
+
+    def _end_infra_wait(self) -> None:
+        """The backoff wait is over and the next attempt is starting: nothing
+        is being waited on any more, so ``infraWait`` goes back to ``null``
+        (task 012, #5). ``health`` stays "degraded" until an iteration
+        actually reaches the model again (_reset_infra_episode) -- a run whose
+        endpoint is still broken has not recovered just because it is between
+        two backoffs."""
+        self.run.update_status(infraWait=None)
 
     def _account_infra_wait(self, waited_s: float, phase: str,
                             attempt: int) -> None:
@@ -534,6 +585,15 @@ class LoopSupervisor:
         self._infra_episode_attempts = 0
         self._infra_episode_waited_s = 0.0
         self._infra_episode_started_at = None
+        if self._infra_degraded:
+            # Task 012 (#5): recovery is the one event that clears the
+            # degraded half of the status contract -- health back to "ok",
+            # infraWait back to null, and an event so an operator watching
+            # the stream sees the outage end, not just its start.
+            self._infra_degraded = False
+            self.run.update_status(health="ok", infraWait=None)
+            self.run.emit("infra_recovered", health="ok",
+                          infraWaitTotalS=round(self._infra_wait_total_s, 3))
 
     def _classify_result(self, result: IterationResult) -> str | None:
         """The engine's single fault verdict for one finished iteration:
@@ -776,6 +836,7 @@ class LoopSupervisor:
         self.run.update_status(state="running", startedAt=utcnow(),
                                deadlineAt=utc_from_epoch(self._deadline_epoch),
                                infraWaitTotalS=round(self._infra_wait_total_s, 3),
+                               health="ok", infraWait=None,
                                iterationsBudget=self.cfg.iterations,
                                maxApproaches=self.cfg.max_approaches,
                                onComplete=self.cfg.on_complete, verdict=None)

@@ -132,7 +132,13 @@ async def amain() -> int:
             return 2
 
     run.update_status(runId=cfg.run_id, state="starting", createdAt=utcnow(),
-                      schemaVersion=CURRENT_SCHEMA_VERSION)
+                      schemaVersion=CURRENT_SCHEMA_VERSION,
+                      # Task 012 (#5): health/infraWait are part of the status
+                      # contract from the very first write, so a consumer never
+                      # has to treat their absence as a third case. `state`
+                      # deliberately does NOT grow a "degraded" value -- that
+                      # would break every consumer's terminal-state logic.
+                      health="ok", infraWait=None)
     loop = LoopSupervisor(cfg, run, workspace)
     app = create_app(cfg, run, loop)
 
