@@ -81,6 +81,19 @@ Full `tasks.json`.
 Array of every iteration's `meta.json` (number, phase, approach, model, timestamps,
 exit code, sentinel seen, token usage, steering consumed).
 
+Each finished iteration also carries `faultClass` — the engine's own fault verdict
+for that iteration (`src/ralphd/engine/faults.py:classify_fault`), the same verdict
+the infra-retry wrapper acts on:
+
+| `faultClass` | meaning |
+|--------------|---------|
+| `null` | not a failure: clean exit, no error recorded, not interrupted/timed out |
+| `"infra"` | the LLM endpoint/provider/network broke (no traffic within the startup window, or a recognized infra error signature) — the attempt is retried and refunded, never charged to the iteration budget |
+| `"work"` | the agent really ran (LLM traffic observed) and then failed, or an operator-initiated abort/interrupt ended it — never retried as an outage |
+
+The field is absent only while an iteration is still in flight (before its
+`endedAt` is written).
+
 ### `GET /iterations/{n}`
 One iteration's `meta.json`.
 
@@ -120,7 +133,7 @@ then follows. Event types:
 |------|--------------------|
 | `state` | lifecycle transition |
 | `phase` | phase entered (planning/worker/verify/review), approach number |
-| `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, usage |
+| `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
 | `task` | task id + old/new status — emitted live while a worker iteration is still running (polled every ~0.25s against `tasks.json`), not only after the iteration ends, so `pending -> in-progress` is observable in real time |
 | `steering.received` / `steering.consumed` | steering file name |
 | `signal` | COMPLETE / VERIFIED / task-verified detected |
