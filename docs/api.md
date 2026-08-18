@@ -183,7 +183,9 @@ contents, no LLM env values):
 ```json
 {
   "runId": "...",
-  "budgets": {"iterations": 25, "maxApproaches": 3, "jobTimeoutS": 28800, "iterationTimeoutS": 2700},
+  "budgets": {"iterations": 25, "maxApproaches": 3, "jobTimeoutS": 28800, "iterationTimeoutS": 2700,
+              "infraStartupTimeoutS": 150.0, "infraRetryBackoffS": [2, 5, 15, 30, 60, 120, 300],
+              "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0},
   "flags": {"vigilant": false, "onComplete": "idle"},
   "model": {"strategy": "quality-first", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
   "prompts": [{"name": "planning", "source": "builtin"}, ...],
@@ -192,6 +194,17 @@ contents, no LLM env values):
   "llmEnvKeys": ["..."]
 }
 ```
+
+The infra-fault (LLM endpoint/network outage) budgets, all settable in
+`job.yaml` and via env:
+
+| Field | `job.yaml` key / env | Default | Meaning |
+|-------|----------------------|---------|---------|
+| `infraStartupTimeoutS` | `infra_startup_timeout_s` / `RALPHD_INFRA_STARTUP_TIMEOUT` | `150.0` | how long an iteration may run with zero observed LLM traffic before it is killed as an infra fault |
+| `infraRetryBackoffS` | `infra_retry_backoff_s` / `RALPHD_INFRA_RETRY_BACKOFF_S` (`"s1,s2,..."`) | `[2, 5, 15, 30, 60, 120, 300]` | escalating wait between retries of the same phase/iteration; the last value repeats for further attempts |
+| `infraRetryBackoffMaxS` | `infra_retry_backoff_max_s` / `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` | `300.0` | cap on a single backoff wait (clamps the repeating tail) |
+| `infraRetryMax` | `infra_retry_max` / `RALPHD_INFRA_RETRY_MAX` | `null` | optional attempt cap, **honoured only when set explicitly**; `null` means no cap — retry for as long as the outage budget allows |
+| `infraOutageBudgetS` | `infra_outage_budget_s` / `RALPHD_INFRA_OUTAGE_BUDGET_S` | `14400.0` (4h) | wall-clock budget for one fault episode: retries continue while the cumulative wait stays under it; the episode resets on any successful iteration |
 
 `creds` lists credential *names* only (no values, no sizes here — see
 `GET /config/creds` for that); `llmEnvKeys` lists the *names* of any env

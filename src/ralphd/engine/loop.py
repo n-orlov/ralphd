@@ -12,7 +12,12 @@ import shutil
 import time
 from pathlib import Path
 
-from .config import PROMPTS_BUILTIN, JobConfig, overlay_or_config
+from .config import (
+    DEFAULT_INFRA_RETRY_BACKOFF_S,
+    PROMPTS_BUILTIN,
+    JobConfig,
+    overlay_or_config,
+)
 from .faults import classify_fault
 from .llm import current_env
 from .runner import IterationResult, PiRunner
@@ -293,6 +298,12 @@ class LoopSupervisor:
     # (cfg.infra_retry_backoff_s / cfg.infra_retry_max), overridable via
     # RALPHD_INFRA_RETRY_BACKOFF_S / RALPHD_INFRA_RETRY_MAX so tests (and
     # operators) don't need a job.yaml edit for every run.
+    #
+    # Task 006 (#5): cfg.infra_retry_max now defaults to None ("no explicit
+    # attempt cap"); this is the historical cap applied while no cap is
+    # configured, until task 008 replaces it with cfg.infra_outage_budget_s
+    # as the real stopping rule.
+    _LEGACY_INFRA_RETRY_MAX = 3
     async def _run_iteration_with_infra_retry(self, phase: str, extra: str,
                                               prompt_name: str | None):
         """Runs `phase` via _run_iteration_once(), retrying THE SAME
@@ -323,6 +334,10 @@ class LoopSupervisor:
         stream abort produces.
         """
         attempt = 0
+        # Task 006 (#5): an unset cfg.infra_retry_max means "no attempt cap";
+        # until task 008 lands the wall-clock outage budget, fall back to the
+        # historical 3 attempts so behaviour here is unchanged.
+        retry_max = self.cfg.infra_retry_max or self._LEGACY_INFRA_RETRY_MAX
         while True:
             result = await self._run_iteration_once(phase, extra, prompt_name)
             fault = self._classify_result(result)
@@ -336,24 +351,26 @@ class LoopSupervisor:
             attempt += 1
             error_desc = result.error_message or "no LLM traffic within startup window"
             self.run.emit("infra_retry", phase=phase, attempt=attempt,
-                          maxAttempts=self.cfg.infra_retry_max, error=error_desc,
+                          maxAttempts=retry_max, error=error_desc,
                           noTrafficTimeout=result.no_traffic_timeout)
             log.warning("iteration %s classified infra fault (attempt %d/%d): %s",
-                       phase, attempt, self.cfg.infra_retry_max, error_desc)
+                       phase, attempt, retry_max, error_desc)
             self.run.update_status(
                 iterationsUsed=self.iterations_used - self._infra_refunded)
-            if attempt >= self.cfg.infra_retry_max:
+            if attempt >= retry_max:
                 self._abort_reason = (
                     f"infra fault: {phase} iteration failed after "
-                    f"{self.cfg.infra_retry_max} attempts ({error_desc})")
+                    f"{retry_max} attempts ({error_desc})")
                 self.run.emit("log", level="error", message=self._abort_reason)
                 return result
-            backoff_schedule = self.cfg.infra_retry_backoff_s or [60.0, 300.0, 900.0]
+            backoff_schedule = (self.cfg.infra_retry_backoff_s
+                                or DEFAULT_INFRA_RETRY_BACKOFF_S)
             backoff = backoff_schedule[min(attempt - 1, len(backoff_schedule) - 1)]
+            backoff = min(backoff, self.cfg.infra_retry_backoff_max_s)
             self.run.update_status(currentIteration={
                 "phase": phase,
                 "note": (f"retrying after infra fault (attempt {attempt}/"
-                         f"{self.cfg.infra_retry_max}, next in {backoff:.0f}s): "
+                         f"{retry_max}, next in {backoff:.0f}s): "
                          f"{error_desc}")})
             await asyncio.sleep(backoff)
 
