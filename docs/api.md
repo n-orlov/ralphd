@@ -38,6 +38,8 @@ The one-call summary. Response:
   "startedAt": "2026-08-08T13:08:11Z",
   "deadlineAt": "2026-08-08T21:08:11Z",
   "infraWaitTotalS": 62.5,
+  "health": "ok",                  // "ok" | "degraded"
+  "infraWait": null,               // populated only while waiting out an infra outage
   "currentIteration": {
     "number": 7, "phase": "worker",
     "model": "anthropic/claude-opus-5",
@@ -77,6 +79,39 @@ wait extends the deadline by exactly the waited time and emits a
 available to the agent) and a 4-hour gateway outage cannot silently consume
 half an 8-hour job. `infraWaitTotalS` is `0` for a run that never hit an
 outage and survives `ralphctl resume` (the per-process deadline does not).
+
+#### `health` and `infraWait`
+
+`state` stays `starting|running|succeeded|failed|aborted` — there is **no**
+`degraded` state value, because that would break every consumer's
+terminal-state logic (`ralphctl watch` included). A run that is sitting out an
+infra outage says so with two dedicated fields instead:
+
+| field | meaning |
+|-------|---------|
+| `health` | `"ok"` normally; `"degraded"` from the first infra-classified failure of an outage episode until an iteration reaches the model again (or the run ends on the outage) |
+| `infraWait` | `null` whenever the run is not actually in a backoff wait; otherwise the object below |
+
+```json
+"health": "degraded",
+"infraWait": {
+  "since": "2026-08-18T09:14:02Z", "attempt": 4,
+  "error": "getaddrinfo EAI_AGAIN aigw…", "phase": "worker",
+  "nextAttemptAt": "2026-08-18T09:15:02Z",
+  "waitedS": 52, "budgetS": 14400, "remainingS": 14348
+}
+```
+
+`waitedS`/`budgetS`/`remainingS` are this episode's cumulative backoff wait,
+the `infraOutageBudgetS` it is spent against, and what is left of it (see the
+infra budgets under `GET /config`). `infraWait` goes back to `null` when the
+wait ends and the next attempt starts, while `health` stays `"degraded"` until
+an iteration actually reaches the model — a run between two backoffs has not
+recovered yet. Both are also emitted as events (`infra_wait` /
+`infra_recovered`), so the whole episode is visible in the event stream
+`ralphctl watch` follows and not only to a client polling `/status` at the
+right moment. Surfaced by `ralphctl status`'s `degraded:` line and the hub
+run-detail card.
 
 ### `GET /tasks`
 Full `tasks.json`.
@@ -150,6 +185,8 @@ then follows. Event types:
 | `signal` | COMPLETE / VERIFIED / task-verified detected |
 | `log` | engine-level notices (timeouts, retries, failures) |
 | `infra_retry` | an infra-classified attempt is being retried: phase, attempt, error, `backoffS` (`null` when giving up), `waitedS`, `budgetS` |
+| `infra_wait` | a backoff wait started: the full `infraWait` payload (`since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`) plus `backoffS`; the run is now `health: "degraded"` |
+| `infra_recovered` | an iteration reached the model again: `health: "ok"`, `infraWaitTotalS` — the outage episode is over and `infraWait` is back to `null` |
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
 
 Every event also lands in `events.jsonl` in the run dir with a monotonically

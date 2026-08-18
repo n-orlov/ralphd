@@ -70,6 +70,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
     @app.get("/status")
     async def status():
         s = run.read_status()
+        # Task 012 (#5): health/infraWait are always present in the contract,
+        # even for a run dir written by an older engine or one whose loop has
+        # not started yet -- their absence is never a third case a consumer
+        # has to handle.
+        s.setdefault("health", "ok")
+        s.setdefault("infraWait", None)
         tasks = run.read_tasks().get("tasks", [])
         counts = {"total": len(tasks)}
         for t in tasks:
