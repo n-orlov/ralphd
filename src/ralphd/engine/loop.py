@@ -325,14 +325,7 @@ class LoopSupervisor:
         attempt = 0
         while True:
             result = await self._run_iteration_once(phase, extra, prompt_name)
-            fault = classify_fault(
-                error_text=result.error_message or "",
-                exit_code=result.exit_code,
-                interrupted=result.interrupted,
-                timed_out=result.timed_out,
-                no_traffic_timeout=result.no_traffic_timeout,
-                produced_traffic=bool(result.final_text) or bool(result.usage),
-                operator_abort=self.operator_abort_requested)
+            fault = self._classify_result(result)
             is_instant = (result.duration_s is not None
                          and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
                          and not result.no_traffic_timeout)
@@ -363,6 +356,26 @@ class LoopSupervisor:
                          f"{self.cfg.infra_retry_max}, next in {backoff:.0f}s): "
                          f"{error_desc}")})
             await asyncio.sleep(backoff)
+
+    def _classify_result(self, result: IterationResult) -> str | None:
+        """The engine's single fault verdict for one finished iteration:
+        ``None`` (not a failure at all), ``"infra"`` or ``"work"``.
+
+        Task 004 (#11): one place derives the classify_fault() inputs from an
+        IterationResult, so the verdict recorded in the iteration's meta.json
+        and the ``iteration.end`` event (``faultClass``) is by construction
+        the same verdict the infra-retry wrapper acts on -- an operator
+        reading `faultClass: "infra"` can be sure that is why the attempt was
+        retried and refunded.
+        """
+        return classify_fault(
+            error_text=result.error_message or "",
+            exit_code=result.exit_code,
+            interrupted=result.interrupted,
+            timed_out=result.timed_out,
+            no_traffic_timeout=result.no_traffic_timeout,
+            produced_traffic=bool(result.final_text) or bool(result.usage),
+            operator_abort=self.operator_abort_requested)
 
     async def _run_iteration_once(self, phase: str, extra: str = "",
                                   prompt_name: str | None = None):
@@ -424,18 +437,27 @@ class LoopSupervisor:
             with contextlib.suppress(asyncio.CancelledError):
                 await poll_task
 
+        # Task 004 (#11): record the engine's own fault verdict next to the
+        # raw signals it was derived from -- null for a clean iteration,
+        # "infra"/"work" otherwise -- so an operator (or a later triage pass
+        # over a finished run dir) can see *why* an attempt was retried and
+        # refunded without re-deriving the classification from exit codes,
+        # error text and token usage by hand.
+        fault_class = self._classify_result(result)
         meta.update(endedAt=utcnow(), exitCode=result.exit_code,
                     interrupted=result.interrupted, timedOut=result.timed_out,
                     noTrafficTimeout=result.no_traffic_timeout,
                     sawComplete=result.saw_complete, sawVerified=result.saw_verified,
                     error=result.error_message or None,
+                    faultClass=fault_class,
                     usage=result.usage)
         atomic_write_json(itdir / "meta.json", meta)
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"))
         self.run.emit("iteration.end", number=n, phase=phase,
                       exitCode=result.exit_code, interrupted=result.interrupted,
                       sawComplete=result.saw_complete, sawVerified=result.saw_verified,
-                      error=result.error_message or None)
+                      error=result.error_message or None,
+                      faultClass=fault_class)
         log.info("iteration %d end: exit=%s complete=%s verified=%s%s",
                  n, result.exit_code, result.saw_complete, result.saw_verified,
                  f" ERROR: {result.error_message}" if result.error_message else "")
