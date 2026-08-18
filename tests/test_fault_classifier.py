@@ -7,6 +7,8 @@ with hand-built signal combinations.
 
 from __future__ import annotations
 
+import pytest
+
 from ralphd.engine.faults import classify_fault
 
 
@@ -111,3 +113,68 @@ def test_interrupted_with_traffic_and_no_infra_text_classifies_work():
         interrupted=True,
         produced_traffic=True,
     ) == "work"
+
+
+# -- task 001 (#11): an error recorded at exit 0 is still a failure ---------
+#
+# pi can record an in-band agent error (`message_end` with
+# `stopReason: "error"`) and *still* exit 0 -- the observed live shape was a
+# gateway error surfaced as an assistant error message with zero token usage
+# followed by a clean shutdown. The table below pins the full
+# {exit 0, exit nonzero} x {traffic, no traffic} grid for an error-bearing
+# result: every cell must classify as a fault (never None), with the class
+# decided only by the error signature and whether traffic happened.
+_ERROR_BEARING_GRID = [
+    # (id, error_text, exit_code, produced_traffic, expected)
+    ("infra-text/exit0/no-traffic", "connect ECONNRESET 10.0.0.1:443", 0, False, "infra"),
+    ("infra-text/exit0/traffic", "connect ECONNRESET 10.0.0.1:443", 0, True, "infra"),
+    ("infra-text/exit1/no-traffic", "connect ECONNRESET 10.0.0.1:443", 1, False, "infra"),
+    ("infra-text/exit1/traffic", "connect ECONNRESET 10.0.0.1:443", 1, True, "infra"),
+    ("gateway-dns/exit0/no-traffic",
+     "getaddrinfo EAI_AGAIN gateway.internal", 0, False, "infra"),
+    ("gateway-dns/exit0/traffic",
+     "getaddrinfo EAI_AGAIN gateway.internal", 0, True, "infra"),
+    # No recognized infra signature: a no-traffic failure is still infra
+    # (nothing ever ran), a with-traffic one is the agent's own problem.
+    ("opaque/exit0/no-traffic", "unknown agent error", 0, False, "infra"),
+    ("opaque/exit0/traffic", "unknown agent error", 0, True, "work"),
+    ("opaque/exit1/no-traffic", "unknown agent error", 1, False, "infra"),
+    ("opaque/exit1/traffic", "unknown agent error", 1, True, "work"),
+]
+
+
+@pytest.mark.parametrize(
+    "error_text,exit_code,produced_traffic,expected",
+    [case[1:] for case in _ERROR_BEARING_GRID],
+    ids=[case[0] for case in _ERROR_BEARING_GRID],
+)
+def test_error_bearing_result_is_always_a_fault(error_text, exit_code,
+                                                produced_traffic, expected):
+    verdict = classify_fault(
+        error_text=error_text,
+        exit_code=exit_code,
+        produced_traffic=produced_traffic,
+    )
+    assert verdict is not None, "an iteration with an error recorded is a failure"
+    assert verdict == expected
+
+
+def test_zero_token_no_traffic_termination_with_error_is_a_fault():
+    # The exact live shape: exit 0, zero tokens, zero assistant text, an
+    # infra-shaped errorMessage recorded in-band.
+    assert classify_fault(
+        error_text="connect ECONNRESET 10.0.0.1:443",
+        exit_code=0,
+        produced_traffic=False,
+    ) == "infra"
+
+
+@pytest.mark.parametrize("error_text", ["", "   ", "\n"],
+                         ids=["empty", "spaces", "newline"])
+def test_error_free_exit_zero_is_still_not_a_failure(error_text):
+    # The guard against over-reaching: a clean iteration (no error text, or
+    # only whitespace) must keep returning None whether or not it produced
+    # traffic, so successes are never retried/refunded.
+    assert classify_fault(error_text=error_text, exit_code=0) is None
+    assert classify_fault(error_text=error_text, exit_code=0,
+                          produced_traffic=True) is None
