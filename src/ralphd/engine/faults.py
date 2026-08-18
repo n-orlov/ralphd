@@ -58,8 +58,19 @@ def classify_fault(
     """Classify one finished iteration's failure signal.
 
     Returns ``None`` when this wasn't a failure at all (clean exit code 0,
-    not interrupted, not timed out, no startup-window kill) -- callers
-    should not retry or otherwise react to a success.
+    *no error recorded*, not interrupted, not timed out, no startup-window
+    kill) -- callers should not retry or otherwise react to a success.
+
+    Task 001 (#11): a non-empty ``error_text`` is a failure signal in its
+    own right, regardless of ``exit_code``. pi records an in-band agent
+    error (``message_end`` with ``stopReason: "error"``) and can still
+    exit 0 -- the observed shape is a gateway/provider error surfaced as
+    an assistant error message with zero token usage, after which the
+    process shuts down cleanly. Keying "was this a failure?" off the exit
+    code alone silently scored those iterations as successes: no retry, no
+    refund, and the iteration budget burned on iterations that never ran.
+    An error was recorded, so it failed; only the *class* (infra vs work)
+    is decided by the rest of this function.
 
     Returns ``"infra"`` when the failure looks like a broken LLM
     endpoint/provider/network rather than a genuine attempted-but-failed
@@ -89,6 +100,7 @@ def classify_fault(
         no_traffic_timeout
         or timed_out
         or interrupted
+        or bool((error_text or "").strip())
         or (exit_code is not None and exit_code != 0)
     )
     if not is_failure:
