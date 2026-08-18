@@ -39,6 +39,7 @@ from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     elapsed_seconds,
     format_duration,
+    parse_utc,
     utcnow,
 )
 from . import llm_profiles, ui_server
@@ -932,6 +933,57 @@ def _format_reason_lines(reason) -> list[str]:
     return lines
 
 
+def _countdown_to(ts) -> str:
+    """Human countdown to a published wall-clock timestamp (task 013, #5):
+    'in 58s (2026-08-18T09:15:02Z)'. Degrades gracefully -- 'due now' once
+    the moment has passed (or when it is missing), and a bare 'at <ts>' for a
+    timestamp that is not in the engine's utcnow() format -- a status line
+    must never be the thing that crashes `ralphctl status`."""
+    if not ts:
+        return "due now"
+    try:
+        remaining = parse_utc(str(ts)) - time.time()
+    except (ValueError, TypeError):
+        return f"at {ts}"
+    if remaining <= 0:
+        return "due now"
+    return f"in {format_duration(remaining)} (at {ts})"
+
+
+def _format_degraded_lines(status: dict) -> list[str]:
+    """Task 013 (#5): the `degraded:` line(s) for a run sitting out an infra
+    outage, so `ralphctl status` says *why nothing is happening* instead of
+    showing a run that merely looks stuck at `state: running`.
+
+    Returns an empty list for a healthy run (`health` absent or "ok"), which
+    keeps the human output of every non-degraded run byte-identical to what
+    it was before this line existed.
+
+    Two degraded shapes exist (see docs/api.md's `health`/`infraWait`):
+    `infraWait` is populated only while a backoff wait is actually pending;
+    between two waits the retry attempt itself is running, `infraWait` is
+    back to `null` and `health` is still "degraded" (the outage episode is
+    not over until an iteration reaches the model again). Both are reported.
+    """
+    if (status.get("health") or "ok") != "degraded":
+        return []
+    wait = status.get("infraWait")
+    if not isinstance(wait, dict):
+        return [("degraded:  infra outage episode in progress "
+                 "(a retry attempt is running, no backoff wait pending)")]
+    lines = [(f"degraded:  infra outage: attempt {wait.get('attempt')} "
+              f"(phase {wait.get('phase') or '?'}), "
+              f"next attempt {_countdown_to(wait.get('nextAttemptAt'))}, "
+              f"waited {format_duration(wait.get('waitedS'))} of "
+              f"{format_duration(wait.get('budgetS'))} outage budget")]
+    error = str(wait.get("error") or "").strip()
+    if error:
+        wrapped = textwrap.wrap(error, width=69) or [error]
+        lines.append(f"           error: {wrapped[0]}")
+        lines.extend(f"           {extra}" for extra in wrapped[1:])
+    return lines
+
+
 _TASK_STATUS_LABELS = {"inProgress": "in-progress", "validationFailed": "validation-failed"}
 
 
@@ -991,6 +1043,12 @@ def cmd_status(args):
         status = _read_json(run_root(args.run_id) / "status.json")
         if status is None:
             die(3, f"run {args.run_id} not found")
+        # Task 013 (#5): the on-disk fallback publishes the same
+        # health/infraWait contract GET /status guarantees (api.py setdefaults
+        # them too), so `--json` passes both through even for a pre-0.5 run
+        # dir whose status.json predates the fields.
+        status.setdefault("health", "ok")
+        status.setdefault("infraWait", None)
     status["live"] = live
 
     # Duration fields (PRD steering 051): a single `durationSeconds` covers
@@ -1027,6 +1085,10 @@ def cmd_status(args):
         note = cur_it.get("note")
         if note:
             lines.append(f"           note: {note}")
+    # Task 013 (#5): a degraded run (sitting out an infra outage) says so
+    # here, with the countdown to the next attempt; nothing at all for a
+    # healthy run, whose output stays byte-identical.
+    lines.extend(_format_degraded_lines(status))
     # Task 003: a `reason:` line whenever status.json carries a non-empty
     # `reason` (set by the engine on terminal failed/aborted states, or the
     # engine-error path) -- previously only visible via --json.
