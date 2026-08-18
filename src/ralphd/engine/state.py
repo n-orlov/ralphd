@@ -36,7 +36,14 @@ CURRENT_SCHEMA_VERSION = 1
 
 
 def utcnow() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return utc_from_epoch(time.time())
+
+
+def utc_from_epoch(epoch: float) -> str:
+    """utcnow()-format timestamp for an arbitrary UTC epoch seconds value --
+    the inverse of parse_utc(), used wherever a *future* wall-clock instant is
+    published (status.json's deadlineAt, infraWait.nextAttemptAt)."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
 def parse_utc(ts: str) -> float:

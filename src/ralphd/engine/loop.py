@@ -22,7 +22,7 @@ from .config import (
 from .faults import classify_fault
 from .llm import current_env
 from .runner import IterationResult, PiRunner
-from .state import RunDir, atomic_write_json, utcnow
+from .state import RunDir, atomic_write_json, utc_from_epoch, utcnow
 
 log = logging.getLogger("ralphd.loop")
 
@@ -99,6 +99,21 @@ class LoopSupervisor:
         self._terminal_reason_note: str | None = None
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
+        # Task 011 (#5): wall-clock twin of self.deadline (published as
+        # status.json's deadlineAt) plus the running total of time this run
+        # spent sitting out infra outages. DECISION: an outage must not eat
+        # the job's working time -- self.deadline is wall clock, so a 4-hour
+        # gateway outage would silently consume half an 8-hour job and the
+        # run would die of "timeout" having done nothing wrong. Every infra
+        # backoff wait therefore *extends* both deadlines by exactly the
+        # waited seconds (see _account_infra_wait) and is accounted in
+        # infraWaitTotalS, so job_timeout_s keeps its plain meaning: time
+        # available to the agent, not time available to the agent's network.
+        # The total is seeded from status.json so it survives `resume` (the
+        # deadline itself is per-process by construction).
+        self._deadline_epoch = time.time() + cfg.job_timeout_s
+        self._infra_wait_total_s = float(
+            run.read_status().get("infraWaitTotalS") or 0.0)
 
     # -- control surface (called from API) --------------------------------
     @property
@@ -482,6 +497,29 @@ class LoopSupervisor:
                          f"{error_desc}")})
             await asyncio.sleep(backoff)
             self._infra_episode_waited_s = waited + backoff
+            self._account_infra_wait(backoff, phase, attempt)
+
+    def _account_infra_wait(self, waited_s: float, phase: str,
+                            attempt: int) -> None:
+        """Books one finished infra backoff wait (task 011, #5): it adds to
+        status.json's ``infraWaitTotalS`` and pushes the job deadline
+        (``self.deadline`` and its published wall-clock twin ``deadlineAt``)
+        out by exactly the waited seconds, emitting ``deadline_extended`` so
+        an extension is auditable rather than a silent clock adjustment.
+
+        The amount booked is the backoff the wrapper slept for, which is also
+        what the outage-budget episode clock counts -- one number, so
+        ``infraWaitTotalS`` and the budget arithmetic can never disagree.
+        """
+        self._infra_wait_total_s += waited_s
+        self.deadline += waited_s
+        self._deadline_epoch += waited_s
+        total = round(self._infra_wait_total_s, 3)
+        deadline_at = utc_from_epoch(self._deadline_epoch)
+        self.run.update_status(infraWaitTotalS=total, deadlineAt=deadline_at)
+        self.run.emit("deadline_extended", phase=phase, attempt=attempt,
+                      waitedS=round(waited_s, 3), infraWaitTotalS=total,
+                      deadlineAt=deadline_at, reason="infra wait")
 
     def _reset_infra_episode(self) -> None:
         """Ends the current infra-outage episode (task 008, #5): the next
@@ -736,6 +774,8 @@ class LoopSupervisor:
     async def _run_job_core(self) -> str:
         """Returns final state: succeeded | failed | aborted."""
         self.run.update_status(state="running", startedAt=utcnow(),
+                               deadlineAt=utc_from_epoch(self._deadline_epoch),
+                               infraWaitTotalS=round(self._infra_wait_total_s, 3),
                                iterationsBudget=self.cfg.iterations,
                                maxApproaches=self.cfg.max_approaches,
                                onComplete=self.cfg.on_complete, verdict=None)

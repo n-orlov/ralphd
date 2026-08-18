@@ -37,6 +37,7 @@ The one-call summary. Response:
   "onComplete": "idle",
   "startedAt": "2026-08-08T13:08:11Z",
   "deadlineAt": "2026-08-08T21:08:11Z",
+  "infraWaitTotalS": 62.5,
   "currentIteration": {
     "number": 7, "phase": "worker",
     "model": "anthropic/claude-opus-5",
@@ -66,6 +67,16 @@ are accumulated alongside the top-level totals on every iteration, so for
 any token/cost field `sum(byPhase[*][field]) == sum(byApproach[*][field])
 == usage[field]`. A phase/approach only appears once at least one iteration
 for it has ended.
+
+`deadlineAt` is `startedAt + jobTimeoutS` **plus every second this run has
+spent waiting out an infra outage** (`infraWaitTotalS`, the cumulative infra
+backoff wait — see the infra budgets under `GET /config`). Waiting for a
+broken LLM endpoint is not work the job's timeout should pay for: each backoff
+wait extends the deadline by exactly the waited time and emits a
+`deadline_extended` event, so `jobTimeoutS` keeps its plain meaning (time
+available to the agent) and a 4-hour gateway outage cannot silently consume
+half an 8-hour job. `infraWaitTotalS` is `0` for a run that never hit an
+outage and survives `ralphctl resume` (the per-process deadline does not).
 
 ### `GET /tasks`
 Full `tasks.json`.
@@ -138,6 +149,8 @@ then follows. Event types:
 | `steering.received` / `steering.consumed` | steering file name |
 | `signal` | COMPLETE / VERIFIED / task-verified detected |
 | `log` | engine-level notices (timeouts, retries, failures) |
+| `infra_retry` | an infra-classified attempt is being retried: phase, attempt, error, `backoffS` (`null` when giving up), `waitedS`, `budgetS` |
+| `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
 
 Every event also lands in `events.jsonl` in the run dir with a monotonically
 increasing `id`.
