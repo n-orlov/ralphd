@@ -60,6 +60,19 @@ function durationBetween(startIso, endIso) {
   return b - a;
 }
 
+// task 014: mirrors `main.py:_countdown_to()` -- a countdown to a future
+// wall-clock instant, degrading to the raw value rather than throwing when
+// the timestamp is not parseable (a status line must never be the thing
+// that breaks the page).
+function countdownTo(iso) {
+  if (!iso) return "due now";
+  const t = isoToEpoch(iso);
+  if (t == null) return "at " + String(iso);
+  const remaining = t - Date.now() / 1000;
+  if (remaining <= 0) return "due now";
+  return "in " + fmtDuration(remaining) + " (at " + String(iso) + ")";
+}
+
 // -------------------------------------------------------------- routing
 
 function router() {
@@ -248,6 +261,7 @@ function renderSummary(el, detail) {
       "\u23F3 " + String(curIt.note),
     ]));
   }
+  renderInfraWait(el, s);
   // Task 004: the engine writes a high-quality `reason` into status.json
   // on terminal failed/aborted states (e.g. the no-progress fail-fast
   // explanation) -- surface it prominently on the run-detail card rather
@@ -269,6 +283,48 @@ function renderSummary(el, detail) {
       "⚠ UNCONSUMED STEERING (run ended without acting on): " + unconsumed.join(", "),
     ]));
   }
+}
+
+// Task 014 (#5): a run sitting out an infra outage must NOT render
+// identically to a healthy running run -- `state` deliberately stays
+// "running" (see docs/api.md: there is no `degraded` state value), so the
+// only signal is `health`/`infraWait` and the hub has to show it or the
+// operator sees a run that merely looks stuck. Same information
+// `ralphctl status`'s `degraded:` line prints (main.py's
+// `_format_degraded_lines`): attempt, phase, countdown to the next
+// attempt, episode wait against the outage budget, and the error.
+// textContent only (via `h()`'s text nodes) -- never innerHTML.
+function renderInfraWait(el, s) {
+  const wait = (s.infraWait && typeof s.infraWait === "object") ? s.infraWait : null;
+  // `infraWait` is populated only while a backoff wait is actually pending;
+  // between two attempts it is back to null while `health` stays
+  // "degraded" (the episode is not over until an iteration reaches the
+  // model). Both shapes get the degraded treatment.
+  const degraded = wait != null || (s.health || "ok") === "degraded";
+  if (!degraded) return;
+  el.classList.add("degraded");
+  if (wait == null) {
+    el.appendChild(h("p", { class: "infra-wait" }, [
+      "\u26A0 degraded: infra outage episode in progress " +
+      "(a retry attempt is running, no backoff wait pending)",
+    ]));
+    return;
+  }
+  const box = h("div", { class: "infra-wait" }, [
+    h("div", {}, [
+      "\u26A0 degraded: infra outage — attempt " + String(wait.attempt ?? "?") +
+      " (phase " + String(wait.phase || "?") + "), next attempt " +
+      countdownTo(wait.nextAttemptAt),
+    ]),
+    h("div", { class: "infra-wait-budget" }, [
+      "waited " + fmtDuration(wait.waitedS) + " of " + fmtDuration(wait.budgetS) +
+      " outage budget" +
+      (wait.remainingS == null ? "" : " (" + fmtDuration(wait.remainingS) + " left)"),
+    ]),
+  ]);
+  const error = String(wait.error == null ? "" : wait.error).trim();
+  if (error) box.appendChild(h("div", { class: "infra-wait-error" }, ["error: " + error]));
+  el.appendChild(box);
 }
 
 function renderUsage(el, usage) {

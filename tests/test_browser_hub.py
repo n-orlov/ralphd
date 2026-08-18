@@ -201,6 +201,57 @@ def test_run_detail_shows_infra_retry_note(tmp_path, pw):
         server.stop()
 
 
+def test_run_detail_renders_degraded_infra_wait_distinctly(tmp_path, pw):
+    """Task 014 (#5): a run sitting out an infra outage keeps
+    `state: running` on purpose (docs/api.md: there is no `degraded` state
+    value), so without a dedicated treatment the hub renders it EXACTLY
+    like a healthy running run and the operator sees a job that merely
+    looks stuck. Assert the degraded card treatment (`.card.degraded` +
+    `.infra-wait`) appears for a degraded fixture, carries the error and
+    the countdown to `nextAttemptAt`, and is entirely absent for a healthy
+    running run."""
+    registry = tmp_path / "registry"
+    next_attempt = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 150))
+    _write_dead_run(registry, "run-degraded", state="running", verdict=None,
+                    health="degraded",
+                    infraWait={
+                        "since": "2026-01-01T00:00:00Z", "attempt": 4,
+                        "error": "getaddrinfo EAI_AGAIN aigw.example.invalid",
+                        "phase": "worker", "nextAttemptAt": next_attempt,
+                        "waitedS": 52, "budgetS": 14400, "remainingS": 14348,
+                    })
+    _write_dead_run(registry, "run-healthy", state="running", verdict=None,
+                    health="ok", infraWait=None)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-degraded")
+        body_text = _wait_for(pw, "document.body.innerText", "degraded")
+        assert "EAI_AGAIN" in body_text, body_text
+        assert "attempt 4" in body_text, body_text
+        assert "worker" in body_text, body_text
+        # countdown to nextAttemptAt, not a bare timestamp
+        assert "next attempt in " in body_text, body_text
+        assert "outage budget" in body_text, body_text
+        n_degraded = int(pw.eval_js("document.querySelectorAll('.card.degraded').length"))
+        n_wait = int(pw.eval_js("document.querySelectorAll('.infra-wait').length"))
+        assert n_degraded == 1
+        assert n_wait == 1
+        pw.screenshot(SCREENSHOTS_DIR / "05-degraded-infra-wait.png")
+
+        pw.open(f"{server.base}/#/run/run-healthy")
+        body_text = _wait_for(pw, "document.body.innerText", "running")
+        assert "degraded" not in body_text, body_text
+        assert "EAI_AGAIN" not in body_text
+        n_degraded = int(pw.eval_js("document.querySelectorAll('.card.degraded').length"))
+        n_wait = int(pw.eval_js("document.querySelectorAll('.infra-wait').length"))
+        assert n_degraded == 0
+        assert n_wait == 0
+    finally:
+        server.stop()
+
+
 def test_run_detail_shows_reason_for_terminal_failed_run(tmp_path, pw):
     """Task 004: the engine's high-quality `reason` string (e.g. the
     no-progress fail-fast explanation) must be prominently visible on the
