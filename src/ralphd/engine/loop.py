@@ -44,6 +44,14 @@ class LoopSupervisor:
         self._pause = asyncio.Event()
         self._pause.set()  # set = not paused
         self._abort_reason: str | None = None
+        # Task 003 (#11): operator-initiated abort/interrupt bookkeeping,
+        # consulted by classify_fault(operator_abort=...) so a SIGINT the
+        # *operator* asked for is never mistaken for a provider-side
+        # stream abort and retried as an outage. POST /abort sets
+        # _abort_reason (sticky: the run is ending); POST /interrupt only
+        # ends the current iteration, so its flag is armed per attempt and
+        # cleared when the next attempt starts.
+        self._operator_interrupted = False
         self._instant_failure_streak = 0
         # Task 001a: iterations refunded because they were retried after an
         # infra-classified fault (see _run_iteration_with_infra_retry) --
@@ -68,8 +76,20 @@ class LoopSupervisor:
         self.deadline = time.monotonic() + cfg.job_timeout_s
 
     # -- control surface (called from API) --------------------------------
+    @property
+    def operator_abort_requested(self) -> bool:
+        """True when this run's current failure signal, whatever it looks
+        like, was asked for by the operator (task 003, #11)."""
+        return self._abort_reason is not None or self._operator_interrupted
+
     def interrupt(self) -> bool:
-        return self.runner.interrupt()
+        delivered = self.runner.interrupt()
+        if delivered:
+            # Only record it when a signal actually reached a running agent
+            # -- an interrupt with nothing running changes no iteration's
+            # outcome and must not shield the next one from infra retry.
+            self._operator_interrupted = True
+        return delivered
 
     def pause(self) -> None:
         self._pause.clear()
@@ -81,6 +101,7 @@ class LoopSupervisor:
 
     def abort(self, reason: str = "") -> None:
         self._abort_reason = reason or "aborted by operator"
+        self._operator_interrupted = True
         self.runner.interrupt()
 
     # -- prompts -----------------------------------------------------------
@@ -293,6 +314,13 @@ class LoopSupervisor:
         entirely to the pre-existing streak-based carve-out
         (_check_instant_failure) instead -- returning immediately here --
         so the two mechanisms never race or double-count the same failure.
+
+        Task 003 (#11): an operator-initiated abort/interrupt is never an
+        infra fault (classify_fault(operator_abort=...) sees
+        self.operator_abort_requested), so POST /abort and POST /interrupt
+        take effect at once instead of being fought by a retry episode --
+        pi reports both as the same bare "aborted" error a provider-side
+        stream abort produces.
         """
         attempt = 0
         while True:
@@ -303,7 +331,8 @@ class LoopSupervisor:
                 interrupted=result.interrupted,
                 timed_out=result.timed_out,
                 no_traffic_timeout=result.no_traffic_timeout,
-                produced_traffic=bool(result.final_text) or bool(result.usage))
+                produced_traffic=bool(result.final_text) or bool(result.usage),
+                operator_abort=self.operator_abort_requested)
             is_instant = (result.duration_s is not None
                          and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
                          and not result.no_traffic_timeout)
@@ -338,6 +367,10 @@ class LoopSupervisor:
     async def _run_iteration_once(self, phase: str, extra: str = "",
                                   prompt_name: str | None = None):
         n = self.iterations_used + 1
+        # Task 003 (#11): a POST /interrupt shields only the iteration it
+        # actually interrupted -- re-arm for this attempt (an abort, which
+        # ends the whole run, stays recorded in _abort_reason).
+        self._operator_interrupted = False
         self.iterations_used = n
         itdir = self.run.iteration_dir(n)
         model = self.cfg.model_for(phase)
