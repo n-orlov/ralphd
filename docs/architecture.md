@@ -213,11 +213,12 @@ as a pi NDJSON event at all (`PiRunner._scan_line()`'s return value — any
 event, not specifically a `message_end`) inside that window. If none arrives,
 the watchdog sets `IterationResult.no_traffic_timeout = True` and SIGINTs the
 process immediately, rather than waiting for the full `timeout_s` to elapse.
-`LoopSupervisor._run_iteration_once()` only passes a real `startup_timeout_s`
+`LoopSupervisor._run_iteration_once()` passes a real `startup_timeout_s`
 (`cfg.infra_startup_timeout_s`, default 150s, overridable via
 `RALPHD_INFRA_STARTUP_TIMEOUT` or the `infra_startup_timeout_s` job.yaml key)
-for the two phases most exposed to this (`planning`, `worker`); other phases
-(`review`, `verify`, `reflect`) are unaffected.
+for exactly the phases the infra-retry wrapper protects — since task 009 that
+is **all five** (`planning`, `worker`, `review`, `verify`, `reflect`): a hung
+invocation is only worth killing early if something is going to retry it.
 
 **2. Classification.** `.faults.classify_fault()` is a pure function (no
 engine state) that maps a finished iteration's failure signal to `"infra"`,
@@ -232,7 +233,19 @@ text is `"work"`; any other no-traffic failure defaults to `"infra"` too
 be an environment/startup fault than genuine agent work).
 
 **3. Retry with backoff, not escalation.** `LoopSupervisor._run_iteration_with_infra_retry()`
-wraps `_run_iteration_once()` for `planning`/`worker` calls. An infra-classified
+wraps `_run_iteration_once()` for every phase in
+`LoopSupervisor.INFRA_RETRY_PHASES` — since task 009 all five (`planning`,
+`worker`, `review`, `verify`, `reflect`), because an endpoint outage does not
+care which prompt is running: before that, an infra-shaped `review` failure
+rejected and archived the approach, an infra-shaped `verify` failure ate the
+task's bounded error-retry budget, and `reflect` just lost its report. The
+wrapper takes **precedence** over those phase-local budgets: an
+infra-classified failure is retried and refunded here and consumes neither
+`MAX_VERIFY_ERROR_RETRIES`, the review steering loop's iterations, nor a
+task's `validationAttempts`; the phase's own logic only sees a result once it
+is no longer an infra fault, or once the wrapper gave up (which sets
+`_abort_reason`, so `budget_left()` is already False and those loops exit
+rather than re-charging the same outage). An infra-classified
 result that is *also* an instant failure (sub-`INSTANT_FAILURE_MAX_DURATION_S`,
 no `no_traffic_timeout`) is returned immediately, unhandled — left entirely
 to task 059's pre-existing streak-based carve-out, so the two mechanisms never
