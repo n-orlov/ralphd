@@ -237,9 +237,27 @@ Human output also renders (task 003):
   tokens (planning $0.10 / worker $0.40 / review $0.06)`, instead of a raw
   JSON dump. The per-phase breakdown only lists phases that actually
   accrued usage.
+- `degraded:` (task 013) -- shown only while the run is `health: "degraded"`,
+  i.e. sitting out an infra outage (see `health`/`infraWait` in
+  [api.md](api.md)). While a backoff wait is pending it names the attempt
+  number, the phase, the **countdown to `nextAttemptAt`** and how much of the
+  outage budget the episode has spent, with the classified error on
+  continuation line(s):
+
+  ```
+  degraded:  infra outage: attempt 4 (phase worker), next attempt in 58s (at 2026-08-18T09:15:02Z), waited 52s of 4h outage budget
+             error: getaddrinfo EAI_AGAIN aigw.example.internal
+  ```
+
+  Between two waits (`infraWait` back to `null` while the retry attempt
+  itself runs, `health` still `degraded`) it reports the ongoing episode
+  without a countdown. A healthy run prints no such line -- its output is
+  byte-identical to before this line existed.
 
 `--json` output is untouched by any of this: it still carries the full,
-unsummarized `reason`/`tasks`/`usage` detail straight from status.json.
+unsummarized `reason`/`tasks`/`usage` detail straight from status.json, plus
+`health` and `infraWait` verbatim (the on-disk fallback for an unreachable
+run defaults them to `"ok"`/`null`, matching `GET /status`).
 
 ### `ralphctl watch <run-id>`
 
