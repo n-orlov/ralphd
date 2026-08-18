@@ -65,6 +65,17 @@ class LoopSupervisor:
         # while self.iterations_used itself keeps monotonically increasing
         # (so every attempt still gets its own iteration directory/number).
         self._infra_refunded = 0
+        # Task 008 (#5): the *episode clock* driving infra retries. One
+        # "episode" is one continuous outage: consecutive infra-classified
+        # attempts with no iteration reaching the model in between. Retries
+        # continue while the episode's cumulative backoff wait stays under
+        # cfg.infra_outage_budget_s (wall clock, not an attempt count -- a
+        # gateway can be down for an hour and the right answer is to keep
+        # waiting, not to give up after 3 tries), and the whole episode
+        # resets as soon as an iteration gets through again.
+        self._infra_episode_attempts = 0
+        self._infra_episode_waited_s = 0.0
+        self._infra_episode_started_at: float | None = None
         # Task 002: at most one grace review per approach (set of approach
         # numbers that have already had one), and a matching refund counter
         # (same mechanism as _infra_refunded) so a grace review never counts
@@ -294,16 +305,15 @@ class LoopSupervisor:
             return await self._run_iteration_once(phase, extra, prompt_name)
         return await self._run_iteration_with_infra_retry(phase, extra, prompt_name)
 
-    # Task 001a: escalating backoff/retry cap defaults live on JobConfig
-    # (cfg.infra_retry_backoff_s / cfg.infra_retry_max), overridable via
-    # RALPHD_INFRA_RETRY_BACKOFF_S / RALPHD_INFRA_RETRY_MAX so tests (and
-    # operators) don't need a job.yaml edit for every run.
+    # Task 001a: escalating backoff defaults live on JobConfig
+    # (cfg.infra_retry_backoff_s / cfg.infra_retry_backoff_max_s /
+    # cfg.infra_outage_budget_s / cfg.infra_retry_max), overridable via the
+    # matching RALPHD_INFRA_* env vars so tests (and operators) don't need a
+    # job.yaml edit for every run.
     #
-    # Task 006 (#5): cfg.infra_retry_max now defaults to None ("no explicit
-    # attempt cap"); this is the historical cap applied while no cap is
-    # configured, until task 008 replaces it with cfg.infra_outage_budget_s
-    # as the real stopping rule.
-    _LEGACY_INFRA_RETRY_MAX = 3
+    # Task 008 (#5): the stopping rule is the wall-clock outage budget
+    # (episode clock, see __init__), NOT an attempt count. cfg.infra_retry_max
+    # is a back-compat cap honoured only when explicitly configured.
     async def _run_iteration_with_infra_retry(self, phase: str, extra: str,
                                               prompt_name: str | None):
         """Runs `phase` via _run_iteration_once(), retrying THE SAME
@@ -316,9 +326,20 @@ class LoopSupervisor:
         self._instant_failure_streak / the no-progress stagnation guard --
         callers (the planning/worker loops in _run_job_core) see a fully
         resolved IterationResult exactly as before, either a genuine
-        success/work-failure or (once cfg.infra_retry_max is exhausted) the
-        last failing attempt with self._abort_reason already set to a
-        diagnostic naming the infra fault plainly.
+        success/work-failure or (once the episode ran out of stopping room,
+        see below) the last failing attempt with self._abort_reason already
+        set to a diagnostic naming the infra fault plainly.
+
+        Task 008 (#5): retries are driven by a wall-clock *episode clock*,
+        not an attempt count. Attempts are unlimited by default and stop
+        only when the episode's cumulative backoff wait has reached
+        cfg.infra_outage_budget_s (default 4h) -- so a 30-minute endpoint
+        outage costs the job nothing but time, while a permanently broken
+        endpoint still terminates the run with a reason naming the total
+        outage duration and the last error. cfg.infra_retry_max, when
+        explicitly configured, still caps the attempts (back-compat, and an
+        escape hatch for operators who want a hard stop); the episode resets
+        on any iteration that reaches the model (_reset_infra_episode).
 
         An infra fault that is ALSO an *instant* failure (sub-
         INSTANT_FAILURE_MAX_DURATION_S exit with no traffic) is left
@@ -333,46 +354,83 @@ class LoopSupervisor:
         pi reports both as the same bare "aborted" error a provider-side
         stream abort produces.
         """
-        attempt = 0
-        # Task 006 (#5): an unset cfg.infra_retry_max means "no attempt cap";
-        # until task 008 lands the wall-clock outage budget, fall back to the
-        # historical 3 attempts so behaviour here is unchanged.
-        retry_max = self.cfg.infra_retry_max or self._LEGACY_INFRA_RETRY_MAX
+        retry_max = self.cfg.infra_retry_max  # None == no explicit attempt cap
+        budget = self.cfg.infra_outage_budget_s
         while True:
             result = await self._run_iteration_once(phase, extra, prompt_name)
             fault = self._classify_result(result)
             is_instant = (result.duration_s is not None
                          and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
                          and not result.no_traffic_timeout)
-            if fault != "infra" or is_instant:
+            if fault != "infra":
+                # The agent reached the model -- a success, or a genuine work
+                # failure it produced itself. Either way the outage (if there
+                # was one) is over: the next one starts from a clean clock.
+                self._reset_infra_episode()
+                return result
+            if is_instant:
                 return result
 
             self._infra_refunded += 1
-            attempt += 1
+            if self._infra_episode_started_at is None:
+                self._infra_episode_started_at = time.monotonic()
+            self._infra_episode_attempts += 1
+            attempt = self._infra_episode_attempts
+            waited = self._infra_episode_waited_s
             error_desc = result.error_message or "no LLM traffic within startup window"
-            self.run.emit("infra_retry", phase=phase, attempt=attempt,
-                          maxAttempts=retry_max, error=error_desc,
-                          noTrafficTimeout=result.no_traffic_timeout)
-            log.warning("iteration %s classified infra fault (attempt %d/%d): %s",
-                       phase, attempt, retry_max, error_desc)
-            self.run.update_status(
-                iterationsUsed=self.iterations_used - self._infra_refunded)
-            if attempt >= retry_max:
-                self._abort_reason = (
-                    f"infra fault: {phase} iteration failed after "
-                    f"{retry_max} attempts ({error_desc})")
-                self.run.emit("log", level="error", message=self._abort_reason)
-                return result
+            # Escalating schedule with the last value repeating, capped by
+            # infra_retry_backoff_max_s and by whatever is left of the outage
+            # budget, so one episode's cumulative wait never exceeds it.
             backoff_schedule = (self.cfg.infra_retry_backoff_s
                                 or DEFAULT_INFRA_RETRY_BACKOFF_S)
             backoff = backoff_schedule[min(attempt - 1, len(backoff_schedule) - 1)]
-            backoff = min(backoff, self.cfg.infra_retry_backoff_max_s)
+            backoff = min(backoff, self.cfg.infra_retry_backoff_max_s,
+                          max(0.0, budget - waited))
+            cap_reached = retry_max is not None and attempt >= retry_max
+            budget_spent = waited >= budget
+            self.run.emit("infra_retry", phase=phase, attempt=attempt,
+                          maxAttempts=retry_max, error=error_desc,
+                          noTrafficTimeout=result.no_traffic_timeout,
+                          backoffS=(None if cap_reached or budget_spent
+                                    else backoff),
+                          waitedS=round(waited, 3), budgetS=budget)
+            log.warning("iteration %s classified infra fault (attempt %d, %.0fs of "
+                       "the %.0fs outage budget waited): %s",
+                       phase, attempt, waited, budget, error_desc)
+            self.run.update_status(
+                iterationsUsed=self.iterations_used - self._infra_refunded)
+            if cap_reached:
+                # Back-compat: reachable only when a cap was set explicitly.
+                self._abort_reason = (
+                    f"infra fault: {phase} iteration failed after "
+                    f"{retry_max} attempts ({error_desc})")
+            elif budget_spent:
+                outage_s = time.monotonic() - self._infra_episode_started_at
+                self._abort_reason = (
+                    f"infra fault: {phase} iteration failed throughout a "
+                    f"{outage_s:.0f}s infra outage ({attempt} attempts, "
+                    f"{waited:.0f}s of the {budget:.0f}s outage budget spent "
+                    f"waiting): {error_desc}")
+            if self._abort_reason is not None:
+                self.run.emit("log", level="error", message=self._abort_reason)
+                return result
+            cap_note = f"/{retry_max}" if retry_max is not None else ""
             self.run.update_status(currentIteration={
                 "phase": phase,
-                "note": (f"retrying after infra fault (attempt {attempt}/"
-                         f"{retry_max}, next in {backoff:.0f}s): "
+                "note": (f"retrying after infra fault (attempt {attempt}"
+                         f"{cap_note}, next in {backoff:.0f}s): "
                          f"{error_desc}")})
             await asyncio.sleep(backoff)
+            self._infra_episode_waited_s = waited + backoff
+
+    def _reset_infra_episode(self) -> None:
+        """Ends the current infra-outage episode (task 008, #5): the next
+        outage gets the full backoff schedule and the full outage budget
+        again, so a job hitting a short glitch every hour is never slowly
+        starved of retry budget by the earlier ones."""
+        self._infra_episode_attempts = 0
+        self._infra_episode_waited_s = 0.0
+        self._infra_episode_started_at = None
 
     def _classify_result(self, result: IterationResult) -> str | None:
         """The engine's single fault verdict for one finished iteration:

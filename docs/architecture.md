@@ -241,13 +241,21 @@ retries the *same* phase/iteration in place with escalating backoff
 (`cfg.infra_retry_backoff_s`, default `[2, 5, 15, 30, 60, 120, 300]` seconds
 with the last value repeating, clamped to `cfg.infra_retry_backoff_max_s`
 (default 300s); overridable via `RALPHD_INFRA_RETRY_BACKOFF_S="s1,s2,..."` /
-`RALPHD_INFRA_RETRY_BACKOFF_MAX_S`). `cfg.infra_outage_budget_s` (default 4h,
-`RALPHD_INFRA_OUTAGE_BUDGET_S`) is the intended wall-clock stopping rule for a
-fault episode, and `cfg.infra_retry_max` (`RALPHD_INFRA_RETRY_MAX`) is an
-optional attempt cap honoured only when set explicitly — while it is unset the
-wrapper still applies the historical 3-attempt cap
-(`LoopSupervisor._LEGACY_INFRA_RETRY_MAX`) before giving up as a terminal infra
-failure. Each infra-classified attempt
+`RALPHD_INFRA_RETRY_BACKOFF_MAX_S`).
+
+The stopping rule is wall-clock, not an attempt count: attempts are
+**unlimited by default** and stop only when the *episode clock* has spent
+`cfg.infra_outage_budget_s` (default 4h, `RALPHD_INFRA_OUTAGE_BUDGET_S`) on
+waiting. An *episode* is one continuous outage — consecutive
+infra-classified attempts with no iteration reaching the model in between;
+`LoopSupervisor._reset_infra_episode()` clears the attempt counter and the
+accumulated wait as soon as one does (success or genuine work failure), so a
+job that hits a short glitch every hour is never slowly starved of retry
+budget. Each wait is additionally clamped to what is left of the budget, so an
+episode's cumulative wait never exceeds it. `cfg.infra_retry_max`
+(`RALPHD_INFRA_RETRY_MAX`) remains an optional attempt cap honoured **only when
+set explicitly** (back-compat and a hard-stop escape hatch); while unset,
+nothing but the outage budget ends a retry episode. Each infra-classified attempt
 increments `LoopSupervisor._infra_refunded`, which `budget_left()` subtracts
 from `iterations_used` — an infra retry never counts against the job's
 iteration budget (the attempt still gets its own iteration directory/number,
@@ -256,13 +264,17 @@ since `iterations_used` itself keeps incrementing monotonically; only the
 `_instant_failure_streak` or the worker loop's stagnation counter.
 
 **4. Surfacing.** Each attempt emits a `type: infra_retry` event
-(`phase`, `attempt`, `maxAttempts`, `error`, `noTrafficTimeout`) to
+(`phase`, `attempt`, `maxAttempts` — `null` when uncapped, `error`,
+`noTrafficTimeout`, `backoffS` — the wait about to start, `null` when giving
+up, `waitedS` — the episode's cumulative wait so far, `budgetS`) to
 `events.jsonl`. While waiting out the backoff between attempts,
 `status.json`'s `currentIteration.note` reads `"retrying after infra fault
-(attempt N/max, next in Xs): <error>"` (visible via `ralphctl status`/the
-hub). If retries exhaust, `LoopSupervisor._abort_reason` is set to
-`"infra fault: <phase> iteration failed after <max> attempts (<error>)"` —
-picked up by the same `budget_left() == False` → `state: aborted` path task
+(attempt N[/max], next in Xs): <error>"` (visible via `ralphctl status`/the
+hub). When the outage budget runs out, `LoopSupervisor._abort_reason` is set to
+`"infra fault: <phase> iteration failed throughout a <D>s infra outage (<N>
+attempts, <W>s of the <B>s outage budget spent waiting): <error>"` (with an
+explicit `infra_retry_max` it keeps the older `"...failed after <max>
+attempts (<error>)"` wording) — picked up by the same `budget_left() == False` → `state: aborted` path task
 059 uses, so the terminal `reason` names the infra fault plainly (e.g. the
 literal `getaddrinfo ENOTFOUND` text, when the failure surfaced one) rather
 than a generic timeout message.
