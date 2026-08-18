@@ -70,6 +70,14 @@ _INFRA_TEXT_PATTERNS = (
     r"ModelStreamErrorException",
     r"quota",
     r"capacity",
+    # NOT in this table, deliberately (task 003, #11): a bare "aborted".
+    # pi records that exact string as the in-band errorMessage whenever the
+    # agent process takes a SIGINT -- which the *operator* can cause
+    # (POST /abort, POST /interrupt) just as easily as a provider-side
+    # stream abort can. The text alone cannot tell the two apart, so that
+    # shape is decided from the `operator_abort` / `produced_traffic`
+    # inputs below instead of from a signature. ("aborted: Premature
+    # close" and friends still match via their own family above.)
 )
 _INFRA_TEXT_RE = re.compile("|".join(_INFRA_TEXT_PATTERNS), re.IGNORECASE)
 
@@ -82,6 +90,7 @@ def classify_fault(
     timed_out: bool = False,
     no_traffic_timeout: bool = False,
     produced_traffic: bool = False,
+    operator_abort: bool = False,
 ) -> FaultClass | None:
     """Classify one finished iteration's failure signal.
 
@@ -122,10 +131,27 @@ def classify_fault(
       failure, and scoring it as "work" would let it silently burn
       approach/task-failure bookkeeping instead of being retried).
 
-    Returns ``"work"`` only for the one case squarely inside the agent's
-    own responsibility: it produced real LLM traffic (assistant text and/or
+    Returns ``"work"`` for the case squarely inside the agent's own
+    responsibility: it produced real LLM traffic (assistant text and/or
     token usage were observed) and *then* exited nonzero/timed out/was
-    interrupted, with no recognized infra signature in its error text.
+    interrupted, with no recognized infra signature in its error text --
+    and for an *operator-initiated* termination (see below), which is
+    nobody's fault but must never be retried as an outage.
+
+    Task 003 (#11): ``operator_abort`` is the caller's real abort/interrupt
+    bookkeeping (``LoopSupervisor.operator_abort_requested``: POST /abort
+    recorded an abort reason, or POST /interrupt actually delivered a
+    SIGINT to the running agent). It exists because pi records a SIGINT as
+    the in-band error text ``"aborted"`` with no traffic and no exit code
+    of its own -- textually identical whether the signal came from a
+    provider-side stream abort (a genuine transient infra fault worth
+    retrying, which is what a bare ``"aborted"`` with no traffic is
+    classified as) or from the operator asking this run to stop. Retrying
+    the latter would fight the operator: the wrapper would sit in backoff
+    and re-run the very iteration that was just aborted. So when an
+    operator-initiated abort/interrupt is recorded, the failure is never
+    ``"infra"`` -- regardless of error text, traffic or watchdog state --
+    which keeps it out of the infra retry loop entirely.
     """
     is_failure = (
         no_traffic_timeout
@@ -136,6 +162,10 @@ def classify_fault(
     )
     if not is_failure:
         return None
+    if operator_abort:
+        # The operator asked for this to stop; nothing here is retryable
+        # (see the task 003 paragraph above).
+        return "work"
     if no_traffic_timeout:
         return "infra"
     if _INFRA_TEXT_RE.search(error_text or ""):
