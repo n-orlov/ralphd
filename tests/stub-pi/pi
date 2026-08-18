@@ -74,6 +74,26 @@ from env vars set by the test:
                       the sleep's end, proving the engine fails fast on a
                       hang instead of waiting out the full iteration
                       timeout.
+  STUB_INBAND_ERROR_COUNT  after the first STUB_INBAND_ERROR_SKIP
+                      invocations (default 0), the next N invocations of
+                      the stub (any phase) simulate the shape behind task
+                      005 (#11): a provider/gateway outage pi surfaces
+                      *in band* -- a single `message_end` with stopReason
+                      "error", an infra-shaped `errorMessage`, ZERO token
+                      usage and NO sentinel -- after which the process
+                      shuts down cleanly and exits 0. Nothing else is
+                      emitted and tasks.json is never touched. This is the
+                      exit-0 failure the engine used to score as a success
+                      (no retry, no refund, budget burned); the message
+                      text defaults to pi's verbatim "Connection error."
+                      and can be overridden with
+                      STUB_INBAND_ERROR_MESSAGE.
+  STUB_INBAND_ERROR_DELAY_S  seconds to sleep before emitting that in-band
+                      error (default 0). A real gateway outage takes time
+                      to surface; a test that wants the *retry* path rather
+                      than the broken-environment instant-failure carve-out
+                      (LoopSupervisor.INSTANT_FAILURE_MAX_DURATION_S = 5s)
+                      must push the attempt's duration past that window.
   STUB_ECHO_SECRET    comma-separated literal secret value(s) for the stub
                       worker to deliberately echo into its final assistant
                       text AND into a tool call's arguments/result (task
@@ -182,6 +202,41 @@ with open(marker("skills"), "w") as _f:
 # restart. Overwritten every invocation, never gated by a knob.
 with open(marker("env.json"), "w") as _f:
     json.dump(dict(os.environ), _f)
+
+
+# STUB_INBAND_ERROR_COUNT simulates a transient provider/gateway fault that
+# pi reports *in band* instead of by dying: a message_end with stopReason
+# "error", an infra-shaped errorMessage, zero token usage, no sentinel --
+# and then a clean exit 0 (the live shape behind tasks 001/005, #11, where
+# the iteration burned budget because exit 0 alone was read as success).
+# Counted globally across phases like the other fault knobs, and gated by
+# STUB_INBAND_ERROR_SKIP so a test can let planning through first.
+_inband_count = int(os.environ.get("STUB_INBAND_ERROR_COUNT", "0"))
+_inband_skip = int(os.environ.get("STUB_INBAND_ERROR_SKIP", "0"))
+if _inband_count:
+    _inband_marker = marker("inband-error-count")
+    _seen = 0
+    if os.path.exists(_inband_marker):
+        _seen = int(open(_inband_marker).read())
+    with open(_inband_marker, "w") as _f:
+        _f.write(str(_seen + 1))
+    if _inband_skip <= _seen < _inband_skip + _inband_count:
+        # An outage takes time to surface; the delay keeps this out of the
+        # engine's instant-failure (broken-environment) carve-out so the
+        # retry path is what the test exercises.
+        time.sleep(float(os.environ.get("STUB_INBAND_ERROR_DELAY_S", "0")))
+        print(json.dumps({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "error",
+                "errorMessage": os.environ.get(
+                    "STUB_INBAND_ERROR_MESSAGE", "Connection error."),
+                "content": [],
+                "usage": {"input": 0, "output": 0, "totalTokens": 0},
+            },
+        }))
+        sys.exit(0)
 
 
 def _chunks(s, n=6):

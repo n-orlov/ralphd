@@ -399,8 +399,14 @@ class LoopSupervisor:
         atomic_write_json(itdir / "meta.json", meta)
         self.run.emit("iteration.start", number=n, phase=phase, model=model)
         log.info("iteration %d start: phase=%s model=%s", n, phase, model)
+        # Task 005 (#11): the *charged* count, not the raw attempt number --
+        # an infra-classified attempt is refunded (budget_left()) and must
+        # stay refunded in what the operator reads, not be silently
+        # re-charged by the next iteration's status write. (A grace review's
+        # refund is deliberately NOT subtracted here: it keeps showing as a
+        # used iteration number, see test_e2e's grace-review contract.)
         self.run.update_status(phase=phase, iteration=n,
-                               iterationsUsed=n,
+                               iterationsUsed=n - self._infra_refunded,
                                currentIteration={"number": n, "phase": phase,
                                                  "model": model,
                                                  "startedAt": meta["startedAt"]})
