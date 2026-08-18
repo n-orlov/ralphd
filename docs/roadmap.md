@@ -68,8 +68,55 @@ Non-goals for v0.1: resume, web UI, self-reflection, multi-job orchestration.
 - ✅ Pluggable notifications on completion (shell hook: `on_complete_cmd`)
 - ✅ Multi-workspace jobs (multiple repos mounted side by side)
 
+## v0.5 — session resilience & self-recovery
+
+Full PRD: [`docs/prds/v0.5-resilience.md`](prds/v0.5-resilience.md). Driven by
+three live incidents (a DNS wobble destroying 4 of 8 approaches, a lost
+post-mortem, an agent deleting its own container) and the GitHub backlog
+(#1–#11, #13). Phase 1 is the resilience half and lands first; Phase 2 is
+operator surfaces.
+
+Phase 1 — the environment must not be able to destroy a job:
+
+- ⏳ In-band LLM errors classified as faults at all — `pi` reports endpoint
+  failures with `exit_code: 0`, which `classify_fault()` scores as success, so
+  the whole retry/refund apparatus is unreachable in production (#11)
+- ⏳ Aggressive retry: fast escalating backoff, a wall-clock **outage budget**
+  (default 4h) in place of a 3-attempt cap, every phase covered, plus an
+  explicit `health: degraded` / `infraWait` status contract — while keeping the
+  fail-fast path for a broken credential (#5, #11)
+- ⏳ `POST /retry` + `ralphctl retry <run-id>`: skip the remaining backoff when
+  the operator knows the endpoint is back
+- ⏳ Reflect phase gets retry *and* reports its own failure instead of silently
+  producing no post-mortem (#5)
+- ⏳ A run recorded `running` with no container is visible to `repair`,
+  `status`, and the hub — not only to `doctor` (#8)
+- ⏳ Opt-in self-recovery: `--auto-resume` + `ralphctl doctor --fix`, with a
+  crash-loop cap (default OFF; see the deferred note below)
+- ⏳ `ralphctl watch` stops closing at a *historical* terminal-state marker —
+  today the documented agent completion-wait reports a resumed run as finished,
+  silently, exit 0 (#13)
+- ⏳ The documented sibling-cleanup idiom can no longer delete the job
+  container (`ralphd.role` labels + `RALPHD_SELF_CONTAINER_ID`) (#7)
+- ⏳ Logs readable from disk when the container is gone, on both hub and CLI —
+  the transcripts are already there (#6)
+
+Phase 2 — operator surfaces:
+
+- ⏳ In-flight iteration-budget top-up via API + `ralphctl budget` (#3)
+- ⏳ Absolute timestamps in the iteration timeline, `logs`, and `status` (#4)
+- ⏳ Unknown cost rendered as unknown instead of `$0.0000` — four runs on the
+  dev host, up to 102M tokens, currently read as free (#10)
+- ⏳ Sortable, newest-first run list in the hub, with `ralphctl runs` parity (#9)
+- ⏳ PRD dialog and clickable task detail in the hub (#1, #2)
+
 ## Later / explicitly deferred
 
+- `auto_resume` defaulting to ON. v0.5 ships opt-in self-recovery with the
+  default OFF so the crash-loop guard and the "never resurrect an
+  operator-killed run" rule can be validated on real runs first; the intent is
+  to flip the default once they have been. The default lives in exactly one
+  place for that reason.
 - PID-namespace isolation of agent iterations from in-container kill signals
   (a supervisor-level SIGKILL/SIGTERM currently reaches the running `pi`
   subprocess directly since it shares the container's PID namespace; giving
