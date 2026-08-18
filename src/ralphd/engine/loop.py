@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -58,6 +59,14 @@ class LoopSupervisor:
         # cleared when the next attempt starts.
         self._operator_interrupted = False
         self._instant_failure_streak = 0
+        # Task 010 (#5): the error signature the current instant-failure
+        # streak is made of, plus the memoised verdict for the attempt
+        # _check_instant_failure() scored last (the infra-retry wrapper
+        # scores every attempt as it happens; the planning/worker call
+        # sites then hand the same resolved result back).
+        self._instant_failure_sig: str | None = None
+        self._instant_scored_result: IterationResult | None = None
+        self._instant_scored_tripped = False
         # Task 001a: iterations refunded because they were retried after an
         # infra-classified fault (see _run_iteration_with_infra_retry) --
         # subtracted from self.iterations_used when checking budget_left()
@@ -312,11 +321,10 @@ class LoopSupervisor:
     # steering loop both exit at once instead of re-charging the same
     # outage against their own budgets. Nothing here touches a task's
     # `validationAttempts` (only an explicit non-error verdict miss in
-    # `_verify_task` does) or `_instant_failure_streak`. The single
-    # exception, deliberately unchanged: an infra fault that is also an
-    # *instant* failure is returned unhandled to the caller, leaving task
-    # 059's broken-environment carve-out (and, for verify, its bounded
-    # error retries) in charge of that shape.
+    # `_verify_task` does). An infra fault that is also an *instant*
+    # failure is retried here too (task 010, #5), with task 059's
+    # broken-environment carve-out keeping the last word on a *run* of
+    # identical instant faults -- see _check_instant_failure().
     INFRA_RETRY_PHASES = ("planning", "worker", "review", "verify", "reflect")
 
     async def run_iteration(self, phase: str, extra: str = "",
@@ -362,11 +370,19 @@ class LoopSupervisor:
         escape hatch for operators who want a hard stop); the episode resets
         on any iteration that reaches the model (_reset_infra_episode).
 
-        An infra fault that is ALSO an *instant* failure (sub-
-        INSTANT_FAILURE_MAX_DURATION_S exit with no traffic) is left
-        entirely to the pre-existing streak-based carve-out
-        (_check_instant_failure) instead -- returning immediately here --
-        so the two mechanisms never race or double-count the same failure.
+        Task 010 (#5): an infra fault that is ALSO an *instant* failure
+        (sub-INSTANT_FAILURE_MAX_DURATION_S with no observable work) is now
+        retried here like any other -- a connection refused by a gateway
+        that is still coming up returns in 0.2s and used to end the run on
+        the spot. The pre-existing broken-environment carve-out keeps the
+        last word on a *run* of them: every such attempt is scored by
+        _check_instant_failure(), and once MAX_CONSECUTIVE_INSTANT_FAILURES
+        attempts have failed instantly, with no traffic and with the *same*
+        error signature, the wrapper stops with that carve-out's diagnosis
+        instead of sitting out the whole outage budget on an environment
+        that is never coming back. An instant failure that DID reach the
+        model (tokens billed) is still handed straight back to the phase's
+        own bounded error retry -- see the comment at that return below.
 
         Task 003 (#11): an operator-initiated abort/interrupt is never an
         infra fault (classify_fault(operator_abort=...) sees
@@ -380,17 +396,32 @@ class LoopSupervisor:
         while True:
             result = await self._run_iteration_once(phase, extra, prompt_name)
             fault = self._classify_result(result)
-            is_instant = (result.duration_s is not None
-                         and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
-                         and not result.no_traffic_timeout)
             if fault != "infra":
                 # The agent reached the model -- a success, or a genuine work
                 # failure it produced itself. Either way the outage (if there
                 # was one) is over: the next one starts from a clean clock.
                 self._reset_infra_episode()
                 return result
-            if is_instant:
+            # Task 010 (#5): decide which mechanism owns an *instant*
+            # failure before retrying anything here.
+            if (result.duration_s is not None
+                    and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
+                    and not result.no_traffic_timeout
+                    and self._instant_failure_signature(result) is None):
+                # An instant failure that DID reach the model (an in-band
+                # provider error with tokens billed -- a 0.3s Bedrock 502
+                # mid-verify) stays with the phase's own bounded error
+                # retry, which records the attempt's outcome and retries it
+                # without consuming a validation attempt. Task 010 only
+                # moves the *zero-work* instant shape (nothing observable
+                # at all: the refused-connection / broken-credential shape)
+                # into this wrapper.
                 return result
+            # Score this attempt against the broken-environment carve-out (a
+            # streak of identical instant zero-work failures). True == the
+            # streak just reached its threshold and _abort_reason now holds
+            # that diagnosis.
+            broken_env = self._check_instant_failure(result, self.iterations_used)
 
             self._infra_refunded += 1
             if self._infra_episode_started_at is None:
@@ -412,14 +443,22 @@ class LoopSupervisor:
             self.run.emit("infra_retry", phase=phase, attempt=attempt,
                           maxAttempts=retry_max, error=error_desc,
                           noTrafficTimeout=result.no_traffic_timeout,
+                          instantFailure=bool(self._instant_failure_streak),
                           backoffS=(None if cap_reached or budget_spent
-                                    else backoff),
+                                    or broken_env else backoff),
                           waitedS=round(waited, 3), budgetS=budget)
             log.warning("iteration %s classified infra fault (attempt %d, %.0fs of "
                        "the %.0fs outage budget waited): %s",
                        phase, attempt, waited, budget, error_desc)
             self.run.update_status(
                 iterationsUsed=self.iterations_used - self._infra_refunded)
+            if broken_env:
+                # _check_instant_failure() has already set _abort_reason to
+                # the broken-environment diagnosis and logged it: the
+                # attempts are still refunded, but this environment is not
+                # coming back on its own, so stop now instead of waiting
+                # out the outage budget.
+                return result
             if cap_reached:
                 # Back-compat: reachable only when a cap was set explicitly.
                 self._abort_reason = (
@@ -448,7 +487,12 @@ class LoopSupervisor:
         """Ends the current infra-outage episode (task 008, #5): the next
         outage gets the full backoff schedule and the full outage budget
         again, so a job hitting a short glitch every hour is never slowly
-        starved of retry budget by the earlier ones."""
+        starved of retry budget by the earlier ones. Task 010 (#5): it also
+        ends any instant-failure streak -- an iteration that reached the
+        model proves the environment works, so the next instant fault
+        starts counting from scratch."""
+        self._instant_failure_streak = 0
+        self._instant_failure_sig = None
         self._infra_episode_attempts = 0
         self._infra_episode_waited_s = 0.0
         self._infra_episode_started_at = None
@@ -990,35 +1034,89 @@ class LoopSupervisor:
     # the whole job's budget in seconds without a single real attempt ever
     # having been made (the live incident behind this task: 11 consecutive
     # ~0.6s nonzero-exit iterations burned all 3 approaches in 7 seconds).
+    #
+    # Task 010 (#5): such a failure is an infra fault too, so it is now
+    # *retried* by _run_iteration_with_infra_retry() first -- what stays
+    # here is the fail-fast half: a run of MAX_CONSECUTIVE_INSTANT_FAILURES
+    # attempts that all fail this way with the same signature stops the job
+    # in seconds instead of waiting out the multi-hour outage budget on an
+    # environment that cannot work (see _instant_failure_signature).
     INSTANT_FAILURE_MAX_DURATION_S = 5.0
     MAX_CONSECUTIVE_INSTANT_FAILURES = 3
 
+    def _instant_failure_signature(self, result: IterationResult) -> str | None:
+        """A stable signature for an *instant, zero-work* failure, or None
+        when `result` isn't that shape at all.
+
+        Task 010 (#5): the signature is what tells a broken environment
+        apart from a transient infra fault now that both are retried.
+        Transient faults vary and take time -- a gateway 502 arrives after
+        a connect, a DNS glitch resolves itself, the error text moves
+        around -- whereas a broken credential (or a missing agent binary)
+        fails identically in 0.6s, every single time. So attempts are only
+        counted towards the fail-fast streak while they keep producing the
+        *same* signature: the exit code plus the error text with digits
+        normalised away (timestamps, ports, request ids).
+
+        An exit-0 attempt counts too when it recorded an in-band error
+        (task 001/005's shape): pi can report a fatal startup/provider
+        error as an assistant error message and still shut down cleanly.
+        """
+        if result.interrupted or result.timed_out or result.no_traffic_timeout:
+            return None  # not instant / not this shape
+        # "No observable work" means no assistant text and no *tokens*: pi
+        # zero-fills a usage block on every message_end, so an in-band
+        # error's usage dict is non-empty while nothing was ever billed.
+        usage = result.usage or {}
+        tokens = sum(int(usage.get(k) or 0) for k in
+                     ("input", "output", "cacheRead", "cacheWrite", "totalTokens"))
+        if result.final_text or tokens:
+            return None  # observable work: the agent reached the model
+        if result.duration_s is None or \
+                result.duration_s >= self.INSTANT_FAILURE_MAX_DURATION_S:
+            return None
+        error = (result.error_message or "").strip()
+        if result.exit_code in (0, None) and not error:
+            return None  # not a failure at all
+        return f"exit={result.exit_code}|{re.sub(r'[0-9]+', 'N', error.lower())[:200]}"
+
     def _check_instant_failure(self, result: IterationResult, n: int) -> bool:
         """Update the running consecutive-instant-failure streak for
-        `result` (any phase: planning or worker). Returns True once
+        `result` (any phase). Returns True once
         MAX_CONSECUTIVE_INSTANT_FAILURES has just been reached, in which
         case self._abort_reason has been set with a clear diagnostic --
         budget_left() is now False and every caller's existing "ran out of
         budget" exit path takes over from here, so the job fails fast with
         state=aborted (not state=failed via the no-progress path) and a
-        reason naming the likely cause. A non-instant-failure result resets
-        the streak to 0 (self._instant_failure_streak is also readable by
-        callers that need to know whether *this* result was an instant
-        failure below the abort threshold, to exclude it from their own
-        progress bookkeeping without aborting yet).
+        reason naming the likely cause. A result that isn't an instant
+        zero-work failure resets the streak to 0, and so does one whose
+        error signature differs from the streak's
+        (_instant_failure_signature); self._instant_failure_streak is also
+        readable by callers that need to know whether *this* result was an
+        instant failure below the abort threshold, to exclude it from their
+        own progress bookkeeping without aborting yet.
+
+        Task 010 (#5): the infra-retry wrapper scores every instant attempt
+        through here as it happens (instant infra faults are retried now),
+        then hands the resolved result back to its caller -- which scores
+        it again at the planning/worker call sites. The verdict is
+        therefore memoised per result object: scoring one attempt twice
+        would inflate the streak and duplicate its log line.
         """
-        is_instant = (
-            result.exit_code not in (0, None)
-            and not result.interrupted
-            and not result.timed_out
-            and not result.final_text
-            and not result.usage
-            and result.duration_s is not None
-            and result.duration_s < self.INSTANT_FAILURE_MAX_DURATION_S
-        )
-        if not is_instant:
+        if result is self._instant_scored_result:
+            return self._instant_scored_tripped
+        self._instant_scored_result = result
+        self._instant_scored_tripped = False
+        signature = self._instant_failure_signature(result)
+        if signature is None:
             self._instant_failure_streak = 0
+            self._instant_failure_sig = None
             return False
+        if signature != self._instant_failure_sig:
+            # A *different* instant fault: two unrelated transient causes
+            # must not add up to a broken-environment verdict.
+            self._instant_failure_streak = 0
+            self._instant_failure_sig = signature
         self._instant_failure_streak += 1
         self.run.emit(
             "log", level="error",
@@ -1037,6 +1135,7 @@ class LoopSupervisor:
                 "through approaches via the no-progress escalation guard")
         self.run.emit("log", level="error", message=diag)
         self._abort_reason = diag
+        self._instant_scored_tripped = True
         return True
 
     @staticmethod
