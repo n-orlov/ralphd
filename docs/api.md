@@ -48,6 +48,8 @@ The one-call summary. Response:
   },
   "tasks": {"total": 9, "completed": 4, "inProgress": 1,
             "pending": 3, "validationFailed": 1, "failed": 0},
+  "tasksStale": false,             // see "Stale task reads" below
+  "tasksSource": "file",           // absent|file|last-good|unreadable
   "steering": {"pending": 0, "consumed": 2},
   "usage": {
     "input": 812345, "output": 90123, "totalTokens": 902468, "costUSD": 14.20,
@@ -177,7 +179,31 @@ A failed reflection **never** changes the run's `state`, `verdict` or
 `reflect_done` event.
 
 ### `GET /tasks`
-Full `tasks.json`.
+Full `tasks.json`, plus the same `tasksStale`/`tasksSource` pair `GET /status`
+carries (appended after the file's own keys, so a plan key of either name
+cannot forge the flag).
+
+#### Stale task reads (`tasksStale`/`tasksSource`)
+
+`tasks.json` is written by the *agent*, not the engine, so a request can land
+inside a rewrite. Both endpoints read it through the one hardened reader
+(`ralphd.engine.state.read_tasks_doc`, see docs/architecture.md §3): a
+mid-write file yields the **last payload that did parse**, so the `/tasks`
+list and the `/status` `tasks` counts never collapse to empty/`total: 0` for a
+file that exists and previously parsed. These two fields say which happened:
+
+| `tasksSource` | `tasksStale` | meaning |
+|---|---|---|
+| `absent` | `false` | no `tasks.json` yet — the empty plan is the truth |
+| `file` | `false` | parsed off disk (an empty `tasks` list here is also the truth) |
+| `last-good` | `true` | unparseable right now; the previous payload is being served |
+| `unreadable` | `true` | unparseable and no last-good exists — `total: 0` here is ignorance, not a plan with no tasks, and renderers must label it rather than print `0` |
+
+`tasksStale` is always present (`false` on the happy path), so its absence only
+ever means "written by a pre-0.6 engine", never "fresh". The counts stay pure
+counts — the flag is deliberately a sibling of `tasks`, not a key inside it, so
+summarisers that iterate the counts (`ralphctl status`) cannot mistake it for a
+task status.
 
 ### `GET /prd`
 `text/markdown` — the PRD in effect (composite PRD when approach ≥ 2).

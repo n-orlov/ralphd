@@ -36,7 +36,7 @@ from .skills import (
     place_skills,
     tar_dir,
 )
-from .state import RunDir, prd_path, task_counts
+from .state import RunDir, prd_path
 
 
 def problem(status: int, title: str, detail: str = "") -> HTTPException:
@@ -126,9 +126,14 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # "no reflect iteration has finished" (reflect off, or not there yet),
         # never "an older engine wrote this run dir".
         s.setdefault("reflect", None)
-        tasks = run.read_tasks().get("tasks", [])
+        tasks_read = run.read_tasks_result()
         # Task 023 (#8): shared with the CLI's on-disk fallback (state.py).
-        s["tasks"] = task_counts(tasks)
+        # Task 003 (#15): counts come from the hardened reader, so a request
+        # that lands inside the agent's rewrite of tasks.json reports the
+        # last-good counts flagged stale instead of collapsing to total 0 --
+        # and `tasksStale`/`tasksSource` say which happened.
+        s["tasks"] = tasks_read.counts
+        s.update(tasks_read.contract)
         pending = len(run.pending_steering())
         consumed = len(list(run.steering_dir.glob("[0-9][0-9][0-9]-*.md"))) - pending
         s["steering"] = {"pending": pending, "consumed": consumed}
@@ -136,7 +141,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
 
     @app.get("/tasks")
     async def tasks():
-        return run.read_tasks()
+        # Task 003 (#15): the payload is tasks.json verbatim plus the read's
+        # provenance (`tasksStale`/`tasksSource`, appended last so a plan key
+        # of the same name can never claim freshness). A mid-write file yields
+        # the last-good plan flagged stale, never an empty task list.
+        res = run.read_tasks_result()
+        return {**res.doc, **res.contract}
 
     @app.get("/prd")
     async def prd(original: bool = False):
