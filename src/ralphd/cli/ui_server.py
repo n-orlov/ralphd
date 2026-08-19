@@ -39,10 +39,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from ..engine.state import (
     NONTERMINAL_STATES,
+    TASKS_STALE_LABEL,
     format_cost,
     format_local_time,
     prd_path,
     read_tasks_doc,
+    tasks_read_notice,
 )
 from ..log_merge import NO_TRANSCRIPT, merged_lines
 from .log_render import new_render_state, render_to_lines
@@ -352,6 +354,32 @@ def _with_cost_display(doc: dict) -> dict:
     return {**doc, "usage": out_usage}
 
 
+def _with_tasks_read_label(tasks: dict) -> dict:
+    """Task 005 (#15): render the read's provenance into the two display
+    strings the browser shows -- `tasksLabel` (the short badge, e.g. `stale`)
+    and `tasksNotice` (the full sentence) -- server-side, from the one home
+    for that wording (`engine.state.tasks_read_notice` / `TASKS_STALE_LABEL`).
+
+    Same discipline as `usage.costDisplay` and `startedAtLocal`: `app.js`
+    displays strings the server formatted instead of re-spelling engine
+    wording in JS, which is how a second, drifting vocabulary gets born.
+
+    Derived strictly FROM the `tasksStale`/`tasksSource` flags already in the
+    payload (whether it came off disk or verbatim from a live `GET /tasks`),
+    so nothing is invented for a pre-v0.6 engine that sends no flags -- it
+    gets no label, and the table renders exactly as it does today. Both keys
+    are also *removed* when the read is not stale, so a task doc that carries
+    forged `tasksNotice`/`tasksLabel` keys of its own cannot make a fresh
+    plan look stale (the same reason task 003 appends the contract last).
+    """
+    notice = tasks_read_notice(tasks.get("tasksSource"), bool(tasks.get("tasksStale")))
+    out = {k: v for k, v in tasks.items() if k not in ("tasksNotice", "tasksLabel")}
+    if notice:
+        out["tasksNotice"] = notice
+        out["tasksLabel"] = TASKS_STALE_LABEL
+    return out
+
+
 def run_detail(reg: Path, run_id: str) -> dict | None:
     """Run detail view (PRD req 21): task table + iteration timeline data,
     live where possible, falling back to the on-disk snapshot for a dead
@@ -385,6 +413,7 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     ok_t, _, live_tasks = _proxy_json(reg, run_id, "GET", "/tasks")
     if ok_t and isinstance(live_tasks, dict):
         tasks = live_tasks
+    tasks = _with_tasks_read_label(tasks)
 
     iterations = []
     itroot = run_dir / "iterations"

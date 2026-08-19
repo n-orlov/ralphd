@@ -991,3 +991,100 @@ def test_run_detail_opens_a_task_in_a_dialog(tmp_path, pw):
         assert int(pw.eval_js("document.querySelectorAll('dialog.text-dialog').length")) == 1
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------
+# task 005 (#15): a stale task read is labelled, and the table never blinks
+# --------------------------------------------------------------------------
+
+STALE_TASKS_PLAN = {
+    "version": 1,
+    "goal": "ship it",
+    "tasks": [
+        {"id": "001", "title": "first task", "status": "completed"},
+        {"id": "002", "title": "second task", "status": "in-progress"},
+        {"id": "003", "title": "third task", "status": "pending"},
+    ],
+}
+# A real mid-write snapshot: pi has truncated tasks.json and not yet finished
+# writing the new plan (same fixture text as tests/test_tasks_stale_cli.py).
+TRUNCATED_TASKS = '{"version": 1, "goal": "ship it", "tasks": [{"id": "001", "sta'
+
+_STALE_ROWS = "document.querySelectorAll('#task-box tbody tr').length"
+_STALE_LABEL_COUNT = "document.querySelectorAll('#tasks-stale').length"
+_STALE_LABEL_TEXT = (
+    "(document.getElementById('tasks-stale') || {}).textContent || '(none)'")
+_STALE_LABEL_SOURCE = (
+    "(document.getElementById('tasks-stale') || {dataset: {}})"
+    ".dataset.tasksSource || '(none)'")
+
+
+def test_run_detail_labels_a_stale_task_read_and_never_blinks_empty(tmp_path, pw):
+    """Task 005 (#15): the browser half of the hardened task read.
+
+    `tasks.json` is written by *pi*, non-atomically, while the hub polls every
+    4 s -- so the pre-#15 run-detail view rendered `(no tasks)` for a whole
+    cycle whenever a poll landed inside a rewrite, and (worse) said nothing
+    about it. Tasks 002-004 made the reader serve the last plan that parsed,
+    flagged `tasksStale`/`tasksSource`; this asserts the browser both KEEPS
+    showing that plan and LABELS it, so an operator is never shown stale rows
+    as if they were current, and never shown an empty plan that isn't one.
+
+    Drives the real failure mode: an agent-style truncate+rewrite loop across
+    several poll cycles, then a file left truncated so a poll is guaranteed to
+    land on it, then a healthy rewrite which must clear the label again.
+    """
+    from ralphd.engine.state import TASKS_STALE_LABEL, TASKS_STALE_NOTICE
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-stale-tasks", state="running", verdict=None)
+    tasks_path = run_dir / "tasks.json"
+    tasks_path.write_text(json.dumps(STALE_TASKS_PLAN))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-stale-tasks")
+        _wait_for(pw, "document.body.innerText", "third task")
+        assert int(pw.eval_js(_STALE_ROWS)) == 3
+        # a healthy read is not labelled: the badge must mean something.
+        assert int(pw.eval_js(_STALE_LABEL_COUNT)) == 0
+
+        # -- phase 1: the rewrite loop, sampled far faster than the poll ---
+        row_counts = set()
+        deadline = time.time() + 10
+        flip = 0
+        while time.time() < deadline:
+            tasks_path.write_text(
+                TRUNCATED_TASKS if flip % 2 else json.dumps(STALE_TASKS_PLAN))
+            flip += 1
+            row_counts.add(int(pw.eval_js(_STALE_ROWS)))
+            time.sleep(0.25)
+        assert row_counts == {3}, row_counts
+
+        # -- phase 2: left truncated, so staleness is certain, not lucky ---
+        tasks_path.write_text(TRUNCATED_TASKS)
+        text = _wait_for(pw, _STALE_LABEL_TEXT, TASKS_STALE_LABEL, timeout=20)
+        assert TASKS_STALE_NOTICE in text, text
+        assert "last-good" in pw.eval_js(_STALE_LABEL_SOURCE)
+        assert int(pw.eval_js("document.querySelectorAll('#tasks-stale .pill-stale').length")) == 1
+        # the point of the label: the rows are still there, still all three.
+        assert int(pw.eval_js(_STALE_ROWS)) == 3
+        # text nodes only, like every other payload the hub renders.
+        assert int(pw.eval_js(
+            "document.querySelectorAll('#tasks-stale script, #tasks-stale b').length")) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "15-stale-tasks-label.png")
+
+        # -- phase 3: a finished write clears the label -------------------
+        tasks_path.write_text(json.dumps(STALE_TASKS_PLAN))
+        cleared = False
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            assert int(pw.eval_js(_STALE_ROWS)) == 3
+            if int(pw.eval_js(_STALE_LABEL_COUNT)) == 0:
+                cleared = True
+                break
+            time.sleep(0.3)
+        assert cleared, "stale label never cleared after tasks.json parsed again"
+    finally:
+        server.stop()

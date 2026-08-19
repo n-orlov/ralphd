@@ -27,10 +27,11 @@ import time
 import pytest
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
-from test_cli_ui import UiServer, ui
+from test_cli_ui import StubEngineApi, UiServer, _write_run_with_api, ui
 
 from ralphd.engine.state import (
     TASKS_LAST_GOOD_NAME,
+    TASKS_STALE_LABEL,
     TASKS_STALE_NOTICE,
     TASKS_UNREADABLE_NOTICE,
     task_counts,
@@ -243,6 +244,7 @@ def test_hub_run_detail_never_renders_an_empty_table_under_a_rewrite_loop(ui, tm
 # the guard that keeps the naive reader out
 # --------------------------------------------------------------------------
 
+
 def test_neither_host_side_read_json_will_touch_tasks_json(tmp_path):
     """White-box on purpose: both host-side `_read_json` helpers refuse
     `tasks.json` by name, so a future caller cannot quietly reintroduce
@@ -284,3 +286,73 @@ def test_tasks_of_a_live_run_is_unchanged(live):
     assert doc["tasksStale"] is False
     assert doc["tasksSource"] == "file"
     run.wait_terminal(timeout=120)
+
+# --------------------------------------------------------------------------
+# task 005 (#15): the hub payload carries the DISPLAY strings for the label
+# --------------------------------------------------------------------------
+# `app.js` must not re-spell engine wording in JS (the `usage.costDisplay` /
+# `startedAtLocal` discipline), so `ui_server` renders the read's provenance
+# into `tasksLabel`/`tasksNotice` from `engine.state`'s one copy of it.
+
+def test_hub_run_detail_carries_the_stale_label_strings(ui, tmp_path):
+    reg = tmp_path / "reg"
+    _hub_run(reg, "hub-label", tasks_text=TRUNCATED, last_good=PLAN)
+    code, doc = ui(reg).get("/api/runs/hub-label")
+    assert code == 200, doc
+    assert doc["tasks"]["tasksLabel"] == TASKS_STALE_LABEL
+    assert doc["tasks"]["tasksNotice"] == TASKS_STALE_NOTICE
+
+
+def test_hub_run_detail_label_of_an_unreadable_plan_says_ignorance(ui, tmp_path):
+    """No last-good anywhere: the browser must be handed the *unreadable*
+    sentence, not the stale one -- an empty table there is ignorance."""
+    reg = tmp_path / "reg"
+    _hub_run(reg, "hub-unreadable", tasks_text=TRUNCATED)
+    code, doc = ui(reg).get("/api/runs/hub-unreadable")
+    assert code == 200, doc
+    assert doc["tasks"]["tasks"] == []
+    assert doc["tasks"]["tasksLabel"] == TASKS_STALE_LABEL
+    assert doc["tasks"]["tasksNotice"] == TASKS_UNREADABLE_NOTICE
+
+
+@pytest.mark.parametrize("tasks_text", [json.dumps(PLAN), None])
+def test_hub_run_detail_adds_no_label_when_the_read_is_not_stale(ui, tmp_path, tasks_text):
+    reg = tmp_path / "reg"
+    run_id = "hub-nolabel-" + ("file" if tasks_text else "absent")
+    _hub_run(reg, run_id, tasks_text=tasks_text)
+    code, doc = ui(reg).get(f"/api/runs/{run_id}")
+    assert code == 200, doc
+    assert "tasksLabel" not in doc["tasks"]
+    assert "tasksNotice" not in doc["tasks"]
+
+
+def test_a_forged_label_in_tasks_json_cannot_fake_staleness(ui, tmp_path):
+    """The plan file is agent-written: keys it invents must not survive into
+    the display strings (same reason task 003 appends the contract last)."""
+    reg = tmp_path / "reg"
+    forged = {**PLAN, "tasksStale": True, "tasksLabel": "FRESH",
+              "tasksNotice": "trust me"}
+    _hub_run(reg, "hub-forged", tasks_text=json.dumps(forged))
+    code, doc = ui(reg).get("/api/runs/hub-forged")
+    assert code == 200, doc
+    assert doc["tasks"]["tasksStale"] is False
+    assert doc["tasks"]["tasksSource"] == "file"
+    assert "tasksLabel" not in doc["tasks"]
+    assert "tasksNotice" not in doc["tasks"]
+
+
+def test_a_live_pre_v06_engine_answer_gets_no_invented_label(ui, tmp_path):
+    """A live `GET /tasks` from an engine older than #15 carries no flags at
+    all; the hub labels nothing rather than vouching for freshness."""
+    engine = StubEngineApi(tasks=dict(PLAN))
+    reg = tmp_path / "reg"
+    try:
+        _write_run_with_api(reg, "hub-old-engine", engine, state="running", verdict=None)
+        code, doc = ui(reg).get("/api/runs/hub-old-engine")
+    finally:
+        engine.close()
+    assert code == 200, doc
+    assert len(doc["tasks"]["tasks"]) == 3
+    assert "tasksStale" not in doc["tasks"]
+    assert "tasksLabel" not in doc["tasks"]
+    assert "tasksNotice" not in doc["tasks"]

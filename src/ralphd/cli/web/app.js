@@ -693,9 +693,35 @@ function statCard(label, value) {
 
 function renderTasks(el, tasks) {
   el.innerHTML = "";
-  const list = (tasks && tasks.tasks) || [];
+  const doc = tasks || {};
+  const list = doc.tasks || [];
+  // Task 005 (#15): a task list served from the last-good cache says so.
+  // `tasksStale` (with `tasksLabel`/`tasksNotice`, the strings `ui_server`
+  // rendered from the engine's own wording -- see `_with_tasks_read_label`)
+  // means "tasks.json would not parse on this read; this is the last plan
+  // that did". Without the label the table below would silently claim to be
+  // the current plan, which is the whole defect issue #15 is about; with it,
+  // an operator watching a poll that landed inside an agent's rewrite sees
+  // stale-but-true data instead of a table that blinks to empty.
+  // Text nodes only (`h` + pill), like every other payload the hub renders.
+  if (doc.tasksStale === true) {
+    el.appendChild(h("p", {
+      id: "tasks-stale",
+      class: "muted tasks-stale",
+      "data-tasks-source": String(doc.tasksSource || ""),
+    }, [
+      pill(doc.tasksLabel || "stale"),
+      " ",
+      String(doc.tasksNotice || ""),
+    ]));
+  }
   if (list.length === 0) {
-    el.appendChild(h("p", { class: "muted" }, ["(no tasks)"]));
+    // An empty list under a stale read is ignorance, not an empty plan
+    // (`tasksSource: "unreadable"`), so the notice above stands alone
+    // rather than being contradicted by a confident "(no tasks)".
+    if (doc.tasksStale !== true) {
+      el.appendChild(h("p", { class: "muted" }, ["(no tasks)"]));
+    }
     return;
   }
   const table = h("table", {}, [h("thead", {}, [h("tr", {}, [
