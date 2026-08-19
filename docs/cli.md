@@ -294,6 +294,16 @@ Human output also renders (task 003):
   (merely exited) and every live or terminal run print none of this, keeping
   their output unchanged.
 
+For an unreachable run the `tasks:` counts are computed **CLI-side** from the
+run dir's `tasks.json` (task 023, issue #8): status.json itself never stores
+them -- `GET /status` synthesises them from the plan -- so without this the
+fallback printed `tasks: (none)` for a dead run with a perfectly readable
+plan, exactly when an operator most wants to know how far it got. The same
+key mapping the engine uses is applied (`total`/`completed`/`inProgress`/
+`pending`/`validationFailed`, shared code in `engine/state.py:task_counts`),
+and `--json` carries the identical numbers under `tasks`. A run dir with no
+`tasks.json`, or an empty plan, still prints `tasks: (none)`.
+
 `--json` output is untouched by any of this: it still carries the full,
 unsummarized `reason`/`tasks`/`usage` detail straight from status.json, plus
 `health` and `infraWait` verbatim (the on-disk fallback for an unreachable
