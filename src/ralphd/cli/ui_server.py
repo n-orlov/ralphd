@@ -36,7 +36,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from ..engine.state import NONTERMINAL_STATES
-from ..log_merge import merged_lines
+from ..log_merge import NO_TRANSCRIPT, merged_lines
 from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
@@ -229,6 +229,13 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     Host-side reads pass no `scrub` -- see `log_merge`'s doc string and
     docs/architecture.md's redaction section for that decision (the bytes
     on disk were already scrubbed at write time by `runner.py`).
+
+    Task 041 (#6): an empty render answers with the single explicit
+    `log_merge.NO_TRANSCRIPT` line rather than `[]`, so the hub's log box
+    says *why* it is empty (a run whose `iterations/` dir has nothing in it
+    yet) instead of just looking broken -- and says it in the same words
+    `ralphctl logs` uses, because the wording lives in `log_merge`, not
+    here and not in app.js.
     """
     ok, raw_text = _proxy_text(reg, run_id, "/logs")
     if not ok:
@@ -236,7 +243,7 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     lines = render_to_lines(raw_text, tty=False, state=new_render_state())
     if tail:
         lines = lines[-tail:]
-    return ok, lines
+    return ok, lines or [NO_TRANSCRIPT]
 
 
 def run_detail(reg: Path, run_id: str) -> dict | None:

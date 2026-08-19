@@ -543,6 +543,21 @@ ralphctl: on-disk snapshot: the run's API is not reachable, showing the transcri
 - A reachable run's behaviour and output are unchanged, and nothing is ever
   written to stderr for it. Pinned by `tests/test_cli_logs_dead_run.py`.
 
+**Empty transcript (task 041).** A run whose `iterations/` dir is empty (it
+just started, or it died before its first iteration was recorded) prints the
+explicit line
+
+```
+(no transcript yet)
+```
+
+and exits `0`, rather than zero bytes of output — which is
+indistinguishable from a broken command. The hub's log tail shows the same
+wording for the same run (one definition, `ralphd.log_merge.NO_TRANSCRIPT`).
+`--raw` is excluded on purpose: it is a machine contract, and an empty
+transcript honestly is zero events, so its stdout stays byte-empty. Pinned
+by `tests/test_no_transcript_message.py`.
+
 ### `ralphctl tasks <run-id>`
 
 Task table (or full `tasks.json` with `--json`).
@@ -1051,8 +1066,11 @@ JSON endpoints served under `/api/`:
   dead run's log is still readable in the hub; only *following* needs a
   live container. `app.js` labels such a tail as `(on-disk snapshot — the
   run's API is not reachable, not following)`, in the same wording style as
-  the detail card's `live: no (on-disk snapshot)` row. `lines` is `[]` only
-  if there is genuinely no transcript on disk either. The static hub bundle's `app.js` just displays these
+  the detail card's `live: no (on-disk snapshot)` row. When there is no
+  transcript at all (an empty `iterations/` dir), `lines` is the single
+  line `(no transcript yet)` — the same wording `ralphctl logs` prints,
+  from the same constant (`ralphd.log_merge.NO_TRANSCRIPT`, task 041) —
+  never `[]`. The static hub bundle's `app.js` just displays these
   lines (one per DOM element, via `textContent`); it does not reimplement
   any event-to-text rendering rules of its own, so it always renders
   identically to `ralphctl logs` (including collapsing a many-delta
