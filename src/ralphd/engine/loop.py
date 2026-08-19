@@ -893,22 +893,60 @@ class LoopSupervisor:
         return result
 
     @staticmethod
-    def _merge_usage(bucket: dict, usage: dict) -> dict:
+    def _has_reported_price(d: dict) -> bool:
+        """True when `d` (an iteration usage dict or a bucket) holds at least
+        one *provider-reported* price. Task 049 records a reported price as a
+        float `costUSD` (`round(x + 0.0, 6)`, so even a free `0.0` stays a
+        float) while the historical nothing-was-billed case adds an int `0` --
+        so the type is exactly the "was a price ever quoted" bit, with no
+        extra bookkeeping key in the published contract."""
+        return isinstance(d.get("costUSD"), float)
+
+    @classmethod
+    def _merge_cost_status(cls, bucket: dict, usage: dict) -> str | None:
+        """Task 050 (#10): summarise how a *bucket* (total/byPhase/byApproach)
+        mixes priced and unpriced iterations, so a total never silently sums a
+        subset and calls it the cost.
+
+        `costStatus` is monotone -- unknown cost can never be un-learned:
+
+        * absent -> every iteration in this bucket was priced (or billed
+          nothing at all): `costUSD` is the whole truth, and a fully priced
+          run's usage is byte-for-byte what it was before this task;
+        * `"partial"` -> the bucket mixes reported prices with billed-but-
+          unpriced tokens, so `costUSD` is a lower bound (the priced subtotal);
+        * `"unknown"` -> tokens were billed and nothing in the bucket ever came
+          back with a price, so there is no meaningful cost figure at all.
+        """
+        prev = bucket.get("costStatus")
+        # `costPriced is False` == this iteration billed tokens the provider
+        # quoted no price for (runner._accumulate_cost); None == no traffic.
+        has_unknown = prev in ("partial", "unknown") or usage.get("costPriced") is False
+        if not has_unknown:
+            return None
+        has_price = (prev == "partial" or cls._has_reported_price(bucket)
+                     or cls._has_reported_price(usage))
+        return "partial" if has_price else "unknown"
+
+    @classmethod
+    def _merge_usage(cls, bucket: dict, usage: dict) -> dict:
         """Add `usage`'s counters into `bucket` (a per-phase/per-approach/
         overall usage dict) in place, returning it. Shared by every
         accumulation site so byPhase/byApproach sums always equal the
         overall total (PRD req 19).
 
-        Non-numeric markers (task 049's `costPriced`) are skipped here: how a
-        *bucket* summarises a mix of priced and unpriced iterations is task
-        050's contract, not plain addition (`False + 0 == 0` would quietly
-        turn the marker into a counter).
+        Non-numeric markers (task 049's `costPriced`) are never *added*
+        (`False + 0 == 0` would quietly turn the marker into a counter);
+        they feed the bucket's own `costStatus` verdict instead (task 050).
         """
+        status = cls._merge_cost_status(bucket, usage)
         for k, v in usage.items():
             if isinstance(v, bool):
                 continue
             bucket[k] = round(bucket.get(k, 0) + v, 6) if isinstance(v, float) \
                 else bucket.get(k, 0) + v
+        if status:
+            bucket["costStatus"] = status
         return bucket
 
     def _accumulate_usage(self, usage: dict, phase: str | None = None,
