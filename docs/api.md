@@ -40,6 +40,7 @@ The one-call summary. Response:
   "infraWaitTotalS": 62.5,
   "health": "ok",                  // "ok" | "degraded"
   "infraWait": null,               // populated only while waiting out an infra outage
+  "reflect": null,                 // absent/null until the reflect phase ends, see below
   "currentIteration": {
     "number": 7, "phase": "worker",
     "model": "anthropic/claude-opus-5",
@@ -112,6 +113,26 @@ recovered yet. Both are also emitted as events (`infra_wait` /
 `ralphctl watch` follows and not only to a client polling `/status` at the
 right moment. Surfaced by `ralphctl status`'s `degraded:` line and the hub
 run-detail card. A wait can be cut short with `POST /retry`.
+
+#### `reflect`
+
+Absent from `status.json` (and `null` in `GET /status`) unless the run was
+started with `reflect: true` and the post-terminal reflect iteration has
+finished. Then:
+
+```json
+"reflect": {"ok": false, "error": "Connection error.",
+            "endedAt": "2026-08-18T09:31:20Z"}
+```
+
+`ok: true` means `artifacts/reflection/report.md` exists; otherwise `error`
+carries the agent's error text (or `the reflect iteration wrote no
+artifacts/reflection/report.md` when it exited cleanly having written
+nothing) and `artifacts/reflection/FAILED.md` names the same error on disk.
+A failed reflection **never** changes the run's `state`, `verdict` or
+`reason` — the job is already over when reflect runs. Surfaced by
+`ralphctl status` and the hub run-detail card, and emitted as a
+`reflect_done` event.
 
 ### `GET /tasks`
 Full `tasks.json`.
@@ -189,6 +210,7 @@ then follows. Event types:
 | `infra_recovered` | an iteration reached the model again: `health: "ok"`, `infraWaitTotalS` — the outage episode is over and `infraWait` is back to `null` |
 | `infra_retry_now` | an operator woke a backoff wait via `POST /retry`: phase, attempt, error, `source: "operator"` |
 | `reflect_infra_delay` | the job ended on an infra-shaped failure, so the post-terminal `reflect` iteration waits before its first attempt instead of firing into the same dead endpoint: `delayS`, `error`, `budgetS` (reflect's own, capped, outage budget). Followed by an ordinary `infra_wait` with `attempt: 0` |
+| `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error` when it failed (same verdict as status.json's `reflect`) |
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
 
 Every event also lands in `events.jsonl` in the run dir with a monotonically
