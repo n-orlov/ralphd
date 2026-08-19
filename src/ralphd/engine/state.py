@@ -110,6 +110,47 @@ def read_json(path: Path, default: Any = None) -> Any:
 NONTERMINAL_STATES = ("starting", "running")
 
 
+# Task 029 (#8): the run-dir marker recording that this run's termination was
+# *operator-initiated* (`ralphctl abort`, POST /abort from the hub or curl,
+# `ralphctl stop`) rather than a container that vanished on its own.
+#
+# Its whole reason to exist is auto-resume: a deliberately stopped run and a
+# crashed one can look identical on disk (`ralphctl stop --force` removes the
+# container, and an abort whose container dies before the engine writes its
+# terminal state leaves `state: running` behind), and resurrecting a run the
+# operator just killed is the worst possible failure mode for self-recovery.
+#
+# A separate small file rather than a status.json field on purpose: both the
+# engine (inside the container) and the host-side CLI have to be able to write
+# it, and status.json is the engine's read-patch-write document -- a host-side
+# patch would race the engine and could be silently clobbered.
+OPERATOR_TERMINATION_FILE = "operator-termination.json"
+
+
+def record_operator_termination(run_root: Path, action: str,
+                                reason: str = "", source: str = "") -> dict:
+    """Write OPERATOR_TERMINATION_FILE into a run dir. `action` is the
+    operator verb ("abort"/"stop"), `source` says who recorded it
+    ("engine"/"cli"). Idempotent: a later record overwrites an earlier one
+    (the most recent operator intent is the one that counts). Missing run
+    dir -> no-op, so callers never have to guard."""
+    doc = {"action": action, "at": utcnow(),
+           "reason": reason or "", "source": source or ""}
+    if not run_root.is_dir():
+        return doc
+    atomic_write_json(run_root / OPERATOR_TERMINATION_FILE, doc)
+    return doc
+
+
+def read_operator_termination(run_root: Path) -> dict | None:
+    """The recorded operator-initiated termination for a run dir, or None.
+    Malformed/absent -> None (never raises: every caller is diagnostic)."""
+    doc = read_json(run_root / OPERATOR_TERMINATION_FILE, None)
+    if not isinstance(doc, dict) or not doc.get("action"):
+        return None
+    return doc
+
+
 # Task 023 (#8): the tasks.json `status` string -> /status `tasks` counts key
 # mapping, in ONE place. Both the engine (GET /status) and the host-side CLI
 # fallback (`ralphctl status` on an unreachable run) count the same tasks.json,

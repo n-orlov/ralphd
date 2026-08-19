@@ -41,6 +41,8 @@ from ..engine.state import (
     elapsed_seconds,
     format_duration,
     parse_utc,
+    read_operator_termination,
+    record_operator_termination,
     task_counts,
     utc_from_epoch,
     utcnow,
@@ -2034,8 +2036,21 @@ def cmd_retry(args):
 
 
 def cmd_abort(args):
-    out(args, api(args.run_id, "POST", "/abort", {"reason": args.reason or ""}),
-        "aborting")
+    result = api(args.run_id, "POST", "/abort", {"reason": args.reason or ""})
+    # Task 029 (#8): the engine records the same marker itself (loop.abort);
+    # doing it host-side too covers the case where the container dies before
+    # it gets that far. Either way `doctor --fix` must never auto-resume a
+    # run the operator deliberately terminated.
+    _record_operator_termination(args.run_id, "abort", args.reason or "")
+    out(args, result, "aborting")
+
+
+def _record_operator_termination(run_id: str, action: str, reason: str) -> None:
+    """Host-side writer for the operator-termination marker (task 029, #8).
+    Thin wrapper over engine/state.py's single implementation so the CLI and
+    the engine can never disagree about the file's name or shape."""
+    record_operator_termination(run_root(run_id), action, reason=reason,
+                               source="cli")
 
 
 def cmd_stop(args):
@@ -2056,6 +2071,13 @@ def cmd_stop(args):
     time.sleep(1)
     sh([DOCKER, "rm", "-f", name])
     _reap_siblings(args.run_id)
+    # After the container is gone, so nothing races the engine's own writes.
+    # `stop` is the sharpest case for task 029: `--force` removes the
+    # container while status.json may still say `running`, which is exactly
+    # the shape of a crashed run -- without this marker `doctor --fix` would
+    # restart it.
+    _record_operator_termination(
+        args.run_id, "stop", "stopped by operator (`ralphctl stop`)")
     out(args, {"stopped": args.run_id}, f"stopped {args.run_id} (run dir kept)")
 
 
@@ -2458,19 +2480,40 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
     spaced by `AUTO_RESUME_BACKOFF_S`, and after `maxAttempts` attempts with
     no progress the run is left alone with a readable give-up reason.
 
+    Task 029 (#8) adds the two refusals that protect the operator: a run
+    whose termination was *operator-initiated* (`abort`/`stop`, recorded in
+    the run dir by `record_operator_termination`) is never resurrected, and
+    the dangling condition is re-checked immediately before each resume so a
+    run that reached a terminal state (or whose container came back) between
+    doctor's registry scan and this moment is left alone. Terminal runs never
+    enter this function in the first place -- `_dangling_run_entry` only ever
+    matches a non-terminal recorded state -- but the scan-to-resume window is
+    real, and "resumed a job that had already succeeded" is unrecoverable.
+
     Returns `{resumed: [...], skipped: [...], failed: [{runId, error}],
     waiting: [{runId, attempts, nextAttemptAt}],
-    gaveUp: [{runId, attempts, reason}]}` -- `skipped` stays exactly "opted
-    out of auto_resume", the guard's two refusals are their own buckets so a
-    cron consumer can tell "not now" from "never again" from "never asked".
+    gaveUp: [{runId, attempts, reason}],
+    operatorTerminated: [{runId, action, at, reason}],
+    recovered: [...]}` -- `skipped` stays exactly "opted out of
+    auto_resume", the guard's two refusals and task 029's two are their own
+    buckets so a cron consumer can tell "not now" from "never again" from
+    "never asked" from "deliberately killed".
     """
     resumed: list[str] = []
     skipped: list[str] = []
     failed: list[dict] = []
     waiting: list[dict] = []
     gave_up: list[dict] = []
+    operator_terminated: list[dict] = []
+    recovered: list[str] = []
     for entry in dangling:
         run_id = entry["runId"]
+        term = read_operator_termination(run_root(run_id))
+        if term is not None:
+            operator_terminated.append(
+                {"runId": run_id, "action": term.get("action"),
+                 "at": term.get("at"), "reason": term.get("reason") or ""})
+            continue
         if not _read_auto_resume_setting(run_id):
             skipped.append(run_id)
             continue
@@ -2486,6 +2529,12 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
         if verdict == "waiting":
             waiting.append({"runId": run_id, "attempts": state["attempts"],
                             "nextAttemptAt": _auto_resume_next_attempt_at(state)})
+            continue
+        if _dangling_run_entry(run_id) is None:
+            # no longer a zombie: it finished on its own, or its container is
+            # back (a slow `resume`, an operator who got there first). THE
+            # condition, re-asked -- never a second implementation of it.
+            recovered.append(run_id)
             continue
         status = _read_json(run_root(run_id) / "status.json", {}) or {}
         used = status.get("iterationsUsed")
@@ -2512,7 +2561,9 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
             continue
         resumed.append(run_id)
     return {"resumed": resumed, "skipped": skipped, "failed": failed,
-            "waiting": waiting, "gaveUp": gave_up}
+            "waiting": waiting, "gaveUp": gave_up,
+            "operatorTerminated": operator_terminated,
+            "recovered": recovered}
 
 
 def cmd_doctor(args):
@@ -2587,6 +2638,18 @@ def cmd_doctor(args):
                     if d["runId"] in auto_resume["skipped"]:
                         report += ("\n      not auto-resumed: auto_resume is "
                                    "off for this run")
+                    # Task 029: the operator killed this one on purpose.
+                    term = next((t for t in auto_resume["operatorTerminated"]
+                                 if t["runId"] == d["runId"]), None)
+                    if term:
+                        report += (f"\n      not auto-resumed: terminated by "
+                                   f"the operator (`{term['action']}` at "
+                                   f"{term['at']}) -- auto-recovery never "
+                                   f"restarts a deliberately stopped run")
+                    if d["runId"] in auto_resume["recovered"]:
+                        report += ("\n      not auto-resumed: no longer "
+                                   "dangling as of this sweep (finished, or "
+                                   "its container is back)")
                     # Task 028: the crash-loop guard's two refusals, said out
                     # loud -- "nothing happened" must never be silent.
                     wait = next((w for w in auto_resume["waiting"]
@@ -2611,6 +2674,8 @@ def cmd_doctor(args):
     if auto_resume is not None:
         report += (f"\n! --fix: auto-resumed {len(auto_resume['resumed'])}, "
                    f"left {len(auto_resume['skipped'])} opted out, "
+                   f"{len(auto_resume['operatorTerminated'])} operator-"
+                   f"terminated, "
                    f"{len(auto_resume['waiting'])} in crash-loop backoff, "
                    f"{len(auto_resume['gaveUp'])} given up on, "
                    f"{len(auto_resume['failed'])} failed")

@@ -304,6 +304,13 @@ def test_abort_via_api(engine_factory):
     assert code == 200
     status = e.wait_state(("aborted",), timeout=30)
     assert status["reason"] == "test abort"
+    # Task 029 (#8): the engine records the operator's intent on disk the
+    # moment the abort arrives, so `doctor --fix` can never auto-resume a run
+    # the operator killed -- even if this container had died before writing
+    # its terminal state.
+    term = json.loads((e.run_dir / "operator-termination.json").read_text())
+    assert term["action"] == "abort" and term["source"] == "engine"
+    assert "test abort" in term["reason"]
     # idle mode: engine still up and queryable after abort
     code, s = e.api("GET", "/status")
     assert code == 200 and s["state"] == "aborted"
