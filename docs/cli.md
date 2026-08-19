@@ -856,6 +856,44 @@ Two dangling-container checks, in both directions — always **non-fatal**
 
   (one line per entry; wrapped here for the page width)
 
+#### `ralphctl doctor --fix` (self-recovery sweep)
+
+`--fix` turns the `danglingRegistryEntries` report into an action: every run
+recorded non-terminal whose container has vanished **and** which is opted in
+to `auto_resume` (`start --auto-resume`, a template's `auto_resume: true`, or
+`ralphctl config set auto_resume true`; default **off**) is resumed through
+exactly the same code path as an operator-typed `ralphctl resume <id>` — so
+the fresh container reproduces the run's original wiring (run-dir/config-dir/
+workspace mounts, the `--llm`/`--env` wiring recorded at start time, the
+`ralphd.run` label) and cannot drift from it. Opted-out runs are still
+**reported** but never touched.
+
+`--json` adds `autoResume: {resumed: [...], skipped: [...], failed:
+[{runId, error}]}` (`null` without `--fix`); the human report annotates each
+dangling entry with `auto-resumed (auto_resume enabled)`, a `not
+auto-resumed: auto_resume is off for this run` note above the usual manual
+remedy line, or `auto-resume FAILED: <error>`.
+A run whose container is still alive is not dangling and is never touched.
+One broken run cannot abort the sweep. `--fix` never changes the exit code:
+it stays the AND of the preflight `checks` above.
+
+The sweep is idempotent and cheap (one registry scan plus one `docker
+inspect` per run), so **the intended deployment is a periodic `ralphctl
+doctor --fix` from cron or a systemd timer** — deliberately *not* a new
+ralphd daemon, which keeps the process model at "one container per job,
+nothing long-lived on the host":
+
+```cron
+* * * * * ralphctl doctor --fix >/dev/null 2>&1
+```
+
+```ini
+# /etc/systemd/system/ralphd-doctor.service  (+ .timer, OnUnitActiveSec=60)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ralphctl doctor --fix
+```
+
 Designed as the first command an AI agent should run.
 
 ### `ralphctl ui [--port N] [--bind ADDR]`

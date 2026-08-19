@@ -2054,9 +2054,9 @@ def _dangling_remedy(run_id: str) -> str:
     One story, **resume-first**: the container died mid-run but the run
     dir (plan, notes, artifacts, iteration transcripts) is intact, so
     continuing the job is the useful default; `repair --set-state
-    aborted` is the way to declare it over instead. Planned opt-in
-    per-run auto-resume (`ralphctl doctor --fix`, see docs/roadmap.md)
-    automates exactly this `resume` step -- named here only, so this
+    aborted` is the way to declare it over instead. Opt-in per-run
+    auto-resume (`ralphctl doctor --fix`, task 027) automates exactly
+    this `resume` step -- named here only, so this
     function stays the single source of the remedy.
     """
     return (f"continue it with `ralphctl resume {run_id}`, or record it as "
@@ -2280,6 +2280,56 @@ def cmd_config(args):
         f"{args.key}: {value}")
 
 
+def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
+    """`doctor --fix`'s self-recovery sweep (task 027, issue #8, PRD req F):
+    resume every dangling run (recorded non-terminal, container gone) that
+    is opted in to `auto_resume`, leave the opted-out ones alone.
+
+    Deliberately *not* a daemon: `doctor --fix` is meant to be run from
+    cron/systemd (see docs/cli.md), which keeps ralphd's process model at
+    "one container per job, nothing long-lived on the host" -- the sweep is
+    idempotent, so running it every minute costs one registry scan plus one
+    `docker inspect` per run.
+
+    The actual restart goes through `cmd_resume` -- the very code path an
+    operator-typed `ralphctl resume` takes -- so an auto-resumed container
+    reproduces the run's original wiring (run-dir/config-dir/workspace
+    mounts, recorded --llm + --env wiring, `ralphd.run` label) by
+    construction and can never drift from it. Its `out()`/`die()` calls are
+    contained here: stdout is swallowed (doctor prints its own report) and
+    SystemExit from a failed `docker run` is turned into a per-run failure
+    entry, so one broken run can't abort the sweep.
+
+    Returns `{resumed: [...], skipped: [...], failed: [{runId, error}]}`.
+    """
+    resumed: list[str] = []
+    skipped: list[str] = []
+    failed: list[dict] = []
+    for entry in dangling:
+        run_id = entry["runId"]
+        if not _read_auto_resume_setting(run_id):
+            skipped.append(run_id)
+            continue
+        rargs = argparse.Namespace(
+            run_id=run_id, iterations=None, image=args.image, port=None,
+            api_bind="127.0.0.1", network=None, allow_docker=False,
+            detach=True, json=False)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                cmd_resume(rargs)
+        except SystemExit as e:
+            if e.code:
+                failed.append({"runId": run_id,
+                               "error": f"resume exited {e.code}"})
+                continue
+        except (OSError, ValueError) as e:
+            failed.append({"runId": run_id, "error": str(e)})
+            continue
+        resumed.append(run_id)
+    return {"resumed": resumed, "skipped": skipped, "failed": failed}
+
+
 def cmd_doctor(args):
     checks = {}
     checks["docker"] = sh([DOCKER, "version", "--format", "{{.Server.Version}}"]) \
@@ -2319,6 +2369,9 @@ def cmd_doctor(args):
             "network namespace, so the API binds --api-bind directly on "
             "the host with no docker port-publish isolation"
         )
+    auto_resume = None
+    if getattr(args, "fix", False):
+        auto_resume = _auto_resume_dangling(args, dangling)
     # strays/dangling registry entries are report-only, never affect the verdict
     ok = all(checks.values())
     report = "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items())
@@ -2339,15 +2392,34 @@ def cmd_doctor(args):
         report += "\n! registry entries recorded running with no matching container:"
         for d in dangling:
             report += f"\n    {d['runId']}  container={d['container']}"
-            # same remedy text `repair` prints for this run (task 025):
-            # one story, never two commands pointing different ways.
-            report += (f"\n      the container died or was removed outside "
-                       f"ralphctl; {_dangling_remedy(d['runId'])}")
+            if auto_resume is not None and d["runId"] in auto_resume["resumed"]:
+                # already restarted by this very sweep -- printing the manual
+                # remedy here would be stale advice
+                report += ("\n      the container died or was removed outside "
+                           "ralphctl; auto-resumed (auto_resume enabled)")
+            else:
+                if auto_resume is not None:
+                    if d["runId"] in auto_resume["skipped"]:
+                        report += ("\n      not auto-resumed: auto_resume is "
+                                   "off for this run")
+                    err = next((f["error"] for f in auto_resume["failed"]
+                                if f["runId"] == d["runId"]), None)
+                    if err:
+                        report += f"\n      auto-resume FAILED: {err}"
+                # same remedy text `repair` prints for this run (task 025):
+                # one story, never two commands pointing different ways.
+                report += (f"\n      the container died or was removed outside "
+                           f"ralphctl; {_dangling_remedy(d['runId'])}")
+    if auto_resume is not None:
+        report += (f"\n! --fix: auto-resumed {len(auto_resume['resumed'])}, "
+                   f"left {len(auto_resume['skipped'])} opted out, "
+                   f"{len(auto_resume['failed'])} failed")
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
                "defaultLlmProfile": default_profile_name,
                "defaultLlmProfileError": default_llm_profile_error,
-               "hostNetworkApiBindNote": host_network_note}, report)
+               "hostNetworkApiBindNote": host_network_note,
+               "autoResume": auto_resume}, report)
     sys.exit(0 if ok else 1)
 
 
@@ -2712,6 +2784,13 @@ def main() -> None:
 
     s = sub.add_parser("doctor", help="preflight checks")
     s.add_argument("--image", default=DEFAULT_IMAGE)
+    s.add_argument("--fix", action="store_true",
+                   help="self-recovery sweep: resume every run recorded "
+                        "non-terminal whose container has vanished and that "
+                        "is opted in to auto_resume (`start --auto-resume` / "
+                        "`config set auto_resume true`). Opted-out runs are "
+                        "reported, never touched. Idempotent -- intended to "
+                        "run from cron/systemd")
     s.set_defaults(func=cmd_doctor)
 
     s = sub.add_parser("config", help="registry-wide defaults "
