@@ -44,6 +44,51 @@ def problem(status: int, title: str, detail: str = "") -> HTTPException:
                          detail={"title": title, "status": status, "detail": detail})
 
 
+class BudgetSpecError(ValueError):
+    """An `iterations` spec that PATCH /config/budget must reject (422)."""
+
+
+def resolve_iterations_spec(spec: object, current: int) -> int:
+    """Resolve `PATCH /config/budget`'s `iterations` spec against the run's
+    current budget (task 045, #3).
+
+    Accepts the same two forms `ralphctl resume --iterations` already takes,
+    so operators only have to learn one syntax:
+
+    * `"+N"` (string) -- relative top-up, N >= 0;
+    * `N` (int, or its string form) -- absolute new budget, N >= 1.
+
+    To *lower* a budget, pass the absolute value: a bare `-5` is read as the
+    absolute budget -5 and rejected as negative, never as a decrement.
+    Raises BudgetSpecError with an operator-readable message.
+    """
+    if isinstance(spec, bool) or spec is None:
+        raise BudgetSpecError("expected an integer or a \"+N\" string")
+    if isinstance(spec, int):
+        value, relative = spec, False
+    elif isinstance(spec, str):
+        text = spec.strip()
+        relative = text.startswith("+")
+        try:
+            value = int(text[1:] if relative else text)
+        except ValueError:
+            raise BudgetSpecError(
+                f"{spec!r} is not an integer or a \"+N\" top-up") from None
+    else:
+        raise BudgetSpecError(
+            f"expected an integer or a \"+N\" string, got {type(spec).__name__}")
+    if relative:
+        if value < 0:
+            raise BudgetSpecError(
+                f"relative top-up must not be negative (got {spec!r}); pass an "
+                "absolute value to lower the budget")
+        return current + value
+    if value < 1:
+        raise BudgetSpecError(
+            f"absolute iteration budget must be a positive integer (got {value})")
+    return value
+
+
 def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
     app = FastAPI(title="ralphd", version=__version__)
 
@@ -286,6 +331,47 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         doc["creds"] = [c["name"] for c in list_creds(CONFIG_DIR)]
         doc["llmEnvKeys"] = sorted(current_env().keys())
         return doc
+
+    # -- iteration budget top-up (PRD req 3 / issue #3) ---------------------
+    @app.patch("/config/budget")
+    async def patch_budget(body: dict | None = None):
+        """Raise (or lower) the iteration budget of a running job without
+        restarting the container: `{"iterations": "+10"}` tops up by 10,
+        `{"iterations": 40}` sets it absolutely. The new value is live at the
+        next iteration boundary (the loop reads cfg.iterations on every turn)
+        and immediately visible in `GET /status` (`iterationsBudget`) and
+        `GET /config` (`budgets.iterations`).
+
+        It is a *live-engine* change: `/config/job.yaml` is a read-only mount,
+        so the engine cannot persist it there -- the new budget lives in this
+        engine process (and in status.json's iterationsBudget); a later
+        `ralphctl resume <run-id> --iterations +N` is what carries a bigger
+        budget into a fresh container.
+        """
+        if finished():
+            raise problem(409, "job finished",
+                         "the iteration budget no longer applies; bump it with "
+                         "`ralphctl resume <run-id> --iterations +N`")
+        spec = (body or {}).get("iterations")
+        if spec is None:
+            raise problem(422, "iterations required",
+                         'expected {"iterations": "+10"} or {"iterations": 40}')
+        try:
+            value = resolve_iterations_spec(spec, cfg.iterations)
+        except BudgetSpecError as exc:
+            raise problem(422, "invalid iterations", str(exc)) from exc
+        used = loop.iterations_used_charged
+        if value < used:
+            raise problem(409, "budget below iterations used",
+                         f"{value} is below the {used} iteration(s) already "
+                         "used; a budget can only be set to the current usage "
+                         "or above")
+        previous = cfg.iterations
+        loop.set_iteration_budget(value)
+        run.emit("budget_changed", field="iterations", previous=previous,
+                 iterations=value, delta=value - previous, iterationsUsed=used,
+                 source="api")
+        return {"iterations": value, "previous": previous, "iterationsUsed": used}
 
     # -- prompts CRUD (PRD req 10) -----------------------------------------
     @app.get("/config/prompts")
