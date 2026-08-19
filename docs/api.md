@@ -71,6 +71,25 @@ any token/cost field `sum(byPhase[*][field]) == sum(byApproach[*][field])
 == usage[field]`. A phase/approach only appears once at least one iteration
 for it has ended.
 
+The cost fields carry the same unknown/partial honesty as an individual
+iteration's (`GET /iterations` below). A bucket — the top-level total *and*
+every `byPhase`/`byApproach` entry — describes how it mixes priced and
+unpriced iterations with an optional `costStatus`:
+
+| shape | meaning |
+|-------|---------|
+| no `costStatus` | every iteration in the bucket was priced by the provider (or billed nothing at all): `costUSD` is the whole cost |
+| `costStatus: "partial"` | the bucket mixes reported prices with billed-but-unpriced tokens: `costUSD` is the **priced subtotal**, i.e. a lower bound |
+| `costStatus: "unknown"` | tokens were billed and nothing in the bucket was ever priced: there is no `costUSD` (except a literal `0` contributed by no-traffic iterations) and no meaningful cost figure |
+
+`costStatus` is monotone: once a bucket contains unpriced traffic it can never
+go back to fully known, and a later priced iteration only upgrades `unknown` to
+`partial`. The `sum(byPhase[*][field]) == usage[field]` invariant still holds
+for every field including `costUSD`, but when a bucket is `partial`/`unknown`
+that sum is a sum of priced subtotals, not of costs — which is exactly why the
+marker exists rather than a silent subset total. Renderers must show
+`partial`/`unknown` cost as unavailable instead of `$0.0000`.
+
 `deadlineAt` is `startedAt + jobTimeoutS` **plus every second this run has
 spent waiting out an infra outage** (`infraWaitTotalS`, the cumulative infra
 backoff wait — see the infra budgets under `GET /config`). Waiting for a
@@ -175,6 +194,9 @@ price. `usage.costPriced` is the marker:
 | no `costUSD`, `costPriced: false` | tokens were billed and **no** price was reported — cost is *unknown*, not $0 |
 | `costUSD` present, `costPriced: false` | mixed: the value is the priced subtotal only, so treat it as partial |
 | `costUSD: 0`, no `costPriced` | nothing was billed at all (e.g. pi's zero-filled `usage` on an in-band error) |
+
+How a run total / `byPhase` / `byApproach` bucket summarises a mix of priced and
+unpriced iterations is the `costStatus` contract under `GET /status` above.
 
 ### `GET /iterations/{n}`
 One iteration's `meta.json`.
