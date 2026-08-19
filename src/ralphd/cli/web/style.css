@@ -103,6 +103,16 @@ h2 {
 .infra-wait { color: var(--warn); font-weight: 600; margin-top: 0.4rem; }
 .infra-wait-budget { font-weight: 400; color: var(--muted); }
 .infra-wait-error { font-weight: 400; white-space: pre-wrap; }
+/* task 017 (#5): countdown + "retry now" button on a degraded card. */
+.infra-retry-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+.infra-countdown { font-weight: 600; }
+.retry-now-status { font-weight: 400; }
 .steering-warning { color: var(--err); font-weight: 600; }
 .infra-retry-note { color: var(--warn); font-weight: 600; }
 .run-reason { color: var(--err); font-weight: 600; white-space: pre-wrap; }

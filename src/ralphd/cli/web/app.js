@@ -261,7 +261,7 @@ function renderSummary(el, detail) {
       "\u23F3 " + String(curIt.note),
     ]));
   }
-  renderInfraWait(el, s);
+  renderInfraWait(el, s, detail.runId, detail.live !== false);
   // Task 004: the engine writes a high-quality `reason` into status.json
   // on terminal failed/aborted states (e.g. the no-progress fail-fast
   // explanation) -- surface it prominently on the run-detail card rather
@@ -294,7 +294,7 @@ function renderSummary(el, detail) {
 // `_format_degraded_lines`): attempt, phase, countdown to the next
 // attempt, episode wait against the outage budget, and the error.
 // textContent only (via `h()`'s text nodes) -- never innerHTML.
-function renderInfraWait(el, s) {
+function renderInfraWait(el, s, runId, live) {
   const wait = (s.infraWait && typeof s.infraWait === "object") ? s.infraWait : null;
   // `infraWait` is populated only while a backoff wait is actually pending;
   // between two attempts it is back to null while `health` stays
@@ -313,8 +313,7 @@ function renderInfraWait(el, s) {
   const box = h("div", { class: "infra-wait" }, [
     h("div", {}, [
       "\u26A0 degraded: infra outage — attempt " + String(wait.attempt ?? "?") +
-      " (phase " + String(wait.phase || "?") + "), next attempt " +
-      countdownTo(wait.nextAttemptAt),
+      " (phase " + String(wait.phase || "?") + ")",
     ]),
     h("div", { class: "infra-wait-budget" }, [
       "waited " + fmtDuration(wait.waitedS) + " of " + fmtDuration(wait.budgetS) +
@@ -324,7 +323,70 @@ function renderInfraWait(el, s) {
   ]);
   const error = String(wait.error == null ? "" : wait.error).trim();
   if (error) box.appendChild(h("div", { class: "infra-wait-error" }, ["error: " + error]));
+  renderRetryNow(box, runId, live, wait);
   el.appendChild(box);
+}
+
+function nextAttemptText(iso) {
+  return "next attempt " + countdownTo(iso);
+}
+
+// Task 017 (#5): a degraded card gets a live-ticking countdown to
+// `nextAttemptAt` plus a "retry now" button that POSTs through the hub's
+// own proxy route (`POST /api/runs/<id>/retry`, ui_server.py) to the run's
+// `POST /retry` — the same thing `ralphctl retry <run-id>` does: wake the
+// pending backoff wait immediately and reset the outage-budget episode
+// clock (docs/api.md).
+//
+// The button is rendered ONLY while a backoff wait is actually pending
+// (i.e. from inside `renderInfraWait`, never on a healthy card) AND only
+// when the run's API is reachable: a dead run's card is a read-only
+// on-disk snapshot, so a button whose proxy can only ever answer 503
+// would be a lie. textContent only (via `h()`'s text nodes).
+function renderRetryNow(box, runId, live, wait) {
+  const row = h("div", { class: "infra-retry-controls" }, []);
+  const countdown = h("span", { class: "infra-countdown" }, [nextAttemptText(wait.nextAttemptAt)]);
+  row.appendChild(countdown);
+  // Tick once a second so the operator watches the wait drain instead of a
+  // number that only moves on the 4s full-page rebuild. The interval stops
+  // itself as soon as its element leaves the DOM -- every `load()` rebuilds
+  // the card, so a per-refresh leaked interval would otherwise pile up.
+  const timer = setInterval(() => {
+    if (!countdown.isConnected) { clearInterval(timer); return; }
+    countdown.textContent = nextAttemptText(wait.nextAttemptAt);
+  }, 1000);
+  if (!live || !runId) {
+    row.appendChild(h("span", { class: "muted" }, [
+      " — read-only on-disk snapshot: the run's API is unreachable, cannot retry now",
+    ]));
+    box.appendChild(row);
+    return;
+  }
+  const statusEl = h("span", { class: "retry-now-status muted" }, []);
+  const button = h("button", { class: "retry-now", type: "button" }, ["retry now"]);
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    statusEl.textContent = " retrying…";
+    try {
+      const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        statusEl.textContent = " retrying now (outage budget clock reset)";
+      } else {
+        statusEl.textContent = " failed: " +
+          String(j.detail || j.title || j.error || resp.status);
+      }
+    } catch (e) {
+      statusEl.textContent = " failed: " + e;
+    }
+    button.disabled = false;
+  });
+  row.appendChild(button);
+  row.appendChild(statusEl);
+  box.appendChild(row);
 }
 
 function renderUsage(el, usage) {

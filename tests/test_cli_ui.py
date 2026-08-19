@@ -14,9 +14,11 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -96,6 +98,85 @@ def _write_dead_run(registry: Path, run_id: str, **status_fields):
               **status_fields}
     (run_dir / "status.json").write_text(json.dumps(status))
     (run_dir / "tasks.json").write_text(json.dumps({"tasks": []}))
+    return run_dir
+
+
+class StubEngineApi:
+    """Minimal stand-in for a run's *live* container API (task 017), so a
+    hub test can exercise the proxy routes without booting a real engine
+    container: answers the GETs the run-detail view issues (`/status`,
+    `/tasks`, `/logs`) plus `POST /retry`, and records every request
+    (method, path, Authorization header) for assertions."""
+
+    def __init__(self, status: dict | None = None, retry_status: int = 200,
+                 retry_body: dict | None = None, tasks: dict | None = None):
+        self.requests: list[tuple[str, str, str | None]] = []
+        self.status_body = status if status is not None else {"state": "running"}
+        self.tasks_body = tasks if tasks is not None else {"tasks": []}
+        self.retry_status = retry_status
+        self.retry_body = retry_body if retry_body is not None else {"retrying": True}
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _reply(self, code: int, obj, content_type="application/json"):
+                payload = (json.dumps(obj) if content_type == "application/json"
+                           else str(obj)).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def _record(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                outer.requests.append(
+                    (self.command, self.path, self.headers.get("Authorization")))
+
+            def do_GET(self):  # BaseHTTPRequestHandler API name
+                self._record()
+                path = self.path.split("?", 1)[0]
+                if path == "/status":
+                    self._reply(200, outer.status_body)
+                elif path == "/tasks":
+                    self._reply(200, outer.tasks_body)
+                elif path == "/logs":
+                    self._reply(200, "", "text/plain")
+                else:
+                    self._reply(404, {"detail": "no such route"})
+
+            def do_POST(self):  # BaseHTTPRequestHandler API name
+                self._record()
+                if self.path.split("?", 1)[0] == "/retry":
+                    self._reply(outer.retry_status, outer.retry_body)
+                else:
+                    self._reply(404, {"detail": "no such route"})
+
+            def log_message(self, *_a):  # silence stderr noise
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+
+def _write_run_with_api(registry: Path, run_id: str, engine: StubEngineApi,
+                        token: str | None = None, **status_fields) -> Path:
+    """A registry run dir whose `host.json` points at `engine`, so the hub
+    treats it as a LIVE run (`live: true`, proxied status/tasks/logs)."""
+    run_dir = _write_dead_run(registry, run_id, **status_fields)
+    (run_dir / "host.json").write_text(json.dumps(
+        {"runId": run_id, "port": engine.port,
+         "apiUrl": f"http://127.0.0.1:{engine.port}"}))
+    if token:
+        (run_dir / ".api-token").write_text(token)
     return run_dir
 
 
@@ -222,6 +303,72 @@ def test_steering_post_unknown_run_404(tmp_path, ui):
     server = ui(registry)
     code, _resp = server.post("/api/runs/nope/steer", {"message": "x"})
     assert code == 404
+
+
+# -- task 017 (#5): POST /api/runs/<id>/retry proxy -------------------------
+
+
+def test_retry_proxy_posts_to_the_runs_retry_and_forwards_the_token(tmp_path, ui):
+    """The hub's "retry now" button (task 017) needs a same-origin route to
+    reach the run's container API, since the page is served by the hub while
+    the engine lives on another port behind a bearer token. Assert the proxy
+    really issues `POST /retry` against the run's recorded `apiUrl`,
+    forwards the run dir's `.api-token`, and hands the engine's body back
+    verbatim."""
+    registry = tmp_path / "registry"
+    engine = StubEngineApi()
+    try:
+        _write_run_with_api(registry, "run-degraded", engine, token="hub-token",
+                            state="running", health="degraded")
+        server = ui(registry)
+        code, body = server.post("/api/runs/run-degraded/retry", {})
+        assert code == 200, (code, body)
+        assert body == {"retrying": True}
+        posts = [(m, p, t) for m, p, t in engine.requests if m == "POST"]
+        assert [(m, p) for m, p, _t in posts] == [("POST", "/retry")], engine.requests
+        assert posts[0][2] == "Bearer hub-token"
+    finally:
+        engine.close()
+
+
+def test_retry_proxy_passes_the_engines_409_refusal_through(tmp_path, ui):
+    """`POST /retry` answers 409 when the run is not sitting in an infra
+    wait (docs/api.md). The hub must pass that code AND its problem detail
+    through rather than flattening every non-200 into a generic failure --
+    otherwise the UI cannot tell "nothing to wake" from a real error."""
+    registry = tmp_path / "registry"
+    engine = StubEngineApi(retry_status=409, retry_body={
+        "title": "not waiting on an infra fault",
+        "detail": "/retry only wakes a run whose /status shows health 'degraded'",
+    })
+    try:
+        _write_run_with_api(registry, "run-not-waiting", engine, state="running")
+        server = ui(registry)
+        code, body = server.post("/api/runs/run-not-waiting/retry", {})
+        assert code == 409, (code, body)
+        assert "not waiting on an infra fault" in json.dumps(body)
+    finally:
+        engine.close()
+
+
+def test_retry_proxy_returns_503_for_an_unreachable_run(tmp_path, ui):
+    """A dead run's card is read-only in the UI (no button rendered at all),
+    but the route itself must still degrade to a clean 503 -- never a hang
+    or a 500 -- if something posts to it anyway."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "gone", state="running")  # no host.json at all
+    server = ui(registry)
+    code, body = server.post("/api/runs/gone/retry", {})
+    assert code == 503, (code, body)
+    assert "unreachable" in body["error"]
+
+
+def test_retry_proxy_unknown_run_404(tmp_path, ui):
+    registry = tmp_path / "registry"
+    server = ui(registry)
+    code, body = server.post("/api/runs/nope/retry", {})
+    assert code == 404
+    assert "not found" in body["error"]
 
 
 def _get_raw(server, path):

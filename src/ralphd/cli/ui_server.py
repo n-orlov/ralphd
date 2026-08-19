@@ -9,7 +9,10 @@ Serves two things:
   - JSON endpoints under `/api/...` reading `<registry>/runs/*` and
     proxying a run's *live* container API when it is reachable, degrading
     gracefully (never raising into a 500, never hanging past a short
-    timeout) when it is not.
+    timeout) when it is not. Control routes are proxies too: `POST
+    /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
+    /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
+    now" button on a degraded run-detail card.
   - The static hub bundle (plain HTML/JS/CSS, no build step) from the
     `web/` directory next to this file (task 034: run list, run detail
     with task table/iteration timeline/live log tail/steering
@@ -284,6 +287,28 @@ class Handler(BaseHTTPRequestHandler):
                          "detail": resp}, code or 503)
                     return
                 self._send_json(resp, code)
+                return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "retry":
+                # Task 017 (#5): the hub's "retry now" button on a degraded
+                # run-detail card. Pure proxy to the run's own `POST /retry`
+                # (docs/api.md), which wakes the pending infra backoff wait
+                # and resets the outage-budget episode clock. The engine's
+                # own status code is passed THROUGH (notably its 409 "not
+                # waiting on an infra fault" refusal, so the UI can say so
+                # rather than claiming a generic failure); only an
+                # unreachable run collapses to 503, matching the read-only
+                # treatment the card already gives a dead run.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                ok, code, resp = _proxy_json(reg, run_id, "POST", "/retry", body=b"")
+                if not ok and not code:
+                    self._send_json(
+                        {"error": "run's API is unreachable — cannot retry now"}, 503)
+                    return
+                self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
+                                code)
                 return
             self._send_json({"error": "no such endpoint"}, 404)
         except Exception as e:
