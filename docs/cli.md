@@ -190,14 +190,38 @@ a missing/invalid docker socket with `--allow-docker`).
 
 ### `ralphctl runs`
 
-List all runs (live and historical) from the registry.
+List all runs (live and historical) from the registry, **newest first**.
 
 ```
-ralphctl runs [--state running|succeeded|failed|aborted] [--limit n]
+ralphctl runs [--state running|succeeded|failed|aborted]
+              [--sort runId|state|verdict|phase|approach|iterationsUsed|startedAt]
+              [--reverse]
 ```
 
-Columns: run ID, state, verdict, phase, iterations used/budget, started, workspace.
-`--json` emits the merged `status.json` array.
+Columns: run ID, state, verdict, phase, approach, iterations used/budget,
+started (absolute local time via the shared formatter, see `status` below).
+`--json` emits the merged `status.json` array — in the **same order** as the
+human table, with the raw ISO `startedAt` and the numeric `iterationsUsed`/
+`iterationsBudget` fields kept alongside the rendered `"7/250"` string.
+
+**Sorting** (task 055, issue #9) is the CLI half of the hub run list's
+click-to-sort (see “Sorting” under `ralphctl ui` below) and uses the *same*
+keys, the same lifecycle orders and the same raw payload values:
+
+- default `--sort startedAt`, i.e. **newest first** — not the run-id
+  alphabetical order the registry directory listing yields;
+- `startedAt`, `iterationsUsed` and `approach` sort biggest/newest first;
+  the text keys (`runId`, `phase`) sort A→Z; `state`/`verdict` sort in
+  lifecycle order (`starting → running → succeeded → failed → aborted`, and
+  no-verdict → `unverified` → `verified`);
+- `--reverse` flips whichever direction the key starts with;
+- rows with a missing value for the key (no `startedAt`/`approach` yet) sort
+  last under an ascending key and first under a descending one, so a
+  just-started run appears at the top of the default view;
+- ties break on run id ascending, so the order is stable;
+- `--sort`/`--reverse` compose with `--state`, which filters first.
+
+An unrecognised `--sort` key is a usage error (exit `2`).
 
 ### `ralphctl status <run-id>`
 
