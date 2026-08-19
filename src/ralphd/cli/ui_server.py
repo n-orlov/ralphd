@@ -36,6 +36,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from ..engine.state import NONTERMINAL_STATES
+from ..log_merge import merged_lines
 from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
@@ -215,17 +216,27 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     never contain `\r`/ANSI control bytes (task 004's piped-output
     contract extends naturally to this server-side non-TTY caller).
 
-    Returns `(live, lines)`; `live=False` (dead/unreachable run) yields an
-    empty list, matching the previous `{"live": false, "text": ""}` shape
-    callers already handled.
+    Returns `(live, lines)`. Task 039 (#6): `live=False` no longer means
+    "no lines" -- an unreachable run (its container died, or it finished
+    long ago) falls back to the ON-DISK merge, `log_merge.merged_lines`,
+    which is the very same merge the engine's `GET /logs` serves from the
+    inside. So the hub can still show a dead run's transcript; only the
+    *follow* part needs the container. Callers/UI must therefore label
+    `live: false` output as an on-disk snapshot (app.js does, in the same
+    wording style as the detail card's `live` row) rather than treating it
+    as "nothing to show".
+
+    Host-side reads pass no `scrub` -- see `log_merge`'s doc string and
+    docs/architecture.md's redaction section for that decision (the bytes
+    on disk were already scrubbed at write time by `runner.py`).
     """
     ok, raw_text = _proxy_text(reg, run_id, "/logs")
     if not ok:
-        return False, []
+        raw_text = "".join(merged_lines(reg / "runs" / run_id))
     lines = render_to_lines(raw_text, tty=False, state=new_render_state())
     if tail:
         lines = lines[-tail:]
-    return True, lines
+    return ok, lines
 
 
 def run_detail(reg: Path, run_id: str) -> dict | None:

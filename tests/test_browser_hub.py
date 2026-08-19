@@ -15,6 +15,7 @@ this job's layout).
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -584,3 +585,50 @@ def test_run_detail_log_tail_collapses_many_delta_thinking_block(tmp_path, pw, l
     finally:
         run.wait_terminal(timeout=60)
         server.stop()
+
+
+def test_dead_run_log_tail_shows_the_on_disk_snapshot_label(tmp_path, pw):
+    """Task 039 (#6): the hub log tail falls back to the shared on-disk
+    merge when a run's API is unreachable, so a dead run's transcript is
+    still readable -- but it MUST be labelled as a snapshot rather than
+    passed off as a live tail (the wording style the detail card's `live`
+    row already uses: "no (on-disk snapshot)"). Asserts the
+    `.lg-snapshot` line plus real transcript lines for a dead fixture, and
+    that a live run gets neither the label nor a lost tail."""
+    registry = tmp_path / "registry"
+    dead = _write_dead_run(registry, "run-dead-logs", state="running", verdict=None)
+    for n, phase, text in ((1, "planning", "browser snapshot planning line"),
+                            (2, "worker", "browser snapshot worker line")):
+        d = dead / "iterations" / f"{n:04d}"
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps(
+            {"number": n, "phase": phase, "model": "stub-model", "approach": 1,
+             "startedAt": f"2026-01-01T00:0{n}:00Z", "exitCode": 0, "error": None,
+             "endedAt": f"2026-01-01T00:0{n}:30Z", "usage": {"totalTokens": 10 * n}}))
+        (d / "output.jsonl").write_text(json.dumps(
+            {"type": "message_end",
+             "message": {"content": [{"type": "text", "text": text}]}}) + "\n")
+
+    live_engine = StubEngineApi(status={"runId": "run-live-logs", "state": "running"})
+    _write_run_with_api(registry, "run-live-logs", live_engine, state="running")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-dead-logs")
+        _wait_for(pw, "document.getElementById('logbox').textContent",
+                  "on-disk snapshot")
+        assert int(pw.eval_js(
+            "document.querySelectorAll('#logbox .lg-snapshot').length")) == 1
+        logbox = pw.eval_js("document.getElementById('logbox').textContent")
+        assert "browser snapshot planning line" in logbox, logbox
+        assert "browser snapshot worker line" in logbox, logbox
+        pw.screenshot(SCREENSHOTS_DIR / "08-dead-run-log-snapshot.png")
+
+        pw.open(f"{server.base}/#/run/run-live-logs")
+        _wait_for(pw, "document.body.innerText", "running")
+        assert int(pw.eval_js(
+            "document.querySelectorAll('#logbox .lg-snapshot').length")) == 0
+    finally:
+        server.stop()
+        live_engine.close()

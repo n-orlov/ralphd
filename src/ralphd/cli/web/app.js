@@ -534,15 +534,22 @@ async function loadLogs(runId) {
   const box = document.getElementById("logbox");
   const { ok, body } = await getJSON(`/api/runs/${encodeURIComponent(runId)}/logs?tail=200`);
   if (!box) return;
-  if (!ok || !body.live) {
-    box.innerHTML = "";
-    box.appendChild(h("span", { class: "muted" }, [
-      body && body.lines && body.lines.length ? "" : "(run's API is not reachable — no live log tail)",
-    ]));
-    if (body && body.lines) renderLogLines(box, body.lines);
-    return;
+  // Task 039 (#6): `live: false` is no longer "nothing to show" -- the
+  // server falls back to the on-disk transcript merge (`log_merge`), the
+  // same merge the container serves from the inside, so a dead or
+  // finished run still has a readable tail. It just isn't following, so
+  // say so in the same wording style the detail card's `live` row uses
+  // ("no (on-disk snapshot)") instead of the old, now-wrong claim that
+  // there is no log to read.
+  const lines = (ok && body && body.lines) ? body.lines : [];
+  renderLogLines(box, lines);
+  if (!ok || !body || body.live !== true) {
+    box.insertBefore(
+      h("div", { class: "lg-line lg-snapshot muted" },
+        ["(on-disk snapshot — the run's API is not reachable, not following)"]),
+      box.firstChild);
+    box.scrollTop = box.scrollHeight;
   }
-  renderLogLines(box, body.lines || []);
 }
 
 // task 014: the server (`ui_server.py`'s `/api/runs/<id>/logs`) already

@@ -343,6 +343,69 @@ def test_ui_log_endpoint_matches_cli_pretty_rendering(tmp_path, live, ui):
     assert ui_thinking == cli_thinking >= 1
 
 
+def _write_iteration(run_dir: Path, n: int, *, phase: str, lines: list[str]) -> None:
+    d = run_dir / "iterations" / f"{n:04d}"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(
+        {"number": n, "phase": phase, "model": "stub-model", "approach": 1,
+         "startedAt": f"2026-01-01T00:0{n}:00Z", "exitCode": 0, "error": None,
+         "endedAt": f"2026-01-01T00:0{n}:30Z", "usage": {"totalTokens": 10 * n}}))
+    (d / "output.jsonl").write_text("".join(line + "\n" for line in lines))
+
+
+def test_log_endpoint_falls_back_to_on_disk_merge_for_a_dead_run(tmp_path, ui):
+    """Task 039 (#6): the hub's log tail used to be live-only -- an
+    unreachable run (container died, or simply finished) answered
+    `{live: false, lines: []}`, so the operator investigating a dead run in
+    the hub saw an empty box even though the transcript was sitting on disk
+    in `iterations/*/output.jsonl`. Now the endpoint falls back to
+    `log_merge.merged_lines` (the SAME merge the engine serves from inside
+    the container, task 038) and only `live` goes false."""
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "gone-with-logs", state="running")
+    _write_iteration(run_dir, 1, phase="planning", lines=[
+        json.dumps({"type": "message_start"}),
+        json.dumps({"type": "message_end", "message": {
+            "content": [{"type": "text", "text": "on-disk planning line"}]}})])
+    _write_iteration(run_dir, 2, phase="worker", lines=[
+        json.dumps({"type": "message_end", "message": {
+            "content": [{"type": "text", "text": "on-disk worker line"}]}})])
+
+    server = ui(registry)
+    code, logs = server.get("/api/runs/gone-with-logs/logs?tail=200")
+    assert code == 200
+    assert logs["live"] is False
+    assert logs["lines"], "a dead run's on-disk transcript must still render"
+    joined = "\n".join(logs["lines"])
+    assert "on-disk planning line" in joined
+    assert "on-disk worker line" in joined
+    # boundary lines are synthesized by the shared merge, not by the API
+    assert "iteration" in joined
+
+
+def test_log_endpoint_on_disk_lines_match_the_shared_merge(tmp_path, ui):
+    """Task 039: the fallback must be the shared module's output, not a
+    second reimplementation -- so the endpoint's lines equal rendering
+    `log_merge.merged_lines` for the same run dir."""
+    from ralphd.cli.log_render import new_render_state, render_to_lines
+    from ralphd.log_merge import merged_lines
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "gone-parity", state="failed")
+    _write_iteration(run_dir, 1, phase="worker", lines=[
+        json.dumps({"type": "message_end", "message": {
+            "content": [{"type": "text", "text": "parity line one"}]}}),
+        json.dumps({"type": "message_end", "message": {
+            "content": [{"type": "text", "text": "parity line two"}]}})])
+
+    server = ui(registry)
+    code, logs = server.get("/api/runs/gone-parity/logs?tail=0")
+    assert code == 200
+    expected = render_to_lines("".join(merged_lines(run_dir)), tty=False,
+                              state=new_render_state())
+    assert logs["lines"] == expected
+
+
 def test_steering_post_proxies_and_creates_steering_file(tmp_path, live, ui):
     run = live(run_id="hubsteer", job={"iterations": 12, "max_approaches": 3,
                                        "on_complete": "idle"},
