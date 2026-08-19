@@ -897,8 +897,16 @@ class LoopSupervisor:
         """Add `usage`'s counters into `bucket` (a per-phase/per-approach/
         overall usage dict) in place, returning it. Shared by every
         accumulation site so byPhase/byApproach sums always equal the
-        overall total (PRD req 19)."""
+        overall total (PRD req 19).
+
+        Non-numeric markers (task 049's `costPriced`) are skipped here: how a
+        *bucket* summarises a mix of priced and unpriced iterations is task
+        050's contract, not plain addition (`False + 0 == 0` would quietly
+        turn the marker into a counter).
+        """
         for k, v in usage.items():
+            if isinstance(v, bool):
+                continue
             bucket[k] = round(bucket.get(k, 0) + v, 6) if isinstance(v, float) \
                 else bucket.get(k, 0) + v
         return bucket
