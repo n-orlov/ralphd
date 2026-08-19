@@ -40,7 +40,7 @@ import io
 import json
 import sys
 
-from ..engine.state import elapsed_seconds, format_duration
+from ..engine.state import elapsed_seconds, format_duration, format_local_time
 
 # Tool-name groupings used by `_fmt_invocation` to pick which argument is
 # "the salient one" for a compact one-liner. These are pi's built-in tool
@@ -108,13 +108,22 @@ def _fmt_invocation(name: str, args) -> str:
 def _render_boundary(ev: dict, tty: bool) -> None:
     n, phase, model, approach = (ev.get("number"), ev.get("phase"),
                                   ev.get("model"), ev.get("approach"))
+    # Task 048 (#4): the boundary lines are the only place a transcript can
+    # be anchored in wall-clock time -- without them a reader scrolling a
+    # merged log knows an iteration "took 4m 12s" but not *when*, which is
+    # exactly what an operator correlating a run against an upstream outage
+    # needs. Rendered through the one shared `format_local_time` formatter
+    # (`engine/state.py`); the raw ISO values stay in the boundary JSON line
+    # itself (`log_merge.boundary_line`) for machine consumers.
     if ev.get("event") == "start":
         print(_ansi(tty, "1;36",
               f"── iteration {n} · phase={phase} · model={model} · "
-              f"approach={approach} ──"))
+              f"approach={approach} · started {format_local_time(ev.get('startedAt'))} ──"))
         return
     usage = ev.get("usage") or {}
     bits = [f"iteration {n} done"]
+    if ev.get("endedAt"):
+        bits.append(f"at {format_local_time(ev.get('endedAt'))}")
     dur = elapsed_seconds(ev.get("startedAt"), ev.get("endedAt"))
     if dur is not None:
         bits.append(f"took {format_duration(dur)}")

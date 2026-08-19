@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from ..engine.state import NONTERMINAL_STATES
+from ..engine.state import NONTERMINAL_STATES, format_local_time
 from ..log_merge import NO_TRANSCRIPT, merged_lines
 from .log_render import new_render_state, render_to_lines
 
@@ -246,6 +246,25 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     return ok, lines or [NO_TRANSCRIPT]
 
 
+# Task 048 (#4): absolute timestamps are formatted HERE, server-side, by the
+# one shared formatter (`engine/state.format_local_time`) instead of being
+# re-implemented in `web/app.js` -- the hub then renders the string as-is
+# (textContent). The raw ISO fields are left completely untouched alongside
+# the added `*Local` ones, so machine consumers and any client-side sorting
+# (task 054) still have the exact wire values.
+_LOCAL_TIME_FIELDS = ("startedAt", "endedAt", "updatedAt")
+
+
+def _with_local_times(doc: dict) -> dict:
+    if not isinstance(doc, dict):
+        return doc
+    out = dict(doc)
+    for field in _LOCAL_TIME_FIELDS:
+        if doc.get(field):
+            out[field + "Local"] = format_local_time(doc[field])
+    return out
+
+
 def run_detail(reg: Path, run_id: str) -> dict | None:
     """Run detail view (PRD req 21): task table + iteration timeline data,
     live where possible, falling back to the on-disk snapshot for a dead
@@ -269,7 +288,7 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         for d in sorted(itroot.iterdir()):
             meta = _read_json(d / "meta.json")
             if meta is not None:
-                iterations.append(meta)
+                iterations.append(_with_local_times(meta))
 
     return {
         "runId": run_id,
@@ -279,7 +298,7 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # state it means the container died without recording a terminal
         # state, which the card renders with the warning treatment.
         "containerGone": container_gone(status, ok_s),
-        "status": status,
+        "status": _with_local_times(status),
         "tasks": tasks,
         "iterations": iterations,
     }

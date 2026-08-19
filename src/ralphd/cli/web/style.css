@@ -141,6 +141,10 @@ tr.row-warning td { background: #fffaf0; }
 }
 
 .timeline-item .num { color: var(--muted); width: 2.5rem; flex: none; }
+/* task 048 (#4): absolute local-time instant of the iteration start,
+   server-formatted; fixed width so the timeline stays column-aligned. */
+.timeline-item .at { color: var(--muted); width: 13rem; flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .timeline-item .phase { font-weight: 600; width: 6rem; flex: none; }
 .timeline-item .dur { color: var(--muted); width: 4.5rem; flex: none; text-align: right; }
 

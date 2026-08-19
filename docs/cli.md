@@ -213,6 +213,14 @@ time. Both are rendered in a compact human format (`45s`, `3h 12m`, `2d 1h` —
 no millisecond noise) via one shared formatting helper used everywhere
 durations are shown.
 
+Alongside the durations (task 048, issue #4) come the **absolute** instants:
+a `started:` line always, an `ended:` line once the run is terminal, and — for
+a vanished-container run — a `last update:` line instead. All three are local
+wall clock plus the UTC offset (`2026-08-18 11:04:07 +0300`), rendered by the
+same shared formatter (`ralphd.engine.state.format_local_time`) the `logs`
+iteration boundaries and the hub use. `--json` is unaffected: it keeps the raw
+ISO `startedAt`/`endedAt` fields for machine consumers.
+
 `--json` adds machine-usable duration fields alongside the existing timestamp
 fields (nothing existing is removed or renamed): a top-level `durationSeconds`
 (elapsed-so-far or total, numeric seconds, same rule as the human line above),
@@ -495,6 +503,19 @@ nothing to omit or fake an in-progress duration for. `--raw` mode is unchanged
 by this: the underlying `ralphd.iteration` boundary events simply carry the raw
 `startedAt`/(on `end`) `endedAt` fields the pretty renderer derives the duration
 from.
+
+Both boundary lines also carry an **absolute local-time timestamp** (task 048,
+issue #4): the start header ends with `· started 2026-08-18 11:04:07 +0300`
+and the "done" line carries `at <same format>` for `endedAt`, alongside (never
+instead of) the relative `took`. A relative duration alone cannot be lined up
+with anything outside the run -- an upstream outage window, a host reboot,
+another run's log -- which is what these are for. "Local" means *the host's*
+timezone, and the UTC offset is always printed so a pasted timestamp stays
+unambiguous; one shared formatter
+(`ralphd.engine.state.format_local_time`) renders every absolute timestamp
+ralphd shows (this renderer, `ralphctl status`, and the hub -- which gets the
+formatted string from the server rather than reimplementing the format in
+JavaScript). `--raw` still emits only the ISO wire values.
 
 **`-N` means N RENDERED lines in pretty mode, N raw events in `--raw` mode.**
 The engine's `GET /logs?tail=N` (and `GET /iterations/{n}/output?tail=N`)
@@ -1077,7 +1098,14 @@ JSON endpoints served under `/api/`:
   produces an error, just stale-but-valid data. `containerGone` is the same
   condition as in the run list, decided here by the real proxy call rather
   than a port probe. `iterations` is always read from disk
-  (`iterations/*/meta.json`). `404` for an unknown run id.
+  (`iterations/*/meta.json`). `404` for an unknown run id. Task 048 (issue
+  #4) adds `startedAtLocal`/`endedAtLocal`/`updatedAtLocal` strings next to
+  (never replacing) the ISO `startedAt`/`endedAt`/`updatedAt` fields of both
+  `status` and each iteration: absolute local-time renderings produced by the
+  one shared server-side formatter (`ralphd.engine.state.format_local_time`),
+  which is what the iteration timeline and the summary card display. "Local"
+  is the *hub host's* timezone (the offset is included), and clients keep the
+  raw ISO values for sorting and machine use.
 - `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
   fetches the run's FULL raw NDJSON backlog from the live container API
   (`GET /logs`, no `tail` param there), renders it through the exact same
