@@ -116,6 +116,9 @@ h2 {
 .steering-warning { color: var(--err); font-weight: 600; }
 .infra-retry-note { color: var(--warn); font-weight: 600; }
 .run-reason { color: var(--err); font-weight: 600; white-space: pre-wrap; }
+/* task 020 (#5): a failed post-terminal reflection -- a warning, not an
+   error: the job's own terminal state is unaffected. */
+.reflect-failed { color: var(--warn); font-weight: 600; white-space: pre-wrap; }
 
 .timeline-item {
   display: flex;

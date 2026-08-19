@@ -262,6 +262,7 @@ function renderSummary(el, detail) {
     ]));
   }
   renderInfraWait(el, s, detail.runId, detail.live !== false);
+  renderReflect(el, s);
   // Task 004: the engine writes a high-quality `reason` into status.json
   // on terminal failed/aborted states (e.g. the no-progress fail-fast
   // explanation) -- surface it prominently on the run-detail card rather
@@ -283,6 +284,24 @@ function renderSummary(el, detail) {
       "⚠ UNCONSUMED STEERING (run ended without acting on): " + unconsumed.join(", "),
     ]));
   }
+}
+
+// Task 020 (#5): a *failed* post-terminal reflection deliberately leaves the
+// run's state/verdict/reason untouched (the job is already over when reflect
+// runs, see docs/api.md's `reflect`), so without this line the hub renders a
+// run that lost its post-mortem exactly like one that never asked for it.
+// Same wording `ralphctl status` prints (main.py's `_format_reflect_lines`).
+// textContent only (via `h()`'s text nodes) -- never innerHTML.
+function renderReflect(el, s) {
+  const reflect = (s.reflect && typeof s.reflect === "object") ? s.reflect : null;
+  // Nothing for a successful reflection (its report.md is the signal) and
+  // nothing for `reflect: null` (disabled, or the phase has not ended).
+  if (reflect == null || reflect.ok !== false) return;
+  const error = String(reflect.error == null ? "" : reflect.error).trim() ||
+    "reason not recorded";
+  el.appendChild(h("p", { class: "reflect-failed" }, [
+    "reflection: failed (" + error + ")",
+  ]));
 }
 
 // Task 014 (#5): a run sitting out an infra outage must NOT render
