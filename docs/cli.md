@@ -553,11 +553,20 @@ It also checks the **dangling-container condition** (task 021): a run whose
 `status.json` records a non-terminal state (`starting`/`running`) but whose
 container no longer exists at all. This is the same check `doctor` reports
 globally as `danglingRegistryEntries` (one implementation, shared), so the
-two can never disagree; here it is reported as an issue naming the guarded
-fix (`ralphctl repair <run-id> --set-state aborted`, or `ralphctl resume
-<run-id>` to continue the run) plus a `dangling` field (`{runId,
-container}` or `null`) in `--json`. A run whose container merely *exited*
-(it still exists) is not this condition.
+two can never disagree; the *remedy* is shared too (task 025, one string in
+one place), so both commands tell **one story** for the same run:
+
+1. `ralphctl resume <run-id>` — continue it. Resume-first is the default
+   advice because the container died but the run dir (plan, notes,
+   artifacts, transcripts) is intact, so the work is still there to finish.
+   Opt-in per-run auto-resume (`ralphctl doctor --fix`, see
+   docs/roadmap.md) automates exactly this step.
+2. `ralphctl repair <run-id> --set-state aborted` — declare it over,
+   recording a `reason` naming the vanished container.
+
+`repair` prints that remedy as part of the issue text, plus a `dangling`
+field (`{runId, container}` or `null`) in `--json`. A run whose container
+merely *exited* (it still exists) is not this condition.
 
 - Refuses to touch a run whose container is currently running (a live
   engine already owns that run dir's on-disk state) -- exit `5`, nothing
@@ -828,9 +837,20 @@ Two dangling-container checks, in both directions — always **non-fatal**
 - `danglingRegistryEntries` — the reverse: a run dir whose `status.json`
   records a non-terminal state (`starting`/`running`) but whose container no
   longer exists at all (killed or `docker rm`'d outside `ralphctl`).
-  Reported as `{runId, container}`; suggested remedy is `ralphctl resume
-  <run-id>`. The same check (one implementation) backs `repair`'s per-run
-  dangling-container diagnosis.
+  Reported as `{runId, container}`; the human report prints the **shared
+  remedy line** described under `repair` below (task 025) — resume first,
+  `repair --set-state aborted` as the alternative — naming the actual run
+  id, so `doctor` and `repair` can never recommend different next commands
+  for the same run. The same check (one implementation) backs `repair`'s
+  per-run dangling-container diagnosis.
+
+  ```
+  ! registry entries recorded running with no matching container:
+      myrun  container=ralphd-myrun
+        the container died or was removed outside ralphctl; continue it with `ralphctl resume myrun`, or record it as over with `ralphctl repair myrun --set-state aborted` (writes a reason naming the vanished container)
+  ```
+
+  (one line per entry; wrapped here for the page width)
 
 Designed as the first command an AI agent should run.
 
