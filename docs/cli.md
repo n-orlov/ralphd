@@ -369,6 +369,17 @@ way (it never buffered). Redirect to a file/pager as usual if you want to
 capture the live output while still watching it (e.g. `ralphctl logs <id> -f
 | tee out.ndjson`).
 
+A follow ends when the run's **current** state is terminal and the whole
+transcript has been delivered — never on a marker left in the run dir by an
+earlier episode. So `logs -f` on a *resumed* run (whose `events.jsonl` still
+carries the previous episode's `succeeded`/`failed`/`aborted` event, and whose
+`status.json` said so until the resuming engine rewrote it) keeps streaming
+through the old transcript and on into the new iterations, right up to the
+real terminus — the same liveness contract `ralphctl watch` follows. Unlike
+`watch`, the logs path never inspected the event log for that decision, so it
+was never subject to the stale-terminal early close (#13); the behaviour is
+pinned by `tests/test_cli_logs_resumed_run.py`.
+
 Interactive exit from `-f`/`--follow` (task 002):
 - On a TTY, press **`q`** to stop following and return — no error, no
   extra output, exit code `0`. This never touches stdin on a non-TTY
