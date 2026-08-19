@@ -313,6 +313,160 @@ def prd_path(run_root: Path, original: bool = False) -> Path | None:
     return plain if plain.exists() else None
 
 
+# ---------------------------------------------------------------------------
+# Task 002 (#15): the hardened tasks.json read path.
+#
+# `tasks.json` is written by the AGENT (pi, per prompts/worker.md), not by the
+# engine, so no reader can assume it was written atomically: a poll that lands
+# inside the agent's write window sees a truncated file. Every reader used to
+# turn that `JSONDecodeError` into its default ({} / []), which is how "the
+# plan vanished for one poll cycle" reached the hub table, the /status task
+# counts and `ralphctl tasks`. Unknown is not zero -- the same principle #10
+# established for cost.
+#
+# The fix lives in the READ path (one place, every surface), and does three
+# things:
+#   1. bounded re-read on a parse failure (the write window is milliseconds);
+#   2. serve the LAST SUCCESSFULLY PARSED payload, flagged stale, when it
+#      still will not parse;
+#   3. distinguish the three cases that collapsed into one default --
+#      absent (no plan yet: empty really is correct), unparseable (serve
+#      last-good, flag stale), parsed-but-empty (empty really is correct).
+#
+# Why this is NOT a mirror: the last-good payload is kept in memory, and the
+# on-disk cache (`<run-dir>/.tasks-last-good.json`) is written ONLY at the
+# moment a read actually fails -- never on the happy path. So the engine never
+# maintains a second copy of the plan that could drift from, or be mistaken
+# for, `tasks.json` itself; the cache exists purely so the fallback survives an
+# engine restart, and its content is by construction something that was read
+# out of `tasks.json` verbatim.
+TASKS_LAST_GOOD_NAME = ".tasks-last-good.json"
+
+# Bounded re-read budget: 4 attempts, 10ms apart (~30ms worst case). Long
+# enough to outlast an agent's rewrite, short enough that a genuinely corrupt
+# file does not stall a request.
+TASKS_READ_ATTEMPTS = 4
+TASKS_READ_DELAY = 0.01
+
+_tasks_last_good_lock = threading.Lock()
+_tasks_last_good: dict[str, dict] = {}
+
+
+@dataclass(frozen=True)
+class TasksRead:
+    """Three-way result of reading a run dir's `tasks.json`.
+
+    `source` is the distinction callers care about:
+      * `"absent"`    -- the file is not there (no plan yet). `doc` is `{}`,
+                         `stale` is False: an empty task list is the truth.
+      * `"file"`      -- parsed straight off disk (possibly an empty plan;
+                         that too is the truth). `stale` is False.
+      * `"last-good"` -- the file would not parse; `doc` is the last payload
+                         that did (this process's, or the on-disk cache left
+                         by a previous engine). `stale` is True.
+      * `"unreadable"`-- the file would not parse and there is no last-good
+                         payload at all. `doc` is `{}` and `stale` is True:
+                         the emptiness here is ignorance, not a fact, and
+                         surfaces must label it rather than print 0.
+    """
+
+    doc: dict
+    source: str
+    stale: bool
+    error: str | None = None
+
+    @property
+    def tasks(self) -> list:
+        """The task list, always a list (`doc["tasks"]` when it is one)."""
+        tasks = self.doc.get("tasks") if isinstance(self.doc, dict) else None
+        return tasks if isinstance(tasks, list) else []
+
+    @property
+    def present(self) -> bool:
+        """True when a `tasks.json` exists at all (parseable or not) -- i.e.
+        when `total: 0` would be a claim about a plan rather than about the
+        absence of one."""
+        return self.source != "absent"
+
+    @property
+    def counts(self) -> dict:
+        return task_counts(self.tasks)
+
+
+def _remember_tasks(key: str, doc: dict) -> None:
+    with _tasks_last_good_lock:
+        _tasks_last_good[key] = doc
+
+
+def _remembered_tasks(key: str) -> dict | None:
+    with _tasks_last_good_lock:
+        return _tasks_last_good.get(key)
+
+
+def read_tasks_doc(
+    run_root: Path | str,
+    *,
+    attempts: int = TASKS_READ_ATTEMPTS,
+    delay: float = TASKS_READ_DELAY,
+    persist: bool = True,
+) -> TasksRead:
+    """Read `<run_root>/tasks.json` without ever inventing an empty plan.
+
+    See the block comment above for the semantics. `persist=False` makes the
+    read strictly side-effect free (no `.tasks-last-good.json` write) -- what a
+    read-only viewer of somebody else's run dir passes.
+
+    Deliberately a plain function over a path, like `prd_path()`: the
+    host-side CLI and hub server must be able to read a registry run dir
+    WITHOUT constructing a `RunDir` (whose `__post_init__` creates
+    directories).
+    """
+    root = Path(run_root)
+    path = root / "tasks.json"
+    key = os.path.abspath(path)
+    last_error: str | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            return TasksRead(doc={}, source="absent", stale=False)
+        except OSError as exc:  # unreadable for some other reason
+            last_error = f"{type(exc).__name__}: {exc}"
+            break
+        try:
+            doc = json.loads(text)
+        except json.JSONDecodeError as exc:
+            last_error = f"JSONDecodeError: {exc}"
+        else:
+            if isinstance(doc, dict):
+                _remember_tasks(key, doc)
+                return TasksRead(doc=doc, source="file", stale=False)
+            # Valid JSON of the wrong shape is as unusable as a truncated
+            # file; treat it the same rather than pretending it is a plan.
+            last_error = f"tasks.json is a {type(doc).__name__}, not an object"
+        if attempt + 1 < max(1, attempts):
+            time.sleep(delay)
+    good = _remembered_tasks(key)
+    if good is None:
+        good = read_json(root / TASKS_LAST_GOOD_NAME, None)
+        if isinstance(good, dict):
+            _remember_tasks(key, good)
+        else:
+            good = None
+    if good is None:
+        return TasksRead(doc={}, source="unreadable", stale=True, error=last_error)
+    if persist:
+        # Only ever written on the sad path, so the cache can never become a
+        # second source of truth the happy path also maintains.
+        try:
+            cache = root / TASKS_LAST_GOOD_NAME
+            if read_json(cache, None) != good:
+                atomic_write_json(cache, good)
+        except OSError:
+            pass  # read-only/vanished run dir: the in-memory fallback still works
+    return TasksRead(doc=good, source="last-good", stale=True, error=last_error)
+
+
 def task_counts(tasks: list) -> dict:
     """Count a tasks.json task list into the /status `tasks` shape:
     {"total": N, "completed": N, "inProgress": N, "pending": N,
@@ -425,7 +579,15 @@ class RunDir:
         return status
 
     def read_tasks(self) -> dict:
-        return read_json(self.tasks_file, {})
+        """The tasks.json payload, via the hardened read path (task 002/#15):
+        a mid-write file yields the last-good payload, never `{}`."""
+        return self.read_tasks_result().doc
+
+    def read_tasks_result(self) -> TasksRead:
+        """Full three-way `TasksRead` (absent / file / last-good / unreadable)
+        for callers that must render the stale flag -- `GET /tasks`, the
+        `/status` task counts, `ralphctl tasks`, the hub table."""
+        return read_tasks_doc(self.root)
 
     # -- vigilant-mode verification tracking (task 052) -------------------
     # A record, engine-owned and never touched by the agent (unlike

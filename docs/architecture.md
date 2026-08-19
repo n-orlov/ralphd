@@ -411,6 +411,7 @@ container and lets the CLI read state even when the container is dead.
 ├── prd.md              # original PRD
 ├── composite-prd.md    # approach ≥2 only
 ├── tasks.json          # task state (source of truth)
+├── .tasks-last-good.json # fallback copy, written ONLY when a read of tasks.json fails
 ├── notes.md            # agent handoff notes, ≤50 lines enforced by prompt
 ├── review-findings.md  # written by failed reviews
 ├── steering/           # steering inbox: 001-*.md, 002-*.md …
@@ -461,6 +462,51 @@ plain sequential list-order picking. This rule lives entirely in the phase
 prompts (the engine does not parse or enforce it in code) — it is the agent
 reading `tasks.json` and the prompt's instructions, same as task selection
 always has been.
+
+### Reading `tasks.json`: unknown is not zero (task 002, #15)
+
+`tasks.json` is written by the **agent** (`pi`, per `prompts/worker.md`), never
+by the engine, so no reader may assume an atomic write: a poll landing inside
+the agent's rewrite window reads a truncated file. Turning that
+`JSONDecodeError` into the reader's default — what every surface used to do —
+is how a whole plan briefly vanished from the hub table and the `tasks: n/m`
+counters went to zero for one poll cycle. Unknown is not zero; this is the same
+principle `format_cost` applies to money.
+
+One hardened read path therefore serves every surface
+(`state.read_tasks_doc(run_root) -> TasksRead`), used by `RunDir.read_tasks()` /
+`RunDir.read_tasks_result()`, `GET /tasks`, the `/status` task counts, the hub
+server and `ralphctl tasks`:
+
+1. **Bounded re-read.** A parse failure is retried a few times ~10 ms apart
+   (`TASKS_READ_ATTEMPTS`/`TASKS_READ_DELAY`, ~30 ms total) — long enough to
+   outlast the write window, short enough never to stall a request.
+2. **Last-good fallback.** If it still will not parse, the last payload that
+   *did* parse is served with `stale=True`.
+3. **A three-way result**, so the three situations that collapsed into one
+   default stay distinguishable:
+
+| `TasksRead.source` | means | `stale` |
+|---|---|---|
+| `absent` | no `tasks.json` yet — an empty plan is the truth | no |
+| `file` | parsed off disk (an empty `tasks` list here is also the truth) | no |
+| `last-good` | unparseable; serving the previous payload | **yes** |
+| `unreadable` | unparseable and no last-good exists — emptiness is ignorance | **yes** |
+
+`TasksRead.tasks` is always a list, `.counts` is `task_counts()` over it, and
+`.present` says whether a `tasks.json` exists at all (so a surface can tell
+"0 tasks" apart from "no plan").
+
+**Why this is a fallback and not a mirror.** The last-good payload lives in
+process memory; the on-disk copy (`<run-dir>/.tasks-last-good.json`) is written
+**only at the moment a read actually fails**, never on the happy path. So the
+engine never maintains a second copy of the plan that could drift from
+`tasks.json` or be mistaken for it — the cache exists purely so the fallback
+survives an engine restart, and everything in it was read verbatim out of
+`tasks.json`. Read-only viewers of somebody else's run dir pass `persist=False`
+and write nothing at all. The two alternatives were considered and rejected: an
+engine-maintained atomic mirror is a second source of truth, and telling an LLM
+to write atomically is unenforceable (readers would still have to cope).
 
 The **workspace** (`/workspace`) is separate from `/run`: it is the repo checkout the
 agent edits. Two modes, chosen per job:
