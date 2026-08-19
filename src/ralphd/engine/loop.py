@@ -70,6 +70,23 @@ class LoopSupervisor:
         # ends the current iteration, so its flag is armed per attempt and
         # cleared when the next attempt starts.
         self._operator_interrupted = False
+        # Task 018 (#5): *who* recorded the abort reason. `_abort_reason` is
+        # set both by POST /abort and by the engine giving up on its own
+        # (an exhausted outage budget, a broken environment), and
+        # operator_abort_requested cannot tell them apart -- which is fine
+        # inside the job loop (either way it is ending) but not for the
+        # post-terminal reflect iteration, which must still be retryable
+        # after an engine-side give-up and must NOT be retried against an
+        # operator who asked the run to stop. See
+        # _begin_reflect_retry_window().
+        self._operator_abort_recorded = False
+        # Task 018 (#5): the fault verdict (and error text) of the most
+        # recently finished iteration, recorded by _run_iteration_once() --
+        # the one signal that says whether the job just ended *on an
+        # infra-shaped failure*, which is what makes reflect wait before its
+        # first attempt instead of firing into the same dead endpoint.
+        self._last_fault_class: str | None = None
+        self._last_fault_error: str = ""
         self._instant_failure_streak = 0
         # Task 010 (#5): the error signature the current instant-failure
         # streak is made of, plus the memoised verdict for the attempt
@@ -180,6 +197,7 @@ class LoopSupervisor:
 
     def abort(self, reason: str = "") -> None:
         self._abort_reason = reason or "aborted by operator"
+        self._operator_abort_recorded = True
         self._operator_interrupted = True
         self.runner.interrupt()
 
@@ -379,6 +397,13 @@ class LoopSupervisor:
     # failure is retried here too (task 010, #5), with task 059's
     # broken-environment carve-out keeping the last word on a *run* of
     # identical instant faults -- see _check_instant_failure().
+    #
+    # Task 018 (#5): `reflect` is listed here AND actually retried -- the
+    # two pieces of the job's own ending that used to make this wrapper a
+    # no-op for the post-terminal iteration (a spent episode clock and an
+    # engine-recorded abort reason vetoing the infra verdict) are handled in
+    # _begin_reflect_retry_window(), and reflect's episode is budgeted
+    # separately (_outage_budget_for) because the job is already over.
     INFRA_RETRY_PHASES = ("planning", "worker", "review", "verify", "reflect")
 
     async def run_iteration(self, phase: str, extra: str = "",
@@ -450,7 +475,7 @@ class LoopSupervisor:
         restarts the outage-budget clock.
         """
         retry_max = self.cfg.infra_retry_max  # None == no explicit attempt cap
-        budget = self.cfg.infra_outage_budget_s
+        budget = self._outage_budget_for(phase)
         while True:
             result = await self._run_iteration_once(phase, extra, prompt_name)
             fault = self._classify_result(result)
@@ -555,6 +580,24 @@ class LoopSupervisor:
                 # instead of hammering a still-broken endpoint.
                 self._infra_episode_waited_s = 0.0
                 self._infra_episode_started_at = time.monotonic()
+
+    def _outage_budget_for(self, phase: str) -> float:
+        """The wall-clock outage budget one episode of `phase` may spend
+        waiting (task 008, #5).
+
+        Every phase gets cfg.infra_outage_budget_s (4h by default) except
+        `reflect` (task 018, #5): that iteration runs *after* the job already
+        reached its terminal state, so an endpoint that is still down must
+        not hold the container open for hours to retry a post-mortem. It
+        gets REFLECT_OUTAGE_BUDGET_S at most -- long enough to ride out the
+        kind of wobble that killed the job seconds ago, short enough that a
+        genuinely dead endpoint ends the run promptly with the failure
+        recorded instead of silently discarded.
+        """
+        budget = self.cfg.infra_outage_budget_s
+        if phase == "reflect":
+            return min(budget, self.REFLECT_OUTAGE_BUDGET_S)
+        return budget
 
     async def _wait_out_backoff(self, backoff: float) -> tuple[float, bool]:
         """Waits `backoff` seconds unless the operator rings the retry-now
@@ -767,6 +810,11 @@ class LoopSupervisor:
         # refunded without re-deriving the classification from exit codes,
         # error text and token usage by hand.
         fault_class = self._classify_result(result)
+        # Task 018 (#5): remember the last iteration's verdict so a following
+        # reflect iteration can tell "the job ended because the endpoint was
+        # broken seconds ago" from "the job ended for its own reasons".
+        self._last_fault_class = fault_class
+        self._last_fault_error = result.error_message or ""
         meta.update(endedAt=utcnow(), exitCode=result.exit_code,
                     interrupted=result.interrupted, timedOut=result.timed_out,
                     noTrafficTimeout=result.no_traffic_timeout,
@@ -892,6 +940,12 @@ class LoopSupervisor:
             await self._run_reflection()
         return state
 
+    # Task 018 (#5): the post-terminal reflect iteration's own outage budget
+    # cap -- see _outage_budget_for(). The job is over by the time reflect
+    # runs; five minutes is enough to ride out the wobble that just killed it
+    # without keeping a finished run's container alive for hours.
+    REFLECT_OUTAGE_BUDGET_S = 300.0
+
     async def _run_reflection(self) -> None:
         """One extra 'reflect' iteration after the job has already reached a
         terminal state (PRD req 24). Runs unconditionally (not gated by
@@ -900,12 +954,111 @@ class LoopSupervisor:
         the agent to write only under artifacts/reflection/ and touch
         nothing else; the engine's own bookkeeping restores status.json's
         `phase` field to None afterward so a terminal job never appears to
-        still be "in phase reflect" once this returns."""
+        still be "in phase reflect" once this returns.
+
+        Task 018 (#5): reflect really does go through the infra-retry wrapper
+        now (`reflect` has been in INFRA_RETRY_PHASES since task 009, but two
+        pieces of the job's own ending made the wrapper a no-op for it -- see
+        _begin_reflect_retry_window()), and when the job just ended on an
+        infra-shaped failure the first attempt is delayed instead of firing
+        into the same dead endpoint in the same second the breaker tripped
+        (_reflect_pre_attempt_wait). Neither changes the guarantees this
+        method has always had: exactly one reflect phase, strictly after the
+        terminal state, unable to change it.
+        """
         self.run.emit("phase", phase="reflect")
+        window = self._begin_reflect_retry_window()
         try:
+            await self._reflect_pre_attempt_wait()
             await self.run_iteration("reflect")
         finally:
+            self._end_reflect_retry_window(window)
             self.run.update_status(phase=None)
+
+    def _begin_reflect_retry_window(self) -> tuple[str | None, bool]:
+        """Gives the post-terminal reflect iteration a real retry window
+        (task 018, #5). Returns the state _end_reflect_retry_window() restores.
+
+        `reflect` has been listed in INFRA_RETRY_PHASES since task 009, yet
+        incident 2 in the v0.5 PRD still lost its post-mortem: two pieces of
+        the job's *own* ending make the wrapper a no-op for the iteration
+        that follows it.
+
+        - The **episode clock**: a job that died of an infra outage arrives
+          here with the episode's whole outage budget already spent, so the
+          first reflect fault would immediately score "budget exhausted" and
+          never be retried. The outage that killed the job is over as far as
+          reflect is concerned -- it is a new, separately budgeted attempt
+          (_outage_budget_for("reflect")), so the episode starts clean.
+        - The **abort reason**: `operator_abort_requested` is true for *any*
+          recorded abort reason, including the wrapper's own give-up, and
+          classify_fault(operator_abort=True) never returns "infra" (task
+          003's carve-out). So every reflect failure after an engine-side
+          give-up would be scored "work" and handed straight back. An
+          engine-recorded reason is therefore parked for the duration of
+          reflect and restored afterwards, leaving the job's terminal
+          `reason` exactly as _run_job_core() wrote it.
+
+        An *operator*-initiated abort keeps its veto in full: if the operator
+        stopped this run, reflect must not sit in backoff retrying against
+        them -- one attempt, whatever it returns.
+        """
+        self._infra_episode_attempts = 0
+        self._infra_episode_waited_s = 0.0
+        self._infra_episode_started_at = None
+        if self._operator_abort_recorded:
+            return None, False
+        parked, self._abort_reason = self._abort_reason, None
+        return parked, True
+
+    def _end_reflect_retry_window(self, window: tuple[str | None, bool]) -> None:
+        """Restores the abort reason parked by _begin_reflect_retry_window()
+        (task 018, #5), so a reflect iteration can never rewrite the reason
+        the job terminated with -- including when the reflect attempts
+        themselves ran out of their own (short) outage budget."""
+        parked, restore = window
+        if restore:
+            self._abort_reason = parked
+
+    async def _reflect_pre_attempt_wait(self) -> None:
+        """Waits out one backoff step before the *first* reflect attempt when
+        the job just ended on an infra-shaped failure (task 018, #5).
+
+        PRD incident 2: four consecutive "Connection error." iterations
+        failed the last approach and `_run_reflection` then launched into the
+        same dead gateway in the same second, so a 105-iteration run produced
+        no post-mortem at all. Retrying is not enough on its own -- the first
+        attempt is the one most likely to hit the outage that is still in
+        progress, and on a short reflect budget it can consume most of it.
+
+        The wait is the same interruptible mechanism as any other infra wait
+        (POST /retry cuts it short) and is published/accounted the same way,
+        so an operator seeing the container still alive after the terminal
+        state can read why in /status and in the event stream.
+
+        An operator who aborted the run gets no delay at all: they asked for
+        this to stop, and reflect's single attempt (see
+        _begin_reflect_retry_window) should not be held up by a countdown."""
+        if self._last_fault_class != "infra" or self._operator_abort_recorded:
+            return
+        budget = self._outage_budget_for("reflect")
+        schedule = self.cfg.infra_retry_backoff_s or DEFAULT_INFRA_RETRY_BACKOFF_S
+        delay = min(schedule[0], self.cfg.infra_retry_backoff_max_s, budget)
+        if delay <= 0:
+            return
+        error = self._last_fault_error or "no LLM traffic within startup window"
+        self.run.emit("reflect_infra_delay", phase="reflect", delayS=delay,
+                      error=error, budgetS=budget)
+        log.warning("the job ended on an infra fault (%s); waiting %.0fs before "
+                    "the first reflect attempt", error, delay)
+        # attempt 0: the delay happens *before* reflect's first attempt, so it
+        # is not one of the episode's retries (which start numbering at 1).
+        self._begin_infra_wait(phase="reflect", attempt=0, error=error,
+                               waited_s=0.0, backoff_s=delay, budget_s=budget)
+        elapsed, woken = await self._wait_out_backoff(delay)
+        self._infra_episode_waited_s = 0.0 if woken else elapsed
+        self._account_infra_wait(elapsed, "reflect", 0)
+        self._end_infra_wait()
 
     async def _run_job_core(self) -> str:
         """Returns final state: succeeded | failed | aborted."""
