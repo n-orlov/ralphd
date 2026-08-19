@@ -83,6 +83,39 @@ def format_duration(seconds: float | None) -> str:
     return f"{days}d {h}h" if h else f"{days}d"
 
 
+# Absolute-timestamp display format (task 048, #4): local wall clock plus the
+# UTC offset, so a timestamp copied out of the hub or the CLI is unambiguous
+# without the reader having to know which machine's timezone it came from.
+# Deliberately NOT the ISO/`Z` wire format: the stored/published value stays
+# `utcnow()`-shaped everywhere (payloads keep the raw ISO field for sorting
+# and machine consumers), this is purely the human rendering of it.
+LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
+
+
+def format_local_time(ts: str | None) -> str:
+    """Absolute local-time rendering of a `utcnow()`-format timestamp.
+
+    The ONE shared absolute-timestamp formatter (task 048, #4): `ralphctl
+    status`, the `ralphctl logs` iteration boundary lines and the hub's
+    run list / summary card / iteration timeline all render timestamps
+    through this function -- the hub gets the already-formatted string from
+    `ui_server` (alongside the untouched raw ISO field) rather than
+    reimplementing the format in JavaScript, which is why "local" always
+    means *the host running ralphd*, not the browser's timezone.
+
+    Mirrors `format_duration`'s defensive contract: `None`/empty renders
+    `"n/a"`, and an unparseable value degrades to itself rather than
+    raising -- a status line must never be the thing that breaks output.
+    """
+    if not ts:
+        return "n/a"
+    try:
+        epoch = parse_utc(ts)
+    except (ValueError, TypeError):
+        return str(ts)
+    return time.strftime(LOCAL_TIME_FORMAT, time.localtime(epoch))
+
+
 def atomic_write(path: Path, data: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(data)

@@ -250,6 +250,13 @@ function renderSummary(el, detail) {
     durText = "elapsed " + fmtDuration(durationBetween(started, new Date().toISOString()));
   }
   if (durText) rows.push(["duration", durText]);
+  // Task 048 (#4): absolute local-time instants alongside the relative
+  // duration. Formatted server-side by the ONE shared Python formatter
+  // (`engine/state.format_local_time`, delivered as `startedAtLocal` /
+  // `endedAtLocal` by `ui_server.run_detail`) rather than a second
+  // JS implementation, so the hub and `ralphctl status` can never drift.
+  if (s.startedAtLocal) rows.push(["started", String(s.startedAtLocal)]);
+  if (s.endedAtLocal) rows.push(["ended", String(s.endedAtLocal)]);
   const p = h("p", {}, []);
   for (const [k, v] of rows) {
     const line = h("div", {}, [h("b", {}, [k + ": "]), typeof v === "string" ? v : v]);
@@ -521,6 +528,10 @@ function renderTimeline(el, iterations) {
       : (it.startedAt ? "running…" : "");
     const row = h("div", { class: "timeline-item" }, [
       h("span", { class: "num" }, ["#" + (it.number ?? "?")]),
+      // Task 048 (#4): when the iteration ran, not just how long it took --
+      // server-formatted absolute local time (`startedAtLocal`), with the
+      // raw ISO `startedAt` still in the payload for sorting/consumers.
+      h("span", { class: "at" }, [String(it.startedAtLocal || "")]),
       h("span", { class: "phase" }, [String(it.phase || "")]),
       h("span", {}, [String(it.model || "")]),
       it.error ? h("span", { class: "pill pill-failed" }, ["error"]) : null,

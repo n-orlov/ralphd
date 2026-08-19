@@ -632,3 +632,50 @@ def test_dead_run_log_tail_shows_the_on_disk_snapshot_label(tmp_path, pw):
     finally:
         server.stop()
         live_engine.close()
+
+
+def test_timeline_and_summary_show_absolute_local_timestamps(tmp_path, pw):
+    """Task 048 (#4): the iteration timeline anchors every row in wall-clock
+    time, and the summary card shows the absolute start/end instants next to
+    the relative duration. The strings are produced server-side by the one
+    shared Python formatter (`engine/state.format_local_time`, delivered as
+    `startedAtLocal`/`endedAtLocal`), so this asserts the rendered cell text
+    equals exactly what that formatter produces -- while the payload the
+    page fetched still carries the raw ISO values."""
+    from ralphd.engine.state import format_local_time
+
+    registry = tmp_path / "registry"
+    started, ended = "2026-01-01T00:01:00Z", "2026-01-01T00:41:30Z"
+    run_dir = _write_dead_run(registry, "run-timestamps", state="succeeded",
+                              startedAt=started, endedAt=ended)
+    it_start, it_end = "2026-01-01T00:01:00Z", "2026-01-01T00:01:30Z"
+    d = run_dir / "iterations" / "0001"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(
+        {"number": 1, "phase": "planning", "model": "stub-model", "approach": 1,
+         "startedAt": it_start, "endedAt": it_end, "exitCode": 0,
+         "error": None, "usage": {"totalTokens": 10}}))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-timestamps")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 1)
+        cell = pw.eval_js(
+            "document.querySelector('.timeline-item .at').textContent").strip('"')
+        assert cell == format_local_time(it_start), cell
+
+        body_text = _wait_for(pw, "document.body.innerText", "started")
+        assert format_local_time(started) in body_text, body_text
+        assert format_local_time(ended) in body_text, body_text
+        # relative duration is kept alongside, not replaced
+        assert "total " in body_text, body_text
+        pw.screenshot(SCREENSHOTS_DIR / "10-absolute-timestamps.png")
+
+        # the payload the page consumed still carries the raw ISO values
+        code, detail = server.get("/api/runs/run-timestamps")
+        assert code == 200, detail
+        assert detail["iterations"][0]["startedAt"] == it_start
+        assert detail["status"]["startedAt"] == started
+    finally:
+        server.stop()

@@ -40,6 +40,7 @@ from ..engine.state import (
     NONTERMINAL_STATES,
     elapsed_seconds,
     format_duration,
+    format_local_time,
     parse_utc,
     read_operator_termination,
     record_operator_termination,
@@ -1490,6 +1491,19 @@ def cmd_status(args):
     lines += [
         f"verdict:   {status.get('verdict')}",
         f"duration:  {format_duration(shown_s)}  ({duration_label})",
+        # Task 048 (#4): a relative duration alone cannot be correlated with
+        # anything outside the run (an upstream outage window, another run's
+        # log, a host reboot). The absolute local-time instants go alongside
+        # -- not instead of -- the durations, through the one shared
+        # `format_local_time` formatter; `--json` keeps the raw ISO
+        # `startedAt`/`endedAt` fields untouched for machine consumers.
+        f"started:   {format_local_time(status.get('startedAt'))}",
+    ]
+    if status.get("endedAt"):
+        lines.append(f"ended:     {format_local_time(status.get('endedAt'))}")
+    elif stale_since:
+        lines.append(f"last update: {format_local_time(stale_since)}")
+    lines += [
         f"phase:     {status.get('phase')}  approach {status.get('approach')}",
         f"iteration: {status.get('iterationsUsed')}/{status.get('iterationsBudget')}",
     ]
