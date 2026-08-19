@@ -100,6 +100,29 @@ def read_json(path: Path, default: Any = None) -> Any:
         return default
 
 
+# Task 023 (#8): the tasks.json `status` string -> /status `tasks` counts key
+# mapping, in ONE place. Both the engine (GET /status) and the host-side CLI
+# fallback (`ralphctl status` on an unreachable run) count the same tasks.json,
+# so they must agree key-for-key -- a second copy of this mapping is how
+# `tasks: 5/7 completed` and `tasks: 5/7 completed (1 in-progress)` start
+# disagreeing about the same file.
+_TASK_COUNT_KEYS = {"in-progress": "inProgress", "validation-failed": "validationFailed"}
+
+
+def task_counts(tasks: list) -> dict:
+    """Count a tasks.json task list into the /status `tasks` shape:
+    {"total": N, "completed": N, "inProgress": N, "pending": N,
+    "validationFailed": N, ...}. Only statuses actually present get a key
+    (plus `total`, always); an unrecognised status is passed through under
+    its own name, and a task with no status at all counts as "unknown"."""
+    counts = {"total": len(tasks)}
+    for t in tasks:
+        raw = t.get("status") if isinstance(t, dict) else None
+        key = _TASK_COUNT_KEYS.get(raw, raw or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 @dataclass
 class RunDir:
     """Layout of /run and helpers over it. Engine-owned."""

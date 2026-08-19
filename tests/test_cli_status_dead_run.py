@@ -21,7 +21,7 @@ from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
 
 from ralphd.cli.main import _format_container_gone_lines
-from ralphd.engine.state import utc_from_epoch
+from ralphd.engine.state import task_counts, utc_from_epoch
 
 __all__ = ["ctl", "unix_sock"]
 
@@ -40,10 +40,81 @@ _BASE_STATUS = {
 }
 
 
-def _seed_status(ctl: Ctl, run_id: str, **status_over) -> None:
+def _seed_status(ctl: Ctl, run_id: str, *, tasks_json=None, **status_over):
     rdir, _cdir = _seed_run(ctl, run_id)
     doc = {**_BASE_STATUS, "runId": run_id, **status_over}
+    # `tasks=None` means "a real status.json, which never carries task counts"
+    if doc.get("tasks") is None:
+        doc.pop("tasks", None)
     (rdir / "status.json").write_text(json.dumps(doc))
+    if tasks_json is not None:
+        (rdir / "tasks.json").write_text(json.dumps(tasks_json))
+    return rdir
+
+
+# --------------------------------------------------------------------------
+# task 023 (#8): task counts in the on-disk fallback
+# --------------------------------------------------------------------------
+
+_MULTI_STATUS_PLAN = {
+    "version": 1,
+    "tasks": [
+        {"id": "001", "title": "a", "status": "completed"},
+        {"id": "002", "title": "b", "status": "completed"},
+        {"id": "003", "title": "c", "status": "in-progress"},
+        {"id": "004", "title": "d", "status": "validation-failed"},
+        {"id": "005", "title": "e", "status": "pending"},
+        {"id": "006", "title": "f", "status": "pending"},
+    ],
+}
+
+
+def test_task_counts_maps_statuses_to_the_status_contract_keys():
+    """The single shared mapping the engine's GET /status and the CLI's
+    on-disk fallback both use."""
+    assert task_counts(_MULTI_STATUS_PLAN["tasks"]) == {
+        "total": 6, "completed": 2, "inProgress": 1,
+        "validationFailed": 1, "pending": 2,
+    }
+    assert task_counts([]) == {"total": 0}
+    # a task with no status at all is counted, never dropped
+    assert task_counts([{"id": "x"}]) == {"total": 1, "unknown": 1}
+
+
+def test_status_of_a_dead_run_shows_task_counts_from_tasks_json(ctl: Ctl):
+    """status.json never carries task counts (the engine synthesises them in
+    GET /status), so the unreachable-run fallback used to print
+    `tasks: (none)` for a run dir with a perfectly readable plan."""
+    _seed_status(ctl, "tst-counts", tasks_json=_MULTI_STATUS_PLAN, tasks=None)
+    res = ctl.run("status", "tst-counts")
+    assert res.returncode == 0, res.stderr
+    line = [ln for ln in res.stdout.splitlines() if ln.startswith("tasks:")]
+    assert len(line) == 1, res.stdout
+    assert "(none)" not in line[0]
+    assert "2/6 completed" in line[0]
+    for bit in ("1 in-progress", "1 validation-failed", "2 pending"):
+        assert bit in line[0], line[0]
+
+
+def test_status_json_of_a_dead_run_carries_the_same_task_counts(ctl: Ctl):
+    _seed_status(ctl, "tst-counts-json", tasks_json=_MULTI_STATUS_PLAN, tasks=None)
+    res = ctl.run("--json", "status", "tst-counts-json")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["live"] is False
+    assert doc["tasks"] == task_counts(_MULTI_STATUS_PLAN["tasks"])
+
+
+def test_status_of_a_dead_run_without_a_plan_still_says_none(ctl: Ctl):
+    _seed_status(ctl, "tst-noplan", tasks=None)
+    res = ctl.run("status", "tst-noplan")
+    assert res.returncode == 0, res.stderr
+    assert "tasks:     (none)" in res.stdout
+    # an empty plan file is the same "nothing to report" case
+    _seed_status(ctl, "tst-emptyplan", tasks_json={"version": 1, "tasks": []},
+                 tasks=None)
+    res = ctl.run("status", "tst-emptyplan")
+    assert "tasks:     (none)" in res.stdout
 
 
 # --------------------------------------------------------------------------

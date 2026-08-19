@@ -35,7 +35,7 @@ from .skills import (
     place_skills,
     tar_dir,
 )
-from .state import RunDir
+from .state import RunDir, task_counts
 
 
 def problem(status: int, title: str, detail: str = "") -> HTTPException:
@@ -81,13 +81,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # never "an older engine wrote this run dir".
         s.setdefault("reflect", None)
         tasks = run.read_tasks().get("tasks", [])
-        counts = {"total": len(tasks)}
-        for t in tasks:
-            key = {"in-progress": "inProgress",
-                   "validation-failed": "validationFailed"}.get(
-                t.get("status"), t.get("status", "unknown"))
-            counts[key] = counts.get(key, 0) + 1
-        s["tasks"] = counts
+        # Task 023 (#8): shared with the CLI's on-disk fallback (state.py).
+        s["tasks"] = task_counts(tasks)
         pending = len(run.pending_steering())
         consumed = len(list(run.steering_dir.glob("[0-9][0-9][0-9]-*.md"))) - pending
         s["steering"] = {"pending": pending, "consumed": consumed}

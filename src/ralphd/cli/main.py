@@ -40,6 +40,7 @@ from ..engine.state import (
     elapsed_seconds,
     format_duration,
     parse_utc,
+    task_counts,
     utcnow,
 )
 from . import llm_profiles, ui_server
@@ -1104,6 +1105,20 @@ def cmd_status(args):
         # Task 020 (#5): same for the reflect verdict -- null means "no
         # reflect iteration has finished" (reflect off, or not there yet).
         status.setdefault("reflect", None)
+        # Task 023 (#8): status.json itself carries no task counts -- the
+        # engine synthesises them in GET /status from tasks.json, so the
+        # on-disk fallback used to print `tasks: (none)` for a run dir with
+        # a perfectly readable plan (exactly the case an operator hits when
+        # the container is gone and they want to know how far it got).
+        # Computed here from the same tasks.json with the engine's own
+        # `task_counts()`, so both surfaces agree key-for-key. Kept behind
+        # `not status.get("tasks")` so a future engine that persists real
+        # counts into status.json wins over this reconstruction.
+        if not status.get("tasks"):
+            plan = _read_json(run_root(args.run_id) / "tasks.json") or {}
+            tasks_list = plan.get("tasks") or []
+            if tasks_list:
+                status["tasks"] = task_counts(tasks_list)
     status["live"] = live
 
     # Task 022 (#8): an unreachable run whose recorded state is non-terminal
