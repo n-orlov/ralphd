@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from .. import API_VERSION, __version__
+from ..log_merge import apply_tail, boundary_line, iteration_dirs, merge_entries
 from .config import CONFIG_DIR, PROMPT_NAMES, JobConfig, list_prompts, overlay_write_path
 from .creds import (
     api_creds_dir,
@@ -152,65 +153,21 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         return StreamingResponse(follower(), media_type="application/x-ndjson")
 
     def _iteration_dirs():
-        itroot = run.root / "iterations"
-        if not itroot.exists():
-            return []
-        return sorted(itroot.iterdir())
-
-    def _boundary(meta: dict, event: str) -> str:
-        line: dict = {"type": "ralphd.iteration", "event": event,
-                     "number": meta.get("number"), "phase": meta.get("phase"),
-                     "model": meta.get("model"), "approach": meta.get("approach"),
-                     "startedAt": meta.get("startedAt")}
-        if event == "end":
-            line["exitCode"] = meta.get("exitCode")
-            line["error"] = meta.get("error")
-            line["usage"] = meta.get("usage")
-            line["endedAt"] = meta.get("endedAt")
-        return json.dumps(line) + "\n"
+        return iteration_dirs(run.root)
 
     def _merge_logs():
-        """Yield (is_boundary, line) for every iteration transcript in order.
-        Lines are scrubbed again here (defense-in-depth, task 060) on top of
-        the write-time scrub in runner.py/state.py -- catches a value that
-        is only *recognized* as a secret after the transcript line was
-        originally written (e.g. a cred added mid-run, using the same
-        literal value an earlier iteration happened to echo)."""
-        for d in _iteration_dirs():
-            meta_path = d / "meta.json"
-            if not meta_path.exists():
-                continue
-            try:
-                meta = json.loads(meta_path.read_text())
-            except json.JSONDecodeError:
-                continue
-            yield True, scrub_text(_boundary(meta, "start"))
-            out = d / "output.jsonl"
-            if out.exists():
-                for line in out.read_text().splitlines(keepends=True):
-                    line = line if line.endswith("\n") else line + "\n"
-                    yield False, scrub_text(line)
-            if meta.get("endedAt"):
-                yield True, scrub_text(_boundary(meta, "end"))
-
-    def _apply_tail(entries: list[tuple[bool, str]], tail: int) -> list[tuple[bool, str]]:
-        """Keep only the last `tail` non-boundary (transcript) lines, plus any
-        boundary lines that fall within that window."""
-        if not tail:
-            return entries
-        selected: list[tuple[bool, str]] = []
-        content_count = 0
-        for is_boundary, line in reversed(entries):
-            selected.append((is_boundary, line))
-            if not is_boundary:
-                content_count += 1
-                if content_count >= tail:
-                    break
-        return list(reversed(selected))
+        """The on-disk merge (shared module `ralphd.log_merge`, task 038) with
+        serving-time scrubbing: lines are scrubbed again here
+        (defense-in-depth, task 060) on top of the write-time scrub in
+        runner.py/state.py -- catches a value that is only *recognized* as a
+        secret after the transcript line was originally written (e.g. a cred
+        added mid-run, using the same literal value an earlier iteration
+        happened to echo)."""
+        return merge_entries(run.root, scrub=scrub_text)
 
     @app.get("/logs")
     async def logs(tail: int = 0, follow: bool = False):
-        entries = _apply_tail(list(_merge_logs()), tail)
+        entries = apply_tail(list(_merge_logs()), tail)
 
         if not follow:
             text = "".join(line for _, line in entries)
@@ -255,7 +212,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                     continue
                 meta = json.loads(meta_path.read_text())
                 if not start_emitted:
-                    yield scrub_text(_boundary(meta, "start"))
+                    yield scrub_text(boundary_line(meta, "start"))
                     start_emitted = True
                 out = d / "output.jsonl"
                 if out.exists():
@@ -267,7 +224,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                             yield scrub_text(line)
                 meta = json.loads(meta_path.read_text())
                 if meta.get("endedAt"):
-                    yield scrub_text(_boundary(meta, "end"))
+                    yield scrub_text(boundary_line(meta, "end"))
                     idx += 1
                     pos = 0
                     start_emitted = False
