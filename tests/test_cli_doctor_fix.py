@@ -82,7 +82,7 @@ def test_fix_resumes_an_opted_in_dangling_run(ctl, tmp_path):
 
     doc = _doctor_fix(ctl, "--fix")
     assert doc["autoResume"] == {"resumed": ["tst-fix-on"], "skipped": [],
-                                "failed": []}
+                                "failed": [], "waiting": [], "gaveUp": []}
     assert doc["danglingRegistryEntries"] == [
         {"runId": "tst-fix-on", "container": "ralphd-tst-fix-on"}]
 
@@ -123,7 +123,7 @@ def test_fix_leaves_an_opted_out_run_untouched_but_reported(ctl):
 
     doc = _doctor_fix(ctl, "--fix")
     assert doc["autoResume"] == {"resumed": [], "skipped": ["tst-fix-off"],
-                                "failed": []}
+                                "failed": [], "waiting": [], "gaveUp": []}
     # still reported as dangling, with the manual remedy
     assert doc["danglingRegistryEntries"] == [
         {"runId": "tst-fix-off", "container": "ralphd-tst-fix-off"}]
@@ -159,7 +159,8 @@ def test_fix_does_not_touch_a_run_whose_container_is_alive(ctl):
         STUB_DOCKER_RUNNING="ralphd-tst-fix-alive"))
     doc = json.loads(res.stdout)
     assert doc["danglingRegistryEntries"] == []
-    assert doc["autoResume"] == {"resumed": [], "skipped": [], "failed": []}
+    assert doc["autoResume"] == {"resumed": [], "skipped": [], "failed": [],
+                                "waiting": [], "gaveUp": []}
     assert len(_docker_runs(ctl)) == 1
 
 

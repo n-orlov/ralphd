@@ -42,6 +42,7 @@ from ..engine.state import (
     format_duration,
     parse_utc,
     task_counts,
+    utc_from_epoch,
     utcnow,
 )
 from . import llm_profiles, ui_server
@@ -337,6 +338,126 @@ def _read_auto_resume_setting(run_id: str) -> bool:
     if "auto_resume" not in doc:
         return AUTO_RESUME_DEFAULT
     return _as_bool(doc["auto_resume"])
+
+
+# Task 028 (#8, PRD req F): the auto-resume crash-loop guard. Self-recovery
+# that never gives up is a crash loop: a run whose container dies within
+# seconds of every resume (broken image, missing credential, corrupt run
+# dir) would otherwise be resurrected by every `doctor --fix` tick forever,
+# burning the operator's LLM budget and hiding the real defect behind an
+# endless stream of fresh containers. So consecutive auto-resume attempts
+# are spaced by an escalating backoff and stop entirely after
+# AUTO_RESUME_MAX_ATTEMPTS, leaving a readable reason behind.
+#
+# Both constants live here alone (the tests read them rather than repeating
+# the numbers). The schedule's shape mirrors the engine's infra backoff:
+# quick first retry (a genuinely transient host hiccup recovers in seconds),
+# escalating fast so a hard failure costs at most a handful of containers.
+AUTO_RESUME_MAX_ATTEMPTS = 5
+AUTO_RESUME_BACKOFF_S = [30, 120, 600, 1800, 3600]
+
+
+def _auto_resume_state_path(run_id: str) -> Path:
+    """The guard's bookkeeping, in the *run* dir (not the config dir, which
+    holds the immutable start-time `auto_resume` opt-in): this is mutable
+    per-run history, written by whoever runs `doctor --fix` on the host."""
+    return run_root(run_id) / "auto-resume.json"
+
+
+def _read_auto_resume_state(run_id: str) -> dict:
+    """The run's `autoResume` record -- {attempts, lastAt, maxAttempts} plus
+    the give-up verdict -- normalised so a missing/hand-mangled file reads as
+    "no attempts yet" instead of crashing the sweep.
+
+    `iterationsUsed` is the run's iteration count as of the last attempt: it
+    is how the guard tells a crash loop (nothing ever progresses) from a run
+    that resumed, did real work, and later died again -- the latter resets
+    the counter, so a long-lived job is not eventually refused recovery
+    because it was recovered four times over its lifetime.
+    """
+    doc = _read_json(_auto_resume_state_path(run_id), {}) or {}
+    try:
+        attempts = int(doc.get("attempts") or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    try:
+        max_attempts = int(doc.get("maxAttempts") or AUTO_RESUME_MAX_ATTEMPTS)
+    except (TypeError, ValueError):
+        max_attempts = AUTO_RESUME_MAX_ATTEMPTS
+    used = doc.get("iterationsUsed")
+    return {"attempts": max(0, attempts),
+            "lastAt": doc.get("lastAt"),
+            "maxAttempts": max(1, max_attempts),
+            "iterationsUsed": used if isinstance(used, int) else None,
+            "gaveUp": bool(doc.get("gaveUp")),
+            "reason": doc.get("reason")}
+
+
+def _write_auto_resume_state(run_id: str, state: dict) -> None:
+    path = _auto_resume_state_path(run_id)
+    if not path.parent.is_dir():
+        return
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def _auto_resume_backoff_s(attempts: int) -> int:
+    """Seconds that must pass after `attempts` consecutive failed
+    auto-resumes before the next one is allowed (0 before the first)."""
+    if attempts <= 0:
+        return 0
+    return AUTO_RESUME_BACKOFF_S[min(attempts, len(AUTO_RESUME_BACKOFF_S)) - 1]
+
+
+def _auto_resume_give_up_reason(state: dict) -> str:
+    return (f"auto-resume gave up after {state['attempts']} attempts "
+            f"(max {state['maxAttempts']}, last attempt "
+            f"{state['lastAt'] or 'unknown'}): the run's container keeps "
+            f"dying without the run making progress, which is a crash loop, "
+            f"not a recoverable outage -- investigate, then delete "
+            f"auto-resume.json in the run dir to re-arm auto-recovery "
+            f"(or resume manually with `ralphctl resume <run-id>`)")
+
+
+def _auto_resume_decision(run_id: str) -> tuple[str, dict]:
+    """Should `doctor --fix` auto-resume this dangling run right now?
+
+    Returns (verdict, state) with verdict one of:
+      "go"      -- resume it (and record the attempt),
+      "waiting" -- inside the crash-loop backoff, try again later,
+      "gave-up" -- AUTO_RESUME_MAX_ATTEMPTS consecutive attempts made no
+                   progress; auto-recovery is off for this run until an
+                   operator clears the record.
+    The returned state is already progress-reset where applicable, so the
+    caller can write it back as-is.
+    """
+    state = _read_auto_resume_state(run_id)
+    status = _read_json(run_root(run_id) / "status.json", {}) or {}
+    used = status.get("iterationsUsed")
+    if (state["attempts"] and isinstance(used, int)
+            and state["iterationsUsed"] is not None
+            and used > state["iterationsUsed"]):
+        # the run got further after the last auto-resume: whatever killed it
+        # this time is a new incident, not the same crash loop
+        state = {"attempts": 0, "lastAt": None,
+                 "maxAttempts": state["maxAttempts"], "iterationsUsed": None,
+                 "gaveUp": False, "reason": None}
+    if state["attempts"] >= state["maxAttempts"]:
+        return "gave-up", state
+    wait_s = _auto_resume_backoff_s(state["attempts"])
+    since = elapsed_seconds(state["lastAt"]) if state["lastAt"] else None
+    if since is not None and since < wait_s:
+        return "waiting", state
+    return "go", state
+
+
+def _auto_resume_next_attempt_at(state: dict) -> str | None:
+    if not state["lastAt"]:
+        return None
+    try:
+        return utc_from_epoch(parse_utc(str(state["lastAt"]))
+                              + _auto_resume_backoff_s(state["attempts"]))
+    except (ValueError, TypeError):
+        return None
 
 
 def _write_extra_env_wiring(cdir: Path, pairs: list[str]) -> None:
@@ -1021,6 +1142,26 @@ def _format_reflect_lines(reflect) -> list[str]:
     return lines
 
 
+def _format_auto_resume_lines(auto_resume) -> list[str]:
+    """Task 028 (#8): the `auto-resume:` line(s) for a run whose automatic
+    recovery gave up -- a crash loop that `doctor --fix` has stopped trying
+    to fix is otherwise completely invisible (the run just sits there
+    recorded `running` with no container and nothing ever happens again).
+
+    Nothing at all unless the guard actually gave up: a run with a couple of
+    recorded attempts is still being recovered, and a run that never needed
+    recovery has no record, so every other run's human output is unchanged.
+    """
+    if not isinstance(auto_resume, dict) or not auto_resume.get("gaveUp"):
+        return []
+    reason = str(auto_resume.get("reason") or "").strip() or (
+        f"gave up after {auto_resume.get('attempts')} attempts")
+    wrapped = textwrap.wrap(reason, width=64) or [reason]
+    lines = [f"auto-resume: {wrapped[0]}"]
+    lines.extend(f"             {extra}" for extra in wrapped[1:])
+    return lines
+
+
 def _countdown_to(ts) -> str:
     """Human countdown to a published wall-clock timestamp (task 013, #5):
     'in 58s (2026-08-18T09:15:02Z)'. Degrades gracefully -- 'due now' once
@@ -1182,6 +1323,14 @@ def cmd_status(args):
                 status["tasks"] = task_counts(tasks_list)
     status["live"] = live
 
+    # Task 028 (#8): the auto-resume crash-loop guard's record lives on the
+    # host (the engine inside the container knows nothing about it), so it is
+    # merged in here for both the live and the on-disk path -- `null` for a
+    # run that never needed recovery.
+    status["autoResume"] = (
+        _read_auto_resume_state(args.run_id)
+        if _auto_resume_state_path(args.run_id).is_file() else None)
+
     # Task 022 (#8): an unreachable run whose recorded state is non-terminal
     # is almost certainly a zombie -- container died/removed outside
     # ralphctl. Only asked once the API is already known to be unreachable,
@@ -1264,6 +1413,9 @@ def cmd_status(args):
     # without this line the operator cannot tell "reflect ran and died" from
     # "reflect was never enabled".
     lines.extend(_format_reflect_lines(status.get("reflect")))
+    # Task 028 (#8): ... and a run automatic recovery has given up on says so,
+    # naming the crash loop, instead of looking merely forgotten.
+    lines.extend(_format_auto_resume_lines(status.get("autoResume")))
     # Task 006: a terminal run (failed/aborted/succeeded) that still has
     # unconsumed steering files is a silent-drop hazard -- a terminal run
     # never reads pending steering again, so this is the operator's only
@@ -2300,16 +2452,48 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
     SystemExit from a failed `docker run` is turned into a per-run failure
     entry, so one broken run can't abort the sweep.
 
-    Returns `{resumed: [...], skipped: [...], failed: [{runId, error}]}`.
+    Task 028 (#8) adds the crash-loop guard: every attempt is recorded in the
+    run dir's `autoResume` record *before* the resume is issued (so a sweep
+    that dies mid-resume still counts the attempt), consecutive attempts are
+    spaced by `AUTO_RESUME_BACKOFF_S`, and after `maxAttempts` attempts with
+    no progress the run is left alone with a readable give-up reason.
+
+    Returns `{resumed: [...], skipped: [...], failed: [{runId, error}],
+    waiting: [{runId, attempts, nextAttemptAt}],
+    gaveUp: [{runId, attempts, reason}]}` -- `skipped` stays exactly "opted
+    out of auto_resume", the guard's two refusals are their own buckets so a
+    cron consumer can tell "not now" from "never again" from "never asked".
     """
     resumed: list[str] = []
     skipped: list[str] = []
     failed: list[dict] = []
+    waiting: list[dict] = []
+    gave_up: list[dict] = []
     for entry in dangling:
         run_id = entry["runId"]
         if not _read_auto_resume_setting(run_id):
             skipped.append(run_id)
             continue
+        verdict, state = _auto_resume_decision(run_id)
+        if verdict == "gave-up":
+            if not state["gaveUp"] or not state["reason"]:
+                state = {**state, "gaveUp": True,
+                         "reason": _auto_resume_give_up_reason(state)}
+                _write_auto_resume_state(run_id, state)
+            gave_up.append({"runId": run_id, "attempts": state["attempts"],
+                            "reason": state["reason"]})
+            continue
+        if verdict == "waiting":
+            waiting.append({"runId": run_id, "attempts": state["attempts"],
+                            "nextAttemptAt": _auto_resume_next_attempt_at(state)})
+            continue
+        status = _read_json(run_root(run_id) / "status.json", {}) or {}
+        used = status.get("iterationsUsed")
+        state = {**state, "attempts": state["attempts"] + 1,
+                 "lastAt": utcnow(),
+                 "iterationsUsed": used if isinstance(used, int) else None,
+                 "gaveUp": False, "reason": None}
+        _write_auto_resume_state(run_id, state)
         rargs = argparse.Namespace(
             run_id=run_id, iterations=None, image=args.image, port=None,
             api_bind="127.0.0.1", network=None, allow_docker=False,
@@ -2327,7 +2511,8 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
             failed.append({"runId": run_id, "error": str(e)})
             continue
         resumed.append(run_id)
-    return {"resumed": resumed, "skipped": skipped, "failed": failed}
+    return {"resumed": resumed, "skipped": skipped, "failed": failed,
+            "waiting": waiting, "gaveUp": gave_up}
 
 
 def cmd_doctor(args):
@@ -2402,6 +2587,19 @@ def cmd_doctor(args):
                     if d["runId"] in auto_resume["skipped"]:
                         report += ("\n      not auto-resumed: auto_resume is "
                                    "off for this run")
+                    # Task 028: the crash-loop guard's two refusals, said out
+                    # loud -- "nothing happened" must never be silent.
+                    wait = next((w for w in auto_resume["waiting"]
+                                 if w["runId"] == d["runId"]), None)
+                    if wait:
+                        report += (f"\n      not auto-resumed yet: crash-loop "
+                                   f"backoff after {wait['attempts']} "
+                                   f"attempt(s), next attempt "
+                                   f"{_countdown_to(wait['nextAttemptAt'])}")
+                    gave = next((g for g in auto_resume["gaveUp"]
+                                 if g["runId"] == d["runId"]), None)
+                    if gave:
+                        report += f"\n      {gave['reason']}"
                     err = next((f["error"] for f in auto_resume["failed"]
                                 if f["runId"] == d["runId"]), None)
                     if err:
@@ -2413,6 +2611,8 @@ def cmd_doctor(args):
     if auto_resume is not None:
         report += (f"\n! --fix: auto-resumed {len(auto_resume['resumed'])}, "
                    f"left {len(auto_resume['skipped'])} opted out, "
+                   f"{len(auto_resume['waiting'])} in crash-loop backoff, "
+                   f"{len(auto_resume['gaveUp'])} given up on, "
                    f"{len(auto_resume['failed'])} failed")
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,

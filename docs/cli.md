@@ -294,6 +294,19 @@ Human output also renders (task 003):
   last write (`, at last update`). A run whose container still *exists*
   (merely exited) and every live or terminal run print none of this, keeping
   their output unchanged.
+- `auto-resume:` (task 028, issue #8) -- shown only when the auto-resume
+  crash-loop guard has **given up** on this run (the run dir's
+  `auto-resume.json` records `gaveUp: true`, see `doctor --fix` below):
+
+  ```
+  auto-resume: gave up after 5 attempts (max 5, last attempt
+               2026-08-18T09:15:02Z): the run's container keeps dying
+               without the run making progress, ...
+  ```
+
+  `--json` carries the whole record as `autoResume` (`null` for a run that
+  never needed recovery, which also prints nothing here -- as does a run
+  still inside the guard's backoff, since that one is still being recovered).
 
 For an unreachable run the `tasks:` counts are computed **CLI-side** from the
 run dir's `tasks.json` (task 023, issue #8): status.json itself never stores
@@ -869,13 +882,35 @@ workspace mounts, the `--llm`/`--env` wiring recorded at start time, the
 **reported** but never touched.
 
 `--json` adds `autoResume: {resumed: [...], skipped: [...], failed:
-[{runId, error}]}` (`null` without `--fix`); the human report annotates each
-dangling entry with `auto-resumed (auto_resume enabled)`, a `not
-auto-resumed: auto_resume is off for this run` note above the usual manual
-remedy line, or `auto-resume FAILED: <error>`.
+[{runId, error}], waiting: [{runId, attempts, nextAttemptAt}], gaveUp:
+[{runId, attempts, reason}]}` (`null` without `--fix`); the human report
+annotates each dangling entry with `auto-resumed (auto_resume enabled)`, a
+`not auto-resumed: auto_resume is off for this run` note above the usual
+manual remedy line, the crash-loop guard's `not auto-resumed yet: crash-loop
+backoff …` / give-up reason (below), or `auto-resume FAILED: <error>`.
 A run whose container is still alive is not dangling and is never touched.
 One broken run cannot abort the sweep. `--fix` never changes the exit code:
 it stays the AND of the preflight `checks` above.
+
+**Crash-loop guard.** A run whose container dies seconds after every resume
+(broken image, missing credential, corrupt run dir) must not be resurrected
+forever, so each run's attempts are recorded in its run dir at
+`auto-resume.json` as `{attempts, lastAt, maxAttempts, iterationsUsed,
+gaveUp, reason}` and:
+
+* consecutive attempts are spaced by an escalating backoff (30s, 2m, 10m,
+  30m, 1h — the last value repeating); a sweep inside the backoff reports
+  `waiting` and starts no container;
+* after `maxAttempts` (5) attempts that never made progress the sweep gives
+  up: the run is left alone (still reported as dangling) with a `reason`
+  naming the crash loop, which `ralphctl status` prints as an
+  `auto-resume: gave up after N attempts …` line and `--json` exposes as
+  `autoResume`. Investigate, then delete the run dir's `auto-resume.json`
+  to re-arm auto-recovery (or `ralphctl resume <id>` by hand);
+* progress resets the counter: if the run's `iterationsUsed` advanced since
+  the recorded attempt, the next death is a new incident and is recovered
+  immediately — a long-lived job is never refused recovery just because it
+  was recovered a few times over its lifetime.
 
 The sweep is idempotent and cheap (one registry scan plus one `docker
 inspect` per run), so **the intended deployment is a periodic `ralphctl
