@@ -60,6 +60,12 @@ th, td {
 
 th { color: var(--muted); font-weight: 600; }
 
+/* Task 054 (#9): run-list column headers are click-to-sort; the active
+   column keeps a ▲/▼ indicator in its text (see app.js `sortIndicator`). */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--accent); }
+th.sortable.sorted { color: var(--fg); }
+
 tr:hover td { background: #f6f8fa; }
 
 a { color: var(--accent); }

@@ -73,6 +73,98 @@ function countdownTo(iso) {
   return "in " + fmtDuration(remaining) + " (at " + String(iso) + ")";
 }
 
+// ------------------------------------------------- run list sorting (#9)
+
+// Task 054 (#9): the run list is sortable on every column, defaulting to
+// STARTED descending -- newest first, which is what an operator opening the
+// hub wants, rather than the run-id alphabetical order the registry
+// directory listing happens to yield.
+//
+// Two rules this implementation exists to honour:
+//  * sort keys read RAW PAYLOAD VALUES (`startedAt`'s ISO instant,
+//    `iterationsUsed`'s integer), never the rendered cell text -- sorting
+//    "17/250" against "9/10" as strings, or ISO strings with different
+//    offsets lexicographically, silently produces a wrong order that looks
+//    plausible;
+//  * the sort state lives HERE, outside the DOM, because `load()` rebuilds
+//    the whole table every REFRESH_MS -- state kept in a class on a <th>
+//    would be thrown away 4 seconds after the operator clicked it.
+let runSort = { key: "startedAt", dir: -1 };
+
+// Lifecycle order for the two enum columns: alphabetical would interleave
+// live and finished runs (aborted, failed, running, starting, succeeded).
+// Mirrors `main.py`'s `_STATUS_STATES` / the verdict progression in
+// docs/api.md (no verdict yet -> unverified -> verified).
+const RUN_STATE_ORDER = ["starting", "running", "succeeded", "failed", "aborted"];
+const RUN_VERDICT_ORDER = ["", "unverified", "verified"];
+
+function lifecycleRank(order, value) {
+  const v = String(value == null ? "" : value).toLowerCase();
+  const i = order.indexOf(v);
+  // An unrecognised value sorts after every known one instead of throwing
+  // the order away (a future state value must not scramble the table).
+  return i >= 0 ? i : order.length;
+}
+
+function numOrNull(v) {
+  const n = Number(v);
+  return v == null || v === "" || isNaN(n) ? null : n;
+}
+
+const RUN_COLUMNS = [
+  { label: "RUN", key: "runId", value: r => String(r.runId || "") },
+  { label: "STATE", key: "state", value: r => lifecycleRank(RUN_STATE_ORDER, r.state) },
+  { label: "VERDICT", key: "verdict", value: r => lifecycleRank(RUN_VERDICT_ORDER, r.verdict) },
+  { label: "PHASE", key: "phase", value: r => String(r.phase || "") },
+  { label: "APPROACH", key: "approach", value: r => numOrNull(r.approach) },
+  // numeric on iterationsUsed -- NOT the rendered "17/250" cell text
+  { label: "ITERATIONS", key: "iterationsUsed", value: r => numOrNull(r.iterationsUsed) },
+  // epoch seconds from the raw ISO instant -- NOT the ISO string, which
+  // only sorts correctly while every run happens to use the same offset
+  { label: "STARTED", key: "startedAt", value: r => isoToEpoch(r.startedAt) },
+];
+
+function runColumn(key) {
+  return RUN_COLUMNS.find(c => c.key === key) || RUN_COLUMNS[RUN_COLUMNS.length - 1];
+}
+
+function cmpValues(a, b) {
+  // Missing values (no startedAt, no approach yet) sort last in ascending
+  // order rather than pretending to be 0/"".
+  const aMissing = a == null || a === "";
+  const bMissing = b == null || b === "";
+  if (aMissing || bMissing) return aMissing && bMissing ? 0 : (aMissing ? 1 : -1);
+  if (typeof a === "number" && typeof b === "number") return a < b ? -1 : (a > b ? 1 : 0);
+  const as = String(a), bs = String(b);
+  return as < bs ? -1 : (as > bs ? 1 : 0);
+}
+
+function sortRuns(runs) {
+  const col = runColumn(runSort.key);
+  return [...runs].sort((a, b) => {
+    const r = cmpValues(col.value(a), col.value(b));
+    if (r !== 0) return r * runSort.dir;
+    // Deterministic tie-break so the 4s rebuild never reshuffles equal rows.
+    return cmpValues(String(a.runId || ""), String(b.runId || ""));
+  });
+}
+
+function toggleRunSort(key) {
+  if (runSort.key === key) {
+    runSort = { key, dir: -runSort.dir };
+    return;
+  }
+  // First click on a new column: time-like and numeric columns are most
+  // useful biggest/newest first, text columns A->Z.
+  const desc = key === "startedAt" || key === "iterationsUsed" || key === "approach";
+  runSort = { key, dir: desc ? -1 : 1 };
+}
+
+function sortIndicator(key) {
+  if (runSort.key !== key) return "";
+  return runSort.dir < 0 ? " \u25BC" : " \u25B2";
+}
+
 // -------------------------------------------------------------- routing
 
 function router() {
@@ -115,13 +207,17 @@ async function renderRunList() {
       tableWrap.appendChild(h("p", { class: "muted" }, ["(no runs)"]));
       return;
     }
-    const table = h("table", {}, [
-      h("thead", {}, [h("tr", {}, [
-        "RUN", "STATE", "VERDICT", "PHASE", "APPROACH", "ITERATIONS", "STARTED",
-      ].map(t => h("th", {}, [t])))]),
+    const table = h("table", { class: "run-list" }, [
+      h("thead", {}, [h("tr", {}, RUN_COLUMNS.map(col => h("th", {
+        class: "sortable" + (runSort.key === col.key ? " sorted" : ""),
+        "data-sort-key": col.key,
+        "aria-sort": runSort.key !== col.key ? "none"
+          : (runSort.dir < 0 ? "descending" : "ascending"),
+        onclick: () => { toggleRunSort(col.key); load(); },
+      }, [col.label + sortIndicator(col.key)])))]),
     ]);
     const tbody = h("tbody", {});
-    for (const r of runs) {
+    for (const r of sortRuns(runs)) {
       // Task 024 (#8): a run recorded non-terminal whose API no longer
       // answers (`containerGone`, ui_server.py) must not look exactly like a
       // healthy running one -- it is over, it just never got to say so.
