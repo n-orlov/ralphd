@@ -47,6 +47,7 @@ from ..engine.state import (
     utc_from_epoch,
     utcnow,
 )
+from ..log_merge import NO_TRANSCRIPT
 from ..log_merge import iteration_lines as _iteration_lines
 from ..log_merge import merged_lines as _merged_lines
 from . import llm_profiles, ui_server
@@ -1568,6 +1569,27 @@ def _snapshot_raw_text(run_id: str, iteration: int | None, tail: int) -> str:
     return "".join(_merged_lines(run_root(run_id), tail=tail))
 
 
+def _pretty_log_lines(text: str, tty: bool, tail: int) -> list[str]:
+    """Render a raw NDJSON transcript to the lines pretty-mode `ralphctl
+    logs` prints, trimmed to the last `tail` RENDERED lines (task 057).
+
+    Task 041 (#6): when the render is empty the operator gets the explicit
+    `log_merge.NO_TRANSCRIPT` marker instead of zero bytes of output, which
+    is indistinguishable from a broken command. That happens for a run
+    whose `iterations/` dir is empty (just started, or died before its
+    first iteration was recorded) -- the single most likely moment for
+    someone to run `logs` on it. The wording lives in `log_merge` so this
+    surface and the hub's log tail (`ui_server.rendered_log_lines`) say the
+    exact same thing. `--raw` deliberately does NOT get this line: it is a
+    1:1 wire-format contract for machines, and an empty transcript is
+    honestly zero events.
+    """
+    lines = _render_to_lines(text, tty, _new_render_state())
+    if tail:
+        lines = lines[-tail:]
+    return lines or [NO_TRANSCRIPT]
+
+
 def _logs_text(args, path: str, tail: int) -> tuple[bool, str]:
     """Fetch a log snapshot for `cmd_logs`, falling back to the on-disk
     merge when the run's API is unreachable (task 040, #6).
@@ -1634,10 +1656,7 @@ def _print_log_snapshot(args, tail: int, tty: bool, following: bool) -> None:
             print()
     else:
         text = _snapshot_raw_text(args.run_id, args.iteration, 0)
-        lines = _render_to_lines(text, tty, _new_render_state())
-        if tail:
-            lines = lines[-tail:]
-        for line in lines:
+        for line in _pretty_log_lines(text, tty, tail or 0):
             print(line)
     print(f"ralphctl: {_LOGS_SNAPSHOT_FOLLOW_NOTICE if following else _LOGS_SNAPSHOT_NOTICE}",
           file=sys.stderr)
@@ -1715,10 +1734,7 @@ def cmd_logs(args):
         # tail=0 for the on-disk fallback too: in pretty mode the trim is
         # applied to RENDERED lines below, never to raw events.
         live, full_text = _logs_text(args, base_path, 0)
-        lines = _render_to_lines(full_text, tty, _new_render_state())
-        if tail:
-            lines = lines[-tail:]
-        for line in lines:
+        for line in _pretty_log_lines(full_text, tty, tail or 0):
             print(line)
         if not live:
             print(f"ralphctl: {_LOGS_SNAPSHOT_NOTICE}", file=sys.stderr)
