@@ -514,16 +514,28 @@ this build knows, duplicate task ids) -- it never guesses at a fix on its
 own; that's what the (separate, guarded) `--set-state`/`--env` flags are
 for.
 
+It also checks the **dangling-container condition** (task 021): a run whose
+`status.json` records a non-terminal state (`starting`/`running`) but whose
+container no longer exists at all. This is the same check `doctor` reports
+globally as `danglingRegistryEntries` (one implementation, shared), so the
+two can never disagree; here it is reported as an issue naming the guarded
+fix (`ralphctl repair <run-id> --set-state aborted`, or `ralphctl resume
+<run-id>` to continue the run) plus a `dangling` field (`{runId,
+container}` or `null`) in `--json`. A run whose container merely *exited*
+(it still exists) is not this condition.
+
 - Refuses to touch a run whose container is currently running (a live
   engine already owns that run dir's on-disk state) -- exit `5`, nothing
   written, same as `resume`'s refusal.
 - Every invocation appends a `type: repair` audit line to the run's
-  `events.jsonl` (`action`, which files were `checked`, the issue count/
+  `events.jsonl` (`action`, what was `checked`, the issue count/
   list) -- never a secret value, since diagnosis only ever names files,
   fields, and task ids.
-- `--json` prints `{"runId", "checked", "issues", "ok"}`; plain output
-  prints a readable one-issue-per-line summary. Exit `0` if no issues were
-  found, `1` otherwise (mirrors `doctor`'s `ok`-based exit code).
+- `--json` prints `{"runId", "checked", "issues", "ok", "dangling"}`;
+  `checked` is `["status.json", "tasks.json", "host.json", "container"]`.
+  Plain output prints a readable one-issue-per-line summary. Exit `0` if no
+  issues were found, `1` otherwise (mirrors `doctor`'s `ok`-based exit
+  code).
 
 Exit codes: `3` unknown run, `5` container still running.
 
@@ -533,11 +545,16 @@ whose container died without the engine ever writing a terminal state to
 `state` field, after validating the requested value against the same
 recognized-state list diagnosis checks (`starting`, `running`, `succeeded`,
 `failed`, `aborted`) and after the same refuse-while-running check. Every
-other field in `status.json` is left untouched. `--json` prints
-`{"runId", "action": "set-state", "old", "new"}`; the audit event
+other field in `status.json` is left untouched -- except that when the run
+was in fact a zombie (the dangling-container condition above), a `reason`
+is written alongside the new state saying the container no longer exists
+(died or was removed outside `ralphctl`), so the terminal state on disk
+explains itself; for an already-terminal run no such reason is invented.
+`--json` prints `{"runId", "action": "set-state", "old", "new", "reason"}`
+(`reason` is `null` when nothing vanished); the audit event
 (`type: repair`, `action: "set-state"`) records the `old`/`new` state
-values. Exit `2` for an unrecognized state value (no write, no audit
-event), `5` if the container is running.
+values and the same `reason`. Exit `2` for an unrecognized state value (no
+write, no audit event), `5` if the container is running.
 
 **`--env KEY=VAL`** (task 010, repeatable) adds or updates a recorded
 value in the persisted env wiring (`env-wiring.json` under the job's
@@ -774,9 +791,11 @@ Two dangling-container checks, in both directions — always **non-fatal**
   run dir at all (leftovers from `--allow-docker` jobs that were never
   reaped, or a manually deleted run dir).
 - `danglingRegistryEntries` — the reverse: a run dir whose `status.json`
-  says `state: running` but whose container no longer exists at all (killed
-  or `docker rm`'d outside `ralphctl`). Reported as `{runId, container}`;
-  suggested remedy is `ralphctl resume <run-id>`.
+  records a non-terminal state (`starting`/`running`) but whose container no
+  longer exists at all (killed or `docker rm`'d outside `ralphctl`).
+  Reported as `{runId, container}`; suggested remedy is `ralphctl resume
+  <run-id>`. The same check (one implementation) backs `repair`'s per-run
+  dangling-container diagnosis.
 
 Designed as the first command an AI agent should run.
 
