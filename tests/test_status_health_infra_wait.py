@@ -40,7 +40,7 @@ def _status(sup) -> dict:
 
 def _sampling_attempts(sup, results):
     """Like test_infra_outage_budget._stub_attempts, but the stubbed backoff
-    sleep also snapshots status.json -- that snapshot is what an operator
+    wait also snapshots status.json -- that snapshot is what an operator
     polling GET /status mid-wait would have seen."""
     calls: list[str] = []
     waits: list[float] = []
@@ -50,11 +50,18 @@ def _sampling_attempts(sup, results):
         calls.append(phase)
         return results[min(len(calls) - 1, len(results) - 1)]
 
-    async def fake_sleep(seconds):
+    async def fake_backoff(seconds):
+        # Task 015 (#5): _wait_out_backoff (an interruptible Event race)
+        # replaced the wrapper's asyncio.sleep.
         waits.append(seconds)
         mid_wait.append(_status(sup))
+        return seconds, False
+
+    async def fake_sleep(seconds):
+        return None  # back-compat no-op for the asyncio.sleep patch below
 
     sup._run_iteration_once = fake_once  # type: ignore[method-assign]
+    sup._wait_out_backoff = fake_backoff  # type: ignore[method-assign]
     return calls, waits, mid_wait, fake_sleep
 
 

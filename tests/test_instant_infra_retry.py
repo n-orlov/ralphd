@@ -84,10 +84,17 @@ def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):
         # _check_instant_failure() memoises its per-attempt verdict on.
         return copy.copy(results[min(len(calls) - 1, len(results) - 1)])
 
-    async def fake_sleep(seconds):
+    async def fake_backoff(seconds):
+        # Task 015 (#5): _wait_out_backoff is the interruptible-Event seam
+        # that replaced the wrapper's asyncio.sleep.
         waits.append(seconds)
+        return seconds, False
+
+    async def fake_sleep(seconds):
+        return None  # back-compat no-op for call sites patching asyncio.sleep
 
     sup._run_iteration_once = fake_once  # type: ignore[method-assign]
+    sup._wait_out_backoff = fake_backoff  # type: ignore[method-assign]
     return calls, waits, fake_sleep
 
 

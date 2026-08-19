@@ -111,7 +111,7 @@ recovered yet. Both are also emitted as events (`infra_wait` /
 `infra_recovered`), so the whole episode is visible in the event stream
 `ralphctl watch` follows and not only to a client polling `/status` at the
 right moment. Surfaced by `ralphctl status`'s `degraded:` line and the hub
-run-detail card.
+run-detail card. A wait can be cut short with `POST /retry`.
 
 ### `GET /tasks`
 Full `tasks.json`.
@@ -187,6 +187,7 @@ then follows. Event types:
 | `infra_retry` | an infra-classified attempt is being retried: phase, attempt, error, `backoffS` (`null` when giving up), `waitedS`, `budgetS` |
 | `infra_wait` | a backoff wait started: the full `infraWait` payload (`since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`) plus `backoffS`; the run is now `health: "degraded"` |
 | `infra_recovered` | an iteration reached the model again: `health: "ok"`, `infraWaitTotalS` — the outage episode is over and `infraWait` is back to `null` |
+| `infra_retry_now` | an operator woke a backoff wait via `POST /retry`: phase, attempt, error, `source: "operator"` |
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
 
 Every event also lands in `events.jsonl` in the run dir with a monotonically
@@ -215,6 +216,20 @@ interrupt.
 ### `POST /pause` / `POST /resume`
 Pause finishes the current iteration, then holds before the next one
 (`state: running`, `phase: paused` reported in `/status`). Resume releases it.
+
+### `POST /retry`
+Wakes an infra backoff wait immediately instead of waiting for
+`infraWait.nextAttemptAt`: the failed phase/iteration is retried at once and
+the outage-budget **episode clock is reset** (the cumulative `waitedS` starts
+from zero again, while the attempt counter — and therefore the escalating
+backoff — is kept). Emits `infra_retry_now`. `200 {"retrying": true}`.
+
+`409` when the run is not actually in an infra wait (`health: "ok"` /
+`infraWait: null`, or the job already finished) — the problem detail says so.
+Naming: `/retry` is about a **degraded** run waiting out an endpoint outage;
+`/resume` is about a **paused** run waiting for the operator. They are
+independent — `/retry` never unpauses a paused run and never touches steering,
+`/resume` never shortens a backoff.
 
 ### `POST /abort`
 Body: `{"reason": "..."}`. Interrupts the current iteration and terminates the job
