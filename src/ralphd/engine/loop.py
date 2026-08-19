@@ -918,6 +918,17 @@ class LoopSupervisor:
         await self._pause.wait()
 
     # -- main loop ------------------------------------------------------------
+    def _resuming_existing_run_dir(self) -> bool:
+        """True when this engine process is continuing a run dir that already
+        holds real recorded work -- an operator `ralphctl resume`, doctor's
+        auto-resume, or a fresh container over a run dir whose prior process
+        was killed -- rather than starting a run from scratch.
+
+        THE condition behind both _resume_point()'s skip-planning decision and
+        the `resumed` flag on the startup `state` event (task 032, #13), so
+        the two can never disagree about what a resume is."""
+        return bool(self.iterations_used and self.run.read_tasks().get("tasks"))
+
     def _resume_point(self) -> tuple[int, bool]:
         """Where run_job() should start on this engine invocation (PRD req
         16). A fresh run dir (no tasks.json yet, or no completed
@@ -933,7 +944,7 @@ class LoopSupervisor:
 
         Returns (start_approach, skip_planning_for_start_approach).
         """
-        if self.iterations_used == 0 or not self.run.read_tasks().get("tasks"):
+        if not self._resuming_existing_run_dir():
             return 1, False
         approach = self.run.read_status().get("approach") or 1
         self.run.emit(
@@ -1163,6 +1174,18 @@ class LoopSupervisor:
                                iterationsBudget=self.cfg.iterations,
                                maxApproaches=self.cfg.max_approaches,
                                onComplete=self.cfg.on_complete, verdict=None)
+        # Task 032 (#13): the move to `running` is a *state* event, not just a
+        # status.json field. events.jsonl is append-only across resumes and
+        # followers replay it from id 0, so without this a resumed run's log
+        # would still end on the *previous* episode's terminal `state` event
+        # -- and every consumer that reconciles against the log (`ralphctl
+        # watch`/`logs -f`, task 031) would have to infer the restart from
+        # unrelated event types. Emitted unconditionally, not only on resume:
+        # one code path is easier to trust than two, a non-terminal state
+        # event never ends anyone's stream, and a fresh run's log now opens
+        # with its own lifecycle transition. `resumed` says which case it is.
+        self.run.emit("state", state="running",
+                      resumed=self._resuming_existing_run_dir())
         start_approach, resuming = self._resume_point()
         try:
             for approach in range(start_approach, self.cfg.max_approaches + 1):

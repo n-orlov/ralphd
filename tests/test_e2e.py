@@ -259,7 +259,9 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
     code, _ = e.api("POST", "/pause", expect_error=True)
     assert code == 409
 
-    # events replay contains the full story
+    # events replay contains the full story. Task 032 (#13): the *first*
+    # `state` event is now the `running` transition every engine emits at
+    # startup, so the replay ends on a *terminal* state event, not on any.
     req = urllib.request.Request(
         f"http://127.0.0.1:{e.port}/events?since=0")
     types = []
@@ -267,9 +269,12 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
         for raw in resp:
             line = raw.decode().strip()
             if line.startswith("data: "):
-                types.append(json.loads(line[6:])["type"])
-            if types and types[-1] == "state":
-                break
+                ev = json.loads(line[6:])
+                types.append(ev["type"])
+                if ev["type"] == "state" and ev["state"] in (
+                        "succeeded", "failed", "aborted"):
+                    break
+    assert types[0] == "state"  # the startup `running` transition
     assert "iteration.start" in types and "signal" in types
     assert types.count("phase") >= 2  # planning + review
 
