@@ -210,11 +210,29 @@ def docker_sock() -> str:
     return os.environ.get("RALPHD_DOCKER_SOCK", "/var/run/docker.sock")
 
 
+def job_container_name(run_id: str) -> str:
+    """The one place the job container's docker name is spelled.
+
+    Also the value exported as RALPHD_SELF_CONTAINER_ID: the real 64-hex id
+    is not known until `docker run` has already returned, and docker accepts
+    a name anywhere an id is accepted, so the name we chose ourselves is the
+    identifier we can hand to the agent *before* the container exists.
+    """
+    return f"ralphd-{run_id}"
+
+
 def _reap_siblings(run_id: str) -> None:
     """Best-effort removal of containers labeled ralphd.run=<run_id>.
 
-    Sibling containers started by the job via the host docker socket carry
-    this label (the job container always does too). Never fails the caller.
+    Deliberately filters on the run label ALONE -- ralphctl reaps the job
+    container together with its siblings (both carry ralphd.run=<run_id>;
+    only the job container also carries ralphd.role=job). That is safe here
+    and only here: `stop`/`rm` mean "take this whole run down". Guidance
+    given to the agent inside the container must add
+    --filter label=ralphd.role=sibling, since the same query run from there
+    would destroy the container it is running in (task 035, #7).
+
+    Never fails the caller.
     """
     res = sh([DOCKER, "ps", "-aq", "--filter", f"label=ralphd.run={run_id}"])
     if res.returncode != 0:
@@ -717,7 +735,12 @@ def cmd_start(args):
         if ws_named:
             env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
 
-    docker_args: list[str] = ["--label", f"ralphd.run={run_id}"]
+    # ralphd.run reaps the whole run; ralphd.role distinguishes THIS
+    # container from siblings the job starts, so cleanup guidance handed to
+    # the agent can exclude it (task 034, #7).
+    docker_args: list[str] = ["--label", f"ralphd.run={run_id}",
+                              "--label", "ralphd.role=job"]
+    env_args += ["-e", f"RALPHD_SELF_CONTAINER_ID={job_container_name(run_id)}"]
     port_args = _network_args(args.network, args.api_bind, port,
                               docker_args, env_args)
     if args.allow_docker:
@@ -814,7 +837,7 @@ def cmd_start(args):
     if token:
         env_args += ["-e", f"RALPHD_API_TOKEN={token}"]
 
-    cmd = [DOCKER, "run", "-d", "--name", f"ralphd-{run_id}",
+    cmd = [DOCKER, "run", "-d", "--name", job_container_name(run_id),
            "--init", *port_args,
            *docker_args, *mounts, *env_args, args.image]
     res = sh(cmd)
@@ -1051,7 +1074,7 @@ def cmd_resume(args):
     _require_run(run_id)
     rdir = run_root(run_id)
     cdir = config_root(run_id)
-    name = f"ralphd-{run_id}"
+    name = job_container_name(run_id)
 
     running = _container_running(name)
     if running:
@@ -1098,7 +1121,9 @@ def cmd_resume(args):
     for entry in _read_extra_env_wiring(cdir):
         env_args += ["-e", entry]
 
-    docker_args = ["--label", f"ralphd.run={run_id}"]
+    docker_args = ["--label", f"ralphd.run={run_id}",
+                   "--label", "ralphd.role=job"]
+    env_args += ["-e", f"RALPHD_SELF_CONTAINER_ID={name}"]
     # --network on resume overrides; otherwise reuse what start recorded so a
     # resumed job keeps the same connectivity its PRD was written against.
     network = args.network or prev_meta.get("network")
@@ -2145,7 +2170,7 @@ def cmd_stop(args):
         api(args.run_id, "POST", "/shutdown")
     except SystemExit:
         pass
-    name = f"ralphd-{args.run_id}"
+    name = job_container_name(args.run_id)
     time.sleep(1)
     sh([DOCKER, "rm", "-f", name])
     _reap_siblings(args.run_id)
@@ -2160,7 +2185,7 @@ def cmd_stop(args):
 
 
 def cmd_rm(args):
-    name = f"ralphd-{args.run_id}"
+    name = job_container_name(args.run_id)
     if sh([DOCKER, "inspect", name]).returncode == 0:
         die(5, "container still exists — `stop` first")
     if not run_root(args.run_id).exists():
@@ -2363,7 +2388,7 @@ def cmd_repair(args):
     run_id = args.run_id
     _require_run(run_id)
     rdir = run_root(run_id)
-    name = f"ralphd-{run_id}"
+    name = job_container_name(run_id)
     running = _container_running(name)
     if running:
         die(5, f"container {name} is running -- repair refuses to touch a "
@@ -2842,7 +2867,7 @@ def _dangling_run_entry(run_id: str) -> dict | None:
     status = _read_json(run_root(run_id) / "status.json", {})
     if status.get("state") not in _NONTERMINAL_STATUS_STATES:
         return None
-    name = f"ralphd-{run_id}"
+    name = job_container_name(run_id)
     if _container_running(name) is not None:
         return None
     return {"runId": run_id, "container": name}
