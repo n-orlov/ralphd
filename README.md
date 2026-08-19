@@ -40,9 +40,9 @@ outputs. The CLI is documented to be driven by a human **or** by another AI agen
   boundaries), and an interrupt endpoint (SIGINT to the running agent for immediate
   course correction).
 - **Survivable outputs.** Run state and artifacts live in a host-mounted run
-  directory (`~/.ralphd/runs/<run-id>/`), so history outlives the container. By
-  default a finished container stays **idle** with its API up so the operator can
-  inspect and collect outputs; it can be configured to exit on completion instead.
+  directory (`~/.ralphd/runs/<run-id>/`), so history outlives the container — a
+  finished container **exits** by default and everything worth keeping is already
+  on the host. `on_complete: idle` keeps it up with its API live for debugging.
 - **Verified, not just "done".** The worker claiming `COMPLETE` only triggers an
   independent review pass; the job succeeds only when the reviewer emits `VERIFIED`.
   Failed reviews start a new approach with the findings folded into a composite PRD.
@@ -56,11 +56,19 @@ outputs. The CLI is documented to be driven by a human **or** by another AI agen
 | [docs/cli.md](docs/cli.md) | `ralphctl` reference — written for humans and AI agents |
 | [docs/llm-profiles.md](docs/llm-profiles.md) | LLM auth: profile format, host forwarding, Bedrock and generic-gateway presets |
 | [docs/roadmap.md](docs/roadmap.md) | Versioned delivery plan |
+| [docs/prds/](docs/prds/) | The PRDs ralphd was built from, verbatim |
+
+For a single full snapshot of the product — requirements, architecture, data
+model, fault model, both operator surfaces, testing — see [SPEC.md](SPEC.md).
 
 ## Status
 
-Design phase. No code yet — the documents above are the source of truth for v0.1
-implementation.
+Implemented and in use: the engine loop, the container API, `ralphctl`, the web
+hub, LLM profiles, and the resilience/self-recovery layer, covered by a test
+suite that includes a real docker-sibling tier and a real browser tier. What is
+not done: a published Docker image and `pipx` packaging. See
+[docs/roadmap.md](docs/roadmap.md) for the version-by-version state and
+[SPEC.md](SPEC.md#15-deferred) for what is deliberately deferred.
 
 ## Provenance
 
