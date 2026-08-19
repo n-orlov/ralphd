@@ -253,11 +253,27 @@ Human output also renders (task 003):
   itself runs, `health` still `degraded`) it reports the ongoing episode
   without a countdown. A healthy run prints no such line -- its output is
   byte-identical to before this line existed.
+- `reflection:` (task 020) -- shown only when the post-terminal `reflect`
+  iteration **failed** (status.json's `reflect.ok` is `false`, see
+  [api.md](api.md)):
+
+  ```
+  reflection: failed (Connection error.)
+  ```
+
+  A failed reflection never changes the run's `state`/`verdict`/`reason` --
+  the job is already over when `reflect` runs -- so without this line the
+  only trace is `artifacts/reflection/FAILED.md` and the run dir looks
+  exactly like one that never enabled reflect. A *successful* reflection
+  (its `artifacts/reflection/report.md` is the signal) and a run that never
+  ran one print nothing, keeping their output byte-identical to before.
+  The hub run-detail card carries the same line (`.reflect-failed`).
 
 `--json` output is untouched by any of this: it still carries the full,
 unsummarized `reason`/`tasks`/`usage` detail straight from status.json, plus
 `health` and `infraWait` verbatim (the on-disk fallback for an unreachable
-run defaults them to `"ok"`/`null`, matching `GET /status`).
+run defaults them to `"ok"`/`null`, matching `GET /status`), and `reflect`
+(defaulted to `null` the same way).
 
 ### `ralphctl watch <run-id>`
 
@@ -848,6 +864,11 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   backoff wait is actually pending and only when the run's API is
   reachable: on a dead run the card says `read-only on-disk snapshot` and
   offers no button.
+  A run whose post-terminal **reflection failed** (`reflect.ok: false`)
+  gets a `.reflect-failed` line -- `reflection: failed (<error>)`, the same
+  wording `ralphctl status` prints -- since the failure deliberately leaves
+  `state`/`verdict`/`reason` untouched; a successful or absent reflection
+  adds nothing.
 
 Browser e2e coverage (PRD req 23a): `tests/test_browser_hub.py`, marked
 `@pytest.mark.browser`, drives a real Chromium via the external

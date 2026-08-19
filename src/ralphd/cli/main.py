@@ -933,6 +933,32 @@ def _format_reason_lines(reason) -> list[str]:
     return lines
 
 
+def _format_reflect_lines(reflect) -> list[str]:
+    """Task 020 (#5): the `reflection:` line(s) for a run whose post-terminal
+    `reflect` iteration failed -- e.g.
+    `reflection: failed (Connection error.)`.
+
+    Returns an empty list unless status.json's `reflect` verdict (task 019,
+    see docs/api.md) actually records a failure: a successful reflection is
+    already visible as `artifacts/reflection/report.md`, and `reflect: null`
+    (reflect disabled, or the phase has not ended yet) has nothing to say --
+    so every run that is not a *failed* reflection keeps the exact output it
+    had before this line existed.
+
+    A failed reflection never changes the run's state/verdict/reason (the job
+    is over by the time reflect runs), which is precisely why it needs its own
+    line: otherwise the only trace is artifacts/reflection/FAILED.md, and from
+    the outside the run dir looks like reflect had never been enabled.
+    """
+    if not isinstance(reflect, dict) or reflect.get("ok") is not False:
+        return []
+    error = str(reflect.get("error") or "").strip() or "reason not recorded"
+    wrapped = textwrap.wrap(f"failed ({error})", width=76) or [error]
+    lines = [f"reflection: {wrapped[0]}"]
+    lines.extend(f"            {extra}" for extra in wrapped[1:])
+    return lines
+
+
 def _countdown_to(ts) -> str:
     """Human countdown to a published wall-clock timestamp (task 013, #5):
     'in 58s (2026-08-18T09:15:02Z)'. Degrades gracefully -- 'due now' once
@@ -1049,6 +1075,9 @@ def cmd_status(args):
         # dir whose status.json predates the fields.
         status.setdefault("health", "ok")
         status.setdefault("infraWait", None)
+        # Task 020 (#5): same for the reflect verdict -- null means "no
+        # reflect iteration has finished" (reflect off, or not there yet).
+        status.setdefault("reflect", None)
     status["live"] = live
 
     # Duration fields (PRD steering 051): a single `durationSeconds` covers
@@ -1095,6 +1124,11 @@ def cmd_status(args):
     lines.extend(_format_reason_lines(status.get("reason")))
     lines.append(f"tasks:     {_summarize_tasks(status.get('tasks') or {})}")
     lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
+    # Task 020 (#5): a failed post-terminal reflection is otherwise invisible
+    # here -- it deliberately leaves state/verdict/reason untouched, so
+    # without this line the operator cannot tell "reflect ran and died" from
+    # "reflect was never enabled".
+    lines.extend(_format_reflect_lines(status.get("reflect")))
     # Task 006: a terminal run (failed/aborted/succeeded) that still has
     # unconsumed steering files is a silent-drop hazard -- a terminal run
     # never reads pending steering again, so this is the operator's only

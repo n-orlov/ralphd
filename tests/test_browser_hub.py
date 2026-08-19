@@ -334,6 +334,44 @@ def test_degraded_card_offers_a_retry_now_button_with_a_ticking_countdown(tmp_pa
         healthy_engine.close()
 
 
+def test_run_detail_shows_a_failed_reflection(tmp_path, pw):
+    """Task 020 (#5): a run whose post-terminal `reflect` iteration failed
+    keeps its terminal state/verdict/reason untouched (docs/api.md's
+    `reflect`), so without a dedicated line the hub renders a run that lost
+    its post-mortem exactly like one that never enabled reflect. Assert the
+    `.reflect-failed` line appears for a failed-reflection fixture naming the
+    error, and is absent both for a successful reflection and for a run that
+    never ran one."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-reflect-failed", state="failed", verdict=None,
+                    reflect={"ok": False, "error": "Connection error.",
+                             "endedAt": "2026-01-01T01:00:00Z"})
+    _write_dead_run(registry, "run-reflect-ok", state="succeeded", verdict="verified",
+                    reflect={"ok": True, "error": None,
+                             "endedAt": "2026-01-01T01:00:00Z"})
+    _write_dead_run(registry, "run-reflect-off", state="succeeded", verdict="verified")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-reflect-failed")
+        body_text = _wait_for(pw, "document.body.innerText", "reflection: failed")
+        assert "Connection error." in body_text, body_text
+        n_reflect = int(pw.eval_js("document.querySelectorAll('.reflect-failed').length"))
+        assert n_reflect == 1
+        pw.screenshot(SCREENSHOTS_DIR / "07-reflection-failed.png")
+
+        for run_id in ("run-reflect-ok", "run-reflect-off"):
+            pw.open(f"{server.base}/#/run/{run_id}")
+            body_text = _wait_for(pw, "document.body.innerText", "succeeded")
+            assert "reflection: failed" not in body_text, (run_id, body_text)
+            n_reflect = int(pw.eval_js(
+                "document.querySelectorAll('.reflect-failed').length"))
+            assert n_reflect == 0, run_id
+    finally:
+        server.stop()
+
+
 def test_run_detail_shows_reason_for_terminal_failed_run(tmp_path, pw):
     """Task 004: the engine's high-quality `reason` string (e.g. the
     no-progress fail-fast explanation) must be prominently visible on the
