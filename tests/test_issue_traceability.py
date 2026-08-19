@@ -91,23 +91,17 @@ def test_every_listed_path_and_test_node_exists() -> None:
 
 
 def test_no_issue_was_closed_from_inside_the_run() -> None:
+    # An actual invocation always names an issue number, which is what this
+    # looks for -- the report and this module both *quote* the forbidden
+    # command without a number, and must not trip the check.
+    invocation = r"gh issue close +#?[0-9]"
     proc = subprocess.run(
-        [
-            "git",
-            "grep",
-            "-rIn",
-            "gh issue close",
-            "--",
-            ".",
-            # this module and the report itself quote the forbidden command
-            f":(exclude){REPORT.relative_to(REPO_ROOT)}",
-            ":(exclude)tests/test_issue_traceability.py",
-        ],
+        ["git", "grep", "-rIn", "-E", invocation],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
-    assert proc.stdout.strip() == "", f"found gh issue close: {proc.stdout}"
+    assert proc.stdout.strip() == "", f"found an issue-closing command: {proc.stdout}"
     log = subprocess.run(
         ["git", "log", "--format=%B"],
         cwd=REPO_ROOT,
@@ -115,4 +109,4 @@ def test_no_issue_was_closed_from_inside_the_run() -> None:
         text=True,
         check=True,
     )
-    assert "gh issue close" not in log.stdout
+    assert not re.search(invocation, log.stdout), "history closes a GitHub issue"
