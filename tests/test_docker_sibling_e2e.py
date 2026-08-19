@@ -394,12 +394,26 @@ def test_resume_continues_after_container_stop(ctl):
     assert len(iter_dirs) >= 2
 
 
+def _first_json_object(stdout: str) -> dict:
+    """Parse only the leading JSON object of a `--json` CLI stdout.
+
+    `--no-detach` prints the start meta object first and then *streams the
+    run's events* on the same stdout until the job ends, so the buffer is a
+    JSON object followed by arbitrary trailing lines -- `json.loads()` over
+    the whole thing only works when the CLI happens to lose the race to
+    connect to `/events` and streams nothing (flaky by construction). Decode
+    just the first value and ignore whatever the follower appended."""
+    obj, _end = json.JSONDecoder().raw_decode(stdout.lstrip())
+    assert isinstance(obj, dict), obj
+    return obj
+
+
 def test_no_detach_exits_0_on_verified_and_nonzero_when_unverified(ctl):
     run_id = _unique_run_id("e041-nodetach-ok")
     res = ctl.start(run_id, extra_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"},
                     extra=("--on-complete", "exit", "--no-detach"), timeout=90)
     assert res.returncode == 0, (res.stdout, res.stderr)
-    meta = json.loads(res.stdout)
+    meta = _first_json_object(res.stdout)
     assert meta["runId"] == run_id
 
     bad_id = _unique_run_id("e041-nodetach-bad")
