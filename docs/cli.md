@@ -200,9 +200,17 @@ ralphctl runs [--state running|succeeded|failed|aborted]
 
 Columns: run ID, state, verdict, phase, approach, iterations used/budget,
 started (absolute local time via the shared formatter, see `status` below).
+The **approach** column renders the counter against its limit (task 007,
+issue #16): `2/3` for a run with `maxApproaches` recorded, a bare `2` for a
+pre-v0.6 run dir where the limit is unknown (the live config's limit is never
+guessed in), and **blank** for a run that has not entered the review ladder
+yet — never `/3`, never the literal `None`. Same renderer as `ralphctl
+status` and the hub (`ralphd.engine.state.format_approach`).
 `--json` emits the merged `status.json` array — in the **same order** as the
 human table, with the raw ISO `startedAt` and the numeric `iterationsUsed`/
-`iterationsBudget` fields kept alongside the rendered `"7/250"` string.
+`iterationsBudget` fields kept alongside the rendered `"7/250"` string, and
+both raw `approach` and `maxApproaches` numbers (either may be `null`)
+alongside the rendered `approachDisplay` string.
 
 **Sorting** (task 055, issue #9) is the CLI half of the hub run list's
 click-to-sort (see “Sorting” under `ralphctl ui` below) and uses the *same*
@@ -227,6 +235,15 @@ An unrecognised `--sort` key is a usage error (exit `2`).
 
 Full status (mirrors `GET /status`; falls back to the run dir's `status.json` when
 the container is gone — indicated by `"live": false` in `--json` mode).
+
+The `phase:` line carries the approach counter against its limit (task 007,
+issue #16): `phase:     worker  approach 2/3`. With no `maxApproaches`
+recorded (a pre-v0.6 run dir, where `GET /status` publishes an explicit
+`null`) it degrades to a bare `approach 2` rather than inventing a
+denominator; for a run that has not entered the review ladder yet the
+approach segment is omitted entirely (it used to read `approach None`).
+`--json` always carries both raw numbers, `approach` and `maxApproaches`,
+the latter `null` when unknown.
 
 Human output includes a `duration:` line: while the job is still running this
 is the **elapsed-so-far** time since `startedAt` (labeled `(elapsed)`); once
