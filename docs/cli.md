@@ -1020,8 +1020,16 @@ JSON endpoints served under `/api/`:
   *rendered* lines (matching the `ralphctl logs` non-follow tail contract:
   `N` means N rendered lines, not N raw events, same as the `-N`/`--tail N`
   syntax below). Returns `{"live": bool, "lines": ["<rendered line>", ...]}`
-  — `lines` is `[]` and `live` is `false` if the run's API isn't reachable,
-  never an error. The static hub bundle's `app.js` just displays these
+  — never an error. When the run's API isn't reachable (task 039: its
+  container died, or the run finished long ago) `live` is `false` and the
+  lines come from the **on-disk transcript merge** instead
+  (`ralphd.log_merge.merged_lines` — the very same merge the engine serves
+  from inside the container, so the rendering is identical), which means a
+  dead run's log is still readable in the hub; only *following* needs a
+  live container. `app.js` labels such a tail as `(on-disk snapshot — the
+  run's API is not reachable, not following)`, in the same wording style as
+  the detail card's `live: no (on-disk snapshot)` row. `lines` is `[]` only
+  if there is genuinely no transcript on disk either. The static hub bundle's `app.js` just displays these
   lines (one per DOM element, via `textContent`); it does not reimplement
   any event-to-text rendering rules of its own, so it always renders
   identically to `ralphctl logs` (including collapsing a many-delta
