@@ -12,6 +12,15 @@ inspect` dumping a container's env). Asserts the persisted
 follow modes) never contain either secret literal but do contain the
 `[REDACTED:...]` marker, while an ordinary non-secret sentinel string
 passes through completely untouched (not overzealous).
+
+Task 042 (#6) extends the same fixture to the HOST-SIDE on-disk readers
+(`log_merge.merged_lines`, used by `ralphctl logs`'s snapshot mode, and
+`ui_server.rendered_log_lines`'s dead-run fallback for the hub): those run
+outside the engine, get no scrub callback, and therefore rely purely on
+write-time scrubbing -- the decision documented in docs/architecture.md's
+redaction section (the redaction map is deliberately NOT persisted). The
+assertions below are what make "accepting write-time-only scrubbing" a
+checked contract rather than a hope.
 """
 
 from __future__ import annotations
@@ -116,6 +125,29 @@ def test_secrets_redacted_from_output_events_and_logs(redact_engine, tmp_path):
     events_text = (e.run_dir / "events.jsonl").read_text()
     assert SECRET_CRED not in events_text
     assert SECRET_LLM not in events_text
+
+    # -- host-side ON-DISK snapshot (task 042): the hub/CLI read these bytes
+    # with NO scrub callback, so this asserts the write-time scrub alone
+    # leaves nothing unscrubbed in a dead-run snapshot ------------------
+    from ralphd.cli.ui_server import rendered_log_lines
+    from ralphd.log_merge import merged_lines
+
+    snapshot = "".join(merged_lines(e.run_dir))
+    assert SECRET_CRED not in snapshot
+    assert SECRET_LLM not in snapshot
+    assert "[REDACTED:" in snapshot          # scrubbing demonstrably ran
+    assert NONSECRET_MARKER in snapshot      # and was not overzealous
+
+    # ... and through the hub's fallback path: the fake registry entry has
+    # no apiUrl, so it is forced down that same on-disk merge (live=False).
+    reg = tmp_path / "fake-registry"
+    (reg / "runs").mkdir(parents=True)
+    (reg / "runs" / "redact-e2e").symlink_to(e.run_dir)
+    live, hub_lines = rendered_log_lines(reg, "redact-e2e", None)
+    assert live is False
+    hub_text = "\n".join(hub_lines)
+    assert SECRET_CRED not in hub_text
+    assert SECRET_LLM not in hub_text
 
     # -- GET /logs, default (tail) mode: same guarantees ---------------
     logs_tail = e.api_raw("/logs")

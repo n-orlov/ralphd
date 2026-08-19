@@ -880,6 +880,39 @@ writable overlay) and no API route (`GET /config`, `GET /config/creds`,
 etc.) ever exposes it — those routes already only ever return credential
 *names*, never values, and that discipline is unchanged by this feature.
 
+**Host-side on-disk reads: write-time scrubbing is the guarantee** (decided
+in v0.5, task 042). Since v0.5 the transcript merge is a shared module
+(`src/ralphd/log_merge.py`) that host-side surfaces read *directly
+from the run dir* when the engine's container is gone: `ralphctl logs`
+(snapshot mode) and the hub's log tail (`ui_server.rendered_log_lines`,
+`live: false`). Those readers run outside the engine process, so scrub
+point 3 (`GET /logs` re-scrubbing at serve time) is not available to them.
+The decision is to **accept write-time-only scrubbing there, and NOT to
+persist the redaction map** — because:
+
+- the redaction map is exactly as sensitive as the secrets in it, so
+  writing it into the run dir to enable a second pass would place every
+  secret value on disk in plaintext, next to the transcript it is meant to
+  protect — strictly worse than the gap it closes, and it would break the
+  memory-only guarantee above;
+- the bytes an on-disk reader sees were *already* scrubbed before they were
+  written (`runner.py` for `output.jsonl`, `state.py:RunDir.emit()` for
+  `events.jsonl`), so a snapshot is no less scrubbed than the file itself;
+  `log_merge` therefore takes its `scrub` callback as an injected argument
+  (the engine passes `redact.scrub_text`; host-side callers pass nothing)
+  rather than pretending to redact host-side.
+
+**Consequence for hub/CLI snapshot output**: a snapshot inherits exactly the
+write-time redaction set — the values the engine knew about *when the line
+was written*. It does not get the retroactive catch that `GET /logs`
+provides for a value only recognized as a secret later (e.g. a cred added
+mid-run via `PUT /config/creds/{name}`, after a transcript line already
+quoted it). While the run's container is alive, both surfaces read through
+`GET /logs` and are covered; only a dead run's snapshot can expose that
+narrow window. The bound is asserted by tests/test_secret_redaction.py,
+which renders the same fixture run dir through the host-side on-disk merge
+and the hub's fallback and requires no unscrubbed secret literal in either.
+
 **Non-goals** (recorded as roadmap notes, not implemented here — see
 [roadmap.md](roadmap.md)): PID-namespace isolation of agent iterations from
 in-container kill signals, and a `ralphctl repair` command for hand-fixing
