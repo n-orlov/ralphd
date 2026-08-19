@@ -1696,6 +1696,23 @@ def cmd_unpause(args):
     out(args, api(args.run_id, "POST", "/resume"), "unpaused")
 
 
+def cmd_retry(args):
+    """Task 016 (#5): wake a degraded run's infra backoff wait *now*.
+
+    Deliberately NOT `unpause`: a degraded run is not paused, it is sitting
+    out an LLM-endpoint outage (`/status` health `degraded` + a populated
+    `infraWait`). A manual retry also resets the outage-budget episode clock,
+    so the accumulated wait no longer counts against
+    `infra_outage_budget_s`. Exit codes follow pause/unpause/abort: the
+    shared api() helper maps the engine's 409 ("not waiting on an infra
+    fault" / "job finished") onto exit 5, and an unreachable container onto
+    4; an unknown run id is rejected before any HTTP with the documented 3.
+    """
+    _require_run(args.run_id)
+    out(args, api(args.run_id, "POST", "/retry"),
+        "retrying now (infra backoff wait woken; outage budget clock reset)")
+
+
 def cmd_abort(args):
     out(args, api(args.run_id, "POST", "/abort", {"reason": args.reason or ""}),
         "aborting")
@@ -2391,6 +2408,11 @@ def main() -> None:
     s.add_argument("--now", action="store_true",
                    help="also interrupt the current iteration")
     s.set_defaults(func=cmd_steer)
+
+    s = sub.add_parser("retry", help="wake a degraded run's infra backoff "
+                       "wait immediately (resets the outage-budget clock)")
+    s.add_argument("run_id")
+    s.set_defaults(func=cmd_retry)
 
     s = sub.add_parser("abort", help="terminate a job")
     s.add_argument("run_id")
