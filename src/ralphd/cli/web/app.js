@@ -462,7 +462,18 @@ function renderUsage(el, usage) {
   const total = usage.totalTokens ?? usage.total_tokens;
   const cost = usage.costUSD ?? usage.cost_usd;
   if (total != null) grid.appendChild(statCard("total tokens", total));
-  if (cost != null) grid.appendChild(statCard("cost", "$" + Number(cost).toFixed(4)));
+  // Task 051 (#10): `costDisplay` is the string the ONE shared formatter
+  // (`engine/state.format_cost`, applied server-side in ui_server, same
+  // pattern as `startedAtLocal`) produced -- "unavailable" for tokens the
+  // provider never priced, "$x+ (partial, rest unavailable)" for a mixed
+  // bucket. Never re-derive it from costUSD here: that is how `$0.0000`
+  // got shown for an unknown cost in the first place (issue #10).
+  const costText = usage.costDisplay ?? (cost != null ? "$" + Number(cost).toFixed(4) : null);
+  if (costText != null) {
+    const card = statCard("cost", costText);
+    if (usage.costStatus) card.classList.add("cost-" + usage.costStatus);
+    grid.appendChild(card);
+  }
   el.appendChild(grid);
   for (const [label, key] of [["by phase", "byPhase"], ["by approach", "byApproach"]]) {
     const bucket = usage[key];
@@ -478,7 +489,7 @@ function renderUsage(el, usage) {
       tbody.appendChild(h("tr", {}, [
         h("td", {}, [k]),
         h("td", {}, [String(v.totalTokens ?? "")]),
-        h("td", {}, [v.costUSD != null ? "$" + Number(v.costUSD).toFixed(4) : ""]),
+        h("td", {}, [v.costDisplay ?? (v.costUSD != null ? "$" + Number(v.costUSD).toFixed(4) : "")]),
       ]));
     }
     table.appendChild(tbody);

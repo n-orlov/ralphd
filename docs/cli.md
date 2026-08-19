@@ -263,7 +263,12 @@ Human output also renders (task 003):
 - `usage:` -- a one-line summary of the `usage` dict, e.g. `$0.56, 625k
   tokens (planning $0.10 / worker $0.40 / review $0.06)`, instead of a raw
   JSON dump. The per-phase breakdown only lists phases that actually
-  accrued usage.
+  accrued usage. A cost the provider never quoted is **never** printed as
+  `$0.00` (task 051, #10): a bucket marked `costStatus: "unknown"` renders
+  `unavailable`, and `costStatus: "partial"` renders the priced subtotal as
+  a lower bound, `$0.12+ (partial, rest unavailable)` -- the same wording
+  the `ralphctl logs` footer and the hub use, because all three go through
+  one formatter (`engine/state.format_cost`).
 - `degraded:` (task 013) -- shown only while the run is `health: "degraded"`,
   i.e. sitting out an infra outage (see `health`/`infraWait` in
   [api.md](api.md)). While a backoff wait is pending it names the attempt
@@ -350,6 +355,9 @@ run defaults them to `"ok"`/`null`, matching `GET /status`), and `reflect`
 Live TUI: task table, phase/approach/iteration header, budget + cost gauges,
 scrolling tail of agent output, pending steering. Read-only; `q` quits.
 Non-TTY/`--json`: streams SSE events as NDJSON instead (usable by agents).
+The cost gauge renders through the one shared cost formatter
+(`engine/state.format_cost`, task 051), so an unpriced/mixed total reads
+`unavailable` there too rather than `$0.0000`.
 
 The stream is replayed from the start of the run's `events.jsonl`, which is
 append-only **across resumes** — so it can contain a terminal `state` event
@@ -435,6 +443,9 @@ Pretty rendering shows: iteration/phase boundary headers (number, phase, model),
 assistant text as it streams, tool calls as compact one-liners, thinking
 elided to a marker, per-iteration usage/cost footer, agent errors
 highlighted. When stdout is not a TTY, output is identical minus color.
+The footer's `cost=` field prints `unavailable` when the provider billed the
+iteration's tokens without quoting a price (`usage.costPriced: false`, see
+[api.md](api.md)) instead of dropping the field or showing `$0`.
 
 Each tool one-liner shows the tool's salient argument (task 001), not just
 its name -- generously truncated (~300 chars) so the operator can actually
@@ -1166,7 +1177,10 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
 - **Run detail** (`#/run/<id>`) — summary card (state/verdict/phase/
   approach/iterations/live-vs-snapshot/duration), a usage/cost panel
   (total tokens+cost plus the `byPhase`/`byApproach` breakdowns from PRD
-  req 19 when present), a task table, an iteration timeline (number,
+  req 19 when present; an unknown/partial cost shows the shared
+  `unavailable` wording, computed server-side by `ui_server` and delivered
+  as `usage.costDisplay` exactly like `startedAtLocal`, never re-derived
+  from `costUSD` in the browser), a task table, an iteration timeline (number,
   phase, model, duration once ended), a live log tail rendered with the
   *same* pretty rules as `ralphctl logs` (iteration boundaries, streamed
   text, compact tool one-liners, elided thinking, malformed-line

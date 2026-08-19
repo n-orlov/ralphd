@@ -88,7 +88,13 @@ go back to fully known, and a later priced iteration only upgrades `unknown` to
 for every field including `costUSD`, but when a bucket is `partial`/`unknown`
 that sum is a sum of priced subtotals, not of costs — which is exactly why the
 marker exists rather than a silent subset total. Renderers must show
-`partial`/`unknown` cost as unavailable instead of `$0.0000`.
+`partial`/`unknown` cost as unavailable instead of `$0.0000` — every shipped
+surface (`ralphctl status`, the `ralphctl logs` iteration footer, the hub's
+usage panel, the `watch` cost gauge) does so through the single formatter
+`engine/state.format_cost`, which renders `unknown` as `unavailable` and
+`partial` as `$<priced subtotal>+ (partial, rest unavailable)`. The hub gets
+that string server-side as `usage.costDisplay` (plus `costDisplay` on each
+`byPhase`/`byApproach` bucket) alongside the untouched raw fields.
 
 `deadlineAt` is `startedAt + jobTimeoutS` **plus every second this run has
 spent waiting out an infra outage** (`infraWaitTotalS`, the cumulative infra

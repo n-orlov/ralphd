@@ -116,6 +116,65 @@ def format_local_time(ts: str | None) -> str:
     return time.strftime(LOCAL_TIME_FORMAT, time.localtime(epoch))
 
 
+# Task 051 (#10): the one word every surface uses for "the provider quoted no
+# price, so there is no cost figure" -- deliberately not `$0.0000`, which is a
+# real (free) price and was exactly the lie #10 reported.
+COST_UNAVAILABLE = "unavailable"
+COST_PARTIAL_SUFFIX = f"+ (partial, rest {COST_UNAVAILABLE})"
+
+
+def cost_status(usage: dict | None) -> str | None:
+    """How much of `usage`'s cost is actually known: None (fully priced, or
+    nothing billed), `"partial"` or `"unknown"`.
+
+    Accepts BOTH published shapes so one formatter can serve every surface:
+
+    * a *bucket* (status.json `usage`, `byPhase[p]`, `byApproach[a]`) carries
+      the merged verdict as `costStatus` (task 050, `loop._merge_cost_status`);
+    * a single *iteration*'s usage carries task 049's `costPriced` marker
+      instead -- `False` means tokens were billed that the provider quoted no
+      price for, which is `"partial"` when the iteration also collected a
+      real (float) `costUSD` and `"unknown"` when it never did.
+    """
+    if not usage:
+        return None
+    status = usage.get("costStatus")
+    if status in ("partial", "unknown"):
+        return status
+    if usage.get("costPriced") is False:
+        return "partial" if isinstance(usage.get("costUSD"), float) else "unknown"
+    return None
+
+
+def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
+    """Render `usage`'s cost for humans, or None when there is nothing to say.
+
+    The ONE shared cost formatter (task 051, #10): `ralphctl status`, the
+    `ralphctl logs` iteration footer, the hub's usage card/tables (via
+    `ui_server`, which ships the formatted string next to the raw numbers,
+    the same pattern as `format_local_time`) and any future `ralphctl watch`
+    TUI cost gauge all go through it, so "we don't know what this cost" is
+    worded identically everywhere and can never render as `$0.0000` again:
+
+    * fully priced (or nothing billed) -> `"$0.56"`, byte-for-byte what each
+      surface printed before this task (`decimals=None` keeps the logs
+      footer's raw `str(float)` rendering);
+    * `"partial"` -> `"$0.56+ (partial, rest unavailable)"`: the priced
+      subtotal is a lower bound, never presented as the total;
+    * `"unknown"` -> `"unavailable"`, with no number at all;
+    * no cost information whatsoever -> None, so the caller keeps its own
+      "omit the field" / legacy `$0.00` behaviour.
+    """
+    status = cost_status(usage)
+    amount = (usage or {}).get("costUSD")
+    if status == "unknown" or (status == "partial" and amount is None):
+        return COST_UNAVAILABLE
+    if amount is None:
+        return None
+    rendered = f"${amount}" if decimals is None else f"${amount:.{decimals}f}"
+    return rendered + COST_PARTIAL_SUFFIX if status == "partial" else rendered
+
+
 def atomic_write(path: Path, data: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(data)

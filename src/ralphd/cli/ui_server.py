@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from ..engine.state import NONTERMINAL_STATES, format_local_time
+from ..engine.state import NONTERMINAL_STATES, format_cost, format_local_time
 from ..log_merge import NO_TRANSCRIPT, merged_lines
 from .log_render import new_render_state, render_to_lines
 
@@ -265,6 +265,36 @@ def _with_local_times(doc: dict) -> dict:
     return out
 
 
+def _with_cost_display(doc: dict) -> dict:
+    """Task 051 (#10): attach the hub's *rendered* cost strings server-side,
+    exactly like `_with_local_times` does for timestamps -- computed by the one
+    shared formatter (`engine/state.format_cost`) so the hub, `ralphctl status`
+    and the `ralphctl logs` footer word an unpriced/mixed total identically and
+    none of them can render `$0.0000` for a cost nobody knows.
+
+    `costDisplay` is *added* to the usage total and to every byPhase/byApproach
+    bucket; the raw `costUSD`/`costStatus` fields are left untouched for
+    machine consumers, and a bucket with no cost information at all gets no
+    `costDisplay` (app.js then falls back to its own number rendering).
+    """
+    usage = doc.get("usage")
+    if not isinstance(usage, dict):
+        return doc
+
+    def rendered(bucket):
+        if not isinstance(bucket, dict):
+            return bucket
+        display = format_cost(bucket, decimals=4)
+        return {**bucket, "costDisplay": display} if display is not None else dict(bucket)
+
+    out_usage = rendered(usage)
+    for key in ("byPhase", "byApproach"):
+        buckets = usage.get(key)
+        if isinstance(buckets, dict):
+            out_usage[key] = {k: rendered(v) for k, v in buckets.items()}
+    return {**doc, "usage": out_usage}
+
+
 def run_detail(reg: Path, run_id: str) -> dict | None:
     """Run detail view (PRD req 21): task table + iteration timeline data,
     live where possible, falling back to the on-disk snapshot for a dead
@@ -298,7 +328,7 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # state it means the container died without recording a terminal
         # state, which the card renders with the warning treatment.
         "containerGone": container_gone(status, ok_s),
-        "status": _with_local_times(status),
+        "status": _with_cost_display(_with_local_times(status)),
         "tasks": tasks,
         "iterations": iterations,
     }

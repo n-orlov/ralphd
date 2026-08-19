@@ -679,3 +679,59 @@ def test_timeline_and_summary_show_absolute_local_timestamps(tmp_path, pw):
         assert detail["status"]["startedAt"] == started
     finally:
         server.stop()
+
+
+def test_run_detail_renders_unknown_cost_as_unavailable(tmp_path, pw):
+    """Task 051 (#10): the usage panel must never claim `$0.0000` for a cost
+    the provider never quoted. The string is produced server-side by the one
+    shared formatter (`engine/state.format_cost`, shipped as
+    `usage.costDisplay` -- the `startedAtLocal` pattern), so this asserts the
+    rendered panel text for an unpriced run, the partial lower-bound wording
+    for a mixed byPhase bucket, and that a fully-priced run still renders the
+    plain number."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-unpriced", state="succeeded", usage={
+        "costStatus": "unknown", "totalTokens": 900,
+        "byPhase": {"worker": {"costStatus": "unknown", "totalTokens": 900}},
+    })
+    _write_dead_run(registry, "run-mixed", state="succeeded", usage={
+        "costUSD": 0.25, "costStatus": "partial", "totalTokens": 900,
+        "byPhase": {"worker": {"costUSD": 0.25, "costStatus": "partial"},
+                    "review": {"costUSD": 1.6, "totalTokens": 100}},
+    })
+    _write_dead_run(registry, "run-priced", state="succeeded",
+                    usage={"costUSD": 14.2, "totalTokens": 900,
+                           "byPhase": {"worker": {"costUSD": 14.2}}})
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-unpriced")
+        panel = _wait_for(pw, "document.getElementById('usage-box').innerText",
+                          "unavailable")
+        assert "$0.0000" not in panel, panel
+        assert "$" not in panel, panel
+        n_marked = int(pw.eval_js(
+            "document.querySelectorAll('.stat.cost-unknown').length"))
+        assert n_marked == 1
+        pw.screenshot(SCREENSHOTS_DIR / "11-usage-cost-unavailable.png")
+
+        pw.open(f"{server.base}/#/run/run-mixed")
+        panel = _wait_for(pw, "document.getElementById('usage-box').innerText",
+                          "partial")
+        assert "$0.2500+ (partial, rest unavailable)" in panel, panel
+        assert "$1.6000" in panel, panel
+        n_marked = int(pw.eval_js(
+            "document.querySelectorAll('.stat.cost-partial').length"))
+        assert n_marked == 1
+
+        pw.open(f"{server.base}/#/run/run-priced")
+        panel = _wait_for(pw, "document.getElementById('usage-box').innerText",
+                          "$14.2000")
+        assert "unavailable" not in panel, panel
+        assert "partial" not in panel, panel
+        n_marked = int(pw.eval_js(
+            "document.querySelectorAll('.stat.cost-unknown, .stat.cost-partial').length"))
+        assert n_marked == 0
+    finally:
+        server.stop()

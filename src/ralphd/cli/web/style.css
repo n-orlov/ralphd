@@ -209,6 +209,10 @@ button:hover { opacity: 0.9; }
 
 .usage-grid .stat .k { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
 .usage-grid .stat .v { font-size: 1.1rem; font-weight: 600; }
+/* Task 051 (#10): an unknown/partial cost is not a number -- render it as the
+   soft, non-authoritative value it is so it never reads like a real total. */
+.usage-grid .stat.cost-unknown .v,
+.usage-grid .stat.cost-partial .v { color: var(--muted); font-size: 0.95rem; }
 
 footer.autorefresh {
   color: var(--muted);
