@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import functools
 import io
 import json
 import os
@@ -1194,6 +1195,97 @@ def cmd_resume(args):
 
 
 # ---------------------------------------------------------------- observation
+# Task 055 (#9): `ralphctl runs` sorting, kept deliberately in lockstep with
+# the hub run list's `RUN_COLUMNS` / `sortRuns` (cli/web/app.js, task 054) --
+# same key names, same lifecycle orders, same missing-value and tie-break
+# rules -- so an operator who sorts the table in the browser and then types
+# `ralphctl runs --sort <key>` gets the same order, not a second dialect.
+RUN_STATE_ORDER = ["starting", "running", "succeeded", "failed", "aborted"]
+RUN_VERDICT_ORDER = ["", "unverified", "verified"]
+# Keys whose *natural* first direction is descending (biggest/newest first),
+# mirroring app.js `toggleRunSort`'s first-click rule. `--reverse` flips
+# whichever direction the key starts with.
+RUN_SORT_DESC_KEYS = ("startedAt", "iterationsUsed", "approach")
+
+
+def _lifecycle_rank(order: list[str], value) -> int:
+    """Position of a state/verdict in lifecycle order; an unrecognised value
+    sorts after every known one instead of scrambling the order (mirrors
+    app.js `lifecycleRank`)."""
+    v = "" if value is None else str(value).lower()
+    return order.index(v) if v in order else len(order)
+
+
+def _num_or_none(v):
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_or_none(ts):
+    if not ts:
+        return None
+    try:
+        return parse_utc(str(ts))
+    except (ValueError, TypeError):
+        return None
+
+
+# key -> sort value extracted from the RAW row values, never the rendered
+# cell text (`iterationsUsed`, not the "17/250" string; the epoch instant,
+# not the ISO characters).
+RUN_SORT_KEYS: dict = {
+    "runId": lambda r: str(r.get("runId") or ""),
+    "state": lambda r: _lifecycle_rank(RUN_STATE_ORDER, r.get("state")),
+    "verdict": lambda r: _lifecycle_rank(RUN_VERDICT_ORDER, r.get("verdict")),
+    "phase": lambda r: str(r.get("phase") or ""),
+    "approach": lambda r: _num_or_none(r.get("approach")),
+    "iterationsUsed": lambda r: _num_or_none(r.get("iterationsUsed")),
+    "startedAt": lambda r: _epoch_or_none(r.get("startedAt")),
+}
+RUN_SORT_DEFAULT = "startedAt"
+
+
+def _cmp_run_values(a, b) -> int:
+    """app.js `cmpValues`: missing values (no startedAt, no approach yet)
+    compare *after* present ones rather than pretending to be 0/""."""
+    a_missing = a is None or a == ""
+    b_missing = b is None or b == ""
+    if a_missing or b_missing:
+        return 0 if a_missing and b_missing else (1 if a_missing else -1)
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return -1 if a < b else (1 if a > b else 0)
+    a, b = str(a), str(b)
+    return -1 if a < b else (1 if a > b else 0)
+
+
+def sort_run_rows(rows: list[dict], key: str | None = None,
+                  reverse: bool = False) -> list[dict]:
+    """Order run rows exactly the way the hub table does for the same key.
+
+    Default `startedAt` descending -- newest first, which is what an operator
+    coming back to a machine wants, not run-id alphabetical.
+    """
+    key = key or RUN_SORT_DEFAULT
+    value = RUN_SORT_KEYS.get(key, RUN_SORT_KEYS[RUN_SORT_DEFAULT])
+    direction = -1 if key in RUN_SORT_DESC_KEYS else 1
+    if reverse:
+        direction = -direction
+
+    def compare(x, y):
+        r = _cmp_run_values(value(x), value(y))
+        if r:
+            return r * direction
+        # Deterministic tie-break (app.js does the same) so repeated calls
+        # never reshuffle equal rows.
+        return _cmp_run_values(str(x.get("runId") or ""), str(y.get("runId") or ""))
+
+    return sorted(rows, key=functools.cmp_to_key(compare))
+
+
 def cmd_runs(args):
     rows = []
     runs_dir = registry() / "runs"
@@ -1202,20 +1294,36 @@ def cmd_runs(args):
             status = _read_json(d / "status.json", {})
             if args.state and status.get("state") != args.state:
                 continue
+            used = status.get("iterationsUsed", 0)
             rows.append({"runId": d.name, "state": status.get("state"),
                          "verdict": status.get("verdict"),
                          "phase": status.get("phase"),
-                         "iterations": f"{status.get('iterationsUsed', 0)}"
+                         "approach": status.get("approach"),
+                         "iterationsUsed": used,
+                         "iterationsBudget": status.get("iterationsBudget"),
+                         "iterations": f"{used}"
                                        f"/{status.get('iterationsBudget', '?')}",
                          "startedAt": status.get("startedAt")})
+    # One ordering for both surfaces: --json is the human table's rows in the
+    # same sequence, so a script and a reader never disagree about "first".
+    rows = sort_run_rows(rows, getattr(args, "sort", None),
+                         bool(getattr(args, "reverse", False)))
     if args.json:
         print(json.dumps(rows, indent=2))
     else:
-        fmt = "{runId:<24} {state:<10} {verdict:<10} {phase:<9} {iterations:<7} {startedAt}"
+        fmt = ("{runId:<24} {state:<10} {verdict:<10} {phase:<9} {approach:<8} "
+               "{iterations:<7} {startedAt}")
         print(fmt.format(runId="RUN", state="STATE", verdict="VERDICT",
-                         phase="PHASE", iterations="ITER", startedAt="STARTED"))
+                         phase="PHASE", approach="APPROACH",
+                         iterations="ITER", startedAt="STARTED"))
         for r in rows:
-            print(fmt.format(**{k: str(v) for k, v in r.items()}))
+            print(fmt.format(
+                runId=str(r["runId"]), state=str(r["state"]),
+                verdict=str(r["verdict"]), phase=str(r["phase"]),
+                approach=str(r["approach"]), iterations=str(r["iterations"]),
+                # Task 048 (#4)'s shared absolute formatter for the human
+                # column; --json keeps the raw ISO value for sorting/consumers.
+                startedAt=format_local_time(r["startedAt"])))
 
 
 def _format_reason_lines(reason) -> list[str]:
@@ -3197,8 +3305,14 @@ def main() -> None:
     s.add_argument("--no-detach", dest="detach", action="store_false")
     s.set_defaults(func=cmd_start, detach=True)
 
-    s = sub.add_parser("runs", help="list runs")
+    s = sub.add_parser("runs", help="list runs (newest first)")
     s.add_argument("--state")
+    s.add_argument("--sort", choices=sorted(RUN_SORT_KEYS),
+                   default=RUN_SORT_DEFAULT,
+                   help="sort key (same keys as the hub's run-list columns); "
+                        f"default {RUN_SORT_DEFAULT} (newest first)")
+    s.add_argument("--reverse", action="store_true",
+                   help="flip the sort key's natural direction")
     s.set_defaults(func=cmd_runs)
 
     for name, fn, extra in [
