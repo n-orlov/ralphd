@@ -348,6 +348,39 @@ TASKS_LAST_GOOD_NAME = ".tasks-last-good.json"
 TASKS_READ_ATTEMPTS = 4
 TASKS_READ_DELAY = 0.01
 
+# Task 004 (#15): the wording every surface uses for a stale/unreadable task
+# read, kept here next to the reader that produces the condition -- same
+# discipline as `log_merge.NO_TRANSCRIPT`, so `ralphctl tasks`, the hub run
+# detail and any future viewer name the same fact the same way instead of each
+# inventing a phrase. Retrieved through `TasksRead.notice`, never re-spelled.
+TASKS_STALE_NOTICE = (
+    "stale task list: tasks.json did not parse on the last read (an agent is "
+    "rewriting it, or it is corrupt) -- showing the last plan that did parse")
+TASKS_UNREADABLE_NOTICE = (
+    "unreadable task list: tasks.json did not parse and no earlier plan was "
+    "ever read -- this is ignorance, not an empty plan")
+# Short form for tabular/badge surfaces (hub task table, CLI columns).
+TASKS_STALE_LABEL = "stale"
+
+
+def tasks_read_notice(source: str | None, stale: bool = False) -> str | None:
+    """The human sentence for a task read described by `tasksSource` /
+    `tasksStale`, or None on the happy path (`absent`/`file`: an empty plan
+    there is a fact, and a surface must stay silent rather than cry wolf).
+
+    Takes the two wire fields rather than a `TasksRead` so a surface holding
+    only the *serialised* contract -- `ralphctl tasks` printing a live `GET
+    /tasks` answer, the hub reading its own JSON -- reaches the same wording
+    without fabricating a reader result.
+    """
+    if source == "last-good":
+        return TASKS_STALE_NOTICE
+    if source == "unreadable":
+        return TASKS_UNREADABLE_NOTICE
+    # An engine that flags staleness without naming a source still gets a
+    # sentence: `tasksStale` is the field whose absence means "old engine".
+    return TASKS_STALE_NOTICE if stale else None
+
 _tasks_last_good_lock = threading.Lock()
 _tasks_last_good: dict[str, dict] = {}
 
@@ -407,6 +440,13 @@ class TasksRead:
         items as counts (`cli/main.py:_summarize_tasks`), so a boolean in
         there would render as a bogus task status."""
         return {"tasksStale": self.stale, "tasksSource": self.source}
+
+    @property
+    def notice(self) -> str | None:
+        """Task 004 (#15): the human sentence for this read, or None on the
+        happy path -- delegated to `tasks_read_notice()`, which owns the
+        wording so a surface holding only the serialised contract agrees."""
+        return tasks_read_notice(self.source, self.stale)
 
 
 def _remember_tasks(key: str, doc: dict) -> None:

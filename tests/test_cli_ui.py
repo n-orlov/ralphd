@@ -213,7 +213,10 @@ def test_run_detail_degrades_gracefully_for_dead_run(tmp_path, ui):
     assert code == 200
     assert body["live"] is False
     assert body["status"]["state"] == "failed"  # fell back to status.json
-    assert body["tasks"] == {"tasks": []}
+    # Task 004 (#15): the on-disk task read is served by the hardened reader,
+    # so the payload states its provenance alongside the (here genuinely
+    # empty) plan instead of an unlabelled default.
+    assert body["tasks"] == {"tasks": [], "tasksStale": False, "tasksSource": "file"}
 
 
 def test_run_detail_and_unknown_run_404(tmp_path, ui):

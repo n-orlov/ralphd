@@ -37,7 +37,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from ..engine.state import NONTERMINAL_STATES, format_cost, format_local_time, prd_path
+from ..engine.state import (
+    NONTERMINAL_STATES,
+    format_cost,
+    format_local_time,
+    prd_path,
+    read_tasks_doc,
+)
 from ..log_merge import NO_TRANSCRIPT, merged_lines
 from .log_render import new_render_state, render_to_lines
 
@@ -59,6 +65,22 @@ API_PROBE_TIMEOUT_S = 0.3
 
 
 def _read_json(path: Path, default=None):
+    """Read one small JSON document off disk, defaulting when it is absent or
+    mid-write.
+
+    Deliberately NOT for `tasks.json` (task 004, #15): collapsing a
+    `JSONDecodeError` into `{"tasks": []}` is exactly how "the plan vanished
+    for one poll cycle" reached the hub table, and the hardened reader
+    (`engine.state.read_tasks_doc`) exists to distinguish absent from
+    mid-write. The guard is a hard error rather than a comment so a future
+    caller cannot quietly reintroduce the bug -- the run dir's own
+    `.tasks-last-good.json` is not read through here either, it belongs to
+    the reader.
+    """
+    if path.name == "tasks.json":
+        raise ValueError(
+            "read tasks.json through engine.state.read_tasks_doc(persist=False), "
+            "not _read_json: an unparseable plan must not become an empty one")
     try:
         return json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -342,9 +364,26 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     if ok_s and live_status:
         status = live_status
 
-    tasks = _read_json(run_dir / "tasks.json", {"tasks": []}) or {"tasks": []}
+    # Task 004 (#15): the on-disk path goes through the engine's hardened
+    # reader, so a poll that lands inside an agent's rewrite of tasks.json
+    # serves the last plan that parsed (flagged `tasksStale`) instead of an
+    # empty table. `persist=False`: the hub is a read-only viewer of somebody
+    # else's run dir and must not write a last-good cache into it.
+    #
+    # The flags travel as the same `tasksStale`/`tasksSource` fields a live
+    # `GET /tasks` already carries (task 003), so app.js has one contract to
+    # render whichever side served the payload. A live answer is passed
+    # through verbatim -- including a pre-v0.6 engine's answer, which carries
+    # no flags at all; inventing `tasksStale: false` there would claim
+    # freshness nobody vouched for.
+    tasks_read = read_tasks_doc(run_dir, persist=False)
+    tasks = {**tasks_read.doc, **tasks_read.contract}
+    # The payload has always carried a `tasks` list for a plan-less run
+    # (app.js renders `d.tasks.tasks`); with `tasksSource: "absent"` alongside
+    # it, an empty list here is a stated fact rather than a swallowed error.
+    tasks.setdefault("tasks", [])
     ok_t, _, live_tasks = _proxy_json(reg, run_id, "GET", "/tasks")
-    if ok_t and live_tasks is not None:
+    if ok_t and isinstance(live_tasks, dict):
         tasks = live_tasks
 
     iterations = []
