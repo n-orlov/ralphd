@@ -324,7 +324,19 @@ class LoopSupervisor:
     @staticmethod
     def _docker_siblings_note() -> str:
         """Guidance appended when the operator granted docker socket access
-        (ralphctl start --allow-docker sets the RALPHD_HOST_* env vars)."""
+        (ralphctl start --allow-docker sets the RALPHD_HOST_* env vars).
+
+        Task 035 (#7) added the sibling-only cleanup idiom. The job
+        container carries ralphd.run=<run-id> exactly like its siblings (it
+        is how `ralphctl stop`/`rm` reap a whole run), so the obvious
+        "tidy up my containers" one-liner filtered on that label alone
+        deletes the container the agent is running in -- the run dies
+        mid-iteration and the iteration's work is lost. Hence: siblings also
+        carry ralphd.role=sibling, cleanup filters on BOTH labels, reaping
+        is ralphctl's job, and RALPHD_SELF_CONTAINER_ID names the one id
+        never to touch. The prompt states the rule *and* the why -- a bare
+        prohibition tends to get "optimised" away by the next model.
+        """
         host_ws = os.environ.get("RALPHD_HOST_WORKSPACE")
         host_wss = os.environ.get("RALPHD_HOST_WORKSPACES")
         host_run = os.environ.get("RALPHD_HOST_RUN_DIR")
@@ -348,10 +360,35 @@ class LoopSupervisor:
             lines.append(f"  - run dir: `$RALPHD_HOST_RUN_DIR` = `{host_run}`\n")
         ws_mount = ("$RALPHD_HOST_WORKSPACE" if host_ws
                     else "<host workspace path from above>")
+        self_id = os.environ.get("RALPHD_SELF_CONTAINER_ID", "")
+        self_id_shown = f" (= `{self_id}`)" if self_id else ""
         lines.append(
-            f"- Label every sibling `--label ralphd.run=$RALPHD_RUN_ID` "
-            f"(= `{run_id}`) so it gets reaped with this job; prefer `--rm` "
-            "for anything short-lived.\n"
+            f"- Label every sibling with BOTH `--label "
+            f"ralphd.run=$RALPHD_RUN_ID` (= `{run_id}`) and `--label "
+            "ralphd.role=sibling` so it gets reaped with this job and can be "
+            "told apart from the job container; prefer `--rm` for anything "
+            "short-lived.\n"
+            "- **Never clean up by the run label alone.** THIS container — the "
+            "job itself — also carries `ralphd.run=$RALPHD_RUN_ID` (plus "
+            "`ralphd.role=job`), so `docker rm -f $(docker ps -aq --filter "
+            "label=ralphd.run=$RALPHD_RUN_ID)` kills the run mid-iteration: "
+            "the agent process dies, the iteration's work and transcript are "
+            "lost, and the run dir is left non-terminal. Always add the role "
+            "filter so the query can only ever match siblings:\n"
+            "  - list: `docker ps -aq --filter "
+            "label=ralphd.run=$RALPHD_RUN_ID --filter "
+            "label=ralphd.role=sibling`\n"
+            "  - remove: `docker rm -f $(docker ps -aq --filter "
+            "label=ralphd.run=$RALPHD_RUN_ID --filter "
+            "label=ralphd.role=sibling)`\n"
+            f"- `$RALPHD_SELF_CONTAINER_ID`{self_id_shown} is this job's own "
+            "container: never `docker stop`/`rm`/`kill` it, and never pass it "
+            "to a command that removes what it lists.\n"
+            "- You do not have to reap anything at the end: tearing the run "
+            "down is `ralphctl`'s job (`ralphctl stop`/`rm` on the host may "
+            "filter on the run label alone, precisely because there it *should* "
+            "take the job container with it). Only remove siblings you are done "
+            "with mid-run, with the two-filter form above.\n"
             "- Images you build and volumes you create live on the HOST and "
             "outlive this job (`ralphctl stop`/`rm` reap labeled *containers* "
             "only) — label them too, and delete any you did not mean to keep.\n"
@@ -366,6 +403,7 @@ class LoopSupervisor:
             "`docker build -t <repo>-ci --label ralphd.run=$RALPHD_RUN_ID ci/`\n"
             "  - Run each command in a throwaway sibling: `docker run --rm "
             "--user 1000:1000 --label ralphd.run=$RALPHD_RUN_ID "
+            "--label ralphd.role=sibling "
             f"-v {ws_mount}:/workspace -w /workspace <repo>-ci <cmd>`\n"
             "  - `--user 1000:1000` is mandatory (this container and the host "
             "user are both uid 1000): a root sibling leaves root-owned files "
