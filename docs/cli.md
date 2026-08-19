@@ -453,6 +453,23 @@ SIGINT the current iteration without adding steering.
 
 Hold/release the loop at the next iteration boundary.
 
+### `ralphctl retry <run-id>`
+
+Wake a **degraded** run (one whose `status` shows `health: degraded` with a
+populated `infraWait` — it is sitting out an LLM-endpoint outage) instead of
+letting the escalating backoff run its course: posts `POST /retry`, which cuts
+the current wait short and attempts the phase again immediately.
+
+A manual retry also **resets the outage-budget episode clock**, so the wait
+accumulated so far stops counting against `infra_outage_budget_s` (the attempt
+number keeps escalating, so the *next* automatic backoff is unchanged). It
+never unpauses a paused run and never touches steering — use `unpause` to
+release an operator pause.
+
+Exit `0` woken · `5` the run is not in an infra wait (or already finished) ·
+`3` unknown run · `4` API unreachable. `--json` prints the engine's
+`{"retrying": true}`.
+
 ### `ralphctl abort <run-id> [--reason <text>]`
 
 Terminate the job (state `aborted`, honors on-complete mode).

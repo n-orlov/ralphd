@@ -223,6 +223,7 @@ Wakes an infra backoff wait immediately instead of waiting for
 the outage-budget **episode clock is reset** (the cumulative `waitedS` starts
 from zero again, while the attempt counter — and therefore the escalating
 backoff — is kept). Emits `infra_retry_now`. `200 {"retrying": true}`.
+CLI: `ralphctl retry <run-id>` (docs/cli.md).
 
 `409` when the run is not actually in an infra wait (`health: "ok"` /
 `infraWait: null`, or the job already finished) — the problem detail says so.
