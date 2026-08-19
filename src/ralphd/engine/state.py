@@ -392,6 +392,22 @@ class TasksRead:
     def counts(self) -> dict:
         return task_counts(self.tasks)
 
+    @property
+    def contract(self) -> dict:
+        """Task 003 (#15): the two fields every surface that serves this read
+        carries verbatim -- `GET /tasks`, `GET /status`, the hub's run
+        payloads, `ralphctl tasks --json` -- so a stale read is labelled the
+        same way wherever it surfaces, and never has to be inferred.
+
+        `tasksStale` is ALWAYS present (False on the happy path), so its
+        absence only ever means "an older engine wrote this", never "fresh";
+        `tasksSource` carries which of the four cases produced the payload.
+        Deliberately siblings of the counts rather than keys inside them:
+        `/status`'s `tasks` dict is consumed by summarisers that iterate its
+        items as counts (`cli/main.py:_summarize_tasks`), so a boolean in
+        there would render as a bogus task status."""
+        return {"tasksStale": self.stale, "tasksSource": self.source}
+
 
 def _remember_tasks(key: str, doc: dict) -> None:
     with _tasks_last_good_lock:
