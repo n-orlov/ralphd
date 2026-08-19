@@ -82,6 +82,7 @@ ralphctl start --prd <file|-> [options]
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
 | `--iteration-timeout <dur>` | 45m | per-iteration limit |
 | `--infra-outage-budget <seconds>` | 14400 (4h) | wall-clock budget for riding out one LLM-endpoint outage: infra-classified faults (connection errors, 429/529, overloaded, throttling — see [architecture.md](architecture.md)) keep being retried while one episode's accumulated backoff wait stays under this budget. Waiting costs no iterations and no approaches. Written to the run's `job.yaml` as `infra_outage_budget_s` and visible in `GET /config` (`budgets.infraOutageBudgetS`) |
+| `--auto-resume` / `--no-auto-resume` | off | opt this run in to (or explicitly out of) self-recovery: `ralphctl doctor --fix` resumes a run recorded non-terminal whose container has vanished (the dangling-container condition `doctor`/`repair`/`status` report). Host-side setting — recorded with the run's other start-time wiring in `<registry>/configs/<run-id>/auto-resume.json`, never passed into the container, so it survives every later `resume` (the container is replaced, the config dir is not). Falls back to the registry's `auto_resume` (`ralphctl config`) if set; `--no-auto-resume` overrides a template/registry opt-in. The default is deliberately **off** in v0.5 and lives in exactly one place in the source (see [roadmap.md](roadmap.md) for the planned flip) |
 | `--port <n>` | auto | host port for the API |
 | `--api-bind <addr>` | 127.0.0.1 | host interface to publish on |
 | `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. Falls back to the registry's `network` (`ralphctl config`) if set. |
@@ -786,20 +787,23 @@ Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
 (created on first `set`). Recognized keys: `image`, `on_complete`
 (`idle`/`exit` — validated on `set`), `default_llm_profile` (any string;
 `ralphctl doctor` resolves it as an LLM profile name, see below), `network`
-(any string; same values `--network` accepts, e.g. `host`).
+(any string; same values `--network` accepts, e.g. `host`), `auto_resume`
+(`true`/`false` — validated on `set` and stored as a real boolean; the
+registry-wide default for `start --auto-resume`).
 
 - `get` prints `<key>: <value>`, or `<key>: (unset)` if the key has never
   been `set` — this is not an error (exit `0` either way).
 - `set` overwrites just that one key in `config.yaml`, leaving any other
   keys already set untouched.
 - An unrecognized key exits `2` (both `get` and `set`) naming the expected
-  keys; an invalid `on_complete` value on `set` also exits `2` and leaves
-  `config.yaml` unchanged.
+  keys; an invalid `on_complete`/`auto_resume` value on `set` also exits `2`
+  and leaves `config.yaml` unchanged.
 - `--json` on `get`/`set` prints `{"key": ..., "value": ...}` (`value` is
   `null` for an unset `get`).
 
 `ralphctl start` layers these in as the **registry-wide fallback** for the
-same-named flags (`--image`, `--on-complete`, `--network`) and for `--llm`
+same-named flags (`--image`, `--on-complete`, `--network`, `--auto-resume`)
+and for `--llm`
 (via `default_llm_profile`), between an explicit flag/`--template` value and
 the hardcoded built-in default: explicit flag > `--template` > `ralphctl
 config` default > hardcoded default. `resume`/`llm test`/`doctor`'s own
