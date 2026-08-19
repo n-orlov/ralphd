@@ -121,11 +121,16 @@ def format_local_time(ts: str | None) -> str:
 # real (free) price and was exactly the lie #10 reported.
 COST_UNAVAILABLE = "unavailable"
 COST_PARTIAL_SUFFIX = f"+ (partial, rest {COST_UNAVAILABLE})"
+# Task 052 (#10): the one word every surface uses for money computed from the
+# host-side pricing map instead of quoted by the provider. Always rendered
+# with a `~` on the amount so a derived figure can never be mistaken for a
+# provider-reported one, whatever surface it appears on.
+COST_DERIVED_WORD = "derived"
 
 
 def cost_status(usage: dict | None) -> str | None:
     """How much of `usage`'s cost is actually known: None (fully priced, or
-    nothing billed), `"partial"` or `"unknown"`.
+    nothing billed), `"derived"`, `"partial"` or `"unknown"`.
 
     Accepts BOTH published shapes so one formatter can serve every surface:
 
@@ -133,17 +138,29 @@ def cost_status(usage: dict | None) -> str | None:
       the merged verdict as `costStatus` (task 050, `loop._merge_cost_status`);
     * a single *iteration*'s usage carries task 049's `costPriced` marker
       instead -- `False` means tokens were billed that the provider quoted no
-      price for, which is `"partial"` when the iteration also collected a
-      real (float) `costUSD` and `"unknown"` when it never did.
+      price for, which is `"derived"` when the host-side pricing map covered
+      every one of them (task 052's `costDerived: true`), `"partial"` when the
+      iteration also collected a real (float) `costUSD` and `"unknown"` when
+      it never did.
     """
     if not usage:
         return None
     status = usage.get("costStatus")
-    if status in ("partial", "unknown"):
+    if status in ("partial", "unknown", "derived"):
         return status
     if usage.get("costPriced") is False:
-        return "partial" if isinstance(usage.get("costUSD"), float) else "unknown"
+        if usage.get("costDerived") is True:
+            return "derived"
+        known = (isinstance(usage.get("costUSD"), float)
+                 or isinstance(usage.get("costDerivedUSD"), float))
+        return "partial" if known else "unknown"
+    if isinstance(usage.get("costDerivedUSD"), float):
+        return "derived"
     return None
+
+
+def _money(amount: float, decimals: int | None) -> str:
+    return f"${amount}" if decimals is None else f"${amount:.{decimals}f}"
 
 
 def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
@@ -162,16 +179,31 @@ def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
     * `"partial"` -> `"$0.56+ (partial, rest unavailable)"`: the priced
       subtotal is a lower bound, never presented as the total;
     * `"unknown"` -> `"unavailable"`, with no number at all;
+    * `"derived"` (task 052) -> `"~$0.45 derived"`, or `"$0.56 + ~$0.45
+      derived"` when provider-quoted and host-derived money are both present:
+      the two are shown as separate amounts, never one sum, so a derived
+      figure is never mistaken for what the provider actually billed;
     * no cost information whatsoever -> None, so the caller keeps its own
       "omit the field" / legacy `$0.00` behaviour.
     """
     status = cost_status(usage)
     amount = (usage or {}).get("costUSD")
-    if status == "unknown" or (status == "partial" and amount is None):
+    derived = (usage or {}).get("costDerivedUSD")
+    if status == "unknown" or (status == "partial" and amount is None
+                               and derived is None):
         return COST_UNAVAILABLE
+    if isinstance(derived, float):
+        # provider-quoted part first (only when a price was actually QUOTED --
+        # a float `costUSD`, per loop._has_reported_price; the int `0` a
+        # no-traffic iteration contributes is not a quote), derived part marked
+        parts = [_money(amount, decimals)] if isinstance(amount, float) else []
+        parts.append(f"~{_money(derived, decimals)} {COST_DERIVED_WORD}")
+        rendered = " + ".join(parts)
+        return (f"{rendered}, partial (rest {COST_UNAVAILABLE})"
+                if status == "partial" else rendered)
     if amount is None:
         return None
-    rendered = f"${amount}" if decimals is None else f"${amount:.{decimals}f}"
+    rendered = _money(amount, decimals)
     return rendered + COST_PARTIAL_SUFFIX if status == "partial" else rendered
 
 

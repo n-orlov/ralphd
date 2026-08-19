@@ -21,6 +21,7 @@ from .config import (
 )
 from .faults import classify_fault
 from .llm import current_env
+from .pricing import PricingMap
 from .runner import IterationResult, PiRunner
 from .state import (
     RunDir,
@@ -48,7 +49,11 @@ class LoopSupervisor:
         self.cfg = cfg
         self.run = run
         self.workspace = workspace
-        self.runner = PiRunner(workspace)
+        # Task 052 (#10): the host-side rate table (usually inlined into
+        # job.yaml by `ralphctl start`) is parsed once, here -- the runner
+        # consults it only for messages the provider quoted no price for.
+        self.runner = PiRunner(workspace,
+                               pricing=PricingMap.from_config(cfg.pricing))
         # Seed from any already-completed iterations on disk (0 for a
         # fresh run dir) so a restarted engine numbers its next iteration
         # N+1 instead of reusing/duplicating past numbers (PRD req 16).
@@ -902,6 +907,14 @@ class LoopSupervisor:
         extra bookkeeping key in the published contract."""
         return isinstance(d.get("costUSD"), float)
 
+    @staticmethod
+    def _has_derived_price(d: dict) -> bool:
+        """True when `d` holds money DERIVED from the host-side pricing map
+        (task 052, #10) rather than quoted by the provider. Kept in its own
+        field (`costDerivedUSD`) precisely so the two can never be summed
+        into one indistinguishable number."""
+        return isinstance(d.get("costDerivedUSD"), float)
+
     @classmethod
     def _merge_cost_status(cls, bucket: dict, usage: dict) -> str | None:
         """Task 050 (#10): summarise how a *bucket* (total/byPhase/byApproach)
@@ -916,15 +929,25 @@ class LoopSupervisor:
         * `"partial"` -> the bucket mixes reported prices with billed-but-
           unpriced tokens, so `costUSD` is a lower bound (the priced subtotal);
         * `"unknown"` -> tokens were billed and nothing in the bucket ever came
-          back with a price, so there is no meaningful cost figure at all.
+          back with a price, so there is no meaningful cost figure at all;
+        * `"derived"` (task 052, #10) -> nothing is unknown, but part of the
+          money in this bucket came from the host-side pricing map rather than
+          the provider (`costDerivedUSD`), so it must be rendered as derived.
         """
         prev = bucket.get("costStatus")
         # `costPriced is False` == this iteration billed tokens the provider
         # quoted no price for (runner._accumulate_cost); None == no traffic.
-        has_unknown = prev in ("partial", "unknown") or usage.get("costPriced") is False
+        # `costDerived is True` == every one of those got a rate from the
+        # host-side map, so the gap is filled (derived, not unknown).
+        unpriced_gap = (usage.get("costPriced") is False
+                        and usage.get("costDerived") is not True)
+        has_unknown = prev in ("partial", "unknown") or unpriced_gap
+        has_derived = (prev == "derived" or cls._has_derived_price(bucket)
+                       or cls._has_derived_price(usage))
         if not has_unknown:
-            return None
-        has_price = (prev == "partial" or cls._has_reported_price(bucket)
+            return "derived" if has_derived else None
+        has_price = (prev == "partial" or has_derived
+                     or cls._has_reported_price(bucket)
                      or cls._has_reported_price(usage))
         return "partial" if has_price else "unknown"
 
@@ -935,7 +958,8 @@ class LoopSupervisor:
         accumulation site so byPhase/byApproach sums always equal the
         overall total (PRD req 19).
 
-        Non-numeric markers (task 049's `costPriced`) are never *added*
+        Non-numeric markers (task 049's `costPriced`, task 052's `costDerived`)
+        are never *added*
         (`False + 0 == 0` would quietly turn the marker into a counter);
         they feed the bucket's own `costStatus` verdict instead (task 050).
         """

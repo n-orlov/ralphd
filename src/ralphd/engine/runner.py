@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .pricing import PricingMap
 from .redact import scrub_text
 
 COMPLETE = "<promise>COMPLETE</promise>"
@@ -54,9 +55,13 @@ class IterationResult:
 class PiRunner:
     """Runs `pi -p --mode json` as a subprocess, one call per iteration."""
 
-    def __init__(self, workspace: Path, pi_bin: str = "pi"):
+    def __init__(self, workspace: Path, pi_bin: str = "pi",
+                 pricing: PricingMap | None = None):
         self.workspace = workspace
         self.pi_bin = pi_bin
+        # Task 052 (#10): optional host-side rate table, consulted ONLY when
+        # the provider quotes no price of its own (see _accumulate_cost).
+        self.pricing = pricing
         self._proc: asyncio.subprocess.Process | None = None
 
     @property
@@ -117,7 +122,9 @@ class PiRunner:
                         line = await self._proc.stdout.readline()
                         if not line:
                             break
-                        saw_event = self._scan_line(line, result)
+                        saw_event = self._scan_line(line, result,
+                                                    pricing=self.pricing,
+                                                    model=model)
                         if saw_event and not first_traffic.is_set():
                             first_traffic.set()
                         # Mechanical secret redaction (task 060): scrub any
@@ -180,7 +187,9 @@ class PiRunner:
         return result
 
     @staticmethod
-    def _scan_line(line: bytes, result: IterationResult) -> bool:
+    def _scan_line(line: bytes, result: IterationResult,
+                   pricing: PricingMap | None = None,
+                   model: str | None = None) -> bool:
         """Extract final assistant text + usage from pi's NDJSON events.
 
         Returns True iff `line` parsed as JSON at all -- i.e. this is the
@@ -204,11 +213,13 @@ class PiRunner:
                 usage = msg.get("usage") or {}
                 for key in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
                     result.usage[key] = result.usage.get(key, 0) + (usage.get(key) or 0)
-                _accumulate_cost(usage, result)
+                _accumulate_cost(usage, result, pricing=pricing, model=model)
         return True
 
 
-def _accumulate_cost(usage: dict, result: IterationResult) -> None:
+def _accumulate_cost(usage: dict, result: IterationResult,
+                     pricing: PricingMap | None = None,
+                     model: str | None = None) -> None:
     """Fold one message's `usage.cost.total` into `result.usage` (task 049, #10).
 
     A *missing* price is not a price of zero. Real gateways (and Bedrock via
@@ -226,6 +237,16 @@ def _accumulate_cost(usage: dict, result: IterationResult) -> None:
     * no price and nothing billed (pi zero-fills `usage` on an in-band error,
       so a no-traffic iteration still reaches this line) -> $0 is the truth
       and the int-0 accumulation stays byte-for-byte what it always was.
+
+    Task 052 (#10) adds one branch to the unpriced case: when a host-side
+    `pricing` map knows a rate for this `model`, the cost is *derived* from
+    the token counters. It accumulates into a SEPARATE `costDerivedUSD`
+    field marked `costDerived: true` -- never folded into `costUSD`, so "the
+    provider quoted this" and "we computed this from a local rate table" stay
+    distinguishable in the stored contract and on every surface. `costPriced`
+    stays `false` either way (the provider still quoted nothing), and
+    `costDerived: false` means at least one unpriced message had no rate, so
+    part of this iteration's cost remains genuinely unknown.
     """
     cost = (usage.get("cost") or {}).get("total")
     if cost is not None:
@@ -236,5 +257,12 @@ def _accumulate_cost(usage: dict, result: IterationResult) -> None:
                  ("input", "output", "cacheRead", "cacheWrite", "totalTokens"))
     if billed:
         result.usage["costPriced"] = False
+        derived = pricing.derive(usage, model) if pricing else None
+        if derived is None:
+            result.usage["costDerived"] = False
+        else:
+            result.usage["costDerivedUSD"] = round(
+                result.usage.get("costDerivedUSD", 0.0) + derived, 6)
+            result.usage.setdefault("costDerived", True)
     else:
         result.usage["costUSD"] = round(result.usage.get("costUSD", 0) + 0, 6)

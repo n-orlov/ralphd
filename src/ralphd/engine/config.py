@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+from .pricing import PricingMap
+
+log = logging.getLogger("ralphd.config")
 
 CONFIG_DIR = Path(os.environ.get("RALPHD_CONFIG_DIR", "/config"))
 RUN_DIR = Path(os.environ.get("RALPHD_RUN_DIR", "/run/ralphd"))
@@ -127,6 +133,13 @@ class JobConfig:
     infra_retry_backoff_max_s: float = DEFAULT_INFRA_RETRY_BACKOFF_MAX_S
     infra_retry_max: int | None = None
     infra_outage_budget_s: float = DEFAULT_INFRA_OUTAGE_BUDGET_S
+    # Task 052 (#10): optional host-side pricing map (see engine/pricing.py),
+    # normally inlined into job.yaml from `<registry>/config.yaml`'s
+    # `pricing:` key by `ralphctl start`. Used ONLY when the provider quotes
+    # no price; the derived cost is published separately and marked derived,
+    # never merged into provider-reported `costUSD`. Overridable per run with
+    # RALPHD_PRICING (a JSON object of the same shape).
+    pricing: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
     # "reflect" (post-job self-reflection, PRD req 24) mirrors "review"'s tier
@@ -164,6 +177,14 @@ class JobConfig:
             cfg.infra_retry_max = int(v)
         if v := os.environ.get("RALPHD_INFRA_OUTAGE_BUDGET_S"):
             cfg.infra_outage_budget_s = float(v)
+        if v := os.environ.get("RALPHD_PRICING"):
+            try:
+                parsed = json.loads(v)
+            except json.JSONDecodeError:
+                log.warning("RALPHD_PRICING is not valid JSON -- ignored")
+            else:
+                if isinstance(parsed, dict):
+                    cfg.pricing = parsed
         return cfg
 
     def effective(self) -> dict:
@@ -200,6 +221,11 @@ class JobConfig:
                 "overrides": dict(self.model_overrides),
                 "thinking": self.thinking,
             },
+            # Task 052 (#10): the host-side rate table as resolved (null when
+            # none is configured, and the shipped default IS none) -- so an
+            # operator reading a derived cost can see which rates produced it.
+            "pricing": (pm.describe()
+                        if (pm := PricingMap.from_config(self.pricing)) else None),
         }
 
     def model_for(self, phase: str) -> str | None:
