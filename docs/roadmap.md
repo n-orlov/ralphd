@@ -91,8 +91,17 @@ Phase 1 — the environment must not be able to destroy a job:
   producing no post-mortem (#5)
 - ⏳ A run recorded `running` with no container is visible to `repair`,
   `status`, and the hub — not only to `doctor` (#8)
-- ⏳ Opt-in self-recovery: `--auto-resume` + `ralphctl doctor --fix`, with a
-  crash-loop cap (default OFF; see the deferred note below)
+- ✅ Opt-in self-recovery, shipped **off by default**: `ralphctl start
+  --auto-resume` (or the registry default `ralphctl config set auto_resume
+  true`) marks a run as opted in, and `ralphctl doctor --fix` — run from cron/
+  systemd, no new daemon — resumes exactly those runs recorded non-terminal
+  whose container has vanished. Opted-out runs are reported and left alone;
+  terminal runs and runs whose termination was operator-initiated (`abort`/
+  `stop`) are never resurrected; a crash-loop guard (`autoResume: {attempts,
+  lastAt, maxAttempts}` in the run dir) spaces attempts with escalating
+  backoff and gives up with a readable reason. The default is a single literal,
+  `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py` — see the deferred note
+  below for the planned flip
 - ⏳ `ralphctl watch` stops closing at a *historical* terminal-state marker —
   today the documented agent completion-wait reports a resumed run as finished,
   silently, exit 0 (#13)
@@ -112,11 +121,14 @@ Phase 2 — operator surfaces:
 
 ## Later / explicitly deferred
 
-- `auto_resume` defaulting to ON. v0.5 ships opt-in self-recovery with the
-  default OFF so the crash-loop guard and the "never resurrect an
-  operator-killed run" rule can be validated on real runs first; the intent is
-  to flip the default once they have been. The default lives in exactly one
-  place for that reason.
+- `auto_resume` defaulting to **ON** in a later version. v0.5 ships opt-in
+  self-recovery with the default OFF so the crash-loop guard and the "never
+  resurrect an operator-killed run" rule can be validated on real runs first;
+  the intent is to flip the default once they have been. So that the flip is a
+  one-line change, the default lives in exactly one place — the
+  `AUTO_RESUME_DEFAULT` literal in `src/ralphd/cli/main.py` (every other
+  surface, including the registry-config default and the tests, reads it from
+  there; `tests/test_cli_auto_resume.py` is parameterised over its value).
 - PID-namespace isolation of agent iterations from in-container kill signals
   (a supervisor-level SIGKILL/SIGTERM currently reaches the running `pi`
   subprocess directly since it shares the container's PID namespace; giving

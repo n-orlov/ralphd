@@ -66,6 +66,25 @@ def test_default_literal_appears_exactly_once_in_the_source(ctl):
     assert len(hits) == 1, f"auto_resume default defined more than once: {hits}"
 
 
+def test_roadmap_records_the_planned_default_flip_and_names_the_single_place():
+    """Task 030: the deferred list must say the default is planned to flip to
+    ON later and point at the one literal a future maintainer has to edit."""
+    from pathlib import Path
+
+    text = (Path(__file__).parent.parent / "docs" / "roadmap.md").read_text()
+    deferred = text.split("## Later / explicitly deferred", 1)
+    assert len(deferred) == 2, "docs/roadmap.md lost its deferred section"
+    note = deferred[1]
+    assert "auto_resume" in note
+    assert "ON" in note, "the deferred note must say the default flips to ON"
+    assert "AUTO_RESUME_DEFAULT" in note
+    assert "src/ralphd/cli/main.py" in note
+    # ...and the v0.5 block must describe what actually shipped: opt-in.
+    v05 = text.split("## v0.5", 1)[1].split("## Later", 1)[0]
+    assert "--auto-resume" in v05
+    assert "off by default" in v05.lower()
+
+
 # ------------------------------------------------------------------- --flag
 def test_start_flag_opts_the_run_in(ctl):
     _start(ctl, "tst-ar-on", "--auto-resume")
