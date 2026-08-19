@@ -2269,6 +2269,35 @@ def cmd_retry(args):
         "retrying now (infra backoff wait woken; outage budget clock reset)")
 
 
+def cmd_budget(args):
+    """Task 046 (#3): change a *running* job's iteration budget in flight.
+
+    Thin operator front-end for `PATCH /config/budget` (task 045), taking the
+    same spec syntax as `resume --iterations`: `+N` tops up by N, a bare `N`
+    sets the budget absolutely (so lowering is explicit -- a bare `-5` is an
+    absolute negative budget and is rejected, never read as a decrement).
+
+    Only the shape is checked here; every semantic decision (below
+    `iterationsUsed`, job already finished) belongs to the engine, which owns
+    the live counters. Exit codes come from the shared api() helper, so they
+    match pause/unpause/retry/abort: 0 applied, 5 on the engine's 409
+    refusals, 1 on its 422 (invalid value), 3 unknown run, 4 API unreachable,
+    2 for a locally malformed spec (usage error, same as
+    `resume --iterations`).
+
+    The change is live-engine only: `/config/job.yaml` is a read-only mount,
+    so a *fresh container* needs `resume --iterations +N` instead.
+    """
+    _require_run(args.run_id)
+    spec = args.iterations.strip()
+    if not re.fullmatch(r"\+?-?\d+", spec):
+        die(2, f"budget: invalid value {spec!r} (expected e.g. +10 or 30)")
+    res = api(args.run_id, "PATCH", "/config/budget", {"iterations": spec})
+    out(args, res,
+        f"iteration budget: {res.get('previous')} -> {res.get('iterations')} "
+        f"({res.get('iterationsUsed')} used)")
+
+
 def cmd_abort(args):
     result = api(args.run_id, "POST", "/abort", {"reason": args.reason or ""})
     # Task 029 (#8): the engine records the same marker itself (loop.abort);
@@ -3246,6 +3275,15 @@ def main() -> None:
                        "wait immediately (resets the outage-budget clock)")
     s.add_argument("run_id")
     s.set_defaults(func=cmd_retry)
+
+    s = sub.add_parser("budget", help="change a running job's iteration "
+                       "budget in flight (+N tops up, N sets absolutely)")
+    s.add_argument("run_id")
+    s.add_argument("iterations", metavar="+N|N",
+                   help="budget top-up (+10) or absolute new budget (40); "
+                        "live-engine change only -- use "
+                        "`resume --iterations +N` for a fresh container")
+    s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")
     s.add_argument("run_id")
