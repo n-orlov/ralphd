@@ -1010,6 +1010,32 @@ def _format_degraded_lines(status: dict) -> list[str]:
     return lines
 
 
+def _format_container_gone_lines(run_id: str, status: dict, entry: dict,
+                                 tty: bool) -> list[str]:
+    """Task 022 (#8): the dedicated warning for a run whose recorded state is
+    non-terminal but whose container is gone -- the zombie condition
+    `_dangling_run_entry` owns (the same one doctor and repair report).
+
+    Before this line existed the operator had to join two facts printed lines
+    apart -- `state: running` and `(live api: False)` -- and know that the
+    combination means "this run died without ever recording a terminal
+    state", which reads exactly like a briefly-unreachable healthy run. Said
+    once, explicitly, naming the container and the command that diagnoses it
+    (`repair` names both the `--set-state` and the `resume` remedy, so status
+    does not fork that story).
+    """
+    state = status.get("state")
+    return [_ansi(tty, "1;31",
+                  f"container: {entry['container']} appears gone (no such "
+                  f"container) -- status.json still"),
+            _ansi(tty, "1;31",
+                  f"           records state {state!r}, so this run stopped "
+                  f"without recording a terminal"),
+            _ansi(tty, "1;31",
+                  f"           state; diagnose with `ralphctl repair "
+                  f"{run_id}`")]
+
+
 _TASK_STATUS_LABELS = {"inProgress": "in-progress", "validationFailed": "validation-failed"}
 
 
@@ -1080,32 +1106,65 @@ def cmd_status(args):
         status.setdefault("reflect", None)
     status["live"] = live
 
+    # Task 022 (#8): an unreachable run whose recorded state is non-terminal
+    # is almost certainly a zombie -- container died/removed outside
+    # ralphctl. Only asked once the API is already known to be unreachable,
+    # so a live run's output (and its `docker inspect` cost) is unchanged.
+    container_gone = None if live else _dangling_run_entry(args.run_id)
+    status["containerGone"] = container_gone is not None
+
     # Duration fields (PRD steering 051): a single `durationSeconds` covers
     # both "elapsed so far" (state still running, no endedAt yet) and "total
     # run time" (terminal state, endedAt set) -- same measurement, the only
     # thing that changes is whether the end bound is `endedAt` or now.
     # Additive: existing timestamp fields (startedAt/endedAt/...) are left
     # untouched, this only adds new numeric-seconds fields alongside them.
-    duration_s = elapsed_seconds(status.get("startedAt"), status.get("endedAt"))
+    #
+    # Task 022 (#8): for a zombie run neither bound is meaningful -- there is
+    # no `endedAt` (the engine never got to write one) and nothing is
+    # elapsing, so measuring to *now* prints an ever-growing number that
+    # reads like a live run making progress. The end bound becomes the last
+    # status.json write (`updatedAt`), and what is displayed is the staleness
+    # -- time since that write -- under a label saying exactly that.
+    stale_since = None
+    if container_gone is not None:
+        stale_since = status.get("updatedAt") or status.get("startedAt")
+    duration_s = elapsed_seconds(status.get("startedAt"),
+                                 status.get("endedAt") or stale_since)
     status["durationSeconds"] = duration_s
+    since_update_s = elapsed_seconds(stale_since) if stale_since else None
+    if stale_since:
+        status["sinceLastUpdateSeconds"] = since_update_s
     cur_it = status.get("currentIteration")
     it_duration_s = None
     if isinstance(cur_it, dict):
-        it_duration_s = elapsed_seconds(cur_it.get("startedAt"))
+        it_duration_s = elapsed_seconds(cur_it.get("startedAt"), stale_since)
         cur_it["elapsedSeconds"] = it_duration_s
 
-    duration_label = "total" if status.get("endedAt") else "elapsed"
+    if stale_since:
+        shown_s, duration_label = since_update_s, "since last update"
+    else:
+        shown_s = duration_s
+        duration_label = "total" if status.get("endedAt") else "elapsed"
+    tty = sys.stdout.isatty()
     lines = [
         f"run:       {status.get('runId')}",
         f"state:     {status.get('state')}  (live api: {live})",
+    ]
+    if container_gone is not None:
+        lines.extend(_format_container_gone_lines(
+            args.run_id, status, container_gone, tty))
+    lines += [
         f"verdict:   {status.get('verdict')}",
-        f"duration:  {format_duration(duration_s)}  ({duration_label})",
+        f"duration:  {format_duration(shown_s)}  ({duration_label})",
         f"phase:     {status.get('phase')}  approach {status.get('approach')}",
         f"iteration: {status.get('iterationsUsed')}/{status.get('iterationsBudget')}",
     ]
     if isinstance(cur_it, dict):
+        at_update = ", at last update" if stale_since else ""
         lines.append(f"iteration elapsed: {format_duration(it_duration_s)} "
-                     f"(iteration {cur_it.get('number')}, phase={cur_it.get('phase')})")
+                     f"(iteration {cur_it.get('number')}, "
+                     f"phase={cur_it.get('phase')}{at_update})")
         # Task 001a criterion 4: while an infra-fault retry is backing off,
         # currentIteration.note carries a human-readable
         # "retrying after infra fault (attempt N/max, next in Xs): <error>"
@@ -1137,7 +1196,6 @@ def cmd_status(args):
     # by combing steering/.consumed.json by hand.
     unconsumed = status.get("unconsumedSteering") or []
     if unconsumed:
-        tty = sys.stdout.isatty()
         names = ", ".join(unconsumed)
         lines.append(_ansi(tty, "1;31",
                             f"!! UNCONSUMED STEERING: {names} "
