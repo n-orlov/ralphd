@@ -156,12 +156,23 @@ you should know):
   `RALPHD_HOST_RUN_DIR`, and `RALPHD_RUN_ID` so the agent can mount the right
   dirs; container-local paths mount empty and can litter root-owned dirs on
   the host.
-- Siblings should carry `--label ralphd.run=<run-id>` (the job container
-  always does, plus `--label ralphd.role=job` so the two can be told apart;
-  the job also gets `RALPHD_SELF_CONTAINER_ID` naming its own container) —
-  `ralphctl stop`/`rm` reap everything with that label,
+- Siblings must carry **both** `--label ralphd.run=<run-id>` and
+  `--label ralphd.role=sibling` (the job container always carries the run
+  label plus `--label ralphd.role=job` so the two can be told apart; the job
+  also gets `RALPHD_SELF_CONTAINER_ID` naming its own container) —
+  `ralphctl stop`/`rm` reap everything with the run label,
   best-effort. `ralphctl doctor` lists stray labeled containers whose run no
   longer exists.
+- **Never clean up by the run label alone** — and the agent is told so in
+  every prompt. From inside
+  the job, `docker rm -f $(docker ps -aq --filter
+  label=ralphd.run=$RALPHD_RUN_ID)` also matches the job container: the run
+  dies mid-iteration, that iteration's work and transcript are lost and the run
+  dir is left non-terminal (issue #7). The sanctioned form adds the role
+  filter — `docker ps -aq --filter label=ralphd.run=$RALPHD_RUN_ID --filter
+  label=ralphd.role=sibling` — and end-of-run reaping is ralphctl's job, not
+  the agent's. Host-side, `stop`/`rm` filter on the run label alone on purpose
+  (they *should* take the job container too).
 - Prefer `--rm` for short-lived siblings; detached unlabeled containers,
   built images, and volumes outlive the job (only *containers* are reaped).
 - **Toolchain in a sibling** — the intended answer whenever a job needs a

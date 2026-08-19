@@ -44,7 +44,7 @@ ci/run.sh bash -c 'tmux -L t new-session -d -s s "./app"; sleep 1; tmux -L t cap
 docker build -t "$CI_IMAGE" --label "ralphd.run=$RALPHD_RUN_ID" ci/
 ```
 
-## 3. The five rules that make this work
+## 3. The six rules that make this work
 
 1. **Host paths only.** A sibling's `-v` source is resolved by the *host*
    daemon. Use `$RALPHD_HOST_WORKSPACE` (or the per-name paths in
@@ -60,10 +60,34 @@ docker build -t "$CI_IMAGE" --label "ralphd.run=$RALPHD_RUN_ID" ci/
    use on `$RALPHD_RUN_ID` — that would break the very next run of the same
    script. If you genuinely want a per-run volume, name it per run *and*
    `docker volume rm` it before the job finishes.
-4. **Label containers and images** `ralphd.run=$RALPHD_RUN_ID` and prefer
-   `--rm`, so `ralphctl stop`/`rm` reap them (containers) and the operator can
-   find the rest (images).
-5. **No credentials.** Siblings get the default bridge network and normal
+4. **Label every sibling with BOTH labels** — `ralphd.run=$RALPHD_RUN_ID`
+   *and* `ralphd.role=sibling` — and prefer `--rm`, so `ralphctl stop`/`rm`
+   reap them (containers) and the operator can find the rest (images). Label
+   built images with the run label too.
+5. **Never clean up by the run label alone.** The job container the agent runs
+   inside carries `ralphd.run=$RALPHD_RUN_ID` as well (plus
+   `ralphd.role=job`), so
+   `docker rm -f $(docker ps -aq --filter label=ralphd.run=$RALPHD_RUN_ID)`
+   deletes the run itself: the agent dies mid-iteration, the iteration's work
+   and transcript are lost, and the run dir is left non-terminal. Always add
+   the role filter so the query can only match siblings:
+
+   ```bash
+   # list siblings
+   docker ps -aq --filter "label=ralphd.run=$RALPHD_RUN_ID" \
+                 --filter label=ralphd.role=sibling
+   # remove siblings only
+   docker rm -f $(docker ps -aq --filter "label=ralphd.run=$RALPHD_RUN_ID" \
+                                --filter label=ralphd.role=sibling)
+   ```
+
+   `$RALPHD_SELF_CONTAINER_ID` names this job's own container: never
+   `stop`/`rm`/`kill` it. You do not have to reap anything at the end anyway —
+   tearing the run down is `ralphctl`'s job (`ralphctl stop`/`rm` on the host
+   may filter on the run label alone, precisely because there it *should* take
+   the job container with it). Only remove siblings you are done with mid-run,
+   with the two-filter form above.
+6. **No credentials.** Siblings get the default bridge network and normal
    internet (image pulls, dependency downloads) whatever network the job
    container is on. They do not need the job's LLM gateway access or any
    credential file — do not pass them in.

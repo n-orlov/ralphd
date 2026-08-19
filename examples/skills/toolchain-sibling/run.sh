@@ -15,8 +15,12 @@ IMAGE="${CI_IMAGE:-myrepo-ci}"
 CACHE_VOL="${CI_CACHE_VOL:-myrepo-ci-cache}"
 
 WS="${RALPHD_HOST_WORKSPACE:-$PWD}"   # host path, not this container's view
-LABEL=()
-[ -n "${RALPHD_RUN_ID:-}" ] && LABEL=(--label "ralphd.run=$RALPHD_RUN_ID")
+# BOTH labels: the run label alone also matches the job container this agent
+# runs inside, so a cleanup filtered on it would delete the run. role=sibling
+# is what makes `--filter label=ralphd.run=$RALPHD_RUN_ID --filter
+# label=ralphd.role=sibling` safe to run from inside the job.
+LABEL=(--label ralphd.role=sibling)
+[ -n "${RALPHD_RUN_ID:-}" ] && LABEL+=(--label "ralphd.run=$RALPHD_RUN_ID")
 
 docker volume create "$CACHE_VOL" >/dev/null   # idempotent, unlabeled on purpose
 

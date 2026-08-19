@@ -986,9 +986,18 @@ image builds):
   id it is known *before* `docker run` returns). Prompts instruct the agent to
   label every sibling `ralphd.run=<run-id>` plus `ralphd.role=sibling` and
   prefer `--rm`; the `role` label is what lets sibling cleanup run from inside
-  the job without deleting the job container itself.
+  the job without deleting the job container itself. The idiom the prompt (and
+  every doc here) teaches is therefore two-filter, never run-label-only:
+  `docker ps -aq --filter label=ralphd.run=$RALPHD_RUN_ID --filter
+  label=ralphd.role=sibling`. **Never clean up by the run label alone:** the
+  one-filter form matches the job
+  container too, so `docker rm -f` over it kills the run mid-iteration, loses
+  that iteration's work and transcript, and leaves the run dir non-terminal
+  (observed on run `deck-phase1`, issue #7). In-container cleanup is optional
+  anyway: reaping is `ralphctl`'s job.
   `ralphctl stop` and `ralphctl rm` best-effort `docker rm -f` everything
-  matching the label (idempotent, never fails the command); `ralphctl doctor`
+  matching the label (idempotent, never fails the command) — host-side, run
+  label only, deliberately: there the job container *should* go too; `ralphctl doctor`
   reports stray labeled containers whose run id no longer has a registry dir
   (report-only). Anything unlabeled and detached outlives the job — the daemon
   has no parentage notion between a job and its siblings. Reaping is
@@ -1013,7 +1022,9 @@ reproducible without the agent):
   build contexts are exempt from the path-translation gotcha above because the
   CLI streams the context).
 - `ci/run.sh` — a thin wrapper that runs an arbitrary command in a `--rm`
-  sibling with the mounts/user/caches below. `examples/skills/toolchain-sibling/`
+  sibling with the mounts/user/caches below, labeled
+  `ralphd.run=$RALPHD_RUN_ID` **and** `ralphd.role=sibling`.
+  `examples/skills/toolchain-sibling/`
   ships a generic one as a mountable skill (`--skills`).
 
 Load-bearing details, each of them a failure mode when omitted:
@@ -1038,6 +1049,13 @@ Load-bearing details, each of them a failure mode when omitted:
    internet (image pulls, dependency downloads) regardless of the job
    container's own `--network` (which may be `host`). They neither need nor
    should be given the job's LLM gateway access.
+5. **Sibling-only cleanup.** Every sibling carries `ralphd.role=sibling` in
+   addition to the run label so that mid-run cleanup can exclude the job
+   container: `docker rm -f $(docker ps -aq --filter
+   label=ralphd.run=$RALPHD_RUN_ID --filter label=ralphd.role=sibling)`.
+   Filtering on `ralphd.run` alone matches the job container itself and kills
+   the run mid-iteration (§6 above, issue #7); `$RALPHD_SELF_CONTAINER_ID` is
+   the id never to touch, and end-of-run reaping is `ralphctl`'s job.
 
 Verified empirically inside such a sibling (not aspirational): Go 1.25
 `go build` and `go test` pass; real `tmux` 3.5a on a private `-L` socket
