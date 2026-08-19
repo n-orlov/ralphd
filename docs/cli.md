@@ -203,7 +203,12 @@ durations are shown.
 fields (nothing existing is removed or renamed): a top-level `durationSeconds`
 (elapsed-so-far or total, numeric seconds, same rule as the human line above),
 and, when `currentIteration` is present, an `elapsedSeconds` field nested
-inside it for that iteration's own elapsed time.
+inside it for that iteration's own elapsed time. Task 022 adds
+`containerGone` (always present: `true` only for the vanished-container case
+described under `container:` below) and, for such a run, a
+`sinceLastUpdateSeconds` field; `durationSeconds` and
+`currentIteration.elapsedSeconds` are then measured to the last `status.json`
+write instead of to *now*, so they stop growing for a run that stopped.
 
 A terminal run (`succeeded`/`failed`/`aborted`) also carries an
 `unconsumedSteering` field: a list of steering filenames that were still
@@ -268,6 +273,26 @@ Human output also renders (task 003):
   (its `artifacts/reflection/report.md` is the signal) and a run that never
   ran one print nothing, keeping their output byte-identical to before.
   The hub run-detail card carries the same line (`.reflect-failed`).
+- `container:` (task 022, issue #8) -- shown only for an **unreachable** run
+  whose status.json still records a non-terminal state (`starting`/`running`)
+  while no container by that name exists at all: the zombie condition
+  `ralphctl doctor`/`repair` report. Printed right under the `state:` line
+  (bold red on a TTY) so the operator does not have to join `state: running`
+  with `(live api: False)` themselves:
+
+  ```
+  container: ralphd-myrun appears gone (no such container) -- status.json still
+             records state 'running', so this run stopped without recording a terminal
+             state; diagnose with `ralphctl repair myrun`
+  ```
+
+  For such a run the `duration:` line stops showing an ever-growing
+  `(elapsed)` value -- nothing is elapsing -- and instead shows the
+  **staleness**: the time since the last `status.json` write, labelled
+  `(since last update)`. Any `iteration elapsed:` line is frozen at that same
+  last write (`, at last update`). A run whose container still *exists*
+  (merely exited) and every live or terminal run print none of this, keeping
+  their output unchanged.
 
 `--json` output is untouched by any of this: it still carries the full,
 unsummarized `reason`/`tasks`/`usage` detail straight from status.json, plus
