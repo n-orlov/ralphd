@@ -197,6 +197,11 @@ trips the ordinary 3-iterations-no-progress guard exactly as before.
 
 ### Infra-fault fail-fast + retry with backoff (task 001a)
 
+> Historical design note for the *first cut* of this machinery. The shipped
+> v0.5 whole — fault taxonomy incl. `faultClass` and the `aborted` carve-out,
+> the outage-budget model, the deadline extension, the `health`/`infraWait`
+> contract, manual retry-now, and the instant-failure carve-out — is §10.
+
 Filed after a live incident distinct from task 059's: two consecutive
 *worker* iterations each hung the **full** `iteration_timeout_s` (45 minutes
 by default) on a transient `getaddrinfo ENOTFOUND` gateway-DNS glitch before
@@ -245,11 +250,14 @@ infra-classified failure is retried and refunded here and consumes neither
 task's `validationAttempts`; the phase's own logic only sees a result once it
 is no longer an infra fault, or once the wrapper gave up (which sets
 `_abort_reason`, so `budget_left()` is already False and those loops exit
-rather than re-charging the same outage). An infra-classified
-result that is *also* an instant failure (sub-`INSTANT_FAILURE_MAX_DURATION_S`,
-no `no_traffic_timeout`) is returned immediately, unhandled — left entirely
-to task 059's pre-existing streak-based carve-out, so the two mechanisms never
-race or double-count the same failure. Any other infra-classified result
+rather than re-charging the same outage). Since task 010 (#5) an
+infra-classified result that is *also* an instant failure
+(sub-`INSTANT_FAILURE_MAX_DURATION_S`, no `no_traffic_timeout`, no observable
+work) is retried here too, with task 059's streak-based carve-out keeping the
+last word on a *run* of identically-failing attempts (§10.5); only an instant
+failure that did reach the model (tokens billed) is returned immediately to
+the phase's own bounded error retry, so the two mechanisms never race or
+double-count the same failure. Any other infra-classified result
 retries the *same* phase/iteration in place with escalating backoff
 (`cfg.infra_retry_backoff_s`, default `[2, 5, 15, 30, 60, 120, 300]` seconds
 with the last value repeating, clamped to `cfg.infra_retry_backoff_max_s`
@@ -290,7 +298,13 @@ explicit `infra_retry_max` it keeps the older `"...failed after <max>
 attempts (<error>)"` wording) — picked up by the same `budget_left() == False` → `state: aborted` path task
 059 uses, so the terminal `reason` names the infra fault plainly (e.g. the
 literal `getaddrinfo ENOTFOUND` text, when the failure surfaced one) rather
-than a generic timeout message.
+than a generic timeout message. Since task 004 (#11) the same verdict is also
+*recorded* per iteration as `faultClass` (§10.1).
+
+**5. Since v0.5.** Each wait is interruptible (`POST /retry`, §10.4), extends
+the job deadline by the seconds waited (§10.2), and publishes
+`health: "degraded"` + `infraWait` (§10.3); an operator-initiated abort is
+never an infra fault (§10.1's `aborted` carve-out).
 
 A traceability row for this requirement belongs alongside task 013's
 requirement→test table (see `artifacts/reports/traceability.md`, built by
@@ -1220,3 +1234,212 @@ the original `docker -e` flags did). A run started before task 001 has no
 `--env`/`--llm` override flags of its own -- only the persisted values are
 replayed. If such an override flag is ever added, it must win over the
 recorded value for that run (never silently ignored).
+
+## 10. Resilience: transient endpoint outages (v0.5)
+
+§9 covers the *coarse* failures (process crash, container death, host
+reboot). This section is the fine-grained half added in v0.5 (PRD
+`docs/prds/v0.5-resilience.md`, issues #5 and #11): the LLM endpoint itself
+going away
+for a while — a gateway restart, a DNS wobble, a provider 429/529 storm, a
+Bedrock stream fault. The v0.4 loop scored those as *work* failures, which is
+how a run could burn its iteration budget, its three approaches and a task's
+validation attempts on iterations that never reached a model at all. The
+invariant now: **a transient outage costs the job time and nothing else**.
+The mechanics live in `src/ralphd/engine/faults.py` and
+`LoopSupervisor._run_iteration_with_infra_retry()`; the operator-facing
+contract is `docs/api.md` (`GET /status`, `GET /iterations`, `GET /events`,
+`POST /retry`) and `docs/cli.md` (`ralphctl status`, `ralphctl retry`).
+The two older subsections of §2 are the historical design notes for the
+first cut of this machinery ("No-progress escalation guard vs. instant
+startup/infra failures", "Infra-fault fail-fast + retry with backoff"); what
+follows is the shipped whole.
+
+### 10.1 Fault taxonomy: `faultClass`
+
+Every finished iteration gets exactly one verdict from the pure function
+`faults.classify_fault()`, derived from the `IterationResult` in one place
+(`LoopSupervisor._classify_result()`) and recorded as `faultClass` in the
+iteration's `meta.json`, in `GET /iterations`, and on the `iteration.end`
+event:
+
+| `faultClass` | meaning |
+| --- | --- |
+| `null` | not a failure: exit 0, **no error text recorded**, not interrupted, not timed out, no startup-window kill |
+| `"infra"` | the endpoint/provider/network is at fault — retried and refunded by the wrapper (§10.2) |
+| `"work"` | the agent reached the model and then genuinely failed — or the *operator* terminated it |
+
+Because both the recorded field and the retry decision come from that one
+call, an operator reading `faultClass: "infra"` can be sure that is why the
+attempt was retried and refunded — the taxonomy is not a second, cosmetic
+opinion about the failure.
+
+Three deliberate details:
+
+- **An error text is a failure signal in its own right** (task 001, #11). pi
+  reports an in-band provider error as a `message_end` with
+  `stopReason: "error"` and can still exit **0** with zero tokens billed.
+  Keying "did this fail?" off the exit code alone scored those as successes:
+  no retry, no refund, budget spent on iterations that never ran.
+- **Signature families, one reviewable table.** `_INFRA_TEXT_PATTERNS` is a
+  single table with one commented line per family, and it is the whole
+  contract for "is this the provider's fault": DNS (`ENOTFOUND`,
+  `EAI_AGAIN`, `getaddrinfo`), TCP connect/teardown (`ECONNREFUSED`,
+  `ECONNRESET`, `ETIMEDOUT`, `EHOSTUNREACH`, `ENETUNREACH`), half-closed
+  streams (`EPIPE`, `socket hang up`, `premature close`), TLS/certificate
+  failures, the SDK's opaque `Connection error.`, gateway 5xx (`bad
+  gateway`, `gateway timeout`, `service unavailable`,
+  `ServiceUnavailable`, `internal server error`, `502/503/504`), provider
+  back-pressure (`429`, `529`, rate limit, throttling, `overloaded`), and
+  Bedrock/capacity shapes (`ModelStreamErrorException`, `quota`,
+  `capacity`). A match is `"infra"` *even if traffic preceded it*; each
+  family plus negative ("ordinary agent failure text") cases are asserted in
+  `tests/test_fault_classifier.py`.
+- **The `aborted` carve-out** (task 003, #11). pi records a SIGINT as the
+  bare in-band error `"aborted"` with no traffic and no exit code of its own
+  — textually identical whether a provider aborted the stream (transient,
+  worth retrying) or the *operator* did (`POST /abort`, `POST /interrupt`).
+  The text cannot decide it, so `"aborted"` is deliberately **not** in the
+  signature table: `classify_fault(operator_abort=...)` takes the loop's real
+  bookkeeping (`LoopSupervisor.operator_abort_requested`) and an
+  operator-initiated termination is never `"infra"`, regardless of text,
+  traffic or watchdog state. Otherwise the wrapper would sit in backoff
+  re-running the very iteration the operator just stopped.
+
+Anything else that produced **no** LLM traffic at all is classified `"infra"`
+too: an unclassifiable no-traffic failure is far likelier to be an
+environment/startup fault than genuine agent work, and scoring it `"work"`
+would let it eat approach/task bookkeeping instead of being retried.
+
+### 10.2 The retry / outage-budget model
+
+`run_iteration()` routes **all five** phases (`INFRA_RETRY_PHASES` =
+planning, worker, review, verify, reflect) through
+`_run_iteration_with_infra_retry()`, because an outage does not care which
+prompt is running. Precedence, as implemented: an `"infra"` result is
+handled *inside* the wrapper — retried in place, refunded — and consumes
+**none** of the phase-local budgets (`MAX_VERIFY_ERROR_RETRIES`, the review
+steering loop's iterations, a task's `validationAttempts`). The phase's own
+logic only sees a result once it is no longer an infra fault, or once the
+wrapper gave up — which sets `_abort_reason`, so `budget_left()` is already
+false and those loops exit instead of re-charging the same outage.
+
+- **Fail fast on a hang, don't wait out the iteration timeout.**
+  `PiRunner.run()`'s startup-window watchdog SIGINTs an attempt that has not
+  produced a single parseable pi event within `infra_startup_timeout_s`
+  (150s) and sets `no_traffic_timeout` — always `"infra"`. Killing early is
+  only safe because something retries, which is why the watchdog is armed
+  exactly for the wrapper's phases.
+- **Escalating backoff:** `infra_retry_backoff_s`, default
+  `[2, 5, 15, 30, 60, 120, 300]`s with the last value repeating, clamped by
+  `infra_retry_backoff_max_s` (300s) *and* by whatever is left of the
+  budget. Fast at the start on purpose: most gateway wobbles are over in
+  seconds.
+- **The stopping rule is wall clock, not attempts.** Attempts are
+  **unlimited by default**; an *episode* (one continuous outage) ends when
+  its cumulative wait reaches `infra_outage_budget_s` (default 4h;
+  `reflect` gets at most `REFLECT_OUTAGE_BUDGET_S` = 300s, because that
+  iteration runs after the job is already terminal). Exhaustion sets
+  `_abort_reason` to `infra fault: <phase> iteration failed throughout a
+  <D>s infra outage (<N> attempts, <W>s of the <B>s outage budget spent
+  waiting): <error>` — the terminal `reason` names the outage duration and
+  the last error verbatim. `infra_retry_max` remains an attempt cap
+  honoured **only when set explicitly** (back-compat / hard-stop escape
+  hatch).
+- **Episodes reset on contact.** `_reset_infra_episode()` clears the attempt
+  counter, the accumulated wait and the instant-failure streak the moment
+  any iteration reaches the model, so a job hitting a short glitch every
+  hour is never slowly starved of retry budget by the earlier ones.
+- **Refunds.** Each infra attempt increments `_infra_refunded`, which
+  `budget_left()` subtracts from `iterations_used`: the attempt still gets
+  its own iteration directory (numbering stays monotonic), but the *budget
+  comparison* is adjusted. Approaches, the stagnation guard and
+  `validationAttempts` are untouched.
+- **Deadline extension** (task 011, #5). Waiting is not working time: every
+  backoff wait adds its real seconds to `status.json`'s `infraWaitTotalS`
+  and pushes both `self.deadline` and its published twin `deadlineAt` out by
+  exactly that much, emitting `deadline_extended`. So `job_timeout_s` keeps
+  its plain meaning — time the job was *able to work* — and a 4-hour outage
+  cannot kill an 8-hour job for "timeout" having done nothing wrong. The
+  seconds booked are the seconds actually spent, so the budget arithmetic
+  and `infraWaitTotalS` can never disagree (a wait cut short by
+  `POST /retry` books only what it waited).
+- **Reflect** (tasks 018/019, #5) runs through the same wrapper and, when the
+  job just ended on an infra-shaped failure, waits one backoff step
+  (`reflect_infra_delay`) *before* its first attempt instead of firing into
+  the same dead gateway in the same second — unless the operator aborted, who
+  gets no countdown. A reflect that still fails is recorded (`status.json`'s
+  `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md`) and
+  surfaced by `ralphctl status` and the hub, never silently discarded; the
+  terminal state is unchanged either way.
+
+### 10.3 Status contract: `health` and `infraWait`
+
+`state` deliberately stays `running` through an outage — adding a
+`"degraded"` state value would break every consumer's terminal-state logic,
+`ralphctl watch` included. The degraded case is carried by two fields
+instead (`status.json` and `GET /status`, documented field-by-field in
+`docs/api.md`):
+
+- `health`: `"ok"` | `"degraded"`. Degraded from the first infra-classified
+  failure of an episode until an iteration reaches the model again — it
+  stays degraded *between* two backoffs, because a run whose endpoint is
+  still broken has not recovered just because it is mid-attempt.
+- `infraWait`: `null` unless the loop is actually parked in a backoff wait;
+  otherwise `since`, `attempt`, `error`, `phase`, `nextAttemptAt`,
+  `waitedS`, `budgetS`, `remainingS`.
+
+The same information is in the event stream, so it is visible to
+`ralphctl watch` and not only to whoever polls `/status` at the right
+moment: `infra_retry` (per attempt), `infra_wait` (the full payload as a
+wait starts), `deadline_extended`, `infra_recovered` (episode over, health
+back to `ok`), `infra_retry_now` (manual wake), `reflect_infra_delay`.
+Surfaces: `ralphctl status` prints a `degraded:` line with the countdown,
+attempt and error (byte-identical output for a healthy run), and the hub
+run-detail card renders a distinct degraded treatment with the countdown —
+`textContent` only, as everywhere in `app.js`.
+
+### 10.4 Manual retry-now
+
+A backoff wait is an interruptible `asyncio.Event` (`_retry_now`, the same
+shape as the pause gate), never a bare `asyncio.sleep`: an operator who can
+see the endpoint is healthy again must not have to stare at a 5-minute
+countdown. `POST /retry` (→ `ralphctl retry <run-id>`, or the hub's *retry
+now* button through the UI-server proxy) releases the wait immediately,
+emits `infra_retry_now`, and **restarts the outage-budget clock** — the
+operator asserting "it is back" is new information, and a run that has
+already sat out most of its budget must not die one attempt later. The
+attempt counter is *kept*, so repeated impatient retries keep escalating the
+backoff instead of hammering a still-broken endpoint. `409` when the run is
+not in an infra wait. `/retry` and `/resume` are independent by design:
+`/retry` never unpauses a paused run, `/resume` never shortens a backoff, and
+neither touches steering.
+
+### 10.5 The instant-failure carve-out (why an outage waits and a broken credential doesn't)
+
+Retrying an infra fault for hours is right for an outage and catastrophic for
+a *misconfiguration*: a run with no LLM credentials would sit in backoff for
+4 hours instead of telling the operator in seconds. Both shapes classify
+`"infra"`, so the wrapper distinguishes them by *shape over time*, not by
+text (task 010, #5):
+
+- A transient fault **varies and takes time** — a gateway 502 arrives after
+  a connect, a DNS glitch resolves itself, the error text moves around.
+- A broken environment **fails identically in 0.6s, every time**.
+
+So an instant (sub-`INSTANT_FAILURE_MAX_DURATION_S` = 5s), zero-work failure
+*is* retried like any other infra fault, while every such attempt is also
+scored by `_check_instant_failure()` against
+`_instant_failure_signature()` — exit code plus error text with digits
+normalised away (timestamps, ports, request ids). Once
+`MAX_CONSECUTIVE_INSTANT_FAILURES` = 3 attempts have failed instantly, with
+no traffic and the **same** signature, the wrapper stops with §2's
+broken-environment diagnosis ("… likely missing or broken LLM credentials,
+or an agent-startup fault …") instead of waiting out the outage budget.
+"No work" means no assistant text and no *tokens*: pi zero-fills a usage
+block on every `message_end`, so an in-band error's `usage` dict is
+non-empty while nothing was ever billed. An instant failure that **did**
+reach the model (a 0.3s Bedrock 502 with tokens billed) is handed straight
+back to the phase's own bounded error retry, and any iteration that reaches
+the model resets the streak — so the fail-fast path can only fire on a run
+of genuinely identical, work-free failures.

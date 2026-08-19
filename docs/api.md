@@ -112,7 +112,10 @@ recovered yet. Both are also emitted as events (`infra_wait` /
 `infra_recovered`), so the whole episode is visible in the event stream
 `ralphctl watch` follows and not only to a client polling `/status` at the
 right moment. Surfaced by `ralphctl status`'s `degraded:` line and the hub
-run-detail card. A wait can be cut short with `POST /retry`.
+run-detail card. A wait can be cut short with `POST /retry`. The whole model
+(fault taxonomy, outage budget, deadline extension, retry-now, the
+instant-failure fail-fast carve-out) is described in `docs/architecture.md`
+§10 “Resilience: transient endpoint outages”.
 
 #### `reflect`
 
@@ -159,7 +162,9 @@ the infra-retry wrapper acts on:
 | `"work"` | the agent really ran (LLM traffic observed) and then failed, or an operator-initiated abort/interrupt ended it — never retried as an outage |
 
 The field is absent only while an iteration is still in flight (before its
-`endedAt` is written).
+`endedAt` is written). The signature families behind `"infra"`, and the
+`aborted`/operator-abort carve-out, are documented in
+`docs/architecture.md` §10.1.
 
 ### `GET /iterations/{n}`
 One iteration's `meta.json`.
@@ -259,7 +264,8 @@ a degraded run-detail card, via the hub's `POST /api/runs/<id>/retry` proxy
 Naming: `/retry` is about a **degraded** run waiting out an endpoint outage;
 `/resume` is about a **paused** run waiting for the operator. They are
 independent — `/retry` never unpauses a paused run and never touches steering,
-`/resume` never shortens a backoff.
+`/resume` never shortens a backoff. Design notes: `docs/architecture.md`
+§10.4.
 
 ### `POST /abort`
 Body: `{"reason": "..."}`. Interrupts the current iteration and terminates the job
