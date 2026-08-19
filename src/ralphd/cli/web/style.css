@@ -226,6 +226,11 @@ footer.autorefresh {
   margin-top: 0.5rem;
 }
 
+/* task 057 (#2): a task row opens its detail dialog, so say so. */
+.task-row { cursor: pointer; }
+.task-row:hover, .task-row:focus { background: rgba(127, 127, 127, 0.12); outline: none; }
+.task-row:focus-visible { outline: 2px solid var(--accent); }
+
 /* task 056 (#1): the PRD (and, task 057, task-detail) dialog. Plain
    <dialog>, no library: a scrollable monospace text box whose content is
    inserted as text nodes only (see app.js's openTextDialog). */

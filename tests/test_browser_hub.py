@@ -924,3 +924,70 @@ def test_run_detail_opens_the_prd_in_a_dialog(tmp_path, pw):
     finally:
         server.stop()
         engine.close()
+
+
+def test_run_detail_opens_a_task_in_a_dialog(tmp_path, pw):
+    """Task 057 (#2): the plan rows in the run-detail view are clickable and
+    open that task's detail -- status, successCriteria, dependsOn, priority --
+    so an operator can read the criteria a task is being judged against
+    without opening the run dir's tasks.json by hand.
+
+    Also pins the rendering discipline the same way task 056's PRD dialog
+    does: the criteria text contains markup and an inline `<script>`, so if
+    the dialog ever went through `innerHTML` those literal characters would
+    vanish from `textContent` and real elements would appear inside it.
+    """
+    registry = tmp_path / "registry"
+    criteria_two = ("`pytest -q tests/test_two.py` green and <b>no</b> "
+                    "<script>alert(1)</script> regressions.")
+    tasks = {"tasks": [
+        {"id": "001", "title": "First task", "status": "completed",
+         "successCriteria": "The first thing is shipped and covered by a test."},
+        {"id": "002", "title": "Second task", "status": "in-progress",
+         "priority": 7, "dependsOn": ["001"], "successCriteria": criteria_two},
+    ]}
+
+    dead = _write_dead_run(registry, "run-tasks", state="running", verdict=None)
+    (dead / "tasks.json").write_text(json.dumps(tasks))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-tasks")
+        _wait_for(pw, "document.body.innerText", "Second task")
+        assert int(pw.eval_js("document.querySelectorAll('tr.task-row').length")) == 2
+        assert int(pw.eval_js("document.querySelectorAll('dialog.text-dialog').length")) == 0
+
+        # -- the second task: criteria plus its scheduling fields ----------
+        pw.click('tr.task-row[data-task-id="002"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "Second task")
+        assert criteria_two in body, body
+        assert "status: in-progress" in body, body
+        assert "priority: 7" in body, body
+        assert "dependsOn: 001" in body, body
+        # ...and only that task's criteria
+        assert "The first thing is shipped" not in body, body
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b').length")) == 0
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+        pw.screenshot(SCREENSHOTS_DIR / "14-task-dialog.png")
+
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if pw.eval_js("document.querySelectorAll('dialog.text-dialog').length") == "0":
+                break
+            time.sleep(0.2)
+        assert pw.eval_js("document.querySelectorAll('dialog.text-dialog').length") == "0"
+
+        # -- a second task opens its OWN detail (one dialog at a time) -----
+        pw.click('tr.task-row[data-task-id="001"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "First task")
+        assert "The first thing is shipped and covered by a test." in body, body
+        assert "status: completed" in body, body
+        assert "priority:" not in body, body
+        assert int(pw.eval_js("document.querySelectorAll('dialog.text-dialog').length")) == 1
+    finally:
+        server.stop()
