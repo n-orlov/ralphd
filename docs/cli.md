@@ -520,6 +520,29 @@ So the trim is owned by different layers depending on mode:
   then a live connection picks up from there without re-showing or
   dropping a line.
 
+**Unreachable run — on-disk snapshot (task 040).** A run's transcript lives
+in its run dir (`iterations/NNNN/output.jsonl`), not only inside the
+container, so `logs` no longer fails with exit `4` once the container is
+gone (crashed, removed, or a finished run whose engine has exited). All
+modes fall back to the same on-disk merge the engine's `GET /logs` serves
+from the inside (`ralphd.log_merge`, shared with the hub's log tail), exit
+`0`, and print a one-line notice on **stderr**:
+
+```
+ralphctl: on-disk snapshot: the run's API is not reachable, showing the transcript recorded in the run dir
+```
+
+- stdout is unaffected — `--raw` keeps its 1:1 wire contract (stdout is
+  byte-for-byte the merge, tailed with the engine's own raw `tail=N`
+  semantics), so piping into `jq`/`tee` works exactly as for a live run.
+- `-f`/`--follow` (and `logsf`) print that snapshot and return cleanly with
+  `… (nothing to follow)` appended to the notice, instead of hanging on a
+  container that will never answer or dying on connection-refused.
+- `--iteration n` reads that iteration's transcript from disk the same way.
+- A run id with no run dir is still an error: exit `3` ("run not found").
+- A reachable run's behaviour and output are unchanged, and nothing is ever
+  written to stderr for it. Pinned by `tests/test_cli_logs_dead_run.py`.
+
 ### `ralphctl tasks <run-id>`
 
 Task table (or full `tasks.json` with `--json`).
