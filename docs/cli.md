@@ -806,6 +806,14 @@ JSON endpoints served under `/api/`:
   forwarded to the run's live `POST /steering`. Returns the API's own
   response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`
   if the run's API is unreachable or rejects it; `404` for an unknown run id.
+- `POST /api/runs/<id>/retry` — the hub's "retry now" button (task 017):
+  forwarded (empty body) to the run's live `POST /retry`, i.e. the same
+  thing `ralphctl retry <run-id>` does — wake the pending infra backoff
+  wait immediately and reset the outage-budget episode clock (docs/api.md).
+  The engine's status code is passed **through**, notably its `409 not
+  waiting on an infra fault` refusal, so the UI can say "nothing to wake"
+  instead of reporting a generic failure; `503` (with an `error`) only when
+  the run's API is unreachable; `404` for an unknown run id.
 - Any other path is served from the static hub bundle packaged in the
   wheel (`src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css` — plain
   HTML/JS/CSS, no npm/node build step). A path that doesn't match a real
@@ -831,6 +839,15 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   markers — reimplemented in `app.js`, not shared code, since the CLI is
   Python and the bundle is browser JS), and a steering form that `POST`s
   to `/api/runs/<id>/steer` and reports the created file name back.
+  A **degraded** run (`health: degraded`/`infraWait` set — the run is
+  sitting out an endpoint outage; see docs/api.md) gets a visually
+  distinct card (`.card.degraded`) carrying the attempt number, phase,
+  error, episode wait against the outage budget, a countdown to
+  `nextAttemptAt` that ticks every second, and a **retry now** button
+  posting to `/api/runs/<id>/retry`. The button appears only while a
+  backoff wait is actually pending and only when the run's API is
+  reachable: on a dead run the card says `read-only on-disk snapshot` and
+  offers no button.
 
 Browser e2e coverage (PRD req 23a): `tests/test_browser_hub.py`, marked
 `@pytest.mark.browser`, drives a real Chromium via the external

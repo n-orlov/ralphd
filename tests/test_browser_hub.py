@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_cli_ui import UiServer, _write_dead_run
+from test_cli_ui import StubEngineApi, UiServer, _write_dead_run, _write_run_with_api
 
 PLAYWRIGHT_CLI = shutil.which("playwright-cli")
 
@@ -250,6 +250,88 @@ def test_run_detail_renders_degraded_infra_wait_distinctly(tmp_path, pw):
         assert n_wait == 0
     finally:
         server.stop()
+
+
+def test_degraded_card_offers_a_retry_now_button_with_a_ticking_countdown(tmp_path, pw):
+    """Task 017 (#5): while a run is degraded the run-detail card must show
+    a countdown to `nextAttemptAt` and a "retry now" button that POSTs
+    through the hub's proxy (`POST /api/runs/<id>/retry`, ui_server.py) to
+    the run's own `POST /retry` -- the browser equivalent of `ralphctl retry
+    <run-id>`. The button must NOT exist on a healthy run's card (there is
+    no wait to wake, `/retry` would only 409), and a dead run's card stays
+    READ-ONLY (on-disk snapshot -- a button whose proxy can only ever answer
+    503 would be a lie)."""
+    registry = tmp_path / "registry"
+    next_attempt = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 180))
+    infra_wait = {
+        "since": "2026-01-01T00:00:00Z", "attempt": 3,
+        "error": "socket hang up", "phase": "worker",
+        "nextAttemptAt": next_attempt,
+        "waitedS": 20, "budgetS": 14400, "remainingS": 14380,
+    }
+    degraded_status = {
+        "runId": "run-degraded-live", "state": "running", "verdict": None,
+        "phase": "worker", "approach": 1, "iterationsUsed": 5,
+        "iterationsBudget": 25, "startedAt": "2026-01-01T00:00:00Z",
+        "health": "degraded", "infraWait": infra_wait,
+    }
+    healthy_status = {**degraded_status, "runId": "run-healthy-live",
+                      "health": "ok", "infraWait": None}
+
+    degraded_engine = StubEngineApi(status=degraded_status)
+    healthy_engine = StubEngineApi(status=healthy_status)
+    _write_run_with_api(registry, "run-degraded-live", degraded_engine,
+                        token="hub-token", **degraded_status)
+    _write_run_with_api(registry, "run-healthy-live", healthy_engine,
+                        **healthy_status)
+    # dead + degraded: last known state says degraded but the API is gone
+    _write_dead_run(registry, "run-degraded-dead", state="running", verdict=None,
+                    health="degraded", infraWait=infra_wait)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-degraded-live")
+        _wait_for(pw, "document.body.innerText", "retry now")
+        n_button = int(pw.eval_js("document.querySelectorAll('button.retry-now').length"))
+        assert n_button == 1
+        # the countdown is live-ticking, not a value frozen until the 4s
+        # full-page rebuild
+        first = pw.eval_js("document.querySelector('.infra-countdown').textContent")
+        assert "next attempt in " in first, first
+        time.sleep(1.6)
+        second = pw.eval_js("document.querySelector('.infra-countdown').textContent")
+        assert second != first, (first, second)
+
+        pw.click("button.retry-now")
+        deadline = time.time() + 15
+        posts = []
+        while time.time() < deadline:
+            posts = [(m, p) for m, p, _t in degraded_engine.requests if m == "POST"]
+            if posts:
+                break
+            time.sleep(0.3)
+        assert posts == [("POST", "/retry")], degraded_engine.requests
+        pw.screenshot(SCREENSHOTS_DIR / "06-retry-now-button.png")
+
+        # healthy run: no button at all
+        pw.open(f"{server.base}/#/run/run-healthy-live")
+        body_text = _wait_for(pw, "document.body.innerText", "running")
+        assert "retry now" not in body_text, body_text
+        n_button = int(pw.eval_js("document.querySelectorAll('button.retry-now').length"))
+        assert n_button == 0
+        assert [(m, p) for m, p, _t in healthy_engine.requests if m == "POST"] == []
+
+        # dead run recorded degraded: read-only snapshot, still no button
+        pw.open(f"{server.base}/#/run/run-degraded-dead")
+        body_text = _wait_for(pw, "document.body.innerText", "degraded")
+        assert "read-only on-disk snapshot" in body_text, body_text
+        n_button = int(pw.eval_js("document.querySelectorAll('button.retry-now').length"))
+        assert n_button == 0
+    finally:
+        server.stop()
+        degraded_engine.close()
+        healthy_engine.close()
 
 
 def test_run_detail_shows_reason_for_terminal_failed_run(tmp_path, pw):
