@@ -1284,6 +1284,14 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   invite injection and mangle the `<`-heavy text the operator came to read.
   Only one dialog exists at a time; closing it removes it, so the 4s refresh
   behind it cannot accumulate copies.
+  Each row of the **task table** is clickable (and keyboard-reachable:
+  `tabindex=0`, Enter/Space) and opens that task's detail in the same
+  `<dialog>` (task 057, issue #2): its `status`, `priority` and `dependsOn`
+  when set, its `successCriteria` — the text the task is actually judged
+  against — and any `validationNotes`. The task record is already in the
+  run-detail payload (`tasks`), so no extra request is made, and the same
+  text-nodes-only discipline applies: criteria are agent-authored prose full
+  of backticks, `<` and fenced snippets.
   A **degraded** run (`health: degraded`/`infraWait` set — the run is
   sitting out an endpoint outage; see docs/api.md) gets a visually
   distinct card (`.card.degraded`) carrying the attempt number, phase,

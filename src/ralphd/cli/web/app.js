@@ -165,11 +165,11 @@ function sortIndicator(key) {
   return runSort.dir < 0 ? " \u25BC" : " \u25B2";
 }
 
-// ------------------------------------------------------- text dialogs (#1)
+// ---------------------------------------------------- text dialogs (#1, #2)
 
-// Task 056 (#1): agent/operator-authored text (a run's PRD; task 057 adds
-// task detail) opens in a modal <dialog> instead of forcing the operator
-// back to `ralphctl` or the run dir on disk.
+// Task 056 (#1): agent/operator-authored text (a run's PRD; and, task 057
+// (#2), a task's detail) opens in a modal <dialog> instead of forcing the
+// operator back to `ralphctl` or the run dir on disk.
 //
 // Rendering discipline (task 014): the text is inserted as TEXT NODES only,
 // via `h()`, never `innerHTML`. A PRD is arbitrary markdown written outside
@@ -211,6 +211,42 @@ async function openPrdDialog(runId) {
   const note = (ok && body && body.live !== true)
     ? "(on-disk snapshot — the run's API is not reachable)" : null;
   return openTextDialog("PRD — " + runId, text, note);
+}
+
+// Task 057 (#2): a task row in the run-detail view opens the plan entry the
+// agent is actually working against -- its status, its successCriteria (the
+// text that decides whether the task is done) and its scheduling fields --
+// instead of making the operator open the run dir's tasks.json by hand.
+//
+// The task record is already in the page (the detail payload's `tasks`), so
+// no new endpoint is needed; it is rendered through `openTextDialog`, i.e.
+// as text nodes only, because criteria are agent/operator-authored prose
+// that routinely contains `<`, backticks and fenced snippets.
+function taskDialogText(t) {
+  const lines = [];
+  lines.push("status: " + String(t.status == null ? "unknown" : t.status));
+  if (t.priority != null) lines.push("priority: " + String(t.priority));
+  if (Array.isArray(t.dependsOn) && t.dependsOn.length > 0) {
+    lines.push("dependsOn: " + t.dependsOn.map(String).join(", "));
+  }
+  if (t.validationAttempts != null) {
+    lines.push("validationAttempts: " + String(t.validationAttempts));
+  }
+  lines.push("");
+  lines.push("successCriteria:");
+  lines.push(String(t.successCriteria || "(none recorded)"));
+  if (t.validationNotes) {
+    lines.push("");
+    lines.push("validationNotes:");
+    lines.push(String(t.validationNotes));
+  }
+  return lines.join("\n");
+}
+
+function openTaskDialog(t) {
+  const id = t.id == null ? "?" : String(t.id);
+  const title = "Task " + id + (t.title ? " — " + String(t.title) : "");
+  return openTextDialog(title, taskDialogText(t), null);
 }
 
 // -------------------------------------------------------------- routing
@@ -667,7 +703,21 @@ function renderTasks(el, tasks) {
   ])])]);
   const tbody = h("tbody", {});
   for (const t of list) {
-    tbody.appendChild(h("tr", {}, [
+    // Task 057 (#2): the whole row is the affordance -- clickable, and
+    // reachable from the keyboard (Enter/Space), since a <tr> is not
+    // natively focusable.
+    const open = () => { openTaskDialog(t); };
+    tbody.appendChild(h("tr", {
+      class: "task-row",
+      "data-task-id": String(t.id == null ? "" : t.id),
+      role: "button",
+      tabindex: "0",
+      title: "show this task's success criteria",
+      onclick: open,
+      onkeydown: (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+      },
+    }, [
       h("td", {}, [String(t.id || "")]),
       h("td", {}, [pill(t.status)]),
       h("td", {}, [String(t.title || "")]),
