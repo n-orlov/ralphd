@@ -943,6 +943,28 @@ class LoopSupervisor:
             await asyncio.sleep(interval)
 
     # -- budget/limits -------------------------------------------------------
+    @property
+    def iterations_used_charged(self) -> int:
+        """The iteration count exactly as published in status.json's
+        `iterationsUsed` (raw attempts minus infra refunds) -- the figure an
+        operator reads, and therefore the one a budget change is validated
+        against (task 045, #3)."""
+        return self.iterations_used - self._infra_refunded
+
+    def set_iteration_budget(self, value: int) -> None:
+        """Task 045 (#3): change the iteration budget of a LIVE run.
+
+        budget_left() reads self.cfg.iterations on every turn of the loop, so
+        rebinding the field is the whole mechanism: a top-up applies at the
+        next iteration boundary with no container restart and no re-read of
+        the (read-only mounted) job.yaml. status.json's iterationsBudget is
+        rewritten here as well so `GET /status` and `GET /config` can never
+        disagree about the number. The caller (api.py) owns validation and
+        the audit event.
+        """
+        self.cfg.iterations = value
+        self.run.update_status(iterationsBudget=value)
+
     def budget_left(self) -> bool:
         # Task 001a: iterations refunded after an infra-classified retry
         # (see _run_iteration_with_infra_retry) never count against the

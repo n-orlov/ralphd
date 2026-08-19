@@ -217,6 +217,7 @@ then follows. Event types:
 | `reflect_infra_delay` | the job ended on an infra-shaped failure, so the post-terminal `reflect` iteration waits before its first attempt instead of firing into the same dead endpoint: `delayS`, `error`, `budgetS` (reflect's own, capped, outage budget). Followed by an ordinary `infra_wait` with `attempt: 0` |
 | `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error` when it failed (same verdict as status.json's `reflect`) |
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
+| `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"`, `previous`, `iterations` (new value), `delta`, `iterationsUsed`, `source: "api"` |
 
 Every event also lands in `events.jsonl` in the run dir with a monotonically
 increasing `id`. That file is append-only **across resumes**, so a terminal
@@ -310,6 +311,40 @@ The infra-fault (LLM endpoint/network outage) budgets, all settable in
 `creds` lists credential *names* only (no values, no sizes here — see
 `GET /config/creds` for that); `llmEnvKeys` lists the *names* of any env
 overrides set via `PUT /config/llm`, never their values.
+
+### `PATCH /config/budget`
+Raises (or lowers) the **iteration budget of a running job** without restarting
+the container. Body:
+
+```json
+{"iterations": "+10"}   // relative top-up: current budget + 10
+{"iterations": 40}      // absolute new budget
+```
+
+Same two forms as `ralphctl resume --iterations` (`"+N"` relative, a bare
+integer absolute — so a bare `-5` is an *absolute* -5 and is rejected, never a
+decrement; lower a budget by passing the absolute value you want).
+`200 {"iterations": 40, "previous": 25, "iterationsUsed": 17}`.
+
+The new value is live at the next iteration boundary (the loop re-reads it on
+every turn — a job parked at `iterationsUsed == iterationsBudget` keeps going
+after a top-up) and is immediately visible in `GET /status`
+(`iterationsBudget`) and `GET /config` (`budgets.iterations`). Every accepted
+change emits a `budget_changed` audit event.
+
+Rejections carry a problem detail and change nothing:
+
+| Status | When |
+|--------|------|
+| `422 iterations required` | no body, or no `iterations` key |
+| `422 invalid iterations` | not an integer or `"+N"` string (`"abc"`, `12.5`, `[10]`), an absolute value below `1`, or a negative relative top-up |
+| `409 budget below iterations used` | the resulting budget is below `status.iterationsUsed` (the *charged* count — infra-refunded retries are not charged); setting it *equal* is allowed and simply stops the run at the current boundary |
+| `409 job finished` | terminal run — bump the budget with `ralphctl resume <run-id> --iterations +N`, which starts a fresh container over the run dir |
+
+This is a change to the **live engine only**: `/config` is a read-only mount, so
+the engine never rewrites `job.yaml`. A resumed container reads `job.yaml`
+again, so use `resume --iterations +N` when the new budget has to survive a
+restart.
 
 ### Prompts — override + listing
 
