@@ -846,16 +846,24 @@ prints `serving hub at http://<bind>:<port>` on startup. Ctrl-C to stop.
 JSON endpoints served under `/api/`:
 
 - `GET /api/runs` — run list (PRD req 21): `{"runs": [{runId, state,
-  verdict, phase, approach, iterationsUsed, iterationsBudget, startedAt},
-  ...]}`, read straight from every `runs/*/status.json` (no live proxy calls,
-  so listing stays cheap regardless of how many runs are dead).
-- `GET /api/runs/<id>` — run detail: `{runId, live, status, tasks,
-  iterations}`. `status`/`tasks` are proxied live from the run's container
-  API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
+  verdict, phase, approach, iterationsUsed, iterationsBudget, startedAt,
+  containerGone}, ...]}`, read straight from every `runs/*/status.json` (no
+  live proxy calls, so listing stays cheap regardless of how many runs are
+  dead). `containerGone` (task 024) is `true` only for a run whose recorded
+  state is non-terminal (`starting`/`running`) while its API port does not
+  accept a connection — i.e. the container died without recording a terminal
+  state. Only those runs are probed, with a concurrent loopback TCP connect
+  (~0.3s worst case for the whole sweep, no docker CLI involved); a terminal
+  run is unreachable by design and always reports `false`.
+- `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, status,
+  tasks, iterations}`. `status`/`tasks` are proxied live from the run's
+  container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
   `host.json`) answers; otherwise falls back to the on-disk
   `status.json`/`tasks.json` snapshot with `live: false` — a dead run never
-  produces an error, just stale-but-valid data. `iterations` is always read
-  from disk (`iterations/*/meta.json`). `404` for an unknown run id.
+  produces an error, just stale-but-valid data. `containerGone` is the same
+  condition as in the run list, decided here by the real proxy call rather
+  than a port probe. `iterations` is always read from disk
+  (`iterations/*/meta.json`). `404` for an unknown run id.
 - `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
   fetches the run's FULL raw NDJSON backlog from the live container API
   (`GET /logs`, no `tail` param there), renders it through the exact same
@@ -898,7 +906,10 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
 
 - **Run list** (`#/`) — table of every run under the registry with state,
   verdict, phase, approach, iteration count and start time, auto-refreshed
-  every 4s; click a run id to open its detail view.
+  every 4s; click a run id to open its detail view. A run flagged
+  `containerGone` gets a highlighted row (`tr.row-warning`) and a
+  `⚠ container gone` marker next to its state pill, so a zombie never
+  looks like a healthy `running` run in the list either.
 - **Run detail** (`#/run/<id>`) — summary card (state/verdict/phase/
   approach/iterations/live-vs-snapshot/duration), a usage/cost panel
   (total tokens+cost plus the `byPhase`/`byApproach` breakdowns from PRD
@@ -923,6 +934,14 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   wording `ralphctl status` prints -- since the failure deliberately leaves
   `state`/`verdict`/`reason` untouched; a successful or absent reflection
   adds nothing.
+  A run flagged **`containerGone`** (task 024: recorded `starting`/`running`,
+  API gone) gets the same warning treatment as a degraded card
+  (`.card.warning`, sharing one CSS rule with `.card.degraded`) plus a
+  `.container-gone` block saying the container appears gone and pointing at
+  `ralphctl repair <run-id>` for the authoritative docker-side diagnosis —
+  the hub only knows the API stopped answering. Without it the only hint was
+  the `live: no (on-disk snapshot)` row, which reads identically for a
+  finished run that is unreachable by design.
 
 Browser e2e coverage (PRD req 23a): `tests/test_browser_hub.py`, marked
 `@pytest.mark.browser`, drives a real Chromium via the external

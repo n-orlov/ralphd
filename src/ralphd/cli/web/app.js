@@ -122,9 +122,15 @@ async function renderRunList() {
     ]);
     const tbody = h("tbody", {});
     for (const r of runs) {
-      tbody.appendChild(h("tr", {}, [
+      // Task 024 (#8): a run recorded non-terminal whose API no longer
+      // answers (`containerGone`, ui_server.py) must not look exactly like a
+      // healthy running one -- it is over, it just never got to say so.
+      const gone = r.containerGone === true;
+      tbody.appendChild(h("tr", { class: gone ? "row-warning" : "" }, [
         h("td", {}, [h("a", { href: "#/run/" + encodeURIComponent(r.runId) }, [r.runId])]),
-        h("td", {}, [pill(r.state)]),
+        h("td", {}, gone
+          ? [pill(r.state), h("span", { class: "container-gone-marker" }, [" \u26A0 container gone"])]
+          : [pill(r.state)]),
         h("td", {}, [pill(r.verdict)]),
         h("td", {}, [String(r.phase || "")]),
         h("td", {}, [String(r.approach == null ? "" : r.approach)]),
@@ -262,6 +268,7 @@ function renderSummary(el, detail) {
     ]));
   }
   renderInfraWait(el, s, detail.runId, detail.live !== false);
+  renderContainerGone(el, detail);
   renderReflect(el, s);
   // Task 004: the engine writes a high-quality `reason` into status.json
   // on terminal failed/aborted states (e.g. the no-progress fail-fast
@@ -284,6 +291,36 @@ function renderSummary(el, detail) {
       "⚠ UNCONSUMED STEERING (run ended without acting on): " + unconsumed.join(", "),
     ]));
   }
+}
+
+// Task 024 (#8): a run whose status.json still records a non-terminal state
+// while its API no longer answers (`containerGone`, computed server-side in
+// ui_server.py from the SAME `NONTERMINAL_STATES` set `ralphctl
+// status`/`doctor`/`repair` use) is dead: the engine was killed before it
+// could write a terminal state. Rendered with the card's existing warning
+// treatment (`.card.warning`, sharing one CSS rule with `.card.degraded`) so
+// it cannot be confused with a healthy `state: running` card -- previously
+// the only hint was the `live: no (on-disk snapshot)` row, which reads the
+// same for a finished run that is unreachable by design.
+//
+// Wording mirrors `ralphctl status`'s `container: … appears gone` lines
+// (main.py's `_format_container_gone_lines`), including pointing at
+// `ralphctl repair` for the authoritative docker-side diagnosis -- the hub
+// only knows the API stopped answering. textContent only (via `h()`).
+function renderContainerGone(el, detail) {
+  if (detail.containerGone !== true) return;
+  const s = detail.status || {};
+  el.classList.add("warning");
+  el.appendChild(h("div", { class: "container-gone" }, [
+    h("div", {}, [
+      "\u26A0 container appears gone: the run's API is unreachable while " +
+      "status.json still records state " + JSON.stringify(String(s.state)),
+    ]),
+    h("div", {}, [
+      "this run stopped without recording a terminal state \u2014 diagnose " +
+      "with `ralphctl repair " + String(detail.runId || "") + "`",
+    ]),
+  ]));
 }
 
 // Task 020 (#5): a *failed* post-terminal reflection deliberately leaves the
