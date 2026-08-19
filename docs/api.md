@@ -198,7 +198,7 @@ then follows. Event types:
 
 | type | payload highlights |
 |------|--------------------|
-| `state` | lifecycle transition |
+| `state` | lifecycle transition: `state` is `running` (emitted by every engine process as it starts the job loop, resume included) or the terminal `succeeded`/`failed`/`aborted`; the startup event also carries `resumed` (`true` when this process picked up a run dir that already held recorded work) |
 | `phase` | phase entered (planning/worker/verify/review), approach number |
 | `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
 | `task` | task id + old/new status — emitted live while a worker iteration is still running (polled every ~0.25s against `tasks.json`), not only after the iteration ends, so `pending -> in-progress` is observable in real time |
@@ -214,7 +214,11 @@ then follows. Event types:
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
 
 Every event also lands in `events.jsonl` in the run dir with a monotonically
-increasing `id`.
+increasing `id`. That file is append-only **across resumes**, so a terminal
+`state` event can sit in the middle of the log — the `running` state event a
+resuming engine emits supersedes it, which is what lets a follower tell a
+historical marker from the run's real terminus (see `ralphctl watch` in
+[cli.md](cli.md)).
 
 ### `GET /artifacts` and `GET /artifacts/{path}`
 List (recursive, with sizes) and download files from the artifacts dir.
