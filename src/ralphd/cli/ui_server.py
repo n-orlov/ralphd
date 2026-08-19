@@ -9,7 +9,9 @@ Serves two things:
   - JSON endpoints under `/api/...` reading `<registry>/runs/*` and
     proxying a run's *live* container API when it is reachable, degrading
     gracefully (never raising into a 500, never hanging past a short
-    timeout) when it is not. Control routes are proxies too: `POST
+    timeout) when it is not -- including the log tail (task 039) and the
+    PRD (task 056), which both fall back to reading the run dir on disk so
+    a dead run stays readable. Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
     now" button on a degraded run-detail card.
@@ -35,13 +37,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from ..engine.state import NONTERMINAL_STATES, format_cost, format_local_time
+from ..engine.state import NONTERMINAL_STATES, format_cost, format_local_time, prd_path
 from ..log_merge import NO_TRANSCRIPT, merged_lines
 from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
 
 DEFAULT_LOG_TAIL = 200
+
+# Task 056 (#1): shown by the hub's PRD dialog when a run dir has no PRD at
+# all (same discipline as `log_merge.NO_TRANSCRIPT`: the wording lives
+# server-side, never spelled out again in app.js).
+NO_PRD = "(no PRD recorded)"
 
 # Task 024 (#8): how long the run-list liveness probe waits for a run's API
 # port to accept a TCP connection. Deliberately tiny: the API is published on
@@ -246,6 +253,34 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     return ok, lines or [NO_TRANSCRIPT]
 
 
+def prd_text(reg: Path, run_id: str) -> tuple[bool, str]:
+    """A run's PRD for the hub's PRD dialog (task 056, #1).
+
+    Exactly the shape `rendered_log_lines` established for the log tail
+    (tasks 038/039): ask the run's LIVE API first (`GET /prd`, which is
+    where a still-running job's composite PRD is authoritative), and fall
+    back to reading the run dir directly when that API does not answer --
+    a finished or dead run's PRD is sitting right there on disk, so the
+    dialog must not be live-only. Which file counts as "the PRD"
+    (`composite-prd.md` when present, else `prd.md`) is decided by the ONE
+    shared helper `engine.state.prd_path`, the same one the engine's route
+    uses, so the live and on-disk answers cannot diverge.
+
+    Returns `(live, text)`; `text` is `NO_PRD` when there is nothing to show,
+    never an empty string, so the dialog says *why* it is empty (the same
+    reason `log_merge.NO_TRANSCRIPT` exists). Host-side reads pass no scrub
+    -- see docs/architecture.md's redaction section.
+    """
+    ok, text = _proxy_text(reg, run_id, "/prd")
+    if not ok:
+        f = prd_path(reg / "runs" / run_id)
+        try:
+            text = f.read_text(errors="replace") if f is not None else ""
+        except OSError:
+            text = ""
+    return ok, text if text.strip() else NO_PRD
+
+
 # Task 048 (#4): absolute timestamps are formatted HERE, server-side, by the
 # one shared formatter (`engine/state.format_local_time`) instead of being
 # re-implemented in `web/app.js` -- the hub then renders the string as-is
@@ -387,6 +422,16 @@ class Handler(BaseHTTPRequestHandler):
                     tail_n = DEFAULT_LOG_TAIL
                 live, lines = rendered_log_lines(reg, run_id, tail_n)
                 self._send_json({"live": live, "lines": lines})
+                return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "prd":
+                # Task 056 (#1): the hub's PRD dialog. Live-first with an
+                # on-disk fallback, exactly like the log tail above.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                live, text = prd_text(reg, run_id)
+                self._send_json({"live": live, "text": text})
                 return
             if len(segs) == 3 and segs[:2] == ["api", "runs"]:
                 run_id = segs[2]

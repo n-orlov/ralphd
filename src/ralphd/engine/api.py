@@ -36,7 +36,7 @@ from .skills import (
     place_skills,
     tar_dir,
 )
-from .state import RunDir, task_counts
+from .state import RunDir, prd_path, task_counts
 
 
 def problem(status: int, title: str, detail: str = "") -> HTTPException:
@@ -140,9 +140,11 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
 
     @app.get("/prd")
     async def prd(original: bool = False):
-        f = run.prd_file if (original or not run.composite_prd_file.exists()) \
-            else run.composite_prd_file
-        if not f.exists():
+        # Task 056 (#1): which of prd.md/composite-prd.md is "the PRD" is
+        # decided by the one shared helper in state.py, which the hub's
+        # on-disk fallback (ui_server.prd_text) uses too.
+        f = prd_path(run.root, original=original)
+        if f is None:
             raise problem(404, "no PRD")
         return PlainTextResponse(f.read_text(), media_type="text/markdown")
 

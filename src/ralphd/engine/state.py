@@ -284,6 +284,35 @@ def read_operator_termination(run_root: Path) -> dict | None:
 _TASK_COUNT_KEYS = {"in-progress": "inProgress", "validation-failed": "validationFailed"}
 
 
+def prd_path(run_root: Path, original: bool = False) -> Path | None:
+    """Which file *is* a run's PRD (task 056, #1) -- decided in ONE place.
+
+    A run dir can hold two: `prd.md` (exactly what the operator handed to
+    `ralphctl start`) and, when the engine composed one, `composite-prd.md`
+    (the text the agent actually works from). "The run's PRD" therefore
+    means the composite when it exists and the original otherwise;
+    `original=True` forces the raw one.
+
+    Shared by the engine's `GET /prd` and the host-side on-disk fallback the
+    hub's PRD dialog uses for an unreachable run (`ui_server.prd_text`, same
+    live-first/on-disk shape as the log merge in tasks 038/039), so the two
+    readers can never disagree about which file a reader is shown. Returns
+    None when the requested PRD is not there at all (caller -> 404 / the
+    "no PRD" message).
+
+    Deliberately a plain function over a path, not a `RunDir` method: the
+    host side must be able to read a registry run dir WITHOUT constructing a
+    `RunDir` (whose `__post_init__` creates directories -- a read-only
+    viewer must never write into a run dir).
+    """
+    root = Path(run_root)
+    composite = root / "composite-prd.md"
+    if not original and composite.exists():
+        return composite
+    plain = root / "prd.md"
+    return plain if plain.exists() else None
+
+
 def task_counts(tasks: list) -> dict:
     """Count a tasks.json task list into the /status `tasks` shape:
     {"total": N, "completed": N, "inProgress": N, "pending": N,
