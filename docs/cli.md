@@ -605,6 +605,34 @@ Exit `0` woken · `5` the run is not in an infra wait (or already finished) ·
 `3` unknown run · `4` API unreachable. `--json` prints the engine's
 `{"retrying": true}`.
 
+### `ralphctl budget <run-id> <+N|N>`
+
+Change a **running** job's iteration budget in flight (`PATCH /config/budget`)
+without restarting the container — the operator-facing answer to "the job is
+about to run out of iterations and it is nearly there":
+
+```console
+$ ralphctl budget my-run +10      # top up: current budget + 10
+$ ralphctl budget my-run 40       # absolute new budget
+```
+
+Same spec syntax as `resume --iterations`: `+N` is relative, a bare integer is
+absolute — so a bare `-5` is an *absolute* -5 and is rejected, never read as a
+decrement (lower a budget by passing the absolute value you want). The new
+value is live at the next iteration boundary and immediately visible in
+`status` (`iterationsBudget`) and `GET /config`; every accepted change emits a
+`budget_changed` audit event.
+
+This is a **live-engine** change only: `/config/job.yaml` is a read-only mount,
+so the engine never rewrites it. Use `resume <run-id> --iterations +N` when the
+new budget has to survive a fresh container.
+
+Exit `0` applied · `5` the engine refused (resulting budget below
+`iterationsUsed`, or the job already finished — resume instead) · `1` the
+engine rejected the value (`422`) · `2` locally malformed spec · `3` unknown
+run · `4` API unreachable. `--json` prints the engine's
+`{"iterations": 40, "previous": 25, "iterationsUsed": 17}`.
+
 ### `ralphctl abort <run-id> [--reason <text>]`
 
 Terminate the job (state `aborted`, honors on-complete mode).
