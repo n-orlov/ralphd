@@ -502,6 +502,23 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         loop.resume()
         return {"resumed": True}
 
+    @app.post("/retry")
+    async def retry_now():
+        # Task 015 (#5): wake an infra backoff wait *now*. Distinct from
+        # /resume, which releases an operator *pause*: a degraded run is not
+        # paused, it is waiting out an outage, and the two states are
+        # independent (this route never unpauses, /resume never shortens a
+        # backoff).
+        if finished():
+            raise problem(409, "job finished", "retry has no effect")
+        if not loop.retry_now():
+            raise problem(
+                409, "not waiting on an infra fault",
+                "/retry only wakes a run whose /status shows health "
+                "'degraded' with a populated infraWait; use /resume to "
+                "release an operator pause")
+        return {"retrying": True}
+
     @app.post("/abort")
     async def abort(body: dict | None = None):
         if finished():

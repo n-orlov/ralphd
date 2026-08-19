@@ -52,7 +52,7 @@ def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
 
 def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):
     """Feeds `results` to the wrapper one attempt at a time (the last one
-    repeats forever), and replaces the backoff sleep with a recorder."""
+    repeats forever), and replaces the backoff wait with a recorder."""
     calls: list[str] = []
     waits: list[float] = []
 
@@ -60,10 +60,20 @@ def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):
         calls.append(phase)
         return results[min(len(calls) - 1, len(results) - 1)]
 
-    async def fake_sleep(seconds):
+    async def fake_backoff(seconds):
+        # Task 015 (#5): the wrapper's wait is an interruptible Event race
+        # (_wait_out_backoff), no longer a bare asyncio.sleep -- stub that
+        # seam and report "waited the whole backoff, not woken by anyone".
         waits.append(seconds)
+        return seconds, False
+
+    async def fake_sleep(seconds):
+        # Back-compat shim: call sites that still patch asyncio.sleep get a
+        # no-op (the recorded waits come from fake_backoff above).
+        return None
 
     sup._run_iteration_once = fake_once  # type: ignore[method-assign]
+    sup._wait_out_backoff = fake_backoff  # type: ignore[method-assign]
     sup._infra_sleep_patch = fake_sleep  # keep a reference for clarity
     return calls, waits, fake_sleep
 

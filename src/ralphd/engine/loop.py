@@ -49,6 +49,18 @@ class LoopSupervisor:
         self.iterations_used = run.max_iteration_number()
         self._pause = asyncio.Event()
         self._pause.set()  # set = not paused
+        # Task 015 (#5): the operator's "retry now" doorbell, shaped exactly
+        # like _pause -- an asyncio.Event the API sets from its own request
+        # handler while the loop task is parked on it. The infra backoff wait
+        # therefore races this Event instead of sleeping blind, so POST /retry
+        # cuts a 5-minute backoff short in milliseconds instead of leaving an
+        # operator who can see the endpoint is healthy again staring at a
+        # countdown. Inverted sense from _pause (clear = nothing requested,
+        # set = wake up now); armed/cleared per wait.
+        self._retry_now = asyncio.Event()
+        # True only while the loop is actually parked in an infra backoff
+        # wait: what POST /retry can wake (409 otherwise).
+        self._infra_waiting = False
         self._abort_reason: str | None = None
         # Task 003 (#11): operator-initiated abort/interrupt bookkeeping,
         # consulted by classify_fault(operator_abort=...) so a SIGINT the
@@ -143,6 +155,28 @@ class LoopSupervisor:
     def resume(self) -> None:
         self._pause.set()
         self.run.emit("log", message="resumed")
+
+    def retry_now(self) -> bool:
+        """Operator-requested "try the endpoint again right now" (task 015,
+        #5). Returns False when the run is not sitting in an infra backoff
+        wait -- there is nothing to wake, and the API turns that into a 409
+        rather than silently pretending to have done something.
+
+        Deliberately narrow: it does NOT unpause a paused run (that is
+        /resume) and does not touch steering. The only state it changes is
+        the backoff wait it interrupts, plus the outage-budget episode clock
+        reset done by the waiter itself.
+        """
+        if not self._infra_waiting:
+            return False
+        wait = self.run.read_status().get("infraWait") or {}
+        self.run.emit("infra_retry_now", phase=wait.get("phase"),
+                      attempt=wait.get("attempt"), error=wait.get("error"),
+                      source="operator",
+                      message="manual retry requested: waking the infra "
+                              "backoff wait and resetting the outage budget")
+        self._retry_now.set()
+        return True
 
     def abort(self, reason: str = "") -> None:
         self._abort_reason = reason or "aborted by operator"
@@ -410,6 +444,10 @@ class LoopSupervisor:
         take effect at once instead of being fought by a retry episode --
         pi reports both as the same bare "aborted" error a provider-side
         stream abort produces.
+
+        Task 015 (#5): each backoff wait is interruptible -- POST /retry
+        wakes it immediately (_wait_out_backoff / self._retry_now) and
+        restarts the outage-budget clock.
         """
         retry_max = self.cfg.infra_retry_max  # None == no explicit attempt cap
         budget = self.cfg.infra_outage_budget_s
@@ -503,10 +541,46 @@ class LoopSupervisor:
             self._begin_infra_wait(phase=phase, attempt=attempt,
                                    error=error_desc, waited_s=waited,
                                    backoff_s=backoff, budget_s=budget)
-            await asyncio.sleep(backoff)
-            self._infra_episode_waited_s = waited + backoff
-            self._account_infra_wait(backoff, phase, attempt)
+            elapsed, woken = await self._wait_out_backoff(backoff)
+            self._infra_episode_waited_s = waited + elapsed
+            self._account_infra_wait(elapsed, phase, attempt)
             self._end_infra_wait()
+            if woken:
+                # Task 015 (#5): a manual retry restarts the outage-budget
+                # episode clock -- the operator asserting "it is back" is new
+                # information, and a run that has already sat out most of its
+                # budget must not die of budget exhaustion one attempt after
+                # being told to try again. The attempt counter is kept, so
+                # repeated impatient retries keep escalating the backoff
+                # instead of hammering a still-broken endpoint.
+                self._infra_episode_waited_s = 0.0
+                self._infra_episode_started_at = time.monotonic()
+
+    async def _wait_out_backoff(self, backoff: float) -> tuple[float, bool]:
+        """Waits `backoff` seconds unless the operator rings the retry-now
+        doorbell first (task 015, #5). Returns (seconds actually waited,
+        woken-by-operator).
+
+        The wait is `self._retry_now.wait()` under a timeout rather than a
+        plain `asyncio.sleep`, so POST /retry -> Event.set() releases the loop
+        task immediately; the seconds actually spent are what gets booked into
+        the episode clock, `infraWaitTotalS` and the deadline extension, so a
+        cut-short wait is never accounted as a full one.
+        """
+        self._retry_now.clear()
+        self._infra_waiting = True
+        started = time.monotonic()
+        woken = True
+        try:
+            await asyncio.wait_for(self._retry_now.wait(), timeout=backoff)
+        except TimeoutError:  # asyncio.TimeoutError since 3.11
+            woken = False
+        finally:
+            self._infra_waiting = False
+            self._retry_now.clear()
+        # Clamped: the timeout path can overshoot by a scheduling tick, and
+        # the booked wait must never exceed the backoff the budget planned.
+        return min(time.monotonic() - started, backoff), woken
 
     def _begin_infra_wait(self, *, phase: str, attempt: int, error: str,
                           waited_s: float, backoff_s: float,
@@ -558,9 +632,11 @@ class LoopSupervisor:
         out by exactly the waited seconds, emitting ``deadline_extended`` so
         an extension is auditable rather than a silent clock adjustment.
 
-        The amount booked is the backoff the wrapper slept for, which is also
-        what the outage-budget episode clock counts -- one number, so
-        ``infraWaitTotalS`` and the budget arithmetic can never disagree.
+        The amount booked is the time actually spent in the backoff wait,
+        which is also what the outage-budget episode clock counts -- one
+        number, so ``infraWaitTotalS`` and the budget arithmetic can never
+        disagree (a wait cut short by POST /retry books only the seconds it
+        really waited).
         """
         self._infra_wait_total_s += waited_s
         self.deadline += waited_s
