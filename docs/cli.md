@@ -1212,7 +1212,15 @@ JSON endpoints served under `/api/`:
   plan that parsed, carrying the same `tasksStale`/`tasksSource` fields
   documented in docs/api.md instead of an empty table. A live answer is passed
   through verbatim, flags included (a pre-0.6 engine sends none, and the hub
-  does not invent `tasksStale: false` on its behalf).
+  does not invent `tasksStale: false` on its behalf). Task 005 (#15) adds the
+  two *display* strings the browser shows for such a read: `tasksLabel` (the
+  short badge, `stale`) and `tasksNotice` (the full sentence), rendered
+  server-side from the engine's single copy of that wording
+  (`ralphd.engine.state.tasks_read_notice` / `TASKS_STALE_LABEL`), exactly
+  like `usage.costDisplay` and `startedAtLocal` — `app.js` never re-spells
+  engine vocabulary. Both keys are present only when the read really was
+  stale (and are stripped if the plan file forged them), so their absence
+  means "nothing to warn about", never "an old hub".
 - `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
   fetches the run's FULL raw NDJSON backlog from the live container API
   (`GET /logs`, no `tail` param there), renders it through the exact same
@@ -1325,6 +1333,14 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   run-detail payload (`tasks`), so no extra request is made, and the same
   text-nodes-only discipline applies: criteria are agent-authored prose full
   of backticks, `<` and fenced snippets.
+  When the task read was served from the last-good cache (task 005, #15) the
+  table is preceded by a `#tasks-stale` line — a `stale` pill plus the
+  `tasksNotice` sentence, `data-tasks-source` carrying `last-good` or
+  `unreadable` — so rows that are true-but-old are never shown as current.
+  The rows themselves stay put: a poll landing inside pi's non-atomic rewrite
+  of `tasks.json` no longer blinks the table to `(no tasks)`, and an
+  `unreadable` read (no last-good anywhere) shows the notice *instead of*
+  `(no tasks)`, since that emptiness is ignorance rather than an empty plan.
   A **degraded** run (`health: degraded`/`infraWait` set — the run is
   sitting out an endpoint outage; see docs/api.md) gets a visually
   distinct card (`.card.degraded`) carrying the attempt number, phase,

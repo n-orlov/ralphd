@@ -83,6 +83,10 @@ a { color: var(--accent); }
 .pill-failed, .pill-error { color: var(--err); border-color: var(--err); }
 .pill-running, .pill-in-progress { color: var(--accent); border-color: var(--accent); }
 .pill-pending, .pill-unknown, .pill-paused { color: var(--warn); border-color: var(--warn); }
+/* Task 005 (#15): a stale task read is a caution, not an error -- same warn
+   colour as the other "this is not settled" pills. */
+.pill-stale { color: var(--warn); border-color: var(--warn); }
+.tasks-stale { margin: 0.2rem 0 0.5rem; }
 
 section {
   margin-bottom: 1.5rem;
