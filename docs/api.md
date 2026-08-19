@@ -181,7 +181,13 @@ Full `tasks.json`.
 
 ### `GET /prd`
 `text/markdown` — the PRD in effect (composite PRD when approach ≥ 2).
-`GET /prd?original=true` returns the original regardless.
+`GET /prd?original=true` returns the original regardless. `404` when the run
+dir holds no PRD at all. Which file that is (`composite-prd.md` when present,
+else `prd.md`) is decided by one shared helper,
+`ralphd.engine.state.prd_path`, which the hub's host-side on-disk fallback
+(`GET /api/runs/<id>/prd`, behind the run-detail **view PRD** dialog — see
+docs/cli.md) uses too, so a live and an on-disk read of the same run dir can
+never disagree about which text is "the PRD".
 
 ### `GET /notes`
 `text/markdown` — current `notes.md` handoff notes.

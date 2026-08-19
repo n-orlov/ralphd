@@ -854,3 +854,73 @@ def test_run_list_is_sortable_and_defaults_to_newest_first(tmp_path, pw):
         assert "\u25B2" not in _sort_header_text(pw, "startedAt")
     finally:
         server.stop()
+
+
+def test_run_detail_opens_the_prd_in_a_dialog(tmp_path, pw):
+    """Task 056 (#1): the run's PRD is one click away from its detail page,
+    for a LIVE run (proxied `GET /prd`) and for a DEAD one (the on-disk
+    fallback, consistent with the log tail's snapshot behaviour in task 039).
+
+    Also pins the rendering discipline in the browser rather than by grep:
+    the PRD text contains markup and an inline `<script>`, so if the dialog
+    ever went through `innerHTML` the literal characters would vanish from
+    `textContent` and a `script` element would appear inside the dialog.
+    """
+    registry = tmp_path / "registry"
+    dead_prd = ("# Dead run PRD\n\n"
+                "Ship <b>the thing</b> & do not <script>alert(1)</script>.\n")
+    live_prd = "# Live run PRD\n\nKeep the endpoint honest.\n"
+
+    dead = _write_dead_run(registry, "run-dead-prd", state="failed",
+                           verdict="unverified")
+    (dead / "prd.md").write_text(dead_prd)
+
+    engine = StubEngineApi(
+        status={"runId": "run-live-prd", "state": "running", "phase": "worker",
+                "approach": 1, "iterationsUsed": 2, "iterationsBudget": 25,
+                "startedAt": "2026-01-01T00:00:00Z"},
+        prd=live_prd)
+    live = _write_run_with_api(registry, "run-live-prd", engine, state="running")
+    # a stale on-disk copy must NOT be what the live run's dialog shows
+    (live / "prd.md").write_text("stale on-disk copy of the live run's PRD\n")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # -- dead run: on-disk fallback, labelled as a snapshot ------------
+        pw.open(f"{server.base}/#/run/run-dead-prd")
+        _wait_for(pw, "document.body.innerText", "view PRD")
+        assert int(pw.eval_js("document.querySelectorAll('dialog.text-dialog').length")) == 0
+        pw.click("button.open-prd")
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "Dead run PRD")
+        assert "Ship <b>the thing</b> & do not <script>alert(1)</script>." in body, body
+        assert "on-disk snapshot" in body, body
+        # textContent-only discipline: nothing was parsed as markup
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b').length")) == 0
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+        pw.screenshot(SCREENSHOTS_DIR / "12-prd-dialog-dead-run.png")
+
+        # closing removes it (no stale copies piling up behind the 4s refresh)
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if pw.eval_js("document.querySelectorAll('dialog.text-dialog').length") == "0":
+                break
+            time.sleep(0.2)
+        assert pw.eval_js("document.querySelectorAll('dialog.text-dialog').length") == "0"
+
+        # -- live run: proxied from the container, no snapshot label -------
+        pw.open(f"{server.base}/#/run/run-live-prd")
+        _wait_for(pw, "document.body.innerText", "view PRD")
+        pw.click("button.open-prd")
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "Live run PRD")
+        assert "Keep the endpoint honest." in body, body
+        assert "stale on-disk copy" not in body, body
+        assert "on-disk snapshot" not in body, body
+        pw.screenshot(SCREENSHOTS_DIR / "13-prd-dialog-live-run.png")
+    finally:
+        server.stop()
+        engine.close()

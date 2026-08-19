@@ -26,6 +26,7 @@ from .runner import IterationResult, PiRunner
 from .state import (
     RunDir,
     atomic_write_json,
+    prd_path,
     record_operator_termination,
     utc_from_epoch,
     utcnow,
@@ -232,8 +233,11 @@ class LoopSupervisor:
 
     def build_prompt(self, phase: str, extra: str = "",
                       prompt_name: str | None = None) -> str:
-        prd = self.run.composite_prd_file if self.run.composite_prd_file.exists() \
-            else self.run.prd_file
+        # Task 056 (#1): "which file is the PRD" is `state.prd_path`'s call
+        # (composite when present), the same one `GET /prd` and the hub's
+        # PRD dialog make -- falling back to the canonical path name when
+        # neither file exists yet, since this only names a path in a prompt.
+        prd = prd_path(self.run.root) or self.run.prd_file
         parts = [self.prompt_text(prompt_name or phase)]
         parts.append("\n\n## Job context\n")
         parts.append(f"- Run state directory: {self.run.root}\n")

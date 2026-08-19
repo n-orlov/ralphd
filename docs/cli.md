@@ -1207,6 +1207,18 @@ JSON endpoints served under `/api/`:
   thinking block to exactly one `[thinking…]` line, the defect this task
   fixed — the pre-014 client-side renderer appended one element per
   `thinking_delta` event with no dedup).
+- `GET /api/runs/<id>/prd` — the run's PRD for the hub's PRD dialog (task
+  056, issue #1): `{"live": bool, "text": "<markdown>"}`. Proxies the run's
+  live `GET /prd` and, when that API doesn't answer, falls back to reading
+  the run dir on disk — the same live-first/on-disk shape as the log tail
+  above, so a finished or killed run's PRD stays readable in the hub. Which
+  file counts as "the PRD" (`composite-prd.md` when the engine composed one,
+  else `prd.md`) is decided by the single shared helper
+  `ralphd.engine.state.prd_path`, the same one the engine route uses, so the
+  live and on-disk answers can never disagree. A run dir with no PRD at all
+  answers with the single line `(no PRD recorded)` (constant
+  `ui_server.NO_PRD`) rather than an empty string, and `404` for an unknown
+  run id.
 - `POST /api/runs/<id>/steer` — body `{"message": ..., "name": ...}`,
   forwarded to the run's live `POST /steering`. Returns the API's own
   response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`
@@ -1262,6 +1274,16 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   markers — reimplemented in `app.js`, not shared code, since the CLI is
   Python and the bundle is browser JS), and a steering form that `POST`s
   to `/api/runs/<id>/steer` and reports the created file name back.
+  A **view PRD** button (task 056, issue #1) opens the run's PRD in a modal
+  `<dialog>` fed by `GET /api/runs/<id>/prd`, so it works for a dead run too
+  (the dialog then says `(on-disk snapshot — the run's API is not
+  reachable)`, the same wording style as the log tail's snapshot label). The
+  PRD is inserted as **text nodes only** (`textContent`, never `innerHTML`
+  — the task-014 rendering discipline): agent/operator-authored markdown is
+  outside the page's trust boundary, and rendering it as HTML would both
+  invite injection and mangle the `<`-heavy text the operator came to read.
+  Only one dialog exists at a time; closing it removes it, so the 4s refresh
+  behind it cannot accumulate copies.
   A **degraded** run (`health: degraded`/`infraWait` set — the run is
   sitting out an endpoint outage; see docs/api.md) gets a visually
   distinct card (`.card.degraded`) carrying the attempt number, phase,

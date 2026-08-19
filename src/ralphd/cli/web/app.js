@@ -165,6 +165,54 @@ function sortIndicator(key) {
   return runSort.dir < 0 ? " \u25BC" : " \u25B2";
 }
 
+// ------------------------------------------------------- text dialogs (#1)
+
+// Task 056 (#1): agent/operator-authored text (a run's PRD; task 057 adds
+// task detail) opens in a modal <dialog> instead of forcing the operator
+// back to `ralphctl` or the run dir on disk.
+//
+// Rendering discipline (task 014): the text is inserted as TEXT NODES only,
+// via `h()`, never `innerHTML`. A PRD is arbitrary markdown written outside
+// this page's trust boundary -- rendering it as HTML would let any run dir
+// inject markup/script into the hub, and would also mangle the very thing
+// the operator wants to read (a fenced code block full of `<`).
+//
+// Exactly one dialog exists at a time: it is removed on close, so the 4s
+// `load()` rebuild of the page behind it can never accumulate stale copies.
+function openTextDialog(title, text, note) {
+  const previous = document.getElementById("text-dialog");
+  if (previous) previous.remove();
+  const dlg = h("dialog", { id: "text-dialog", class: "text-dialog" }, [
+    h("h3", { class: "dialog-title" }, [String(title)]),
+    note ? h("p", { class: "muted dialog-note" }, [String(note)]) : null,
+    // <pre> keeps the markdown's own line breaks/indentation readable
+    // without interpreting any of it.
+    h("pre", { class: "dialog-body" }, [String(text)]),
+    h("form", { method: "dialog", class: "dialog-close" }, [
+      h("button", { type: "submit" }, ["close"]),
+    ]),
+  ]);
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.appendChild(dlg);
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "open");
+  return dlg;
+}
+
+// The PRD comes from the hub's `GET /api/runs/<id>/prd` (ui_server.py),
+// which proxies the run's live `GET /prd` and falls back to the on-disk
+// run dir for an unreachable run -- so this works for a dead run too, and
+// says which of the two it got, in the same wording style as the log tail's
+// on-disk-snapshot label.
+async function openPrdDialog(runId) {
+  const { ok, body } = await getJSON(`/api/runs/${encodeURIComponent(runId)}/prd`);
+  const text = (ok && body && typeof body.text === "string" && body.text)
+    ? body.text : "(failed to load the PRD)";
+  const note = (ok && body && body.live !== true)
+    ? "(on-disk snapshot — the run's API is not reachable)" : null;
+  return openTextDialog("PRD — " + runId, text, note);
+}
+
 // -------------------------------------------------------------- routing
 
 function router() {
@@ -249,6 +297,13 @@ async function renderRunDetail(runId) {
   app.innerHTML = "";
   app.appendChild(h("p", {}, [h("a", { href: "#/" }, ["← runs"])]));
   app.appendChild(h("h2", {}, ["Run " + runId]));
+  // Task 056 (#1): the run's PRD, one click away from its detail page.
+  app.appendChild(h("p", { class: "detail-actions" }, [
+    h("button", {
+      type: "button", class: "open-prd", id: "open-prd",
+      onclick: () => { openPrdDialog(runId); },
+    }, ["view PRD"]),
+  ]));
 
   const summary = h("div", { class: "card" }, [h("p", { class: "muted" }, ["loading…"])]);
   const usageSec = h("section", {}, [h("h2", {}, ["Usage / cost"]), h("div", { id: "usage-box" })]);

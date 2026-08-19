@@ -105,16 +105,19 @@ class StubEngineApi:
     """Minimal stand-in for a run's *live* container API (task 017), so a
     hub test can exercise the proxy routes without booting a real engine
     container: answers the GETs the run-detail view issues (`/status`,
-    `/tasks`, `/logs`) plus `POST /retry`, and records every request
-    (method, path, Authorization header) for assertions."""
+    `/tasks`, `/logs`, and -- task 056 -- `/prd`) plus `POST /retry`, and
+    records every request (method, path, Authorization header) for
+    assertions."""
 
     def __init__(self, status: dict | None = None, retry_status: int = 200,
-                 retry_body: dict | None = None, tasks: dict | None = None):
+                 retry_body: dict | None = None, tasks: dict | None = None,
+                 prd: str | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.status_body = status if status is not None else {"state": "running"}
         self.tasks_body = tasks if tasks is not None else {"tasks": []}
         self.retry_status = retry_status
         self.retry_body = retry_body if retry_body is not None else {"retrying": True}
+        self.prd_body = prd
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -143,6 +146,11 @@ class StubEngineApi:
                     self._reply(200, outer.tasks_body)
                 elif path == "/logs":
                     self._reply(200, "", "text/plain")
+                elif path == "/prd":
+                    if outer.prd_body is None:
+                        self._reply(404, {"detail": "no PRD"})
+                    else:
+                        self._reply(200, outer.prd_body, "text/markdown")
                 else:
                     self._reply(404, {"detail": "no such route"})
 

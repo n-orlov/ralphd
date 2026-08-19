@@ -225,3 +225,33 @@ footer.autorefresh {
   font-size: 0.8rem;
   margin-top: 0.5rem;
 }
+
+/* task 056 (#1): the PRD (and, task 057, task-detail) dialog. Plain
+   <dialog>, no library: a scrollable monospace text box whose content is
+   inserted as text nodes only (see app.js's openTextDialog). */
+.detail-actions { margin: 0.2rem 0 0.6rem; }
+
+.text-dialog {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.8rem 1rem;
+  max-width: min(80rem, 92vw);
+  max-height: 84vh;
+  overflow: auto;
+}
+
+.text-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.text-dialog .dialog-title { margin: 0 0 0.3rem; }
+.text-dialog .dialog-note { margin: 0 0 0.5rem; font-size: 0.8rem; }
+
+.text-dialog .dialog-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  margin: 0;
+  max-height: 62vh;
+  overflow: auto;
+}
+
+.text-dialog .dialog-close { margin-top: 0.6rem; }
