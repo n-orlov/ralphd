@@ -76,6 +76,10 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # has to handle.
         s.setdefault("health", "ok")
         s.setdefault("infraWait", None)
+        # Task 019 (#5): same for the reflect phase's verdict -- null means
+        # "no reflect iteration has finished" (reflect off, or not there yet),
+        # never "an older engine wrote this run dir".
+        s.setdefault("reflect", None)
         tasks = run.read_tasks().get("tasks", [])
         counts = {"total": len(tasks)}
         for t in tasks:

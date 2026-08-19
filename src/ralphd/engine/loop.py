@@ -965,15 +965,94 @@ class LoopSupervisor:
         (_reflect_pre_attempt_wait). Neither changes the guarantees this
         method has always had: exactly one reflect phase, strictly after the
         terminal state, unable to change it.
+
+        Task 019 (#5): the result is no longer discarded --
+        _record_reflect_outcome() reads it and leaves a verdict behind
+        (status.json `reflect`, plus artifacts/reflection/FAILED.md when it
+        failed), because a silently swallowed reflect failure looks exactly
+        like `reflect: false` from the outside.
         """
         self.run.emit("phase", phase="reflect")
         window = self._begin_reflect_retry_window()
+        result: IterationResult | None = None
         try:
             await self._reflect_pre_attempt_wait()
-            await self.run_iteration("reflect")
+            result = await self.run_iteration("reflect")
         finally:
             self._end_reflect_retry_window(window)
             self.run.update_status(phase=None)
+            self._record_reflect_outcome(result)
+
+    # Task 019 (#5): the post-mortem the reflect phase is supposed to leave
+    # behind. "reflect ran but produced no report" is a failure too -- that
+    # is exactly the shape PRD incident 2 had (the phase fired into a dead
+    # endpoint and the run dir looked like reflect had never been enabled).
+    REFLECT_REPORT = "report.md"
+
+    def _reflect_failure(self, result: IterationResult | None) -> str | None:
+        """The reflect iteration's failure text, or None if it succeeded.
+
+        Task 019 (#5). Deliberately *not* classify_fault(): this is not about
+        whose fault it was (the retry wrapper already spent its budget on
+        that question by the time we get here) but about whether the operator
+        ended up with a post-mortem. So a missing report counts as a failure
+        even on a clean exit -- an agent that exits 0 having written nothing
+        leaves the same empty artifacts/reflection/ as a broken endpoint.
+        The one thing that is *not* reported as a reflect failure is the
+        promise line: the report on disk is the deliverable.
+        """
+        if result is None:
+            return "the reflect iteration did not run to completion"
+        error = (result.error_message or "").strip()
+        if result.interrupted:
+            return error or "the reflect iteration was interrupted"
+        if result.timed_out or result.no_traffic_timeout:
+            return error or "the reflect iteration timed out"
+        if error:
+            return error
+        if result.exit_code not in (0, None):
+            return f"the reflect agent exited {result.exit_code}"
+        report = self.run.artifacts_dir / "reflection" / self.REFLECT_REPORT
+        if not report.exists():
+            return (f"the reflect iteration wrote no artifacts/reflection/"
+                    f"{self.REFLECT_REPORT}")
+        return None
+
+    def _record_reflect_outcome(self, result: IterationResult | None) -> None:
+        """Records the reflect phase's verdict in the run state (task 019, #5):
+        `reflect: {ok, error, endedAt}` in status.json either way, plus
+        artifacts/reflection/FAILED.md naming the error when it failed, so a
+        failed post-mortem is visible on disk next to where the report would
+        have been (and to `ralphctl status` / the hub, task 020).
+
+        Never touches the terminal state, verdict or reason: reflect runs
+        after the job is over and must not be able to rewrite how it ended.
+        """
+        error = self._reflect_failure(result)
+        self.run.update_status(reflect={"ok": error is None, "error": error,
+                                        "endedAt": utcnow()})
+        if error is None:
+            log.info("reflect iteration wrote artifacts/reflection/%s",
+                     self.REFLECT_REPORT)
+            self.run.emit("reflect_done", ok=True)
+            return
+        log.warning("reflect iteration failed: %s", error)
+        outdir = self.run.artifacts_dir / "reflection"
+        outdir.mkdir(parents=True, exist_ok=True)
+        status = self.run.read_status()
+        (outdir / "FAILED.md").write_text(
+            "# Reflection failed\n\n"
+            f"The post-terminal `reflect` iteration did not produce a report.\n\n"
+            f"- error: {error}\n"
+            f"- when: {utcnow()}\n"
+            f"- run: {self.cfg.run_id}\n"
+            f"- terminal state: {status.get('state')} "
+            f"(verdict {status.get('verdict')})\n\n"
+            "The job's own terminal state above is unaffected by this failure.\n"
+            "See the last `reflect` iteration under `iterations/` for the\n"
+            "transcript, and `infra_wait`/`infra_retry` events for the retries\n"
+            "that were already spent on it.\n")
+        self.run.emit("reflect_done", ok=False, error=error)
 
     def _begin_reflect_retry_window(self) -> tuple[str | None, bool]:
         """Gives the post-terminal reflect iteration a real retry window

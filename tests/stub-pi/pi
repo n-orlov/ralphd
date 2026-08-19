@@ -94,6 +94,21 @@ from env vars set by the test:
                       than the broken-environment instant-failure carve-out
                       (LoopSupervisor.INSTANT_FAILURE_MAX_DURATION_S = 5s)
                       must push the attempt's duration past that window.
+  STUB_REFLECT_FAIL   make the `reflect` invocation (only) fail, whatever
+                      invocation number it happens to be -- unlike the
+                      globally-counted fault knobs above, so a test does not
+                      have to know how many phases ran before reflect (task
+                      019, #5). Two shapes:
+                        `error`  an in-band provider/gateway error: a
+                                 message_end with stopReason "error", an
+                                 infra-shaped errorMessage (override with
+                                 STUB_INBAND_ERROR_MESSAGE), zero token
+                                 usage, exit 0, nothing written;
+                        `silent` a clean exit 0 with an ordinary final
+                                 message that writes NO
+                                 artifacts/reflection/report.md -- the
+                                 "phase ran, operator got no post-mortem"
+                                 shape.
   STUB_ECHO_SECRET    comma-separated literal secret value(s) for the stub
                       worker to deliberately echo into its final assistant
                       text AND into a tool call's arguments/result (task
@@ -514,6 +529,26 @@ elif "Role: Verifier" in prompt:
         )
 
 elif "Role: Reflector" in prompt:
+    # Task 019 (#5): a reflect-only failure knob. The engine must notice that
+    # the post-mortem never got written -- both when the agent errors out and
+    # when it exits 0 having written nothing at all.
+    _reflect_fail = os.environ.get("STUB_REFLECT_FAIL", "")
+    if _reflect_fail == "error":
+        print(json.dumps({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "error",
+                "errorMessage": os.environ.get(
+                    "STUB_INBAND_ERROR_MESSAGE", "Connection error."),
+                "content": [],
+                "usage": {"input": 0, "output": 0, "totalTokens": 0},
+            },
+        }))
+        sys.exit(0)
+    if _reflect_fail == "silent":
+        emit_final("stub reflector: wrote nothing at all")
+        sys.exit(0)
     # Post-job self-reflection: writes a report + a unified diff to
     # artifacts/reflection/, never touching workspace or run state (tasks.json,
     # status.json, notes.md, review-findings.md are left alone).
