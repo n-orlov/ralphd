@@ -268,7 +268,10 @@ Human output also renders (task 003):
   `unavailable`, and `costStatus: "partial"` renders the priced subtotal as
   a lower bound, `$0.12+ (partial, rest unavailable)` -- the same wording
   the `ralphctl logs` footer and the hub use, because all three go through
-  one formatter (`engine/state.format_cost`).
+  one formatter (`engine/state.format_cost`). A cost computed from the
+  optional host-side pricing map (task 052, #10, see `ralphctl config`
+  below) is marked as such and never presented as a provider-quoted price:
+  `~$0.45 derived`, or `$0.56 + ~$0.45 derived` when both kinds are present.
 - `degraded:` (task 013) -- shown only while the run is `health: "degraded"`,
   i.e. sitting out an infra outage (see `health`/`infraWait` in
   [api.md](api.md)). While a backoff wait is pending it names the attempt
@@ -951,6 +954,42 @@ and for `--llm`
 the hardcoded built-in default: explicit flag > `--template` > `ralphctl
 config` default > hardcoded default. `resume`/`llm test`/`doctor`'s own
 `--image` flags are unaffected (still default to the hardcoded image).
+
+#### Optional host-side pricing map (`pricing:`)
+
+Some gateways bill tokens and report no price at all, which ralphd records as
+*unknown* rather than `$0` (#10). `pricing:` in `<registry>/config.yaml` lets
+you supply the missing rates yourself -- the only way to get a real number for
+a gateway-local alias like `aigw-openai/gpt-5`, which no upstream pricing table
+can know. It is a nested mapping, so it is edited in `config.yaml` directly
+rather than through `config set` (which only takes scalar keys):
+
+```yaml
+pricing:
+  aliases:
+    "aigw-openai/*": "openai/*"            # trailing-* keeps the tail
+    eu.anthropic.claude-opus-5: anthropic/claude-opus-5
+  models:
+    "openai/gpt-5": {input: 1.25, output: 10.0, cacheRead: 0.125}
+    "anthropic/*":  {input: 3.0, output: 15.0}   # family default
+```
+
+Rates are USD per **million** tokens, keyed like the usage counters
+(`input`, `output`, `cacheRead`, `cacheWrite`); an absent cache rate falls back
+to the `input` rate rather than to a silent `$0`. An exact model key beats a
+wildcard one, and the longest wildcard prefix wins.
+
+- `ralphctl start` **inlines** the map into the run's `job.yaml` (`pricing`),
+  so the rates a run uses are the ones it started with and survive every later
+  `resume`; a single run can also be pointed at a map with
+  `RALPHD_PRICING='{"models": ...}'`. The resolved table is visible in
+  `GET /config` (`pricing`).
+- It is consulted **only** when the provider quoted no price, and the result is
+  published separately as `costDerivedUSD` (never merged into `costUSD`) and
+  rendered as `~$0.45 derived` everywhere (`status`, the `logs` footer, the
+  hub) -- a derived cost is never passed off as a provider-reported one.
+- No map configured (the default) changes nothing: unpriced traffic stays
+  `unavailable`, never a guessed number.
 
 ### `ralphctl doctor`
 

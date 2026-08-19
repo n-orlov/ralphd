@@ -714,6 +714,12 @@ def cmd_start(args):
         # below), so the engine's JobConfig default applies -- the default
         # lives in engine/config.py alone, never duplicated here.
         "infra_outage_budget_s": args.infra_outage_budget,
+        # Task 052 (#10): the host-side pricing map (`pricing:` in
+        # `<registry>/config.yaml`) is inlined here, at start, so the engine
+        # inside the container sees it and a `ralphctl resume` keeps using the
+        # exact rates the run started with. Absent key -> no map -> an
+        # unpriced iteration stays *unknown* (never a made-up $0).
+        "pricing": _registry_config(registry()).get("pricing") or None,
     }
     (cdir / "job.yaml").write_text(
         "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))

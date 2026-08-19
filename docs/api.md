@@ -81,6 +81,7 @@ unpriced iterations with an optional `costStatus`:
 | no `costStatus` | every iteration in the bucket was priced by the provider (or billed nothing at all): `costUSD` is the whole cost |
 | `costStatus: "partial"` | the bucket mixes reported prices with billed-but-unpriced tokens: `costUSD` is the **priced subtotal**, i.e. a lower bound |
 | `costStatus: "unknown"` | tokens were billed and nothing in the bucket was ever priced: there is no `costUSD` (except a literal `0` contributed by no-traffic iterations) and no meaningful cost figure |
+| `costStatus: "derived"` | nothing is unknown, but part of the money came from the host-side pricing map rather than the provider: `costDerivedUSD` holds that part (see below) |
 
 `costStatus` is monotone: once a bucket contains unpriced traffic it can never
 go back to fully known, and a later priced iteration only upgrades `unknown` to
@@ -95,6 +96,19 @@ usage panel, the `watch` cost gauge) does so through the single formatter
 `partial` as `$<priced subtotal>+ (partial, rest unavailable)`. The hub gets
 that string server-side as `usage.costDisplay` (plus `costDisplay` on each
 `byPhase`/`byApproach` bucket) alongside the untouched raw fields.
+
+#### Derived cost (optional host-side pricing map)
+
+When a `pricing:` map is configured (see `docs/cli.md`, and the resolved rates
+in `GET /config`), a bucket or iteration whose tokens the provider quoted **no**
+price for also carries `costDerivedUSD`: USD computed from that map's
+per-million rates. It is a separate field on purpose — it is never added into
+`costUSD`, so `costUSD` always means "money the provider itself quoted" and no
+consumer can silently mix the two. `format_cost` renders derived money with a
+`~` and the word `derived` (`~$0.45 derived`, or `$0.56 + ~$0.45 derived` when
+both kinds are present, or `$0.56 + ~$0.45 derived, partial (rest unavailable)`
+when part of the cost is still unknown). With no map configured nothing
+changes: an unpriced bucket stays `unknown`.
 
 `deadlineAt` is `startedAt + jobTimeoutS` **plus every second this run has
 spent waiting out an infra outage** (`infraWaitTotalS`, the cumulative infra
@@ -200,6 +214,8 @@ price. `usage.costPriced` is the marker:
 | no `costUSD`, `costPriced: false` | tokens were billed and **no** price was reported — cost is *unknown*, not $0 |
 | `costUSD` present, `costPriced: false` | mixed: the value is the priced subtotal only, so treat it as partial |
 | `costUSD: 0`, no `costPriced` | nothing was billed at all (e.g. pi's zero-filled `usage` on an in-band error) |
+| `costDerivedUSD: 0.31`, `costDerived: true` | every unpriced message was covered by the host-side pricing map — cost is *derived*, and kept out of `costUSD` |
+| `costDerived: false` | at least one unpriced message had no rate in the map (or no map is configured), so part of the cost stays unknown |
 
 How a run total / `byPhase` / `byApproach` bucket summarises a mix of priced and
 unpriced iterations is the `costStatus` contract under `GET /status` above.
@@ -328,6 +344,7 @@ contents, no LLM env values):
               "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0},
   "flags": {"vigilant": false, "onComplete": "idle"},
   "model": {"strategy": "quality-first", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
+  "pricing": null,                 // or the resolved host-side rate table, see below
   "prompts": [{"name": "planning", "source": "builtin"}, ...],
   "skills": [{"name": "...", "origin": "mounted"}, ...],
   "creds": ["github", ...],
@@ -349,6 +366,24 @@ The infra-fault (LLM endpoint/network outage) budgets, all settable in
 `creds` lists credential *names* only (no values, no sizes here — see
 `GET /config/creds` for that); `llmEnvKeys` lists the *names* of any env
 overrides set via `PUT /config/llm`, never their values.
+
+`pricing` is the optional host-side rate table (`pricing` in `job.yaml` /
+`RALPHD_PRICING` as JSON, normally inlined from `<registry>/config.yaml` by
+`ralphctl start` — see `docs/cli.md`), reported as resolved so an operator can
+see which rates produced a derived cost:
+
+```json
+{"models": {"openai/gpt-5": {"input": 1.25, "output": 10.0, "cacheRead": 0.125, "cacheWrite": 1.25}},
+ "aliases": {"aigw-openai/*": "openai/*"}}
+```
+
+Rates are USD per **million** tokens keyed like the usage counters; an absent
+cache rate falls back to the `input` rate (never to a silent `$0`). Aliases map
+gateway-local model ids onto canonical ones (`"aigw-openai/*": "openai/*"`
+keeps the tail). The default is `null` — no map, and unpriced traffic then stays
+`unknown` rather than being guessed at. A configured map is consulted **only**
+when the provider quoted no price, and its output is published separately as
+`costDerivedUSD` (see the usage contract above).
 
 ### `PATCH /config/budget`
 Raises (or lowers) the **iteration budget of a running job** without restarting
