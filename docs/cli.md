@@ -330,6 +330,14 @@ Live TUI: task table, phase/approach/iteration header, budget + cost gauges,
 scrolling tail of agent output, pending steering. Read-only; `q` quits.
 Non-TTY/`--json`: streams SSE events as NDJSON instead (usable by agents).
 
+The stream is replayed from the start of the run's `events.jsonl`, which is
+append-only **across resumes** — so it can contain a terminal `state` event
+from an earlier episode. `watch` ends only on a terminal `state` event that
+nothing in the log supersedes *and* that the live `GET /status` agrees with,
+so watching a resumed run blocks until that run's real terminus instead of
+exiting on the historical marker (a finished run whose engine is gone or
+idling still ends immediately).
+
 ### `ralphctl logs <run-id> [-N[f]]` / `ralphctl logsf <run-id>`
 
 The **whole-job console** (backed by `GET /logs`): all iterations merged in
@@ -1076,8 +1084,10 @@ the run's `steering/` directory. Screenshots of each view are saved to
 ## Notes for AI agents driving ralphctl
 
 - Always pass `--json`; parse stdout only.
-- `start` is asynchronous by default; poll `status` or stream `watch --json`.
-  A simple completion wait: `ralphctl watch <id> --json | jq -c 'select(.type=="state")'`.
+- `start` is asynchronous by default; poll `status` or stream `--json watch`.
+  A simple completion wait: `ralphctl --json watch <id> | jq -c 'select(.type=="state")'`
+  — it exits at the run's real terminus, including on a resumed run whose log
+  still carries the previous episode's terminal event.
 - Steering is cheap and safe (applies at iteration boundary); `--now` interrupts
   work in progress — use only to stop active harm, not to reprioritize.
 - Do not edit files under `~/.ralphd/runs/<id>/` except `steering/`; everything
