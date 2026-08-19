@@ -1985,21 +1985,40 @@ def _diagnose_host_json(rdir: Path) -> list[str]:
     return issues
 
 
+def _dangling_remedy(run_id: str) -> str:
+    """THE remedy text for the dangling-container condition (task 025,
+    issue #8): `doctor`'s registry sweep and `repair`'s per-run diagnosis
+    both render this one string, so the operator can never read two
+    recommendations pointing in different directions for the same run.
+
+    One story, **resume-first**: the container died mid-run but the run
+    dir (plan, notes, artifacts, iteration transcripts) is intact, so
+    continuing the job is the useful default; `repair --set-state
+    aborted` is the way to declare it over instead. Planned opt-in
+    per-run auto-resume (`ralphctl doctor --fix`, see docs/roadmap.md)
+    automates exactly this `resume` step -- named here only, so this
+    function stays the single source of the remedy.
+    """
+    return (f"continue it with `ralphctl resume {run_id}`, or record it as "
+            f"over with `ralphctl repair {run_id} --set-state aborted` "
+            f"(writes a reason naming the vanished container)")
+
+
 def _diagnose_dangling_container(run_id: str) -> list[str]:
     """The dangling-container condition as a diagnosis line (task 021,
     requirement E): a run recorded non-terminal whose container is gone.
     Reuses `_dangling_run_entry` -- doctor's check -- rather than a second
-    implementation, and names the guarded fix so `repair` stops reporting
-    a zombie run as 'no issues found'."""
+    implementation, and names the fix (via `_dangling_remedy`, the same
+    text doctor prints -- task 025) so `repair` stops reporting a zombie
+    run as 'no issues found'."""
     entry = _dangling_run_entry(run_id)
     if entry is None:
         return []
     state = _read_json(run_root(run_id) / "status.json", {}).get("state")
     issue = (f"container: {entry['container']} no longer exists, but "
              f"status.json still records state {state!r} -- the container "
-             f"died or was removed outside ralphctl; fix with `ralphctl "
-             f"repair {run_id} --set-state aborted` (records why the run "
-             f"ended), or `ralphctl resume {run_id}` to continue it")
+             f"died or was removed outside ralphctl; "
+             f"{_dangling_remedy(run_id)}")
     return [issue]
 
 
@@ -2255,8 +2274,10 @@ def cmd_doctor(args):
         report += "\n! registry entries recorded running with no matching container:"
         for d in dangling:
             report += f"\n    {d['runId']}  container={d['container']}"
-        report += "\n  the container likely died/was removed outside ralphctl; " \
-                  "try `ralphctl resume <run-id>`"
+            # same remedy text `repair` prints for this run (task 025):
+            # one story, never two commands pointing different ways.
+            report += (f"\n      the container died or was removed outside "
+                       f"ralphctl; {_dangling_remedy(d['runId'])}")
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
                "defaultLlmProfile": default_profile_name,

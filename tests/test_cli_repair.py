@@ -10,6 +10,8 @@ test_cli_docker.py / test_cli_resume.py (no real container/engine needed).
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
@@ -410,7 +412,6 @@ def test_repair_set_state_on_terminal_run_records_no_vanished_reason(ctl: Ctl):
 def test_repair_dangling_check_has_one_implementation():
     """doctor and repair must share the condition (task 021's criteria):
     exactly one place computes 'recorded non-terminal, container gone'."""
-    from pathlib import Path
     src = (Path(__file__).resolve().parents[1]
            / "src" / "ralphd" / "cli" / "main.py").read_text()
     assert src.count("def _dangling_run_entry(") == 1
@@ -419,3 +420,45 @@ def test_repair_dangling_check_has_one_implementation():
     sweep = src.split("def _dangling_registry_entries(")[1].split("\ndef ")[0]
     assert "_dangling_run_entry(" in sweep
     assert "_container_running(" not in sweep
+
+
+# --- task 025 (#8): doctor's and repair's remedy tell ONE story ----------
+
+
+def _ralphctl_commands(text: str) -> list[str]:
+    """Every backticked `ralphctl ...` command in a CLI report, in order."""
+    return re.findall(r"`(ralphctl [^`]+)`", text)
+
+
+def test_doctor_and_repair_recommend_the_same_next_command(ctl: Ctl):
+    """The dangling-container remedy must not point two ways: doctor's
+    registry sweep and repair's per-run diagnosis, over the *same* fixture,
+    recommend the same first next command (and the same alternative)."""
+    rdir, _cdir = _seed_run(ctl, "tst-onestory")
+    (rdir / "status.json").write_text(json.dumps(
+        {"state": "running", "schemaVersion": 1}))
+
+    repair = ctl.run("repair", "tst-onestory")
+    assert repair.returncode == 1, repair.stderr
+    doctor = ctl.run("doctor")
+    assert "tst-onestory" in doctor.stdout, doctor.stdout
+
+    repair_cmds = _ralphctl_commands(repair.stdout)
+    doctor_cmds = _ralphctl_commands(
+        # only the dangling block, so unrelated doctor advice can't leak in
+        doctor.stdout.split("no matching container:")[1])
+    assert repair_cmds, repair.stdout
+    assert doctor_cmds, doctor.stdout
+    # same first recommendation, naming this run (never a `<run-id>` stub)
+    assert repair_cmds[0] == doctor_cmds[0] == "ralphctl resume tst-onestory"
+    # and the same alternative, in the same order
+    assert repair_cmds == doctor_cmds
+
+
+def test_dangling_remedy_text_has_one_implementation():
+    """One story = one string: doctor and repair both call the helper
+    rather than each spelling out its own advice (task 025)."""
+    src = (Path(__file__).resolve().parents[1]
+           / "src" / "ralphd" / "cli" / "main.py").read_text()
+    assert src.count("def _dangling_remedy(") == 1
+    assert src.count("_dangling_remedy(") == 3  # def + doctor + repair
