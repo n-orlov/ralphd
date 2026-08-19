@@ -91,3 +91,115 @@ def test_every_ralphctl_command_in_tutorial_exists_in_help():
     # Sanity: the tutorial must reference a reasonably large subset of real
     # verbs, not just one or two (proves the walkthrough is substantive).
     assert len(referenced & subcommands) >= 8
+
+
+# --------------------------------------------------------------------------
+# Task 036 (#7): the sibling-only cleanup rule, everywhere it is duplicated.
+#
+# The job container carries `ralphd.run=<run-id>` exactly like the siblings the
+# agent starts, so a cleanup command filtered on that label alone deletes the
+# container the agent is running in (run `deck-phase1` did exactly that: the
+# run died mid-verify, the iteration's work and transcript were lost, the run
+# dir was left non-terminal). Task 035 fixed the prompt; this guards every
+# *documented* duplicate of the idiom -- docs, examples, and the rendered
+# prompt -- against drifting back to the one-filter form.
+# --------------------------------------------------------------------------
+
+# Files that teach the idiom. docs/prds/ is excluded on purpose: those are
+# frozen historical specs that quote the destructive command verbatim as the
+# incident report ("the idiom ralphd's own prompt teaches it").
+CLEANUP_DOC_FILES = [
+    REPO_ROOT / "docs" / "cli.md",
+    REPO_ROOT / "docs" / "architecture.md",
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "examples" / "skills" / "toolchain-sibling" / "SKILL.md",
+    REPO_ROOT / "examples" / "skills" / "toolchain-sibling" / "run.sh",
+]
+
+SIBLING_FILTER = "--filter label=ralphd.role=sibling"
+# Verbs that make an occurrence of the run label a *query over containers*
+# rather than a plain `--label` on something being created.
+CLEANUP_VERBS = ("docker rm", "docker ps", "docker stop", "docker kill", "xargs")
+# A one-filter example is allowed only where the surrounding prose marks it as
+# the thing never to do.
+PROHIBITION_MARKERS = (
+    "never clean up by the run label alone",
+    "never remove containers by",
+    "run label only, deliberately",   # host-side ralphctl stop/rm, on purpose
+    "filter on the run label alone on purpose",
+)
+
+
+def _run_label_only_cleanups(text: str) -> list[str]:
+    """Lines that query containers by ralphd.run without the role filter."""
+    lines = text.splitlines()
+    bad = []
+    for i, line in enumerate(lines):
+        if "label=ralphd.run" not in line:
+            continue
+        if not any(v in line for v in CLEANUP_VERBS):
+            continue
+        # a wrapped command continues on the next line(s); the safe form must
+        # carry the role filter *in the same command*, not merely nearby
+        command = "\n".join(lines[i:i + 3]).lower()
+        if "ralphd.role=sibling" in command:
+            continue
+        # a one-filter example is allowed where the prose (possibly the heading
+        # of a numbered rule a few lines up) marks it as the thing never to do
+        window = "\n".join(lines[max(0, i - 4):i + 3]).lower()
+        if any(m in window for m in PROHIBITION_MARKERS):
+            continue
+        bad.append(f"{i + 1}: {line.strip()}")
+    return bad
+
+
+def test_docs_and_examples_teach_the_sibling_only_cleanup_filter():
+    for path in CLEANUP_DOC_FILES:
+        text = path.read_text()
+        if "ralphd.run" not in text:
+            continue
+        assert "ralphd.role=sibling" in text, (
+            f"{path.relative_to(REPO_ROOT)} labels siblings with the run label "
+            f"but never mentions ralphd.role=sibling")
+    for path in (REPO_ROOT / "docs" / "cli.md",
+                 REPO_ROOT / "docs" / "architecture.md",
+                 REPO_ROOT / "examples" / "skills" / "toolchain-sibling" / "SKILL.md"):
+        text = path.read_text()
+        assert SIBLING_FILTER.split("--filter ")[-1] in text
+        low = text.lower()
+        assert any(m in low for m in PROHIBITION_MARKERS[:2]), (
+            f"{path.relative_to(REPO_ROOT)} must warn against the "
+            f"run-label-only cleanup form, not just show the safe one")
+
+
+def test_no_run_label_only_cleanup_command_in_docs_or_examples():
+    offenders = {}
+    for path in CLEANUP_DOC_FILES:
+        bad = _run_label_only_cleanups(path.read_text())
+        if bad:
+            offenders[str(path.relative_to(REPO_ROOT))] = bad
+    assert not offenders, (
+        "cleanup commands filtered on ralphd.run alone also match the job "
+        f"container (#7); add {SIBLING_FILTER}: {offenders}")
+
+
+def test_rendered_prompt_has_no_run_label_only_cleanup_command(monkeypatch):
+    """The prompt is the fourth copy of the idiom -- hold it to the same bar."""
+    from ralphd.engine.loop import LoopSupervisor
+
+    for k, v in {"RALPHD_HOST_WORKSPACE": "/host/ws",
+                 "RALPHD_HOST_RUN_DIR": "/host/run",
+                 "RALPHD_RUN_ID": "doc-check",
+                 "RALPHD_SELF_CONTAINER_ID": "ralphd-doc-check"}.items():
+        monkeypatch.setenv(k, v)
+    note = LoopSupervisor._docker_siblings_note()
+    assert SIBLING_FILTER in note
+    assert not _run_label_only_cleanups(note)
+
+
+def test_example_skill_run_sh_labels_siblings_with_the_role_label():
+    text = (REPO_ROOT / "examples" / "skills" / "toolchain-sibling"
+            / "run.sh").read_text()
+    assert "ralphd.role=sibling" in text, (
+        "the shipped wrapper must apply the role label, otherwise the "
+        "documented sibling-only cleanup filter matches nothing")
