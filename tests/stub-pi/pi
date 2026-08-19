@@ -118,6 +118,15 @@ from env vars set by the test:
                       A distinctive non-secret marker is always appended
                       alongside it so tests can prove ordinary text passes
                       through untouched.
+  STUB_UNPRICED_COUNT  after the first STUB_UNPRICED_SKIP invocations
+                      (default 0), the next N invocations (any phase) emit
+                      their normal `message_end` with normal token counts but
+                      NO `usage.cost` block at all -- the live shape behind
+                      task 049 (#10), where a gateway bills tokens and
+                      reports no pricing. Everything else about the
+                      invocation is unchanged, so a run can mix priced and
+                      unpriced iterations (use a large count for a fully
+                      unpriced run).
 
 Every invocation unconditionally records the exact prompt it received to
 `<run>/.stub-last-prompt` (overwritten) and appends it to
@@ -165,6 +174,23 @@ if _instant_fail_count:
     if _instant_fail_skip <= _seen < _instant_fail_skip + _instant_fail_count:
         sys.stderr.write("stub: simulated instant startup failure (no LLM credentials)\n")
         sys.exit(1)
+
+
+# STUB_UNPRICED_COUNT (task 049, #10): make the selected invocations report
+# token usage with no `cost` block -- the observed gateway shape where
+# tokens are billed but no price is quoted. Counted globally across phases
+# like the other knobs; only emit_final()'s usage block is affected.
+_unpriced_count = int(os.environ.get("STUB_UNPRICED_COUNT", "0"))
+_unpriced_skip = int(os.environ.get("STUB_UNPRICED_SKIP", "0"))
+UNPRICED_NOW = False
+if _unpriced_count:
+    _unpriced_marker = marker("unpriced-count")
+    _seen = 0
+    if os.path.exists(_unpriced_marker):
+        _seen = int(open(_unpriced_marker).read())
+    with open(_unpriced_marker, "w") as _f:
+        _f.write(str(_seen + 1))
+    UNPRICED_NOW = _unpriced_skip <= _seen < _unpriced_skip + _unpriced_count
 
 
 # STUB_INFRA_HANG_COUNT simulates a transient LLM-endpoint/gateway fault
@@ -325,13 +351,15 @@ def emit_final(text, tool_call=None, thinking_text=None):
     if tool_call is not None:
         content.append(tool_call)
     content.append({"type": "text", "text": text})
+    _usage = {"input": 100, "output": 10, "totalTokens": 110}
+    if not UNPRICED_NOW:
+        _usage["cost"] = {"total": 0.01}
     print(json.dumps({
         "type": "message_end",
         "message": {
             "role": "assistant",
             "content": content,
-            "usage": {"input": 100, "output": 10, "totalTokens": 110,
-                      "cost": {"total": 0.01}},
+            "usage": _usage,
         },
     }))
 

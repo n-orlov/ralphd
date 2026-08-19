@@ -166,6 +166,16 @@ The field is absent only while an iteration is still in flight (before its
 `aborted`/operator-abort carve-out, are documented in
 `docs/architecture.md` §10.1.
 
+An iteration's `usage` records cost only when the provider actually quoted a
+price. `usage.costPriced` is the marker:
+
+| shape | meaning |
+|-------|---------|
+| `costUSD: 0.42`, `costPriced: true` | provider-reported price (an explicit `0.0` means free) |
+| no `costUSD`, `costPriced: false` | tokens were billed and **no** price was reported — cost is *unknown*, not $0 |
+| `costUSD` present, `costPriced: false` | mixed: the value is the priced subtotal only, so treat it as partial |
+| `costUSD: 0`, no `costPriced` | nothing was billed at all (e.g. pi's zero-filled `usage` on an in-band error) |
+
 ### `GET /iterations/{n}`
 One iteration's `meta.json`.
 

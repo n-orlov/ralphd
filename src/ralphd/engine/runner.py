@@ -204,6 +204,37 @@ class PiRunner:
                 usage = msg.get("usage") or {}
                 for key in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
                     result.usage[key] = result.usage.get(key, 0) + (usage.get(key) or 0)
-                cost = (usage.get("cost") or {}).get("total") or 0
-                result.usage["costUSD"] = round(result.usage.get("costUSD", 0) + cost, 6)
+                _accumulate_cost(usage, result)
         return True
+
+
+def _accumulate_cost(usage: dict, result: IterationResult) -> None:
+    """Fold one message's `usage.cost.total` into `result.usage` (task 049, #10).
+
+    A *missing* price is not a price of zero. Real gateways (and Bedrock via
+    some gateways) bill plenty of tokens while reporting no `cost` block at
+    all; coercing that to 0 silently understated whole runs as $0.0000 with
+    no way to tell "free" from "unknown". So:
+
+    * price reported -> add it to `costUSD`, and mark `costPriced` true
+      (unless some other message in this iteration already came back
+      unpriced -- see below);
+    * no price but tokens were billed -> record `costPriced: false` and add
+      NOTHING, so a fully-unpriced iteration has no `costUSD` key at all
+      (unknown, not zero) and a mixed one keeps the priced subtotal flagged
+      as partial;
+    * no price and nothing billed (pi zero-fills `usage` on an in-band error,
+      so a no-traffic iteration still reaches this line) -> $0 is the truth
+      and the int-0 accumulation stays byte-for-byte what it always was.
+    """
+    cost = (usage.get("cost") or {}).get("total")
+    if cost is not None:
+        result.usage["costUSD"] = round(result.usage.get("costUSD", 0) + cost, 6)
+        result.usage.setdefault("costPriced", True)
+        return
+    billed = sum(int(usage.get(k) or 0) for k in
+                 ("input", "output", "cacheRead", "cacheWrite", "totalTokens"))
+    if billed:
+        result.usage["costPriced"] = False
+    else:
+        result.usage["costUSD"] = round(result.usage.get("costUSD", 0) + 0, 6)
