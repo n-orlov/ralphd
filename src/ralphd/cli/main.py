@@ -45,8 +45,9 @@ from ..engine.state import (
     format_local_time,
     parse_utc,
     read_operator_termination,
+    read_tasks_doc,
     record_operator_termination,
-    task_counts,
+    tasks_read_notice,
     utc_from_epoch,
     utcnow,
 )
@@ -139,6 +140,20 @@ def host_meta(run_id: str) -> dict:
 
 
 def _read_json(path: Path, default=None):
+    """Read one small JSON document off disk, defaulting when absent or
+    mid-write.
+
+    Deliberately NOT for `tasks.json` (task 004, #15): that file is rewritten
+    non-atomically by the agent, so `JSONDecodeError -> default` silently
+    turns a plan being rewritten into no plan. Every task read goes through
+    `engine.state.read_tasks_doc()`, which distinguishes absent from
+    mid-write and serves the last plan that parsed. Enforced rather than
+    documented so it cannot regress quietly.
+    """
+    if path.name == "tasks.json":
+        raise ValueError(
+            "read tasks.json through engine.state.read_tasks_doc(persist=False), "
+            "not _read_json: an unparseable plan must not become an empty one")
     try:
         return json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
@@ -1545,11 +1560,16 @@ def cmd_status(args):
         # `task_counts()`, so both surfaces agree key-for-key. Kept behind
         # `not status.get("tasks")` so a future engine that persists real
         # counts into status.json wins over this reconstruction.
-        if not status.get("tasks"):
-            plan = _read_json(run_root(args.run_id) / "tasks.json") or {}
-            tasks_list = plan.get("tasks") or []
-            if tasks_list:
-                status["tasks"] = task_counts(tasks_list)
+        #
+        # Task 004 (#15): read through the hardened reader, so a plan caught
+        # mid-rewrite reconstructs from the last-good payload (and says so via
+        # the same `tasksStale`/`tasksSource` fields a live GET /status
+        # carries) instead of collapsing to `tasks: (none)`. `persist=False`:
+        # the CLI is a viewer, it does not write caches into a run dir.
+        plan = read_tasks_doc(run_root(args.run_id), persist=False)
+        status.update(plan.contract)
+        if not status.get("tasks") and plan.tasks:
+            status["tasks"] = plan.counts
     status["live"] = live
 
     # Task 028 (#8): the auto-resume crash-loop guard's record lives on the
@@ -1673,10 +1693,65 @@ def cmd_status(args):
     out(args, status, "\n".join(lines))
 
 
+# Task 004 (#15): what `ralphctl tasks` says on stderr when it read the plan
+# from the run dir instead of the run's API -- the `tasks` twin of
+# `_LOGS_SNAPSHOT_NOTICE`, worded the same way so an operator learns one
+# phrase. On stderr, never stdout, so `--json` stays a clean document.
+_TASKS_SNAPSHOT_NOTICE = (
+    "on-disk snapshot: the run's API is not reachable, showing the plan "
+    "recorded in the run dir")
+
+
+def _tasks_doc(run_id: str) -> tuple[bool, dict]:
+    """Fetch a run's task document live, falling back to the run dir on disk
+    (task 004, #15).
+
+    Two independent failure modes used to print NOTHING here:
+      * the container is gone -- `api()` exited 4 on connection-refused, even
+        though the plan is sitting in the run dir (the case an operator most
+        needs it: how far did the run get before it died?);
+      * `tasks.json` was caught mid-rewrite -- the reader defaulted to an
+        empty plan, so the command printed zero task lines and looked like a
+        run with no plan at all.
+
+    Both are fixed by the same two moves: fall back like `cmd_logs` does, and
+    read through the engine's hardened reader, which serves the last plan
+    that parsed and labels it (`tasksStale`/`tasksSource`, the exact fields a
+    live `GET /tasks` carries -- so `--json` has one shape either way).
+
+    Returns `(live, doc)`. Exit 3 ("run not found") is still an error: no run
+    dir means there is nothing to fall back to.
+    """
+    _require_run(run_id)
+    # `api()` reports unreachability by printing to stderr and exiting 4;
+    # here that is a fallback, not an error, so its message is buffered and
+    # only replayed for failures we still propagate (e.g. a 404).
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            doc = api(run_id, "GET", "/tasks")
+        if isinstance(doc, dict):
+            return True, doc
+    except SystemExit as e:
+        if e.code != 4:
+            sys.stderr.write(err.getvalue())
+            raise
+    res = read_tasks_doc(run_root(run_id), persist=False)
+    return False, {**res.doc, **res.contract}
+
+
 def cmd_tasks(args):
-    tasks = api(args.run_id, "GET", "/tasks")
+    live, tasks = _tasks_doc(args.run_id)
+    if not live:
+        print(_TASKS_SNAPSHOT_NOTICE, file=sys.stderr)
+    # The stale/unreadable wording lives in `engine/state.py` next to the
+    # reader (like `log_merge.NO_TRANSCRIPT`), so the live path -- where the
+    # engine flagged the read -- and the on-disk path say the same sentence.
+    notice = tasks_read_notice(tasks.get("tasksSource"), bool(tasks.get("tasksStale")))
+    if notice:
+        print(f"!! {notice}", file=sys.stderr)
     if args.json:
-        print(json.dumps(tasks, indent=2))
+        print(json.dumps({**tasks, "live": live}, indent=2))
         return
     for t in tasks.get("tasks", []):
         print(f"[{t.get('status'):<17}] {t.get('id')} {t.get('title')}")

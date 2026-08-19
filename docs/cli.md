@@ -369,7 +369,12 @@ plan, exactly when an operator most wants to know how far it got. The same
 key mapping the engine uses is applied (`total`/`completed`/`inProgress`/
 `pending`/`validationFailed`, shared code in `engine/state.py:task_counts`),
 and `--json` carries the identical numbers under `tasks`. A run dir with no
-`tasks.json`, or an empty plan, still prints `tasks: (none)`.
+`tasks.json`, or an empty plan, still prints `tasks: (none)`. Task 004 (#15):
+that read goes through the hardened reader too, so a plan caught mid-rewrite
+is reconstructed from the last payload that parsed and `--json` carries the
+same `tasksStale`/`tasksSource` fields a live `GET /status` does (docs/api.md,
+"Stale task reads") — the counts never drop to `(none)` for a file that exists
+and previously parsed.
 
 `--json` output is untouched by any of this: it still carries the full,
 unsummarized `reason`/`tasks`/`usage` detail straight from status.json, plus
@@ -620,6 +625,26 @@ by `tests/test_no_transcript_message.py`.
 ### `ralphctl tasks <run-id>`
 
 Task table (or full `tasks.json` with `--json`).
+
+**Never prints an empty plan it is not sure about (task 004, #15).**
+`tasks.json` is written by the agent, not the engine, so a read can land
+inside a non-atomic rewrite. Two cases used to print nothing at all; both now
+print the plan plus a marker on **stderr** (stdout keeps the plain
+`[status] id title` format, `--json` stays a clean document):
+
+| Case | stdout | stderr marker |
+|------|--------|---------------|
+| API unreachable (container gone) | the plan from the run dir | `on-disk snapshot: the run's API is not reachable, showing the plan recorded in the run dir` |
+| `tasks.json` caught mid-rewrite / corrupt | the last plan that parsed | `!! stale task list: …` |
+| `tasks.json` unparseable and never read before | nothing | `!! unreadable task list: …` |
+
+The read goes through the engine's hardened reader
+(`engine.state.read_tasks_doc`, `docs/architecture.md` §3), so the same
+`tasksStale` / `tasksSource` fields a live `GET /tasks` carries (see
+`docs/api.md`, "Stale task reads") appear in `--json` on the on-disk path too,
+alongside `live: true|false`. A run id with no run dir is still exit `3`.
+A reachable run with a healthy plan prints exactly what it always did, with
+nothing on stderr. Pinned by `tests/test_tasks_stale_cli.py`.
 
 ### `ralphctl steer <run-id> [message]`
 
@@ -1179,7 +1204,15 @@ JSON endpoints served under `/api/`:
   one shared server-side formatter (`ralphd.engine.state.format_local_time`),
   which is what the iteration timeline and the summary card display. "Local"
   is the *hub host's* timezone (the offset is included), and clients keep the
-  raw ISO values for sorting and machine use.
+  raw ISO values for sorting and machine use. Task 004 (#15): the on-disk
+  `tasks` snapshot is read through the engine's hardened reader
+  (`read_tasks_doc(..., persist=False)` — the hub is a read-only viewer of
+  another process's run dir and never writes a last-good cache into it), so a
+  poll that lands inside an agent's rewrite of `tasks.json` serves the last
+  plan that parsed, carrying the same `tasksStale`/`tasksSource` fields
+  documented in docs/api.md instead of an empty table. A live answer is passed
+  through verbatim, flags included (a pre-0.6 engine sends none, and the hub
+  does not invent `tasksStale: false` on its behalf).
 - `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
   fetches the run's FULL raw NDJSON backlog from the live container API
   (`GET /logs`, no `tail` param there), renders it through the exact same
