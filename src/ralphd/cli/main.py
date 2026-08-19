@@ -39,6 +39,7 @@ from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     NONTERMINAL_STATES,
     elapsed_seconds,
+    format_cost,
     format_duration,
     format_local_time,
     parse_utc,
@@ -1388,10 +1389,15 @@ def _summarize_usage(usage: dict) -> str:
     / review $0.06)' -- instead of dumping the raw usage dict as JSON."""
     if not usage:
         return "(none)"
-    cost = usage.get("costUSD", 0) or 0
-    summary = f"${cost:.2f}, {_format_token_count(usage.get('totalTokens'))}"
+    # Task 051 (#10): rendered through the one shared `format_cost`, so an
+    # unpriced/mixed bucket says `unavailable` instead of claiming `$0.00`.
+    # `or "$0.00"` preserves the pre-0.5 rendering for a usage dict that
+    # simply has no `costUSD` key (old run dirs) -- unknown-vs-free is a
+    # distinction only the markers can make, and they win above.
+    summary = (f"{format_cost(usage) or '$0.00'}, "
+               f"{_format_token_count(usage.get('totalTokens'))}")
     by_phase = usage.get("byPhase") or {}
-    phase_bits = [f"{phase} ${(by_phase[phase].get('costUSD', 0) or 0):.2f}"
+    phase_bits = [f"{phase} {format_cost(by_phase[phase]) or '$0.00'}"
                  for phase in ("planning", "worker", "review") if phase in by_phase]
     if phase_bits:
         summary += " (" + " / ".join(phase_bits) + ")"

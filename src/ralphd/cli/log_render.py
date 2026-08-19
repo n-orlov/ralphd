@@ -40,7 +40,12 @@ import io
 import json
 import sys
 
-from ..engine.state import elapsed_seconds, format_duration, format_local_time
+from ..engine.state import (
+    elapsed_seconds,
+    format_cost,
+    format_duration,
+    format_local_time,
+)
 
 # Tool-name groupings used by `_fmt_invocation` to pick which argument is
 # "the salient one" for a compact one-liner. These are pi's built-in tool
@@ -131,8 +136,14 @@ def _render_boundary(ev: dict, tty: bool) -> None:
         bits.append(f"exit={ev['exitCode']}")
     if usage:
         bits.append(f"tokens={usage.get('totalTokens', 0)}")
-        if usage.get("costUSD") is not None:
-            bits.append(f"cost=${usage['costUSD']}")
+        # Task 051 (#10): the per-iteration footer goes through the one shared
+        # `format_cost` too (`decimals=None` == the historical raw `str(float)`
+        # rendering, so a priced iteration's line is byte-identical), which is
+        # what turns an iteration whose tokens the provider never priced into
+        # `cost=unavailable` instead of silently dropping the cost bit.
+        cost = format_cost(usage, decimals=None)
+        if cost is not None:
+            bits.append(f"cost={cost}")
     print(_ansi(tty, "2", "  " + ", ".join(bits)))
     if ev.get("error"):
         print(_ansi(tty, "1;31", f"!! iteration {n} error: {ev['error']}"))
