@@ -115,3 +115,23 @@ def merged_lines(run_root: Path, tail: int = 0,
     exactly what `GET /logs?tail=N` serves for the same run dir."""
     return [line for _, line in
             apply_tail(list(merge_entries(run_root, scrub=scrub)), tail)]
+
+
+def iteration_lines(run_root: Path, number: int, tail: int = 0,
+                    scrub: Callable[[str], str] | None = None) -> list[str]:
+    """One iteration's raw transcript lines -- what `GET
+    /iterations/{n}/output?tail=N` serves for the same run dir (no
+    synthesized boundaries: that route is the per-iteration passthrough).
+
+    Lives here rather than in the host CLI so that reading a run's
+    `output.jsonl` files stays the single responsibility of this module
+    (task 040, #6; pinned by tests/test_log_merge.py's grep test).
+    Returns `[]` for an iteration that has no transcript on disk.
+    """
+    scrub = scrub or (lambda text: text)
+    path = Path(run_root) / "iterations" / f"{number:04d}" / "output.jsonl"
+    if not path.exists():
+        return []
+    lines = [scrub(line if line.endswith("\n") else line + "\n")
+             for line in path.read_text().splitlines(keepends=True)]
+    return lines[-tail:] if tail else lines

@@ -47,6 +47,8 @@ from ..engine.state import (
     utc_from_epoch,
     utcnow,
 )
+from ..log_merge import iteration_lines as _iteration_lines
+from ..log_merge import merged_lines as _merged_lines
 from . import llm_profiles, ui_server
 from .log_render import FULL_BACKLOG_TAIL as _FULL_BACKLOG_TAIL
 from .log_render import _ansi
@@ -1545,8 +1547,105 @@ def cmd_tasks(args):
         print(f"[{t.get('status'):<17}] {t.get('id')} {t.get('title')}")
 
 
+# Task 040 (#6): what `ralphctl logs` says on stderr when it served the
+# transcript from the run dir instead of the run's API. On stderr, never
+# stdout, so `--raw` keeps its 1:1 wire contract and a pipe into jq/tee is
+# unaffected; the wording matches the hub's own snapshot label (app.js
+# `.lg-snapshot`) so both surfaces call the same thing by the same name.
+_LOGS_SNAPSHOT_NOTICE = (
+    "on-disk snapshot: the run's API is not reachable, showing the "
+    "transcript recorded in the run dir")
+_LOGS_SNAPSHOT_FOLLOW_NOTICE = _LOGS_SNAPSHOT_NOTICE + " (nothing to follow)"
+
+
+def _snapshot_raw_text(run_id: str, iteration: int | None, tail: int) -> str:
+    """The raw NDJSON `GET /logs` (or `GET /iterations/{n}/output`) would
+    have served for this run dir, read straight off disk via the shared
+    merge module -- i.e. byte-identical to what the engine serves from the
+    inside (task 038)."""
+    if iteration is not None:
+        return "".join(_iteration_lines(run_root(run_id), iteration, tail=tail))
+    return "".join(_merged_lines(run_root(run_id), tail=tail))
+
+
+def _logs_text(args, path: str, tail: int) -> tuple[bool, str]:
+    """Fetch a log snapshot for `cmd_logs`, falling back to the on-disk
+    merge when the run's API is unreachable (task 040, #6).
+
+    A dead run is the case an operator most needs the transcript for (the
+    container crashed -- what did the agent do last?), and the bytes are
+    all right there in the run dir, so `logs` no longer dies with exit 4 on
+    connection-refused. Returns `(live, raw_text)`; `live=False` callers
+    must print `_LOGS_SNAPSHOT_NOTICE` on stderr. Exit 3 ("run not found")
+    is still an error: no run dir means nothing to fall back to.
+    """
+    _require_run(args.run_id)
+    # `api()` reports unreachability by printing to stderr and exiting 4;
+    # here that is not an error but a fallback, so its message is buffered
+    # and only replayed for the failures we still propagate (e.g. a 404
+    # from `--iteration` on a live run, which exits 1).
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return True, api(args.run_id, "GET", path, raw=True, timeout=30)
+    except SystemExit as e:
+        if e.code != 4:
+            sys.stderr.write(err.getvalue())
+            raise
+        return False, _snapshot_raw_text(args.run_id, args.iteration, tail)
+
+
+def _api_reachable(run_id: str, timeout: int = 5) -> bool:
+    """Cheap liveness probe for a run's container API (task 040, #6).
+
+    Needed by the *follow* paths only: a follow cannot discover
+    unreachability the way a snapshot fetch does (`_logs_text`), because
+    `_stream_logs` would have to fail mid-stream. `GET /status` is the
+    smallest reply the engine serves, so a live run pays one tiny extra
+    request and keeps its behaviour byte-identical. An HTTP *error* still
+    counts as reachable -- something answered, so the container is alive and
+    the real follow should run and report that error itself.
+    """
+    meta = host_meta(run_id)
+    if not meta.get("apiUrl"):
+        return False
+    req = urllib.request.Request(meta["apiUrl"] + "/status")
+    token_file = run_root(run_id) / ".api-token"
+    if token_file.exists():
+        req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def _print_log_snapshot(args, tail: int, tty: bool, following: bool) -> None:
+    """Print the on-disk transcript for an unreachable run and say so on
+    stderr (task 040, #6). `--raw` gets the merge verbatim (1:1 with the
+    wire format `GET /logs` would have served); pretty mode renders it and
+    trims to `tail` RENDERED lines exactly like the live path does."""
+    if args.raw:
+        text = _snapshot_raw_text(args.run_id, args.iteration, tail or 0)
+        sys.stdout.write(text)
+        if text and not text.endswith("\n"):
+            print()
+    else:
+        text = _snapshot_raw_text(args.run_id, args.iteration, 0)
+        lines = _render_to_lines(text, tty, _new_render_state())
+        if tail:
+            lines = lines[-tail:]
+        for line in lines:
+            print(line)
+    print(f"ralphctl: {_LOGS_SNAPSHOT_FOLLOW_NOTICE if following else _LOGS_SNAPSHOT_NOTICE}",
+          file=sys.stderr)
+
+
 def cmd_logs(args):
     tty = sys.stdout.isatty()
+    _require_run(args.run_id)
     # `--tail` has no default: bare `logs <id>` (no --follow) falls back to
     # tail 50; bare `-f`/`--follow` with no explicit count follows the
     # unbounded log from now on (no fixed snapshot size).
@@ -1570,6 +1669,12 @@ def cmd_logs(args):
         query = ("?" + "&".join(qs)) if qs else ""
         path = base_path + query
         if args.follow:
+            # Task 040 (#6): nothing to follow on a dead run -- print the
+            # on-disk snapshot and exit 0 with a notice, rather than dying
+            # on connection-refused (exit 4) or, worse, hanging.
+            if not _api_reachable(args.run_id):
+                _print_log_snapshot(args, tail or 0, tty, following=True)
+                return
             # Task 002: Ctrl+C during a follow is a normal user-requested
             # stop, not a crash -- caught here (rather than left to
             # Python's default handler) so it exits with no traceback at
@@ -1588,10 +1693,12 @@ def cmd_logs(args):
             except KeyboardInterrupt:
                 sys.exit(_SIGINT_EXIT_CODE)
             return
-        text = api(args.run_id, "GET", path, raw=True, timeout=30)
+        live, text = _logs_text(args, path, tail or 0)
         sys.stdout.write(text)
         if text and not text.endswith("\n"):
             print()
+        if not live:
+            print(f"ralphctl: {_LOGS_SNAPSHOT_NOTICE}", file=sys.stderr)
         return
 
     # Pretty mode: `-N`/`--tail N` means N RENDERED lines -- what the
@@ -1605,12 +1712,20 @@ def cmd_logs(args):
     # lines. Iteration/phase boundary headers count toward N like any
     # other rendered line (see docs/cli.md).
     if not args.follow:
-        full_text = api(args.run_id, "GET", base_path, raw=True, timeout=30)
+        # tail=0 for the on-disk fallback too: in pretty mode the trim is
+        # applied to RENDERED lines below, never to raw events.
+        live, full_text = _logs_text(args, base_path, 0)
         lines = _render_to_lines(full_text, tty, _new_render_state())
         if tail:
             lines = lines[-tail:]
         for line in lines:
             print(line)
+        if not live:
+            print(f"ralphctl: {_LOGS_SNAPSHOT_NOTICE}", file=sys.stderr)
+        return
+
+    if not _api_reachable(args.run_id):  # task 040 (#6), see the --raw branch
+        _print_log_snapshot(args, tail or 0, tty, following=True)
         return
 
     try:
