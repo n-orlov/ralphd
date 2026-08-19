@@ -27,17 +27,27 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import socket
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from ..engine.state import NONTERMINAL_STATES
 from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
 
 DEFAULT_LOG_TAIL = 200
+
+# Task 024 (#8): how long the run-list liveness probe waits for a run's API
+# port to accept a TCP connection. Deliberately tiny: the API is published on
+# loopback, so a live run answers in microseconds and a dead one is refused
+# instantly -- this timeout only bounds the pathological "port filtered,
+# nothing answers at all" case.
+API_PROBE_TIMEOUT_S = 0.3
 
 
 def _read_json(path: Path, default=None):
@@ -51,10 +61,60 @@ def host_meta(reg: Path, run_id: str) -> dict:
     return _read_json(reg / "runs" / run_id / "host.json", {}) or {}
 
 
+def _api_reachable(reg: Path, run_id: str, timeout: float = API_PROBE_TIMEOUT_S) -> bool:
+    """Task 024 (#8): does the run's container API accept a connection?
+
+    A bare TCP connect (no HTTP request, no auth) to the port `host.json`
+    records -- the cheapest possible "is the engine still there" question,
+    which is all the run list needs in order to tell a healthy running run
+    from one whose container died without recording a terminal state.
+
+    Deliberately NOT `docker inspect`: the hub is a read-only viewer that
+    must work without the docker CLI (`run_list`'s contract, asserted by
+    tests/test_cli_ui.py), and "the API answers" is exactly the fact the
+    run-detail proxy already reports as `live`.
+    """
+    api_url = host_meta(reg, run_id).get("apiUrl")
+    if not api_url:
+        return False
+    parts = urlsplit(api_url)
+    host = parts.hostname
+    if not host:
+        return False
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def container_gone(status: dict, api_reachable: bool) -> bool:
+    """Task 024 (#8): the hub's form of the zombie condition -- status.json
+    still records a non-terminal state (`NONTERMINAL_STATES`, the same set
+    `ralphctl status`/`doctor`/`repair` use) while the run's API does not
+    answer. The engine never got to write a terminal state, so without this
+    the hub renders such a run EXACTLY like a healthy running one.
+
+    The CLI can go one better and ask docker whether the container still
+    exists; the hub stops at "the API is unreachable" (no docker dependency),
+    so the UI wording says "appears gone" and points at `ralphctl repair` for
+    the authoritative diagnosis instead of claiming certainty it lacks.
+    """
+    return not api_reachable and status.get("state") in NONTERMINAL_STATES
+
+
 def run_list(reg: Path) -> list[dict]:
     """Run list view (PRD req 21): state/verdict/phase/iterations per run,
     read from `<registry>/runs/*/status.json` only -- no live proxy calls
-    (would make listing N runs take N round trips)."""
+    (would make listing N runs take N round trips).
+
+    Task 024 (#8) adds `containerGone` per row, which does need to know
+    whether the API answers. That stays within the spirit of the rule above:
+    only runs whose *recorded* state is non-terminal are probed (a finished
+    run cannot be a zombie), the probe is a loopback TCP connect rather than
+    an HTTP round trip, and the probes run concurrently -- so the sweep costs
+    one short timeout in the worst case, not N."""
     rows = []
     runs_dir = reg / "runs"
     if runs_dir.is_dir():
@@ -71,7 +131,15 @@ def run_list(reg: Path) -> list[dict]:
                 "iterationsUsed": status.get("iterationsUsed"),
                 "iterationsBudget": status.get("iterationsBudget"),
                 "startedAt": status.get("startedAt"),
+                "containerGone": False,
             })
+    maybe_zombies = [r for r in rows if r["state"] in NONTERMINAL_STATES]
+    if maybe_zombies:
+        with ThreadPoolExecutor(max_workers=min(8, len(maybe_zombies))) as pool:
+            for row, reachable in zip(
+                    maybe_zombies,
+                    pool.map(lambda r: _api_reachable(reg, r["runId"]), maybe_zombies)):
+                row["containerGone"] = not reachable
     return rows
 
 
@@ -188,6 +256,11 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     return {
         "runId": run_id,
         "live": ok_s,
+        # Task 024 (#8): `live: false` alone is not the story -- a *finished*
+        # run is unreachable by design. Paired with a non-terminal recorded
+        # state it means the container died without recording a terminal
+        # state, which the card renders with the warning treatment.
+        "containerGone": container_gone(status, ok_s),
         "status": status,
         "tasks": tasks,
         "iterations": iterations,

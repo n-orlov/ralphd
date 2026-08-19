@@ -37,6 +37,7 @@ import yaml
 from .. import __version__
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
+    NONTERMINAL_STATES,
     elapsed_seconds,
     format_duration,
     parse_utc,
@@ -1889,8 +1890,9 @@ _TASK_STATUSES = ("pending", "in-progress", "completed", "validation-failed",
                   "failed", "skipped")
 _STATUS_STATES = ("starting", "running", "succeeded", "failed", "aborted")
 # Recorded states that mean "a live engine still owns this run": if no
-# container exists for one of these, the run is a zombie (task 021).
-_NONTERMINAL_STATUS_STATES = ("starting", "running")
+# container exists for one of these, the run is a zombie (task 021). Defined
+# once in engine/state.py (task 024) -- the hub server needs the same set.
+_NONTERMINAL_STATUS_STATES = NONTERMINAL_STATES
 
 
 def _diagnose_status_json(rdir: Path) -> list[str]:

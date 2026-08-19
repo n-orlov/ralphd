@@ -216,6 +216,70 @@ def test_run_detail_and_unknown_run_404(tmp_path, ui):
     assert "not found" in body["error"]
 
 
+def test_dead_nonterminal_run_is_flagged_container_gone_in_list_and_detail(tmp_path, ui):
+    """Task 024 (#8): a run whose status.json still records `running` while
+    its API no longer answers died without recording a terminal state. The
+    hub payload has to say so (`containerGone`), otherwise the UI can only
+    show `live: false` -- which is also true of every *finished* run and so
+    renders a zombie exactly like a healthy running run."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-zombie", state="running", verdict=None)
+    _write_dead_run(registry, "run-starting-zombie", state="starting", verdict=None)
+    # terminal runs are unreachable BY DESIGN -- never flagged
+    _write_dead_run(registry, "run-done", state="succeeded", verdict="verified")
+    _write_dead_run(registry, "run-failed", state="failed", verdict="unverified")
+
+    server = ui(registry)
+    code, body = server.get("/api/runs")
+    assert code == 200
+    gone = {r["runId"]: r["containerGone"] for r in body["runs"]}
+    assert gone == {"run-zombie": True, "run-starting-zombie": True,
+                    "run-done": False, "run-failed": False}
+
+    for run_id, expected in (("run-zombie", True), ("run-done", False)):
+        code, detail = server.get(f"/api/runs/{run_id}")
+        assert code == 200
+        assert detail["live"] is False
+        assert detail["containerGone"] is expected, run_id
+
+
+def test_live_nonterminal_run_is_not_flagged_container_gone(tmp_path, ui):
+    """Task 024 (#8): the healthy half of the contract -- a `running` run
+    whose API answers must stay unflagged in BOTH views (the run list's
+    verdict comes from a cheap TCP probe, the detail view's from the real
+    proxy call, and the two must not disagree)."""
+    registry = tmp_path / "registry"
+    engine = StubEngineApi(status={"runId": "run-alive", "state": "running"})
+    try:
+        _write_run_with_api(registry, "run-alive", engine, state="running", verdict=None)
+        server = ui(registry)
+        code, body = server.get("/api/runs")
+        assert code == 200
+        assert [r["containerGone"] for r in body["runs"]] == [False]
+        code, detail = server.get("/api/runs/run-alive")
+        assert code == 200
+        assert detail["live"] is True
+        assert detail["containerGone"] is False
+    finally:
+        engine.close()
+
+
+def test_hub_and_cli_share_one_nonterminal_state_set(tmp_path):
+    """Task 024 (#8): the hub's zombie condition and the CLI's must be built
+    on the same `NONTERMINAL_STATES` tuple -- one definition, no drift."""
+    from ralphd.cli import main as cli_main
+    from ralphd.cli import ui_server as ui_mod
+    from ralphd.engine.state import NONTERMINAL_STATES
+
+    assert cli_main._NONTERMINAL_STATUS_STATES is NONTERMINAL_STATES
+    assert ui_mod.NONTERMINAL_STATES is NONTERMINAL_STATES
+    for state in NONTERMINAL_STATES:
+        assert ui_mod.container_gone({"state": state}, api_reachable=False) is True
+        assert ui_mod.container_gone({"state": state}, api_reachable=True) is False
+    for state in ("succeeded", "failed", "aborted", None):
+        assert ui_mod.container_gone({"state": state}, api_reachable=False) is False
+
+
 def test_run_detail_proxies_live_status_tasks_and_logs(tmp_path, live, ui):
     run = live(run_id="hubtest", job={"iterations": 12, "max_approaches": 3,
                                       "on_complete": "idle"},

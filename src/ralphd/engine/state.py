@@ -100,6 +100,16 @@ def read_json(path: Path, default: Any = None) -> Any:
         return default
 
 
+# Task 024 (#8): THE set of recorded `state` values that mean "a live engine
+# still owns this run". Lives here, next to the other state-contract
+# vocabulary, because three surfaces have to agree on it: the engine, the
+# host-side CLI (`ralphctl status`/`doctor`/`repair`'s zombie condition) and
+# the hub server (a run recorded in one of these states whose API does not
+# answer is a dead run, not a healthy one). A second copy is how those
+# surfaces start disagreeing about which runs are zombies.
+NONTERMINAL_STATES = ("starting", "running")
+
+
 # Task 023 (#8): the tasks.json `status` string -> /status `tasks` counts key
 # mapping, in ONE place. Both the engine (GET /status) and the host-side CLI
 # fallback (`ralphctl status` on an unreachable run) count the same tasks.json,

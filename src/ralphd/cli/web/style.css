@@ -98,8 +98,15 @@ h2 {
 
 .card.error { border-color: var(--err); }
 /* task 014 (#5): degraded (infra outage) treatment -- deliberately
-   distinct from both a healthy card and the red error card. */
-.card.degraded { border-color: var(--warn); border-width: 2px; background: #fffaf0; }
+   distinct from both a healthy card and the red error card.
+   task 024 (#8) reuses the SAME treatment for a dead non-terminal run
+   (`.card.warning`): one rule, so the two warning conditions can never
+   drift into looking like different severities. */
+.card.degraded, .card.warning {
+  border-color: var(--warn);
+  border-width: 2px;
+  background: #fffaf0;
+}
 .infra-wait { color: var(--warn); font-weight: 600; margin-top: 0.4rem; }
 .infra-wait-budget { font-weight: 400; color: var(--muted); }
 .infra-wait-error { font-weight: 400; white-space: pre-wrap; }
@@ -113,6 +120,10 @@ h2 {
 }
 .infra-countdown { font-weight: 600; }
 .retry-now-status { font-weight: 400; }
+/* task 024 (#8): a run recorded non-terminal whose API is gone. */
+.container-gone { color: var(--warn); font-weight: 600; margin-top: 0.4rem; }
+.container-gone-marker { color: var(--warn); font-weight: 600; }
+tr.row-warning td { background: #fffaf0; }
 .steering-warning { color: var(--err); font-weight: 600; }
 .infra-retry-note { color: var(--warn); font-weight: 600; }
 .run-reason { color: var(--err); font-weight: 600; white-space: pre-wrap; }

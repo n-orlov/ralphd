@@ -139,6 +139,64 @@ def test_run_list_renders_fixture_runs(tmp_path, pw):
         server.stop()
 
 
+def test_dead_nonterminal_run_gets_the_warning_treatment(tmp_path, pw):
+    """Task 024 (#8): a run whose status.json still records `running` while
+    its container is gone must NOT render like a healthy running run -- the
+    engine was killed before it could write a terminal state, so `state`
+    alone lies. Assert the card's existing warning treatment
+    (`.card.warning`, one CSS rule shared with `.card.degraded`) plus the
+    `container appears gone` line on the detail view and a row marker in the
+    run list, and their complete absence for a live running run."""
+    registry = tmp_path / "registry"
+    engine = StubEngineApi(status={
+        "runId": "run-alive", "state": "running", "verdict": None,
+        "phase": "worker", "approach": 1, "iterationsUsed": 2,
+        "iterationsBudget": 25, "startedAt": "2026-01-01T00:00:00Z",
+    })
+    _write_dead_run(registry, "run-zombie", state="running", verdict=None)
+    _write_run_with_api(registry, "run-alive", engine, state="running", verdict=None)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # run list: the zombie's row is marked, the live run's is not
+        pw.open(server.base)
+        _wait_for(pw, "document.body.innerText", "run-zombie")
+        _wait_for_count_ge(pw, "document.querySelectorAll('tr.row-warning').length", 1)
+        marked = pw.eval_js(
+            "[...document.querySelectorAll('tr.row-warning')]"
+            ".map(r => r.querySelector('a').textContent).join(',')").strip('"')
+        assert marked == "run-zombie", marked
+        assert "container gone" in pw.eval_js("document.body.innerText")
+        n_marker = int(pw.eval_js(
+            "document.querySelectorAll('.container-gone-marker').length"))
+        assert n_marker == 1
+        pw.screenshot(SCREENSHOTS_DIR / "08-run-list-container-gone.png")
+
+        # detail: warning card + the explanation naming `ralphctl repair`
+        pw.open(f"{server.base}/#/run/run-zombie")
+        body_text = _wait_for(pw, "document.body.innerText", "container appears gone")
+        assert "ralphctl repair run-zombie" in body_text, body_text
+        assert "records state" in body_text and "running" in body_text, body_text
+        n_warning = int(pw.eval_js("document.querySelectorAll('.card.warning').length"))
+        n_gone = int(pw.eval_js("document.querySelectorAll('.container-gone').length"))
+        assert n_warning == 1
+        assert n_gone == 1
+        pw.screenshot(SCREENSHOTS_DIR / "09-detail-container-gone.png")
+
+        # a genuinely live running run: no warning treatment anywhere
+        pw.open(f"{server.base}/#/run/run-alive")
+        body_text = _wait_for(pw, "document.body.innerText", "running")
+        assert "container appears gone" not in body_text, body_text
+        n_warning = int(pw.eval_js("document.querySelectorAll('.card.warning').length"))
+        n_gone = int(pw.eval_js("document.querySelectorAll('.container-gone').length"))
+        assert n_warning == 0
+        assert n_gone == 0
+    finally:
+        server.stop()
+        engine.close()
+
+
 def test_run_detail_shows_unconsumed_steering_warning(tmp_path, pw):
     """Task 006: the hub run-detail view must loudly surface a terminal
     run's unconsumedSteering field (not silently omit it the way a plain
