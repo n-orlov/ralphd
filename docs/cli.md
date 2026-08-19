@@ -1213,6 +1213,18 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   `containerGone` gets a highlighted row (`tr.row-warning`) and a
   `⚠ container gone` marker next to its state pill, so a zombie never
   looks like a healthy `running` run in the list either.
+  **Sorting** (task 054, issue #9): every column header is click-to-sort,
+  clicking the active column reverses it, and the active column carries a
+  `▲`/`▼` indicator (plus `aria-sort`). The default is **STARTED
+  descending** — newest first, not the run-id alphabetical order the
+  registry directory listing yields. Keys are the *raw payload values*, not
+  the rendered cell text: `ITERATIONS` sorts numerically on
+  `iterationsUsed` (not the `"17/250"` string), `STARTED` on the parsed
+  instant (so ISO values with different UTC offsets order correctly), and
+  `STATE`/`VERDICT` in lifecycle order (`starting → running → succeeded →
+  failed → aborted`, and no-verdict → `unverified` → `verified`) rather than
+  alphabetically. The chosen sort lives outside the DOM, so the 4s refresh
+  rebuild preserves it.
 - **Run detail** (`#/run/<id>`) — summary card (state/verdict/phase/
   approach/iterations/live-vs-snapshot/duration), a usage/cost panel
   (total tokens+cost plus the `byPhase`/`byApproach` breakdowns from PRD

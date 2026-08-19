@@ -735,3 +735,122 @@ def test_run_detail_renders_unknown_cost_as_unavailable(tmp_path, pw):
         assert n_marked == 0
     finally:
         server.stop()
+
+
+def _run_list_order(session: Pw) -> list[str]:
+    """The run ids currently rendered in the run-list table, top to bottom."""
+    raw = session.eval_js(
+        "[...document.querySelectorAll('table.run-list tbody tr td:first-child a')]"
+        ".map(a => a.textContent).join(',')").strip('"')
+    return [x for x in raw.split(",") if x]
+
+
+def _sort_header_text(session: Pw, key: str) -> str:
+    return session.eval_js(
+        f"document.querySelector('th[data-sort-key=\\\"{key}\\\"]').textContent"
+    ).strip('"')
+
+
+def test_run_list_is_sortable_and_defaults_to_newest_first(tmp_path, pw):
+    """Task 054 (#9): every run-list column sorts on click, reversibly, with
+    an indicator, and the default order is STARTED descending -- NOT the
+    run-id alphabetical order the registry directory listing yields.
+
+    The fixtures are built so that a naive implementation fails visibly:
+
+    * `ccc-offset` / `ddd-mid` are ordered differently by ISO *string* than
+      by the instants those strings denote (one carries a +05:00 offset), so
+      sorting the rendered/raw text instead of the parsed epoch flips them;
+    * the ITERATIONS cells ("9/10", "17/250", "3/25", "100/250") sort
+      completely differently as text than `iterationsUsed` does as a number;
+    * STATE/VERDICT lifecycle order (running -> succeeded -> failed ->
+      aborted) is not alphabetical order.
+
+    Finally the chosen sort must survive the 4s `load()` rebuild, which is
+    why `app.js` keeps it in a module-level variable rather than in the DOM.
+    """
+    registry = tmp_path / "registry"
+    # alphabetical run-id order is aaa, bbb, ccc, ddd -- deliberately not
+    # any of the orders asserted below except the explicit RUN sort.
+    _write_dead_run(registry, "aaa-newest", state="running", verdict=None,
+                    phase="worker", approach=2, iterationsUsed=9,
+                    iterationsBudget=10, startedAt="2026-01-05T00:00:00Z")
+    _write_dead_run(registry, "bbb-oldest", state="succeeded", verdict="verified",
+                    phase="review", approach=1, iterationsUsed=17,
+                    iterationsBudget=250, startedAt="2026-01-01T00:00:00Z")
+    # 2026-01-04T02:00:00+05:00 == 2026-01-03T21:00:00Z: EARLIER than
+    # ddd-mid's 23:00Z although its ISO text sorts later.
+    _write_dead_run(registry, "ccc-offset", state="failed", verdict="unverified",
+                    phase="worker", approach=1, iterationsUsed=3,
+                    iterationsBudget=25, startedAt="2026-01-04T02:00:00+05:00")
+    _write_dead_run(registry, "ddd-mid", state="aborted", verdict="unverified",
+                    phase="verify", approach=3, iterationsUsed=100,
+                    iterationsBudget=250, startedAt="2026-01-03T23:00:00Z")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(server.base)
+        _wait_for(pw, "document.body.innerText", "ddd-mid")
+
+        # default: STARTED descending, computed from the parsed instants
+        newest_first = ["aaa-newest", "ddd-mid", "ccc-offset", "bbb-oldest"]
+        assert _run_list_order(pw) == newest_first, _run_list_order(pw)
+        assert "\u25BC" in _sort_header_text(pw, "startedAt")
+        assert pw.eval_js(
+            "document.querySelector('th[data-sort-key=\\\"startedAt\\\"]')"
+            ".getAttribute('aria-sort')").strip('"') == "descending"
+        pw.screenshot(SCREENSHOTS_DIR / "12-run-list-sorted.png")
+
+        # reversible: same column, other direction
+        pw.click('th[data-sort-key="startedAt"]')
+        _wait_for(pw, "document.body.innerText", "\u25B2")
+        assert _run_list_order(pw) == list(reversed(newest_first)), _run_list_order(pw)
+
+        # ITERATIONS sorts numerically on iterationsUsed, not on "17/250"
+        pw.click('th[data-sort-key="iterationsUsed"]')
+        _wait_for(pw, "document.body.innerText", "\u25BC")
+        assert _run_list_order(pw) == ["ddd-mid", "bbb-oldest", "aaa-newest",
+                                       "ccc-offset"], _run_list_order(pw)
+        pw.click('th[data-sort-key="iterationsUsed"]')
+        _wait_for(pw, "document.body.innerText", "\u25B2")
+        assert _run_list_order(pw) == ["ccc-offset", "aaa-newest", "bbb-oldest",
+                                       "ddd-mid"], _run_list_order(pw)
+
+        # STATE / VERDICT sort in lifecycle order, not alphabetically
+        pw.click('th[data-sort-key="state"]')
+        lifecycle = ["aaa-newest", "bbb-oldest", "ccc-offset", "ddd-mid"]
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != lifecycle:
+            time.sleep(0.2)
+        assert _run_list_order(pw) == lifecycle, _run_list_order(pw)
+        assert "\u25B2" in _sort_header_text(pw, "state")
+
+        pw.click('th[data-sort-key="verdict"]')
+        verdict_order = ["aaa-newest", "ccc-offset", "ddd-mid", "bbb-oldest"]
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != verdict_order:
+            time.sleep(0.2)
+        assert _run_list_order(pw) == verdict_order, _run_list_order(pw)
+
+        # RUN column: plain alphabetical, reversible
+        pw.click('th[data-sort-key="runId"]')
+        alphabetical = ["aaa-newest", "bbb-oldest", "ccc-offset", "ddd-mid"]
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != alphabetical:
+            time.sleep(0.2)
+        assert _run_list_order(pw) == alphabetical, _run_list_order(pw)
+        pw.click('th[data-sort-key="runId"]')
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != list(reversed(alphabetical)):
+            time.sleep(0.2)
+        assert _run_list_order(pw) == list(reversed(alphabetical)), _run_list_order(pw)
+
+        # ...and the choice survives the periodic full-table rebuild
+        # (REFRESH_MS = 4000 in app.js): sort state lives outside the DOM.
+        time.sleep(5.5)
+        assert _run_list_order(pw) == list(reversed(alphabetical)), _run_list_order(pw)
+        assert "\u25BC" in _sort_header_text(pw, "runId")
+        assert "\u25B2" not in _sort_header_text(pw, "startedAt")
+    finally:
+        server.stop()
