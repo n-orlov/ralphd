@@ -290,6 +290,55 @@ def _extra_env_wiring_path(cdir: Path) -> Path:
     return cdir / "env-wiring.json"
 
 
+# THE default for the per-run `auto_resume` setting (task 026, issue #8,
+# PRD req F) -- the *only* place this default value is written down. Every
+# other reader (`start`'s flag layering via `_TEMPLATE_SCALAR_FIELDS`, the
+# `_read_auto_resume_setting()` fallback for runs started before this
+# existed, `doctor --fix`) goes through this constant, and the tests are
+# parameterised over it, so flipping the default to ON in a later version
+# (docs/roadmap.md's deferred list) is this one line.
+AUTO_RESUME_DEFAULT = False
+
+
+def _auto_resume_path(cdir: Path) -> Path:
+    return cdir / "auto-resume.json"
+
+
+def _as_bool(v) -> bool:
+    """Coerce a `true`/`false` scalar from a YAML/JSON/CLI source (which may
+    hand us a real bool or its string spelling, e.g. a hand-edited
+    `<registry>/config.yaml`) into a bool -- never `bool("false") is True`."""
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
+
+def _write_auto_resume_setting(cdir: Path, enabled: bool) -> None:
+    """Persist the run's `auto_resume` opt-in alongside its other
+    start-time wiring (`llm-wiring.json`, `env-wiring.json`) in the job's
+    config dir, so it survives the container it was started with: a
+    `ralphctl resume` (whether operator-typed or, per task 027, issued by
+    `doctor --fix`) replaces the container but never the config dir, so
+    the opt-in a run was started with is still the opt-in that applies.
+
+    Not a secret (unlike its two sibling wiring files) -- a plain readable
+    file, since `doctor --fix` has to sweep it for every run in the
+    registry.
+    """
+    _auto_resume_path(cdir).write_text(
+        json.dumps({"auto_resume": bool(enabled)}, indent=2) + "\n")
+
+
+def _read_auto_resume_setting(run_id: str) -> bool:
+    """The run's persisted `auto_resume` opt-in, falling back to
+    `AUTO_RESUME_DEFAULT` for a run started before task 026 (no file at
+    all) or one whose config dir is gone."""
+    doc = _read_json(_auto_resume_path(config_root(run_id)), {}) or {}
+    if "auto_resume" not in doc:
+        return AUTO_RESUME_DEFAULT
+    return _as_bool(doc["auto_resume"])
+
+
 def _write_extra_env_wiring(cdir: Path, pairs: list[str]) -> None:
     """Persist the *resolved* `name=value` pairs contributed by
     `--forward-env`, `--llm-env`, and `--env` at `start` time (task 001,
@@ -407,6 +456,9 @@ _TEMPLATE_SCALAR_FIELDS = {
     "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
     "model": None, "fast_model": None, "thinking": None,
     "image": DEFAULT_IMAGE, "network": None,
+    # default lives in AUTO_RESUME_DEFAULT alone (task 026) -- never a
+    # second literal here
+    "auto_resume": AUTO_RESUME_DEFAULT,
 }
 
 # For these `start` scalar fields, `ralphctl config set <regkey> ...` (task
@@ -416,7 +468,8 @@ _TEMPLATE_SCALAR_FIELDS = {
 # named `default_llm_profile` (matches doctor's existing read of it);
 # the others share their field name.
 _REGISTRY_CONFIG_FIELD_KEYS = {"image": "image", "on_complete": "on_complete",
-                               "llm": "default_llm_profile", "network": "network"}
+                               "llm": "default_llm_profile", "network": "network",
+                               "auto_resume": "auto_resume"}
 
 
 def _apply_template(args) -> Path | None:
@@ -447,6 +500,9 @@ def _apply_template(args) -> Path | None:
             reg_key = _REGISTRY_CONFIG_FIELD_KEYS.get(key)
             fallback = reg_cfg.get(reg_key, hard_default) if reg_key else hard_default
             setattr(args, key, cfg.get(key, fallback))
+    # the one non-string scalar that can arrive from a template/registry
+    # YAML as either a bool or its string spelling
+    args.auto_resume = _as_bool(args.auto_resume)
     if not args.skills:
         skill_names = cfg.get("skills") or []
         args.skills = [str(tdir / s) for s in skill_names] or None
@@ -628,6 +684,10 @@ def cmd_start(args):
         env_args += ["-e", kv]
         extra_env.append(kv)
     _write_extra_env_wiring(cdir, extra_env)
+    # Host-side setting: the engine never resumes itself, so this is only
+    # ever read back by `ralphctl` (task 027's `doctor --fix`); it is
+    # deliberately not passed into the container.
+    _write_auto_resume_setting(cdir, args.auto_resume)
     if token:
         env_args += ["-e", f"RALPHD_API_TOKEN={token}"]
 
@@ -2185,14 +2245,18 @@ def cmd_ui(args):
 # (see `_REGISTRY_CONFIG_FIELD_KEYS` above) plus `default_llm_profile`,
 # which doctor already reads independently.
 _CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
-                "default_llm_profile": None, "network": None}
+                "default_llm_profile": None, "network": None,
+                "auto_resume": ("true", "false")}
+# keys stored as real booleans in `<registry>/config.yaml` (task 026)
+_CONFIG_BOOL_KEYS = {"auto_resume"}
 
 
 def cmd_config(args):
     """Registry-wide defaults at `<registry>/config.yaml` (PRD req 25):
-    `image`, `on_complete`, `default_llm_profile`, `network`. `start` layers
-    these in between a `--template`'s value and the hardcoded fallback (see
-    `_apply_template`); `doctor` reads `default_llm_profile` directly."""
+    `image`, `on_complete`, `default_llm_profile`, `network`,
+    `auto_resume`. `start` layers these in between a `--template`'s value
+    and the hardcoded fallback (see `_apply_template`); `doctor` reads
+    `default_llm_profile` directly."""
     if args.key not in _CONFIG_KEYS:
         die(2, f"unknown config key: {args.key} (expected one of "
                 f"{', '.join(sorted(_CONFIG_KEYS))})")
@@ -2208,11 +2272,12 @@ def cmd_config(args):
         die(2, f"{args.key} must be one of {', '.join(choices)}")
     reg.mkdir(parents=True, exist_ok=True)
     cfg = _registry_config(reg)
-    cfg[args.key] = args.value
+    value = _as_bool(args.value) if args.key in _CONFIG_BOOL_KEYS else args.value
+    cfg[args.key] = value
     (reg / "config.yaml").write_text(
         yaml.safe_dump(cfg, default_flow_style=False, sort_keys=True))
-    out(args, {"key": args.key, "value": args.value},
-        f"{args.key}: {args.value}")
+    out(args, {"key": args.key, "value": value},
+        f"{args.key}: {value}")
 
 
 def cmd_doctor(args):
@@ -2485,6 +2550,16 @@ def main() -> None:
                         "while the accumulated wait of an outage episode is "
                         "under this many seconds (engine default 14400 = 4h). "
                         "Waiting costs no iterations and no approaches")
+    s.add_argument("--auto-resume", dest="auto_resume", action="store_true",
+                   default=None,
+                   help="opt this run in to self-recovery: `ralphctl doctor "
+                        "--fix` resumes it if its container vanishes while "
+                        "the run is still non-terminal (default: off, or the "
+                        "template's / `ralphctl config set auto_resume` value)")
+    s.add_argument("--no-auto-resume", dest="auto_resume", action="store_false",
+                   default=None,
+                   help="opt this run out of self-recovery even when a "
+                        "template or registry default enables it")
     s.add_argument("--port", type=int)
     s.add_argument("--api-bind", default="127.0.0.1")
     s.add_argument("--network", default=None, metavar="NET",
@@ -2640,7 +2715,8 @@ def main() -> None:
     s.set_defaults(func=cmd_doctor)
 
     s = sub.add_parser("config", help="registry-wide defaults "
-                       "(image, on_complete, default_llm_profile)")
+                       "(image, on_complete, default_llm_profile, network, "
+                       "auto_resume)")
     consub = s.add_subparsers(dest="action", required=True)
     g = consub.add_parser("get", help="print a registry default (or (unset))")
     g.add_argument("key")
