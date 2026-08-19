@@ -860,6 +860,83 @@ def cmd_start(args):
         sys.exit(0 if status.get("verdict") == "verified" else 1)
 
 
+TERMINAL_STATES = ("succeeded", "failed", "aborted")
+
+
+def _has_later_state_event(run_id: str, ev_id) -> bool:
+    """True when the run dir's `events.jsonl` holds a `state` event with a
+    higher id than `ev_id` -- i.e. the log itself already proves the run
+    moved on after that marker. False when the log cannot be read or the id
+    is unusable, in which case the caller falls back to the liveness probe."""
+    if not isinstance(ev_id, int):
+        return False
+    try:
+        with open(run_root(run_id) / "events.jsonl") as f:
+            for line in f:
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (ev.get("type") == "state" and isinstance(ev.get("id"), int)
+                        and ev["id"] > ev_id):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _engine_is_live(run_id: str) -> bool:
+    """True only when the run's API answers *and* reports a non-terminal
+    state, i.e. an engine is still working on this run right now.
+
+    An unreachable API (container gone, or torn down moments after the
+    terminal event) and an API that reports a terminal state both count as
+    not live. Deliberately does not go through api(): a failed probe here is
+    an expected outcome, not a fatal CLI error, and must not print to stderr
+    in the middle of a --json event stream."""
+    url = host_meta(run_id).get("apiUrl")
+    if not url:
+        return False
+    req = urllib.request.Request(url + "/status")
+    token_file = run_root(run_id) / ".api-token"
+    if token_file.exists():
+        req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            status = json.loads(resp.read() or b"{}")
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError,
+            json.JSONDecodeError):
+        return False
+    return isinstance(status, dict) and status.get("state") in NONTERMINAL_STATES
+
+
+def _terminal_event_ends_stream(run_id: str, ev: dict) -> bool:
+    """Task 031 (#13): decide whether a `state` event naming a terminal
+    state is really the end of the stream.
+
+    A run dir's `events.jsonl` is append-only *across resumes*, and the
+    follower replays it from id 0 -- so the first terminal state event it
+    sees may be a historical marker from an earlier episode that
+    `ralphctl resume` has since continued past. Closing on it makes
+    `ralphctl watch` (and the completion-wait idiom in docs/cli.md) report a
+    resumed job as finished while it is still working.
+
+    The stream therefore ends only when BOTH hold: nothing in the log
+    supersedes the marker (no later `state` event -- the marker is the log's
+    last word on the run's state), and the engine is not live (reconciled
+    against the live /status, never against the replayed marker). An idling
+    finished run -- API up, state terminal -- still ends the stream, so this
+    never turns a completed job into a hang.
+
+    Only later *state* events count as superseding: the engine emits
+    `on_complete_cmd` log events strictly after the terminal state event
+    (engine/main.py), and those must not hold the stream open past a real
+    completion."""
+    if _has_later_state_event(run_id, ev.get("id")):
+        return False
+    return not _engine_is_live(run_id)
+
+
 def _follow_events(args, run_id: str, fatal: bool = True):
     meta = host_meta(run_id)
     url = meta["apiUrl"] + "/events?since=0"
@@ -897,8 +974,9 @@ def _follow_events(args, run_id: str, fatal: bool = True):
                                   if k not in ("id", "ts", "type")}
                         print(f"[{ev['ts']}] {ev['type']} "
                               f"{json.dumps(detail) if detail else ''}", flush=True)
-                    if ev["type"] == "state" and ev.get("state") in (
-                            "succeeded", "failed", "aborted"):
+                    if (ev["type"] == "state"
+                            and ev.get("state") in TERMINAL_STATES
+                            and _terminal_event_ends_stream(run_id, ev)):
                         return
             return
         except (urllib.error.URLError, TimeoutError, ConnectionError):
