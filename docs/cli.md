@@ -157,7 +157,9 @@ you should know):
   dirs; container-local paths mount empty and can litter root-owned dirs on
   the host.
 - Siblings should carry `--label ralphd.run=<run-id>` (the job container
-  always does) — `ralphctl stop`/`rm` reap everything with that label,
+  always does, plus `--label ralphd.role=job` so the two can be told apart;
+  the job also gets `RALPHD_SELF_CONTAINER_ID` naming its own container) —
+  `ralphctl stop`/`rm` reap everything with that label,
   best-effort. `ralphctl doctor` lists stray labeled containers whose run no
   longer exists.
 - Prefer `--rm` for short-lived siblings; detached unlabeled containers,

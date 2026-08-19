@@ -148,6 +148,20 @@ def test_resume_allow_docker_reinjects_socket(ctl, unix_sock):
     assert "ROOT-EQUIVALENT" in res.stderr
 
 
+def test_resume_labels_job_role_and_exports_self_container_id(ctl):
+    """Task 034 (#7): a resumed container is wired exactly like a started one
+    -- same ralphd.role=job label and same RALPHD_SELF_CONTAINER_ID."""
+    _seed_run(ctl, "tst-role2")
+    res = ctl.run("resume", "tst-role2")
+    assert res.returncode == 0, res.stderr
+    argv = _run_argv(ctl)
+    lbl = [argv[i + 1] for i, a in enumerate(argv) if a == "--label"]
+    assert lbl == ["ralphd.run=tst-role2", "ralphd.role=job"]
+    assert "RALPHD_SELF_CONTAINER_ID=ralphd-tst-role2" in env_vars(argv)
+    ni = argv.index("--name")
+    assert argv[ni + 1] == "ralphd-tst-role2"
+
+
 # --------------------------------------------------------------------------
 def test_unpause_hits_resume_endpoint(live):
     """The rename (old `resume` -> `unpause`) must still hit the engine's

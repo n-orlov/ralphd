@@ -75,7 +75,27 @@ def env_vars(argv: list[str]) -> list[str]:
     return [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
 
 
+def labels(argv: list[str]) -> list[str]:
+    return [argv[i + 1] for i, a in enumerate(argv) if a == "--label"]
+
+
 # --------------------------------------------------------------------------
+def test_start_labels_job_role_and_exports_self_container_id(ctl):
+    """Task 034 (#7): the job container is distinguishable from the siblings
+    the job starts (ralphd.role=job) and knows its own identifier, so the
+    cleanup idiom handed to the agent can exclude it."""
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "tst-role")
+    assert res.returncode == 0, res.stderr
+    argv = docker_run_argv(ctl)
+
+    assert labels(argv) == ["ralphd.run=tst-role", "ralphd.role=job"]
+    assert "RALPHD_SELF_CONTAINER_ID=ralphd-tst-role" in env_vars(argv)
+    # the exported id is the identifier docker was given for this container
+    ni = argv.index("--name")
+    assert argv[ni + 1] == "ralphd-tst-role"
+
+
 def test_start_without_allow_docker_has_label_but_no_socket(ctl):
     res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none", "--run-id", "tst-run")
     assert res.returncode == 0, res.stderr
@@ -161,6 +181,10 @@ def test_stop_reaps_labeled_siblings(ctl):
     assert ["ps", "-aq", "--filter", "label=ralphd.run=tst-stop"] in rec
     assert ["rm", "-f", "sib1"] in rec
     assert ["rm", "-f", "sib2"] in rec
+    # task 034: _reap_siblings() keeps its run-id-ONLY filter -- host-side
+    # `stop` takes the whole run down, job container included; the
+    # role=sibling narrowing is only for cleanup run from inside the job.
+    assert not any("ralphd.role" in a for argv in rec for a in argv)
 
 
 def test_stop_reap_failure_is_non_fatal(ctl):
@@ -188,6 +212,7 @@ def test_rm_reaps_labeled_siblings(ctl):
     rec = ctl.recorded()
     assert ["ps", "-aq", "--filter", "label=ralphd.run=tst-rm"] in rec
     assert ["rm", "-f", "sib9"] in rec
+    assert not any("ralphd.role" in a for argv in rec for a in argv)
     assert not run_dir.exists()
 
 

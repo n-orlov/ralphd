@@ -979,8 +979,14 @@ image builds):
   telling the agent to use them. (`docker build` contexts are exempt: the
   CLI streams the context itself.)
 - **Label + reap lifecycle.** The job container always carries
-  `--label ralphd.run=<run-id>` (with or without `--allow-docker`); prompts
-  instruct the agent to put the same label on every sibling and prefer `--rm`.
+  `--label ralphd.run=<run-id>` *and* `--label ralphd.role=job` (with or
+  without `--allow-docker`), and is told its own identifier via
+  `RALPHD_SELF_CONTAINER_ID` (the `ralphd-<run-id>` name `ralphctl` chose for
+  it — docker accepts a name anywhere it accepts an id, and unlike the 64-hex
+  id it is known *before* `docker run` returns). Prompts instruct the agent to
+  label every sibling `ralphd.run=<run-id>` plus `ralphd.role=sibling` and
+  prefer `--rm`; the `role` label is what lets sibling cleanup run from inside
+  the job without deleting the job container itself.
   `ralphctl stop` and `ralphctl rm` best-effort `docker rm -f` everything
   matching the label (idempotent, never fails the command); `ralphctl doctor`
   reports stray labeled containers whose run id no longer has a registry dir
