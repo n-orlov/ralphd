@@ -83,6 +83,35 @@ def format_duration(seconds: float | None) -> str:
     return f"{days}d {h}h" if h else f"{days}d"
 
 
+def format_approach(approach, max_approaches) -> str:
+    """Render the approach counter as `n/m` -- task 007 (#16).
+
+    The ONE shared renderer for the approach column/line (`ralphctl status`,
+    `ralphctl runs`, and the hub through `ui_server`), so no surface invents
+    its own denominator. Three cases, each of them honest:
+
+    - no approach recorded yet (`None`/empty)  -> `""`. A run that has not
+      started an approach has no counter, and printing `/3` would claim a
+      position in a ladder it never entered.
+    - approach but no `maxApproaches` (a pre-v0.6 run dir, where
+      `GET /status` publishes an explicit `null` -- see api.py) -> `"2"`
+      bare. The limit is genuinely unknown; the live config's value must
+      never be guessed in, which is exactly why this takes the denominator
+      as an argument instead of reading it from anywhere.
+    - both known -> `"2/3"`.
+
+    Values are rendered as given (ints in practice); non-numeric junk
+    degrades to its string form rather than raising -- a status line must
+    never be the thing that breaks output (same contract as
+    `format_duration`/`format_local_time`).
+    """
+    if approach is None or approach == "":
+        return ""
+    if max_approaches is None or max_approaches == "":
+        return str(approach)
+    return f"{approach}/{max_approaches}"
+
+
 # Absolute-timestamp display format (task 048, #4): local wall clock plus the
 # UTC offset, so a timestamp copied out of the hub or the CLI is unambiguous
 # without the reader having to know which machine's timezone it came from.

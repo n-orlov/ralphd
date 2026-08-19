@@ -40,6 +40,7 @@ from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     NONTERMINAL_STATES,
     elapsed_seconds,
+    format_approach,
     format_cost,
     format_duration,
     format_local_time,
@@ -1314,6 +1315,14 @@ def cmd_runs(args):
                          "verdict": status.get("verdict"),
                          "phase": status.get("phase"),
                          "approach": status.get("approach"),
+                         # Task 007 (#16): BOTH numbers in --json (raw, for
+                         # sorting and machine consumers) next to the human
+                         # `n/m` string; an absent field is an explicit null
+                         # ("limit unknown"), never the live config guessed in.
+                         "maxApproaches": status.get("maxApproaches"),
+                         "approachDisplay": format_approach(
+                             status.get("approach"),
+                             status.get("maxApproaches")),
                          "iterationsUsed": used,
                          "iterationsBudget": status.get("iterationsBudget"),
                          "iterations": f"{used}"
@@ -1335,7 +1344,12 @@ def cmd_runs(args):
             print(fmt.format(
                 runId=str(r["runId"]), state=str(r["state"]),
                 verdict=str(r["verdict"]), phase=str(r["phase"]),
-                approach=str(r["approach"]), iterations=str(r["iterations"]),
+                # Task 007 (#16): the rendered `n/m` (blank for a run with no
+                # approach yet) -- the raw number stays in --json and is what
+                # `--sort approach` compares, exactly like `iterationsUsed`
+                # vs the "7/250" string.
+                approach=str(r["approachDisplay"]),
+                iterations=str(r["iterations"]),
                 # Task 048 (#4)'s shared absolute formatter for the human
                 # column; --json keeps the raw ISO value for sorting/consumers.
                 startedAt=format_local_time(r["startedAt"])))
@@ -1551,6 +1565,11 @@ def cmd_status(args):
         # Task 020 (#5): same for the reflect verdict -- null means "no
         # reflect iteration has finished" (reflect off, or not there yet).
         status.setdefault("reflect", None)
+        # Task 007 (#16): same for the approach denominator -- a pre-v0.6 run
+        # dir has no `maxApproaches`, and `GET /status` publishes an explicit
+        # null for it, so the on-disk fallback's `--json` says the same thing
+        # (limit unknown) rather than omitting the key.
+        status.setdefault("maxApproaches", None)
         # Task 023 (#8): status.json itself carries no task counts -- the
         # engine synthesises them in GET /status from tasks.json, so the
         # on-disk fallback used to print `tasks: (none)` for a run dir with
@@ -1643,8 +1662,16 @@ def cmd_status(args):
         lines.append(f"ended:     {format_local_time(status.get('endedAt'))}")
     elif stale_since:
         lines.append(f"last update: {format_local_time(stale_since)}")
+    approach_text = format_approach(status.get("approach"),
+                                    status.get("maxApproaches"))
+    phase_line = f"phase:     {status.get('phase')}"
+    if approach_text:
+        # Task 007 (#16): `approach 2/3` when the limit is known, `approach 2`
+        # when it is not, and no approach segment at all for a run that has
+        # not entered the ladder (it used to read `approach None`).
+        phase_line += f"  approach {approach_text}"
     lines += [
-        f"phase:     {status.get('phase')}  approach {status.get('approach')}",
+        phase_line,
         f"iteration: {status.get('iterationsUsed')}/{status.get('iterationsBudget')}",
     ]
     if isinstance(cur_it, dict):
