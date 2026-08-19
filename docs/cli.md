@@ -883,7 +883,8 @@ workspace mounts, the `--llm`/`--env` wiring recorded at start time, the
 
 `--json` adds `autoResume: {resumed: [...], skipped: [...], failed:
 [{runId, error}], waiting: [{runId, attempts, nextAttemptAt}], gaveUp:
-[{runId, attempts, reason}]}` (`null` without `--fix`); the human report
+[{runId, attempts, reason}], operatorTerminated: [{runId, action, at,
+reason}], recovered: [...]}` (`null` without `--fix`); the human report
 annotates each dangling entry with `auto-resumed (auto_resume enabled)`, a
 `not auto-resumed: auto_resume is off for this run` note above the usual
 manual remedy line, the crash-loop guard's `not auto-resumed yet: crash-loop
@@ -891,6 +892,24 @@ backoff …` / give-up reason (below), or `auto-resume FAILED: <error>`.
 A run whose container is still alive is not dangling and is never touched.
 One broken run cannot abort the sweep. `--fix` never changes the exit code:
 it stays the AND of the preflight `checks` above.
+
+**Never resurrects a run you killed.** Self-recovery only ever restarts a run
+whose container *vanished on its own*. Two carve-outs make that true:
+
+* runs in a terminal state (`succeeded`/`failed`/`aborted`) are not dangling
+  by definition and never enter the sweep — and the dangling condition is
+  re-checked immediately before each resume, so a run that finished (or whose
+  container came back) between the registry scan and the restart is reported
+  as `recovered` and left alone;
+* `ralphctl abort` and `ralphctl stop` record the operator's intent in the run
+  dir as `operator-termination.json` (`{action, at, reason, source}`; the
+  engine writes the same file the moment `POST /abort` arrives, so an abort
+  whose container dies before it can write a terminal state is still marked).
+  A run carrying that marker is reported under `operatorTerminated` with `not
+  auto-resumed: terminated by the operator …` and is never restarted, even
+  with `auto_resume` on. `ralphctl stop --force` is the sharp case it exists
+  for: it removes the container while `status.json` may still say `running`,
+  which on disk is otherwise indistinguishable from a crash.
 
 **Crash-loop guard.** A run whose container dies seconds after every resume
 (broken image, missing credential, corrupt run dir) must not be resurrected

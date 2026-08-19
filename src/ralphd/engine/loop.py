@@ -22,7 +22,13 @@ from .config import (
 from .faults import classify_fault
 from .llm import current_env
 from .runner import IterationResult, PiRunner
-from .state import RunDir, atomic_write_json, utc_from_epoch, utcnow
+from .state import (
+    RunDir,
+    atomic_write_json,
+    record_operator_termination,
+    utc_from_epoch,
+    utcnow,
+)
 
 log = logging.getLogger("ralphd.loop")
 
@@ -199,6 +205,15 @@ class LoopSupervisor:
         self._abort_reason = reason or "aborted by operator"
         self._operator_abort_recorded = True
         self._operator_interrupted = True
+        # Task 029 (#8): record the operator's intent on disk *now*, before
+        # the loop unwinds. If this container dies before it manages to
+        # write its terminal state (SIGKILL, `stop --force`, host reboot
+        # mid-abort) the run dir would otherwise be indistinguishable from a
+        # run whose container crashed -- and `doctor --fix` would helpfully
+        # resurrect a job the operator just killed.
+        record_operator_termination(self.run.root, "abort",
+                                    reason=self._abort_reason,
+                                    source="engine")
         self.runner.interrupt()
 
     # -- prompts -----------------------------------------------------------
