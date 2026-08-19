@@ -1815,6 +1815,9 @@ def _append_run_event(rdir: Path, type_: str, **data) -> dict:
 _TASK_STATUSES = ("pending", "in-progress", "completed", "validation-failed",
                   "failed", "skipped")
 _STATUS_STATES = ("starting", "running", "succeeded", "failed", "aborted")
+# Recorded states that mean "a live engine still owns this run": if no
+# container exists for one of these, the run is a zombie (task 021).
+_NONTERMINAL_STATUS_STATES = ("starting", "running")
 
 
 def _diagnose_status_json(rdir: Path) -> list[str]:
@@ -1907,6 +1910,24 @@ def _diagnose_host_json(rdir: Path) -> list[str]:
     return issues
 
 
+def _diagnose_dangling_container(run_id: str) -> list[str]:
+    """The dangling-container condition as a diagnosis line (task 021,
+    requirement E): a run recorded non-terminal whose container is gone.
+    Reuses `_dangling_run_entry` -- doctor's check -- rather than a second
+    implementation, and names the guarded fix so `repair` stops reporting
+    a zombie run as 'no issues found'."""
+    entry = _dangling_run_entry(run_id)
+    if entry is None:
+        return []
+    state = _read_json(run_root(run_id) / "status.json", {}).get("state")
+    issue = (f"container: {entry['container']} no longer exists, but "
+             f"status.json still records state {state!r} -- the container "
+             f"died or was removed outside ralphctl; fix with `ralphctl "
+             f"repair {run_id} --set-state aborted` (records why the run "
+             f"ended), or `ralphctl resume {run_id}` to continue it")
+    return [issue]
+
+
 def cmd_repair(args):
     """PRD requirement E: non-interactive diagnosis (and, guarded, fixes)
     for a run dir left in an inconsistent shape by a crash outside the
@@ -1920,7 +1941,11 @@ def cmd_repair(args):
     whose container died without the engine ever writing a terminal
     state -- it overwrites status.json's 'state' field directly, bypassing
     diagnosis, after validating the requested value against the same
-    `_STATUS_STATES` list diagnosis checks against.
+    `_STATUS_STATES` list diagnosis checks against. When the run was in
+    fact a zombie (recorded non-terminal, container gone -- task 021's
+    condition), it also writes a `reason` saying the container vanished,
+    so the terminal state on disk is self-explaining rather than a bare
+    state flip.
 
     `--env KEY=VAL` (task 010) adds/updates a recorded value in the
     persisted env wiring (`env-wiring.json`, task 001's
@@ -1939,6 +1964,9 @@ def cmd_repair(args):
                f"live run; `abort` or `stop` it first")
 
     set_state = getattr(args, "set_state", None)
+    # the zombie condition, computed once for both the --set-state reason
+    # and diagnosis (doctor's check, one implementation).
+    dangling = _dangling_run_entry(run_id)
     if set_state is not None:
         if set_state not in _STATUS_STATES:
             die(2, f"--set-state: invalid state {set_state!r} (expected "
@@ -1953,16 +1981,29 @@ def cmd_repair(args):
             die(1, "status.json: expected a JSON object")
         old_state = doc.get("state")
         doc["state"] = set_state
+        # task 021: a zombie run (recorded non-terminal, container gone)
+        # gets a reason explaining the vanished container -- the same
+        # field the engine writes on its own terminal transitions.
+        reason = None
+        if dangling is not None:
+            reason = (f"container {dangling['container']} no longer exists "
+                      f"(died or was removed outside ralphctl); state "
+                      f"{old_state!r} -> {set_state!r} by `ralphctl repair "
+                      f"--set-state`")
+            doc["reason"] = reason
         status_path.write_text(json.dumps(doc, indent=2))
         try:
             status_path.chmod(0o600)
         except OSError:
             pass
         _append_run_event(rdir, "repair", action="set-state",
-                          old=old_state, new=set_state)
+                          old=old_state, new=set_state, reason=reason)
         result = {"runId": run_id, "action": "set-state", "old": old_state,
-                  "new": set_state}
-        out(args, result, f"{run_id}: state {old_state!r} -> {set_state!r}")
+                  "new": set_state, "reason": reason}
+        human = f"{run_id}: state {old_state!r} -> {set_state!r}"
+        if reason:
+            human += f"\n  reason: {reason}"
+        out(args, result, human)
         sys.exit(0)
 
     env_updates = getattr(args, "env", None)
@@ -1996,13 +2037,13 @@ def cmd_repair(args):
                           f"{', '.join(updated_keys)}")
         sys.exit(0)
 
-    checked = ["status.json", "tasks.json", "host.json"]
+    checked = ["status.json", "tasks.json", "host.json", "container"]
     issues = (_diagnose_status_json(rdir) + _diagnose_tasks_json(rdir)
-              + _diagnose_host_json(rdir))
+              + _diagnose_host_json(rdir) + _diagnose_dangling_container(run_id))
     _append_run_event(rdir, "repair", action="diagnose", checked=checked,
                       issueCount=len(issues), issues=issues)
     result = {"runId": run_id, "checked": checked, "issues": issues,
-              "ok": not issues}
+              "ok": not issues, "dangling": dangling}
     if issues:
         human = (f"{run_id}: {len(issues)} issue(s) found\n"
                   + "\n".join(f"  - {i}" for i in issues))
@@ -2210,21 +2251,37 @@ def _stray_sibling_containers() -> list[dict]:
     return strays
 
 
+def _dangling_run_entry(run_id: str) -> dict | None:
+    """THE dangling-container condition, in its single-run form: a run dir
+    whose status.json records a non-terminal state but whose container no
+    longer exists at all (crashed/removed outside ralphctl, e.g. `docker
+    rm -f` by hand). The reverse of `_stray_sibling_containers`.
+
+    One implementation, shared by `doctor`'s global report-only sweep
+    (`_dangling_registry_entries`) and `repair`'s per-run diagnosis (task
+    021) -- the two must never be able to disagree about whether a given
+    run is a zombie. Returns `{runId, container}` or None (not dangling:
+    either the recorded state is terminal, or a container by that name
+    still exists, running or exited)."""
+    status = _read_json(run_root(run_id) / "status.json", {})
+    if status.get("state") not in _NONTERMINAL_STATUS_STATES:
+        return None
+    name = f"ralphd-{run_id}"
+    if _container_running(name) is not None:
+        return None
+    return {"runId": run_id, "container": name}
+
+
 def _dangling_registry_entries() -> list[dict]:
-    """The reverse of `_stray_sibling_containers`: a run dir whose status.json
-    says `state: running` but whose container no longer exists at all
-    (crashed/removed outside ralphctl, e.g. `docker rm -f` by hand)."""
+    """Every run in the registry matching `_dangling_run_entry`."""
     runs_dir = registry() / "runs"
     if not runs_dir.is_dir():
         return []
     dangling = []
     for d in sorted(runs_dir.iterdir()):
-        status = _read_json(d / "status.json", {})
-        if status.get("state") != "running":
-            continue
-        name = f"ralphd-{d.name}"
-        if _container_running(name) is None:
-            dangling.append({"runId": d.name, "container": name})
+        entry = _dangling_run_entry(d.name)
+        if entry is not None:
+            dangling.append(entry)
     return dangling
 
 

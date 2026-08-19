@@ -56,7 +56,8 @@ def test_repair_clean_run_reports_no_issues(ctl: Ctl):
     doc = json.loads(res.stdout)
     assert doc["ok"] is True
     assert doc["issues"] == []
-    assert sorted(doc["checked"]) == ["host.json", "status.json", "tasks.json"]
+    assert sorted(doc["checked"]) == ["container", "host.json", "status.json",
+                                      "tasks.json"]
 
 
 def test_repair_reports_corrupted_status_json(ctl: Ctl):
@@ -107,7 +108,8 @@ def test_repair_appends_audit_event_never_leaking_values(ctl: Ctl):
     assert len(repairs) == 1
     ev = repairs[0]
     assert ev["action"] == "diagnose"
-    assert sorted(ev["checked"]) == ["host.json", "status.json", "tasks.json"]
+    assert sorted(ev["checked"]) == ["container", "host.json", "status.json",
+                                     "tasks.json"]
     assert ev["issueCount"] == 0
     # no secret-shaped content anywhere in the whole event log
     blob = json.dumps(events)
@@ -278,3 +280,142 @@ def test_repair_env_refuses_while_container_running(ctl: Ctl):
     assert res.returncode == 5, res.stderr
     assert not (cdir / "env-wiring.json").exists()
     assert _events(rdir) == []
+
+
+# --- task 021 (#8): the dangling-container condition ---------------------
+
+
+def test_repair_reports_dangling_container_for_running_run(ctl: Ctl):
+    """A run recorded non-terminal whose container no longer exists at all
+    must stop being reported as 'no issues found' -- and the report must
+    name the guarded fix."""
+    rdir, _cdir = _seed_run(ctl, "tst-zombie")
+    (rdir / "status.json").write_text(json.dumps(
+        {"state": "running", "schemaVersion": 1}))
+    (rdir / "tasks.json").write_text(json.dumps(
+        {"version": 1, "tasks": [
+            {"id": "001", "title": "do the thing", "status": "in-progress"},
+        ]}))
+    # no STUB_DOCKER_CONTAINERS -> `docker inspect` on ralphd-tst-zombie
+    # exits nonzero, i.e. the container does not exist
+    res = ctl.run("--json", "repair", "tst-zombie")
+    assert res.returncode == 1, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["ok"] is False
+    assert doc["dangling"] == {"runId": "tst-zombie",
+                              "container": "ralphd-tst-zombie"}
+    joined = "\n".join(doc["issues"])
+    assert "ralphd-tst-zombie no longer exists" in joined
+    assert "'running'" in joined
+    # names the guarded fix (and the alternative)
+    assert "repair tst-zombie --set-state aborted" in joined
+    assert "resume tst-zombie" in joined
+    # audit trail records the same finding
+    repairs = [e for e in _events(rdir) if e.get("type") == "repair"]
+    assert len(repairs) == 1
+    assert repairs[0]["issueCount"] == len(doc["issues"])
+    assert "container" in repairs[0]["checked"]
+
+
+def test_repair_human_output_names_the_dangling_container(ctl: Ctl):
+    rdir, _cdir = _seed_run(ctl, "tst-zombie-human")
+    (rdir / "status.json").write_text(json.dumps({"state": "starting"}))
+    res = ctl.run("repair", "tst-zombie-human")
+    assert res.returncode == 1, res.stderr
+    assert "issue(s) found" in res.stdout
+    assert "ralphd-tst-zombie-human no longer exists" in res.stdout
+    assert "--set-state aborted" in res.stdout
+
+
+def test_repair_terminal_run_without_container_is_not_dangling(ctl: Ctl):
+    """A finished run legitimately has no container -- no false positive."""
+    rdir, _cdir = _seed_run(ctl, "tst-done")
+    (rdir / "status.json").write_text(json.dumps(
+        {"state": "succeeded", "schemaVersion": 1}))
+    res = ctl.run("--json", "repair", "tst-done")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["ok"] is True
+    assert doc["dangling"] is None
+    assert doc["issues"] == []
+
+
+def test_repair_running_run_with_exited_container_is_not_dangling(ctl: Ctl):
+    """The container still exists (exited), so it is not the vanished-
+    container condition doctor reports -- one story, one check."""
+    rdir, _cdir = _seed_run(ctl, "tst-exited")
+    (rdir / "status.json").write_text(json.dumps({"state": "running"}))
+    res = ctl.run("--json", "repair", "tst-exited", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-exited",
+        "STUB_DOCKER_RUNNING": "",
+    })
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["dangling"] is None
+    assert doc["issues"] == []
+
+
+def test_repair_still_refuses_dangling_check_on_live_container(ctl: Ctl):
+    """A live container is never diagnosed at all (unchanged refusal)."""
+    rdir, _cdir = _seed_run(ctl, "tst-zombie-alive")
+    (rdir / "status.json").write_text(json.dumps({"state": "running"}))
+    res = ctl.run("repair", "tst-zombie-alive", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-zombie-alive",
+        "STUB_DOCKER_RUNNING": "ralphd-tst-zombie-alive",
+    })
+    assert res.returncode == 5, res.stderr
+    assert "running" in res.stderr
+    assert _events(rdir) == []
+
+
+def test_repair_set_state_aborted_writes_vanished_container_reason(ctl: Ctl):
+    rdir, _cdir = _seed_run(ctl, "tst-zombie-fix")
+    (rdir / "status.json").write_text(json.dumps(
+        {"state": "running", "schemaVersion": 1, "verdict": None}))
+    res = ctl.run("--json", "repair", "tst-zombie-fix", "--set-state",
+                  "aborted")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["new"] == "aborted"
+    reason = doc["reason"]
+    assert "ralphd-tst-zombie-fix no longer exists" in reason
+
+    on_disk = json.loads((rdir / "status.json").read_text())
+    assert on_disk["state"] == "aborted"
+    assert on_disk["reason"] == reason
+    assert on_disk["schemaVersion"] == 1  # other fields untouched
+
+    repairs = [e for e in _events(rdir) if e.get("type") == "repair"]
+    assert len(repairs) == 1
+    assert repairs[0]["action"] == "set-state"
+    assert repairs[0]["old"] == "running"
+    assert repairs[0]["new"] == "aborted"
+    assert repairs[0]["reason"] == reason
+
+
+def test_repair_set_state_on_terminal_run_records_no_vanished_reason(ctl: Ctl):
+    """Nothing vanished: a state flip on an already-terminal run must not
+    invent a container-died reason."""
+    rdir, _cdir = _seed_run(ctl, "tst-flip")
+    (rdir / "status.json").write_text(json.dumps({"state": "failed"}))
+    res = ctl.run("--json", "repair", "tst-flip", "--set-state", "aborted")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["reason"] is None
+    on_disk = json.loads((rdir / "status.json").read_text())
+    assert on_disk["state"] == "aborted"
+    assert "reason" not in on_disk
+
+
+def test_repair_dangling_check_has_one_implementation():
+    """doctor and repair must share the condition (task 021's criteria):
+    exactly one place computes 'recorded non-terminal, container gone'."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "src" / "ralphd" / "cli" / "main.py").read_text()
+    assert src.count("def _dangling_run_entry(") == 1
+    assert src.count("def _dangling_registry_entries(") == 1
+    # the registry sweep delegates instead of re-deriving the condition
+    sweep = src.split("def _dangling_registry_entries(")[1].split("\ndef ")[0]
+    assert "_dangling_run_entry(" in sweep
+    assert "_container_running(" not in sweep
