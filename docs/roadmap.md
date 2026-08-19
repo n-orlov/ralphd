@@ -3,14 +3,15 @@
 Versions are milestones, not promises of dates. Each version is releasable on its
 own; scope may shift between minors, not the ordering of the big rocks.
 
-> **Status (2026-08-09, refreshed by task 059):** v0.1 through v0.4's engine/
-> CLI/hub-UI feature scope is implemented and covered by black-box tests (252
-> passing, including a real docker-sibling e2e tier and a real browser e2e
-> tier for the hub) — see `artifacts/reports/traceability.md` for the full
-> requirement-to-test mapping. What remains outside that scope: publishing a
-> built Docker image + `pipx` packaging (never attempted, no CI to do it
-> from). Every discovered-task follow-up in the 045–060 series is done — no
-> open process/hardening follow-ups remain.
+> **Status (v0.5 close-out):** v0.1 through v0.5's engine/CLI/hub-UI feature
+> scope is implemented and covered by black-box tests, including a real
+> docker-sibling e2e tier and a real browser e2e tier for the hub — see
+> `artifacts/reports/traceability.md` (v0.1–v0.4 requirements),
+> `artifacts/reports/issue-traceability.md` (v0.5: backlog issues #1–#11, #13
+> → requirement letter → task → commit → tests) and
+> `artifacts/reports/v0.5-definition-of-done.md` (evidence per DoD bullet).
+> What remains outside that scope: publishing a built Docker image + `pipx`
+> packaging (never attempted, no CI to do it from).
 
 ## v0.1 — the working loop (MVP)
 
@@ -78,19 +79,38 @@ operator surfaces.
 
 Phase 1 — the environment must not be able to destroy a job:
 
-- ⏳ In-band LLM errors classified as faults at all — `pi` reports endpoint
-  failures with `exit_code: 0`, which `classify_fault()` scores as success, so
-  the whole retry/refund apparatus is unreachable in production (#11)
-- ⏳ Aggressive retry: fast escalating backoff, a wall-clock **outage budget**
-  (default 4h) in place of a 3-attempt cap, every phase covered, plus an
-  explicit `health: degraded` / `infraWait` status contract — while keeping the
-  fail-fast path for a broken credential (#5, #11)
-- ⏳ `POST /retry` + `ralphctl retry <run-id>`: skip the remaining backoff when
-  the operator knows the endpoint is back
-- ⏳ Reflect phase gets retry *and* reports its own failure instead of silently
-  producing no post-mortem (#5)
-- ⏳ A run recorded `running` with no container is visible to `repair`,
-  `status`, and the hub — not only to `doctor` (#8)
+- ✅ In-band LLM errors classified as faults at all — `pi` reports endpoint
+  failures with `exit_code: 0`, which `classify_fault()` used to score as
+  success, making the whole retry/refund apparatus unreachable in production.
+  A non-empty `error_message` is now a fault regardless of exit code, the
+  signature table covers the observed gateway/Bedrock families, the bare
+  `aborted` error is `infra` only when there was no traffic *and* no operator
+  abort, and the verdict is recorded as `faultClass` in each iteration's
+  `meta.json` and the `iteration.end` event (#11)
+- ✅ Aggressive retry: fast escalating backoff (`2,5,15,30,60,120,300`s, last
+  value repeating up to `infra_retry_backoff_max_s`), a wall-clock **outage
+  budget** (`infra_outage_budget_s`, default 4h, `ralphctl start
+  --infra-outage-budget`) in place of the 3-attempt cap (`infra_retry_max` is
+  now honoured only when set explicitly), all five phases covered without
+  double-counting phase-local error budgets, waits accounted as
+  `infraWaitTotalS` with the job deadline extended by them, plus an explicit
+  `health: ok|degraded` / `infraWait` status contract surfaced in
+  `ralphctl status` and the hub — while keeping the fail-fast path for a
+  broken credential (stable instant no-traffic failures still get the
+  broken-environment diagnosis in seconds) (#5, #11)
+- ✅ `POST /retry` + `ralphctl retry <run-id>` (+ a hub retry-now button with a
+  countdown): the backoff wait is an interruptible event, so an operator who
+  knows the endpoint is back skips the remaining wait and resets the
+  outage-budget episode clock
+- ✅ Reflect phase gets retry (with a pre-attempt wait after an infra-shaped
+  ending) *and* reports its own failure — `status.json`'s `reflect` outcome +
+  `artifacts/reflection/FAILED.md`, surfaced in `ralphctl status` and the hub —
+  instead of silently producing no post-mortem (#5)
+- ✅ A run recorded `running` with no container is visible to `repair` (guarded
+  `--set-state` writing a vanished-container reason + audit event), `status`
+  (explicit warning line, on-disk task counts, staleness instead of a growing
+  live elapsed) and the hub's warning treatment — not only to `doctor`, whose
+  remedy text now tells the same story (#8)
 - ✅ Opt-in self-recovery, shipped **off by default**: `ralphctl start
   --auto-resume` (or the registry default `ralphctl config set auto_resume
   true`) marks a run as opted in, and `ralphctl doctor --fix` — run from cron/
@@ -102,22 +122,38 @@ Phase 1 — the environment must not be able to destroy a job:
   backoff and gives up with a readable reason. The default is a single literal,
   `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py` — see the deferred note
   below for the planned flip
-- ⏳ `ralphctl watch` stops closing at a *historical* terminal-state marker —
-  today the documented agent completion-wait reports a resumed run as finished,
-  silently, exit 0 (#13)
-- ⏳ The documented sibling-cleanup idiom can no longer delete the job
-  container (`ralphd.role` labels + `RALPHD_SELF_CONTAINER_ID`) (#7)
-- ⏳ Logs readable from disk when the container is gone, on both hub and CLI —
-  the transcripts are already there (#6)
+- ✅ `ralphctl watch` (and `ralphctl logs -f`) stop closing at a *historical*
+  terminal-state marker: the stream ends on a terminal event only when it is
+  the log's last event *and* the engine is not live, and resume now appends an
+  explicit `running` state event so a stale marker can never be the log's
+  final word (#13)
+- ✅ The documented sibling-cleanup idiom can no longer delete the job
+  container: `ralphd.role=job|sibling` labels + `RALPHD_SELF_CONTAINER_ID`,
+  the sibling-only cleanup filter propagated to every documented copy
+  (prompt, skill example, architecture, CLI docs) with a test that runs the
+  documented command and proves the job container survives (#7)
+- ✅ Logs readable from disk when the container is gone, on both hub and CLI —
+  one shared `log_merge` module behind the live API, the hub's snapshot label
+  and `ralphctl logs` (pretty/`--raw`/`--follow`, exit 0 with a stderr
+  notice), plus an explicit `(no transcript yet)` for an empty run (#6)
 
 Phase 2 — operator surfaces:
 
-- ⏳ In-flight iteration-budget top-up via API + `ralphctl budget` (#3)
-- ⏳ Absolute timestamps in the iteration timeline, `logs`, and `status` (#4)
-- ⏳ Unknown cost rendered as unknown instead of `$0.0000` — four runs on the
-  dev host, up to 102M tokens, currently read as free (#10)
-- ⏳ Sortable, newest-first run list in the hub, with `ralphctl runs` parity (#9)
-- ⏳ PRD dialog and clickable task detail in the hub (#1, #2)
+- ✅ In-flight iteration-budget top-up via `PATCH /config/budget` + `ralphctl
+  budget <run-id> +N|N`, proven e2e on a job that was about to exhaust its
+  budget (#3)
+- ✅ Absolute timestamps (one shared formatter, ISO kept in the payload) in the
+  iteration timeline, `logs`, and `status` (#4)
+- ✅ Unknown cost rendered as unknown instead of `$0.0000` — unpriced
+  iterations are marked (`costPriced: false`), run totals mixing priced and
+  unpriced read as *partial*, every surface renders unknown/partial as
+  unavailable, and an optional host-side pricing map (with gateway aliases)
+  can supply a *derived* cost that is never conflated with a
+  provider-reported one (#10); `artifacts/reports/pricing-anomaly.md` records
+  the investigation of the same-model priced/unpriced anomaly
+- ✅ Sortable run list in the hub (all seven columns, sort state outside the
+  DOM, newest-first by default), with `ralphctl runs --sort/--reverse` parity (#9)
+- ✅ PRD dialog and clickable task detail in the hub (#1, #2)
 
 ## Later / explicitly deferred
 
