@@ -138,7 +138,16 @@ async def amain() -> int:
                       # has to treat their absence as a third case. `state`
                       # deliberately does NOT grow a "degraded" value -- that
                       # would break every consumer's terminal-state logic.
-                      health="ok", infraWait=None)
+                      health="ok", infraWait=None,
+                      # Task 006 (#16): the approach *denominator*, written
+                      # with the very first status write rather than only when
+                      # the loop reaches `running`, so no surface has to
+                      # assemble `approach n/m` from status.json plus a second
+                      # `GET /config` call -- and a job that dies before the
+                      # loop ever starts still carries its budget.
+                      # LoopSupervisor re-asserts it on the move to `running`;
+                      # both writes read the same cfg field.
+                      maxApproaches=cfg.max_approaches)
     loop = LoopSupervisor(cfg, run, workspace)
     app = create_app(cfg, run, loop)
 

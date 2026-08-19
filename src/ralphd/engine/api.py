@@ -126,6 +126,11 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # "no reflect iteration has finished" (reflect off, or not there yet),
         # never "an older engine wrote this run dir".
         s.setdefault("reflect", None)
+        # Task 006 (#16): the approach denominator is part of the contract too
+        # -- an explicit null for a run dir written by a pre-v0.6 engine, which
+        # consumers render as a bare `approach` with no `/m` rather than
+        # guessing a denominator (or crashing on a missing key).
+        s.setdefault("maxApproaches", None)
         tasks_read = run.read_tasks_result()
         # Task 023 (#8): shared with the CLI's on-disk fallback (state.py).
         # Task 003 (#15): counts come from the hardened reader, so a request

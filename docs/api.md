@@ -29,7 +29,7 @@ The one-call summary. Response:
   "state": "running",              // starting|running|succeeded|failed|aborted
   "phase": "worker",               // planning|worker|verify|review|null
   "approach": 1,
-  "maxApproaches": 3,
+  "maxApproaches": 3,           // approach denominator; null for a pre-v0.6 run dir
   "iteration": 7,
   "iterationsBudget": 50,
   "iterationsUsed": 7,
@@ -121,6 +121,23 @@ wait extends the deadline by exactly the waited time and emits a
 available to the agent) and a 4-hour gateway outage cannot silently consume
 half an 8-hour job. `infraWaitTotalS` is `0` for a run that never hit an
 outage and survives `ralphctl resume` (the per-process deadline does not).
+
+#### `approach` and `maxApproaches`
+
+`approach` is the current approach number (1-based) and `maxApproaches` its
+denominator — the run's `max_approaches` budget, the same number `GET /config`
+reports as `budgets.maxApproaches`. It is written by the engine with the very
+first `status.json` write (state `starting`), so every surface can render
+`approach 2/3` from one status read and no consumer has to make a second call
+to `/config` to find the denominator. Both numbers survive to the terminal
+snapshot, so a finished run still says which approach it ended on and out of
+how many it was allowed.
+
+A run dir written by a pre-v0.6 engine has no `maxApproaches` in its
+`status.json`; `GET /status` then reports it as an explicit `null` (never a
+missing key), which means *no denominator is known* — renderers show a bare
+`2` rather than inventing `2/?`. `approach` itself is absent/null until the
+loop starts, in which case there is nothing to render at all.
 
 #### `health` and `infraWait`
 
