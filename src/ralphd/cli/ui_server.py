@@ -30,7 +30,10 @@ Serves two things:
     (task 030) is the one route that is neither a read nor a proxy: it
     performs `ralphctl rm --force`'s removal through the CLI's own
     `remove_run_state`, for a run whose recorded state is terminal and for
-    no other -- see `delete_run`/`deletion_refusal`.
+    no other -- see `delete_run`/`deletion_refusal` (and
+    `deletion_fields`, which tells the browser which of the two answers a
+    run would get, so the hub's delete button is enabled exactly when it
+    would work).
   - The static hub bundle (plain HTML/JS/CSS, no build step) from the
     `web/` directory next to this file (task 034: run list, run detail
     with task table/iteration timeline/live log tail/steering
@@ -281,6 +284,10 @@ def run_list(reg: Path) -> list[dict]:
                 "iterationsBudget": status.get("iterationsBudget"),
                 "startedAt": status.get("startedAt"),
                 "containerGone": False,
+                # Task 031 (#19): what this row's delete control may promise,
+                # decided by the delete endpoint's OWN gate over the same
+                # on-disk status doc -- see `deletion_fields`.
+                **deletion_fields(status),
                 # Task 013 (#21): task progress per row, one local hardened
                 # read each -- see `_row_tasks`.
                 **_row_tasks(d),
@@ -875,6 +882,11 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     if not run_dir.is_dir():
         return None
     status = _read_json(run_dir / "status.json", {}) or {}
+    # Task 031 (#19): the delete gate's own doc. `status` below may be replaced
+    # by a live proxied answer, but the delete endpoint gates on what the run
+    # dir RECORDS -- so the affordance has to be decided from the same doc, or
+    # the button would promise something the endpoint refuses.
+    recorded_status = status
     ok_s, _, live_status = _proxy_json(reg, run_id, "GET", "/status")
     if ok_s and live_status:
         status = live_status
@@ -918,6 +930,12 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # state it means the container died without recording a terminal
         # state, which the card renders with the warning treatment.
         "containerGone": container_gone(status, ok_s),
+        # Task 031 (#19): `deletable` + `deleteRefusal` (the server's own
+        # wording) for the detail page's delete control. Top level, not inside
+        # `status`: it is a fact about this run's removability, not a rendering
+        # of the status doc -- and `status` may be a live payload from another
+        # process, which must not be able to claim it.
+        **deletion_fields(recorded_status),
         "status": _with_approach_display(_with_cost_display(_with_local_times(status))),
         "tasks": tasks,
         "iterations": iterations,
@@ -935,6 +953,29 @@ def _cli():
     """
     from . import main as cli_main
     return cli_main
+
+
+def deletion_fields(status: dict) -> dict:
+    """Task 031 (#19): what a delete affordance may offer for this run --
+    `deletable` (may be clicked) plus `deleteRefusal` (why not, or None).
+
+    Decided by the ONE gate the endpoint itself applies (`deletion_refusal`)
+    over the SAME on-disk status doc `delete_run` reads, so the button can
+    neither offer a deletion the endpoint will refuse nor hide one it would
+    perform. In particular the run-detail view keeps deciding this from the
+    run dir's `status.json` even when the card above it is showing a *live*
+    proxied status: the endpoint gates on what is recorded, and a control that
+    disagreed with it would be lying about what clicking does.
+
+    Both keys are always present and always recomputed, the discipline of
+    `approachDisplay`/`costDisplay`: a forged `deletable` in somebody's
+    status.json (or in a proxied payload) cannot talk the hub into offering a
+    destructive action, and the refusal SENTENCE is the server's own wording
+    (`DELETE_REFUSED_ACTIVE`/`_UNKNOWN`), so app.js never invents a second
+    explanation of why a run may not be deleted.
+    """
+    reason = deletion_refusal(status if isinstance(status, dict) else {})
+    return {"deletable": reason is None, "deleteRefusal": reason}
 
 
 def deletion_refusal(status: dict) -> str | None:

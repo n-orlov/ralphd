@@ -397,3 +397,43 @@ footer.autorefresh {
 }
 .cost-cell:hover { text-decoration: underline; }
 .cost-cell:focus-visible { outline: 2px solid var(--accent); }
+
+/* Task 031 (#19): the delete affordance on the run list and run detail, and
+   its confirmation. The button is a real (destructive-looking) button, and a
+   refused one stays visible-but-disabled next to the server's own reason --
+   absence would read as "the hub cannot do this". */
+.delete-cell {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+button.delete-run {
+  border-color: var(--err);
+  background: none;
+  color: var(--err);
+  padding: 0.15rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+button.delete-run:hover { background: rgba(200, 0, 0, 0.08); opacity: 1; }
+button.delete-run[disabled] {
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.delete-refusal { font-size: 0.75rem; max-width: 34rem; }
+.detail-actions #delete-box { margin-left: 0.6rem; }
+th.actions-col { cursor: default; }
+
+/* The confirmation dialog reuses `.text-dialog`'s chrome (one dialog look, one
+   `showDialog` invariant); only the confirm button is dressed as destructive. */
+.delete-dialog .dialog-close { display: flex; gap: 0.6rem; }
+.delete-dialog button.delete-confirm {
+  border-color: var(--err);
+  background: var(--err);
+  color: #fff;
+}
+#delete-status { margin: 0.5rem 0 0; }

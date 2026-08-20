@@ -2199,3 +2199,142 @@ def test_run_detail_opens_the_cost_dialog_from_the_cost_cell(tmp_path, pw):
         assert cost_view(registry, "run-cost-quiet")["hasUsage"] is False
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------
+# task 031 (#19): the delete affordance
+# --------------------------------------------------------------------------
+
+# The recording stub `docker` (tests/stub-docker/docker): the hub's delete goes
+# through the CLI's real removal sequence, and this test is about the browser
+# half -- it must not talk to a real daemon to prove that a row disappears.
+STUB_DOCKER = Path(__file__).parent / "stub-docker" / "docker"
+
+_DIALOG_COUNT = "document.querySelectorAll('dialog').length"
+_DELETE_BUTTONS = "document.querySelectorAll('button.delete-run').length"
+_ROW_IDS = ("[...document.querySelectorAll('table.run-list tbody tr a')]"
+            ".map(a => a.textContent).join(',')")
+
+
+def _delete_button(run_id: str) -> str:
+    return f"document.querySelector('button.delete-run[data-delete-run=\"{run_id}\"]')"
+
+
+def _row_run_ids(session: Pw) -> list[str]:
+    raw = session.eval_js(_ROW_IDS).strip('"')
+    return [x for x in raw.split(",") if x]
+
+
+def _wait_until_gone(session: Pw, run_id: str, timeout=20):
+    deadline = time.time() + timeout
+    ids: list[str] = []
+    while time.time() < deadline:
+        ids = _row_run_ids(session)
+        if run_id not in ids:
+            return ids
+        time.sleep(0.3)
+    raise AssertionError(f"{run_id} still listed after {timeout}s: {ids}")
+
+
+def test_run_list_and_detail_delete_a_run_behind_a_confirm_dialog(tmp_path, pw):
+    """Task 031 (#19): deleting a finished run used to mean leaving the hub for
+    `ralphctl stop` + `ralphctl rm`, and the hub had no delete affordance at
+    all.
+
+    Drives the real thing in a real Chromium: the run list and the run detail
+    page both offer a delete button for a TERMINAL run only, behind a
+    confirmation naming the run id; the active run's button is disabled with
+    the server's own refusal sentence shown next to it; cancelling leaves the
+    run on disk; confirming really removes it (row gone from the table, run
+    dir gone from the registry) while the other runs are untouched; and the
+    single-dialog invariant holds across the 4s `load()` rebuild behind it.
+    """
+    from ralphd.cli import ui_server
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "del-done", state="succeeded", verdict="verified")
+    _write_dead_run(registry, "del-detail", state="failed", verdict=None)
+    engine = StubEngineApi(status={
+        "runId": "del-live", "state": "running", "verdict": None,
+        "phase": "worker", "approach": 1, "iterationsUsed": 2,
+        "iterationsBudget": 25, "startedAt": "2026-01-01T00:00:00Z",
+    })
+    _write_run_with_api(registry, "del-live", engine, state="running", verdict=None)
+
+    server = UiServer(registry, env={
+        "RALPHD_DOCKER": str(STUB_DOCKER),
+        "STUB_DOCKER_LOG": str(tmp_path / "docker-argv.jsonl"),
+    })
+    server.wait_ready()
+    try:
+        # -- the run list: one control per row, enabled only where it works --
+        pw.open(server.base)
+        _wait_for(pw, "document.body.innerText", "del-done")
+        _wait_for_count_ge(pw, _DELETE_BUTTONS, 3)
+        assert pw.eval_js(_delete_button("del-done") + ".disabled") == "false"
+        assert pw.eval_js(_delete_button("del-detail") + ".disabled") == "false"
+        # ...and the live run's is disabled, with the reason SHOWN (the
+        # server's `deleteRefusal`, ui_server.DELETE_REFUSED_ACTIVE)
+        assert pw.eval_js(_delete_button("del-live") + ".disabled") == "true"
+        refusals = pw.eval_js(
+            "[...document.querySelectorAll('.delete-refusal')]"
+            ".map(e => e.textContent).join('|')").strip('"')
+        assert refusals == ui_server.DELETE_REFUSED_ACTIVE.format(state="running"), \
+            refusals
+        assert "still active" in refusals and "running" in refusals
+        assert int(pw.eval_js(_DIALOG_COUNT)) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "29-delete-disabled.png")
+
+        # -- cancelling destroys nothing -------------------------------------
+        pw.click('button.delete-run[data-delete-run="del-done"]')
+        body = _wait_for(pw, "document.querySelector('#delete-dialog').textContent",
+                         "del-done")
+        assert "cannot be undone" in body, body
+        assert int(pw.eval_js(_DIALOG_COUNT)) == 1
+        pw.screenshot(SCREENSHOTS_DIR / "30-delete-confirm.png")
+        pw.click("#delete-cancel")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOG_COUNT) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOG_COUNT)) == 0
+        assert (registry / "runs" / "del-done").is_dir()
+        assert "del-done" in _row_run_ids(pw)
+
+        # -- confirming really deletes it, and does not stack a dialog -------
+        pw.click('button.delete-run[data-delete-run="del-done"]')
+        _wait_for(pw, "document.querySelector('#delete-dialog').textContent",
+                  "del-done")
+        time.sleep(5.0)                       # a full 4s poll rebuilds the table
+        assert int(pw.eval_js(_DELETE_BUTTONS)) == 3      # ...behind
+        assert int(pw.eval_js(_DIALOG_COUNT)) == 1        # ...exactly ONE dialog
+        pw.click("#delete-confirm")
+        ids = _wait_until_gone(pw, "del-done")
+        assert sorted(ids) == ["del-detail", "del-live"], ids
+        assert not (registry / "runs" / "del-done").exists()
+        assert (registry / "runs" / "del-detail").is_dir()
+        assert (registry / "runs" / "del-live").is_dir()
+        assert int(pw.eval_js(_DIALOG_COUNT)) == 0        # closed on success
+
+        # -- run detail: the same control, same gate -------------------------
+        pw.open(f"{server.base}/#/run/del-live")
+        _wait_for(pw, "document.body.innerText", "running")
+        _wait_for_count_ge(pw, "document.querySelectorAll('#delete-box button').length", 1)
+        assert pw.eval_js(_delete_button("del-live") + ".disabled") == "true"
+        detail_text = pw.eval_js("document.body.innerText")
+        assert ui_server.DELETE_REFUSED_ACTIVE.format(state="running") in detail_text
+
+        pw.open(f"{server.base}/#/run/del-detail")
+        _wait_for(pw, "document.body.innerText", "del-detail")
+        _wait_for_count_ge(pw, _DELETE_BUTTONS, 1)
+        assert pw.eval_js(_delete_button("del-detail") + ".disabled") == "false"
+        pw.click('button.delete-run[data-delete-run="del-detail"]')
+        _wait_for(pw, "document.querySelector('#delete-dialog').textContent",
+                  "del-detail")
+        pw.click("#delete-confirm")
+        # nothing left to show: the hub goes back to the list
+        _wait_for(pw, "location.hash", "#/")
+        ids = _wait_until_gone(pw, "del-detail")
+        assert ids == ["del-live"], ids
+        assert not (registry / "runs" / "del-detail").exists()
+    finally:
+        server.stop()
+        engine.close()

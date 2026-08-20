@@ -1844,7 +1844,8 @@ JSON endpoints served under `/api/`:
   verdict, phase, approach, maxApproaches, approachDisplay, iterationsUsed,
   iterationsBudget, startedAt, containerGone, tasksTotal, tasksCompleted,
   tasksInProgress, tasksValidationFailed, tasksDisplay, tasksSummary,
-  tasksTrouble, tasksColumn, tasksStale, tasksSource}, ...]}`, read straight from every
+  tasksTrouble, tasksColumn, tasksStale, tasksSource, deletable,
+  deleteRefusal}, ...]}`, read straight from every
   `runs/*/status.json` (no
   live proxy calls, so listing stays cheap regardless of how many runs are
   dead). `containerGone` (task 024) is `true` only for a run whose recorded
@@ -1884,8 +1885,17 @@ JSON endpoints served under `/api/`:
   terminal (`5/7 ⚠ stale`). The hub composes its own cell from the parts
   instead (styled spans), but neither surface can word the counts differently:
   there is exactly one place a run-list row is built.
-- `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, status,
-  tasks, iterations}`. `status`/`tasks` are proxied live from the run's
+  Task 031 (issue #19) adds `deletable` and `deleteRefusal`: whether
+  `DELETE /api/runs/<id>` (below) would delete this run, and — when it would
+  not — the very sentence that endpoint answers with. Both are computed from
+  the same gate over the same on-disk `status.json` the endpoint reads, so the
+  hub's delete button is enabled exactly when clicking it works, and a
+  disabled one shows the endpoint's own reason instead of a second wording
+  invented in the browser. `deleteRefusal` is `null` exactly when `deletable`
+  is `true`; a forged `deletable` in somebody's `status.json` is ignored (the
+  row is built from the gate, like `approachDisplay`).
+- `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, deletable,
+  deleteRefusal, status, tasks, iterations}`. `status`/`tasks` are proxied live from the run's
   container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
   `host.json`) answers; otherwise falls back to the on-disk
   `status.json`/`tasks.json` snapshot with `live: false` — a dead run never
@@ -1921,6 +1931,14 @@ JSON endpoints served under `/api/`:
   status doc carrying a forged `approachDisplay` cannot claim a ladder
   position its counter fields do not support, and a live pre-v0.6 engine's
   answer (no `maxApproaches`) renders a bare `2`.
+  Task 031 (#19) adds `deletable`/`deleteRefusal`, the same two fields the run
+  list carries — deliberately **top level, not inside `status`**: they state a
+  fact about the run's removability, not a rendering of the status doc, and
+  `status` here may be a live payload from another process that must not be
+  able to claim it. They are decided from the run dir's **recorded**
+  `status.json` even while the card above shows a live proxied status, because
+  that is what `DELETE /api/runs/<id>` gates on: a live answer claiming the
+  job finished cannot unlock a button the endpoint would refuse.
 - `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
   fetches the run's FULL raw NDJSON backlog from the live container API
   (`GET /logs`, no `tail` param there), renders it through the exact same
@@ -2128,6 +2146,12 @@ JSON endpoints served under `/api/`:
   browser is never the only way to make progress. An unknown run id — and any
   id that is not the plain name of a directory directly under
   `<registry>/runs/`, e.g. a percent-encoded `..` — answers `404`.
+
+  Which of the two answers a run would get is also *published*, as
+  `deletable`/`deleteRefusal` on `GET /api/runs`' rows and on
+  `GET /api/runs/<id>` (task 031, above), so the hub's delete button is
+  enabled exactly when it works and a disabled one shows this endpoint's own
+  refusal sentence.
 - Any other path is served from the static hub bundle packaged in the
   wheel (`src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css` — plain
   HTML/JS/CSS, no npm/node build step). A path that doesn't match a real
@@ -2173,6 +2197,9 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   all, so it sorts **last ascending** rather than pretending to be 0% done.
   First click on the header is therefore *ascending* (least-complete first:
   the runs that still owe work).
+  A trailing **delete** button per row (task 031, issue #19) removes a
+  finished run without leaving the hub — see the delete affordance below. It
+  is deliberately not a sortable column: it renders an action, not a value.
 - **Run detail** (`#/run/<id>`) — summary card (state/verdict/phase/
   approach `n/m` (task 008, issue #16: the same `approachDisplay` string the
   run list and `ralphctl status` show)/iterations/live-vs-snapshot/duration), a usage/cost panel
@@ -2323,6 +2350,24 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   the hub only knows the API stopped answering. Without it the only hint was
   the `live: no (on-disk snapshot)` row, which reads identically for a
   finished run that is unreachable by design.
+  A **delete** control (task 031, issue #19) sits in the run-detail action bar
+  next to **view PRD**, and in every run-list row: a `<button
+  class="delete-run" data-delete-run="<id>">` that opens a confirmation naming
+  the run id and listing what will be removed (container, siblings, run dir,
+  job config — `ralphctl rm --force`'s own removal), with **cancel** and
+  **delete** buttons. The confirmation is a `<dialog id="delete-dialog">` and
+  goes through the *same* single-dialog invariant as every text dialog above,
+  so it cannot stack on one of them or on the 4s refresh behind it. Whether the
+  button is offered at all is the server's `deletable` answer (see
+  `DELETE /api/runs/<id>`), never a state comparison re-spelled in JS: for an
+  active run — or one whose state the hub cannot establish — it renders
+  **disabled** (`data-delete-refused="1"`) with the server's own
+  `deleteRefusal` sentence shown beside it, so an operator learns *why* instead
+  of finding a missing button. Confirming removes the row from the list
+  immediately (the list reloads rather than waiting out the poll); on the
+  detail page there is no run left to show, so the hub returns to the run list.
+  A refusal that arrives anyway (the run started again between the poll and the
+  click) is shown in the dialog verbatim rather than swallowed.
 
 Browser e2e coverage (PRD req 23a): `tests/test_browser_hub.py`, marked
 `@pytest.mark.browser`, drives a real Chromium via the external
