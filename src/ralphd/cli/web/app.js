@@ -513,6 +513,62 @@ async function loadArtifacts(runId) {
   renderArtifacts(box, ok, body, runId);
 }
 
+// ------------------------------------------------- fault explanation (#18.4)
+
+// Task 026 (#18.4): a degraded card said the run was sitting out an infra
+// outage and a failed card said it failed, and neither said WHY: which row of
+// `engine/faults.py`' signature table fired, how far up the retry ladder the
+// run has climbed, how much of the outage budget is already spent. Reading
+// that meant knowing the signature table by heart, grepping `events.jsonl`
+// and doing the budget arithmetic by hand.
+//
+// The badge on the card is now the way in: it opens `GET
+// /api/runs/<id>/fault` (ui_server.py, on-disk only -- so this works for a
+// run whose container is long gone) in THE single `openTextDialog`, showing
+// the server's own `text`, i.e. exactly the block `ralphctl fault <run>`
+// prints (`state.fault_summary_lines`). Nothing here words a fact: even "no
+// fault recorded" is the server's line, so a badge is never a lie about
+// having something to say.
+
+const FAULT_LOAD_FAILED = "failed to load the run's fault explanation";
+
+// What the badge promises when hovered -- the four facts #18.4 asked for.
+const FAULT_BADGE_TITLE = "explain this fault: classification, matched " +
+  "signature, retry-ladder position, outage budget spent";
+
+function faultTitle(runId) {
+  return "Fault \u2014 " + String(runId);
+}
+
+async function openFaultDialog(runId) {
+  const { ok, body } = await getJSON(
+    `/api/runs/${encodeURIComponent(runId)}/fault`);
+  const text = (ok && body && typeof body.text === "string" && body.text)
+    ? body.text
+    : FAULT_LOAD_FAILED;
+  return openTextDialog(faultTitle(runId), text, null);
+}
+
+// A real <button> (keyboard reachability and Enter/Space come from the
+// platform, like the document/artifact rows), styled as the badge it wraps.
+// `kind` says which badge it is (`state` on a failed/aborted run's state
+// pill, `infra-wait` on a degraded card) so a test -- and an operator reading
+// the DOM -- can tell the two entry points apart.
+//
+// No run id (a payload without `runId`) means no endpoint to ask: the badge is
+// then not rendered at all rather than being a button that can only fail --
+// `h()` skips a null child, and `stateCell` falls back to the bare pill.
+function faultBadge(runId, kind, child) {
+  if (!runId) return null;
+  return h("button", {
+    type: "button",
+    class: "fault-badge",
+    "data-fault-badge": kind,
+    title: FAULT_BADGE_TITLE,
+    onclick: () => { openFaultDialog(runId); },
+  }, [child]);
+}
+
 // --------------------------------------------------- steering history (#17)
 
 // Task 017 (#17): steering used to be write-only in the hub -- an operator
@@ -796,12 +852,27 @@ async function renderRunDetail(runId) {
   refreshTimer = setInterval(load, REFRESH_MS);
 }
 
+// Task 026 (#18.4): the states whose badge is a way IN to the fault
+// explanation -- a run the engine stopped for a reason. A degraded *running*
+// run gets its own badge on the infra-wait block instead (`renderInfraWait`),
+// where the outage is already the subject.
+const FAULT_BADGE_STATES = new Set(["failed", "aborted"]);
+
+// The summary card's `state:` cell: the pill, wrapped in the fault badge when
+// this run ended in a way that has an explanation to give (task 026). The
+// pill's own look is untouched -- the badge only makes it clickable.
+function stateCell(detail, s) {
+  const pillEl = pill(s.state);
+  if (!FAULT_BADGE_STATES.has(String(s.state || ""))) return pillEl;
+  return faultBadge(detail.runId, "state", pillEl) || pillEl;
+}
+
 function renderSummary(el, detail) {
   const s = detail.status || {};
   el.innerHTML = "";
   el.className = "card" + (s.state === "failed" ? " error" : "");
   const rows = [
-    ["state", pill(s.state)],
+    ["state", stateCell(detail, s)],
     ["verdict", pill(s.verdict)],
     ["phase", String(s.phase || "")],
     ["approach", approachText(s)],
@@ -937,6 +1008,8 @@ function renderInfraWait(el, s, runId, live) {
     el.appendChild(h("p", { class: "infra-wait" }, [
       "\u26A0 degraded: infra outage episode in progress " +
       "(a retry attempt is running, no backoff wait pending)",
+      // Task 026 (#18.4): ...and the badge that says WHICH outage.
+      faultBadge(runId, "infra-wait", " explain"),
     ]));
     return;
   }
@@ -944,6 +1017,7 @@ function renderInfraWait(el, s, runId, live) {
     h("div", {}, [
       "\u26A0 degraded: infra outage — attempt " + String(wait.attempt ?? "?") +
       " (phase " + String(wait.phase || "?") + ")",
+      faultBadge(runId, "infra-wait", " explain"),
     ]),
     h("div", { class: "infra-wait-budget" }, [
       "waited " + fmtDuration(wait.waitedS) + " of " + fmtDuration(wait.budgetS) +

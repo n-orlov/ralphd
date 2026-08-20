@@ -1848,3 +1848,197 @@ def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw)
         assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 0
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------
+# task 026 (#18.4): the fault dialog behind the failure / infra-wait badge
+# --------------------------------------------------------------------------
+
+_FAULT_BADGES = "document.querySelectorAll('button.fault-badge').length"
+_FAULT_BADGE_KINDS = (
+    "Array.from(document.querySelectorAll('button.fault-badge'))"
+    ".map(b => b.dataset.faultBadge).join('|')")
+
+
+def _seed_faulted_run(registry, run_id, *, pending_wait=True, **status):
+    """A run dir that faulted on a DNS outage the engine retried -- written the
+    way the engine writes it (status.json's degraded contract,
+    `iterations/NNNN/meta.json`, `events.jsonl`), with no container at all.
+
+    `pending_wait=False` is the shape a run that RAN OUT of outage budget has on
+    disk: `loop._end_infra_wait` puts `infraWait` back to null while `health`
+    stays degraded (it only returns to "ok" on recovery).
+    """
+    error = ("request to https://aigw.internal/v1 failed, reason: getaddrinfo "
+             "EAI_AGAIN aigw.internal")
+    wait = {"since": "2026-09-04T10:00:31Z", "attempt": 3, "error": error,
+            "phase": "worker", "nextAttemptAt": "2026-09-04T10:02:31Z",
+            "waitedS": 210.0, "budgetS": 14400.0, "remainingS": 14190.0}
+    run_dir = _write_dead_run(registry, run_id, health="degraded",
+                              infraWait=wait if pending_wait else None,
+                              infraWaitTotalS=210.0, **status)
+    it = run_dir / "iterations" / "0003"
+    it.mkdir(parents=True)
+    (it / "meta.json").write_text(json.dumps({
+        "number": 3, "phase": "worker", "approach": 1,
+        "startedAt": "2026-09-04T10:00:00Z", "endedAt": "2026-09-04T10:00:31Z",
+        "exitCode": 0, "interrupted": False, "timedOut": False,
+        "noTrafficTimeout": False, "sawComplete": False, "sawVerified": False,
+        "error": error, "faultClass": "infra", "usage": {}}))
+    (run_dir / "events.jsonl").write_text("".join(
+        json.dumps({"id": n, "type": "infra_retry", "phase": "worker",
+                    "attempt": n, "maxAttempts": None, "error": error,
+                    "noTrafficTimeout": False, "instantFailure": False,
+                    "backoffS": 30.0 * n, "waitedS": 30.0 * n,
+                    "budgetS": 14400}) + "\n"
+        for n in (1, 2, 3)))
+    return run_dir
+
+
+def _seed_work_faulted_run(registry, run_id, **status):
+    """A run that died of a WORK fault: the model was reached, the worker exited
+    non-zero, nothing was retried. No degraded card at all -- so the state pill
+    is the only badge, which is the case the failure badge exists for."""
+    run_dir = _write_dead_run(registry, run_id, state="failed",
+                              verdict="unverified", health="ok",
+                              infraWait=None, **status)
+    it = run_dir / "iterations" / "0002"
+    it.mkdir(parents=True)
+    (it / "meta.json").write_text(json.dumps({
+        "number": 2, "phase": "worker", "approach": 1,
+        "startedAt": "2026-09-04T09:00:00Z", "endedAt": "2026-09-04T09:04:00Z",
+        "exitCode": 1, "interrupted": False, "timedOut": False,
+        "noTrafficTimeout": False, "sawComplete": True, "sawVerified": False,
+        "error": "worker exited 1: pytest collection error",
+        "faultClass": "work", "usage": {"totalTokens": 12345}}))
+    return run_dir
+
+
+def test_run_detail_opens_the_fault_dialog_from_the_badge(tmp_path, pw):
+    """Task 026 (#18.4): `state: failed` / `⚠ degraded` told an operator that
+    something went wrong and nothing more -- WHICH signature fired, how far up
+    the retry ladder the run climbed and how much of the outage budget is gone
+    were readable only by knowing `engine/faults.py`' table by heart and
+    grepping `events.jsonl` by hand.
+
+    Drives both ways in with a real browser, for runs whose container is gone
+    (the on-disk case #18.4 exists for): the failed run's state badge and a
+    degraded running run's infra-wait badge. Pins the dialog payload (the
+    server's own `state.fault_text`, i.e. exactly what `ralphctl fault` prints,
+    as TEXT NODES), that all four facts are in it, that the single shared dialog
+    does not stack across the 4s `load()` rebuild behind it, that the badge is
+    keyboard-reachable, and that a run which never faulted carries no badge at
+    all (nothing to explain, so nothing to click).
+    """
+    from ralphd.cli.ui_server import fault_view
+
+    registry = tmp_path / "registry"
+    _seed_faulted_run(registry, "run-fault-dead", pending_wait=False,
+                      state="failed", verdict="unverified",
+                      reason="infra outage budget exhausted",
+                      abortReason="infra outage budget exhausted")
+    _seed_faulted_run(registry, "run-fault-degraded", state="running",
+                      verdict=None)
+    _seed_work_faulted_run(registry, "run-fault-work")
+    _write_dead_run(registry, "run-fault-clean", state="succeeded",
+                    verdict="verified")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # -- the failure badge on a terminal failed run ---------------------
+        pw.open(f"{server.base}/#/run/run-fault-dead")
+        kinds = _wait_for(pw, _FAULT_BADGE_KINDS, "state").strip('"')
+        # a run the outage KILLED keeps `health: degraded` on disk, so it
+        # carries both ways in -- and both open the same explanation
+        assert kinds == "state|infra-wait", kinds
+        assert int(pw.eval_js(_DIALOGS)) == 0
+        pw.click('button.fault-badge[data-fault-badge="state"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "fault:     infra")
+        title = pw.eval_js("document.querySelector('.text-dialog .dialog-title')"
+                           ".textContent")
+        assert "run-fault-dead" in title, title
+        # the four facts #18.4 asked for
+        assert "fault:     infra (iteration 3, phase worker)" in body, body
+        assert "signature: dns" in body, body
+        assert "EAI_AGAIN" in body, body
+        assert "ladder:    attempt 3" in body, body
+        assert "budget:    " in body and "14400" not in body, body
+        # ...and every line of it came from the server, verbatim
+        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
+                         ".textContent")
+        dialog_body = json.loads(raw) if raw.startswith('"') else raw
+        assert dialog_body == fault_view(registry, "run-fault-dead")["text"]
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b')"
+            ".length")) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "26-fault-dialog.png")
+
+        # -- it survives a full 4s poll without stacking --------------------
+        time.sleep(5.0)
+        assert int(pw.eval_js(_FAULT_BADGES)) == 2        # card re-rendered
+        assert int(pw.eval_js(_DIALOGS)) == 1             # ...behind ONE dialog
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- the infra-wait badge on a degraded RUNNING run, by keyboard ----
+        # A <button> gets Enter/Space from the platform -- but the 4s `load()`
+        # replaces the card's nodes, so a focus taken just before one lands is
+        # lost through no fault of the button: retry the whole cycle.
+        pw.open(f"{server.base}/#/run/run-fault-degraded")
+        kinds = _wait_for(pw, _FAULT_BADGE_KINDS, "infra-wait").strip('"')
+        assert kinds == "infra-wait", kinds  # running: the outage is the badge
+        focus_js = (
+            "(() => { const el = document.querySelector('button.fault-badge"
+            "[data-fault-badge=\"infra-wait\"]'); el.focus();"
+            " return document.activeElement === el ? 'focused' : 'lost'; })()")
+        deadline = time.time() + 40
+        body = ""
+        while time.time() < deadline and "signature: dns" not in body:
+            if pw.eval_js(focus_js).strip('"') != "focused":
+                continue
+            assert pw.run("press", "Enter").returncode == 0
+            for _ in range(10):
+                body = pw.eval_js(
+                    "document.querySelector('.text-dialog')"
+                    " ? document.querySelector('.text-dialog').textContent : ''")
+                if "signature: dns" in body:
+                    break
+                time.sleep(0.2)
+        assert "fault:     infra" in body, body
+        assert "health:    degraded" in body, body
+        assert "gave up" not in body, body     # still in the outage, not dead of it
+        assert int(pw.eval_js(_DIALOGS)) == 1
+        pw.click(".text-dialog .dialog-close button")
+
+        # -- a WORK fault: the state pill is the only badge -----------------
+        pw.open(f"{server.base}/#/run/run-fault-work")
+        kinds = _wait_for(pw, _FAULT_BADGE_KINDS, "state").strip('"')
+        assert kinds == "state", kinds
+        assert int(pw.eval_js("document.querySelectorAll('.infra-wait').length")) == 0
+        pw.click('button.fault-badge[data-fault-badge="state"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "fault:     work")
+        assert "pytest collection error" in body, body
+        # a work fault matches no infra signature -- said out loud, in the
+        # server's own wording, not left blank
+        assert "signature: " in body, body
+        assert "dns" not in body, body
+        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
+                         ".textContent")
+        dialog_body = json.loads(raw) if raw.startswith('"') else raw
+        assert dialog_body == fault_view(registry, "run-fault-work")["text"]
+        pw.click(".text-dialog .dialog-close button")
+
+        # -- a run that never faulted has nothing to click ------------------
+        pw.open(f"{server.base}/#/run/run-fault-clean")
+        _wait_for(pw, "document.body.innerText", "succeeded")
+        assert int(pw.eval_js(_FAULT_BADGES)) == 0
+        assert int(pw.eval_js("document.querySelectorAll('.infra-wait').length")) == 0
+    finally:
+        server.stop()

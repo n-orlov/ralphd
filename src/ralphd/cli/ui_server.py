@@ -14,12 +14,14 @@ Serves two things:
     back to reading the run dir on disk so a dead run stays readable.
     Some reads are on-disk ONLY by design: `GET
     /api/runs/<id>/iterations/<n>` (task 020), `GET
-    /api/runs/<id>/documents[/<name>]` (task 022) and `GET
-    /api/runs/<id>/artifacts[/<path>]` (task 024), because the engine,
+    /api/runs/<id>/documents[/<name>]` (task 022), `GET
+    /api/runs/<id>/artifacts[/<path>]` (task 024) and `GET
+    /api/runs/<id>/fault` (task 026), because the engine,
     the agent and `start` write `iterations/NNNN/meta.json`, the
-    transcript, the run's state documents and everything under
-    `artifacts/` into the run dir / job config dir themselves -- see
-    `iteration_view`/`document_list`/`artifact_list`.
+    transcript, status.json, events.jsonl, the run's state documents and
+    everything under `artifacts/` into the run dir / job config dir
+    themselves -- see
+    `iteration_view`/`document_list`/`artifact_list`/`fault_view`.
     Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
@@ -56,6 +58,8 @@ from ..engine.state import (
     artifact_entries,
     artifact_summary_lines,
     artifact_text,
+    fault_explanation,
+    fault_text,
     format_approach,
     format_artifact_size,
     format_cost,
@@ -410,6 +414,35 @@ def iteration_view(reg: Path, run_id: str, number: int, *,
     if lines is not None:
         out["log"] = lines
     return out
+
+
+def fault_view(reg: Path, run_id: str) -> dict:
+    """Why this run is (or last was) in trouble, for the hub's fault dialog
+    (task 026, #18.4): the classification, WHICH row of
+    `faults.INFRA_SIGNATURES` matched, how far up the retry ladder the run
+    climbed and how much of the outage budget is spent.
+
+    The payload is `engine.state.fault_explanation` -- the ONE join of
+    status.json's degraded contract, the episode's `infra_retry` events and the
+    last failing iteration's meta.json (task 025) -- plus `text`, i.e.
+    `state.fault_text`. So it is byte-for-byte the shape `ralphctl fault <run>
+    --json` prints, `summaryLines` and all (the shaping carries them), and the
+    dialog body is the same block the CLI prints: app.js only puts `text` into a
+    text node, and the two surfaces cannot explain the same fault differently.
+
+    A run that never faulted is NOT an error: the explanation answers
+    `hasFault: false` and its `text` is `state.NO_FAULT` -- "nothing went
+    wrong" is an answer (the `RUN_DOCUMENT_ABSENT`/`NO_ARTIFACTS` discipline),
+    so the badge that opened the dialog never has to lie about being clickable.
+
+    Purely on-disk, like `iteration_view`/`document_list`/`artifact_list` and
+    `ralphctl fault`: status.json, events.jsonl and the iteration metas are the
+    engine's own writes, so a live run and one whose container is long gone read
+    identically -- there is no live answer to prefer and hence no `live` flag
+    and no snapshot notice.
+    """
+    exp = fault_explanation(reg / "runs" / run_id)
+    return {"runId": run_id, **exp, "text": fault_text(exp)}
 
 
 def _config_dir(reg: Path, run_id: str) -> Path:
@@ -955,6 +988,17 @@ class Handler(BaseHTTPRequestHandler):
                         {"error": f"not an artifact name: {name!r}"}, 404)
                     return
                 self._send_json(view)
+                return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "fault":
+                # Task 026 (#18.4): why this run is (or last was) in trouble,
+                # for the fault dialog behind the degraded/failure badge.
+                # Purely on-disk (see `fault_view`), like the iteration,
+                # document and artifact views above.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                self._send_json(fault_view(reg, run_id))
                 return
             if (len(segs) == 5 and segs[:2] == ["api", "runs"]
                     and segs[3] == "iterations"):
