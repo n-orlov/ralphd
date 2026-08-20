@@ -1208,7 +1208,8 @@ a **pinned** pi CLI version (npm silently resolves an old pi when the node
 engine requirement isn't met — pin both, upgrade deliberately),
 git, ripgrep, curl/jq, build essentials, and a non-root `agent` user. Deliberately
 **thin on toolchains** — language runtimes beyond Python/Node are the operator's
-business via `--image` (derived images `FROM ralphd`) or a job-level
+business via `--base-image`/`--dockerfile` (ralphd layers the engine onto *their*
+image, see below) or a job-level
 `setup.sh`, or the job's own via the *toolchain-in-a-sibling* pattern (§6),
 which is the preferred answer because it keeps this image unchanged.
 Engine and API run as the non-root user; no docker socket, no host
@@ -1219,6 +1220,43 @@ by the explicit `--allow-docker` opt-in (§6). It also bundles **playwright-cli*
 web UIs — e2e verification of frontend changes, screenshots as artifacts.
 Chrome, not chromium, because playwright-cli's default channel is `chrome`;
 only that channel ships (chromium would add ~500 MB for no default-path gain).
+
+### The job image is content-hashed, and supplied in one of three ways (v0.6, #20)
+
+Until v0.6 `container/Dockerfile` existed and nothing built it: `--image` only
+ever *selected* a tag somebody had built by hand, and two runs of this project
+silently executed a ten-day-old engine. So the image is now a function of its
+inputs, and "the image matches the source" is structural rather than something
+an operator remembers. Three repositories, because the three hashes are not
+comparable and a staleness check (`doctor`) must not confuse them:
+
+| reference | means | hash covers |
+|-----------|-------|-------------|
+| `ralphd:<hash>` | the default job image, built from this checkout | `container/`, `pyproject.toml`, `src/ralphd/` (`cli/image.py: IMAGE_INPUTS`) |
+| `ralphd-base:<hash>` | an operator's own Dockerfile, built as a **base** | that Dockerfile's name + its whole build context |
+| `ralphd-derived:<hash>` | the engine + pi layered onto a base | the base reference + the image inputs + the generated recipe |
+
+A supplied image or Dockerfile is an **ingredient, never the job image**: it has
+no `ralphd-engine` in it, so ralphd generates a Dockerfile that layers the engine
+and pi (at the version `container/Dockerfile` pins — copied, never restated) onto
+it and runs the derived result. Each build is one `docker image inspect` and a
+build only on a miss; nothing is ever tagged `latest`, and the base itself is
+neither probed nor run.
+
+The three supply keys — `image` (pin a finished image, no hash, no build),
+`base_image` (an existing base) and `dockerfile` (a recipe to build one) — are
+three answers to a single question, so they are resolved **as one unit** by the
+most specific level that answers at all: the command line, then the
+`--template`'s `job.yaml`, then the registry's `config.yaml`, then "build
+`ralphd:<hash>` from source". A lower level is never consulted for the other two
+keys, so `--dockerfile ci/Dockerfile` replaces a registry-wide `image:` pin
+instead of colliding with it; two of the three within one level is a usage error,
+since there is nothing to rank them by. The ingredients an operator supplied are
+recorded in the run's `job.yaml`, so `resume` replays the recipe the run started
+with rather than dropping back to `ralphd:dev`. `cli/image.py` owns the
+declarative half (which files are inputs, what they hash to, the text of the
+generated recipe) and is **docker-free by construction**; running builds, cache
+lookups and precedence live in `cli/main.py`.
 
 ## 9. Failure containment
 

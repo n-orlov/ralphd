@@ -108,6 +108,24 @@ DERIVED_REPO = "ralphd-derived"
 # Hash-stream format for a derived tag, versioned like HASH_FORMAT.
 DERIVED_FORMAT = "ralphd-derived-image v1"
 
+# The repository a base image built from an operator's *own* Dockerfile (task
+# 035, requirement H3: `start --dockerfile <path>`, or the `dockerfile:` key in
+# a template's job.yaml / the registry config) is tagged into. A third
+# repository, for the same reason DERIVED_REPO is separate from IMAGE_REPO:
+# this hash is over somebody else's build context, so comparing it against a
+# ralphd source hash would be meaningless. The job image is then *derived* from
+# this tag -- a `--dockerfile` supplies a base, exactly like `--base-image`,
+# and never the finished job image.
+BASE_REPO = "ralphd-base"
+
+# Hash-stream format for a base tag, versioned like HASH_FORMAT.
+BASE_FORMAT = "ralphd-base-image v1"
+
+# The one instruction a build context's Dockerfile cannot do without, so that
+# `--dockerfile <some text file>` is refused *here*, naming the file, instead
+# of thirty seconds into a build. (Case-insensitive: `from` is legal.)
+FROM_RE = re.compile(r"^[ \t]*FROM[ \t]+\S", re.IGNORECASE | re.MULTILINE)
+
 # What a base image reference may look like. Deliberately strict: the reference
 # is interpolated into a generated `FROM` line, so anything with whitespace or
 # a newline in it must be refused rather than rendered (see _check_base).
@@ -190,6 +208,24 @@ def derived_tag_hash(ref: str) -> str | None:
     """
     repo, sep, tag = ref.partition(":")
     if not sep or repo != DERIVED_REPO or not HASH_RE.match(tag):
+        return None
+    return tag
+
+
+def base_tag(short_hash: str) -> str:
+    """`ralphd-base:<hash>` -- the one spelling of a Dockerfile-built base tag."""
+    return f"{BASE_REPO}:{short_hash}"
+
+
+def base_tag_hash(ref: str) -> str | None:
+    """The content hash inside a `ralphd-base:<hash>` reference, or None.
+
+    Separate from `tag_hash`/`derived_tag_hash` for the same reason those two
+    are separate from each other: this hash covers an operator's build context,
+    not ralphd's source, so nothing may compare it against a source hash.
+    """
+    repo, sep, tag = ref.partition(":")
+    if not sep or repo != BASE_REPO or not HASH_RE.match(tag):
         return None
     return tag
 
@@ -586,3 +622,86 @@ def derive(root: Path | str, base: str) -> DerivedImage:
     short = derived_hash(base, tree.digest, dockerfile)
     return DerivedImage(base=base, root=root, tree=tree, dockerfile=dockerfile,
                         digest=tree.digest, hash=short)
+
+
+# ------------------------------ a base built from the operator's Dockerfile (H3)
+# The third supply point (`--dockerfile <path>`, `dockerfile:` in a template's
+# job.yaml or the registry config): the operator's own build recipe. It is
+# built with the Dockerfile's *own directory* as the context -- the natural
+# reading of "this Dockerfile", and the only one under which a `COPY` line in
+# it means what its author meant -- tagged `ralphd-base:<hash>`, and then used
+# as a base, so the engine and pi are layered on top by `derive()` above. The
+# job image is never the operator's build directly: it has no `ralphd-engine`.
+#
+# The tag hashes the context by exactly the rules the ralphd source is hashed
+# by (`hash_tree`, one implementation), so an unchanged recipe is a cache hit
+# and any change to it -- to the Dockerfile, or to a file it copies in -- is a
+# new tag and a rebuild. The Dockerfile's own name is in the stream too, so a
+# context carrying two recipes cannot serve one under the other's tag.
+
+
+@dataclass(frozen=True)
+class DockerfileBase:
+    """An operator-supplied Dockerfile, its build context, and its tag.
+
+    `dockerfile` and `context` are absolute (the context is the Dockerfile's
+    directory); `rel` is the file's name inside that context; `tree` is the
+    hash of the whole context, kept so a caller can report what it hashed.
+    """
+
+    dockerfile: Path
+    context: Path
+    rel: str
+    tree: HashedTree
+    digest: str
+    hash: str
+
+    @property
+    def tag(self) -> str:
+        return base_tag(self.hash)
+
+
+def dockerfile_hash(name: str, context_digest: str) -> str:
+    """The short hash of a Dockerfile-built base: its name + its context.
+
+    Both, because both change what the built image contains: the recipe itself
+    (whose text is part of the context digest, since it lives in the context)
+    and everything the recipe can copy in.
+    """
+    h = hashlib.sha256()
+    h.update(f"{BASE_FORMAT}\n".encode())
+    h.update(f"recipe {name}\n".encode())
+    h.update(f"context {context_digest}\n".encode())
+    return h.hexdigest()[:HASH_LENGTH]
+
+
+def dockerfile_base(spec: Path | str) -> DockerfileBase:
+    """Everything needed to build `spec` into a base image, or ImageInputError.
+
+    Refuses -- rather than guessing, and rather than letting a builder explain
+    it later -- a path that does not exist, a directory (the flag names a file;
+    the message says which one to name), an unreadable/undecodable file, and a
+    file with no `FROM` instruction, which is not a build recipe at all.
+    """
+    given = Path(spec).expanduser()
+    path = given if given.is_absolute() else Path.cwd() / given
+    if path.is_dir():
+        raise ImageInputError(
+            f"{given} is a directory: name the Dockerfile itself, e.g. "
+            f"{given / 'Dockerfile'} (its directory becomes the build context)")
+    if not path.is_file():
+        raise ImageInputError(f"no such file: {given}")
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        raise ImageInputError(f"cannot read {given}: {e}") from e
+    if not FROM_RE.search(text):
+        raise ImageInputError(
+            f"{given} declares no FROM instruction, so it is not a Dockerfile "
+            "ralphd can build a base image from")
+    path = path.resolve()
+    context = path.parent
+    tree = hash_tree(context, (".",))
+    short = dockerfile_hash(path.name, tree.digest)
+    return DockerfileBase(dockerfile=path, context=context, rel=path.name,
+                          tree=tree, digest=tree.digest, hash=short)

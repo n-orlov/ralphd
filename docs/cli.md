@@ -80,6 +80,7 @@ ralphctl start --prd <file|-> [options]
 | `--prompt-override <dir>` | — | phase-prompt override directory |
 | `--image <ref>` | built from source (`ralphd:<hash>`) | pin an exact engine image instead of building one — see "The job image" below; falls back to the registry's `image` (`ralphctl config`) if set |
 | `--base-image <ref>` | — | build the job image **on top of** this one — see "Bring your own base image" below. Mutually exclusive with `--image` |
+| `--dockerfile <path>` | — | build **this** Dockerfile (with its own directory as the build context) into that base image instead of naming one that already exists — see "Bring your own base image" below. Mutually exclusive with `--image` and `--base-image` |
 | `--on-complete idle\|exit` | exit | post-completion behavior; `idle` is an explicit debugging opt-in; falls back to the registry's `on_complete` (`ralphctl config`) if set |
 | `--on-complete-cmd <cmd>` | — | shell command run once by the engine (in-container) on reaching a terminal state; receives `RALPHD_RUN_ID`/`RALPHD_STATE`/`RALPHD_VERDICT` env vars; failures are logged (`events.jsonl`, `level: error`) but never affect the job's verdict or the engine's exit code |
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
@@ -159,8 +160,50 @@ root as the build context, and runs the result:
   message naming what is missing rather than producing a broken job image;
 - a failed derived build aborts `start` the same way (exit `1`, no run state).
 
-`--base-image` and `--image` are different things — one supplies an ingredient,
-the other pins a finished image — so passing both (including `--base-image`
+Build the base yourself (`--dockerfile <path>`) — when the toolchain your repo
+needs is a *recipe* rather than an image somebody already pushed, hand ralphd
+the Dockerfile instead of the image. It is built **with the Dockerfile's own
+directory as the build context** (so a `COPY settings.xml` line in it means what
+its author meant), tagged `ralphd-base:<hash>` over that whole context, and then
+used exactly as a `--base-image` would be: the engine and pi are layered on top
+and the derived image is what runs. Two builds, two cache keys, one rule — hash
+the inputs, look the tag up, build only on a miss:
+
+- any change inside the context (the Dockerfile itself, or a file it copies in)
+  is a new `ralphd-base:<hash>` **and** a new `ralphd-derived:<hash>`; an
+  unchanged context and an unchanged engine is two tag lookups and no build;
+- the Dockerfile's own name is part of the hash, so a context carrying both
+  `Dockerfile` and `Dockerfile.ci` yields two base images, not one;
+- a path that does not exist, a directory, or a file with no `FROM` instruction
+  is refused up front (exit `2`) naming the file — not thirty seconds into a
+  build. Commit the recipe next to your repo (`ci/Dockerfile`) and the job image
+  is reproducible without you;
+- the run's `job.yaml` records `dockerfile:` (or `base_image:`), so
+  `ralphctl resume` replays the recipe the run started with rather than falling
+  back to `ralphd:dev`. It replays the *recipe*: if you edited the Dockerfile in
+  between, the resume builds and runs what it now means.
+
+**Which image runs, and who gets to say.** `image`, `base_image` and
+`dockerfile` are three answers to one question, so they are settled as a unit:
+the most specific **level** that answers at all wins whole, and the other two
+keys are not filled in from further down.
+
+| level | how you set it |
+|-------|----------------|
+| command line | `--image` / `--base-image` / `--dockerfile` |
+| the `--template`'s `job.yaml` | `image:` / `base_image:` / `dockerfile:` |
+| the registry's `config.yaml` | `ralphctl config set image` / `config set base_image` / `config set dockerfile` |
+| nothing set anywhere | build `ralphd:<hash>` from the source tree |
+
+So `--dockerfile ci/Dockerfile` on the command line **replaces** a standing
+`ralphctl config set image ...` pin instead of colliding with it. Setting two of
+the three *within one level* is a usage error (exit `2`): there is nothing to
+rank them by, so ralphd refuses rather than picking one and being silently
+wrong. `RALPHD_IMAGE` is deliberately not a level of its own — it is ambient, so
+it pins when nothing else answers and is refused by name when something does.
+
+`--base-image`/`--dockerfile` and `--image` are different things — one supplies
+an ingredient, the other pins a finished image — so passing both (including
 with `RALPHD_IMAGE` set) is a usage error (exit `2`), as is a base reference
 that is not a plain image reference.
 
@@ -1569,7 +1612,12 @@ container starts (a bare integer, e.g. `--iterations 30`, sets it
 absolutely instead); omit it to just continue with whatever budget remains.
 `--allow-docker`, `--image`, `--port`, `--api-bind`, `--network` (defaults
 to the network recorded at start time), `--no-detach` mirror
-`start`'s flags of the same name. The resolved `pi` config and creds/skills
+`start`'s flags of the same name. `--image` on `resume` pins as always; with no
+flag, `resume` **replays the image recipe the run started with** — the
+`base_image:`/`dockerfile:` recorded in its `job.yaml`, re-resolved to the same
+`ralphd-derived:<hash>` tag when nothing changed (a lookup, not a build) — and
+falls back to `ralphd:dev` only for a run that recorded no ingredients at all.
+The resolved `pi` config and creds/skills
 are restored too, since the container entrypoint re-copies `/config/pi`
 and the engine re-places `/config/creds` + `/config/skills` on every
 startup. Anything from a bare `--forward-env`/`--llm-env`/`--env` (as
@@ -1585,7 +1633,9 @@ malformed `--iterations` value, `1` the underlying `docker run` failed.
 ### `ralphctl config get <key>` / `ralphctl config set <key> <value>`
 
 Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
-(created on first `set`). Recognized keys: `image`, `on_complete`
+(created on first `set`). Recognized keys: `image`, `base_image`, `dockerfile`
+(the three image supply points, ranked as one unit — see "The job image"),
+`on_complete`
 (`idle`/`exit` — validated on `set`), `default_llm_profile` (any string;
 `ralphctl doctor` resolves it as an LLM profile name, see below), `network`
 (any string; same values `--network` accepts, e.g. `host`), `auto_resume`
@@ -1605,16 +1655,19 @@ registry-wide default for `start --auto-resume`), `price_strategy`
   `null` for an unset `get`).
 
 `ralphctl start` layers these in as the **registry-wide fallback** for the
-same-named flags (`--image`, `--on-complete`, `--network`, `--auto-resume`,
+same-named flags (`--image`, `--base-image`, `--dockerfile`, `--on-complete`,
+`--network`, `--auto-resume`,
 `--price-strategy`)
 and for `--llm`
 (via `default_llm_profile`), between an explicit flag/`--template` value and
 the hardcoded built-in default: explicit flag > `--template` > `ralphctl
-config` default > hardcoded default. `resume`/`llm test`/`doctor`'s own
-`--image` flags are unaffected (still default to the hardcoded image). Note
-that for `image` there is no hardcoded final fallback on `start`: with nothing
-set anywhere, `start` builds `ralphd:<hash>` from source instead of selecting a
-tag (see "The job image").
+config` default > hardcoded default. `llm test`/`doctor`'s own
+`--image` flags are unaffected (still default to the hardcoded image), and
+`resume`'s replays the recipe the run started with (see `resume` below). Note
+that for the three image keys there is no hardcoded final fallback on `start`:
+with nothing set anywhere, `start` builds `ralphd:<hash>` from source instead of
+selecting a tag, and the three are ranked *as one unit* rather than key by key
+(see "The job image").
 
 #### Optional host-side pricing map (`pricing:`)
 

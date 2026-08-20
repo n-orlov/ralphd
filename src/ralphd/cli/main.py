@@ -669,10 +669,33 @@ IMAGE_NO_SOURCE_TO_DERIVE = (
     "layer on top of it. Install ralphd from a checkout, or pin a finished "
     "image with --image (which is run as-is, not used as a base).")
 IMAGE_BASE_AND_PIN_NOTICE = (
-    "--image and --base-image are different things: --image (or RALPHD_IMAGE, "
-    "or a template's or the registry's image) pins a finished job image and "
-    "runs it as-is, while --base-image supplies a base to layer the engine and "
-    "pi onto. Pass one or the other, not both.")
+    "--image and --base-image/--dockerfile are different things: --image (or "
+    "RALPHD_IMAGE, or a template's or the registry's image) pins a finished "
+    "job image and runs it as-is, while --base-image and --dockerfile supply a "
+    "base to layer the engine and pi onto. Pass one or the other, not both.")
+IMAGE_BASE_AND_DOCKERFILE_NOTICE = (
+    "--base-image and --dockerfile are two ways to supply the same thing -- "
+    "the base the job image is derived from: one names an image that already "
+    "exists, the other a recipe to build one. Pass one or the other, not both.")
+IMAGE_DOCKERFILE_UNUSABLE = "cannot build a base image from {what}: {why}"
+
+# The three keys that decide which image `start` runs, resolved as ONE unit
+# (`_resolve_image_supply`, task 035 / requirement H3) rather than field by
+# field: they are three answers to the same question, so the most specific
+# *level* that answers it wins whole, instead of a `--dockerfile` on the
+# command line being silently combined with a registry-wide `image:` pin from
+# `config.yaml`.
+IMAGE_SUPPLY_KEYS = ("image", "base_image", "dockerfile")
+IMAGE_SUPPLY_FLAGS = {"image": "--image", "base_image": "--base-image",
+                      "dockerfile": "--dockerfile"}
+IMAGE_SUPPLY_LEVEL_FLAG = "the command line"
+IMAGE_SUPPLY_LEVEL_TEMPLATE = "the template's job.yaml"
+IMAGE_SUPPLY_LEVEL_REGISTRY = "the registry's config.yaml"
+IMAGE_SUPPLY_CLASH_NOTICE = (
+    "{where} supplies both {keys}, which contradict each other: --image / "
+    "image: pins a finished job image and runs it as-is, while --base-image / "
+    "base_image: and --dockerfile / dockerfile: supply a base to layer the "
+    "engine and pi onto. Set exactly one of the three per level.")
 
 # Bounded build output (requirement H4: "visible enough to debug a failing
 # build without drowning the start path"). Every line is echoed, prefixed and
@@ -711,9 +734,13 @@ def _image_build_env() -> dict:
     return env
 
 
-def _build_image(tag: str, root: Path,
-                 dockerfile: Path) -> tuple[int, list[str], bool]:
+def _build_image(tag: str, root: Path, dockerfile: Path,
+                 label: str = "job image") -> tuple[int, list[str], bool]:
     """Build `tag` from `root` with `dockerfile`; return (code, tail, elided).
+
+    `label` names *what* is being built, for the operator watching stderr: the
+    job image itself, or (task 035) the base image an operator's own
+    `--dockerfile` produces before the engine is layered onto it.
 
     Output is streamed as it arrives (a 20-minute image build must not look
     hung) but bounded: clipped per line, capped at IMAGE_BUILD_ECHO_LINES, and
@@ -721,7 +748,7 @@ def _build_image(tag: str, root: Path,
     failure. On stderr, because stdout of `start` is the run's own report.
     """
     cmd = [DOCKER, "build", "-t", tag, "-f", str(dockerfile), str(root)]
-    print(f"ralphctl: building job image {tag} from {root}", file=sys.stderr)
+    print(f"ralphctl: building {label} {tag} from {root}", file=sys.stderr)
     tail: list[str] = []
     echoed = 0
     try:
@@ -759,7 +786,36 @@ def _report_build_failure(code: int, tail: list[str], elided: bool,
            f"created -- fix the build, or pin an existing image with --image.")
 
 
-def _derived_job_image(base: str, src: Path) -> dict:
+def _dockerfile_base_image(spec: str) -> image.DockerfileBase:
+    """Build (or reuse) the operator's own Dockerfile as a *base* image.
+
+    Requirement H3's third supply point: `--dockerfile <path>` (or a
+    `dockerfile:` key in a template's job.yaml / the registry config) is built
+    with the Dockerfile's own directory as the build context and tagged
+    `ralphd-base:<hash>` over that context -- and the result is a **base**, not
+    the job image: the engine and pi are layered onto it by `_derived_job_image`
+    exactly as for `--base-image`. Two builds, two cache keys, one rule: hash
+    the inputs, look the tag up, build only on a miss.
+    """
+    try:
+        df = image.dockerfile_base(spec)
+    except image.ImageInputError as e:
+        die(2, IMAGE_DOCKERFILE_UNUSABLE.format(what=f"--dockerfile {spec}",
+                                                why=e))
+    if image_exists(df.tag):
+        return df
+    code, tail, elided = _build_image(df.tag, df.context, df.dockerfile,
+                                     label="base image")
+    if code != 0:
+        _report_build_failure(code, tail, elided,
+                              f"{df.tag} from {df.dockerfile} with "
+                              f"{df.context} as the context")
+    print(f"ralphctl: built base image {df.tag}", file=sys.stderr)
+    return df
+
+
+def _derived_job_image(base: str, src: Path,
+                       dockerfile: Path | None = None) -> dict:
     """Resolve (and on a cache miss build) the image derived from `base`.
 
     Requirement H2: a user-supplied base image is **not** the job image. The
@@ -769,6 +825,10 @@ def _derived_job_image(base: str, src: Path) -> dict:
     cached and invalidated by exactly the same rules as the default image: one
     `image inspect`, a build only on a miss. The base itself is never run -- it
     has no `ralphd-engine` in it.
+
+    `dockerfile` is the operator's own recipe when the base came from one (task
+    035), recorded on the result so a later surface can say where the base came
+    from rather than only that it was `ralphd-base:<hash>`.
     """
     try:
         derived = image.derive(src, base)
@@ -779,7 +839,8 @@ def _derived_job_image(base: str, src: Path) -> dict:
     if not derived.tree.complete:
         print(f"ralphctl: warning: image inputs missing from {src}: "
               f"{', '.join(derived.tree.missing)}", file=sys.stderr)
-    fields = {"imageHash": derived.hash, "imageBase": derived.base}
+    fields = {"imageHash": derived.hash, "imageBase": derived.base,
+              "imageDockerfile": str(dockerfile) if dockerfile else None}
     if image_exists(derived.tag):
         return {"image": derived.tag, "imageSource": IMAGE_SOURCE_CACHED,
                 **fields}
@@ -802,15 +863,18 @@ def _derived_job_image(base: str, src: Path) -> dict:
 
 
 def resolve_job_image(selected: str | None, *, base: str | None = None,
+                      dockerfile: str | None = None,
                       root: Path | None = None) -> dict:
     """Resolve the image `start` will run, building it if it does not exist.
 
     The one place image *production* happens. Returns
-    `{image, imageSource, imageHash, imageBase}` -- `imageHash` is None
-    whenever the reference was not derived from content, so a later surface can
-    tell "pinned, staleness unknowable" from "built from this exact source",
-    and `imageBase` is non-None exactly when the reference is a *derived*
-    image, whose hash is a function of that base as well as of the source.
+    `{image, imageSource, imageHash, imageBase, imageDockerfile}` --
+    `imageHash` is None whenever the reference was not derived from content, so
+    a later surface can tell "pinned, staleness unknowable" from "built from
+    this exact source"; `imageBase` is non-None exactly when the reference is a
+    *derived* image, whose hash is a function of that base as well as of the
+    source; `imageDockerfile` is non-None exactly when that base was itself
+    built from an operator's own recipe.
 
     `selected` not None (an `--image` flag, `RALPHD_IMAGE`, a template's or the
     registry's `image`) pins it: **no hash is computed and no build runs**, so
@@ -818,28 +882,42 @@ def resolve_job_image(selected: str | None, *, base: str | None = None,
 
     `base` not None (requirement H2) makes that reference a *base layer*: the
     engine and pi are layered on top of it and the derived image is what runs.
+    `dockerfile` not None (requirement H3) builds that recipe into a base first
+    -- with its own directory as the build context -- and then derives from it,
+    so the two are alternative spellings of the same ingredient and passing
+    both is a usage error.
 
     Dies (exit 1) on a failed build, exit 2 on contradictory input. Callers
     must call this *before* creating any run state -- requirement H4: no
     half-registered run.
     """
-    if selected and base:
+    if selected and (base or dockerfile):
         die(2, IMAGE_BASE_AND_PIN_NOTICE)
+    if base and dockerfile:
+        die(2, IMAGE_BASE_AND_DOCKERFILE_NOTICE)
     if selected:
         return {"image": selected, "imageSource": IMAGE_SOURCE_PINNED,
-                "imageHash": None, "imageBase": None}
+                "imageHash": None, "imageBase": None, "imageDockerfile": None}
     src = image.source_root(root)
     if src is None:
-        if base:
+        if base or dockerfile:
             # Deriving needs the engine source to install: there is no
             # fallback that could honour the operator's base, so this is an
             # error rather than task 038's observable-but-silent default.
-            die(1, IMAGE_NO_SOURCE_TO_DERIVE.format(base=base))
+            die(1, IMAGE_NO_SOURCE_TO_DERIVE.format(
+                base=base or f"the image built from {dockerfile}"))
         print(f"ralphctl: warning: {IMAGE_NO_SOURCE_NOTICE}", file=sys.stderr)
         return {"image": DEFAULT_IMAGE, "imageSource": IMAGE_SOURCE_UNHASHABLE,
-                "imageHash": None, "imageBase": None}
+                "imageHash": None, "imageBase": None, "imageDockerfile": None}
+    recipe = None
+    if dockerfile:
+        # The operator's own recipe becomes a hash-tagged base image; the job
+        # image is then derived from that tag by the H2 path below.
+        recipe = _dockerfile_base_image(dockerfile)
+        base = recipe.tag
     if base:
-        return _derived_job_image(base, src)
+        return _derived_job_image(
+            base, src, dockerfile=recipe.dockerfile if recipe else None)
     tree = image.hash_image_inputs(src)
     tag = image.image_tag(tree.hash)
     if not tree.complete:
@@ -850,14 +928,16 @@ def resolve_job_image(selected: str | None, *, base: str | None = None,
               f"{', '.join(tree.missing)}", file=sys.stderr)
     if image_exists(tag):
         return {"image": tag, "imageSource": IMAGE_SOURCE_CACHED,
-                "imageHash": tree.hash, "imageBase": None}
+                "imageHash": tree.hash, "imageBase": None,
+                "imageDockerfile": None}
     code, tail, elided = _build_image(tag, src, src / image.SOURCE_MARKER)
     if code != 0:
         _report_build_failure(code, tail, elided,
                               f"{tag} from {src} ({image.SOURCE_MARKER})")
     print(f"ralphctl: built job image {tag}", file=sys.stderr)
     return {"image": tag, "imageSource": IMAGE_SOURCE_BUILT,
-            "imageHash": tree.hash, "imageBase": None}
+            "imageHash": tree.hash, "imageBase": None,
+            "imageDockerfile": None}
 
 
 # ---------------------------------------------------------------- start
@@ -875,11 +955,7 @@ _TEMPLATE_SCALAR_FIELDS = {
     # from job.yaml so the engine's own default (`none`) applies. The default
     # lives in engine/config.DEFAULT_PRICE_STRATEGY alone.
     "price_strategy": None,
-    # Task 033 (#20 H1): None here means "nobody selected an image" -- not
-    # `ralphd:dev`. cmd_start then hashes the image inputs and builds
-    # `ralphd:<hash>` on a cache miss; an explicit flag, `RALPHD_IMAGE`, a
-    # template's `image:` or the registry's `image` all pin instead.
-    "image": IMAGE_ENV, "network": None,
+    "network": None,
     # default lives in AUTO_RESUME_DEFAULT alone (task 026) -- never a
     # second literal here
     "auto_resume": AUTO_RESUME_DEFAULT,
@@ -891,10 +967,60 @@ _TEMPLATE_SCALAR_FIELDS = {
 # `<registry>/config.yaml` > hardcoded default. `llm`'s registry key is
 # named `default_llm_profile` (matches doctor's existing read of it);
 # the others share their field name.
-_REGISTRY_CONFIG_FIELD_KEYS = {"image": "image", "on_complete": "on_complete",
+#
+# The three image supply keys (`image`, `base_image`, `dockerfile`) are NOT
+# here: they contradict each other, so they are settled as one unit by
+# `_resolve_image_supply` below -- under the same key names, at the same three
+# levels -- rather than filled in field by field.
+_REGISTRY_CONFIG_FIELD_KEYS = {"on_complete": "on_complete",
                                "llm": "default_llm_profile", "network": "network",
                                "auto_resume": "auto_resume",
                                "price_strategy": "price_strategy"}
+
+
+def _resolve_image_supply(args, cfg: dict, reg_cfg: dict) -> None:
+    """Settle `image` / `base_image` / `dockerfile` as one unit (task 035, H3).
+
+    Requirement H3's "most specific winning", read the only way that does not
+    quietly combine two contradictory answers: the three keys are three answers
+    to *one* question -- which image does this job run -- so the most specific
+    **level** that answers it at all wins whole, and lower levels are not
+    consulted for the other two keys. `--dockerfile ci/Dockerfile` on the
+    command line therefore beats a standing `image:` pin in the registry's
+    `config.yaml` instead of colliding with it; two of the three *within* one
+    level is a usage error (exit 2), because there is no way to rank them.
+
+    `RALPHD_IMAGE` is deliberately not a level: it is ambient, so rather than
+    being silently dropped by a `--dockerfile` (or silently winning over one) it
+    is carried into `resolve_job_image`, which refuses the combination by name
+    (task 034's IMAGE_BASE_AND_PIN_NOTICE). Nobody answering anywhere leaves
+    all three unset, which is "build `ralphd:<hash>` from source" (task 033).
+
+    Mutates `args` in place; called from `_apply_template` before the
+    field-by-field loop, which no longer knows about these three keys.
+    """
+    levels = ((IMAGE_SUPPLY_LEVEL_FLAG,
+               {k: getattr(args, k, None) for k in IMAGE_SUPPLY_KEYS}),
+              (IMAGE_SUPPLY_LEVEL_TEMPLATE, cfg),
+              (IMAGE_SUPPLY_LEVEL_REGISTRY, reg_cfg))
+    chosen: tuple[str, str] | None = None
+    for where, level in levels:
+        picked = [(k, str(level.get(k)).strip()) for k in IMAGE_SUPPLY_KEYS
+                  if level.get(k) not in (None, "")]
+        if not picked:
+            continue
+        if len(picked) > 1:
+            die(2, IMAGE_SUPPLY_CLASH_NOTICE.format(
+                where=where,
+                keys=" and ".join(IMAGE_SUPPLY_FLAGS[k] for k, _ in picked)))
+        chosen = picked[0]
+        break
+    for key in IMAGE_SUPPLY_KEYS:
+        setattr(args, key, chosen[1] if chosen and chosen[0] == key else None)
+    if chosen is None or chosen[0] != "image":
+        # ambient RALPHD_IMAGE: the bottom of the ladder when nothing else
+        # answered, and a refusal (never a silent drop) when something did.
+        args.image = IMAGE_ENV
 
 
 def _apply_template(args) -> Path | None:
@@ -920,6 +1046,10 @@ def _apply_template(args) -> Path | None:
             if not isinstance(cfg, dict):
                 die(2, f"template {args.template}: job.yaml must be a mapping")
     reg_cfg = _registry_config(registry())
+    # the three image supply points first, as one unit (task 035): the loop
+    # below fills fields independently, which is exactly wrong for three keys
+    # that contradict each other.
+    _resolve_image_supply(args, cfg, reg_cfg)
     for key, hard_default in _TEMPLATE_SCALAR_FIELDS.items():
         if getattr(args, key) is None:
             reg_key = _REGISTRY_CONFIG_FIELD_KEYS.get(key)
@@ -953,9 +1083,11 @@ def cmd_start(args):
     # Requirement H1/H4 (#20): resolve -- and, on a cache miss, BUILD -- the
     # job image *before* any run state exists, so a failed build aborts here
     # instead of leaving a half-registered run dir behind. An explicit
-    # selection (flag/env/template/registry) pins and skips both steps.
-    args.image = resolve_job_image(
-        args.image, base=getattr(args, "base_image", None))["image"]
+    # selection (flag/env/template/registry) pins and skips both steps; a base
+    # or a `--dockerfile` recipe (task 035) is layered into a derived image.
+    resolved_image = resolve_job_image(args.image, base=args.base_image,
+                                       dockerfile=args.dockerfile)
+    args.image = resolved_image["image"]
     rdir.mkdir(parents=True, exist_ok=True)
     cdir.mkdir(parents=True, exist_ok=True)
     os.chmod(cdir, 0o700)
@@ -1013,6 +1145,13 @@ def cmd_start(args):
         # strategy the run started with.
         "price_strategy": args.price_strategy or (
             llm_profile.get("price_strategy") if llm_profile else None),
+        # Task 035 (#20 H3): the *recipe* this run's image was derived from,
+        # persisted so `ralphctl resume` replays it instead of falling back to
+        # some default image (see `_resume_job_image`). Only the ingredients an
+        # operator supplied are recorded -- the resolved tag itself is run
+        # state, not job config, and lives in host.json.
+        "base_image": args.base_image,
+        "dockerfile": resolved_image["imageDockerfile"],
     }
     (cdir / "job.yaml").write_text(
         "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))
@@ -1360,6 +1499,29 @@ def _apply_iterations_topup(job: dict, spec: str) -> None:
         die(2, f"--iterations: invalid value {spec!r} (expected e.g. +10 or 30)")
 
 
+def _resume_job_image(job: dict) -> str:
+    """The image a `resume` runs when the operator pinned none (task 035, H3).
+
+    A run started from a `--base-image` or a `--dockerfile` recorded those
+    ingredients in its own `job.yaml` (see cmd_start), so a resume replays the
+    *recipe* the run started with rather than dropping back to `ralphd:dev` --
+    which is a different engine, and (for a job whose repo needs a JDK) an
+    image without the toolchain the PRD was written against. On unchanged
+    sources the replay is a pure tag lookup: same base, same source, same tag.
+
+    A run with no recipe recorded keeps the pre-035 behaviour exactly
+    (DEFAULT_IMAGE), and requirement H4's stronger promise -- reproduce the
+    *resolved* tag even after the sources moved -- is task 036's, which records
+    it in run state and prefers it over this replay.
+    """
+    base = job.get("base_image") or None
+    dockerfile = job.get("dockerfile") or None
+    if not (base or dockerfile):
+        return DEFAULT_IMAGE
+    return resolve_job_image(job.get("image") or None, base=base,
+                            dockerfile=dockerfile)["image"]
+
+
 def _container_running(name: str) -> bool | None:
     """True/False if the container exists (running or not); None if no
     container by that name exists at all."""
@@ -1397,6 +1559,9 @@ def cmd_resume(args):
     if args.iterations:
         _apply_iterations_topup(job, args.iterations)
         _write_job_yaml(job_path, job)
+    # `--image` on resume pins as always; with no flag, replay the image recipe
+    # this run started with (task 035) instead of whatever `ralphd:dev` is today.
+    args.image = args.image or _resume_job_image(job)
 
     prev_meta = host_meta(run_id)
     ws = prev_meta.get("workspace")
@@ -3627,6 +3792,7 @@ def cmd_ui(args):
 # (see `_REGISTRY_CONFIG_FIELD_KEYS` above) plus `default_llm_profile`,
 # which doctor already reads independently.
 _CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
+                "base_image": None, "dockerfile": None,
                 "default_llm_profile": None, "network": None,
                 "auto_resume": ("true", "false"),
                 "price_strategy": PRICE_STRATEGIES}
@@ -3636,10 +3802,11 @@ _CONFIG_BOOL_KEYS = {"auto_resume"}
 
 def cmd_config(args):
     """Registry-wide defaults at `<registry>/config.yaml` (PRD req 25):
-    `image`, `on_complete`, `default_llm_profile`, `network`,
-    `auto_resume`, `price_strategy`. `start` layers these in between a
-    `--template`'s value and the hardcoded fallback (see `_apply_template`);
-    `doctor` reads `default_llm_profile` directly."""
+    `image`, `base_image`, `dockerfile` (the three image supply points, ranked
+    as one unit by `_resolve_image_supply`), `on_complete`,
+    `default_llm_profile`, `network`, `auto_resume`, `price_strategy`. `start`
+    layers these in between a `--template`'s value and the hardcoded fallback
+    (see `_apply_template`); `doctor` reads `default_llm_profile` directly."""
     if args.key not in _CONFIG_KEYS:
         die(2, f"unknown config key: {args.key} (expected one of "
                 f"{', '.join(sorted(_CONFIG_KEYS))})")
@@ -4092,6 +4259,11 @@ def main() -> None:
                         "ralphd layers the engine and pi onto it and runs the "
                         "derived, hash-tagged image. Mutually exclusive with "
                         "--image, which pins a finished image and runs it as-is")
+    s.add_argument("--dockerfile", default=None, metavar="PATH",
+                   help="build THIS Dockerfile (with its own directory as the "
+                        "build context) into that base image (#20 H3), instead "
+                        "of naming a base that already exists; persisted into "
+                        "the run's job.yaml and replayed by resume")
     s.add_argument("--on-complete", default=None, choices=["idle", "exit"],
                    help="post-completion behavior (default: exit; idle is an "
                         "explicit debugging opt-in)")
@@ -4154,7 +4326,11 @@ def main() -> None:
     s.add_argument("--iterations", metavar="+N",
                    help="budget top-up, e.g. +10 (adds to the existing "
                         "budget); a bare integer sets it absolutely")
-    s.add_argument("--image", default=DEFAULT_IMAGE)
+    s.add_argument("--image", default=None,
+                   help="pin the image this resume runs; defaults to replaying "
+                        "the image recipe the run started with (its "
+                        "base_image/dockerfile), or "
+                        f"{DEFAULT_IMAGE} for a run that recorded none")
     s.add_argument("--port", type=int)
     s.add_argument("--api-bind", default="127.0.0.1")
     s.add_argument("--network", default=None, metavar="NET",

@@ -197,7 +197,7 @@ def test_pinning_does_not_hash_even_in_process(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "image_exists", boom)
     assert main.resolve_job_image("some/where:tag") == {
         "image": "some/where:tag", "imageSource": main.IMAGE_SOURCE_PINNED,
-        "imageHash": None, "imageBase": None}
+        "imageHash": None, "imageBase": None, "imageDockerfile": None}
 
 
 # --- a failed build aborts before any run state ---------------------------
@@ -359,7 +359,8 @@ def test_no_source_tree_falls_back_observably(tmp_path, stub_daemon, capsys):
     res = main.resolve_job_image(None, root=tmp_path / "not-a-checkout")
     assert res == {"image": main.DEFAULT_IMAGE,
                    "imageSource": main.IMAGE_SOURCE_UNHASHABLE,
-                   "imageHash": None, "imageBase": None}
+                   "imageHash": None, "imageBase": None,
+                   "imageDockerfile": None}
     err = capsys.readouterr().err
     assert main.IMAGE_NO_SOURCE_NOTICE in err
     assert main.DEFAULT_IMAGE in err and "--image" in err
