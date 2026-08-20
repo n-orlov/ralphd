@@ -121,6 +121,14 @@ const RUN_COLUMNS = [
   // the SORT value stays the raw numerator -- sorting on "10/12" as a string
   // would put approach 10 before approach 2.
   { label: "APPROACH", key: "approach", value: r => numOrNull(r.approach) },
+  // Task 014 (#21): the CELL text is the server-rendered `5/7`
+  // (ui_server._row_tasks -> engine.state.format_task_fraction) plus the
+  // trouble flags; the SORT value is the completion RATIO, so `5/7` (0.71)
+  // ranks above `100/250` (0.4) -- which neither a string sort of the cells
+  // nor a sort on the bare numerator would get right. A run with no plan has
+  // no ratio at all (null), so `cmpValues` puts it last ascending instead of
+  // pretending it is 0% done.
+  { label: "TASKS", key: "tasks", value: r => taskRatio(r) },
   // numeric on iterationsUsed -- NOT the rendered "17/250" cell text
   { label: "ITERATIONS", key: "iterationsUsed", value: r => numOrNull(r.iterationsUsed) },
   // epoch seconds from the raw ISO instant -- NOT the ISO string, which
@@ -136,6 +144,45 @@ function approachText(o) {
   // shows the bare numerator rather than inventing a denominator here.
   if (o && typeof o.approachDisplay === "string") return o.approachDisplay;
   return String(!o || o.approach == null ? "" : o.approach);
+}
+
+// ----------------------------------------------- task progress cell (#21)
+
+function taskRatio(r) {
+  // Sort value for the TASKS column: completed/total as a fraction of one,
+  // or null when there is no plan to have progress through -- the same
+  // "unknown is not zero" rule `engine.state.format_task_fraction` follows
+  // when it renders an EMPTY string rather than `0/0`.
+  const total = numOrNull(r && r.tasksTotal);
+  const completed = numOrNull(r && r.tasksCompleted);
+  if (total == null || total <= 0) return null;
+  return (completed == null ? 0 : completed) / total;
+}
+
+function taskCell(r) {
+  // The fraction is whatever the SERVER rendered (`tasksDisplay`, task 013):
+  // one formatter behind the hub, `ralphctl runs` and `ralphctl status`,
+  // never a second spelling in JS. Empty string for a plan-less run.
+  const fraction = r && typeof r.tasksDisplay === "string" ? r.tasksDisplay : "";
+  const trouble = r && Array.isArray(r.tasksTrouble) ? r.tasksTrouble.map(String) : [];
+  const kids = [fraction];
+  if (fraction && trouble.length > 0) {
+    // Worded exactly as `format_task_counts` words it ("1 validation-failed",
+    // "2 in-progress") -- the server did the wording, so a plan stuck on a
+    // failed validation cannot look like ordinary progress here.
+    kids.push(h("span", { class: "tasks-trouble" }, [" \u26A0 " + trouble.join(", ")]));
+  }
+  if (fraction && r && r.tasksStale === true) {
+    // Task 005 (#15) labels this on run detail; in the list the marker says
+    // the fraction is the last plan that PARSED (a poll landed mid-rewrite).
+    kids.push(h("span", { class: "pill pill-stale" }, [" stale"]));
+  }
+  const attrs = { class: "tasks-cell",
+                  "data-tasks-source": String((r && r.tasksSource) || "") };
+  // The whole sentence (`5/7 completed (1 in-progress, 1 pending)`) on hover;
+  // the cell itself stays a column, not a paragraph.
+  if (r && r.tasksSummary) attrs.title = String(r.tasksSummary);
+  return h("td", attrs, kids);
 }
 
 function runColumn(key) {
@@ -170,6 +217,9 @@ function toggleRunSort(key) {
   }
   // First click on a new column: time-like and numeric columns are most
   // useful biggest/newest first, text columns A->Z.
+  // TASKS is deliberately NOT in this list: least-complete first is the
+  // useful first click (those runs still owe work), and ascending also puts
+  // the plan-less runs -- which have no progress to compare -- last.
   const desc = key === "startedAt" || key === "iterationsUsed" || key === "approach";
   runSort = { key, dir: desc ? -1 : 1 };
 }
@@ -328,6 +378,7 @@ async function renderRunList() {
         h("td", {}, [pill(r.verdict)]),
         h("td", {}, [String(r.phase || "")]),
         h("td", {}, [approachText(r)]),
+        taskCell(r),
         h("td", {}, [`${r.iterationsUsed ?? 0}/${r.iterationsBudget ?? "?"}`]),
         h("td", { class: "muted" }, [String(r.startedAt || "")]),
       ]));

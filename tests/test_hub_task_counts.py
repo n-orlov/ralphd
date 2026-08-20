@@ -19,6 +19,8 @@ engine API that must record ZERO requests while the list is rendered.
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 from test_cli_ui import StubEngineApi, UiServer, _write_run_with_api, ui
@@ -288,3 +290,62 @@ def test_rows_of_several_runs_do_not_borrow_each_others_counts(tmp_path, ui):
     assert code == 200, body
     assert {r["runId"]: r["tasksDisplay"] for r in body["runs"]} == {
         "run-1": "5/7", "run-2": "2/2", "run-3": ""}
+
+
+# --------------------------------------------------------------------------
+# task 014 (#21): the browser half of the TASKS column. The rendering itself
+# is asserted in a real Chromium by
+# tests/test_browser_hub.py::test_run_list_tasks_column_renders_flags_and_sorts_on_progress;
+# these are the cheap fast-lane guards on the contract that test depends on.
+# --------------------------------------------------------------------------
+
+APP_JS = (Path(cli_main.__file__).parent / "web" / "app.js").read_text()
+
+
+def test_app_js_has_a_tasks_column_between_approach_and_iterations():
+    block = APP_JS.split("const RUN_COLUMNS = [")[1].split("];")[0]
+    labels = re.findall(r'label:\s*"([^"]+)"', block)
+    assert labels == ["RUN", "STATE", "VERDICT", "PHASE", "APPROACH", "TASKS",
+                      "ITERATIONS", "STARTED"], labels
+    # the CELL renders the string the SERVER formatted, and the trouble flags
+    # the server worded -- never a second JS spelling of either.
+    assert "r.tasksDisplay" in APP_JS
+    assert "r.tasksTrouble" in APP_JS
+    body = APP_JS.split("function taskCell(")[1].split("\n}")[0]
+    code = "\n".join(ln for ln in body.splitlines()
+                     if not ln.strip().startswith("//"))
+    assert "completed" not in code, code
+
+
+def test_the_tasks_column_sorts_on_the_ratio_not_the_rendered_text():
+    block = APP_JS.split("const RUN_COLUMNS = [")[1].split("];")[0]
+    tasks_col = next(ln for ln in block.splitlines() if '"TASKS"' in ln)
+    assert "taskRatio(r)" in tasks_col, tasks_col
+    assert "tasksDisplay" not in tasks_col, tasks_col
+    # ascending-first, so the plan-less runs (no ratio) land last
+    desc = APP_JS.split("const desc = ")[1].split(";")[0]
+    assert '"tasks"' not in desc, desc
+
+
+@pytest.mark.parametrize("row,expected", [
+    ({"tasksTotal": 7, "tasksCompleted": 5}, 5 / 7),
+    ({"tasksTotal": 250, "tasksCompleted": 100}, 0.4),
+    ({"tasksTotal": 2, "tasksCompleted": 2}, 1.0),
+    ({"tasksTotal": 4}, 0.0),
+    # no plan is not 0% done: no ratio at all, so it sorts last ascending
+    ({"tasksTotal": 0, "tasksCompleted": 0}, None),
+    ({}, None),
+    ({"tasksTotal": "seven", "tasksCompleted": 5}, None),
+])
+def test_task_ratio_is_the_shared_sort_value(row, expected):
+    assert cli_main._task_ratio(row) == expected
+
+
+def test_the_ratio_orders_five_sevenths_above_a_hundred_of_two_fifty():
+    rows = [{"runId": "big", "tasksTotal": 250, "tasksCompleted": 100},
+            {"runId": "mid", "tasksTotal": 7, "tasksCompleted": 5},
+            {"runId": "none"}]
+    order = [r["runId"] for r in cli_main.sort_run_rows(rows, "tasks")]
+    # ascending: least complete first, the plan-less run LAST (not first,
+    # which is what treating "no plan" as 0 would do)
+    assert order == ["big", "mid", "none"], order
