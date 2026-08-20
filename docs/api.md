@@ -396,7 +396,26 @@ Body: `{"message": "<markdown>", "name": "optional-slug"}`. Writes the next
 `202 {"file": "003-optional-slug.md"}`.
 
 ### `GET /steering`
-Lists steering files with `consumed` flags and the iteration that consumed them.
+Lists this run's steering messages, oldest first — one entry per
+`steering/NNN-<slug>.md` file:
+
+| field | meaning |
+| --- | --- |
+| `file` | the file name — the engine's own identifier for an entry (`POST /steering` returns it, the `steering.received`/`steering.consumed` events name it) |
+| `seq` | the engine-assigned sequence number, as an int |
+| `name` | the operator-supplied slug (the file stem without its sequence prefix) |
+| `ts` | when the message arrived (the file's mtime — it is written once, atomically) |
+| `state` | `pending` or `applied` |
+| `consumed` | the same fact as a bool (the pre-v0.6 key, unchanged) |
+| `bytes` / `hasBody` | size, and whether there is any non-blank text |
+| `body` | the message text |
+
+A run nobody steered answers `[]`. The entries come from the single shared
+reader `ralphd.engine.state.steering_entries`, which the hub also uses to read
+`<run>/steering/` directly when a run's container is gone (`GET
+/api/runs/<id>/steering`, docs/cli.md), so a live answer and a
+container-gone answer describe the same run identically. Which *iteration*
+consumed an entry is in the `steering.consumed` event (`GET /logs`), not here.
 
 ### `POST /interrupt`
 SIGINTs the current agent process (the iteration ends as `interrupted`; the loop

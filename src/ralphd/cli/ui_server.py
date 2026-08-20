@@ -9,9 +9,10 @@ Serves two things:
   - JSON endpoints under `/api/...` reading `<registry>/runs/*` and
     proxying a run's *live* container API when it is reachable, degrading
     gracefully (never raising into a 500, never hanging past a short
-    timeout) when it is not -- including the log tail (task 039) and the
-    PRD (task 056), which both fall back to reading the run dir on disk so
-    a dead run stays readable. Control routes are proxies too: `POST
+    timeout) when it is not -- including the log tail (task 039), the
+    PRD (task 056) and the steering history (task 016), which all fall
+    back to reading the run dir on disk so a dead run stays readable.
+    Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
     now" button on a degraded run-detail card.
@@ -39,12 +40,15 @@ from urllib.parse import parse_qs, urlsplit
 
 from ..engine.state import (
     NONTERMINAL_STATES,
+    STEERING_APPLIED,
+    STEERING_PENDING,
     TASKS_STALE_LABEL,
     format_approach,
     format_cost,
     format_local_time,
     prd_path,
     read_tasks_doc,
+    steering_entries,
     tasks_read_notice,
 )
 from ..log_merge import NO_TRANSCRIPT, merged_lines
@@ -58,6 +62,11 @@ DEFAULT_LOG_TAIL = 200
 # all (same discipline as `log_merge.NO_TRANSCRIPT`: the wording lives
 # server-side, never spelled out again in app.js).
 NO_PRD = "(no PRD recorded)"
+
+# Task 016 (#17): shown by the hub's steering panel when an operator has
+# never steered this run -- same discipline as `NO_PRD`/`NO_TRANSCRIPT`, the
+# wording lives server-side and app.js only renders it.
+NO_STEERING = "(no steering messages)"
 
 # Task 024 (#8): how long the run-list liveness probe waits for a run's API
 # port to accept a TCP connection. Deliberately tiny: the API is published on
@@ -351,6 +360,74 @@ def prd_text(reg: Path, run_id: str) -> tuple[bool, str]:
     return ok, text if text.strip() else NO_PRD
 
 
+def steering_list(reg: Path, run_id: str, *, bodies: bool = True) -> tuple[bool, list[dict]]:
+    """A run's steering messages for the hub (task 016, #17).
+
+    The shape the log tail (tasks 038/039) and the PRD dialog (task 056)
+    established: ask the run's LIVE API first (`GET /steering`, authoritative
+    for a running job -- it is the process that decides when an entry becomes
+    *applied*) and fall back to reading `<run>/steering/` directly when that
+    API does not answer, so a finished or dead run's steering history stays
+    readable. Both sides go through the ONE shared reader
+    (`engine.state.steering_entries`), so the live and on-disk answers are the
+    same entries for the same run rather than two vocabularies.
+
+    A pre-v0.6 engine's `GET /steering` answers with only `file`/`consumed`.
+    Those entries are COMPLETED from the run dir on disk (the hub is running
+    on the host that holds it) instead of being served half-empty: the live
+    side keeps deciding which files exist and which are applied, disk only
+    supplies the fields it has always had -- the name, arrival timestamp and
+    body of a file the live answer already named.
+
+    Returns `(live, entries)`; `entries` is `[]` for a run nobody ever
+    steered (the caller pairs that with `NO_STEERING`).
+    """
+    run_dir = reg / "runs" / run_id
+    disk = {e["file"]: e for e in steering_entries(run_dir, bodies=bodies)}
+    ok, _, resp = _proxy_json(reg, run_id, "GET", "/steering")
+    if not (ok and isinstance(resp, list)):
+        return False, list(disk.values())
+    entries = []
+    for item in resp:
+        if not isinstance(item, dict) or not isinstance(item.get("file"), str):
+            continue
+        live_fields = {k: v for k, v in item.items() if v is not None}
+        base = dict(disk.get(item["file"], {}))
+        # The LIVE side owns applied-ness. A pre-v0.6 answer states it as
+        # `consumed` only, so disk's `state` must not survive the merge and
+        # contradict it (nor the other way round for a `state`-only answer);
+        # whichever key the live answer omits is re-derived below from the
+        # one it sent, in `_normalized_steering`.
+        if "consumed" in live_fields and "state" not in live_fields:
+            base.pop("state", None)
+        if "state" in live_fields and "consumed" not in live_fields:
+            base.pop("consumed", None)
+        merged = {**base, **live_fields}
+        if not bodies:
+            merged.pop("body", None)
+        entries.append(_normalized_steering(merged))
+    return True, entries
+
+
+def _normalized_steering(entry: dict) -> dict:
+    """Fill in what a pre-v0.6 live answer does not send, from what it does.
+
+    `state` is derived from `consumed` (and vice versa) rather than left
+    missing, because "pending or applied" is the one thing the panel must
+    always be able to say; `name` falls back to the file name. Nothing is
+    invented that the entry does not already imply -- an entry with no `ts`
+    and no `body` on disk keeps having none (the run dir is gone, and
+    claiming a timestamp would be a guess).
+    """
+    out = dict(entry)
+    if "consumed" not in out and "state" in out:
+        out["consumed"] = out["state"] != STEERING_PENDING
+    if "state" not in out:
+        out["state"] = STEERING_APPLIED if out.get("consumed") else STEERING_PENDING
+    out.setdefault("name", out.get("file"))
+    return out
+
+
 # Task 048 (#4): absolute timestamps are formatted HERE, server-side, by the
 # one shared formatter (`engine/state.format_local_time`) instead of being
 # re-implemented in `web/app.js` -- the hub then renders the string as-is
@@ -567,6 +644,19 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 live, text = prd_text(reg, run_id)
                 self._send_json({"live": live, "text": text})
+                return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "steering":
+                # Task 016 (#17): the run's steering history for the hub's
+                # steering panel (task 017 renders it). Live-first with an
+                # on-disk fallback, exactly like the log tail and the PRD
+                # above -- see `steering_list`.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                live, entries = steering_list(reg, run_id)
+                self._send_json({"live": live, "entries": entries,
+                                 "notice": "" if entries else NO_STEERING})
                 return
             if len(segs) == 3 and segs[:2] == ["api", "runs"]:
                 run_id = segs[2]

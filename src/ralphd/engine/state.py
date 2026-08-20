@@ -437,6 +437,89 @@ def prd_path(run_root: Path, original: bool = False) -> Path | None:
     return plain if plain.exists() else None
 
 
+# Task 016 (#17): the shape of a run's steering directory, in ONE place.
+#
+# `<run>/steering/NNN-<name>.md` holds the operator messages; the engine marks
+# a file *applied* by appending its name to `steering/.consumed.json` when an
+# iteration consumes it (`RunDir.consume_steering`). Both the engine's
+# `GET /steering` and the host-side hub fallback (`ui_server.steering_list`,
+# for a run whose container is gone) read the pair through `steering_entries`
+# below, so a live answer and an on-disk answer cannot disagree about which
+# entries exist or which of them are still pending.
+STEERING_GLOB = "[0-9][0-9][0-9]-*.md"
+STEERING_CONSUMED_FILE = ".consumed.json"
+STEERING_PENDING = "pending"
+STEERING_APPLIED = "applied"
+
+
+def steering_consumed_names(run_root: Path) -> set[str]:
+    """The set of steering file names an iteration has already consumed."""
+    names = read_json(Path(run_root) / "steering" / STEERING_CONSUMED_FILE, [])
+    return {n for n in names if isinstance(n, str)} if isinstance(names, list) else set()
+
+
+def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
+    """Every steering message of a run, oldest first (task 016, #17).
+
+    One entry per `steering/NNN-<name>.md` file:
+
+      `file`   the file name (the engine's own identifier for an entry,
+               already used by `POST /steering`'s answer and the
+               `steering.received`/`steering.consumed` events),
+      `seq`    the engine-assigned sequence number as an int (sortable),
+      `name`   the operator-supplied suffix (`--name`), i.e. the file stem
+               without its sequence prefix -- what a human called it,
+      `ts`     when the message was written, from the file's mtime in
+               `utcnow()` format (the file is written once, atomically, by
+               `add_steering`, so its mtime *is* its arrival time; no
+               separate index to drift out of sync),
+      `state`  `pending` or `applied` -- the vocabulary lives here, so the
+               CLI, the hub and the API all say the same word,
+      `consumed` the same fact as a bool, kept because the pre-v0.6
+               `GET /steering` answered with exactly that key,
+      `body`   the message text (omit with `bodies=False` for list views
+               that only need the header line; `hasBody` is always there).
+
+    Deliberately a plain function over a path, not a `RunDir` method, for the
+    same reason as `prd_path`: the host side reads a registry run dir without
+    constructing a `RunDir` (which would create directories in somebody
+    else's run dir). Returns `[]` when there is no `steering/` dir at all --
+    an operator who never steered, which is not an error.
+    """
+    sdir = Path(run_root) / "steering"
+    try:
+        files = sorted(sdir.glob(STEERING_GLOB))
+    except OSError:
+        return []
+    consumed = steering_consumed_names(run_root)
+    out = []
+    for p in files:
+        try:
+            st = p.stat()
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        stem = p.name.removesuffix(".md")
+        m = re.match(r"^(\d{3})-(.*)$", stem)
+        seq = int(m.group(1)) if m else None
+        name = (m.group(2) if m else stem) or stem
+        applied = p.name in consumed
+        entry = {
+            "file": p.name,
+            "seq": seq,
+            "name": name,
+            "ts": utc_from_epoch(st.st_mtime),
+            "state": STEERING_APPLIED if applied else STEERING_PENDING,
+            "consumed": applied,
+            "bytes": st.st_size,
+            "hasBody": bool(text.strip()),
+        }
+        if bodies:
+            entry["body"] = text
+        out.append(entry)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Task 002 (#15): the hardened tasks.json read path.
 #
@@ -1003,7 +1086,7 @@ class RunDir:
 
     # -- steering --------------------------------------------------------
     def add_steering(self, message: str, name: str | None = None) -> str:
-        existing = sorted(self.steering_dir.glob("[0-9][0-9][0-9]-*.md"))
+        existing = sorted(self.steering_dir.glob(STEERING_GLOB))
         seq = int(existing[-1].name[:3]) + 1 if existing else 1
         suffix = name or "steering"
         # The sequence prefix is always engine-assigned. If the caller's
@@ -1019,12 +1102,17 @@ class RunDir:
         return fname
 
     def consumed_marker(self) -> Path:
-        return self.steering_dir / ".consumed.json"
+        return self.steering_dir / STEERING_CONSUMED_FILE
 
     def pending_steering(self) -> list[Path]:
-        consumed = set(read_json(self.consumed_marker(), []))
-        return [p for p in sorted(self.steering_dir.glob("[0-9][0-9][0-9]-*.md"))
+        consumed = steering_consumed_names(self.root)
+        return [p for p in sorted(self.steering_dir.glob(STEERING_GLOB))
                 if p.name not in consumed]
+
+    def steering_entries(self, *, bodies: bool = True) -> list[dict]:
+        """Task 016 (#17): this run's steering messages, through the ONE shared
+        reader the host side uses too (module-level `steering_entries`)."""
+        return steering_entries(self.root, bodies=bodies)
 
     def consume_steering(self, files: list[Path], iteration: int) -> None:
         consumed = read_json(self.consumed_marker(), [])
