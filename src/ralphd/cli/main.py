@@ -78,7 +78,7 @@ from ..engine.state import (
 from ..log_merge import NO_TRANSCRIPT, iteration_numbers
 from ..log_merge import iteration_lines as _iteration_lines
 from ..log_merge import merged_lines as _merged_lines
-from . import llm_profiles, ui_server
+from . import image, llm_profiles, ui_server
 from .log_render import FULL_BACKLOG_TAIL as _FULL_BACKLOG_TAIL
 from .log_render import _ansi
 from .log_render import new_render_state as _new_render_state
@@ -86,7 +86,17 @@ from .log_render import render_log_line as _render_log_line
 from .log_render import render_to_lines as _render_to_lines
 
 DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
-DEFAULT_IMAGE = os.environ.get("RALPHD_IMAGE", "ralphd:dev")
+
+# `RALPHD_IMAGE` is a *selection*, like `--image`: set it and ralphctl pins
+# exactly that reference, hashing nothing and building nothing (task 033,
+# requirement H1). Unset (`IMAGE_ENV is None`) means nobody chose an image, and
+# `start` then resolves the content-hashed default `ralphd:<hash>` and builds it
+# on a cache miss. DEFAULT_IMAGE stays the hand-built legacy tag: the default
+# for `resume`/`doctor`/`llm test`'s own `--image` flags, and the fallback when
+# the image inputs are not on disk to hash (a wheel/pipx install -- task 038
+# owns that decision).
+IMAGE_ENV = os.environ.get("RALPHD_IMAGE") or None
+DEFAULT_IMAGE = IMAGE_ENV or "ralphd:dev"
 
 # `ralphctl logs -f`/`logsf` Ctrl+C exit code (task 002, docs/cli.md): the
 # shell convention for "terminated by signal N" is 128+N, so SIGINT (2)
@@ -631,6 +641,142 @@ def _parse_workspace_specs(specs: list[str]) -> list[tuple[str | None, Path]]:
     return out
 
 
+# ------------------------------------------------------- job image (#20 H1)
+# Producing the job image, as opposed to hashing its inputs (cli/image.py) or
+# selecting somebody else's tag. `container/Dockerfile` has existed since v0.1
+# and nothing ever built it: two runs of this project executed a ten-day-old
+# engine and no surface could say so. Tagging by content hash makes "the image
+# matches the source" structural -- a source change produces a new tag, and a
+# missing tag is a build.
+
+# How the image `start` is about to run was arrived at. Recorded here as
+# vocabulary (task 036 puts it in run state, task 037 compares it against the
+# current source hash) so no surface invents its own word for it.
+IMAGE_SOURCE_PINNED = "pinned"        # --image / RALPHD_IMAGE / template / registry
+IMAGE_SOURCE_CACHED = "cached"        # ralphd:<hash> already present -- tag lookup only
+IMAGE_SOURCE_BUILT = "built"          # ralphd:<hash> was missing and got built
+IMAGE_SOURCE_UNHASHABLE = "unhashable"  # no source tree to hash (wheel/pipx)
+
+# Bounded build output (requirement H4: "visible enough to debug a failing
+# build without drowning the start path"). Every line is echoed, prefixed and
+# clipped, until ECHO_LINES; past that only the last TAIL_LINES are kept, and
+# they are printed if -- and only if -- the build then fails.
+IMAGE_BUILD_ECHO_LINES = 200
+IMAGE_BUILD_TAIL_LINES = 40
+IMAGE_BUILD_LINE_WIDTH = 200
+IMAGE_BUILD_PREFIX = "  build: "
+IMAGE_BUILD_ELIDED_NOTICE = (
+    f"... more than {IMAGE_BUILD_ECHO_LINES} lines of build output; "
+    f"showing the last {IMAGE_BUILD_TAIL_LINES} only if the build fails")
+IMAGE_NO_SOURCE_NOTICE = (
+    "cannot hash the job image inputs: no ralphd source tree next to this "
+    f"install (no {image.SOURCE_MARKER}), so nothing can be built from "
+    f"content -- falling back to {DEFAULT_IMAGE}. Pin one with --image, or "
+    "see docs/architecture.md on installing from a checkout.")
+
+
+def image_exists(ref: str) -> bool:
+    """Is this image reference present on the local daemon? (The cache check.)"""
+    return sh([DOCKER, "image", "inspect", ref]).returncode == 0
+
+
+def _image_build_env() -> dict:
+    """Environment for the build.
+
+    Defaults to the legacy builder because the case ralphd itself has to work
+    in is a build from *inside* a job container, which ships the static docker
+    client only -- no buildx plugin, so a BuildKit build there fails with a
+    confusing "buildx not found". An operator who has BuildKit and wants it
+    sets `DOCKER_BUILDKIT=1` themselves; we never override that choice.
+    """
+    env = dict(os.environ)
+    env.setdefault("DOCKER_BUILDKIT", "0")
+    return env
+
+
+def _build_image(tag: str, root: Path,
+                 dockerfile: Path) -> tuple[int, list[str], bool]:
+    """Build `tag` from `root` with `dockerfile`; return (code, tail, elided).
+
+    Output is streamed as it arrives (a 20-minute image build must not look
+    hung) but bounded: clipped per line, capped at IMAGE_BUILD_ECHO_LINES, and
+    the last IMAGE_BUILD_TAIL_LINES retained for the caller to print on
+    failure. On stderr, because stdout of `start` is the run's own report.
+    """
+    cmd = [DOCKER, "build", "-t", tag, "-f", str(dockerfile), str(root)]
+    print(f"ralphctl: building job image {tag} from {root}", file=sys.stderr)
+    tail: list[str] = []
+    echoed = 0
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                bufsize=1, env=_image_build_env())
+    except OSError as e:
+        return 127, [str(e)], False
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.rstrip("\n")[:IMAGE_BUILD_LINE_WIDTH]
+        tail.append(line)
+        del tail[:-IMAGE_BUILD_TAIL_LINES]
+        if echoed < IMAGE_BUILD_ECHO_LINES:
+            print(f"{IMAGE_BUILD_PREFIX}{line}", file=sys.stderr)
+        elif echoed == IMAGE_BUILD_ECHO_LINES:
+            print(f"{IMAGE_BUILD_PREFIX}{IMAGE_BUILD_ELIDED_NOTICE}",
+                  file=sys.stderr)
+        echoed += 1
+    return proc.wait(), tail, echoed > IMAGE_BUILD_ECHO_LINES
+
+
+def resolve_job_image(selected: str | None, *, root: Path | None = None) -> dict:
+    """Resolve the image `start` will run, building it if it does not exist.
+
+    The one place image *production* happens. Returns
+    `{image, imageSource, imageHash}` -- `imageHash` is None whenever the
+    reference was not derived from content, so a later surface can tell
+    "pinned, staleness unknowable" from "built from this exact source".
+
+    `selected` not None (an `--image` flag, `RALPHD_IMAGE`, a template's or the
+    registry's `image`) pins it: **no hash is computed and no build runs**, so
+    deliberately running an old engine stays possible and cheap.
+
+    Dies (exit 1) on a failed build. Callers must call this *before* creating
+    any run state -- requirement H4: no half-registered run.
+    """
+    if selected:
+        return {"image": selected, "imageSource": IMAGE_SOURCE_PINNED,
+                "imageHash": None}
+    src = image.source_root(root)
+    if src is None:
+        print(f"ralphctl: warning: {IMAGE_NO_SOURCE_NOTICE}", file=sys.stderr)
+        return {"image": DEFAULT_IMAGE, "imageSource": IMAGE_SOURCE_UNHASHABLE,
+                "imageHash": None}
+    tree = image.hash_image_inputs(src)
+    tag = image.image_tag(tree.hash)
+    if not tree.complete:
+        # A hash over a partial input set is still a real hash of what is
+        # there, but the build is likely to fail on the missing piece -- say so
+        # now rather than letting `pip install /opt/ralphd` explain it.
+        print(f"ralphctl: warning: image inputs missing from {src}: "
+              f"{', '.join(tree.missing)}", file=sys.stderr)
+    if image_exists(tag):
+        return {"image": tag, "imageSource": IMAGE_SOURCE_CACHED,
+                "imageHash": tree.hash}
+    code, tail, elided = _build_image(tag, src, src / image.SOURCE_MARKER)
+    if code != 0:
+        # Re-print the tail only when the live echo was cut short: otherwise
+        # every line is already above and repeating them is noise, not context.
+        if elided:
+            print(f"{IMAGE_BUILD_PREFIX}last {len(tail)} lines:", file=sys.stderr)
+            for line in tail:
+                print(f"{IMAGE_BUILD_PREFIX}{line}", file=sys.stderr)
+        die(1, f"job image build failed (exit {code}): {tag} from {src} "
+               f"({image.SOURCE_MARKER}). No run state was created -- fix the "
+               f"build, or pin an existing image with --image.")
+    print(f"ralphctl: built job image {tag}", file=sys.stderr)
+    return {"image": tag, "imageSource": IMAGE_SOURCE_BUILT,
+            "imageHash": tree.hash}
+
+
 # ---------------------------------------------------------------- start
 # job-config fields a template's job.yaml may default; explicit CLI flags
 # (checked via `is not None`/falsy, since every one of these argparse
@@ -646,7 +792,11 @@ _TEMPLATE_SCALAR_FIELDS = {
     # from job.yaml so the engine's own default (`none`) applies. The default
     # lives in engine/config.DEFAULT_PRICE_STRATEGY alone.
     "price_strategy": None,
-    "image": DEFAULT_IMAGE, "network": None,
+    # Task 033 (#20 H1): None here means "nobody selected an image" -- not
+    # `ralphd:dev`. cmd_start then hashes the image inputs and builds
+    # `ralphd:<hash>` on a cache miss; an explicit flag, `RALPHD_IMAGE`, a
+    # template's `image:` or the registry's `image` all pin instead.
+    "image": IMAGE_ENV, "network": None,
     # default lives in AUTO_RESUME_DEFAULT alone (task 026) -- never a
     # second literal here
     "auto_resume": AUTO_RESUME_DEFAULT,
@@ -717,6 +867,11 @@ def cmd_start(args):
     if rdir.exists() and any(rdir.iterdir()):
         die(2, f"run {run_id} already exists")
     cdir = config_root(run_id)
+    # Requirement H1/H4 (#20): resolve -- and, on a cache miss, BUILD -- the
+    # job image *before* any run state exists, so a failed build aborts here
+    # instead of leaving a half-registered run dir behind. An explicit
+    # selection (flag/env/template/registry) pins and skips both steps.
+    args.image = resolve_job_image(args.image)["image"]
     rdir.mkdir(parents=True, exist_ok=True)
     cdir.mkdir(parents=True, exist_ok=True)
     os.chmod(cdir, 0o700)

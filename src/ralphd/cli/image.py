@@ -75,6 +75,12 @@ HASH_RE = re.compile(rf"^[0-9a-f]{{{HASH_LENGTH}}}$")
 # docs and later tasks refer to.
 IMAGE_INPUTS = ("container", "pyproject.toml", "src/ralphd")
 
+# The image repository the content hash tags into: `ralphd:<hash>` (task 033,
+# requirement H1). Spelled once here so the builder, the cache lookup and
+# `doctor`'s staleness check cannot disagree about what the default job image
+# is called.
+IMAGE_REPO = "ralphd"
+
 # The file that marks a directory as a ralphd source root worth hashing --
 # i.e. a checkout, as opposed to a `pipx`/wheel install that has no
 # `container/` at all (the packaging interaction task 038 decides).
@@ -97,6 +103,30 @@ EXCLUDED_SUFFIXES = (".pyc", ".pyo", ".pyd", ".orig", ".rej", ".swp", "~")
 EXCLUDED_FILE_NAMES = frozenset({".DS_Store"})
 
 _CHUNK = 1 << 20
+
+
+def image_tag(short_hash: str) -> str:
+    """`ralphd:<hash>` -- the one spelling of the default job image's tag.
+
+    Takes the short hash (`HashedTree.hash`) rather than a HashedTree so a
+    caller holding only a tag component (`doctor` comparing the tag in use
+    against the current source hash, task 037) uses the same formatting.
+    """
+    return f"{IMAGE_REPO}:{short_hash}"
+
+
+def tag_hash(ref: str) -> str | None:
+    """The content hash inside a `ralphd:<hash>` reference, or None.
+
+    None means "this reference was not produced by hashing these inputs" --
+    an operator's own pin, a registry ref, or a `ralphd:dev` built by hand.
+    Absence is an answer: a caller must not treat an unrecognized reference as
+    stale *or* as fresh (task 037 reports it as neither).
+    """
+    repo, sep, tag = ref.partition(":")
+    if not sep or repo != IMAGE_REPO or not HASH_RE.match(tag):
+        return None
+    return tag
 
 
 def is_excluded_dir(name: str) -> bool:

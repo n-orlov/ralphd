@@ -156,7 +156,10 @@ def test_start_allow_docker_missing_socket_exits_2(ctl, tmp_path):
                   env={"RALPHD_DOCKER_SOCK": str(tmp_path / "absent.sock")})
     assert res.returncode == 2
     assert "not found" in res.stderr
-    assert ctl.recorded() == []  # never reached docker run
+    # never reached docker run. (The job-image cache probe -- `image inspect`,
+    # task 033 -- legitimately precedes this check, so the invariant is about
+    # `run`, not about the log being empty.)
+    assert [a for a in ctl.recorded() if a[:1] == ["run"]] == []
 
 
 def test_start_allow_docker_non_socket_path_exits_2(ctl, tmp_path):
