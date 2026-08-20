@@ -16,12 +16,13 @@ Serves two things:
     /api/runs/<id>/iterations/<n>` (task 020), `GET
     /api/runs/<id>/documents[/<name>]` (task 022), `GET
     /api/runs/<id>/artifacts[/<path>]` (task 024) and `GET
-    /api/runs/<id>/fault` (task 026), because the engine,
+    /api/runs/<id>/fault` (task 026) and `GET /api/runs/<id>/cost`
+    (task 028), because the engine,
     the agent and `start` write `iterations/NNNN/meta.json`, the
     transcript, status.json, events.jsonl, the run's state documents and
     everything under `artifacts/` into the run dir / job config dir
     themselves -- see
-    `iteration_view`/`document_list`/`artifact_list`/`fault_view`.
+    `iteration_view`/`document_list`/`artifact_list`/`fault_view`/`cost_view`.
     Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
@@ -58,6 +59,8 @@ from ..engine.state import (
     artifact_entries,
     artifact_summary_lines,
     artifact_text,
+    cost_breakdown,
+    cost_breakdown_text,
     fault_explanation,
     fault_text,
     format_approach,
@@ -443,6 +446,37 @@ def fault_view(reg: Path, run_id: str) -> dict:
     """
     exp = fault_explanation(reg / "runs" / run_id)
     return {"runId": run_id, **exp, "text": fault_text(exp)}
+
+
+def cost_view(reg: Path, run_id: str) -> dict:
+    """What this run spent, per phase and per approach, for the hub's cost
+    dialog behind the usage card's cost cell (task 028, #18.5).
+
+    The payload is `engine.state.cost_breakdown` -- the ONE shaping of
+    status.json's `usage` buckets (task 027), `summaryLines` and all -- plus
+    `text`, i.e. `state.cost_breakdown_text`. So it is byte-for-byte the
+    document `ralphctl cost <run> --json` prints and the dialog body is the very
+    block `ralphctl cost <run>` prints: app.js only puts `text` into a text
+    node, and the two surfaces cannot label the same money differently
+    (provider-priced, `~… derived`, a partial subtotal, `unavailable`).
+
+    The headline the dialog hangs off stays the card's own `costDisplay` --
+    `format_cost` applied to the same bucket (`cost_breakdown`'s `total`), so
+    opening the dialog can never contradict the number that was clicked.
+
+    A run with no usage at all is NOT an error: the breakdown answers
+    `hasUsage: false` and its `text` is `state.COST_NO_USAGE` (the
+    `NO_FAULT`/`NO_ARTIFACTS` discipline), so the cell is never a lie about
+    having a breakdown to show.
+
+    Purely on-disk, like `iteration_view`/`document_list`/`artifact_list`/
+    `fault_view` and `ralphctl cost`: status.json is the engine's own atomic
+    write, so a live run and one whose container is long gone read identically
+    -- there is no live answer to prefer and hence no `live` flag and no
+    snapshot notice.
+    """
+    bd = cost_breakdown(reg / "runs" / run_id)
+    return {"runId": run_id, **bd, "text": cost_breakdown_text(bd)}
 
 
 def _config_dir(reg: Path, run_id: str) -> Path:
@@ -999,6 +1033,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"error": f"run {run_id} not found"}, 404)
                     return
                 self._send_json(fault_view(reg, run_id))
+                return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "cost":
+                # Task 028 (#18.5): what this run spent, per phase and per
+                # approach, for the dialog behind the usage card's cost cell.
+                # Purely on-disk (see `cost_view`), like the fault, iteration,
+                # document and artifact views above.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                self._send_json(cost_view(reg, run_id))
                 return
             if (len(segs) == 5 and segs[:2] == ["api", "runs"]
                     and segs[3] == "iterations"):

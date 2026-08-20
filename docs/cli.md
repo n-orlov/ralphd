@@ -955,7 +955,8 @@ much of this figure is actually known" meant reading JSON by hand.
   `tests/test_cli_cost_breakdown.py`.
 - The block below the `run:` line is worded ONCE, by
   `ralphd.engine.state.cost_breakdown_lines`, so the hub's cost-breakdown
-  dialog (task 028) shows the same numbers in the same words.
+  dialog (task 028, `GET /api/runs/<id>/cost`, opened by the usage card's cost
+  cell) shows the same numbers in the same words.
 
 ### `ralphctl docs <run-id> [name]`
 
@@ -2026,6 +2027,21 @@ JSON endpoints served under `/api/`:
   `live` flag (status.json, `events.jsonl` and the iteration metas are the
   engine's own writes), like the iteration/document/artifact endpoints above.
   `404` for an unknown run id.
+- `GET /api/runs/<id>/cost` — what this run spent, per phase and per approach,
+  for the hub's cost-breakdown dialog behind the usage card's cost cell (task
+  028, issue #18.5). Byte-for-byte the document `ralphctl cost <run> --json`
+  prints: the shared shaping `ralphd.engine.state.cost_breakdown` produces
+  (`hasUsage`, `total`, the `byPhase`/`byApproach` lists, `costDisplay`/
+  `costStatus`/`costSource`, `model`/`modelRaw`, `sources`, `notices`,
+  `summaryLines`) plus `runId` and `text` — the complete dialog body, i.e.
+  exactly the block `ralphctl cost <run>` prints below its `run:` line. So the
+  hub cannot label money differently from the CLI, and `costDisplay` is the very
+  string the card's cost cell already shows — opening the breakdown can never
+  contradict the number that was clicked. A run that recorded no usage is **not**
+  an error: it answers `hasUsage: false` with `(no usage recorded)` as its `text`.
+  On-disk only, with no `live` flag (status.json is the engine's own atomic
+  write), like the fault/iteration/document/artifact endpoints. `404` for an
+  unknown run id.
 - `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, for the
   hub's iteration dialog (task 020, issue #18.1): the exact dict `ralphctl
   iteration` prints from (`ralphd.engine.state.iteration_detail` — `number`,
@@ -2233,6 +2249,17 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   of the outage budget is spent. Because the endpoint is on-disk this works with
   the container long gone — and a run that never faulted carries no badge, so
   there is nothing to click and nothing to explain.
+  The **usage card's cost cell** is a `<button class="cost-cell"
+  data-cost-cell="total">` (task 028, issue #18.5) — keyboard-reachable,
+  Enter/Space from the platform — opening this run's cost breakdown in the same
+  single `<dialog>`. The headline stays exactly the `costDisplay` string the card
+  always showed; the dialog body is the `text` string `GET /api/runs/<id>/cost`
+  formatted (see above), i.e. exactly what `ralphctl cost <run>` prints, as text
+  nodes only: the per-phase and per-approach buckets, and whether each figure was
+  quoted by the provider, derived from the host-side rate table, a partial
+  subtotal or `unavailable`. Because the endpoint is on-disk this works with the
+  container long gone — and a run that reported no usage at all has no cost cell
+  to click.
   A run whose post-terminal **reflection failed** (`reflect.ok: false`)
   gets a `.reflect-failed` line -- `reflection: failed (<error>)`, the same
   wording `ralphctl status` prints -- since the failure deliberately leaves
