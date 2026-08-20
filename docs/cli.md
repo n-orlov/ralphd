@@ -196,23 +196,64 @@ List all runs (live and historical) from the registry, **newest first**.
 
 ```
 ralphctl runs [--state running|succeeded|failed|aborted]
-              [--sort runId|state|verdict|phase|approach|iterationsUsed|startedAt]
+              [--sort runId|state|verdict|phase|approach|tasks|iterationsUsed|startedAt]
               [--reverse]
 ```
 
-Columns: run ID, state, verdict, phase, approach, iterations used/budget,
-started (absolute local time via the shared formatter, see `status` below).
+Columns: run ID, state, verdict, phase, approach, tasks, iterations
+used/budget, started (absolute local time via the shared formatter, see
+`status` below).
 The **approach** column renders the counter against its limit (task 007,
 issue #16): `2/3` for a run with `maxApproaches` recorded, a bare `2` for a
 pre-v0.6 run dir where the limit is unknown (the live config's limit is never
 guessed in), and **blank** for a run that has not entered the review ladder
 yet — never `/3`, never the literal `None`. Same renderer as `ralphctl
 status` and the hub (`ralphd.engine.state.format_approach`).
+
+The **tasks** column (task 015, issue #21) is the hub run list's TASKS cell
+flattened to one string by `ralphd.engine.state.format_task_column`:
+
+```
+RUN                      STATE      VERDICT    PHASE     APPROACH TASKS        ITER    STARTED
+selfdev-v06              running    None       worker    1/3      5/7 ⚠        41/250  2026-09-02 11:04:07 +0000
+nightly-docs             succeeded  verified   review    2/3      7/7          18/60   2026-09-01 22:10:00 +0000
+fresh-start              starting   None       None                            0/250   2026-09-02 12:00:00 +0000
+```
+
+- `5/7` — completed/total, counted from that run's own `tasks.json` with the
+  engine's `state.task_counts`, through the **hardened last-good reader**
+  (issue #15) with `persist=False`: a poll landing inside the agent's rewrite
+  of the plan shows the last plan that parsed rather than blinking to nothing,
+  and the CLI never writes a cache into somebody else's run dir.
+- **blank**, never `0/0`, for a run whose agent has not written a plan yet —
+  and equally for a `tasks.json` that will not parse with no last-good payload
+  behind it (that is ignorance, not a plan of zero tasks).
+- `⚠` marks a plan with a **validation-failed** or **in-progress** task (the
+  same two states the hub flags; pending work is not trouble). The flag
+  *sentences* do not fit a column, so they are not abbreviated into a private
+  wording here: `--json` carries them verbatim in `tasksTrouble`
+  (`["1 validation-failed", "1 in-progress"]`) and `ralphctl status <run>`
+  prints the full summary.
+- `stale` after the fraction means the number came from the last-good payload
+  (`tasksSource: "last-good"`), the same label the hub shows as a pill.
+- One **local** read per listed row (after `--state` filters), never a `GET
+  /tasks` proxy call — so a run whose container is long gone shows its
+  fraction exactly like a live one, and listing N runs costs no round trips.
+
+The row itself is built once, by `TasksRead.row_fields`, and shared with the
+hub's `/api/runs`: the hub cell, `ralphctl runs` and `ralphctl status` cannot
+disagree about a run's progress.
+
 `--json` emits the merged `status.json` array — in the **same order** as the
 human table, with the raw ISO `startedAt` and the numeric `iterationsUsed`/
 `iterationsBudget` fields kept alongside the rendered `"7/250"` string, and
 both raw `approach` and `maxApproaches` numbers (either may be `null`)
-alongside the rendered `approachDisplay` string.
+alongside the rendered `approachDisplay` string. Task progress travels the
+same way: raw `tasksTotal`/`tasksCompleted`/`tasksInProgress`/
+`tasksValidationFailed` beside the rendered `tasksDisplay` (`5/7`),
+`tasksColumn` (the terminal cell), `tasksSummary`, `tasksTrouble` and issue
+#15's `tasksStale`/`tasksSource` — the same field set the hub's run-list rows
+carry.
 
 **Sorting** (task 055, issue #9) is the CLI half of the hub run list's
 click-to-sort (see “Sorting” under `ralphctl ui` below) and uses the *same*
@@ -223,10 +264,12 @@ keys, the same lifecycle orders and the same raw payload values:
 - `startedAt`, `iterationsUsed` and `approach` sort biggest/newest first;
   the text keys (`runId`, `phase`) sort A→Z; `state`/`verdict` sort in
   lifecycle order (`starting → running → succeeded → failed → aborted`, and
-  no-verdict → `unverified` → `verified`);
+  no-verdict → `unverified` → `verified`); `tasks` sorts on the completion
+  **ratio** `tasksCompleted / tasksTotal` (so `5/7` outranks `100/250`) and
+  starts **ascending**, least-complete first — the runs that still owe work;
 - `--reverse` flips whichever direction the key starts with;
-- rows with a missing value for the key (no `startedAt`/`approach` yet) sort
-  last under an ascending key and first under a descending one, so a
+- rows with a missing value for the key (no `startedAt`/`approach`/plan yet)
+  sort last under an ascending key and first under a descending one, so a
   just-started run appears at the top of the default view;
 - ties break on run id ascending, so the order is stable;
 - `--sort`/`--reverse` compose with `--state`, which filters first.
@@ -1331,7 +1374,7 @@ JSON endpoints served under `/api/`:
   verdict, phase, approach, maxApproaches, approachDisplay, iterationsUsed,
   iterationsBudget, startedAt, containerGone, tasksTotal, tasksCompleted,
   tasksInProgress, tasksValidationFailed, tasksDisplay, tasksSummary,
-  tasksTrouble, tasksStale, tasksSource}, ...]}`, read straight from every
+  tasksTrouble, tasksColumn, tasksStale, tasksSource}, ...]}`, read straight from every
   `runs/*/status.json` (no
   live proxy calls, so listing stays cheap regardless of how many runs are
   dead). `containerGone` (task 024) is `true` only for a run whose recorded
@@ -1365,6 +1408,12 @@ JSON endpoints served under `/api/`:
   `tasksSource` are the same two fields documented in docs/api.md, so a row
   served from the last-good plan keeps its fraction and says where it came
   from instead of blinking blank for a poll cycle.
+  Task 015 (issue #21) moved the whole field set into one builder,
+  `TasksRead.row_fields`, shared with `ralphctl runs` — which is why the rows
+  also carry `tasksColumn`, the same cell flattened to one string for a
+  terminal (`5/7 ⚠ stale`). The hub composes its own cell from the parts
+  instead (styled spans), but neither surface can word the counts differently:
+  there is exactly one place a run-list row is built.
 - `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, status,
   tasks, iterations}`. `status`/`tasks` are proxied live from the run's
   container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
