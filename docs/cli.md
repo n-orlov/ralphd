@@ -1157,8 +1157,10 @@ size:      844 bytes
   `tests/test_cli_artifacts.py`.
 - The listing and the header block are worded ONCE, by
   `ralphd.engine.state.format_artifact_listing` / `artifact_summary_lines` /
-  `format_artifact_size`, so the hub's artifacts panel and dialog (task 024)
-  cannot describe the same file differently.
+  `format_artifact_size`, so the hub's artifacts panel and dialog (task 024,
+  `GET /api/runs/<id>/artifacts[/<path>]`) show the very same lines and the very
+  same size cells — an artifact cannot be described as missing in one surface
+  and empty in the other.
 
 ### `ralphctl skills <run-id> [ls|get <name> <dest>|add <dir>|rm <name>]`
 
@@ -1803,6 +1805,33 @@ JSON endpoints served under `/api/`:
   back *from*. A document this run never wrote is not an error — its `text` is
   the `(not written)` wording. `404` for an unknown run id or a name that
   matches no known document.
+- `GET /api/runs/<id>/artifacts` and `GET /api/runs/<id>/artifacts/<path>` —
+  what the job left behind in `artifacts/`, for the hub's **Artifacts** panel and
+  its dialogs (task 024, issue #18.3): the same shaping `ralphctl artifacts`
+  prints from (`ralphd.engine.state.artifact_entries`/`artifact`). The listing
+  answers `{runId, artifacts: [...], notice}` with one entry per *file* under
+  `artifacts/` in path order (an artifact tree is whatever the agent wrote, so
+  unlike the document listing there is no fixed set of rows): `path` (relative
+  to `artifacts/`, and what you pass back in the URL), `key` (the well-known
+  name — `report`, `suggestions`, `reflect-failed` — or `null`), `title`,
+  `file`, `available`, `exists`, `bytes`, `isText` and `sizeDisplay`, rendered
+  server-side by `state.format_artifact_size` (the same file-size vocabulary as
+  the documents above). `notice` is `(no artifacts)` — `state.NO_ARTIFACTS`, the
+  very line `ralphctl artifacts <run> ls` prints — for a run that produced
+  nothing, else `""`. The listing carries **no bodies**: a 4s poll must not ship
+  a whole reflection report. `GET .../artifacts/<path>` adds `body`,
+  `summaryLines` and `text` — the complete dialog body, exactly what `ralphctl
+  artifacts <run> show <name>` prints. The path may be a well-known key
+  (`report`), a path relative to `artifacts/`, or that path with the directory
+  (`artifacts/reflection/report.md`), spelled either as one percent-encoded
+  segment or with real slashes. Resolution *and* the traversal guard are the
+  shaping's single `state.artifact_relpath` — an absolute path, a `..` segment
+  or a NUL is not an artifact and gets a `404`, never a file from elsewhere on
+  the host. On-disk only, with no `live` flag (the agent writes these files into
+  a directory this host holds); a binary artifact answers with the `(binary file
+  …)` wording rather than bytes, and one that is no longer there with `(not
+  written)` rather than a `404`. `404` for an unknown run id or a name that
+  cannot address an artifact at all.
 - `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, for the
   hub's iteration dialog (task 020, issue #18.1): the exact dict `ralphctl
   iteration` prints from (`ralphd.engine.state.iteration_detail` — `number`,
@@ -1922,6 +1951,21 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   documents exist is itself part of the answer, so absence is stated rather
   than hidden. The endpoint is on-disk, so the panel works for a run whose
   container is long gone — hence no snapshot label here either.
+  An **Artifacts** panel (task 024, issue #18.3) follows it and lists what `GET
+  /api/runs/<id>/artifacts` reports — every file under the run's `artifacts/`,
+  the reflect phase's `reflection/report.md` and `reflection/suggestions.diff`
+  above all, which until now could only be read by knowing the registry layout
+  and `cat`-ing files on the host. Each row is a `<button class="artifact-item"
+  data-artifact="<path>" data-artifact-key="<key>">` showing the well-known name
+  (when the file has one), the path and the server's `sizeDisplay`, and opens the
+  file in the same single `<dialog>` as the server's `text` — the very lines
+  `ralphctl artifacts <run> show <name>` prints — again as text nodes only: a
+  post-mortem report is agent-authored markdown and a suggestions diff is
+  nothing but `<`, `>` and context lines. A binary artifact stays clickable and
+  its dialog carries the server's `(binary file …)` wording, which is a better
+  answer than an unexplained dead row; a run that left nothing behind gets the
+  `(no artifacts)` notice instead of an empty panel. On-disk like the documents,
+  so it works with the container long gone.
   Each row of the **task table** is clickable (and keyboard-reachable:
   `tabindex=0`, Enter/Space) and opens that task's detail in the same
   `<dialog>` (task 057, issue #2): its `status`, `priority` and `dependsOn`

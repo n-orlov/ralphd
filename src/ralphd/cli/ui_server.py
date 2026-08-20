@@ -12,12 +12,14 @@ Serves two things:
     timeout) when it is not -- including the log tail (task 039), the
     PRD (task 056) and the steering history (task 016), which all fall
     back to reading the run dir on disk so a dead run stays readable.
-    One read is on-disk ONLY by design: `GET
-    /api/runs/<id>/iterations/<n>` (task 020) and `GET
-    /api/runs/<id>/documents[/<name>]` (task 022), because the engine,
+    Some reads are on-disk ONLY by design: `GET
+    /api/runs/<id>/iterations/<n>` (task 020), `GET
+    /api/runs/<id>/documents[/<name>]` (task 022) and `GET
+    /api/runs/<id>/artifacts[/<path>]` (task 024), because the engine,
     the agent and `start` write `iterations/NNNN/meta.json`, the
-    transcript and the run's state documents into the run dir / job
-    config dir themselves -- see `iteration_view`/`document_list`.
+    transcript, the run's state documents and everything under
+    `artifacts/` into the run dir / job config dir themselves -- see
+    `iteration_view`/`document_list`/`artifact_list`.
     Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
@@ -42,14 +44,20 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..engine.state import (
+    NO_ARTIFACTS,
     NONTERMINAL_STATES,
     STEERING_APPLIED,
     STEERING_PENDING,
     TASKS_STALE_LABEL,
+    artifact,
+    artifact_entries,
+    artifact_summary_lines,
+    artifact_text,
     format_approach,
+    format_artifact_size,
     format_cost,
     format_iteration_log_header,
     format_local_time,
@@ -86,6 +94,12 @@ NO_STEERING = "(no steering messages)"
 # none of them (and its job config dir is out of reach) -- the `NO_PRD`/
 # `NO_STEERING` discipline again, wording server-side.
 NO_DOCUMENTS = "(no state documents on disk)"
+
+# Task 024 (#18.3): the hub's artifacts panel has NO wording of its own -- the
+# "this run left nothing behind" line is `state.NO_ARTIFACTS`, i.e. the very
+# string `ralphctl artifacts <run> ls` prints, imported above rather than
+# respelled here (the `NO_DOCUMENTS`/`NO_PRD` discipline, one step further:
+# when the CLI already owns the wording, the hub reuses it).
 
 # Task 024 (#8): how long the run-list liveness probe waits for a run's API
 # port to accept a TCP connection. Deliberately tiny: the API is published on
@@ -473,6 +487,74 @@ def document_view(reg: Path, run_id: str, name: str) -> dict | None:
             "text": run_document_text(doc)}
 
 
+def _with_artifact_display(entry: dict) -> dict:
+    """Add the one server-rendered display string the artifacts panel needs:
+    `sizeDisplay`, i.e. `state.format_artifact_size` (the same file-size
+    vocabulary the document panel uses). Same discipline as
+    `_with_document_display`: app.js renders strings, and a `sizeDisplay` that
+    arrived in a payload is always recomputed from the entry's own fields."""
+    return {**entry, "sizeDisplay": format_artifact_size(entry)}
+
+
+def artifact_list(reg: Path, run_id: str) -> dict:
+    """What a run left behind in `artifacts/`, for the hub's artifacts panel
+    (task 024, #18.3): above all the reflect phase's `reflection/report.md` and
+    `reflection/suggestions.diff`, which until now could only be read by knowing
+    the registry layout and `cat`-ing files on the host.
+
+    The listing `ralphctl artifacts <run> ls` prints, as a payload:
+    `state.artifact_entries` (the ONE shaping, task 023) with `sizeDisplay`
+    added, so a file cannot be described as missing in one surface and empty in
+    the other. Unlike the document panel there is no fixed set of rows -- an
+    artifact tree is whatever the agent wrote -- so a run that produced nothing
+    is an empty list plus `state.NO_ARTIFACTS`, the CLI's own wording.
+
+    Bodies are deliberately NOT included (`artifact_entries(bodies=False)`): the
+    panel needs labels, and shipping a whole reflection report on every 4s poll
+    would be pure waste. The body arrives when a dialog opens, from
+    `artifact_view`.
+
+    Purely on-disk, like `iteration_view`/`document_list` and `ralphctl
+    artifacts`: the agent writes these files into a directory this host holds,
+    so a live run and one whose container is long gone read identically --
+    there is no live answer to prefer, hence no `live` flag and no snapshot
+    notice.
+    """
+    entries = [_with_artifact_display(e) for e in
+               artifact_entries(reg / "runs" / run_id, bodies=False)]
+    return {"runId": run_id, "artifacts": entries,
+            "notice": "" if entries else NO_ARTIFACTS}
+
+
+def artifact_view(reg: Path, run_id: str, name: str) -> dict | None:
+    """One artifact for the hub's dialog, or None when `name` cannot address an
+    artifact at all (caller -> 404).
+
+    `state.artifact` resolves a well-known key (`report`, `suggestions`), a path
+    under `artifacts/` or that path spelled with the directory -- and it is the
+    ONE traversal guard, which matters here precisely because this name arrives
+    from a URL: an absolute path or one containing `..` is not an artifact and
+    gets None rather than a file from somewhere else on the host.
+
+    The payload carries the two renderings worded ONCE in `engine.state`:
+    `summaryLines` (the header block) and `text` (header + separator + body),
+    which is exactly what `ralphctl artifacts <run> show <name>` prints -- so
+    app.js puts `text` into text nodes and the two surfaces cannot describe the
+    same file differently.
+
+    An artifact this run never wrote is not an error (the listing may be a poll
+    cycle behind the disk): it answers with the entry and
+    `state.RUN_DOCUMENT_ABSENT` as its body. A binary one answers with
+    `state.ARTIFACT_BINARY` instead of spraying bytes into a browser.
+    """
+    entry = artifact(reg / "runs" / run_id, name)
+    if entry is None:
+        return None
+    return {"runId": run_id, **_with_artifact_display(entry),
+            "summaryLines": artifact_summary_lines(entry),
+            "text": artifact_text(entry)}
+
+
 def prd_text(reg: Path, run_id: str) -> tuple[bool, str]:
     """A run's PRD for the hub's PRD dialog (task 056, #1).
 
@@ -845,6 +927,32 @@ class Handler(BaseHTTPRequestHandler):
                 if view is None:
                     self._send_json(
                         {"error": f"unknown document {segs[4]!r}"}, 404)
+                    return
+                self._send_json(view)
+                return
+            if (len(segs) >= 4 and segs[:2] == ["api", "runs"]
+                    and segs[3] == "artifacts"):
+                # Task 024 (#18.3): what the job left behind -- the listing for
+                # the panel, one artifact for the dialog. Purely on-disk (see
+                # `artifact_list`), like the documents above.
+                #
+                # An artifact is addressed by a PATH (`reflection/report.md`),
+                # so it may span several URL segments -- and app.js may also
+                # send it percent-encoded as one. Both spellings are unquoted
+                # and rejoined here, then resolved (and guarded against
+                # traversal) by the ONE resolver, `state.artifact_relpath`.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                if len(segs) == 4:
+                    self._send_json(artifact_list(reg, run_id))
+                    return
+                name = "/".join(unquote(s) for s in segs[4:])
+                view = artifact_view(reg, run_id, name)
+                if view is None:
+                    self._send_json(
+                        {"error": f"not an artifact name: {name!r}"}, 404)
                     return
                 self._send_json(view)
                 return

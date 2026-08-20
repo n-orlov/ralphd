@@ -332,3 +332,32 @@ footer.autorefresh {
 .document-item .document-size { font-size: 0.78rem; }
 .document-absent { cursor: default; opacity: 0.65; }
 .document-absent:hover { background: none; }
+
+/* artifacts panel (task 024, #18.3) -- same affordance as a document row */
+.artifact-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+.artifact-item {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: baseline;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.artifact-item:hover, .artifact-item:focus { background: rgba(127, 127, 127, 0.12); outline: none; }
+.artifact-item:focus-visible { outline: 2px solid var(--accent); }
+.artifact-item .artifact-key { font-weight: 600; }
+.artifact-item .artifact-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.artifact-item .artifact-size { font-size: 0.78rem; }

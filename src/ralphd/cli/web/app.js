@@ -431,6 +431,88 @@ async function loadDocuments(runId) {
   renderDocuments(box, ok, body, runId);
 }
 
+// -------------------------------------------------------- artifacts (#18.3)
+
+// Task 024 (#18.3): what the job left behind in `artifacts/` -- above all the
+// reflect phase's post-mortem (`reflection/report.md`) and the prompt/skill
+// diff it proposes (`reflection/suggestions.diff`) -- used to be reachable only
+// by knowing the registry layout and `cat`-ing files on the host, so the whole
+// point of the reflect phase was invisible from the hub. The panel lists what
+// `GET /api/runs/<id>/artifacts` reports and opens each entry in THE single
+// `openTextDialog`.
+//
+// Every string shown was formatted in Python: the row's size cell is
+// `state.format_artifact_size` (`sizeDisplay`), the row's label is the
+// artifact's own key/path, and the dialog body is `state.artifact_text`, the
+// very text `ralphctl artifacts <run> show <name>` prints -- including its
+// wording for an artifact that vanished, is empty, or is binary (a report is
+// agent-authored markdown, a diff is full of `<`/`>`; both go in as TEXT NODES
+// only, exactly like a PRD). The endpoint is on-disk, so this works for a dead
+// run with no container (hence no live/snapshot note).
+
+const ARTIFACT_LOAD_FAILED = "failed to load the run's artifacts";
+
+function artifactTitle(runId, a) {
+  return String(a.path || a.key || "artifact") + " — " + String(runId);
+}
+
+async function openArtifactDialog(runId, a) {
+  const name = String(a.path || a.key || "");
+  const path = `/api/runs/${encodeURIComponent(runId)}/artifacts/` +
+    encodeURIComponent(name);
+  const { ok, body } = await getJSON(path);
+  const text = (ok && body && typeof body.text === "string" && body.text)
+    ? body.text
+    : "(failed to load " + name + ")";
+  return openTextDialog(artifactTitle(runId, a), text, null);
+}
+
+function renderArtifacts(box, ok, body, runId) {
+  box.innerHTML = "";
+  if (!ok || !body) {
+    box.appendChild(h("p", { class: "muted" }, [ARTIFACT_LOAD_FAILED]));
+    return;
+  }
+  const items = Array.isArray(body.artifacts) ? body.artifacts : [];
+  const list = h("div", { class: "artifact-list", id: "artifact-list" }, []);
+  for (const a of items) {
+    const path = String(a.path || "");
+    const key = String(a.key || "");
+    const size = String(a.sizeDisplay || "");
+    // A <button>, like a document row: keyboard reachability and Enter/Space
+    // come from the platform. A binary artifact stays clickable -- the server
+    // answers with its own "copy it out with pull" wording, which is a better
+    // answer than an unexplained dead row.
+    list.appendChild(h("button", {
+      type: "button",
+      class: "artifact-item",
+      "data-artifact": path,
+      "data-artifact-key": key,
+      title: String(a.title || ""),
+      onclick: () => { openArtifactDialog(runId, a); },
+    }, [
+      key ? h("span", { class: "artifact-key" }, [key]) : null,
+      h("span", { class: "artifact-path" }, [path]),
+      h("span", { class: "muted artifact-size" }, [" " + size]),
+    ]));
+  }
+  box.appendChild(list);
+  if (body.notice) {
+    // Wording comes from the server (`state.NO_ARTIFACTS`, the same line
+    // `ralphctl artifacts ls` prints), like the document panel's notice.
+    box.appendChild(h("p", { class: "muted", id: "artifacts-notice" },
+                      [String(body.notice)]));
+  }
+}
+
+async function loadArtifacts(runId) {
+  const box = document.getElementById("artifacts-box");
+  const { ok, body } = await getJSON(
+    `/api/runs/${encodeURIComponent(runId)}/artifacts`);
+  if (!box) return;
+  renderArtifacts(box, ok, body, runId);
+}
+
 // --------------------------------------------------- steering history (#17)
 
 // Task 017 (#17): steering used to be write-only in the hub -- an operator
@@ -622,6 +704,12 @@ async function renderRunDetail(runId) {
     h("h2", {}, ["State documents"]),
     h("div", { id: "documents-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
   ]);
+  // Task 024 (#18.3): what the job left behind -- the reflect report and the
+  // diff it proposes above all -- one click away too.
+  const artifactSec = h("section", {}, [
+    h("h2", {}, ["Artifacts"]),
+    h("div", { id: "artifacts-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
+  ]);
   const usageSec = h("section", {}, [h("h2", {}, ["Usage / cost"]), h("div", { id: "usage-box" })]);
   const taskSec = h("section", {}, [h("h2", {}, ["Tasks"]), h("div", { id: "task-box" })]);
   const timelineSec = h("section", {}, [h("h2", {}, ["Iteration timeline"]), h("div", { id: "timeline-box" })]);
@@ -646,6 +734,7 @@ async function renderRunDetail(runId) {
 
   app.appendChild(summary);
   app.appendChild(docSec);
+  app.appendChild(artifactSec);
   app.appendChild(usageSec);
   app.appendChild(taskSec);
   app.appendChild(timelineSec);
@@ -700,6 +789,7 @@ async function renderRunDetail(runId) {
     await loadLogs(runId);
     await loadSteering(runId);
     await loadDocuments(runId);
+    await loadArtifacts(runId);
   }
 
   await load();
