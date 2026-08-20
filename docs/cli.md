@@ -778,6 +778,87 @@ steering:  001-focus.md
   `tests/test_hub_iteration_dialog.py`, so the two surfaces cannot grow two
   vocabularies for the same `meta.json`.
 
+### `ralphctl docs <run-id> [name]`
+
+A run's own **state documents** — the prose a run leaves behind, plus the config
+it was launched with (task 021, #18.2):
+
+| Key | File | What it is |
+|-----|------|------------|
+| `notes` | `notes.md` (run dir) | handoff notes the worker rewrites every iteration |
+| `findings` | `review-findings.md` (run dir) | the reviewer's findings that sent the run into another approach |
+| `composite-prd` | `composite-prd.md` (run dir) | the PRD text the agent works from once an approach restarts |
+| `job` | `job.yaml` (config dir) | effective job config as inlined at `start`, **secret values redacted** |
+
+```
+ralphctl docs <run-id>            # which documents exist, with sizes
+ralphctl docs <run-id> <name>     # one document: header block + full body
+```
+
+`<name>` is a key or the file name (`notes` and `notes.md` both work,
+case-insensitively). The original `prd.md` is not in this list — it has its own
+surface (the hub's PRD dialog, `GET /prd`).
+
+```
+$ ralphctl docs brisk-otter-1408
+run:       brisk-otter-1408
+DOCUMENT      FILE                         SIZE  DESCRIPTION
+notes         notes.md                    2,914  handoff notes the worker rewrites every iteration
+findings      review-findings.md          1,102  the reviewer's findings that sent the run into another approach
+composite-prd composite-prd.md    (not written)  the PRD text the agent works from (written when an approach restarts)
+job           job.yaml                      412  effective job config as inlined at start, secret values redacted
+
+$ ralphctl docs brisk-otter-1408 job
+run:       brisk-otter-1408
+document:  job  (job.yaml)
+purpose:   effective job config as inlined at start, secret values redacted
+size:      412 bytes
+note:      secret values redacted
+--- job.yaml ---
+run_id: "brisk-otter-1408"
+iterations: 250
+api_token: "***REDACTED***"
+on_complete_cmd: "curl -H 'Authorization: Bearer [REDACTED:github.env:GITHUB_TOKEN]' https://ci"
+model: "amazon-bedrock/eu.anthropic.claude-opus-5"
+price_strategy: "aws"
+```
+
+- **`job.yaml` is redacted mechanically, on two independent bounds**, because
+  the alternative — remembering not to `cat` it — has already failed twice in
+  this project (see `src/ralphd/engine/redact.py`): every value under a
+  secret-shaped key **name** (`api_token`, a nested `AWS_SECRET_ACCESS_KEY`,
+  anything matching `TOKEN|KEY|SECRET|PASSWORD`) is replaced with
+  `***REDACTED***`, and every **value** this host knows to be a secret — from
+  its own environment, `~/.creds`, and the run's own staged config dir
+  (`creds/*.env`, `llm-wiring.json`, `env-wiring.json`, `pi/models.json`) — is
+  scrubbed as `[REDACTED:<label>]` wherever it appears, including inside an
+  innocently-named key like `on_complete_cmd`. Key order, structure and every
+  non-secret value survive verbatim, so the output is still the file. Output of
+  this command is safe to paste into an issue; `cat`-ing the file is not.
+- **Which documents exist is part of the answer.** A document this run never
+  wrote is a listed row saying `(not written)`, never a dropped line; asking for
+  it exits `1` and names the documents that *are* on disk. A file that exists
+  but is blank prints `(empty)` — two different facts, two different words.
+- **Purely on-disk, no container needed and no snapshot notice**, like
+  `ralphctl iteration`: these files are written into the run dir and the config
+  dir by the agent, the engine and `start` itself, so a live run and one whose
+  container is long gone read identically. Nothing is written or created by
+  reading (no `RunDir` construction — a viewer must not mkdir into somebody
+  else's run dir).
+- `--json` on the listing prints `{runId, documents: [...]}` with
+  `key`/`name`/`where`/`title`/`path`/`available`/`exists`/`bytes`/`redacted`
+  and **no bodies**; `--json` with a name adds `body` (already redacted — there
+  is no raw back door) and `text`, the complete rendering the human view prints.
+  `available: false` means the reader had no config dir to look in, which is
+  not the same as the document being missing.
+- Exit codes: `0` · `1` the named document is not there · `2` unknown document
+  name (the message lists the keys) · `3` run not found. Pinned by
+  `tests/test_cli_run_documents.py`.
+- The header block and the listing are worded ONCE, by
+  `ralphd.engine.state.run_document_summary_lines` /
+  `format_run_document_listing`, so the hub's document dialogs (task 022) show
+  the very same lines.
+
 ### `ralphctl tasks <run-id>`
 
 Task table (or full `tasks.json` with `--json`).
