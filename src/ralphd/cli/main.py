@@ -39,6 +39,7 @@ from .. import __version__
 from ..engine.config import PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
+    IMAGE_RECORD_KEYS,
     NO_ARTIFACTS,
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
@@ -57,10 +58,14 @@ from ..engine.state import (
     format_artifact_listing,
     format_cost,
     format_duration,
+    format_image,
+    format_image_id,
     format_iteration_log_header,
     format_local_time,
     format_run_document_listing,
     format_task_counts,
+    image_record,
+    image_record_from,
     iteration_detail,
     iteration_summary_lines,
     parse_utc,
@@ -656,6 +661,15 @@ IMAGE_SOURCE_PINNED = "pinned"        # --image / RALPHD_IMAGE / template / regi
 IMAGE_SOURCE_CACHED = "cached"        # the hashed tag already present -- tag lookup only
 IMAGE_SOURCE_BUILT = "built"          # the hashed tag was missing and got built
 IMAGE_SOURCE_UNHASHABLE = "unhashable"  # no source tree to hash (wheel/pipx)
+# Task 036 (#20 H4): `resume` reproducing the image THIS RUN started on, from
+# the record in its own run state -- neither hashed nor built, just reused.
+IMAGE_SOURCE_RECORDED = "recorded"
+# ... and the last resort: a run whose state records no image and whose job.yaml
+# holds no recipe (a pre-v0.6 run dir), resumed on DEFAULT_IMAGE. A word of its
+# own because it is the one case where nothing at all is known about the image
+# -- neither content hash nor operator intent (task 037 must not read it as a
+# deliberate pin).
+IMAGE_SOURCE_DEFAULT = "default"
 
 # `cached`/`built` describe *both* hashed repositories, and `imageBase` is what
 # tells them apart: None for the default `ralphd:<hash>`, the operator's base
@@ -678,6 +692,23 @@ IMAGE_BASE_AND_DOCKERFILE_NOTICE = (
     "the base the job image is derived from: one names an image that already "
     "exists, the other a recipe to build one. Pass one or the other, not both.")
 IMAGE_DOCKERFILE_UNUSABLE = "cannot build a base image from {what}: {why}"
+
+# Task 036 (#20 H4): what `resume` says when the image a run started on cannot
+# be reproduced exactly. Every one of these is a warning, never a refusal: a
+# resume that will not start is worse than a resume the operator was told about.
+IMAGE_RECORDED_MOVED_NOTICE = (
+    "run state records this run's image as {ref} (id {short}), but {ref} now "
+    "names a different image -- running the recorded id instead, so this "
+    "resume continues on the image the run started on.")
+IMAGE_RECORDED_ID_GONE_NOTICE = (
+    "run state records this run's image as {ref} (id {short}), but {ref} now "
+    "names a different image and the recorded id is no longer on this daemon "
+    "-- running {ref} as it is today. This resume may run a different engine "
+    "than the run started with.")
+IMAGE_RECORDED_GONE_NOTICE = (
+    "the image this run started on ({ref}) is no longer on this daemon -- "
+    "resolving one again from this run's own configuration instead. This "
+    "resume may run a different engine than the run started with.")
 
 # The three keys that decide which image `start` runs, resolved as ONE unit
 # (`_resolve_image_supply`, task 035 / requirement H3) rather than field by
@@ -718,6 +749,36 @@ IMAGE_NO_SOURCE_NOTICE = (
 def image_exists(ref: str) -> bool:
     """Is this image reference present on the local daemon? (The cache check.)"""
     return sh([DOCKER, "image", "inspect", ref]).returncode == 0
+
+
+def inspect_image(ref: str) -> tuple[bool, str | None]:
+    """`(present, image id)` for a reference on the local daemon (task 036).
+
+    Two questions in one call because they must be answered about the same
+    instant: `resume` has to know both whether the image it recorded is still
+    here *and* whether that reference still names the same image (a mutable pin
+    like `ralphd:dev` moves under a run). `(False, None)` for an absent
+    reference; `(True, None)` when the daemon has it but would not say which id
+    (never inferred as absence -- unknown is not gone).
+    """
+    res = sh([DOCKER, "image", "inspect", "--format", "{{.Id}}", ref])
+    if res.returncode != 0:
+        return False, None
+    return True, res.stdout.strip() or None
+
+
+def container_image_id(container: str) -> str | None:
+    """The content id of the image a container is actually running, or None.
+
+    Asked of the container rather than of the reference on purpose: it is the
+    only answer that stays true for a reference the daemon resolved itself (a
+    pinned tag `docker run` pulled, or a tag that moves later). Never fatal --
+    an unanswerable id is recorded as absent, not as an error.
+    """
+    res = sh([DOCKER, "inspect", "--format", "{{.Image}}", container])
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() or None
 
 
 def _image_build_env() -> dict:
@@ -938,6 +999,30 @@ def resolve_job_image(selected: str | None, *, base: str | None = None,
     return {"image": tag, "imageSource": IMAGE_SOURCE_BUILT,
             "imageHash": tree.hash, "imageBase": None,
             "imageDockerfile": None}
+
+
+def _image_record_fields(resolved: dict, container: str) -> dict:
+    """The job-image record `start`/`resume` write into host.json beside
+    `image` (task 036, requirement H4).
+
+    Two halves: the *provenance* `resolve_job_image`/`_resume_image` reported
+    (how the reference was arrived at, the content hash it was tagged by, the
+    base and the operator Dockerfile behind it), and the *identity* of the image
+    the container actually got -- observed from the container itself, so a
+    pinned reference the daemon pulled, or one that moves tomorrow, is still
+    recorded as the image this run runs.
+
+    Keys nothing is known about are omitted rather than written as nulls, which
+    is host.json's existing convention (`network`/`workspace`); readers get the
+    explicit-null contract from `engine.state.image_record` instead. `image`
+    itself is left to the caller, which already writes it.
+    """
+    fields = {k: v for k, v in resolved.items()
+              if k in IMAGE_RECORD_KEYS and k != "image" and v is not None}
+    observed = container_image_id(container)
+    if observed:
+        fields["imageId"] = observed
+    return fields
 
 
 # ---------------------------------------------------------------- start
@@ -1291,8 +1376,10 @@ def cmd_start(args):
     container = res.stdout.strip()
     meta = {"runId": run_id, "container": container, "port": port,
             "apiUrl": f"http://{args.api_bind}:{port}",
-            "image": args.image, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                            time.gmtime())}
+            "image": args.image,
+            **_image_record_fields(resolved_image, container),
+            "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                       time.gmtime())}
     if args.network:
         meta["network"] = args.network
     if ws is not None:
@@ -1499,8 +1586,9 @@ def _apply_iterations_topup(job: dict, spec: str) -> None:
         die(2, f"--iterations: invalid value {spec!r} (expected e.g. +10 or 30)")
 
 
-def _resume_job_image(job: dict) -> str:
-    """The image a `resume` runs when the operator pinned none (task 035, H3).
+def _resume_job_image(job: dict) -> dict:
+    """The image recipe a `resume` replays when run state records none (task
+    035, H3) -- one `resolve_job_image` record, same shape as `start`'s.
 
     A run started from a `--base-image` or a `--dockerfile` recorded those
     ingredients in its own `job.yaml` (see cmd_start), so a resume replays the
@@ -1509,17 +1597,72 @@ def _resume_job_image(job: dict) -> str:
     image without the toolchain the PRD was written against. On unchanged
     sources the replay is a pure tag lookup: same base, same source, same tag.
 
-    A run with no recipe recorded keeps the pre-035 behaviour exactly
-    (DEFAULT_IMAGE), and requirement H4's stronger promise -- reproduce the
-    *resolved* tag even after the sources moved -- is task 036's, which records
-    it in run state and prefers it over this replay.
+    This is the *fallback*, not the first answer: task 036 records the resolved
+    image itself in run state and `_resume_image` prefers it, because replaying
+    a recipe over changed sources produces a different image, and requirement
+    H4 asks for the same one. A run with no recipe and no record keeps the
+    pre-035 behaviour exactly (DEFAULT_IMAGE).
     """
     base = job.get("base_image") or None
     dockerfile = job.get("dockerfile") or None
     if not (base or dockerfile):
-        return DEFAULT_IMAGE
+        return {"image": DEFAULT_IMAGE, "imageSource": IMAGE_SOURCE_DEFAULT,
+                "imageHash": None, "imageBase": None, "imageDockerfile": None}
     return resolve_job_image(job.get("image") or None, base=base,
-                            dockerfile=dockerfile)["image"]
+                            dockerfile=dockerfile)
+
+
+def _resume_image(pinned: str | None, job: dict, prev_meta: dict) -> dict:
+    """Which image a `resume` runs -- requirement H4's core promise (task 036).
+
+    Ranked, most-specific-first:
+
+    1. `--image` pins, as everywhere else.
+    2. **the image this run started on**, as recorded in its own run state
+       (`host.json`: the reference plus the daemon-observed content id). It is
+       reproduced exactly -- by reference while that reference still names the
+       recorded image, by the recorded *id* once the reference has moved -- and
+       on this path **no hash is computed and no build runs**: a resume after
+       the sources changed continues on the same engine instead of hashing the
+       checkout again and swapping the engine mid-run.
+    3. the *recipe* the run started with (task 035), when the recorded image is
+       no longer on this daemon at all (pruned, or a different machine).
+    4. DEFAULT_IMAGE, for a pre-v0.6 run dir that records neither.
+
+    Returns a `resolve_job_image`-shaped record (so `cmd_resume` writes the
+    same host.json fields `cmd_start` does); provenance recorded at `start`
+    (hash/base/dockerfile) is carried forward on path 2, because it is
+    literally the same image. Every degradation is announced on stderr.
+    """
+    if pinned:
+        return {"image": pinned, "imageSource": IMAGE_SOURCE_PINNED,
+                "imageHash": None, "imageBase": None, "imageDockerfile": None}
+    rec = image_record_from(prev_meta)
+    ref, rec_id = rec["image"], rec["imageId"]
+
+    def recorded(reference: str) -> dict:
+        return {"image": reference, "imageSource": IMAGE_SOURCE_RECORDED,
+                "imageHash": rec["imageHash"], "imageBase": rec["imageBase"],
+                "imageDockerfile": rec["imageDockerfile"]}
+
+    def warn(notice: str) -> None:
+        print(f"ralphctl: warning: {notice}", file=sys.stderr)
+
+    if ref:
+        present, current_id = inspect_image(ref)
+        if present and (not rec_id or not current_id or current_id == rec_id):
+            # the recorded reference still names the recorded image (or nobody
+            # can say otherwise) -- the whole promise, for one docker call.
+            return recorded(ref)
+        short = format_image_id(rec_id)
+        if rec_id and inspect_image(rec_id)[0]:
+            warn(IMAGE_RECORDED_MOVED_NOTICE.format(ref=ref, short=short))
+            return recorded(rec_id)
+        if present:
+            warn(IMAGE_RECORDED_ID_GONE_NOTICE.format(ref=ref, short=short))
+            return recorded(ref)
+        warn(IMAGE_RECORDED_GONE_NOTICE.format(ref=ref))
+    return _resume_job_image(job)
 
 
 def _container_running(name: str) -> bool | None:
@@ -1559,11 +1702,13 @@ def cmd_resume(args):
     if args.iterations:
         _apply_iterations_topup(job, args.iterations)
         _write_job_yaml(job_path, job)
-    # `--image` on resume pins as always; with no flag, replay the image recipe
-    # this run started with (task 035) instead of whatever `ralphd:dev` is today.
-    args.image = args.image or _resume_job_image(job)
-
     prev_meta = host_meta(run_id)
+    # `--image` on resume pins as always; with no flag, reproduce the image this
+    # run started on from its own run state (task 036, H4), falling back to the
+    # recipe it started with (task 035) only when that image is gone.
+    resolved_image = _resume_image(args.image, job, prev_meta)
+    args.image = resolved_image["image"]
+
     ws = prev_meta.get("workspace")
     ws_named: dict[str, str] = prev_meta.get("workspaces") or {}
     port = args.port or free_port()
@@ -1633,6 +1778,7 @@ def cmd_resume(args):
     meta = {"runId": run_id, "container": container, "port": port,
             "apiUrl": f"http://{args.api_bind}:{port}",
             "image": args.image,
+            **_image_record_fields(resolved_image, container),
             "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if network:
         meta["network"] = network
@@ -2081,6 +2227,15 @@ def cmd_status(args):
             status["tasks"] = plan.counts
     status["live"] = live
 
+    # Task 036 (#20 H4): which image this run is running. A live `GET /status`
+    # already answers it (the engine reads the same host.json), so this only
+    # fills keys the answer did not carry -- the on-disk path, and a live run
+    # started by a pre-v0.6 ralphctl/engine -- rather than overwriting what the
+    # run's own API said.
+    for key, value in image_record(run_root(args.run_id)).items():
+        if status.get(key) is None:
+            status[key] = value
+
     # Task 028 (#8): the auto-resume crash-loop guard's record lives on the
     # host (the engine inside the container knows nothing about it), so it is
     # merged in here for both the live and the on-disk path -- `null` for a
@@ -2173,6 +2328,14 @@ def cmd_status(args):
         if status.get("modelRaw"):
             model_line += f"  (gateway id: {status.get('modelRaw')})"
         lines.append(model_line)
+    # Task 036 (#20 H4): and which job image it is running it on -- the
+    # reference plus the daemon's short id for the image the container actually
+    # got, so "is this the engine I think it is?" and "what will a resume run?"
+    # are answerable without `docker inspect`. Omitted entirely when run state
+    # records no image (a pre-v0.6 run dir), never `image: None`.
+    image_line = format_image(status)
+    if image_line:
+        lines.append(f"image:     {image_line}")
     if isinstance(cur_it, dict):
         at_update = ", at last update" if stale_since else ""
         lines.append(f"iteration elapsed: {format_duration(it_duration_s)} "

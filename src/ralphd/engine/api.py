@@ -39,6 +39,7 @@ from .skills import (
 from .state import (
     STEERING_GLOB,
     RunDir,
+    image_record,
     prd_path,
     steering_entries,
 )
@@ -142,6 +143,13 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # pre-v0.6 run dir), never "the engine has no idea what it asked for".
         s.setdefault("model", None)
         s.setdefault("modelRaw", None)
+        # Task 036 (#20 H4): which job image this run is running, and the
+        # daemon's content id for it. The engine cannot see its own image, so
+        # this is the host's record from the run dir's own host.json (read per
+        # request, never cached: a `resume` rewrites it) -- explicit nulls when
+        # nothing is recorded, so a consumer of the API alone can still answer
+        # "which engine is this?" and tell that from "nobody wrote it down".
+        s.update(image_record(run.root))
         tasks_read = run.read_tasks_result()
         # Task 023 (#8): shared with the CLI's on-disk fallback (state.py).
         # Task 003 (#15): counts come from the hardened reader, so a request
