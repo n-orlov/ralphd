@@ -247,7 +247,7 @@ def test_a_derived_tag_is_built_once_and_looked_up_afterwards(checkout, stub_dae
     assert first == {"image": derived_tag_for(checkout, BASE),
                      "imageSource": main.IMAGE_SOURCE_BUILT,
                      "imageHash": image.derive(checkout, BASE).hash,
-                     "imageBase": BASE}
+                     "imageBase": BASE, "imageDockerfile": None}
     again = main.resolve_job_image(None, base=BASE, root=checkout)
     assert again == {**first, "imageSource": main.IMAGE_SOURCE_CACHED}
     assert len(stub_daemon("build")) == 1
