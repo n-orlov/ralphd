@@ -2851,9 +2851,32 @@ def _record_operator_termination(run_id: str, action: str, reason: str) -> None:
                                source="cli")
 
 
+def _teardown_container(run_id: str, reason: str) -> None:
+    """Take a run's containers down: ask the engine to shut down, remove the
+    job container, reap the run's siblings, record the operator termination.
+
+    The ONE implementation of that sequence (task 029, #19): `stop` and
+    `rm --force` must not be able to drift apart on the order of the steps,
+    on the sibling reaping, or on the label discipline `_reap_siblings()`
+    documents. The marker is written last, after the container is gone, so
+    nothing races the engine's own writes -- `stop` is the sharpest case:
+    `--force` removes the container while status.json may still say
+    `running`, which is exactly the shape of a crashed run, and without the
+    marker `doctor --fix` would restart it.
+    """
+    try:
+        api(run_id, "POST", "/shutdown")
+    except SystemExit:
+        pass
+    time.sleep(1)
+    sh([DOCKER, "rm", "-f", job_container_name(run_id)])
+    _reap_siblings(run_id)
+    _record_operator_termination(run_id, "stop", reason)
+
+
 def cmd_stop(args):
     status = _read_json(run_root(args.run_id) / "status.json", {})
-    if status.get("state") not in ("succeeded", "failed", "aborted"):
+    if status.get("state") not in TERMINAL_STATES:
         if not args.force:
             die(5, "job still running — use `abort` first or `stop --force`")
         try:
@@ -2861,38 +2884,50 @@ def cmd_stop(args):
             time.sleep(2)
         except SystemExit:
             pass
-    try:
-        api(args.run_id, "POST", "/shutdown")
-    except SystemExit:
-        pass
-    name = job_container_name(args.run_id)
-    time.sleep(1)
-    sh([DOCKER, "rm", "-f", name])
-    _reap_siblings(args.run_id)
-    # After the container is gone, so nothing races the engine's own writes.
-    # `stop` is the sharpest case for task 029: `--force` removes the
-    # container while status.json may still say `running`, which is exactly
-    # the shape of a crashed run -- without this marker `doctor --fix` would
-    # restart it.
-    _record_operator_termination(
-        args.run_id, "stop", "stopped by operator (`ralphctl stop`)")
+    _teardown_container(args.run_id, "stopped by operator (`ralphctl stop`)")
     out(args, {"stopped": args.run_id}, f"stopped {args.run_id} (run dir kept)")
 
 
 def cmd_rm(args):
-    name = job_container_name(args.run_id)
-    if sh([DOCKER, "inspect", name]).returncode == 0:
-        die(5, "container still exists — `stop` first")
-    if not run_root(args.run_id).exists():
-        die(3, f"run {args.run_id} not found")
+    """Delete a run's state. Plain `rm` refuses while a container record
+    exists (the safe default, unchanged); `--force` stops that container
+    first and then deletes, so getting rid of a finished run is ONE command
+    (task 029, #19).
+
+    `--force` is a shortcut past a *stale* container, never a way to kill
+    live work: it refuses unless the run's recorded state is terminal, and
+    an absent/unreadable status.json counts as not-terminal (we cannot
+    establish the job is over, so we do not act). Killing a live job stays
+    explicit -- `abort`, or `stop --force`.
+    """
+    run_id = args.run_id
+    container_exists = sh(
+        [DOCKER, "inspect", job_container_name(run_id)]).returncode == 0
+    if container_exists and not args.force:
+        die(5, "container still exists — `stop` first (or `rm --force`)")
+    if not run_root(run_id).exists():
+        die(3, f"run {run_id} not found")
+    state = _read_json(run_root(run_id) / "status.json", {}).get("state")
+    if container_exists and state not in TERMINAL_STATES:
+        die(5, f"job still running (state: {state or 'unknown'}) — `abort` "
+               "first, then `rm --force`")
     if not args.yes and sys.stdin.isatty():
-        reply = input(f"delete all state for {args.run_id}? [y/N] ")
+        reply = input(f"delete all state for {run_id}? [y/N] ")
         if reply.lower() != "y":
             sys.exit(1)
-    _reap_siblings(args.run_id)
-    shutil.rmtree(run_root(args.run_id), ignore_errors=True)
-    shutil.rmtree(config_root(args.run_id), ignore_errors=True)
-    out(args, {"removed": args.run_id}, f"removed {args.run_id}")
+    if container_exists:
+        # Exactly `stop`'s path (shutdown, job container, siblings, marker),
+        # so `rm --force` cannot drift from `stop` -- see _teardown_container.
+        _teardown_container(run_id,
+                            "stopped by operator (`ralphctl rm --force`)")
+    else:
+        # No container record: nothing to stop, but siblings can outlive it.
+        _reap_siblings(run_id)
+    shutil.rmtree(run_root(run_id), ignore_errors=True)
+    shutil.rmtree(config_root(run_id), ignore_errors=True)
+    out(args, {"removed": run_id, "stoppedContainer": container_exists},
+        f"stopped and removed {run_id}" if container_exists
+        else f"removed {run_id}")
 
 
 def _append_run_event(rdir: Path, type_: str, **data) -> dict:
@@ -3980,6 +4015,10 @@ def main() -> None:
     s = sub.add_parser("rm", help="delete a run's state")
     s.add_argument("run_id")
     s.add_argument("--yes", action="store_true")
+    s.add_argument("--force", action="store_true",
+                   help="stop a finished run's leftover container first "
+                        "instead of refusing; still refuses a job whose "
+                        "recorded state is not terminal (use `abort`)")
     s.set_defaults(func=cmd_rm)
 
     s = sub.add_parser("repair", help="diagnose (and, guarded, fix) "
