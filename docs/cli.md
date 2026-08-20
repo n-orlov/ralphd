@@ -879,6 +879,84 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   included) and the badge on a degraded or failed run's card renders that `text`
   verbatim — see the `ralphctl ui` section's run-detail description.
 
+### `ralphctl cost <run-id>`
+
+What this run spent, **per phase and per approach**, with every kind of money
+labelled (task 027, #18.5).
+
+```
+ralphctl cost <run-id>
+```
+
+```
+$ ralphctl cost brisk-otter-1408
+run:       brisk-otter-1408
+cost:      $0.5000 + ~$1.2500 derived, partial (rest unavailable)
+tokens:    40,000 total (in 1,200, out 3,400)
+model:     amazon-bedrock/eu.anthropic.claude-opus-5  (gateway id: eu.anthropic.claude-opus-5)
+by phase:
+  planning  $0.5000           10,000 tokens
+  worker    ~$1.2500 derived  20,000 tokens
+  verify    unavailable       10,000 tokens
+  reflect   (none)
+by approach:
+  1  $0.5000+ (partial, rest unavailable)  30,000 tokens
+  2  ~$1.2500 derived                      10,000 tokens
+legend:    a bare amount was quoted by the provider; ~ marks money derived from the host-side rate table; unavailable means tokens were billed that nothing priced
+```
+
+`status.json`'s `usage` has carried `byPhase`/`byApproach` buckets since
+day one (`loop._accumulate_usage`, PRD req 19) and nothing rendered them:
+`status` printed one headline plus a hard-coded `planning/worker/review`
+parenthetical (two of which a vigilant run does not even use), and the hub's
+usage card showed the raw numbers. "Which phase burned the tokens" and "how
+much of this figure is actually known" meant reading JSON by hand.
+
+- **`cost:`** is the headline — the *same* string `ralphctl status` and the
+  hub's usage card show, produced by the one shared formatter
+  (`ralphd.engine.state.format_cost`, `decimals=4` here), so a breakdown can
+  never disagree with the number printed beside it.
+- **`tokens:`** is the run total in full (`format_tokens`, the counters the
+  provider actually reported — no zeroed cache fields are invented). Each table
+  row carries that bucket's one-number token count instead.
+- **`source:`** appears only when the money string does not already say where
+  the money came from: `provider-priced` for a real quote, `declared free` for a
+  route your `pricing.free:` patterns declare free, `no traffic` for the
+  historical `$0.00`-with-no-tokens sentinel. `derived`, `partial` and
+  `unavailable` are spelled by the amount itself, so they are not repeated.
+- **`model:`** is the id recorded in run state (task 012), with the raw gateway
+  id in brackets when it differs — i.e. the id the rate table was asked about.
+  Omitted entirely for a run that never observed one.
+- **`by phase:` / `by approach:`** are the run's own buckets: phases in the
+  engine's order, approaches numerically (`10` after `2`). A bucket that
+  recorded nothing renders `(none)` — never `$0.00`, which would read like a
+  phase that ran for free.
+- **`!!` notices** name the anomaly behind a wall of `unavailable`: a provider
+  that quoted `$0` for billable tokens (task 049) is reported as unpriced, and
+  the notice points at `artifacts/reports/pricing-anomaly.md` — the same
+  sentence every other cost surface uses.
+- **`legend:`** is printed only when `derived`/`partial`/`unavailable` actually
+  occur, so a fully priced run's breakdown is not padded with an explanation of
+  vocabulary it never uses.
+- **Purely on-disk, no container needed and no snapshot notice**, like
+  `iteration`/`docs`/`artifacts`/`fault`: `status.json` is the engine's own
+  atomic write, so a live run and one whose container is long gone read
+  identically. A forged `costDisplay`/`tokensDisplay` in `status.json` is
+  always recomputed from the numbers beside it.
+- **Unknown is not zero.** A run that recorded no usage at all prints `(no
+  usage recorded)` rather than a table of zeros, and is **not** an error.
+- `--json` carries the raw numbers plus the rendered strings: `total` and the
+  `byPhase`/`byApproach` **lists** (each entry = that bucket's own counters plus
+  `key`, `tokens`, `tokensDisplay`, `tokensTotalDisplay`, `costDisplay`,
+  `costSource`), `costDisplay`/`costStatus`/`costSource` for the run,
+  `model`/`modelRaw`, `sources`, `notices`, `hasUsage`, plus `summaryLines` and
+  `text` (the human block, verbatim, minus the `run:` line).
+- Exit codes: `0` · `3` run not found. Pinned by
+  `tests/test_cli_cost_breakdown.py`.
+- The block below the `run:` line is worded ONCE, by
+  `ralphd.engine.state.cost_breakdown_lines`, so the hub's cost-breakdown
+  dialog (task 028) shows the same numbers in the same words.
+
 ### `ralphctl docs <run-id> [name]`
 
 A run's own **state documents** — the prose a run leaves behind, plus the config

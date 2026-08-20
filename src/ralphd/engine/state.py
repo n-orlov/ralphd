@@ -2111,6 +2111,257 @@ def fault_text(exp: dict) -> str:
     `text` (`artifact_text`/`run_document_text`'s role for #18.4)."""
     return "\n".join(fault_summary_lines(exp))
 
+# -- cost breakdown (task 027, #18.5) ---------------------------------------
+# status.json's `usage` already carries `byPhase`/`byApproach` buckets
+# (`loop._accumulate_usage`), but the only surfaces that ever read them were
+# `ralphctl status`' one-line summary (planning/worker/review only, phases the
+# engine no longer even uses) and the hub's usage card. So "which phase spent
+# this, and how much of that number is actually known" meant reading raw JSON.
+# The shaping and wording live here so `ralphctl cost` and the hub's
+# cost-breakdown dialog (task 028) say the same thing in the same words --
+# `iteration_detail`/`fault_explanation`' discipline.
+COST_TOTAL_KEY = "total"
+# Said out loud for a run whose status.json records no usage at all: a column
+# of `$0.00`s would look like a run that cost nothing, rather than one that
+# never reported anything.
+COST_NO_USAGE = "(no usage recorded)"
+# The per-bucket verdict words. `format_cost` already SPELLS derived/partial/
+# unavailable inside its own string; these are the machine-readable summary
+# (`costSource`) plus the two cases a money string cannot express on its own.
+COST_SOURCE_PROVIDER = "provider-priced"
+COST_SOURCE_DERIVED = COST_DERIVED_WORD
+COST_SOURCE_PARTIAL = "partial"
+COST_SOURCE_UNAVAILABLE = COST_UNAVAILABLE
+COST_SOURCE_FREE = "declared free"
+COST_SOURCE_NO_TRAFFIC = "no traffic"
+# Printed once, and only when one of those qualifiers actually appears, so a
+# fully priced run's breakdown is not padded with an explanation of vocabulary
+# it never uses.
+COST_BREAKDOWN_LEGEND = (
+    "legend:    a bare amount was quoted by the provider; ~ marks money "
+    f"derived from the host-side rate table; {COST_UNAVAILABLE} means tokens "
+    "were billed that nothing priced")
+COST_LEGEND_SOURCES = (COST_SOURCE_DERIVED, COST_SOURCE_PARTIAL,
+                       COST_SOURCE_UNAVAILABLE)
+# Keys `cost_bucket` derives itself, stripped from the raw passthrough first so
+# a hand-edited status.json cannot smuggle in a display string its own numbers
+# do not support (`ITERATION_DERIVED_KEYS`' rule, same reason).
+COST_BUCKET_DERIVED_KEYS = ("key", "tokens", "tokensDisplay", "tokensTotalDisplay",
+                            "costDisplay", "costSource", "byPhase", "byApproach")
+
+
+def _token_total(usage: dict | None) -> int | None:
+    """How many tokens a bucket counted, or None when it counted nothing.
+
+    `totalTokens` when the provider reported one; otherwise the sum of the
+    counters it DID report (`billable_tokens`) -- a provider reporting no total
+    is not the same as no tokens. NB `billable_tokens` itself includes
+    `totalTokens` in its sum (it answers "was anything billable at all"), so it
+    is only ever consulted here when there is no total to double-count.
+    """
+    if not isinstance(usage, dict):
+        return None
+    raw = usage.get("totalTokens")
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    return billable_tokens(usage) or None
+
+
+def format_token_total(usage: dict | None) -> str:
+    """The one-number token column of the cost breakdown: `505,628 tokens`,
+    or `''` when the bucket counted nothing at all.
+
+    `format_tokens` renders the same bucket in full (`… total (in 32, out …)`)
+    which is what the header line and `--json` carry; a table needs one number
+    per row.
+    """
+    total = _token_total(usage)
+    return "" if total is None else f"{total:,} tokens"
+
+
+def cost_source(usage: dict | None) -> str | None:
+    """Which kind of money a bucket holds, in one word -- the machine-readable
+    twin of what `format_cost`' string says, or None when the bucket says
+    nothing at all.
+
+    `cost_status` (the shared classifier) answers three of the cases straight
+    off; the two it renders as None are told apart here, because "the provider
+    priced this" and "nothing was ever billed" are very different facts that
+    both come out of `format_cost` as a bare amount:
+
+      `"unknown"`  -> `unavailable`      (tokens billed, nothing priced them)
+      `"partial"`  -> `partial`          (a priced subtotal, not the total)
+      `"derived"`  -> `derived`          (host-side rate table, not a quote)
+      no tokens    -> `no traffic`       (the int-0 sentinel of #10)
+      `costFree`   -> `declared free`    (a route that DECLARED itself free)
+      otherwise    -> `provider-priced`  (a real quote), or None with no cost
+    """
+    if not isinstance(usage, dict) or not usage:
+        return None
+    status = cost_status(usage)
+    if status == "unknown":
+        return COST_SOURCE_UNAVAILABLE
+    if status == "partial":
+        return COST_SOURCE_PARTIAL
+    if status == "derived":
+        return COST_SOURCE_DERIVED
+    if billable_tokens(usage) == 0:
+        return COST_SOURCE_NO_TRAFFIC
+    if usage.get("costFree") is True:
+        return COST_SOURCE_FREE
+    if usage.get("costUSD") is not None:
+        return COST_SOURCE_PROVIDER
+    return None
+
+
+def cost_bucket(usage: dict | None, key: str = COST_TOTAL_KEY) -> dict:
+    """One usage bucket (the total, a phase or an approach) shaped for display:
+    its own numbers passed through verbatim plus the rendered strings, by the
+    same formatters every other cost surface uses (`format_cost`,
+    `format_tokens`)."""
+    raw = usage if isinstance(usage, dict) else {}
+    out = {k: v for k, v in raw.items() if k not in COST_BUCKET_DERIVED_KEYS}
+    out["key"] = key
+    out["tokens"] = _token_total(raw)
+    out["tokensDisplay"] = format_tokens(raw) if raw else USAGE_NONE
+    out["tokensTotalDisplay"] = format_token_total(raw)
+    out["costDisplay"] = format_cost(raw, decimals=4)
+    out["costSource"] = cost_source(raw)
+    return out
+
+
+def _cost_buckets(raw, numeric_keys: bool = False) -> list[dict]:
+    """`byPhase`/`byApproach` as an ordered list of shaped buckets. Phase order
+    is the engine's own insertion order; approaches are sorted numerically
+    (`"10"` after `"2"`), falling back to string order for junk keys."""
+    if not isinstance(raw, dict):
+        return []
+    keys = list(raw)
+    if numeric_keys:
+        def sort_key(k):
+            try:
+                return (0, int(k), "")
+            except (TypeError, ValueError):
+                return (1, 0, str(k))
+        keys.sort(key=sort_key)
+    return [cost_bucket(raw.get(k), str(k)) for k in keys]
+
+
+def cost_breakdown(run_root: Path) -> dict:
+    """Everything status.json knows about what this run spent, per phase and
+    per approach (task 027, #18.5).
+
+    Purely on-disk, like `iteration_detail`/`fault_explanation`: status.json is
+    the engine's own atomic write, so a live run and one whose container is
+    long gone read identically and there is nothing to fall back from.
+
+    The headline stays `total["costDisplay"]` -- the same `format_cost` string
+    `ralphctl status` and the hub's usage card show -- so a breakdown can never
+    disagree with the number next to it.
+    """
+    status = read_json(run_root / "status.json", {})
+    if not isinstance(status, dict):
+        status = {}
+    usage = status.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    total = cost_bucket(usage)
+    by_phase = _cost_buckets(usage.get("byPhase"))
+    by_approach = _cost_buckets(usage.get("byApproach"), numeric_keys=True)
+    buckets = [total, *by_phase, *by_approach]
+    notices = []
+    # Task 049's anomaly is worded ONCE (COST_ZERO_QUOTE_NOTICE) and named here
+    # whenever any bucket carries it -- a breakdown full of `unavailable` rows
+    # otherwise leaves the operator guessing why a route that answered every
+    # request priced none of it.
+    if any(is_zero_quote(b) for b in [usage, *_raw_buckets(usage)]):
+        notices.append(COST_ZERO_QUOTE_NOTICE)
+    out = {
+        "hasUsage": bool(total["tokens"] or total["costDisplay"]
+                         or by_phase or by_approach),
+        "total": total,
+        "byPhase": by_phase,
+        "byApproach": by_approach,
+        "notices": notices,
+        "costDisplay": total["costDisplay"],
+        "costStatus": cost_status(usage),
+        "costSource": total["costSource"],
+        "model": status.get("model"),
+        "modelRaw": status.get("modelRaw"),
+        "sources": sorted({b["costSource"] for b in buckets if b["costSource"]}),
+    }
+    out["summaryLines"] = cost_breakdown_lines(out)
+    return out
+
+
+def _raw_buckets(usage: dict) -> list[dict]:
+    out = []
+    for key in ("byPhase", "byApproach"):
+        raw = usage.get(key)
+        if isinstance(raw, dict):
+            out.extend(v for v in raw.values() if isinstance(v, dict))
+    return out
+
+
+def _cost_rows(buckets: list[dict]) -> list[str]:
+    """The indented table body of one group. Columns are sized to their own
+    content (a phase name is 6-8 characters, an approach key is 1-2), and a
+    bucket that recorded nothing renders `USAGE_NONE` rather than a zero."""
+    key_w = max(len(b["key"]) for b in buckets)
+    cells = [(b["key"], b["costDisplay"] or USAGE_NONE, b["tokensTotalDisplay"])
+             for b in buckets]
+    cost_w = max(len(c[1]) for c in cells)
+    tok_w = max(len(c[2]) for c in cells)
+    return [f"  {k:<{key_w}}  {cost:<{cost_w}}  {tokens:>{tok_w}}".rstrip()
+            for k, cost, tokens in cells]
+
+
+def cost_breakdown_lines(bd: dict) -> list[str]:
+    """One run's cost breakdown as labelled text lines, worded ONCE
+    (`fault_summary_lines`' role for #18.5): `ralphctl cost` prints these and
+    task 028's hub dialog shows the very same block.
+
+    A group is omitted rather than printed empty, and a run with no usage at
+    all gets the single `COST_NO_USAGE` line instead of a table of zeros.
+    """
+    if not isinstance(bd, dict) or not bd.get("hasUsage"):
+        return [COST_NO_USAGE]
+    total = bd.get("total") or {}
+    lines = [f"cost:      {total.get('costDisplay') or USAGE_NONE}",
+             f"tokens:    {total.get('tokensDisplay') or USAGE_NONE}"]
+    # The verdict word is added only when it is NOT already spelled inside the
+    # money string: `format_cost` says `derived`/`partial`/`unavailable` itself,
+    # and repeating it would say the same thing twice -- but a bare `$0.12` (or
+    # a `$0.0000` that is honest because the route declared itself free, or
+    # because nothing was billed at all) says nothing about where it came from.
+    source = total.get("costSource")
+    if source and source not in (total.get("costDisplay") or ""):
+        lines.append(f"source:    {source}")
+    if bd.get("model"):
+        model = f"model:     {bd['model']}"
+        if bd.get("modelRaw") and bd["modelRaw"] != bd["model"]:
+            model += f"  (gateway id: {bd['modelRaw']})"
+        lines.append(model)
+    lines.extend(f"!! {n}" for n in (bd.get("notices") or []))
+    for label, key in (("by phase:", "byPhase"), ("by approach:", "byApproach")):
+        buckets = bd.get(key) or []
+        if buckets:
+            lines.append(label)
+            lines.extend(_cost_rows(buckets))
+    if any(s in COST_LEGEND_SOURCES for s in (bd.get("sources") or [])):
+        lines.append(COST_BREAKDOWN_LEGEND)
+    return lines
+
+
+def cost_breakdown_text(bd: dict) -> str:
+    """The complete rendering of one cost breakdown as a single string -- what
+    the hub's dialog shows and what `ralphctl cost --json` carries as `text`
+    (`fault_text`/`artifact_text`' role for #18.5)."""
+    return "\n".join(cost_breakdown_lines(bd))
+
 @dataclass
 class RunDir:
     """Layout of /run and helpers over it. Engine-owned."""

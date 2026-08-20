@@ -47,6 +47,8 @@ from ..engine.state import (
     artifact_entries,
     artifact_names,
     artifact_text,
+    cost_breakdown,
+    cost_breakdown_text,
     elapsed_seconds,
     fault_explanation,
     fault_text,
@@ -2169,6 +2171,35 @@ def cmd_fault(args):
         return
     print("\n".join([f"run:       {args.run_id}", *exp["summaryLines"]]))
 
+
+def cmd_cost(args):
+    """What this run spent, per phase and per approach (task 027, #18.5).
+
+    `ralphctl status` prints one headline number and (historically) a
+    three-phase parenthetical; status.json's `usage` has carried `byPhase` and
+    `byApproach` buckets all along, so "which phase burned the tokens" and
+    "how much of this figure is actually known" only ever needed joining up and
+    wording. Both live in `state.cost_breakdown` / `cost_breakdown_lines`, so
+    task 028's hub dialog shows the same block in the same words, and the
+    headline stays the very `costDisplay` string `status` and the hub's usage
+    card print -- a breakdown can never disagree with the number beside it.
+
+    Purely on-disk, like `ralphctl iteration`/`docs`/`artifacts`/`fault`:
+    status.json is the engine's own atomic write, so a live run and one whose
+    container is long gone read identically -- nothing to fall back from, hence
+    no snapshot notice.
+    """
+    _require_run(args.run_id)
+    bd = cost_breakdown(run_root(args.run_id))
+    if args.json:
+        # `text` is the same complete rendering the human output prints (and
+        # the hub dialog shows), `summaryLines` its lines -- the `fault`/
+        # `docs`/`artifacts` shape.
+        print(json.dumps({"runId": args.run_id, **bd,
+                          "text": cost_breakdown_text(bd)}, indent=2))
+        return
+    print("\n".join([f"run:       {args.run_id}", *bd["summaryLines"]]))
+
 class _TerminalModeGuard:
     """Task 016: owns termios save/restore for `ralphctl logs -f` on a
     TTY, in the MAIN thread, for the entire duration of the follow loop.
@@ -3843,6 +3874,11 @@ def main() -> None:
                        "class, matched signature, retry ladder, outage budget")
     s.add_argument("run_id")
     s.set_defaults(func=cmd_fault)
+
+    s = sub.add_parser("cost", help="what a run spent, per phase and per "
+                       "approach, labelling priced/derived/unavailable money")
+    s.add_argument("run_id")
+    s.set_defaults(func=cmd_cost)
 
     s = sub.add_parser("docs", help="a run's state documents: notes, review "
                        "findings, composite PRD, effective job.yaml (redacted)")
