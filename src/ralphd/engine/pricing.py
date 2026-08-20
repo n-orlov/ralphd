@@ -25,6 +25,8 @@ via `RALPHD_PRICING` as JSON):
       models:
         "openai/gpt-5": {input: 1.25, output: 10.0, cacheRead: 0.125}
         "anthropic/*":  {input: 3.0,  output: 15.0}
+      free:
+        - "ollama/*"                          # this route really costs nothing
 
 Rates are USD per MILLION tokens, keyed exactly like the usage counters pi
 reports (`input`, `output`, `cacheRead`, `cacheWrite`); an absent cache rate
@@ -32,6 +34,12 @@ falls back to the input rate rather than to zero, since silently pricing
 cached tokens at $0 is the same class of lie this task exists to remove. A
 malformed entry is ignored rather than fatal -- an operator's typo in an
 optional cost annotation must never stop a job from running.
+
+`free:` (task 049, v0.6) is the ONLY way a $0 becomes credible for a route
+that billed tokens: it is a declaration by the operator, matched with the same
+rules as the rate table. Never infer "free" from a provider quoting zero --
+that is exactly the implausible-zero anomaly `state.is_zero_quote` exists to
+catch (`artifacts/reports/pricing-anomaly.md`).
 """
 
 from __future__ import annotations
@@ -110,6 +118,10 @@ class PricingMap:
 
     models: dict[str, ModelRate] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
+    # Task 049 (v0.6): model-id patterns the operator DECLARES cost nothing,
+    # matched exactly like `models` keys (after aliasing). The only way a $0
+    # with billable tokens is believed.
+    free: tuple[str, ...] = ()
 
     @classmethod
     def from_config(cls, raw: object) -> PricingMap | None:
@@ -117,13 +129,19 @@ class PricingMap:
         if not isinstance(raw, dict) or not raw:
             return None
         aliases_raw = raw.get("aliases") or {}
+        free_raw = raw.get("free") or ()
         if "models" in raw:
             models_raw = raw.get("models") or {}
         else:
             # flat form: the mapping IS the model table
-            models_raw = {k: v for k, v in raw.items() if k != "aliases"}
+            models_raw = {k: v for k, v in raw.items()
+                          if k not in ("aliases", "free")}
         aliases = {str(k): str(v) for k, v in aliases_raw.items()
                    if isinstance(aliases_raw, dict) and v is not None}
+        if isinstance(free_raw, str):
+            free_raw = [free_raw]
+        free = tuple(str(p) for p in free_raw if p) \
+            if isinstance(free_raw, (list, tuple)) else ()
         models: dict[str, ModelRate] = {}
         if isinstance(models_raw, dict):
             for name, entry in models_raw.items():
@@ -132,9 +150,9 @@ class PricingMap:
                     log.warning("pricing: ignoring unusable rate for %r", name)
                     continue
                 models[str(name)] = rate
-        if not models:
+        if not models and not free:
             return None
-        return cls(models=models, aliases=aliases)
+        return cls(models=models, aliases=aliases, free=free)
 
     # -- lookup -----------------------------------------------------------
 
@@ -165,6 +183,21 @@ class PricingMap:
                 return self.models[pattern]
         return None
 
+    def is_free(self, model: str | None) -> bool:
+        """True when the operator DECLARED this route free (task 049, v0.6).
+
+        Matched on the canonical (aliased) id with the same exact-then-longest-
+        wildcard rules as `rate_for`, so `free: ["ollama/*"]` covers a family
+        and a pinned id covers exactly one route. A declared-free route keeps
+        rendering `$0.00`; an *undeclared* zero quote is an anomaly, not a
+        price (`state.is_zero_quote`).
+        """
+        if not model or not self.free:
+            return False
+        name = self.canonical(str(model))
+        return any(_match(pattern, name) is not None
+                   for pattern in sorted(self.free, key=len, reverse=True))
+
     def derive(self, usage: dict, model: str | None) -> float | None:
         """Derived USD for one message's token counters, or None when this
         model has no rate at all (the caller then keeps cost *unknown*)."""
@@ -188,4 +221,5 @@ class PricingMap:
             "models": {name: {k: rate.per_mtok(k) for k in RATE_KEYS}
                        for name, rate in sorted(self.models.items())},
             "aliases": dict(sorted(self.aliases.items())),
+            "free": sorted(self.free),
         }

@@ -259,15 +259,36 @@ price. `usage.costPriced` is the marker:
 
 | shape | meaning |
 |-------|---------|
-| `costUSD: 0.42`, `costPriced: true` | provider-reported price (an explicit `0.0` means free) |
+| `costUSD: 0.42`, `costPriced: true` | provider-reported price |
 | no `costUSD`, `costPriced: false` | tokens were billed and **no** price was reported — cost is *unknown*, not $0 |
 | `costUSD` present, `costPriced: false` | mixed: the value is the priced subtotal only, so treat it as partial |
 | `costUSD: 0`, no `costPriced` | nothing was billed at all (e.g. pi's zero-filled `usage` on an in-band error) |
+| no `costUSD`, `costPriced: false`, `costZeroQuoted: true` | the provider quoted **exactly 0** for billable tokens — an *implausible zero*, treated as unknown (v0.6, see below) |
+| `costUSD: 0.0`, `costPriced: true`, `costFree: true` | the route is **declared** free in `pricing.free`, so this $0 is real and renders `$0.00` |
 | `costDerivedUSD: 0.31`, `costDerived: true` | every unpriced message was covered by the host-side pricing map — cost is *derived*, and kept out of `costUSD` |
 | `costDerived: false` | at least one unpriced message had no rate in the map (or no map is configured), so part of the cost stays unknown |
 
 How a run total / `byPhase` / `byApproach` bucket summarises a mix of priced and
 unpriced iterations is the `costStatus` contract under `GET /status` above.
+
+#### Implausible zero quotes (v0.6)
+
+A quoted cost of **exactly 0 alongside non-zero billable tokens** is not a
+price: pi zero-fills its `cost` block when the resolved model definition
+carries no rates, so a gateway can report `costUSD: 0` for half a million
+tokens (`artifacts/reports/pricing-anomaly.md` §7 has the live payload). Such a
+zero is classified `unknown` on every surface — never `costPriced: true`, never
+rendered `$0.00` — and is derivable from the host-side pricing map exactly like
+an absent price.
+
+The classification is applied **on read** as well as on write, so a run dir
+written by a pre-v0.6 engine (an `int` `0` with no `costStatus`) is reported
+honestly by `GET /status`, `GET /iterations/{n}`, `ralphctl status` and the hub.
+
+Two zeros stay real, and neither is inferred from the zero itself: nothing was
+billed (the sentinel row above), or the operator **declared** the route free in
+`pricing.free` (`costFree: true`, carried into the run/`byPhase`/`byApproach`
+rollups so a reader cannot mistake it for the anomaly).
 
 ### `GET /iterations/{n}`
 One iteration's `meta.json`.
@@ -423,13 +444,17 @@ see which rates produced a derived cost:
 
 ```json
 {"models": {"openai/gpt-5": {"input": 1.25, "output": 10.0, "cacheRead": 0.125, "cacheWrite": 1.25}},
- "aliases": {"aigw-openai/*": "openai/*"}}
+ "aliases": {"aigw-openai/*": "openai/*"},
+ "free": ["ollama/*"]}
 ```
 
 Rates are USD per **million** tokens keyed like the usage counters; an absent
 cache rate falls back to the `input` rate (never to a silent `$0`). Aliases map
 gateway-local model ids onto canonical ones (`"aigw-openai/*": "openai/*"`
-keeps the tail). The default is `null` — no map, and unpriced traffic then stays
+keeps the tail). `free` lists model-id patterns the operator **declares** cost
+nothing (matched with the same rules, after aliasing) — the only way a `$0` over
+billable tokens is believed rather than treated as an implausible zero. The
+default is `null` — no map, and unpriced traffic then stays
 `unknown` rather than being guessed at. A configured map is consulted **only**
 when the provider quoted no price, and its output is published separately as
 `costDerivedUSD` (see the usage contract above).

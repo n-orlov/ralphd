@@ -127,6 +127,13 @@ from env vars set by the test:
                       invocation is unchanged, so a run can mix priced and
                       unpriced iterations (use a large count for a fully
                       unpriced run).
+  STUB_ZERO_COST_COUNT  like STUB_UNPRICED_COUNT (with its own
+                      STUB_ZERO_COST_SKIP), but the selected invocations emit
+                      normal token counts WITH `usage.cost = {"total": 0}` --
+                      the live AIGW/Bedrock shape behind task 049 (v0.6,
+                      steering 001): half a million billed tokens quoted at
+                      exactly $0. Takes precedence over the unpriced knob for
+                      an invocation selected by both.
 
 Every invocation unconditionally records the exact prompt it received to
 `<run>/.stub-last-prompt` (overwritten) and appends it to
@@ -191,6 +198,21 @@ if _unpriced_count:
     with open(_unpriced_marker, "w") as _f:
         _f.write(str(_seen + 1))
     UNPRICED_NOW = _unpriced_skip <= _seen < _unpriced_skip + _unpriced_count
+
+# STUB_ZERO_COST_COUNT (task 049, v0.6): the implausible-zero shape -- tokens
+# billed AND a cost block quoting exactly 0. Same counting discipline as the
+# unpriced knob, its own marker file so the two can be combined.
+_zero_cost_count = int(os.environ.get("STUB_ZERO_COST_COUNT", "0"))
+_zero_cost_skip = int(os.environ.get("STUB_ZERO_COST_SKIP", "0"))
+ZERO_COST_NOW = False
+if _zero_cost_count:
+    _zero_marker = marker("zero-cost-count")
+    _zseen = 0
+    if os.path.exists(_zero_marker):
+        _zseen = int(open(_zero_marker).read())
+    with open(_zero_marker, "w") as _f:
+        _f.write(str(_zseen + 1))
+    ZERO_COST_NOW = _zero_cost_skip <= _zseen < _zero_cost_skip + _zero_cost_count
 
 
 # STUB_INFRA_HANG_COUNT simulates a transient LLM-endpoint/gateway fault
@@ -352,7 +374,9 @@ def emit_final(text, tool_call=None, thinking_text=None):
         content.append(tool_call)
     content.append({"type": "text", "text": text})
     _usage = {"input": 100, "output": 10, "totalTokens": 110}
-    if not UNPRICED_NOW:
+    if ZERO_COST_NOW:
+        _usage["cost"] = {"total": 0}
+    elif not UNPRICED_NOW:
         _usage["cost"] = {"total": 0.01}
     print(json.dumps({
         "type": "message_end",
