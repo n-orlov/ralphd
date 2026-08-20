@@ -1267,6 +1267,23 @@ def _epoch_or_none(ts):
         return None
 
 
+def _task_ratio(row: dict):
+    """Task 014 (#21): a run row's task progress as a fraction of one
+    (`tasksCompleted / tasksTotal`), or None when there is no plan to have
+    progress through -- mirrors app.js `taskRatio`.
+
+    Sorting on the ratio (not on the rendered `5/7`, not on the bare
+    numerator) is what makes `5/7` outrank `100/250`; `None` means "no plan",
+    which `_cmp_run_values` puts after every run that has one instead of
+    treating it as 0% done.
+    """
+    total = _num_or_none(row.get("tasksTotal"))
+    completed = _num_or_none(row.get("tasksCompleted"))
+    if total is None or total <= 0:
+        return None
+    return (0.0 if completed is None else completed) / total
+
+
 # key -> sort value extracted from the RAW row values, never the rendered
 # cell text (`iterationsUsed`, not the "17/250" string; the epoch instant,
 # not the ISO characters).
@@ -1276,6 +1293,13 @@ RUN_SORT_KEYS: dict = {
     "verdict": lambda r: _lifecycle_rank(RUN_VERDICT_ORDER, r.get("verdict")),
     "phase": lambda r: str(r.get("phase") or ""),
     "approach": lambda r: _num_or_none(r.get("approach")),
+    # Task 014 (#21): the hub's TASKS column sorts on the completion RATIO
+    # (`5/7` outranks `100/250`; a plan-less run has no ratio at all, so it
+    # sorts last ascending) -- and the sort dialect is shared, so the key
+    # exists here too, computed the same way. `cmd_runs` starts carrying the
+    # raw counts in task 015; until then every row's value is None, which the
+    # missing-value rule below already handles.
+    "tasks": lambda r: _task_ratio(r),
     "iterationsUsed": lambda r: _num_or_none(r.get("iterationsUsed")),
     "startedAt": lambda r: _epoch_or_none(r.get("startedAt")),
 }

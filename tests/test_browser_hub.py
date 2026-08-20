@@ -1183,3 +1183,130 @@ def test_run_list_and_detail_render_the_approach_denominator(tmp_path, pw):
         pw.screenshot(SCREENSHOTS_DIR / "17-approach-detail.png")
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------
+# task 014 (#21): the run list's TASKS column
+# --------------------------------------------------------------------------
+
+_TASKS_CELLS = (
+    "[...document.querySelectorAll('table.run-list tbody tr')]"
+    ".map(tr => tr.children[0].textContent + '=' +"
+    " tr.querySelector('td.tasks-cell').textContent).join('|')")
+
+
+def _tasks_cells(session: Pw) -> dict:
+    raw = session.eval_js(_TASKS_CELLS).strip('"')
+    return dict(pair.split("=", 1) for pair in raw.split("|") if "=" in pair)
+
+
+def _plan(statuses) -> str:
+    return json.dumps({
+        "version": 1,
+        "goal": "ship it",
+        "tasks": [{"id": f"{i:03d}", "title": f"task {i}", "status": s}
+                  for i, s in enumerate(statuses, start=1)],
+    })
+
+
+def test_run_list_tasks_column_renders_flags_and_sorts_on_progress(tmp_path, pw):
+    """Task 014 (#21): the hub run list has a TASKS column.
+
+    #21's complaint is that the list says a run is `running` without saying
+    how far through its plan it is, so the operator has to open each run. The
+    column shows the fraction the server rendered (`tasksDisplay`, task 013 ->
+    `engine.state.format_task_fraction`) plus the trouble flags in
+    `format_task_counts`' exact wording -- never a second JS spelling of
+    either.
+
+    Asserted from an ON-DISK snapshot with no container (the fraction must be
+    just as available for a finished run as for a live one), for the four
+    honest renderings: mid-plan with something in flight, a plan stuck on a
+    failed validation, a finished plan, and a run with no plan at all -- which
+    is BLANK, never `0/0`, and sorts last ascending because "no plan" is not
+    "0% done".
+
+    The fixtures are chosen so the sort can only pass on the completion
+    RATIO: sorting the rendered cell text ("1/4" < "100/250" < "2/2" < "5/7")
+    or the bare numerator (1, 5, 2, 100) each yields a different, plausible-
+    looking order.
+    """
+    registry = tmp_path / "registry"
+    # 5/7 completed, one worker iteration in flight -> flagged in-progress
+    run = _write_dead_run(registry, "aaa-mid", state="running", verdict=None,
+                          phase="worker", startedAt="2026-01-05T00:00:00Z")
+    (run / "tasks.json").write_text(_plan(
+        ["completed"] * 5 + ["in-progress", "pending"]))
+    # 1/4, and the plan is stuck: a validation-failed task is trouble
+    run = _write_dead_run(registry, "bbb-stuck", state="running", verdict=None,
+                          phase="verify", startedAt="2026-01-04T00:00:00Z")
+    (run / "tasks.json").write_text(_plan(
+        ["completed", "validation-failed", "pending", "pending"]))
+    # a finished plan: no flags at all
+    run = _write_dead_run(registry, "ccc-done", state="succeeded", verdict="verified",
+                          phase="review", startedAt="2026-01-03T00:00:00Z")
+    (run / "tasks.json").write_text(_plan(["completed", "completed"]))
+    # no plan on disk at all (the agent never got to write one)
+    run = _write_dead_run(registry, "ddd-planless", state="failed",
+                          verdict="unverified", phase="planning",
+                          startedAt="2026-01-02T00:00:00Z")
+    (run / "tasks.json").unlink()
+    # a big plan, 40% done: sorts between 1/4 and 5/7 on ratio only
+    run = _write_dead_run(registry, "eee-big", state="running", verdict=None,
+                          phase="worker", startedAt="2026-01-01T00:00:00Z")
+    (run / "tasks.json").write_text(_plan(["completed"] * 100 + ["pending"] * 150))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(server.base)
+        _wait_for(pw, "document.body.innerText", "eee-big")
+        assert "TASKS" in _sort_header_text(pw, "tasks")
+
+        cells = _tasks_cells(pw)
+        assert cells == {
+            "aaa-mid": "5/7 \u26a0 1 in-progress",
+            "bbb-stuck": "1/4 \u26a0 1 validation-failed",
+            "ccc-done": "2/2",
+            "ddd-planless": "",
+            "eee-big": "100/250",
+        }, cells
+        # never `0/0` for the run with no plan, and no invented denominator
+        assert "0/0" not in pw.eval_js("document.body.innerText")
+        # text nodes only, like every other payload the hub renders
+        assert int(pw.eval_js(
+            "document.querySelectorAll('td.tasks-cell script, td.tasks-cell b')"
+            ".length")) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "18-tasks-column.png")
+
+        # first click = ascending: least-complete first, plan-less LAST
+        pw.click('th[data-sort-key="tasks"]')
+        asc = ["bbb-stuck", "eee-big", "aaa-mid", "ccc-done", "ddd-planless"]
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != asc:
+            time.sleep(0.2)
+        assert _run_list_order(pw) == asc, _run_list_order(pw)
+        assert "\u25B2" in _sort_header_text(pw, "tasks")
+
+        # ...and reversibly
+        pw.click('th[data-sort-key="tasks"]')
+        desc = ["ddd-planless", "ccc-done", "aaa-mid", "eee-big", "bbb-stuck"]
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != desc:
+            time.sleep(0.2)
+        assert _run_list_order(pw) == desc, _run_list_order(pw)
+        assert "\u25BC" in _sort_header_text(pw, "tasks")
+        # the cells survived the re-render unchanged
+        assert _tasks_cells(pw)["eee-big"] == "100/250"
+
+        # the flags are the summary sentence's own wording: the full sentence
+        # is on the cell (hover), and the flag text appears verbatim inside it
+        summary = pw.eval_js(
+            "[...document.querySelectorAll('table.run-list tbody tr')]"
+            ".filter(tr => tr.children[0].textContent === 'aaa-mid')"
+            ".map(tr => tr.querySelector('td.tasks-cell').getAttribute('title'))"
+            ".join('')").strip('"')
+        assert summary == "5/7 completed (1 in-progress, 1 pending)", summary
+        assert "1 in-progress" in summary
+    finally:
+        server.stop()

@@ -87,6 +87,11 @@ a { color: var(--accent); }
    colour as the other "this is not settled" pills. */
 .pill-stale { color: var(--warn); border-color: var(--warn); }
 .tasks-stale { margin: 0.2rem 0 0.5rem; }
+/* Task 014 (#21): the run list's TASKS column. Trouble flags
+   (validation-failed / in-progress) get the same warn treatment as every
+   other "this run wants a look" marker; the fraction itself stays plain. */
+.tasks-cell { white-space: nowrap; }
+.tasks-trouble { color: var(--warn); font-weight: 600; }
 
 section {
   margin-bottom: 1.5rem;

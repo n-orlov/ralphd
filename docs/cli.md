@@ -1466,7 +1466,7 @@ JSON endpoints served under `/api/`:
 The bundle itself (open `http://<bind>:<port>/` in a browser):
 
 - **Run list** (`#/`) — table of every run under the registry with state,
-  verdict, phase, approach, iteration count and start time, auto-refreshed
+  verdict, phase, approach, task progress, iteration count and start time, auto-refreshed
   every 4s; click a run id to open its detail view. A run flagged
   `containerGone` gets a highlighted row (`tr.row-warning`) and a
   `⚠ container gone` marker next to its state pill, so a zombie never
@@ -1487,6 +1487,17 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   run that never entered the ladder — task 008, issue #16), while the column
   still sorts on the raw `approach` number, so approach 10 never sorts as the
   string `"10/12"`.
+  The **TASKS** cell (task 014, issue #21) shows the server-rendered
+  `tasksDisplay` (`5/7`) plus the trouble flags from `tasksTrouble`
+  (`⚠ 1 validation-failed`, `⚠ 1 in-progress` — the same wording
+  `ralphctl status` uses), with the full sentence (`tasksSummary`) as the
+  cell's hover title. A run with no plan on disk gets a **blank** cell, never
+  `0/0`. The column sorts on the completion **ratio** `tasksCompleted /
+  tasksTotal` — so `5/7` outranks `100/250`, which neither the rendered text
+  nor the bare numerator would get right — and a plan-less run has no ratio at
+  all, so it sorts **last ascending** rather than pretending to be 0% done.
+  First click on the header is therefore *ascending* (least-complete first:
+  the runs that still owe work).
 - **Run detail** (`#/run/<id>`) — summary card (state/verdict/phase/
   approach `n/m` (task 008, issue #16: the same `approachDisplay` string the
   run list and `ralphctl status` show)/iterations/live-vs-snapshot/duration), a usage/cost panel
