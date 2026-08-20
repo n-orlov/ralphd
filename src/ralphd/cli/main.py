@@ -40,11 +40,13 @@ from ..engine.config import PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     NONTERMINAL_STATES,
+    TASK_STATUS_LABELS,
     elapsed_seconds,
     format_approach,
     format_cost,
     format_duration,
     format_local_time,
+    format_task_counts,
     parse_utc,
     read_operator_termination,
     read_tasks_doc,
@@ -1507,7 +1509,7 @@ def _format_container_gone_lines(run_id: str, status: dict, entry: dict,
                   f"{run_id}`")]
 
 
-_TASK_STATUS_LABELS = {"inProgress": "in-progress", "validationFailed": "validation-failed"}
+_TASK_STATUS_LABELS = TASK_STATUS_LABELS  # task 013 (#21): the labels moved to engine/state.py
 
 
 def _summarize_tasks(tasks: dict) -> str:
@@ -1515,20 +1517,13 @@ def _summarize_tasks(tasks: dict) -> str:
     {"total": 7, "completed": 7, "pending": 0, ...}, see api.py's
     GET /status) as a short human summary like '7/7 completed' or, when
     not everything is done, '5/7 completed (1 in-progress, 1 pending)' --
-    instead of dumping the raw counts dict as JSON."""
-    if not tasks:
-        return "(none)"
-    total = tasks.get("total", 0)
-    completed = tasks.get("completed", 0)
-    others = []
-    for key, value in tasks.items():
-        if key in ("total", "completed") or not value:
-            continue
-        others.append(f"{value} {_TASK_STATUS_LABELS.get(key, key)}")
-    summary = f"{completed}/{total} completed"
-    if others:
-        summary += " (" + ", ".join(others) + ")"
-    return summary
+    instead of dumping the raw counts dict as JSON.
+
+    Task 013 (#21) moved the renderer itself into `engine/state.py`
+    (`format_task_counts`) so the hub's TASKS column and `ralphctl runs` word
+    the same counts identically; this stays as the name `cmd_status` and its
+    tests already use."""
+    return format_task_counts(tasks)
 
 
 def _format_token_count(n) -> str:

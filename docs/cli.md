@@ -1329,7 +1329,9 @@ JSON endpoints served under `/api/`:
 
 - `GET /api/runs` — run list (PRD req 21): `{"runs": [{runId, state,
   verdict, phase, approach, maxApproaches, approachDisplay, iterationsUsed,
-  iterationsBudget, startedAt, containerGone}, ...]}`, read straight from every
+  iterationsBudget, startedAt, containerGone, tasksTotal, tasksCompleted,
+  tasksInProgress, tasksValidationFailed, tasksDisplay, tasksSummary,
+  tasksTrouble, tasksStale, tasksSource}, ...]}`, read straight from every
   `runs/*/status.json` (no
   live proxy calls, so listing stays cheap regardless of how many runs are
   dead). `containerGone` (task 024) is `true` only for a run whose recorded
@@ -1345,6 +1347,24 @@ JSON endpoints served under `/api/`:
   Either raw number may be `null`: no `maxApproaches` renders a bare `2`
   rather than borrowing this host's configured limit, and no `approach` at all
   renders an empty string rather than `/3`.
+  Task 013 (issue #21) adds the task-progress fields, from **one local read of
+  that run's `tasks.json` per row** through the engine's hardened reader
+  (`read_tasks_doc(..., persist=False)`) and `task_counts` — still no live
+  proxy call, so a finished run whose container is gone reports its progress
+  exactly like a live one. `tasksTotal`/`tasksCompleted`/`tasksInProgress`/
+  `tasksValidationFailed` are the raw counts (what the hub sorts on);
+  `tasksDisplay` is the rendered `5/7`, `tasksSummary` is the same sentence
+  `ralphctl status` prints (`5/7 completed (1 in-progress, 1
+  validation-failed)`) and `tasksTrouble` is the list of trouble flags
+  (`["1 validation-failed", "1 in-progress"]`) worded by that same renderer
+  (`ralphd.engine.state.format_task_counts`/`format_task_fraction`/
+  `format_task_trouble`) — one vocabulary for CLI and hub. A run with no plan
+  (none written yet, an empty plan, or a `tasks.json` that will not parse and
+  has no last-good payload) gets an **empty** `tasksDisplay`/`tasksSummary`
+  rather than `0/0`: there is no denominator anybody stated. `tasksStale`/
+  `tasksSource` are the same two fields documented in docs/api.md, so a row
+  served from the last-good plan keeps its fraction and says where it came
+  from instead of blinking blank for a poll cycle.
 - `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, status,
   tasks, iterations}`. `status`/`tasks` are proxied live from the run's
   container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
