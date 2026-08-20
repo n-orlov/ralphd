@@ -733,8 +733,9 @@ steering:  001-focus.md
 
 - **`exit:` is the one-line verdict**, ranked from the raw signals the engine
   records (they overlap — a timed-out iteration also has an exit code): `still
-  running` · `interrupted by operator` · `no-traffic timeout (the model never
-  answered)` · `iteration timeout` · `error (exit N): <message>` · `clean exit`
+  running` · `interrupted (a signal ended the iteration)` · `no-traffic
+  timeout (the model never answered)` · `iteration timeout` · `error (exit N):
+  <message>` · `clean exit`
   · `exit N` · `unknown`. A non-null fault classification
   (`engine/faults.py`, the reason an attempt was retried and refunded) is
   appended as `[infra fault]`/`[work fault]` — alongside the signal, never
@@ -812,9 +813,20 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 - **`because:`** names which branch of the classifier decided it, in the
   classifier's own words: the startup watchdog fired (no LLM traffic at all) ·
   the error text matched a known infra signature · the agent reached the model
-  and then failed · no traffic and no recognized signature (an unclassifiable
-  no-traffic failure is treated as infra) · an operator-initiated
-  abort/interrupt, which is never retried as an outage.
+  and then failed · a signal ended the iteration after it had reached the model
+  · no traffic and no recognized signature (an unclassifiable no-traffic failure
+  is treated as infra) · an abort/interrupt recorded for the run, which is never
+  retried as an outage.
+  The abort branch is worded by **what the engine can establish** (steering 004):
+  `operator_abort_requested` is equally true for a `POST /abort`, a `POST
+  /interrupt` and the engine giving up on its own (an exhausted outage budget, a
+  `SIGTERM` from anywhere), so it says *operator-requested* only when the abort
+  demonstrably arrived from outside (`_operator_abort_recorded`); otherwise it
+  says an abort/interrupt is recorded and that who asked for it is not
+  established, and `gave up:` quotes the recorded reason verbatim (`signal 15`)
+  instead of attributing it to a person who may not exist. The *classification*
+  of these shapes is unchanged and still coarse — an engine-side give-up is
+  still `work` — which is issue #23, not this surface's business.
 - **`signature:`** is the row of `engine/faults.py`'s `INFRA_SIGNATURES` table
   that matched: its family (`dns` · `tcp` · `stream` · `tls` · `sdk` ·
   `http-5xx` · `backpressure` · `bedrock-stream` · `capacity`), what that
@@ -844,8 +856,9 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   unreadable (mid-write, or an iteration dir removed by hand) is still
   explained from the run's own retry events, saying where the verdict came
   from instead of inventing a branch. And when the class the engine recorded
-  differs from what the error text alone implies — the operator-abort carve-out
-  is the usual, legitimate cause — the divergence is printed (`!! the engine
+  differs from what the error text alone implies — an abort/interrupt recorded
+  for the run (by the operator, or by the engine giving up) is the usual,
+  legitimate cause — the divergence is printed (`!! the engine
   recorded a different class than this error alone implies`); the engine's
   verdict is what the run acted on and is never overwritten.
 - `--json` carries the whole shaping: `faultClass`, `reason`, `signature`
@@ -2093,7 +2106,8 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   single `<dialog>`** (task 020, issue #18.1): phase and approach, the
   absolute start/end instants, the duration (labelled `total` or `elapsed`),
   the exit reason (`clean exit`, `exit 7`, `error (exit N): …`, `iteration
-  timeout`, `no-traffic timeout`, `interrupted by operator`, with an
+  timeout`, `no-traffic timeout`, `interrupted (a signal ended the
+  iteration)`, with an
   `[infra fault]` marker when the attempt was refunded), the model pi actually
   used, that iteration's tokens and cost, the steering it consumed, the task it
   verified — and then its full transcript. The whole body is the `text` string

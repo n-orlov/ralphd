@@ -282,7 +282,7 @@ the infra-retry wrapper acts on:
 |--------------|---------|
 | `null` | not a failure: clean exit, no error recorded, not interrupted/timed out |
 | `"infra"` | the LLM endpoint/provider/network broke (no traffic within the startup window, or a recognized infra error signature) — the attempt is retried and refunded, never charged to the iteration budget |
-| `"work"` | the agent really ran (LLM traffic observed) and then failed, or an operator-initiated abort/interrupt ended it — never retried as an outage |
+| `"work"` | the agent really ran (LLM traffic observed) and then failed, or an abort/interrupt was recorded for the run — an operator's, or the engine giving up on its own — which is never retried as an outage (the *explanation* surfaces name which of the two only when it can be established; the class cannot tell them apart, issue #23) |
 
 The field is absent only while an iteration is still in flight (before its
 `endedAt` is written). The signature families behind `"infra"`, and the
