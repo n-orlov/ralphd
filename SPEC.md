@@ -3596,7 +3596,7 @@ expensive to rediscover.
 ### 14.4 Running the suite
 
 ```
-pip install -e '.[cli,dev]'
+pip install -e '.[dev]'
 pytest                                    # everything available
 pytest -m 'not docker and not browser'    # the fast tier
 pytest -m docker                          # needs a reachable docker socket

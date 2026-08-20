@@ -666,5 +666,5 @@ endpoint/key rotation. `204`.
 
 ## Versioning
 
-`GET /version` → `{"ralphd": "0.1.0", "api": 1, "pi": "<pi version>"}`. Breaking
+`GET /version` → `{"ralphd": "0.6.0", "api": 1, "pi": "<pi version>"}`. Breaking
 API changes bump `api`; `ralphctl` checks compatibility on connect.

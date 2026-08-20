@@ -1,6 +1,10 @@
 [project]
 name = "ralphd"
-version = "0.1.0.dev0"
+# First release of the line the roadmap records as shipped (v0.1-v0.6). The same
+# string is spelled in src/ralphd/__init__.py (__version__, served by
+# `GET /version` and both --version flags); tests/test_packaging_metadata.py
+# holds the two in agreement and checks the docs' claims against them.
+version = "0.6.0"
 description = "Locally runnable, dockerized autonomous coding loop (Ralph technique) driven by pi"
 readme = "README.md"
 license = "Apache-2.0"
@@ -12,9 +16,12 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+# One extra, and every requirement in it is used by something in this repo --
+# tests/test_packaging_metadata.py names where, so a dependency that stops being
+# used (as `httpx`/`rich` never were in the dropped `cli` extra) fails the suite
+# instead of shipping forever in the metadata.
 [project.optional-dependencies]
-cli = ["httpx>=0.27", "rich>=13.7"]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27", "rich>=13.7", "ruff>=0.4", "build>=1.0", "hatchling>=1.20"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27", "ruff>=0.4", "build>=1.0", "hatchling>=1.20"]
 
 [project.scripts]
 ralphctl = "ralphd.cli.main:main"
