@@ -112,6 +112,36 @@ def format_approach(approach, max_approaches) -> str:
     return f"{approach}/{max_approaches}"
 
 
+def model_ids(provider, model) -> tuple[str | None, str | None]:
+    """`(resolved id, raw gateway id)` for one assistant message -- task 012 (#14).
+
+    pi reports the model it actually used per message as a `provider` plus a
+    provider-side `model` id (`amazon-bedrock` + `eu.anthropic.claude-opus-5`).
+    The engine records BOTH halves of that, because they answer two different
+    operator questions:
+
+    - the *resolved id* is the pi-style `provider/model` ref -- the same string
+      an operator would pass to `--model`, and the string the pricing tables
+      match against, so "why is this unpriced" is answerable from run state;
+    - the *raw gateway id* is what the provider itself called the model. It is
+      returned only when it genuinely differs from the resolved ref (i.e. the
+      provider prefix was added), so a surface never shows the same string
+      twice claiming they are two facts.
+
+    A message that names no model at all yields `(None, None)`: the engine then
+    leaves whatever it already recorded alone rather than overwriting a known
+    id with ignorance. Defensive like `format_duration`/`format_approach`:
+    junk degrades to its string form instead of raising.
+    """
+    raw = "" if model is None or isinstance(model, bool) else str(model).strip()
+    prov = "" if provider is None or isinstance(provider, bool) else str(provider).strip()
+    if not raw:
+        return None, None
+    if not prov or raw.startswith(prov + "/"):
+        return raw, None
+    return f"{prov}/{raw}", raw
+
+
 # Absolute-timestamp display format (task 048, #4): local wall clock plus the
 # UTC offset, so a timestamp copied out of the hub or the CLI is unambiguous
 # without the reader having to know which machine's timezone it came from.

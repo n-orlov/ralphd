@@ -247,6 +247,21 @@ approach segment is omitted entirely (it used to read `approach None`).
 `--json` always carries both raw numbers, `approach` and `maxApproaches`,
 the latter `null` when unknown.
 
+A `model:` line names the model the run is actually talking to (task 012, issue
+#14) — the id **pi resolved**, as observed in its own message stream, not the
+ref the operator asked for (which is `null` whenever nothing was pinned):
+
+```
+model:     amazon-bedrock/eu.anthropic.claude-opus-5  (gateway id: eu.anthropic.claude-opus-5)
+```
+
+The `(gateway id: …)` suffix appears only when the provider's own id differs
+from the pi-style ref, and the whole line is omitted for a run that has not
+observed a model yet (never `model: None`, same discipline as the approach
+segment). `--json` carries `model` and `modelRaw`, both explicitly `null` for a
+pre-v0.6 run dir — see “`model` and `modelRaw`” in docs/api.md for why the
+observed id is the honest one.
+
 Human output includes a `duration:` line: while the job is still running this
 is the **elapsed-so-far** time since `startedAt` (labeled `(elapsed)`); once
 the job has reached a terminal state it is the **total run time** from

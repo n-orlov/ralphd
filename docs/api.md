@@ -30,6 +30,8 @@ The one-call summary. Response:
   "phase": "worker",               // planning|worker|verify|review|null
   "approach": 1,
   "maxApproaches": 3,           // approach denominator; null for a pre-v0.6 run dir
+  "model": "amazon-bedrock/eu.anthropic.claude-opus-5",  // model observed in use
+  "modelRaw": "eu.anthropic.claude-opus-5",             // gateway id, when different
   "iteration": 7,
   "iterationsBudget": 50,
   "iterationsUsed": 7,
@@ -139,6 +141,34 @@ missing key), which means *no denominator is known* — renderers show a bare
 `2` rather than inventing `2/?`. `approach` itself is absent/null until the
 loop starts, in which case there is nothing to render at all.
 
+#### `model` and `modelRaw`
+
+The model this run is actually talking to, as **pi resolved it** — not the ref
+the operator asked for. pi reports the model it used on every assistant message
+(a `provider` plus a provider-side `model` id), and the engine records both
+halves of that through one helper (`ralphd.engine.state.model_ids`):
+
+| field | meaning |
+|-------|---------|
+| `model` | the pi-style `provider/model` ref — the same string `--model` takes, and the string the pricing tables match against |
+| `modelRaw` | the provider-side (gateway) id, populated **only** when it differs from `model`, i.e. when the provider prefix was added; `null` otherwise, so one string is never presented twice as two facts |
+
+Why it is the *observed* id and not the configured one: when the operator pins
+nothing, `job.yaml`'s `model` is `null` and pi picks its own default — the case
+where run state used to report `model: null` while every message on the wire
+named a concrete id, leaving "why is this route unpriced" unanswerable from run
+state (#14). Both fields are `null` until an iteration observes a model, and an
+iteration that observes none (an instant startup failure, an in-band error with
+zero traffic) never overwrites an id already recorded. A pre-v0.6 run dir has
+neither key; `GET /status` reports explicit `null`s, never a missing key and
+never the live config's ref guessed in.
+
+The value is the **latest** observation, which is what "which model is this run
+using" means for a run whose phases may use different tiers (`fast_model`).
+Per-iteration ids stay in `iterations/NNNN/meta.json`, where `model` is the ref
+that was requested (possibly `null`) and `modelResolved`/`modelRaw` are what
+actually answered.
+
 #### `health` and `infraWait`
 
 `state` stays `starting|running|succeeded|failed|aborted` — there is **no**
@@ -238,6 +268,11 @@ never disagree about which text is "the PRD".
 ### `GET /iterations`
 Array of every iteration's `meta.json` (number, phase, approach, model, timestamps,
 exit code, sentinel seen, token usage, steering consumed).
+
+Each entry carries three model fields, which answer different questions:
+`model` is the ref the engine *requested* (`null` when nothing was pinned and pi
+chose), while `modelResolved` and `modelRaw` are what pi reported actually
+answering — see `model`/`modelRaw` under `GET /status` above.
 
 Each finished iteration also carries `faultClass` — the engine's own fault verdict
 for that iteration (`src/ralphd/engine/faults.py:classify_fault`), the same verdict

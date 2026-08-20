@@ -134,6 +134,15 @@ from env vars set by the test:
                       steering 001): half a million billed tokens quoted at
                       exactly $0. Takes precedence over the unpriced knob for
                       an invocation selected by both.
+  STUB_MODEL          the provider-side model id this stub claims to have
+                      resolved, reported on every assistant `message_end` as
+                      real pi does (`provider` + `model`, e.g. `amazon-bedrock`
+                      + `eu.anthropic.claude-opus-5`). Defaults to whatever
+                      `--model provider/id` the engine passed (split on the
+                      first slash, mirroring pi's own ref form) and, when the
+                      engine pinned nothing, to a stub default -- which is the
+                      shape behind task 012 (#14): pi picks its own model and
+                      only its message stream knows which.
 
 Every invocation unconditionally records the exact prompt it received to
 `<run>/.stub-last-prompt` (overwritten) and appends it to
@@ -148,6 +157,32 @@ import time
 prompt = sys.stdin.read()
 run = os.environ["STUB_RUN_DIR"]
 tasks_file = os.path.join(run, "tasks.json")
+
+# The model this invocation reports having used, pi-style: a `provider` plus a
+# provider-side `model` id on every assistant message_end (task 012, #14).
+# `--model provider/id` from the engine is the default; STUB_MODEL overrides
+# the provider-side half; with neither, a stub default stands in for "pi chose
+# its own model" -- the case where run state can only learn the id from here.
+def _resolve_model():
+    ref = None
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--model" and i + 1 < len(argv):
+            ref = argv[i + 1]
+        elif arg.startswith("--model="):
+            ref = arg.split("=", 1)[1]
+    provider, model = "stub-provider", "stub-model-1"
+    if ref:
+        provider, _, rest = ref.partition("/")
+        model = rest or provider
+        if not rest:
+            provider = ""
+    if os.environ.get("STUB_MODEL"):
+        model = os.environ["STUB_MODEL"]
+    return provider, model
+
+
+MODEL_PROVIDER, MODEL_ID = _resolve_model()
 # Worker iterations sleep *after* writing in-progress (see below) so tests
 # can poll for the pending -> in-progress transition while the iteration is
 # still "running" from the engine's point of view; every other phase keeps
@@ -378,13 +413,18 @@ def emit_final(text, tool_call=None, thinking_text=None):
         _usage["cost"] = {"total": 0}
     elif not UNPRICED_NOW:
         _usage["cost"] = {"total": 0.01}
+    _message = {
+        "role": "assistant",
+        "content": content,
+        "usage": _usage,
+    }
+    if MODEL_PROVIDER:
+        _message["provider"] = MODEL_PROVIDER
+    if MODEL_ID:
+        _message["model"] = MODEL_ID
     print(json.dumps({
         "type": "message_end",
-        "message": {
-            "role": "assistant",
-            "content": content,
-            "usage": _usage,
-        },
+        "message": _message,
     }))
 
 
