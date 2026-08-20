@@ -78,7 +78,7 @@ ralphctl start --prd <file|-> [options]
 | `--creds <dir>` | — | mount a credentials directory (see below) |
 | `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below |
 | `--prompt-override <dir>` | — | phase-prompt override directory |
-| `--image <ref>` | bundled default | alternative/derived engine image; falls back to the registry's `image` (`ralphctl config`) if set |
+| `--image <ref>` | built from source (`ralphd:<hash>`) | pin an exact engine image instead of building one — see "The job image" below; falls back to the registry's `image` (`ralphctl config`) if set |
 | `--on-complete idle\|exit` | exit | post-completion behavior; `idle` is an explicit debugging opt-in; falls back to the registry's `on_complete` (`ralphctl config`) if set |
 | `--on-complete-cmd <cmd>` | — | shell command run once by the engine (in-container) on reaching a terminal state; receives `RALPHD_RUN_ID`/`RALPHD_STATE`/`RALPHD_VERDICT` env vars; failures are logged (`events.jsonl`, `level: error`) but never affect the job's verdict or the engine's exit code |
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
@@ -108,6 +108,34 @@ prompts tell the agent which files exist and to source the one it needs
 every process. Recognized extras (`gitconfig`, `git-credentials`, `netrc`,
 `ssh/`) are placed conventionally; an executable `setup.sh` runs once before the
 first iteration. Nothing from this directory is copied into the run dir or logged.
+
+The job image (`--image <ref>`) — by default `start` **builds it**, keyed by the
+content of its inputs: `container/` (the Dockerfile and its entrypoint),
+`pyproject.toml` and `src/ralphd/`. Those hash to a short digest, the image is
+tagged `ralphd:<hash>`, and the build runs only when that tag is missing from
+the local daemon. So:
+
+- a source change produces a new tag automatically — running a stale engine is
+  structurally impossible rather than something you have to remember;
+- a repeat `start` on unchanged sources is a single image lookup and no build;
+- files that cannot change what the engine does inside the container (`tests/`,
+  `docs/`, and `artifacts/`, which a *running job* writes) are outside the hash,
+  so they never invalidate a cached image.
+
+Build output streams to stderr, prefixed and bounded — the first 200 lines,
+then a notice; if the build fails, the last 40 lines are printed as context and
+`start` exits `1` **before creating the run dir or config dir**, so a broken
+build never leaves a half-registered run behind (re-run the same `--run-id`
+once it is fixed). The build defaults to the legacy builder
+(`DOCKER_BUILDKIT=0`) because a build from inside a job container has the
+static docker client only; set `DOCKER_BUILDKIT=1` yourself to override that.
+
+An explicit reference — `--image <ref>`, the `RALPHD_IMAGE` environment
+variable, a `--template`'s `image:`, or the registry's `image`
+(`ralphctl config set image ...`) — **pins exactly that image**: nothing is
+hashed and nothing is built, which is how you deliberately run an older
+engine. If ralphd is installed without its sources (a wheel/pipx install has no
+`container/` to hash) `start` says so on stderr and falls back to `ralphd:dev`.
 
 Skills (`--skills <dir>`, repeatable): one directory per skill (must contain
 `SKILL.md`). If the given dir has no `SKILL.md` but every immediate child does,
@@ -139,7 +167,8 @@ field (`--skills`/`--creds` override wholesale, not merge). For `image`,
 `on_complete`, `network`, and `llm`, fields the template doesn't set fall
 back next to any matching `ralphctl config` registry default
 (`image`/`on_complete`/`network`/`default_llm_profile`), and only then to
-the hardcoded default; every other field falls straight back to its
+the hardcoded default (for `image`, to building `ralphd:<hash>` from source
+— see "The job image" above); every other field falls straight back to its
 hardcoded default. An unknown `--template`
 name exits `3` naming the expected path; a malformed `job.yaml` (not a
 mapping) exits `2`.
@@ -1555,7 +1584,10 @@ and for `--llm`
 (via `default_llm_profile`), between an explicit flag/`--template` value and
 the hardcoded built-in default: explicit flag > `--template` > `ralphctl
 config` default > hardcoded default. `resume`/`llm test`/`doctor`'s own
-`--image` flags are unaffected (still default to the hardcoded image).
+`--image` flags are unaffected (still default to the hardcoded image). Note
+that for `image` there is no hardcoded final fallback on `start`: with nothing
+set anywhere, `start` builds `ralphd:<hash>` from source instead of selecting a
+tag (see "The job image").
 
 #### Optional host-side pricing map (`pricing:`)
 

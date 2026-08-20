@@ -23,6 +23,20 @@ just enough behavior for ralphctl to proceed. Knobs:
                               status.json reaches a terminal state, so tests
                               can deterministically reproduce the API
                               dying right at job completion.
+  STUB_DOCKER_IMAGES          comma-separated image refs that `docker image
+                              inspect` finds. Set (even to empty) to make the
+                              image cache answer honestly; unset means every
+                              image "exists" (the pre-task-033 behaviour every
+                              doctor test relies on).
+  STUB_DOCKER_IMAGE_FILE      path to a file of image refs, one per line,
+                              APPENDED to by `docker build -t <ref>` and read
+                              by `docker image inspect` alongside
+                              STUB_DOCKER_IMAGES -- so a build in one ralphctl
+                              invocation is a cache hit in the next.
+  STUB_DOCKER_BUILD_LINES     how many lines of fake build output `docker
+                              build` prints (default 3).
+  STUB_DOCKER_BUILD_FAIL      if set, `docker build` prints its output and
+                              exits 1 without recording the tag.
 """
 import json
 import os
@@ -63,6 +77,19 @@ def _parse_run_argv(argv):
             continue
         i += 1
     return mounts, port, env
+
+
+def _known_images():
+    """The image refs this stub daemon has, or None for "everything exists"."""
+    listed = os.environ.get("STUB_DOCKER_IMAGES")
+    path = os.environ.get("STUB_DOCKER_IMAGE_FILE")
+    if listed is None and not path:
+        return None
+    refs = {r for r in (listed or "").split(",") if r}
+    if path and os.path.exists(path):
+        with open(path) as f:
+            refs |= {line.strip() for line in f if line.strip()}
+    return refs
 
 
 if cmd == "run" and os.environ.get("STUB_DOCKER_LIVE_ENGINE"):
@@ -108,4 +135,22 @@ elif cmd == "inspect":
         sys.exit(1)
 elif cmd == "version":
     print("29.5.3")
+elif cmd == "build":
+    tag = argv[argv.index("-t") + 1] if "-t" in argv else None
+    lines = int(os.environ.get("STUB_DOCKER_BUILD_LINES", "3"))
+    for i in range(lines):
+        print(f"Step {i + 1}/{lines} : RUN true")
+    if os.environ.get("STUB_DOCKER_BUILD_FAIL"):
+        print("The command '/bin/sh -c false' returned a non-zero code: 1",
+              file=sys.stderr)
+        sys.exit(1)
+    path = os.environ.get("STUB_DOCKER_IMAGE_FILE")
+    if tag and path:
+        with open(path, "a") as f:
+            f.write(tag + "\n")
+    print(f"Successfully tagged {tag}")
+elif cmd == "image" and argv[1:2] == ["inspect"]:
+    refs = _known_images()
+    if refs is not None:
+        sys.exit(0 if argv[-1] in refs else 1)
 sys.exit(0)
