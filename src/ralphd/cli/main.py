@@ -1025,6 +1025,188 @@ def _image_record_fields(resolved: dict, container: str) -> dict:
     return fields
 
 
+# ------------------------------------------- job-image staleness (#20 H4)
+# Requirement H4: `doctor` reports image **staleness** -- the source hash
+# against the tag in use -- not merely that some image exists. "Exists" was
+# the pre-v0.6 check, and it is exactly the check that let two runs of this
+# project execute a ten-day-old engine with nothing to say so.
+#
+# The whole difficulty is that a tag is only comparable to a source hash when
+# it was *produced* by hashing that source. There are three hash namespaces
+# (`ralphd:<hash>`, `ralphd-derived:<hash>`, `ralphd-base:<hash>`, task 032-035)
+# and only the first is a function of ralphd's source alone; a pinned or
+# hand-built reference is a function of nothing this host can recompute. So
+# there are FOUR answers, not two, and `unknowable` is a first-class one:
+# reporting a pin as "up to date" would be the same lie in the other direction.
+IMAGE_STALENESS_FRESH = "fresh"          # built from exactly these inputs
+IMAGE_STALENESS_STALE = "stale"          # hashed from some other source tree
+IMAGE_STALENESS_MISSING = "missing"      # not on this daemon at all
+IMAGE_STALENESS_UNKNOWABLE = "unknowable"  # not comparable to a source hash
+IMAGE_STALENESS_VERDICTS = (IMAGE_STALENESS_FRESH, IMAGE_STALENESS_STALE,
+                            IMAGE_STALENESS_MISSING,
+                            IMAGE_STALENESS_UNKNOWABLE)
+
+# Which hash namespace a reference lives in -- read with cli/image.py's own
+# readers (`tag_hash`/`derived_tag_hash`/`base_tag_hash`), never by matching
+# the string here, so "what is a ralphd tag" stays defined in one module.
+IMAGE_TAG_DEFAULT = "default"    # ralphd:<hash>         -- comparable
+IMAGE_TAG_DERIVED = "derived"    # ralphd-derived:<hash> -- covers a base too
+IMAGE_TAG_BASE = "base"          # ralphd-base:<hash>    -- covers a context
+IMAGE_TAG_UNHASHED = "unhashed"  # a pin, a registry ref, a hand-built tag
+IMAGE_TAG_NONE = "none"          # nothing recorded at all
+
+IMAGE_FRESH_NOTE = (
+    "{ref} was built from exactly this source tree's image inputs (source "
+    "hash {source})")
+IMAGE_STALE_NOTE = (
+    "{ref} was built from different image inputs than this source tree, whose "
+    "job image is {expected} -- a run on {ref} executes an engine that is not "
+    "this source")
+IMAGE_MISSING_BUILDABLE_NOTE = (
+    "{ref} is this source tree's job image but is not on this daemon -- the "
+    "next `ralphctl start` builds it")
+IMAGE_MISSING_NOTE = (
+    "{ref} is not on this daemon and is not this source tree's job image "
+    "({expected}), so nothing here builds it: a run on {ref} cannot start")
+IMAGE_NO_SOURCE_HASH_NOTE = (
+    "{ref} cannot be compared against a source hash: there is no ralphd "
+    "source tree next to this install (no {marker}) to hash")
+IMAGE_DERIVED_NOTE = (
+    "{ref} is a derived image, whose hash covers the base image it was layered "
+    "onto as well as ralphd's source, so it is not comparable to a bare source "
+    "hash -- this source tree's own default job image is {expected}")
+IMAGE_BASE_TAG_NOTE = (
+    "{ref} is a base image built from an operator's own Dockerfile, whose hash "
+    "covers that build context rather than ralphd's source, so it is not "
+    "comparable to a source hash -- this source tree's own default job image "
+    "is {expected}")
+IMAGE_PIN_NOTE = (
+    "{ref} was not produced by hashing ralphd's source, so whether it matches "
+    "this source tree cannot be established -- this source tree's own job "
+    "image is {expected}")
+IMAGE_NO_REFERENCE_NOTE = (
+    "no image reference is recorded for this run, so which engine it runs "
+    "cannot be established (a run dir written before v0.6 records none)")
+# Appended to an `unknowable` verdict for a run: the record's own word for how
+# the reference was chosen (IMAGE_SOURCE_*), which is the only thing that can
+# explain the ignorance -- `pinned` and `default` mean staleness is unknowable
+# by construction, not that the image is current.
+IMAGE_RECORDED_SOURCE_CLAUSE = " (run state records it as `{source}`)"
+IMAGE_NO_SOURCE_EXPECTED = "unknown (nothing here to hash)"
+
+
+def image_tag_kind(ref: str | None) -> tuple[str, str | None]:
+    """`(namespace, content hash)` for an image reference (task 037).
+
+    The hash is read by cli/image.py's own three readers rather than by
+    pattern-matching a tag here: they are what define the namespaces, and a
+    second implementation is how `ralphd-derived:<hash>` would eventually get
+    compared against a source hash it has nothing to do with.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        return IMAGE_TAG_NONE, None
+    for kind, reader in ((IMAGE_TAG_DEFAULT, image.tag_hash),
+                         (IMAGE_TAG_DERIVED, image.derived_tag_hash),
+                         (IMAGE_TAG_BASE, image.base_tag_hash)):
+        found = reader(ref)
+        if found:
+            return kind, found
+    return IMAGE_TAG_UNHASHED, None
+
+
+def current_source_hash(root: Path | None = None) -> tuple[Path | None, str | None]:
+    """`(source root, content hash of the image inputs)`, or `(None, None)`.
+
+    `(None, None)` is the wheel/pipx case -- no `container/` to hash -- and it
+    means staleness is unknowable, never "fresh": there is nothing to compare
+    a tag against. One hash per `doctor` invocation (cheap by construction,
+    task 032: excluded directories are pruned, not walked).
+    """
+    src = image.source_root(root)
+    if src is None:
+        return None, None
+    return src, image.hash_image_inputs(src).hash
+
+
+def _comparable_image_hash(kind: str, tag_hash: str | None,
+                           rec: dict | None) -> str | None:
+    """The hash of an image that a ralphd *source* hash may be compared to.
+
+    None means "not comparable" -- which is an answer, not a failure. A
+    derived or base tag's hash covers ingredients that are not this source, so
+    it is refused here even though it is a real content hash.
+
+    A run's own record (task 036) answers when the reference cannot: a resume
+    that had to fall back to the recorded image *id* runs a reference with no
+    tag to read, while `host.json` still says which source hash produced it.
+    Only for `cached`/`built`/`recorded` with no base -- `pinned`, `unhashable`
+    and `default` mean nobody hashed anything.
+    """
+    rec = rec or {}
+    if rec.get("imageBase") or rec.get("imageDockerfile"):
+        return None
+    if kind == IMAGE_TAG_DEFAULT:
+        return tag_hash
+    recorded = rec.get("imageHash")
+    if (isinstance(recorded, str) and recorded.strip()
+            and rec.get("imageSource") in (IMAGE_SOURCE_CACHED,
+                                           IMAGE_SOURCE_BUILT,
+                                           IMAGE_SOURCE_RECORDED)):
+        return recorded.strip()
+    return None
+
+
+def image_staleness(ref: str | None, *, source_hash: str | None,
+                    present: bool | None = None,
+                    rec: dict | None = None) -> dict:
+    """Is `ref` the image this source tree builds? (requirement H4's question.)
+
+    Pure: every docker fact it uses is passed in (`present`, `None` when nobody
+    asked the daemon -- which is never read as absence), so the verdict is
+    testable without a daemon and so one implementation can answer both about
+    the host's own job image and about the image a run recorded (task 036).
+
+    Returns `{image, imageKind, imageHash, imageSource, sourceHash,
+    sourceImage, present, staleness, note}` -- `staleness` one of
+    IMAGE_STALENESS_VERDICTS, `note` the operator-facing sentence (worded once,
+    here, so the text report and `--json` cannot disagree).
+    """
+    ref = (ref or "").strip()
+    rec = rec or {}
+    kind, tag_hash = image_tag_kind(ref)
+    comparable = _comparable_image_hash(kind, tag_hash, rec)
+    expected = image.image_tag(source_hash) if source_hash else None
+    matches = bool(comparable and source_hash and comparable == source_hash)
+    fmt = {"ref": ref, "source": source_hash,
+           "expected": expected or IMAGE_NO_SOURCE_EXPECTED,
+           "marker": image.SOURCE_MARKER}
+    if not ref:
+        verdict, note = IMAGE_STALENESS_UNKNOWABLE, IMAGE_NO_REFERENCE_NOTE
+    elif present is False:
+        verdict = IMAGE_STALENESS_MISSING
+        note = (IMAGE_MISSING_BUILDABLE_NOTE if matches
+                else IMAGE_MISSING_NOTE).format(**fmt)
+    elif not source_hash:
+        verdict = IMAGE_STALENESS_UNKNOWABLE
+        note = IMAGE_NO_SOURCE_HASH_NOTE.format(**fmt)
+    elif comparable:
+        verdict = IMAGE_STALENESS_FRESH if matches else IMAGE_STALENESS_STALE
+        note = (IMAGE_FRESH_NOTE if matches else IMAGE_STALE_NOTE).format(**fmt)
+    else:
+        verdict = IMAGE_STALENESS_UNKNOWABLE
+        note = {IMAGE_TAG_DERIVED: IMAGE_DERIVED_NOTE,
+                IMAGE_TAG_BASE: IMAGE_BASE_TAG_NOTE}.get(
+                    kind, IMAGE_PIN_NOTE).format(**fmt)
+    recorded_source = rec.get("imageSource")
+    if verdict == IMAGE_STALENESS_UNKNOWABLE and recorded_source and ref:
+        note += IMAGE_RECORDED_SOURCE_CLAUSE.format(source=recorded_source)
+    return {"image": ref or None, "imageKind": kind, "imageHash": comparable,
+            "imageSource": recorded_source, "sourceHash": source_hash,
+            "sourceImage": expected, "present": present,
+            "staleness": verdict, "note": note}
+
+
 # ---------------------------------------------------------------- start
 # job-config fields a template's job.yaml may default; explicit CLI flags
 # (checked via `is not None`/falsy, since every one of these argparse
@@ -4105,17 +4287,136 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
             "recovered": recovered}
 
 
+# Where the reference `doctor` reports on came from -- the same ranking `start`
+# uses to *select* an image (task 035's levels), said in words an operator can
+# match to their own configuration. `doctor` cannot know a per-job
+# `--dockerfile`/`base_image`, so it never claims to: it reports the host-wide
+# answer and says which level produced it.
+IMAGE_IN_USE_FLAG = "the --image flag"
+IMAGE_IN_USE_ENV = "RALPHD_IMAGE"
+IMAGE_IN_USE_REGISTRY = "the registry's config.yaml (image:)"
+IMAGE_IN_USE_SOURCE = "this source tree's image inputs"
+IMAGE_IN_USE_DERIVED = "the registry's config.yaml ({key}:)"
+IMAGE_IN_USE_FALLBACK = "the built-in fallback"
+# The registry configures a *base*, so the job image is a derived tag that only
+# exists once it has been derived: doctor names the base rather than inventing
+# a tag, and reports the default tag it can still speak for.
+IMAGE_DERIVED_SUPPLY_NOTE = (
+    "the job image is derived from {base} ({where}), so which tag runs is only "
+    "settled when `ralphctl start` derives it; this source tree's own default "
+    "job image is {expected}")
+IMAGE_STALE_RUNS_HEADING = (
+    "runs recorded non-terminal whose own job image is not this source tree's:")
+
+
+def _doctor_image_reference(args, reg_cfg: dict) -> tuple[str | None, str, str | None]:
+    """`(reference, where it came from, base it is derived from)` for `doctor`.
+
+    Ranked exactly like `start`'s image *selection*: an explicit `--image`,
+    then the ambient `RALPHD_IMAGE`, then the registry's `image:` pin, then --
+    when nothing pins anything -- the content-hashed default this source tree
+    builds, and finally the legacy fallback for an install with no source tree.
+
+    A registry that supplies `base_image:`/`dockerfile:` instead of `image:`
+    yields `(None, where, base)`: the job image is a *derived* tag, and naming
+    one here would mean deriving it (a second resolver, and a build). Absence
+    is an answer -- the caller reports the base instead of guessing a tag.
+    """
+    pinned = getattr(args, "image", None)
+    if pinned:
+        return pinned, IMAGE_IN_USE_FLAG, None
+    if IMAGE_ENV:
+        return IMAGE_ENV, IMAGE_IN_USE_ENV, None
+    for key in ("image", "base_image", "dockerfile"):
+        val = reg_cfg.get(key)
+        if isinstance(val, str) and val.strip():
+            if key == "image":
+                return val.strip(), IMAGE_IN_USE_REGISTRY, None
+            return (None, IMAGE_IN_USE_DERIVED.format(key=key), val.strip())
+    _, source_hash = current_source_hash()
+    if source_hash:
+        return image.image_tag(source_hash), IMAGE_IN_USE_SOURCE, None
+    return DEFAULT_IMAGE, IMAGE_IN_USE_FALLBACK, None
+
+
+def _doctor_image_staleness(args, reg_cfg: dict,
+                            source_hash: str | None) -> tuple[dict, bool]:
+    """`doctor`'s job-image verdict, and whether the check passes (task 037).
+
+    The check passes when the job image is **available**: present on this
+    daemon, or something ralphd can produce from this source tree. That is a
+    deliberate change from the pre-v0.6 "present" check, which failed a fresh
+    checkout for an image `start` would have built anyway -- and, in the other
+    direction, passed for a pinned reference that is years older than the
+    source. Staleness is reported separately and is *report-only*: running an
+    old engine on purpose is a supported thing to do (`--image`), being unable
+    to tell is not.
+    """
+    ref, where, base = _doctor_image_reference(args, reg_cfg)
+    expected = image.image_tag(source_hash) if source_hash else None
+    if ref is None:
+        # a derived supply: no single tag to inspect, so nothing is claimed
+        # about presence -- ralphd can produce it iff there is source to layer.
+        verdict = image_staleness(None, source_hash=source_hash)
+        verdict["note"] = IMAGE_DERIVED_SUPPLY_NOTE.format(
+            base=base, where=where,
+            expected=expected or IMAGE_NO_SOURCE_EXPECTED)
+        verdict["imageBase"] = base
+        verdict["where"] = where
+        return verdict, source_hash is not None
+    present = image_exists(ref)
+    verdict = image_staleness(ref, source_hash=source_hash, present=present)
+    verdict["imageBase"] = None
+    verdict["where"] = where
+    return verdict, bool(present or (expected and ref == expected))
+
+
+def _run_image_staleness(source_hash: str | None) -> list[dict]:
+    """The job-image verdict for every run recorded non-terminal (task 037).
+
+    The literal reading of "the tag in use": a live run's image is the one its
+    own `host.json` records (task 036), not whatever the host would resolve
+    today -- and it is the case fact 1 of the PRD is about, a run executing an
+    engine that predates the fix it is watching for.
+
+    Hash comparison only: no `docker image inspect` per run, so this costs one
+    file read each and never claims an image is gone. Terminal runs are left
+    out -- an image that was current while the run happened is not "stale"
+    afterwards, and the run is over either way.
+    """
+    runs_dir = registry() / "runs"
+    if not runs_dir.is_dir():
+        return []
+    entries = []
+    for d in sorted(runs_dir.iterdir()):
+        status = _read_json(d / "status.json", {})
+        if not isinstance(status, dict) or status.get("state") not in NONTERMINAL_STATES:
+            continue
+        rec = image_record(d)
+        entries.append({"runId": d.name,
+                        **image_staleness(rec["image"], source_hash=source_hash,
+                                          rec=rec)})
+    return entries
+
+
 def cmd_doctor(args):
     checks = {}
     checks["docker"] = sh([DOCKER, "version", "--format", "{{.Server.Version}}"]) \
         .returncode == 0
-    checks["image"] = sh([DOCKER, "image", "inspect", args.image]).returncode == 0
     reg = registry()
     reg.mkdir(parents=True, exist_ok=True)
+    reg_cfg = _registry_config(reg)
+    # Requirement H4: source hash vs the tag in use, not mere existence.
+    src_root, source_hash = current_source_hash()
+    image_verdict, image_ok = _doctor_image_staleness(args, reg_cfg, source_hash)
+    checks["image"] = image_ok
+    run_images = _run_image_staleness(source_hash)
+    stale_runs = [e for e in run_images
+                  if e["staleness"] == IMAGE_STALENESS_STALE]
     checks["registry"] = os.access(reg, os.W_OK)
     checks["pi_host_config"] = (Path.home() / ".pi" / "agent" / "settings.json").exists()
 
-    default_profile_name = _registry_config(reg).get("default_llm_profile", "host")
+    default_profile_name = reg_cfg.get("default_llm_profile", "host")
     default_llm_profile_error = None
     if default_profile_name in ("host", "none"):
         checks["default_llm_profile"] = True
@@ -4132,11 +4433,12 @@ def cmd_doctor(args):
 
     strays = _stray_sibling_containers()
     dangling = _dangling_registry_entries()
+    image_verdict["sourceRoot"] = str(src_root) if src_root else None
     # host-network jobs share the host's network namespace, so docker's
     # normal port-publish isolation (`-p host:container`) doesn't apply --
     # the API binds `--api-bind` directly on the host. Report-only, never
     # affects the verdict (mirrors strays/dangling below).
-    configured_network = _registry_config(reg).get("network")
+    configured_network = reg_cfg.get("network")
     host_network_note = None
     if configured_network == "host":
         host_network_note = (
@@ -4150,6 +4452,18 @@ def cmd_doctor(args):
     # strays/dangling registry entries are report-only, never affect the verdict
     ok = all(checks.values())
     report = "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items())
+    # The staleness line is report-only, so it is marked `!` exactly when it is
+    # news the operator has to act on (a stale or unrunnable image) and left
+    # unmarked when it is not (fresh, or honestly unknowable).
+    stale_mark = image_verdict["staleness"] in (IMAGE_STALENESS_STALE,
+                                                IMAGE_STALENESS_MISSING)
+    report += (f"\n{'!' if stale_mark else ' '} job image "
+               f"({image_verdict['staleness']}, from "
+               f"{image_verdict['where']}): {image_verdict['note']}")
+    if stale_runs:
+        report += f"\n! {IMAGE_STALE_RUNS_HEADING}"
+        for e in stale_runs:
+            report += f"\n    {e['runId']}  {e['note']}"
     if default_llm_profile_error:
         report += f"\n    default LLM profile ({default_profile_name!r}): {default_llm_profile_error}"
     if host_network_note:
@@ -4219,6 +4533,7 @@ def cmd_doctor(args):
                    f"{len(auto_resume['gaveUp'])} given up on, "
                    f"{len(auto_resume['failed'])} failed")
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
+               "imageStaleness": image_verdict, "runImageStaleness": run_images,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
                "defaultLlmProfile": default_profile_name,
                "defaultLlmProfileError": default_llm_profile_error,
@@ -4665,7 +4980,13 @@ def main() -> None:
     s.set_defaults(func=cmd_artifacts)
 
     s = sub.add_parser("doctor", help="preflight checks")
-    s.add_argument("--image", default=DEFAULT_IMAGE)
+    s.add_argument("--image", default=None, metavar="REF",
+                   help="report on this image reference instead of the one "
+                        "this host would run (RALPHD_IMAGE, the registry's "
+                        "image:, or the content-hashed default this source "
+                        "tree builds); with --fix it also pins the image "
+                        "auto-resumed runs restart on, which by default is "
+                        "the one each run recorded at start time")
     s.add_argument("--fix", action="store_true",
                    help="self-recovery sweep: resume every run recorded "
                         "non-terminal whose container has vanished and that "
