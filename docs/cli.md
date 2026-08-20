@@ -778,6 +778,91 @@ steering:  001-focus.md
   `tests/test_hub_iteration_dialog.py`, so the two surfaces cannot grow two
   vocabularies for the same `meta.json`.
 
+### `ralphctl fault <run-id>`
+
+Why this run is (or last was) in trouble — the fault **explained**, not just
+classified (task 025, #18.4).
+
+```
+ralphctl fault <run-id>
+```
+
+```
+$ ralphctl fault brisk-otter-1408
+run:       brisk-otter-1408
+fault:     infra (iteration 7, phase worker)
+because:   the error text matched a known infra signature
+signature: dns -- the endpoint's name did not resolve (pattern EAI_AGAIN, matched "EAI_AGAIN")
+exit:      error (exit 0): request to https://aigw.internal/v1 failed, reason: getaddrinfo EAI_AGAIN aigw.internal [infra fault]
+ladder:    attempt 3 (no cap: the outage budget is the stopping rule), waits so far 30s, 1m, 2m, next attempt at 2026-09-04 13:14:03 +0200
+budget:    3m 30s of 4h spent waiting (3h 56m left); 5m 30s of infra waits in this run
+health:    degraded (sitting out a backoff wait right now)
+```
+
+Every fact above was already on disk and nothing joined it up: `status`
+printed `degraded:` with the countdown, `iteration <n>` printed `[infra
+fault]`, and *which* signature fired, *how far* up the retry ladder the run
+has climbed and *how much* of the outage budget is gone had to be
+reconstructed by knowing `engine/faults.py`' table by heart and grepping
+`events.jsonl`.
+
+- **`fault:`** is the class the engine recorded and acted on (`infra` ·
+  `work`), with the iteration and phase it happened in — read from the newest
+  `iterations/NNNN/meta.json` that carries a `faultClass`.
+- **`because:`** names which branch of the classifier decided it, in the
+  classifier's own words: the startup watchdog fired (no LLM traffic at all) ·
+  the error text matched a known infra signature · the agent reached the model
+  and then failed · no traffic and no recognized signature (an unclassifiable
+  no-traffic failure is treated as infra) · an operator-initiated
+  abort/interrupt, which is never retried as an outage.
+- **`signature:`** is the row of `engine/faults.py`'s `INFRA_SIGNATURES` table
+  that matched: its family (`dns` · `tcp` · `stream` · `tls` · `sdk` ·
+  `http-5xx` · `backpressure` · `bedrock-stream` · `capacity`), what that
+  family means, the pattern, and the exact substring it matched in the error.
+  `(no signature matched)` for a work fault or a watchdog kill — never a guess.
+- **`ladder:`** is the run's *own* recorded retry attempts (one `infra_retry`
+  event each), not `infra_retry_backoff_s` re-simulated: a wait cut short by
+  `ralphctl retry`, a wait clamped by what was left of the budget and reflect's
+  own shorter budget all read truthfully. `attempt 3 of 6` when
+  `infra_retry_max` is set, otherwise `no cap: the outage budget is the
+  stopping rule` (the real stopping rule, see `status`' `degraded:` line). The
+  pre-reflect delay is reported as what it is, not as a retry.
+- **`budget:`** is that outage episode's spend against `infra_outage_budget_s`,
+  plus the run-wide `infraWaitTotalS` when earlier outages added to it. Infra
+  waits extend the job deadline, so this time never counts against
+  `job_timeout_s`.
+- **`recovered:`** appears when the engine emitted `infra_recovered` — a later
+  iteration reached the model, so the episode is over and the ladder is not a
+  live one. **`gave up:`** prints `status.json`'s `abortReason` when the run
+  stopped on the fault.
+- **Purely on-disk, no container needed and no snapshot notice**, like
+  `iteration`/`docs`/`artifacts`: `status.json`, `events.jsonl` and the
+  iteration metas are all the engine's own writes, so a live run and one whose
+  container is long gone read identically.
+- **Unknown is not zero.** A run that never faulted prints `(no fault
+  recorded)` rather than an empty block. A fault whose `meta.json` is
+  unreadable (mid-write, or an iteration dir removed by hand) is still
+  explained from the run's own retry events, saying where the verdict came
+  from instead of inventing a branch. And when the class the engine recorded
+  differs from what the error text alone implies — the operator-abort carve-out
+  is the usual, legitimate cause — the divergence is printed (`!! the engine
+  recorded a different class than this error alone implies`); the engine's
+  verdict is what the run acted on and is never overwritten.
+- `--json` carries the whole shaping: `faultClass`, `reason`, `signature`
+  (`family`/`description`/`pattern`/`match`), `iteration`, `phase`, `error`
+  (full text, untruncated), `iterationDetail` (`iteration`'s own dict),
+  `ladder` (`attempt`, `maxAttempts`, `attempts`, `backoffsS`,
+  `nextAttemptAt`/`nextAttemptAtLocal`, `display`), `budget` (`waitedS`,
+  `budgetS`, `remainingS`, `totalWaitedS`, `display`), `state`, `health`,
+  `waiting`, `recovered`, `abortReason`, `notices`, `hasFault`, plus
+  `summaryLines` and `text` (the human block, verbatim).
+- Exit codes: `0` · `3` run not found. A run with no fault is **not** an error:
+  "nothing went wrong" is an answer. Pinned by
+  `tests/test_cli_fault_explanation.py`.
+- The block below the `run:` line is worded ONCE, by
+  `ralphd.engine.state.fault_summary_lines`, so the hub's fault dialog (task
+  026) explains the same fault in the same words.
+
 ### `ralphctl docs <run-id> [name]`
 
 A run's own **state documents** — the prose a run leaves behind, plus the config

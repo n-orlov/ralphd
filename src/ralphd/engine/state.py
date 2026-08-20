@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
-from ..log_merge import iteration_dir, iteration_output_path
+from ..log_merge import iteration_dir, iteration_numbers, iteration_output_path
+from .faults import explain_fault, matched_signature
 from .redact import redact_job_yaml, scrub_text
 
 
@@ -1668,6 +1669,428 @@ def artifact_text(entry: dict) -> str:
     return "\n".join([*artifact_summary_lines(entry),
                       format_run_document_header(entry.get("path")),
                       artifact_body(entry)])
+
+
+# ---------------------------------------------------------------------------
+# Task 025 (#18.4): the fault explanation.
+#
+# The engine already records everything needed to explain a fault -- the
+# classifier's verdict per iteration (`faultClass` in
+# `iterations/NNNN/meta.json`), the retry attempts and their backoffs
+# (`infra_retry`/`infra_wait` events), the degraded half of the status
+# contract (`health`/`infraWait`/`infraWaitTotalS`) -- but nothing joined
+# them up: an operator staring at `faultClass: "infra"` still had to know
+# `engine/faults.py`' signature table by heart to learn WHY, grep
+# `events.jsonl` for the attempt number, and do the outage-budget arithmetic
+# by hand. This is that join, shaped ONCE (the `iteration_detail` /
+# `run_documents` discipline): `ralphctl fault` prints these dicts and the
+# hub's fault dialog (task 026) renders the very same lines.
+#
+# Purely on-disk, like every other explanation surface: status.json,
+# events.jsonl and the iteration metas are the engine's own writes, so a live
+# run and one whose container is long gone read identically.
+
+# This run never recorded a fault -- said out loud, the `NO_ARTIFACTS` /
+# `RUN_DOCUMENT_ABSENT` discipline, because "nothing went wrong" is an answer.
+NO_FAULT = "(no fault recorded)"
+
+# The error text was not matched by any row of `faults.INFRA_SIGNATURES`
+# (which is normal for a work fault, and is itself why an unclassifiable
+# no-traffic failure is treated as infra).
+FAULT_SIGNATURE_NONE = "(no signature matched)"
+
+# Nothing was retried: no `infra_retry` attempt is recorded for the episode.
+FAULT_LADDER_NONE = "(nothing retried)"
+
+# The retry wrapper is demonstrably acting on an infra fault (its own
+# `infra_retry`/`infra_wait` events say so) but the failing iteration's
+# meta.json is not readable -- mid-write, or an iteration dir removed by hand.
+# The class is the engine's own; the classifier's reasoning is not re-derivable
+# from an event, so this says where the verdict came from instead of inventing
+# a branch it did not take.
+FAULT_REASON_FROM_EVENT = (
+    "the engine's retry wrapper recorded an infra fault (read from this run's "
+    "own retry events -- the iteration's meta.json is not readable)")
+
+# `cfg.infra_retry_max` is None by default: the wall-clock outage budget is
+# the stopping rule, not an attempt count (loop.py's own words).
+FAULT_LADDER_UNCAPPED = "no cap: the outage budget is the stopping rule"
+
+# `loop._reflect_pre_attempt_wait` publishes its pre-reflect wait as attempt 0
+# -- deliberately not one of the episode's retries, because the job has already
+# ended and this is only the delay before reflect's single attempt.
+FAULT_LADDER_REFLECT_DELAY = (
+    "waiting before the first reflect attempt (not a retry: the job already "
+    "ended on an infra fault)")
+
+# An outage episode that has ended: the engine emitted `infra_recovered`, i.e.
+# an iteration reached the model again.
+FAULT_RECOVERED_NOTICE = "the endpoint recovered: a later iteration reached the model"
+
+# The verdict recorded by the engine and the one this shaping re-derives from
+# the same meta.json disagree. The usual, legitimate cause is the operator
+# carve-out (`operator_abort`, task 003 of #11): an abort/interrupt is recorded
+# as a `work` fault though its error text and traffic look infra, and that
+# input is not part of the iteration's meta.json. Never silently resolved --
+# the ENGINE's verdict is what the run acted on, and the divergence is shown.
+FAULT_VERDICT_DIVERGED_NOTICE = (
+    "!! the engine recorded a different class than this error alone implies "
+    "(usually an operator abort/interrupt, which is never retried)")
+
+# Event types the explanation reads, so a huge events.jsonl is not held in
+# memory to answer one question.
+FAULT_EVENT_TYPES = ("infra_retry", "infra_wait", "infra_recovered",
+                     "reflect_infra_delay")
+
+
+def read_events(run_root: Path, types=None, limit: int | None = None) -> list[dict]:
+    """A run dir's `events.jsonl` as dicts, oldest first (task 025, #18.4).
+
+    `types` keeps only those event types; `limit` keeps only the LAST that many
+    matching events. A line that does not parse is skipped rather than raised
+    on: the file is appended to by a live engine, so the last line can be a
+    half-written one -- the #15 rule (a mid-write file is not an empty one),
+    applied to the event log. A missing file is an empty list.
+    """
+    wanted = set(types) if types else None
+    out: list[dict] = []
+    try:
+        with open(Path(run_root) / "events.jsonl") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                if wanted is not None and ev.get("type") not in wanted:
+                    continue
+                out.append(ev)
+    except OSError:
+        return []
+    return out[-limit:] if limit is not None and limit >= 0 else out
+
+
+def _last_fault_iteration(run_root: Path) -> dict | None:
+    """The most recent iteration whose meta.json records a fault verdict, as
+    `iteration_detail`'s dict (so the explanation reuses that shaping, exit
+    reason and all), or None when no iteration ever failed.
+
+    Scanned newest-first and stopped at the first hit: "the current/last
+    fault" is the one an operator is asking about, and a finished run's
+    earlier faults are still readable through `ralphctl iteration`.
+    """
+    for number in reversed(iteration_numbers(Path(run_root))):
+        detail = iteration_detail(Path(run_root), number)
+        if not isinstance(detail, dict):
+            continue
+        fault = detail.get("faultClass")
+        if isinstance(fault, str) and fault:
+            return detail
+    return None
+
+
+def _fault_episode(events: list[dict]) -> dict:
+    """The infra-retry episode the run is in (or ended in), from its own
+    events: the `infra_retry` attempts recorded AFTER the last
+    `infra_recovered`.
+
+    That boundary is the engine's own (`loop._reset_infra_episode` emits
+    `infra_recovered` exactly when an iteration reaches the model again and
+    the backoff schedule/outage budget start over), so this reads the episode
+    clock rather than inventing a second definition of "one outage".
+    """
+    recovered = False
+    attempts: list[dict] = []
+    for ev in events:
+        kind = ev.get("type")
+        if kind == "infra_recovered":
+            # A new episode starts from a clean clock: forget the old attempts,
+            # but remember that recovery happened (it is the answer for a run
+            # that rode an outage out successfully).
+            attempts = []
+            recovered = True
+        elif kind == "infra_retry":
+            attempts.append(ev)
+            recovered = False
+    return {"attempts": attempts, "recovered": recovered}
+
+
+def format_fault_signature(signature: dict | None) -> str:
+    """Which row of `faults.INFRA_SIGNATURES` matched, in one line:
+    `dns -- the endpoint's name did not resolve (pattern EAI_AGAIN, matched
+    "EAI_AGAIN")`, or `FAULT_SIGNATURE_NONE`."""
+    if not isinstance(signature, dict) or not signature.get("family"):
+        return FAULT_SIGNATURE_NONE
+    line = str(signature["family"])
+    if signature.get("description"):
+        line += f" -- {signature['description']}"
+    bits = []
+    if signature.get("pattern"):
+        bits.append(f"pattern {signature['pattern']}")
+    if signature.get("match"):
+        bits.append(f'matched "{signature["match"]}"')
+    return line + (f" ({', '.join(bits)})" if bits else "")
+
+
+def format_fault_ladder(ladder: dict | None) -> str:
+    """Where the run stands in the infra retry ladder:
+    `attempt 4 of 6, waits so far 30s, 1m, 2m, next attempt in 58s` -- or
+    `FAULT_LADDER_NONE` when nothing was retried.
+
+    The ladder is the run's OWN recorded backoffs (one `infra_retry` event per
+    attempt), not `cfg.infra_retry_backoff_s` re-simulated: a wait cut short by
+    POST /retry, a wait clamped by what was left of the outage budget and a
+    reflect-phase episode on its own shorter budget all really happened that
+    way, and the config is not in the run dir to be trusted about it anyway.
+    """
+    if not isinstance(ladder, dict) or ladder.get("attempt") is None:
+        return FAULT_LADDER_NONE
+    cap = ladder.get("maxAttempts")
+    if ladder["attempt"] == 0:
+        head = FAULT_LADDER_REFLECT_DELAY
+    else:
+        head = f"attempt {ladder['attempt']}"
+        head += f" of {cap}" if cap else f" ({FAULT_LADDER_UNCAPPED})"
+    waits = [format_duration(w) for w in (ladder.get("backoffsS") or [])
+             if w is not None]
+    if waits:
+        head += f", waits so far {', '.join(waits)}"
+    if ladder.get("nextAttemptAt"):
+        head += f", next attempt at {ladder.get('nextAttemptAtLocal') or ladder['nextAttemptAt']}"
+    return head
+
+
+def format_fault_budget(budget: dict | None) -> str:
+    """How much of the outage budget this episode has spent:
+    `52s of 4h spent waiting (4h left)`, plus the run-wide infra-wait total
+    when it is larger than this episode's (earlier outages this run rode out).
+
+    `USAGE_NONE`'s discipline: a run with no recorded budget arithmetic gets
+    `FAULT_LADDER_NONE`-style honesty rather than a `0s of 0s`.
+    """
+    if not isinstance(budget, dict):
+        return USAGE_NONE
+    total_wait = budget.get("totalWaitedS")
+    if budget.get("budgetS") is None:
+        # No episode budget recorded (nothing was ever waited out in one).
+        if total_wait:
+            return f"{format_duration(total_wait)} of infra waits in this run"
+        return USAGE_NONE
+    line = (f"{format_duration(budget.get('waitedS'))} of "
+            f"{format_duration(budget.get('budgetS'))} spent waiting")
+    if budget.get("remainingS") is not None:
+        line += f" ({format_duration(budget['remainingS'])} left)"
+    if total_wait and total_wait > (budget.get("waitedS") or 0) + 1:
+        line += f"; {format_duration(total_wait)} of infra waits in this run"
+    return line
+
+
+def fault_explanation(run_root: Path) -> dict:
+    """Why this run is (or last was) in trouble -- the whole story in one dict
+    (task 025, #18.4).
+
+    Joins the three records the engine already keeps:
+
+      the last failing iteration   `_last_fault_iteration` -> `iteration`
+                          (`iteration_detail`'s dict: phase, timing, exit
+                          reason, the raw failure signals), from which
+                          `faults.explain_fault` re-derives the CLASSIFIER's
+                          own reasoning -- `reason` (which branch of the
+                          ladder decided it) and `signature` (which row of
+                          `faults.INFRA_SIGNATURES` matched, with the exact
+                          substring). `faultClass` is always the verdict the
+                          ENGINE recorded and acted on; when the re-derived
+                          one differs, `FAULT_VERDICT_DIVERGED_NOTICE` says so
+                          instead of either being quietly preferred.
+      the retry attempts  `infra_retry` events of the current episode ->
+                          `ladder` (attempt, cap, the backoffs actually
+                          waited, the next attempt's instant),
+      the outage budget   status.json's `infraWait`/`infraWaitTotalS` plus the
+                          episode's last `infra_retry` -> `budget`.
+
+    Also carries the run's `state`/`health`, `waiting` (is a backoff wait
+    pending right now), `recovered` (the episode ended with an iteration
+    reaching the model), and `abortReason` when the run gave up. `hasFault` is
+    False only when there is genuinely nothing to explain -- then every other
+    field is null and the renderers print `NO_FAULT`.
+    """
+    root = Path(run_root)
+    status = read_json(root / "status.json", {}) or {}
+    if not isinstance(status, dict):
+        status = {}
+    events = read_events(root, FAULT_EVENT_TYPES)
+    episode = _fault_episode(events)
+    attempts = episode["attempts"]
+    detail = _last_fault_iteration(root)
+
+    wait = status.get("infraWait")
+    wait = wait if isinstance(wait, dict) else None
+    last_retry = attempts[-1] if attempts else None
+
+    exp: dict = {
+        "hasFault": False,
+        "state": status.get("state"),
+        "health": status.get("health") or None,
+        "waiting": wait is not None,
+        "infraWait": wait,
+        "recovered": bool(episode["recovered"]),
+        "abortReason": status.get("abortReason") or None,
+        "faultClass": None,
+        "reason": None,
+        "signature": None,
+        "iteration": None,
+        "phase": None,
+        "error": None,
+        "ladder": None,
+        "budget": None,
+        "notices": [],
+    }
+
+    if detail is not None:
+        recorded = detail.get("faultClass")
+        usage = detail.get("usage") if isinstance(detail.get("usage"), dict) else None
+        derived = explain_fault(
+            error_text=str(detail.get("error") or ""),
+            exit_code=(detail.get("exitCode")
+                       if isinstance(detail.get("exitCode"), int)
+                       and not isinstance(detail.get("exitCode"), bool) else None),
+            interrupted=bool(detail.get("interrupted")),
+            timed_out=bool(detail.get("timedOut")),
+            no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
+            produced_traffic=bool(usage) or bool(detail.get("sawComplete")),
+        )
+        exp.update(hasFault=True,
+                   faultClass=recorded,
+                   reason=derived["reason"],
+                   signature=derived["signature"],
+                   iteration=detail.get("number"),
+                   phase=detail.get("phase"),
+                   error=str(detail.get("error") or "") or None,
+                   iterationDetail=detail)
+        if derived["faultClass"] != recorded:
+            exp["notices"].append(FAULT_VERDICT_DIVERGED_NOTICE)
+    elif last_retry is not None or wait is not None:
+        # The retry wrapper is acting on a fault whose iteration meta this
+        # reader cannot see (a mid-write meta.json, an iteration dir pruned by
+        # hand): the episode is still the honest answer, without a verdict
+        # invented for it.
+        source = wait or last_retry or {}
+        exp.update(hasFault=True, faultClass="infra",
+                   reason=FAULT_REASON_FROM_EVENT,
+                   phase=source.get("phase"),
+                   error=str(source.get("error") or "") or None)
+        exp["signature"] = matched_signature(exp["error"])
+
+    if attempts or wait is not None:
+        backoffs = [ev.get("backoffS") for ev in attempts
+                    if isinstance(ev.get("backoffS"), (int, float))]
+        attempt = None
+        for candidate in ((wait or {}).get("attempt"),
+                          (last_retry or {}).get("attempt")):
+            if isinstance(candidate, int) and not isinstance(candidate, bool):
+                attempt = candidate
+                break
+        cap = (last_retry or {}).get("maxAttempts")
+        exp["ladder"] = {
+            "attempt": attempt,
+            "maxAttempts": cap if isinstance(cap, int) and not isinstance(cap, bool)
+            else None,
+            "attempts": len(attempts),
+            "backoffsS": backoffs,
+            "phase": (wait or last_retry or {}).get("phase"),
+            "nextAttemptAt": (wait or {}).get("nextAttemptAt"),
+        }
+        if exp["ladder"]["nextAttemptAt"]:
+            exp["ladder"]["nextAttemptAtLocal"] = format_local_time(
+                exp["ladder"]["nextAttemptAt"])
+        exp["ladder"]["display"] = format_fault_ladder(exp["ladder"])
+
+    def number(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    total_wait = number(status.get("infraWaitTotalS"))
+    source = wait or last_retry or {}
+    budget_s = number(source.get("budgetS"))
+    waited_s = number(source.get("waitedS"))
+    if budget_s is not None or total_wait:
+        remaining = number((wait or {}).get("remainingS"))
+        if remaining is None and budget_s is not None and waited_s is not None:
+            remaining = max(0.0, budget_s - waited_s)
+        exp["budget"] = {"waitedS": waited_s, "budgetS": budget_s,
+                         "remainingS": remaining, "totalWaitedS": total_wait}
+        exp["budget"]["display"] = format_fault_budget(exp["budget"])
+        exp["hasFault"] = exp["hasFault"] or bool(attempts) or wait is not None
+
+    exp["signatureDisplay"] = format_fault_signature(exp["signature"])
+    exp["summaryLines"] = fault_summary_lines(exp)
+    return exp
+
+
+def fault_summary_lines(exp: dict) -> list[str]:
+    """One run's fault explanation as labelled text lines, worded ONCE
+    (`iteration_summary_lines`' role for #18.4): `ralphctl fault` prints these
+    and the hub's fault dialog (task 026) shows the very same block.
+
+    A line is omitted rather than printed empty when the fact behind it was
+    never recorded -- and a run with nothing to explain gets the single
+    `NO_FAULT` line, not a column of `None`s.
+    """
+    if not isinstance(exp, dict) or not exp.get("hasFault"):
+        return [NO_FAULT]
+    head = f"fault:     {exp.get('faultClass') or EXIT_REASON_UNKNOWN}"
+    if exp.get("iteration") is not None:
+        head += f" (iteration {exp['iteration']}"
+        head += f", phase {exp['phase']})" if exp.get("phase") else ")"
+    elif exp.get("phase"):
+        head += f" (phase {exp['phase']})"
+    lines = [head, *(exp.get("notices") or [])]
+    if exp.get("reason"):
+        lines.append(f"because:   {exp['reason']}")
+    lines.append(f"signature: {exp.get('signatureDisplay') or FAULT_SIGNATURE_NONE}")
+    error = _one_line(str(exp.get("error") or "").strip(), EXIT_REASON_ERROR_MAX)
+    detail = exp.get("iterationDetail")
+    exit_reason = (detail.get("exitReason") if isinstance(detail, dict) else None)
+    # The ranked verdict (`error (exit 0): … [infra fault]`) already quotes the
+    # error text it was derived from -- printing both would say the same
+    # sentence twice. The error gets its own line only when the verdict does
+    # not carry it (a watchdog kill, an event-sourced explanation with no
+    # readable meta.json).
+    if error and error not in (exit_reason or ""):
+        lines.append(f"error:     {error}")
+    if exit_reason:
+        lines.append(f"exit:      {exit_reason}")
+    ladder = exp.get("ladder")
+    if isinstance(ladder, dict):
+        lines.append(f"ladder:    {ladder.get('display') or FAULT_LADDER_NONE}")
+    budget = exp.get("budget")
+    if isinstance(budget, dict):
+        lines.append(f"budget:    {budget.get('display') or USAGE_NONE}")
+    health = exp.get("health")
+    if health:
+        state = f"health:    {health}"
+        if exp.get("waiting"):
+            state += " (sitting out a backoff wait right now)"
+        elif health == "degraded":
+            state += " (a retry attempt is running, no backoff wait pending)"
+        lines.append(state)
+    if exp.get("recovered") and not exp.get("waiting"):
+        lines.append(f"recovered: {FAULT_RECOVERED_NOTICE}")
+    if exp.get("abortReason"):
+        lines.append(f"gave up:   {_one_line(exp['abortReason'], EXIT_REASON_ERROR_MAX)}")
+    return lines
+
+
+def fault_text(exp: dict) -> str:
+    """The complete rendering of one fault explanation as a single string --
+    what the hub's dialog shows and what `ralphctl fault --json` carries as
+    `text` (`artifact_text`/`run_document_text`'s role for #18.4)."""
+    return "\n".join(fault_summary_lines(exp))
 
 @dataclass
 class RunDir:

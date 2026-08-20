@@ -48,6 +48,8 @@ from ..engine.state import (
     artifact_names,
     artifact_text,
     elapsed_seconds,
+    fault_explanation,
+    fault_text,
     format_approach,
     format_artifact_listing,
     format_cost,
@@ -2137,6 +2139,36 @@ def cmd_iteration(args):
             print(line)
 
 
+def cmd_fault(args):
+    """Why this run is (or last was) in trouble (task 025, #18.4).
+
+    `faultClass: "infra"` on its own is a verdict without an argument: it says
+    the engine blamed the endpoint, not WHICH signature from
+    `engine/faults.py`' table fired, how far up the retry ladder the run has
+    climbed, or how much of the outage budget is already spent. Reading those
+    three facts used to mean knowing the signature table by heart, grepping
+    `events.jsonl` for `infra_retry` and doing the budget arithmetic by hand.
+
+    The join and its wording live in `state.fault_explanation` /
+    `state.fault_summary_lines`, so the hub's fault dialog (task 026) explains
+    the same fault in the same words.
+
+    Purely on-disk, like `ralphctl iteration`/`docs`/`artifacts`: status.json,
+    events.jsonl and the iteration metas are the engine's own writes, so a live
+    run and one whose container is long gone read identically -- there is
+    nothing to fall back from, hence no snapshot notice.
+    """
+    _require_run(args.run_id)
+    exp = fault_explanation(run_root(args.run_id))
+    if args.json:
+        # `text` is the same complete rendering the human output prints (and
+        # the hub dialog shows), `summaryLines` its lines -- the `docs`/
+        # `artifacts` shape.
+        print(json.dumps({"runId": args.run_id, **exp,
+                          "text": fault_text(exp)}, indent=2))
+        return
+    print("\n".join([f"run:       {args.run_id}", *exp["summaryLines"]]))
+
 class _TerminalModeGuard:
     """Task 016: owns termios save/restore for `ralphctl logs -f` on a
     TTY, in the MAIN thread, for the entire duration of the follow loop.
@@ -3806,6 +3838,11 @@ def main() -> None:
     s.add_argument("--no-log", action="store_true",
                    help="header only -- skip the transcript")
     s.set_defaults(func=cmd_iteration)
+
+    s = sub.add_parser("fault", help="explain a run's current/last fault: "
+                       "class, matched signature, retry ladder, outage budget")
+    s.add_argument("run_id")
+    s.set_defaults(func=cmd_fault)
 
     s = sub.add_parser("docs", help="a run's state documents: notes, review "
                        "findings, composite PRD, effective job.yaml (redacted)")

@@ -184,7 +184,7 @@ def test_error_free_exit_zero_is_still_not_a_failure(error_text):
 #
 # Every case below is passed with produced_traffic=True and exit_code=1, so
 # the *only* thing that can make the verdict "infra" is the error text
-# matching `faults._INFRA_TEXT_PATTERNS` (a no-traffic failure would be
+# matching `faults.INFRA_SIGNATURES` (a no-traffic failure would be
 # classified infra regardless, which would make these assertions vacuous).
 # Strings are the real-world shapes seen from the gateway / Bedrock stack.
 _INFRA_FAMILY_CASES = [
