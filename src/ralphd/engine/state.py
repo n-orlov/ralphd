@@ -661,6 +661,85 @@ def task_counts(tasks: list) -> dict:
     return counts
 
 
+# Task 013 (#21): how a `task_counts()` key is SPELLED for a human, in ONE
+# place. `ralphctl status` (`cli/main.py:_summarize_tasks`), `ralphctl runs`
+# and the hub's TASKS column all render the same counts dict, so the wording
+# lives here beside the counter -- a second copy is how `1 in-progress` in
+# one surface and `1 inProgress` in another get born.
+TASK_STATUS_LABELS = {"inProgress": "in-progress",
+                      "validationFailed": "validation-failed"}
+
+# Which statuses are *trouble* an at-a-glance view should flag, in the order
+# they are shown (worst first). Not a rendering decision the hub gets to make
+# on its own: `ralphctl runs` flags the same two.
+TASK_TROUBLE_KEYS = ("validationFailed", "inProgress")
+
+# What `format_task_counts` says for a run with no counts at all.
+NO_TASKS = "(none)"
+
+
+def format_task_counts(counts: dict) -> str:
+    """Render a `task_counts()`/`GET /status` `tasks` dict as the one human
+    summary every surface uses: `7/7 completed`, or
+    `5/7 completed (1 in-progress, 1 pending)` when something is outstanding
+    (task 003; moved here from `cli/main.py` by task 013 so the hub can render
+    exactly the same sentence instead of re-spelling it in JS).
+
+    `NO_TASKS` for an empty dict -- an absent plan is not `0/0`.
+    """
+    if not counts:
+        return NO_TASKS
+    total = counts.get("total", 0)
+    completed = counts.get("completed", 0)
+    others = []
+    for key, value in counts.items():
+        if key in ("total", "completed") or not value:
+            continue
+        others.append(f"{value} {TASK_STATUS_LABELS.get(key, key)}")
+    summary = f"{completed}/{total} completed"
+    if others:
+        summary += " (" + ", ".join(others) + ")"
+    return summary
+
+
+def format_task_fraction(counts: dict) -> str:
+    """Task 013 (#21): the at-a-glance form of the same counts -- `5/7`, or
+    an EMPTY string when there is no plan to have progress through.
+
+    Never `0/0`: a run whose agent has not written a plan yet (and a run whose
+    `tasks.json` could not be read at all) has no denominator, and printing
+    one claims a fact -- "a plan of zero tasks" -- that nobody stated. Same
+    discipline as `format_approach`: junk degrades to no answer rather than to
+    a confident wrong one.
+    """
+    try:
+        total = int(counts.get("total") or 0)
+        completed = int(counts.get("completed") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return ""
+    if total <= 0:
+        return ""
+    return f"{completed}/{total}"
+
+
+def format_task_trouble(counts: dict) -> list[str]:
+    """Task 013 (#21): the trouble flags for a counts dict, worded EXACTLY as
+    `format_task_counts` words them (`['1 validation-failed', '2
+    in-progress']`) -- so a compact column can flag a stuck plan without
+    inventing a second vocabulary for the same statuses.
+
+    Empty list when neither is present; counts of 0 are not flags.
+    """
+    if not isinstance(counts, dict):
+        return []
+    out = []
+    for key in TASK_TROUBLE_KEYS:
+        value = counts.get(key)
+        if value:
+            out.append(f"{value} {TASK_STATUS_LABELS.get(key, key)}")
+    return out
+
+
 @dataclass
 class RunDir:
     """Layout of /run and helpers over it. Engine-owned."""

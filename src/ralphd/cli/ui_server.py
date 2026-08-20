@@ -43,6 +43,9 @@ from ..engine.state import (
     format_approach,
     format_cost,
     format_local_time,
+    format_task_counts,
+    format_task_fraction,
+    format_task_trouble,
     prd_path,
     read_tasks_doc,
     tasks_read_notice,
@@ -137,6 +140,45 @@ def container_gone(status: dict, api_reachable: bool) -> bool:
     return not api_reachable and status.get("state") in NONTERMINAL_STATES
 
 
+def _row_tasks(run_dir: Path) -> dict:
+    """Task 013 (#21): the run-list row's task-progress fields, from ONE local
+    read of that run's `tasks.json`.
+
+    The read goes through the engine's hardened reader
+    (`engine.state.read_tasks_doc`, task 002) with `persist=False` -- so a poll
+    landing inside the agent's rewrite of the plan shows the last plan that
+    parsed, flagged `tasksStale`, instead of the column blinking to nothing,
+    and the hub still writes nothing into somebody else's run dir.
+
+    Deliberately NO live proxy call: the run list's contract is local reads
+    only (see `run_list`), so listing N runs cannot cost N HTTP round trips --
+    and the fraction must be there for a finished run whose container is long
+    gone, which is exactly when a live call cannot help.
+
+    Rendered server-side by the shared formatters, the discipline of
+    `approachDisplay`/`costDisplay`: `tasksDisplay` (`5/7`, empty for a
+    plan-less run -- never `0/0`), `tasksSummary` (`ralphctl status`' exact
+    sentence) and `tasksTrouble` (`['1 validation-failed']`, worded exactly as
+    that sentence words it). The raw counts travel alongside so the browser can
+    sort numerically on progress rather than on the rendered string.
+    """
+    res = read_tasks_doc(run_dir, persist=False)
+    counts = res.counts
+    fraction = format_task_fraction(counts)
+    return {
+        "tasksTotal": counts.get("total", 0),
+        "tasksCompleted": counts.get("completed", 0),
+        "tasksInProgress": counts.get("inProgress", 0),
+        "tasksValidationFailed": counts.get("validationFailed", 0),
+        "tasksDisplay": fraction,
+        # A plan-less run gets no summary either: `0/0 completed` would be a
+        # claim about a plan that does not exist.
+        "tasksSummary": format_task_counts(counts) if fraction else "",
+        "tasksTrouble": format_task_trouble(counts),
+        **res.contract,
+    }
+
+
 def run_list(reg: Path) -> list[dict]:
     """Run list view (PRD req 21): state/verdict/phase/iterations per run,
     read from `<registry>/runs/*/status.json` only -- no live proxy calls
@@ -147,7 +189,12 @@ def run_list(reg: Path) -> list[dict]:
     only runs whose *recorded* state is non-terminal are probed (a finished
     run cannot be a zombie), the probe is a loopback TCP connect rather than
     an HTTP round trip, and the probes run concurrently -- so the sweep costs
-    one short timeout in the worst case, not N."""
+    one short timeout in the worst case, not N.
+
+    Task 013 (#21) adds the TASKS fields, which are also strictly local: one
+    `read_tasks_doc` per row (see `_row_tasks`), never a `GET /tasks` proxy
+    call -- so the fraction is just as available for a run whose container is
+    gone as for a live one."""
     rows = []
     runs_dir = reg / "runs"
     if runs_dir.is_dir():
@@ -172,6 +219,9 @@ def run_list(reg: Path) -> list[dict]:
                 "iterationsBudget": status.get("iterationsBudget"),
                 "startedAt": status.get("startedAt"),
                 "containerGone": False,
+                # Task 013 (#21): task progress per row, one local hardened
+                # read each -- see `_row_tasks`.
+                **_row_tasks(d),
             })
     maybe_zombies = [r for r in rows if r["state"] in NONTERMINAL_STATES]
     if maybe_zombies:
