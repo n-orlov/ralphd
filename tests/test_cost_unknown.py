@@ -43,12 +43,16 @@ def test_priced_iteration_records_cost_and_marks_it_priced():
     assert usage["totalTokens"] == 110
 
 
-def test_provider_reported_zero_price_is_still_priced():
-    """An explicit 0.0 from the provider means free, not unknown."""
+def test_provider_reported_zero_price_with_billed_tokens_is_not_priced():
+    """Task 049 (v0.6, steering 001) corrects this case: a zero quote for
+    billable tokens is a missing price, not a free route. Only a route the
+    operator DECLARES free keeps `$0.00` -- see tests/test_cost_zero_quote.py.
+    """
     usage = _scan(_line({"input": 100, "output": 10, "totalTokens": 110,
                          "cost": {"total": 0.0}}))
-    assert usage["costUSD"] == 0.0
-    assert usage["costPriced"] is True
+    assert "costUSD" not in usage
+    assert usage["costPriced"] is False
+    assert usage["costZeroQuoted"] is True
 
 
 # --- unpriced with tokens -------------------------------------------------

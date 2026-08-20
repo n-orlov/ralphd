@@ -206,3 +206,73 @@ print(d["bedrock-converse-stream"]["eu.anthropic.claude-opus-5"]["cost"])'
 
 No secret values are reproduced here: `llm-wiring.json` and `models.json` carry
 a gateway bearer token in `apiKey`, which was redacted when read.
+
+---
+
+## 7. The v0.6 sequel: the *implausible zero* (task 049, steering 001)
+
+**The v0.5 mitigation above missed this exact route, because the gateway does
+not omit the cost block — it quotes zero.** §4 explains why: pi always emits a
+`cost` block and zero-fills it when the resolved model definition has no rates.
+So the shape that reaches ralphd is a *quote* of `0` over hundreds of thousands
+of billed tokens, and task 049's original rule ("a reported price is the
+provider's truth") faithfully recorded it as `costPriced: true`. Every surface
+then printed the very number #10 was filed about.
+
+Live evidence from the v0.6 self-development run (`selfdev-v06-release`), read
+off its own mounted run dir — this run is its own fixture:
+
+| source | payload |
+|---|---|
+| `iterations/0001/meta.json` | `{"input":32,"output":18320,"cacheRead":438945,"cacheWrite":48331,"totalTokens":505628,"costUSD":0,"costPriced":true}`, `"model": "amazon-bedrock/eu.anthropic.claude-opus-5"` |
+| `status.json` (rollup at the time) | `costUSD: 0` as an **int**, **no** `costStatus`, `totalTokens` 18 032 038 across `planning`/`worker`/`verify` |
+| `ralphctl status` rendering | `usage: $0.00, 18032k tokens` |
+
+### The rule ralphd now applies
+
+An **implausible zero** is a quoted cost of exactly `0` alongside non-zero
+billable tokens. It is classified as *unknown*, never as priced, and never
+rendered `$0.00`:
+
+- `engine/state.is_zero_quote` / `billable_tokens` — the classifier, applied by
+  `cost_status` to **both** published shapes, so a pre-v0.6 iteration
+  `meta.json` or `status.json` already on disk is reclassified on read (this is
+  what turns the table above into `unavailable` retroactively);
+- `engine/runner._accumulate_cost` — a zero quote over billed tokens is
+  recorded exactly like an *absent* one (no `costUSD` contribution,
+  `costPriced: false`, derivable from the host-side pricing map) plus a
+  `costZeroQuoted: true` marker and a warning carrying
+  `state.COST_ZERO_QUOTE_NOTICE`, which names this report;
+- `engine/loop._merge_cost_status` — the same gap arriving as a zero rolls the
+  bucket up to `unknown` (or `partial`/`derived`), so the run total is never a
+  confident `$0`.
+
+Two zeros stay honest, and neither is *inferred* from the zero itself:
+
+1. **nothing was billed** — #10's int-`0` no-traffic sentinel, byte-for-byte
+   unchanged (pi zero-fills `usage` on an in-band error);
+2. **the route declares itself free** — new `pricing.free:` patterns
+   (`PricingMap.is_free`, matched with the alias/wildcard rules of the rate
+   table). A declared-free route records `costFree: true` next to its `0.0` and
+   keeps rendering `$0.00`; the declaration is carried through the status.json
+   rollup so a reader cannot mistake it for the anomaly later.
+
+```yaml
+pricing:                      # <registry>/config.yaml or a run's job.yaml
+  free: ["ollama/*"]          # a $0 is believed here, and only here
+```
+
+### What this run's own cost became
+
+`price_strategy: aws` (issue #14, task 011) is not landed at the time of
+writing, and no operator `pricing:` map was configured for this run, so **this
+run's cost stays *unknown*, not derivable — but it is now reported as
+`unavailable` instead of `$0.00`.** With the built-in Bedrock rates of §2
+(opus-5: input 5.5 / output 27.5 / cacheRead 0.55 / cacheWrite 6.875 per Mtok)
+the 18 032 038 tokens above would derive to roughly `~$25`, which is precisely
+the number the `derived` path exists to produce once #14 is complete; task 046
+records the final answer.
+
+Tests: `tests/test_cost_zero_quote.py` (the verbatim payload above as a
+fixture, the rollup shape, the declared-free case, the derived path over a zero
+quote, the three surfaces, and the preserved no-traffic sentinel).

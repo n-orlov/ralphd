@@ -5,17 +5,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import state
 from .pricing import PricingMap
 from .redact import scrub_text
 
 COMPLETE = "<promise>COMPLETE</promise>"
 VERIFIED = "<promise>VERIFIED</promise>"
+
+log = logging.getLogger("ralphd.runner")
 
 # pi emits full message snapshots per NDJSON event — single lines routinely
 # exceed asyncio's 64 KiB default readline limit
@@ -247,22 +251,45 @@ def _accumulate_cost(usage: dict, result: IterationResult,
     stays `false` either way (the provider still quoted nothing), and
     `costDerived: false` means at least one unpriced message had no rate, so
     part of this iteration's cost remains genuinely unknown.
+    Task 049 (v0.6, steering 001) adds the *implausible zero*: this same
+    gateway was later observed quoting `cost.total: 0` for 505 628 billed
+    tokens (pi zero-fills the block when the resolved model definition carries
+    no rates -- `artifacts/reports/pricing-anomaly.md`), which the rules above
+    recorded as `costPriced: true` and every surface rendered as `$0.00`. A
+    zero money quote next to billed tokens is therefore treated exactly like
+    an absent one (unpriced, derivable), plus a `costZeroQuoted: true` marker
+    and a warning naming the anomaly. The single exception is declared, never
+    inferred: `pricing.free` patterns (`PricingMap.is_free`) mark the usage
+    `costFree: true` and keep the honest `$0.00`.
     """
     cost = (usage.get("cost") or {}).get("total")
-    if cost is not None:
+    billed = sum(int(usage.get(k) or 0) for k in state.COST_TOKEN_KEYS)
+    declared_free = bool(pricing and pricing.is_free(model))
+    # A quote of exactly 0 for billable tokens is only believed when the route
+    # declares itself free; otherwise it is a missing price, not a price.
+    zero_quote = (cost is not None and not cost and billed and not declared_free)
+    if cost is not None and not zero_quote:
         result.usage["costUSD"] = round(result.usage.get("costUSD", 0) + cost, 6)
         result.usage.setdefault("costPriced", True)
+        if billed and not cost:
+            # record the declaration alongside the zero, so a later reader
+            # (state.is_zero_quote, the status.json rollup) can tell this $0
+            # from the anomaly without access to the config
+            result.usage["costFree"] = True
         return
-    billed = sum(int(usage.get(k) or 0) for k in
-                 ("input", "output", "cacheRead", "cacheWrite", "totalTokens"))
-    if billed:
-        result.usage["costPriced"] = False
-        derived = pricing.derive(usage, model) if pricing else None
-        if derived is None:
-            result.usage["costDerived"] = False
-        else:
-            result.usage["costDerivedUSD"] = round(
-                result.usage.get("costDerivedUSD", 0.0) + derived, 6)
-            result.usage.setdefault("costDerived", True)
-    else:
+    if not billed:
+        # no price and nothing billed: $0 is the truth, byte-for-byte as before
         result.usage["costUSD"] = round(result.usage.get("costUSD", 0) + 0, 6)
+        return
+    result.usage["costPriced"] = False
+    if zero_quote:
+        result.usage["costZeroQuoted"] = True
+        log.warning("cost: %s (model=%s, %d tokens)",
+                    state.COST_ZERO_QUOTE_NOTICE, model or "unknown", billed)
+    derived = pricing.derive(usage, model) if pricing else None
+    if derived is None:
+        result.usage["costDerived"] = False
+    else:
+        result.usage["costDerivedUSD"] = round(
+            result.usage.get("costDerivedUSD", 0.0) + derived, 6)
+        result.usage.setdefault("costDerived", True)

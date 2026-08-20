@@ -493,7 +493,8 @@ assistant text as it streams, tool calls as compact one-liners, thinking
 elided to a marker, per-iteration usage/cost footer, agent errors
 highlighted. When stdout is not a TTY, output is identical minus color.
 The footer's `cost=` field prints `unavailable` when the provider billed the
-iteration's tokens without quoting a price (`usage.costPriced: false`, see
+iteration's tokens without quoting a usable price (`usage.costPriced: false`,
+including an implausible `$0` quote -- `usage.costZeroQuoted`, see
 [api.md](api.md)) instead of dropping the field or showing `$0`.
 
 Each tool one-liner shows the tool's salient argument (task 001), not just
@@ -1038,6 +1039,8 @@ pricing:
   models:
     "openai/gpt-5": {input: 1.25, output: 10.0, cacheRead: 0.125}
     "anthropic/*":  {input: 3.0, output: 15.0}   # family default
+  free:
+    - "ollama/*"                           # declared free: a $0 here is real
 ```
 
 Rates are USD per **million** tokens, keyed like the usage counters
@@ -1045,12 +1048,22 @@ Rates are USD per **million** tokens, keyed like the usage counters
 to the `input` rate rather than to a silent `$0`. An exact model key beats a
 wildcard one, and the longest wildcard prefix wins.
 
+`free:` (v0.6) is a list of model-id patterns you **declare** cost nothing,
+matched with the same rules after aliasing. It exists because a provider
+quoting exactly `$0` for billable tokens is not evidence of a free route --
+some gateways quote zero when their model definition carries no rates, so an
+undeclared zero is treated as *unknown* (`costZeroQuoted`, see `docs/api.md`
+and `artifacts/reports/pricing-anomaly.md`). A declared-free route keeps
+printing `$0.00`. A `pricing:` map may consist of `free:` alone.
+
 - `ralphctl start` **inlines** the map into the run's `job.yaml` (`pricing`),
   so the rates a run uses are the ones it started with and survive every later
   `resume`; a single run can also be pointed at a map with
   `RALPHD_PRICING='{"models": ...}'`. The resolved table is visible in
   `GET /config` (`pricing`).
-- It is consulted **only** when the provider quoted no price, and the result is
+- It is consulted **only** when the provider quoted no price (which since v0.6
+  includes a quote of exactly `$0` over billable tokens, unless the route is
+  declared `free`), and the result is
   published separately as `costDerivedUSD` (never merged into `costUSD`) and
   rendered as `~$0.45 derived` everywhere (`status`, the `logs` footer, the
   hub) -- a derived cost is never passed off as a provider-reported one.

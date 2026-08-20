@@ -13,6 +13,7 @@ import shutil
 import time
 from pathlib import Path
 
+from . import state
 from .config import (
     DEFAULT_INFRA_RETRY_BACKOFF_S,
     PROMPTS_BUILTIN,
@@ -941,9 +942,13 @@ class LoopSupervisor:
         prev = bucket.get("costStatus")
         # `costPriced is False` == this iteration billed tokens the provider
         # quoted no price for (runner._accumulate_cost); None == no traffic.
+        # `state.is_zero_quote` catches the same gap arriving as an implausible
+        # ZERO quote (task 049, v0.6) -- including from a pre-v0.6 iteration
+        # meta.json replayed into a bucket, which is marked `costPriced: true`.
         # `costDerived is True` == every one of those got a rate from the
         # host-side map, so the gap is filled (derived, not unknown).
-        unpriced_gap = (usage.get("costPriced") is False
+        unpriced_gap = ((usage.get("costPriced") is False
+                         or state.is_zero_quote(usage))
                         and usage.get("costDerived") is not True)
         has_unknown = prev in ("partial", "unknown") or unpriced_gap
         has_derived = (prev == "derived" or cls._has_derived_price(bucket)
@@ -966,6 +971,11 @@ class LoopSupervisor:
         are never *added*
         (`False + 0 == 0` would quietly turn the marker into a counter);
         they feed the bucket's own `costStatus` verdict instead (task 050).
+        The one bool that is *carried* rather than dropped is `costFree` (task
+        049, v0.6): an operator-declared free route is why a bucket's `$0.00`
+        over billable tokens is honest, so the declaration has to survive the
+        rollup -- otherwise `state.is_zero_quote` would re-read that same zero
+        as the implausible-zero anomaly.
         """
         status = cls._merge_cost_status(bucket, usage)
         for k, v in usage.items():
@@ -973,6 +983,8 @@ class LoopSupervisor:
                 continue
             bucket[k] = round(bucket.get(k, 0) + v, 6) if isinstance(v, float) \
                 else bucket.get(k, 0) + v
+        if usage.get("costFree") is True:
+            bucket["costFree"] = True
         if status:
             bucket["costStatus"] = status
         return bucket

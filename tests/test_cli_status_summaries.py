@@ -101,9 +101,11 @@ def test_usage_summary_with_phase_breakdown():
 
 
 def test_usage_summary_no_phase_breakdown():
-    usage = {"costUSD": 0.0, "totalTokens": 500}
+    # a real (non-zero) quote: a $0 next to billed tokens is task 049's
+    # implausible zero and renders `unavailable` (tests/test_cost_zero_quote.py)
+    usage = {"costUSD": 0.02, "totalTokens": 500}
     summary = _summarize_usage(usage)
-    assert summary == "$0.00, 500 tokens"
+    assert summary == "$0.02, 500 tokens"
 
 
 def test_usage_summary_partial_phase_breakdown_only_shows_present_phases():

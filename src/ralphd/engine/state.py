@@ -155,6 +155,62 @@ COST_PARTIAL_SUFFIX = f"+ (partial, rest {COST_UNAVAILABLE})"
 # with a `~` on the amount so a derived figure can never be mistaken for a
 # provider-reported one, whatever surface it appears on.
 COST_DERIVED_WORD = "derived"
+# Task 049 (v0.6, steering 001): the token counters that mean "this call was
+# billable". Any one of them being non-zero next to a quoted cost of exactly 0
+# is the implausible-zero anomaly (see `is_zero_quote`).
+COST_TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite", "totalTokens")
+# The one sentence every surface/log uses for that anomaly.
+COST_ZERO_QUOTE_NOTICE = (
+    "provider quoted $0 for billable tokens; treated as an unpriced route "
+    "(see artifacts/reports/pricing-anomaly.md)")
+
+
+def billable_tokens(usage: dict | None) -> int:
+    """Total tokens `usage` says were billed, 0 when it says none were.
+
+    Defensive like `format_duration`: junk counters count as zero rather than
+    raising, because this feeds a *renderer* (`cost_status`).
+    """
+    total = 0
+    for key in COST_TOKEN_KEYS:
+        raw = (usage or {}).get(key)
+        if isinstance(raw, bool) or raw is None:
+            continue
+        try:
+            total += int(raw)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def is_zero_quote(usage: dict | None) -> bool:
+    """True when `usage` carries an *implausible* zero cost (task 049, v0.6).
+
+    Live evidence from the v0.6 self-development run: the AIGW/Bedrock route
+    reported `costUSD: 0` with `costPriced: true` for 505 628 billed tokens,
+    and ralphd printed `$0.00, 506k tokens`. A zero money quote next to
+    non-zero billable tokens is not a price -- it is a missing price wearing a
+    quote's clothes (pi zero-fills its `cost` block when the resolved model
+    definition has no rates: `artifacts/reports/pricing-anomaly.md` §4). So it
+    is classified as *unknown*, never as priced and never rendered `$0.00`.
+
+    Two shapes stay honest zeros, and neither is *inferred* from the zero:
+
+    * nothing was billed (`billable_tokens == 0`) -- the historical int-0
+      no-traffic sentinel of #10, byte-for-byte unchanged;
+    * the route DECLARED itself free, recorded as `costFree: true` by
+      `runner._accumulate_cost` from the operator's `pricing.free` patterns
+      (`engine/pricing.PricingMap.is_free`). "Free" is always a declaration in
+      the data, so a pure formatter can honour it without reading config.
+    """
+    if not usage or usage.get("costFree") is True:
+        return False
+    amount = usage.get("costUSD")
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+        return False
+    if amount != 0:
+        return False
+    return billable_tokens(usage) > 0
 
 
 def cost_status(usage: dict | None) -> str | None:
@@ -165,6 +221,10 @@ def cost_status(usage: dict | None) -> str | None:
 
     * a *bucket* (status.json `usage`, `byPhase[p]`, `byApproach[a]`) carries
       the merged verdict as `costStatus` (task 050, `loop._merge_cost_status`);
+    * a payload of EITHER shape recorded by a pre-v0.6 engine (or by a
+      provider that quotes zero) may carry an implausible zero -- `costUSD: 0`
+      with billable tokens -- which is `"unknown"` however it was marked
+      (task 049, v0.6; see `is_zero_quote`);
     * a single *iteration*'s usage carries task 049's `costPriced` marker
       instead -- `False` means tokens were billed that the provider quoted no
       price for, which is `"derived"` when the host-side pricing map covered
@@ -177,10 +237,13 @@ def cost_status(usage: dict | None) -> str | None:
     status = usage.get("costStatus")
     if status in ("partial", "unknown", "derived"):
         return status
-    if usage.get("costPriced") is False:
+    zero_quote = is_zero_quote(usage)
+    if usage.get("costPriced") is False or zero_quote:
         if usage.get("costDerived") is True:
             return "derived"
-        known = (isinstance(usage.get("costUSD"), float)
+        # An implausible zero is not money, so it can never make a bucket
+        # "partial" -- otherwise the $0 lie would come back as `$0.00+`.
+        known = ((isinstance(usage.get("costUSD"), float) and not zero_quote)
                  or isinstance(usage.get("costDerivedUSD"), float))
         return "partial" if known else "unknown"
     if isinstance(usage.get("costDerivedUSD"), float):
@@ -224,8 +287,10 @@ def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
     if isinstance(derived, float):
         # provider-quoted part first (only when a price was actually QUOTED --
         # a float `costUSD`, per loop._has_reported_price; the int `0` a
-        # no-traffic iteration contributes is not a quote), derived part marked
-        parts = [_money(amount, decimals)] if isinstance(amount, float) else []
+        # no-traffic iteration contributes is not a quote, and neither is
+        # task 049's implausible zero), derived part marked
+        parts = ([_money(amount, decimals)]
+                 if isinstance(amount, float) and not is_zero_quote(usage) else [])
         parts.append(f"~{_money(derived, decimals)} {COST_DERIVED_WORD}")
         rendered = " + ".join(parts)
         return (f"{rendered}, partial (rest {COST_UNAVAILABLE})"
