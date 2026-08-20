@@ -111,13 +111,17 @@ class StubEngineApi:
 
     def __init__(self, status: dict | None = None, retry_status: int = 200,
                  retry_body: dict | None = None, tasks: dict | None = None,
-                 prd: str | None = None):
+                 prd: str | None = None, steering: list | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.status_body = status if status is not None else {"state": "running"}
         self.tasks_body = tasks if tasks is not None else {"tasks": []}
         self.retry_status = retry_status
         self.retry_body = retry_body if retry_body is not None else {"retrying": True}
         self.prd_body = prd
+        # Task 016 (#17): what this run's live `GET /steering` answers with.
+        # `None` means "route not there" (404) so a test can exercise the
+        # hub's fallback while the container is still up.
+        self.steering_body = steering
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -151,6 +155,11 @@ class StubEngineApi:
                         self._reply(404, {"detail": "no PRD"})
                     else:
                         self._reply(200, outer.prd_body, "text/markdown")
+                elif path == "/steering":
+                    if outer.steering_body is None:
+                        self._reply(404, {"detail": "no such route"})
+                    else:
+                        self._reply(200, outer.steering_body)
                 else:
                     self._reply(404, {"detail": "no such route"})
 

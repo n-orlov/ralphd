@@ -36,7 +36,12 @@ from .skills import (
     place_skills,
     tar_dir,
 )
-from .state import RunDir, prd_path
+from .state import (
+    STEERING_GLOB,
+    RunDir,
+    prd_path,
+    steering_entries,
+)
 
 
 def problem(status: int, title: str, detail: str = "") -> HTTPException:
@@ -146,7 +151,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         s["tasks"] = tasks_read.counts
         s.update(tasks_read.contract)
         pending = len(run.pending_steering())
-        consumed = len(list(run.steering_dir.glob("[0-9][0-9][0-9]-*.md"))) - pending
+        consumed = len(list(run.steering_dir.glob(STEERING_GLOB))) - pending
         s["steering"] = {"pending": pending, "consumed": consumed}
         return s
 
@@ -542,10 +547,13 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
 
     @app.get("/steering")
     async def steering_list():
-        consumed = {p.name for p in run.steering_dir.glob("[0-9][0-9][0-9]-*.md")} - \
-                   {p.name for p in run.pending_steering()}
-        return [{"file": p.name, "consumed": p.name in consumed}
-                for p in sorted(run.steering_dir.glob("[0-9][0-9][0-9]-*.md"))]
+        # Task 016 (#17): the full entries -- name, timestamp, pending/applied
+        # state and body -- through the ONE shared reader
+        # (`state.steering_entries`), which the hub's on-disk fallback uses
+        # too, so a live answer and a container-gone answer describe the same
+        # run identically. The pre-v0.6 `file`/`consumed` keys are still
+        # there, unchanged: this is purely additive.
+        return steering_entries(run.root)
 
     @app.post("/interrupt")
     async def interrupt(body: dict | None = None):

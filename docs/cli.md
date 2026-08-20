@@ -1490,6 +1490,24 @@ JSON endpoints served under `/api/`:
   answers with the single line `(no PRD recorded)` (constant
   `ui_server.NO_PRD`) rather than an empty string, and `404` for an unknown
   run id.
+- `GET /api/runs/<id>/steering` — the run's steering history, for the hub's
+  steering panel (task 016, issue #17): `{"live": bool, "entries": [...],
+  "notice": ""}`. Each entry is one `steering/NNN-<slug>.md` message with
+  `file`, `seq`, `name`, `ts` (arrival time), `state` (`pending`/`applied`),
+  `consumed`, `bytes`/`hasBody` and `body` — the exact shape the engine's own
+  `GET /steering` returns (docs/api.md), because both sides read it with the
+  same helper, `ralphd.engine.state.steering_entries`. Live-first with an
+  **on-disk fallback**, the same shape as the log tail and the PRD above: the
+  running job's API is asked first (it is the process that decides when an
+  entry becomes *applied*), and when it does not answer, `<run>/steering/` is
+  read straight off disk with `live: false`, so a finished or killed run's
+  steering history stays readable. An old engine that answers with only
+  `file`/`consumed` still wins on applied-ness, and the missing name,
+  timestamp and body are filled in from the run dir rather than served empty
+  (nothing is invented for a file the hub cannot see). A run nobody steered
+  answers `entries: []` with `notice` set to `(no steering messages)`
+  (constant `ui_server.NO_STEERING`, wording server-side like `NO_PRD`);
+  `404` for an unknown run id.
 - `POST /api/runs/<id>/steer` — body `{"message": ..., "name": ...}`,
   forwarded to the run's live `POST /steering`. Returns the API's own
   response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`
