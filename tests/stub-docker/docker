@@ -37,6 +37,10 @@ just enough behavior for ralphctl to proceed. Knobs:
                               build` prints (default 3).
   STUB_DOCKER_BUILD_FAIL      if set, `docker build` prints its output and
                               exits 1 without recording the tag.
+  STUB_DOCKER_BUILD_DOCKERFILE  path to copy the `-f <dockerfile>` file's
+                              CONTENT to, so a test can read the recipe that
+                              was actually built (task 034's generated,
+                              never-on-disk-in-the-repo derived Dockerfile).
 """
 import json
 import os
@@ -137,6 +141,10 @@ elif cmd == "version":
     print("29.5.3")
 elif cmd == "build":
     tag = argv[argv.index("-t") + 1] if "-t" in argv else None
+    copy_to = os.environ.get("STUB_DOCKER_BUILD_DOCKERFILE")
+    if copy_to and "-f" in argv:
+        with open(argv[argv.index("-f") + 1]) as src, open(copy_to, "w") as dst:
+            dst.write(src.read())
     lines = int(os.environ.get("STUB_DOCKER_BUILD_LINES", "3"))
     for i in range(lines):
         print(f"Step {i + 1}/{lines} : RUN true")

@@ -79,6 +79,7 @@ ralphctl start --prd <file|-> [options]
 | `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below |
 | `--prompt-override <dir>` | — | phase-prompt override directory |
 | `--image <ref>` | built from source (`ralphd:<hash>`) | pin an exact engine image instead of building one — see "The job image" below; falls back to the registry's `image` (`ralphctl config`) if set |
+| `--base-image <ref>` | — | build the job image **on top of** this one — see "Bring your own base image" below. Mutually exclusive with `--image` |
 | `--on-complete idle\|exit` | exit | post-completion behavior; `idle` is an explicit debugging opt-in; falls back to the registry's `on_complete` (`ralphctl config`) if set |
 | `--on-complete-cmd <cmd>` | — | shell command run once by the engine (in-container) on reaching a terminal state; receives `RALPHD_RUN_ID`/`RALPHD_STATE`/`RALPHD_VERDICT` env vars; failures are logged (`events.jsonl`, `level: error`) but never affect the job's verdict or the engine's exit code |
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
@@ -136,6 +137,32 @@ variable, a `--template`'s `image:`, or the registry's `image`
 hashed and nothing is built, which is how you deliberately run an older
 engine. If ralphd is installed without its sources (a wheel/pipx install has no
 `container/` to hash) `start` says so on stderr and falls back to `ralphd:dev`.
+
+Bring your own base image (`--base-image <ref>`) — when your repo needs a
+toolchain the default image does not carry (a JDK, a Go toolchain, a specific
+node), hand ralphd that image as a **base**, not as the job image: it is not
+run directly (it has no `ralphd-engine` in it). `start` generates a Dockerfile
+that layers the engine and pi onto it — pi at the version `container/Dockerfile`
+pins, the engine installed from the source tree into its own venv, so your
+image's own python installation is left alone — builds it with the ralphd source
+root as the build context, and runs the result:
+
+- the derived image is tagged `ralphd-derived:<hash>`, where the hash covers the
+  base reference, the same image inputs as above **and** the generated recipe,
+  so a new base, a new engine or a new ralphd each produce a new tag;
+- it is cached exactly like the default image: one lookup, a build only on a
+  miss, so a second `start` from the same base builds nothing;
+- your base only has to carry your toolchain. The recipe installs what the
+  engine shells out to (`git`, `curl`, `jq`, `rg`, `ps`, `python3`) and a
+  new-enough node **only if the base lacks them**, via the base's own
+  `apt-get`; a base with neither the tools nor `apt-get` fails the build with a
+  message naming what is missing rather than producing a broken job image;
+- a failed derived build aborts `start` the same way (exit `1`, no run state).
+
+`--base-image` and `--image` are different things — one supplies an ingredient,
+the other pins a finished image — so passing both (including `--base-image`
+with `RALPHD_IMAGE` set) is a usage error (exit `2`), as is a base reference
+that is not a plain image reference.
 
 Skills (`--skills <dir>`, repeatable): one directory per skill (must contain
 `SKILL.md`). If the given dir has no `SKILL.md` but every immediate child does,

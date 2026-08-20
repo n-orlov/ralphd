@@ -653,9 +653,26 @@ def _parse_workspace_specs(specs: list[str]) -> list[tuple[str | None, Path]]:
 # vocabulary (task 036 puts it in run state, task 037 compares it against the
 # current source hash) so no surface invents its own word for it.
 IMAGE_SOURCE_PINNED = "pinned"        # --image / RALPHD_IMAGE / template / registry
-IMAGE_SOURCE_CACHED = "cached"        # ralphd:<hash> already present -- tag lookup only
-IMAGE_SOURCE_BUILT = "built"          # ralphd:<hash> was missing and got built
+IMAGE_SOURCE_CACHED = "cached"        # the hashed tag already present -- tag lookup only
+IMAGE_SOURCE_BUILT = "built"          # the hashed tag was missing and got built
 IMAGE_SOURCE_UNHASHABLE = "unhashable"  # no source tree to hash (wheel/pipx)
+
+# `cached`/`built` describe *both* hashed repositories, and `imageBase` is what
+# tells them apart: None for the default `ralphd:<hash>`, the operator's base
+# reference for a derived `ralphd-derived:<hash>` (task 034, requirement H2).
+# One vocabulary rather than two more words, because the *act* is the same one
+# -- hash the inputs, look the tag up, build only on a miss -- and only the
+# ingredients differ.
+IMAGE_NO_SOURCE_TO_DERIVE = (
+    "cannot derive a job image from base {base}: no ralphd source tree next "
+    f"to this install (no {image.SOURCE_MARKER}), so there is no engine to "
+    "layer on top of it. Install ralphd from a checkout, or pin a finished "
+    "image with --image (which is run as-is, not used as a base).")
+IMAGE_BASE_AND_PIN_NOTICE = (
+    "--image and --base-image are different things: --image (or RALPHD_IMAGE, "
+    "or a template's or the registry's image) pins a finished job image and "
+    "runs it as-is, while --base-image supplies a base to layer the engine and "
+    "pi onto. Pass one or the other, not both.")
 
 # Bounded build output (requirement H4: "visible enough to debug a failing
 # build without drowning the start path"). Every line is echoed, prefixed and
@@ -727,29 +744,102 @@ def _build_image(tag: str, root: Path,
     return proc.wait(), tail, echoed > IMAGE_BUILD_ECHO_LINES
 
 
-def resolve_job_image(selected: str | None, *, root: Path | None = None) -> dict:
+def _report_build_failure(code: int, tail: list[str], elided: bool,
+                          what: str) -> None:
+    """Die (exit 1) on a failed build, showing the tail only if it was elided.
+
+    Re-printing the tail when the live echo was complete would repeat lines
+    the operator already has above: noise, not context.
+    """
+    if elided:
+        print(f"{IMAGE_BUILD_PREFIX}last {len(tail)} lines:", file=sys.stderr)
+        for line in tail:
+            print(f"{IMAGE_BUILD_PREFIX}{line}", file=sys.stderr)
+    die(1, f"job image build failed (exit {code}): {what}. No run state was "
+           f"created -- fix the build, or pin an existing image with --image.")
+
+
+def _derived_job_image(base: str, src: Path) -> dict:
+    """Resolve (and on a cache miss build) the image derived from `base`.
+
+    Requirement H2: a user-supplied base image is **not** the job image. The
+    engine and pi are layered on top of it by a generated Dockerfile
+    (`image.derive`), the result is tagged `ralphd-derived:<hash>` where the
+    hash covers the base reference *and* the source *and* the recipe, and it is
+    cached and invalidated by exactly the same rules as the default image: one
+    `image inspect`, a build only on a miss. The base itself is never run -- it
+    has no `ralphd-engine` in it.
+    """
+    try:
+        derived = image.derive(src, base)
+    except image.ImageInputError as e:
+        # An unusable base, or a `container/Dockerfile` that no longer declares
+        # what the recipe copies out of it: refuse, never build something else.
+        die(2, f"cannot derive a job image from base {base}: {e}")
+    if not derived.tree.complete:
+        print(f"ralphctl: warning: image inputs missing from {src}: "
+              f"{', '.join(derived.tree.missing)}", file=sys.stderr)
+    fields = {"imageHash": derived.hash, "imageBase": derived.base}
+    if image_exists(derived.tag):
+        return {"image": derived.tag, "imageSource": IMAGE_SOURCE_CACHED,
+                **fields}
+    print(f"ralphctl: deriving job image {derived.tag} from base "
+          f"{derived.base}", file=sys.stderr)
+    # The generated Dockerfile lives outside the build context on purpose: it
+    # is a build input, not a source file, and writing it into the checkout
+    # would leave litter behind a failed build (and race two concurrent
+    # `start`s over the same path).
+    with tempfile.TemporaryDirectory(prefix="ralphd-derived-") as td:
+        dockerfile = Path(td) / "Dockerfile"
+        dockerfile.write_text(derived.dockerfile)
+        code, tail, elided = _build_image(derived.tag, derived.root, dockerfile)
+    if code != 0:
+        _report_build_failure(code, tail, elided,
+                              f"{derived.tag} derived from base "
+                              f"{derived.base} with {src} as the context")
+    print(f"ralphctl: built job image {derived.tag}", file=sys.stderr)
+    return {"image": derived.tag, "imageSource": IMAGE_SOURCE_BUILT, **fields}
+
+
+def resolve_job_image(selected: str | None, *, base: str | None = None,
+                      root: Path | None = None) -> dict:
     """Resolve the image `start` will run, building it if it does not exist.
 
     The one place image *production* happens. Returns
-    `{image, imageSource, imageHash}` -- `imageHash` is None whenever the
-    reference was not derived from content, so a later surface can tell
-    "pinned, staleness unknowable" from "built from this exact source".
+    `{image, imageSource, imageHash, imageBase}` -- `imageHash` is None
+    whenever the reference was not derived from content, so a later surface can
+    tell "pinned, staleness unknowable" from "built from this exact source",
+    and `imageBase` is non-None exactly when the reference is a *derived*
+    image, whose hash is a function of that base as well as of the source.
 
     `selected` not None (an `--image` flag, `RALPHD_IMAGE`, a template's or the
     registry's `image`) pins it: **no hash is computed and no build runs**, so
     deliberately running an old engine stays possible and cheap.
 
-    Dies (exit 1) on a failed build. Callers must call this *before* creating
-    any run state -- requirement H4: no half-registered run.
+    `base` not None (requirement H2) makes that reference a *base layer*: the
+    engine and pi are layered on top of it and the derived image is what runs.
+
+    Dies (exit 1) on a failed build, exit 2 on contradictory input. Callers
+    must call this *before* creating any run state -- requirement H4: no
+    half-registered run.
     """
+    if selected and base:
+        die(2, IMAGE_BASE_AND_PIN_NOTICE)
     if selected:
         return {"image": selected, "imageSource": IMAGE_SOURCE_PINNED,
-                "imageHash": None}
+                "imageHash": None, "imageBase": None}
     src = image.source_root(root)
     if src is None:
+        if base:
+            # Deriving needs the engine source to install: there is no
+            # fallback that could honour the operator's base, so this is an
+            # error rather than task 038's observable-but-silent default.
+            die(1, IMAGE_NO_SOURCE_TO_DERIVE.format(base=base))
         print(f"ralphctl: warning: {IMAGE_NO_SOURCE_NOTICE}", file=sys.stderr)
         return {"image": DEFAULT_IMAGE, "imageSource": IMAGE_SOURCE_UNHASHABLE,
-                "imageHash": None}
+                "imageHash": None, "imageBase": None}
+    if base:
+        return _derived_job_image(base, src)
     tree = image.hash_image_inputs(src)
     tag = image.image_tag(tree.hash)
     if not tree.complete:
@@ -760,21 +850,14 @@ def resolve_job_image(selected: str | None, *, root: Path | None = None) -> dict
               f"{', '.join(tree.missing)}", file=sys.stderr)
     if image_exists(tag):
         return {"image": tag, "imageSource": IMAGE_SOURCE_CACHED,
-                "imageHash": tree.hash}
+                "imageHash": tree.hash, "imageBase": None}
     code, tail, elided = _build_image(tag, src, src / image.SOURCE_MARKER)
     if code != 0:
-        # Re-print the tail only when the live echo was cut short: otherwise
-        # every line is already above and repeating them is noise, not context.
-        if elided:
-            print(f"{IMAGE_BUILD_PREFIX}last {len(tail)} lines:", file=sys.stderr)
-            for line in tail:
-                print(f"{IMAGE_BUILD_PREFIX}{line}", file=sys.stderr)
-        die(1, f"job image build failed (exit {code}): {tag} from {src} "
-               f"({image.SOURCE_MARKER}). No run state was created -- fix the "
-               f"build, or pin an existing image with --image.")
+        _report_build_failure(code, tail, elided,
+                              f"{tag} from {src} ({image.SOURCE_MARKER})")
     print(f"ralphctl: built job image {tag}", file=sys.stderr)
     return {"image": tag, "imageSource": IMAGE_SOURCE_BUILT,
-            "imageHash": tree.hash}
+            "imageHash": tree.hash, "imageBase": None}
 
 
 # ---------------------------------------------------------------- start
@@ -871,7 +954,8 @@ def cmd_start(args):
     # job image *before* any run state exists, so a failed build aborts here
     # instead of leaving a half-registered run dir behind. An explicit
     # selection (flag/env/template/registry) pins and skips both steps.
-    args.image = resolve_job_image(args.image)["image"]
+    args.image = resolve_job_image(
+        args.image, base=getattr(args, "base_image", None))["image"]
     rdir.mkdir(parents=True, exist_ok=True)
     cdir.mkdir(parents=True, exist_ok=True)
     os.chmod(cdir, 0o700)
@@ -4002,6 +4086,12 @@ def main() -> None:
                    help="mount the host docker socket into the job container "
                         "(ROOT-EQUIVALENT host access — trusted PRDs only)")
     s.add_argument("--image", default=None)
+    s.add_argument("--base-image", default=None, metavar="REF",
+                   help="build the job image ON TOP of this image (#20 H2): it "
+                        "only has to carry the toolchain your repo needs -- "
+                        "ralphd layers the engine and pi onto it and runs the "
+                        "derived, hash-tagged image. Mutually exclusive with "
+                        "--image, which pins a finished image and runs it as-is")
     s.add_argument("--on-complete", default=None, choices=["idle", "exit"],
                    help="post-completion behavior (default: exit; idle is an "
                         "explicit debugging opt-in)")
