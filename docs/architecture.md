@@ -1258,6 +1258,16 @@ declarative half (which files are inputs, what they hash to, the text of the
 generated recipe) and is **docker-free by construction**; running builds, cache
 lookups and precedence live in `cli/main.py`.
 
+Because only the first of the three hashes is a function of ralphd's source
+alone, `ralphctl doctor`'s staleness check has **four** answers, not two:
+`fresh`, `stale`, `missing` and `unknowable` -- the last one for a pin, either
+of the other two namespaces, and an install with no `container/` to hash. A
+reference that cannot be compared to a source hash is never reported as up to
+date (see [cli.md](cli.md#job-image-staleness-20-h4)). The same verdict is
+applied per live run against the image its own `host.json` records, which is
+the case the whole mechanism exists for: a running job executing an engine that
+predates the fix it is watching for.
+
 ## 9. Failure containment
 
 - Agent process crash / nonzero exit → iteration recorded as failed, loop continues

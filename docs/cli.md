@@ -1870,8 +1870,12 @@ Preflight checks (`checks` in `--json` output; overall `ok` is the AND of all
 of them, exit code `0`/`1` accordingly):
 
 - `docker` — the docker daemon is reachable.
-- `image` — the job image (`--image`, default `ghcr.io/.../ralphd:latest`) is
-  present locally.
+- `image` — the job image is **available**: present on this daemon, or
+  something ralphd can build from this source tree. (Before v0.6 this was
+  bare presence, which failed a fresh checkout for an image `start` would
+  have built anyway and passed for a pinned reference years older than the
+  source.) A pinned reference that is missing still fails the check — a pin is
+  run as-is, never built, so a run on it cannot start.
 - `registry` — `~/.ralphd` (or `$RALPHD_REGISTRY`) is writable.
 - `pi_host_config` — `~/.pi/agent/settings.json` exists (needed for `--llm host`).
 - `default_llm_profile` — the registry's `default_llm_profile` (set via
@@ -1910,6 +1914,68 @@ Two dangling-container checks, in both directions — always **non-fatal**
   ```
 
   (one line per entry; wrapped here for the page width)
+
+#### Job-image staleness (#20 H4)
+
+Beyond "does an image exist", `doctor` answers *is the image this host runs
+jobs on the one this source tree builds?* — it hashes the image inputs
+(`container/`, `pyproject.toml`, `src/ralphd/`; see
+[architecture.md](architecture.md)) and compares that hash with the tag in use.
+One line in the human report, `imageStaleness` in `--json`:
+
+```
+! job image (stale, from RALPHD_IMAGE): ralphd:aaaaaaaaaaaa was built from different image inputs than this source tree, whose job image is ralphd:867111e69aec -- a run on ralphd:aaaaaaaaaaaa executes an engine that is not this source
+```
+
+The line is prefixed `!` only when it is news to act on (`stale`/`missing`).
+Four verdicts, because two would have to lie:
+
+| `staleness` | meaning |
+| --- | --- |
+| `fresh` | the reference is `ralphd:<hash>` and the hash **is** this source tree's |
+| `stale` | it is `ralphd:<hash>` from some *other* source tree — a run on it executes an engine that is not this checkout |
+| `missing` | not on this daemon. If it is this tree's own tag, the next `start` builds it (the check still passes); otherwise nothing here builds it |
+| `unknowable` | it cannot be compared to a source hash at all — and is therefore never reported as up to date |
+
+`unknowable` covers, deliberately: an operator pin / registry reference /
+hand-built tag (`ralphd:dev`); a **derived** `ralphd-derived:<hash>`, whose hash
+covers its base image as well as ralphd's source; a **base**
+`ralphd-base:<hash>`, whose hash covers an operator's build context; and an
+install with no source tree next to it (no `container/Dockerfile` to hash — the
+pipx case). The three tag namespaces are never compared with each other.
+
+`imageStaleness` fields: `image` (the reference reported on, `null` when the
+registry supplies a `base_image:`/`dockerfile:` and the job image is therefore
+a derived tag that does not exist until `start` derives it — the base is named
+in `imageBase` instead of a tag being guessed), `imageKind`
+(`default`/`derived`/`base`/`unhashed`/`none`), `imageHash` (the comparable
+hash, `null` when there is none), `imageSource` (task 036's provenance word for
+a run's recorded image), `sourceHash`/`sourceImage`/`sourceRoot` (this tree's
+hash, the tag it produces, and where it was hashed), `present`, `staleness`,
+`where` (which level supplied the reference: `--image` > `RALPHD_IMAGE` > the
+registry's `image:` > this source tree's inputs) and `note` (the sentence the
+human report prints — worded once, so text and JSON cannot disagree).
+
+`--json`'s `runImageStaleness` applies the same verdict per **run recorded
+non-terminal**, against the image that run's own `host.json` records (see
+`resume` above): the literal "tag in use", and the case this check exists for —
+a live run executing an engine that predates the fix it is watching for. It is
+a hash comparison over run state, so it costs one file read per run and no
+`docker` call, and it never claims an image is gone. Terminal runs are left out
+(an image that was current while the run happened is not stale afterwards).
+Stale runs — and only those — are listed in the human report, report-only:
+
+```
+! runs recorded non-terminal whose own job image is not this source tree's:
+    myrun  ralphd:aaaaaaaaaaaa was built from different image inputs than this source tree, whose job image is ralphd:867111e69aec -- ...
+```
+
+Staleness never affects `ok`: running an old engine on purpose is supported
+(`--image`), being unable to tell is not.
+
+`--image REF` reports on `REF` instead of the reference this host would resolve;
+with `--fix` it also pins the image auto-resumed runs restart on (by default
+each run restarts on the image it recorded at start time, see `resume`).
 
 #### `ralphctl doctor --fix` (self-recovery sweep)
 
