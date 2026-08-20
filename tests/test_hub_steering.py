@@ -34,7 +34,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ralphd.cli.ui_server import NO_STEERING, steering_list
+from ralphd.cli.ui_server import NO_STEERING, _with_steering_display, steering_list
 from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
@@ -43,6 +43,7 @@ from ralphd.engine.state import (
     STEERING_CONSUMED_FILE,
     STEERING_PENDING,
     RunDir,
+    format_local_time,
     steering_entries,
 )
 
@@ -81,6 +82,14 @@ def _seed_steering(run_dir: Path, files: dict[str, str],
         (sdir / name).write_text(body)
     if consumed is not None:
         (sdir / STEERING_CONSUMED_FILE).write_text(json.dumps(consumed))
+
+
+def _hub_entries(run_dir: Path, *, bodies: bool = True) -> list[dict]:
+    """What the hub's endpoint must answer for this run dir: the shared
+    reader's entries plus the display fields the hub renders server-side
+    (task 017's `tsLocal`) -- additive, never a different vocabulary."""
+    return [_with_steering_display(e)
+            for e in steering_entries(run_dir, bodies=bodies)]
 
 
 # -- the shared reader ----------------------------------------------------
@@ -183,7 +192,7 @@ def test_hub_proxies_a_live_run(tmp_path, ui):
         assert code == 200
         assert body["live"] is True
         assert body["notice"] == ""
-        assert body["entries"] == steering_entries(run_dir)
+        assert body["entries"] == _hub_entries(run_dir)
         assert ("GET", "/steering", None) in engine.requests
     finally:
         engine.close()
@@ -200,7 +209,7 @@ def test_hub_falls_back_to_disk_for_a_dead_run(tmp_path, ui):
     code, body = server.get("/api/runs/run-gone/steering")
     assert code == 200
     assert body["live"] is False          # so the UI can label it a snapshot
-    assert body["entries"] == steering_entries(run_dir)
+    assert body["entries"] == _hub_entries(run_dir)
     assert [e["state"] for e in body["entries"]] == [STEERING_APPLIED] * 2
     assert [e["body"] for e in body["entries"]] == [ONE, TWO]
 
@@ -317,6 +326,72 @@ def test_steering_list_can_skip_bodies(tmp_path):
     live, entries = steering_list(registry, "run-nb", bodies=False)
     assert live is False
     assert "body" not in entries[0] and entries[0]["hasBody"] is True
+
+
+# -- the display fields the panel renders (task 017) ----------------------
+
+
+def test_entries_carry_a_server_formatted_arrival_time(tmp_path, ui):
+    """Task 017 (#17): the panel shows `tsLocal`, formatted by the ONE shared
+    absolute-time formatter -- so "local" means the host running ralphd and
+    app.js never re-implements a timestamp format."""
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-ts", state="succeeded")
+    _seed_steering(run_dir, {"001-a.md": ONE}, consumed=[])
+
+    server = ui(registry)
+    _, body = server.get("/api/runs/run-ts/steering")
+    (entry,) = body["entries"]
+    assert entry["tsLocal"] == format_local_time(entry["ts"])
+    assert entry["ts"] == steering_entries(run_dir)[0]["ts"]   # raw value untouched
+
+
+def test_an_entry_with_no_timestamp_claims_no_arrival_time(tmp_path, ui):
+    """`format_local_time(None)` renders `n/a`, which in a row would read like
+    a real value -- a ghost entry (task 016) gets no `tsLocal` at all."""
+    registry = tmp_path / "registry"
+    engine = StubEngineApi(status={"state": "running"},
+                           steering=[{"file": "007-ghost.md", "consumed": False}])
+    _write_run_with_api(registry, "run-ghost-ts", engine, state="running")
+
+    server = ui(registry)
+    try:
+        _, body = server.get("/api/runs/run-ghost-ts/steering")
+    finally:
+        engine.close()
+    (entry,) = body["entries"]
+    assert "ts" not in entry and "tsLocal" not in entry
+
+
+def test_a_forged_tslocal_from_a_live_answer_is_recomputed(tmp_path, ui):
+    """Same discipline as `_with_approach_display`: the rendered string is
+    always derived from the entry's own `ts`, never trusted as sent."""
+    registry = tmp_path / "registry"
+    engine = StubEngineApi(
+        status={"state": "running"},
+        steering=[{"file": "001-a.md", "ts": "2026-01-02T03:04:05Z",
+                   "state": STEERING_PENDING, "consumed": False,
+                   "tsLocal": "whenever I say"}])
+    _write_run_with_api(registry, "run-forged", engine, state="running")
+
+    server = ui(registry)
+    try:
+        _, body = server.get("/api/runs/run-forged/steering")
+    finally:
+        engine.close()
+    (entry,) = body["entries"]
+    assert entry["tsLocal"] == format_local_time("2026-01-02T03:04:05Z")
+
+
+def test_app_js_renders_the_server_side_arrival_string(tmp_path):
+    """The panel must not grow a second timestamp vocabulary in JS: it renders
+    `tsLocal` and never parses the raw `ts` itself."""
+    app_js = (Path(__file__).parents[1] / "src" / "ralphd" / "cli" / "web"
+              / "app.js").read_text()
+    assert "e.tsLocal" in app_js
+    steering_part = app_js[app_js.index("function renderSteering"):]
+    steering_part = steering_part[:steering_part.index("\nasync function loadSteering")]
+    assert "Date" not in steering_part and "fmtDuration" not in steering_part
 
 
 # -- against a real engine ------------------------------------------------

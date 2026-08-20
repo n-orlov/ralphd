@@ -1496,7 +1496,11 @@ JSON endpoints served under `/api/`:
   `file`, `seq`, `name`, `ts` (arrival time), `state` (`pending`/`applied`),
   `consumed`, `bytes`/`hasBody` and `body` — the exact shape the engine's own
   `GET /steering` returns (docs/api.md), because both sides read it with the
-  same helper, `ralphd.engine.state.steering_entries`. Live-first with an
+  same helper, `ralphd.engine.state.steering_entries` — plus `tsLocal`, that
+  arrival time rendered server-side by the shared
+  `ralphd.engine.state.format_local_time` (task 017, exactly like
+  `startedAtLocal` on the detail payload; recomputed from `ts`, and absent
+  when there is no `ts` to render). Live-first with an
   **on-disk fallback**, the same shape as the log tail and the PRD above: the
   running job's API is asked first (it is the process that decides when an
   entry becomes *applied*), and when it does not answer, `<run>/steering/` is
@@ -1578,7 +1582,8 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   text, compact tool one-liners, elided thinking, malformed-line
   markers — reimplemented in `app.js`, not shared code, since the CLI is
   Python and the bundle is browser JS), and a steering form that `POST`s
-  to `/api/runs/<id>/steer` and reports the created file name back.
+  to `/api/runs/<id>/steer` and reports the created file name back, plus the
+  **steering history** panel below it (task 017, issue #17, described below).
   A **view PRD** button (task 056, issue #1) opens the run's PRD in a modal
   `<dialog>` fed by `GET /api/runs/<id>/prd`, so it works for a dead run too
   (the dialog then says `(on-disk snapshot — the run's API is not
@@ -1605,6 +1610,26 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   of `tasks.json` no longer blinks the table to `(no tasks)`, and an
   `unreadable` read (no last-good anywhere) shows the notice *instead of*
   `(no tasks)`, since that emptiness is ignorance rather than an empty plan.
+  The **steering history** panel (task 017, issue #17) lists every message
+  `GET /api/runs/<id>/steering` reports, oldest first, one `.steering-item`
+  row each: a `pending`/`applied` pill (the fact the panel exists to state —
+  a pending message is one the agent has *not* read yet), the operator's own
+  `--name`, the arrival time as the server-formatted `tsLocal` string (the
+  same `engine.state.format_local_time` `ralphctl status` uses, so "local"
+  means the host running ralphd, not the browser's timezone) and the file
+  name. Each row is clickable and keyboard-reachable (`tabindex=0`,
+  Enter/Space) and opens that message's full text in the **same single
+  `<dialog>`** the PRD and task dialogs use — text nodes only, since a
+  steering message is operator prose from outside the page's trust boundary;
+  the dialog's note line repeats the state and arrival time. Because the
+  endpoint is live-first with an on-disk fallback, the panel works for a
+  finished or killed run too, and then adds the `(on-disk snapshot — the
+  run's API is not reachable)` label (both in the list and in the dialog). A
+  run nobody steered shows `#steering-notice` with the server's `(no steering
+  messages)` wording rather than an empty box, and an entry the hub holds no
+  body for says so instead of showing an empty message. Sending through the
+  form refreshes the panel immediately, so an operator sees their own message
+  without waiting out the 4s poll.
   A **degraded** run (`health: degraded`/`infraWait` set — the run is
   sitting out an endpoint outage; see docs/api.md) gets a visually
   distinct card (`.card.degraded`) carrying the attempt number, phase,
