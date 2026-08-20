@@ -13,9 +13,11 @@ Serves two things:
     PRD (task 056) and the steering history (task 016), which all fall
     back to reading the run dir on disk so a dead run stays readable.
     One read is on-disk ONLY by design: `GET
-    /api/runs/<id>/iterations/<n>` (task 020), because the engine writes
-    `iterations/NNNN/meta.json` and the transcript into the run dir
-    itself -- see `iteration_view`.
+    /api/runs/<id>/iterations/<n>` (task 020) and `GET
+    /api/runs/<id>/documents[/<name>]` (task 022), because the engine,
+    the agent and `start` write `iterations/NNNN/meta.json`, the
+    transcript and the run's state documents into the run dir / job
+    config dir themselves -- see `iteration_view`/`document_list`.
     Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
@@ -51,10 +53,15 @@ from ..engine.state import (
     format_cost,
     format_iteration_log_header,
     format_local_time,
+    format_run_document_size,
     iteration_detail,
     iteration_summary_lines,
     prd_path,
     read_tasks_doc,
+    run_document,
+    run_document_summary_lines,
+    run_document_text,
+    run_documents,
     steering_entries,
     tasks_read_notice,
 )
@@ -74,6 +81,11 @@ NO_PRD = "(no PRD recorded)"
 # never steered this run -- same discipline as `NO_PRD`/`NO_TRANSCRIPT`, the
 # wording lives server-side and app.js only renders it.
 NO_STEERING = "(no steering messages)"
+
+# Task 022 (#18.2): shown by the hub's state-document panel when a run wrote
+# none of them (and its job config dir is out of reach) -- the `NO_PRD`/
+# `NO_STEERING` discipline again, wording server-side.
+NO_DOCUMENTS = "(no state documents on disk)"
 
 # Task 024 (#8): how long the run-list liveness probe waits for a run's API
 # port to accept a TCP connection. Deliberately tiny: the API is published on
@@ -384,6 +396,81 @@ def iteration_view(reg: Path, run_id: str, number: int, *,
     if lines is not None:
         out["log"] = lines
     return out
+
+
+def _config_dir(reg: Path, run_id: str) -> Path:
+    """A run's job config dir, where `job.yaml` (and this run's staged secret
+    values) live -- the same `<registry>/configs/<run-id>` layout
+    `cli.main.config_root` spells, so the hub and `ralphctl docs` read the very
+    same file. Returned even when it is not there: `state.run_documents` then
+    reports `job.yaml` as never written rather than out of reach, which is what
+    a registry without a config dir for this run actually means."""
+    return reg / "configs" / run_id
+
+
+def _with_document_display(doc: dict) -> dict:
+    """Add the one server-rendered display string the document panel needs:
+    `sizeDisplay`, i.e. `state.format_run_document_size` -- the byte count, or
+    the ONE wording for a document this run never wrote / that is out of reach.
+    Same discipline as `usage.costDisplay`/`steering.tsLocal`: app.js renders
+    strings, it does not word facts (and a forged `sizeDisplay` in a payload we
+    were handed is always recomputed from the entry's own fields)."""
+    return {**doc, "sizeDisplay": format_run_document_size(doc)}
+
+
+def document_list(reg: Path, run_id: str) -> dict:
+    """Which state documents this run has, for the hub's document panel (task
+    022, #18.2): `notes.md`, `review-findings.md`, `composite-prd.md` and the
+    redacted `job.yaml`.
+
+    The listing `ralphctl docs <run>` prints, as a payload: one entry per KNOWN
+    document (`state.run_documents`, the ONE shaping) whether or not it exists,
+    because *which* documents a run wrote is itself part of the answer -- app.js
+    turns the ones that exist into dialog buttons and states the absence of the
+    rest in the server's own wording (`sizeDisplay`).
+
+    Bodies are deliberately NOT included: the panel only needs labels, and a
+    run's whole notes/PRD/job.yaml on every 4s poll would be pure waste. The
+    body arrives when a dialog opens, from `document_view`.
+
+    Purely on-disk, like `iteration_view` (task 020) and `ralphctl docs`: every
+    one of these files is written by the agent, the engine or `start` itself
+    into directories this host holds, so a live run and one whose container is
+    long gone read identically -- there is no live answer to prefer and hence
+    no `live` flag and no snapshot notice.
+    """
+    docs = [_with_document_display(d) for d in
+            run_documents(reg / "runs" / run_id, _config_dir(reg, run_id),
+                          bodies=False)]
+    return {"runId": run_id, "documents": docs,
+            "notice": "" if any(d.get("exists") for d in docs) else NO_DOCUMENTS}
+
+
+def document_view(reg: Path, run_id: str, name: str) -> dict | None:
+    """One state document for the hub's dialog, or None when `name` matches no
+    known document (caller -> 404).
+
+    `state.run_document` (key OR file name, task 021's aliases) plus the two
+    renderings worded ONCE in `engine.state`: `summaryLines` (the header block)
+    and `text` (header + separator + body), which is exactly what `ralphctl docs
+    <run> <name>` prints. So app.js puts `text` into text nodes and the two
+    surfaces cannot describe the same file differently.
+
+    `job.yaml` arrives ALREADY redacted -- `state.run_documents` runs
+    `redact.redact_job_yaml` over it at read time, so this endpoint has no raw
+    back door and the dialog is as safe to screenshot as `ralphctl docs` output
+    is to paste.
+
+    A document this run never wrote is not an error: it answers with the entry
+    and `state.RUN_DOCUMENT_ABSENT` as its body, the same as the CLI's wording,
+    rather than an empty dialog.
+    """
+    doc = run_document(reg / "runs" / run_id, name, _config_dir(reg, run_id))
+    if doc is None:
+        return None
+    return {"runId": run_id, **_with_document_display(doc),
+            "summaryLines": run_document_summary_lines(doc),
+            "text": run_document_text(doc)}
 
 
 def prd_text(reg: Path, run_id: str) -> tuple[bool, str]:
@@ -739,6 +826,27 @@ class Handler(BaseHTTPRequestHandler):
                 live, entries = steering_list(reg, run_id)
                 self._send_json({"live": live, "entries": entries,
                                  "notice": "" if entries else NO_STEERING})
+                return
+            if (len(segs) in (4, 5) and segs[:2] == ["api", "runs"]
+                    and segs[3] == "documents"):
+                # Task 022 (#18.2): the run's state documents -- the listing
+                # for the panel, one document for the dialog. Purely on-disk
+                # (see `document_list`): these files are written into the run
+                # dir and the job config dir by the agent/engine/`start`
+                # itself, so there is no live answer to prefer.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                if len(segs) == 4:
+                    self._send_json(document_list(reg, run_id))
+                    return
+                view = document_view(reg, run_id, segs[4])
+                if view is None:
+                    self._send_json(
+                        {"error": f"unknown document {segs[4]!r}"}, 404)
+                    return
+                self._send_json(view)
                 return
             if (len(segs) == 5 and segs[:2] == ["api", "runs"]
                     and segs[3] == "iterations"):

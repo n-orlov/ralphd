@@ -856,8 +856,10 @@ price_strategy: "aws"
   `tests/test_cli_run_documents.py`.
 - The header block and the listing are worded ONCE, by
   `ralphd.engine.state.run_document_summary_lines` /
-  `format_run_document_listing`, so the hub's document dialogs (task 022) show
-  the very same lines.
+  `format_run_document_listing` / `format_run_document_size`, so the hub's
+  **State documents** panel and its dialogs (task 022, `GET
+  /api/runs/<id>/documents[/<name>]`) show the very same lines and the very
+  same size/absence cells.
 
 ### `ralphctl tasks <run-id>`
 
@@ -1709,6 +1711,32 @@ JSON endpoints served under `/api/`:
   answers `entries: []` with `notice` set to `(no steering messages)`
   (constant `ui_server.NO_STEERING`, wording server-side like `NO_PRD`);
   `404` for an unknown run id.
+- `GET /api/runs/<id>/documents` and `GET /api/runs/<id>/documents/<name>` —
+  the run's **state documents** for the hub's document panel and its dialogs
+  (task 022, issue #18.2): the same shaping `ralphctl docs` prints from
+  (`ralphd.engine.state.run_documents`/`run_document`). The listing answers
+  `{runId, documents: [...], notice}` with one entry per *known* document
+  (`notes`, `findings`, `composite-prd`, `job`) whether or not this run wrote
+  it — `key`, `name`, `where` (`run` or `config`), `title`, `path`,
+  `available`, `exists`, `bytes` and `sizeDisplay`, the byte count or the one
+  absence wording (`(not written)`/`(unreadable)`) rendered server-side by
+  `state.format_run_document_size`, so app.js words nothing. `notice` is
+  `(no state documents on disk)` (constant `ui_server.NO_DOCUMENTS`, the
+  `NO_PRD`/`NO_STEERING` discipline) when a run wrote none of them, else `""`.
+  The listing carries **no bodies**: the panel only needs labels and a 4s poll
+  must not ship the whole run's prose. `GET .../documents/<name>` (key or file
+  name, e.g. `notes` or `notes.md`, case-insensitively) adds `body`,
+  `redacted`, `summaryLines` and `text` — the complete dialog body, i.e. the
+  header block + `--- <file> ---` + the body, exactly what `ralphctl docs <run>
+  <name>` prints. `job.yaml` arrives **already redacted** (masked by key name
+  and scrubbed by value, `engine.redact.redact_job_yaml`): there is no raw back
+  door, so the dialog is as safe to screenshot as `ralphctl docs` output is to
+  paste. Like the iteration endpoint above these are **on-disk only, with no
+  `live` flag**: these files are written into the run dir and the job config
+  dir by the agent, the engine and `start` itself, so there is nothing to fall
+  back *from*. A document this run never wrote is not an error — its `text` is
+  the `(not written)` wording. `404` for an unknown run id or a name that
+  matches no known document.
 - `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, for the
   hub's iteration dialog (task 020, issue #18.1): the exact dict `ralphctl
   iteration` prints from (`ralphd.engine.state.iteration_detail` — `number`,
@@ -1815,6 +1843,19 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   invite injection and mangle the `<`-heavy text the operator came to read.
   Only one dialog exists at a time; closing it removes it, so the 4s refresh
   behind it cannot accumulate copies.
+  A **State documents** panel (task 022, issue #18.2) sits under the summary
+  card and lists what `GET /api/runs/<id>/documents` reports: the worker's
+  `notes.md`, the reviewer's `review-findings.md`, the `composite-prd.md` an
+  approach restart wrote and the effective `job.yaml`. A document that exists
+  is a `<button class="document-item" data-document="<key>">` (keyboard
+  reachability and Enter/Space come from the platform) opening it in the same
+  single `<dialog>`, showing the server's `text` as text nodes only — the very
+  lines `ralphctl docs <run> <name>` prints, `job.yaml` included and redacted.
+  A document this run never wrote is listed too, as a non-clickable
+  `.document-absent` row carrying the server's `(not written)` wording: which
+  documents exist is itself part of the answer, so absence is stated rather
+  than hidden. The endpoint is on-disk, so the panel works for a run whose
+  container is long gone — hence no snapshot label here either.
   Each row of the **task table** is clickable (and keyboard-reachable:
   `tabindex=0`, Enter/Space) and opens that task's detail in the same
   `<dialog>` (task 057, issue #2): its `status`, `priority` and `dependsOn`
