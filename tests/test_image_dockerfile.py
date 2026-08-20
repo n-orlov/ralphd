@@ -508,7 +508,7 @@ def test_the_supply_keys_are_settled_as_one_unit_in_process(ctl, monkeypatch):
     assert (args.image, args.base_image, args.dockerfile) == (None, None, None)
 
 
-# --- resume replays the recipe the run started with ---------------------
+# --- resume reproduces the image the run started on (035 recipe, 036 record) --
 
 
 def test_resume_replays_the_recipe_and_rebuilds_nothing(ctl, recipe):
@@ -531,12 +531,15 @@ def test_resume_replays_a_base_image_too(ctl):
     assert len(ctl.of("build")) == 1
 
 
-def test_resume_of_a_run_with_no_recipe_keeps_the_pre_035_default(ctl):
-    """Task 036 owns reproducing the *resolved* tag for these runs; until then
-    a run that recorded no ingredients resumes exactly as it did before."""
+def test_resume_of_a_run_with_no_recipe_reuses_the_image_it_started_on(ctl):
+    """Task 036 (H4) took this case over: the *resolved* image is recorded in
+    run state and preferred, so a run that recorded no ingredients no longer
+    falls back to DEFAULT_IMAGE -- it resumes on the image it started on."""
     assert ctl.start("plain-resume").returncode == 0
+    started = ctl.of("run")[0][-1]
+    assert started != main.DEFAULT_IMAGE
     assert ctl.run("resume", "plain-resume").returncode == 0
-    assert ctl.of("run")[1][-1] == main.DEFAULT_IMAGE
+    assert ctl.of("run")[1][-1] == started
 
 
 def test_an_image_flag_on_resume_still_pins(ctl, recipe):
@@ -547,13 +550,28 @@ def test_an_image_flag_on_resume_still_pins(ctl, recipe):
     assert len(ctl.of("build")) == 2          # nothing rebuilt for the pin
 
 
-def test_a_resumed_recipe_that_changed_is_rebuilt_under_its_new_tag(ctl, recipe):
-    """The replay is of the *recipe*, not of a tag: a resume after the
-    operator edited their Dockerfile runs the image that recipe now means."""
+def test_a_changed_recipe_is_replayed_only_once_the_recorded_image_is_gone(ctl, recipe):
+    """Task 036 (H4) narrowed this: while the image the run started on is still
+    on the daemon, an edited Dockerfile changes nothing -- a resume must not
+    swap the engine mid-run. The recipe replay is the *fallback*, and once that
+    image is gone it is of the recipe (not of a tag), so the resume runs the
+    image the edited recipe now means."""
+    started = derived_from_recipe(REPO, recipe)
     assert ctl.start("df-resume-edit", "--dockerfile", str(recipe)).returncode == 0
+    assert ctl.of("run")[0][-1] == started
     recipe.write_text(RECIPE + "RUN apt-get install -y maven\n")
+    edited = derived_from_recipe(REPO, recipe)
+    assert edited != started
+
     assert ctl.run("resume", "df-resume-edit").returncode == 0
-    assert ctl.of("run")[1][-1] == derived_from_recipe(REPO, recipe)
+    assert ctl.of("run")[1][-1] == started
+    assert len(ctl.of("build")) == 2          # start's two, none from resume
+
+    ctl.images.write_text("")                # the recorded image is pruned
+    res = ctl.run("resume", "df-resume-edit")
+    assert res.returncode == 0, res.stderr
+    assert "no longer on this daemon" in res.stderr
+    assert ctl.of("run")[2][-1] == edited
     assert len(ctl.of("build")) == 4
 
 

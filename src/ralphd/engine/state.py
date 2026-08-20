@@ -410,6 +410,92 @@ def read_operator_termination(run_root: Path) -> dict | None:
     return doc
 
 
+# Task 036 (#20 H4): the host's record of WHICH IMAGE a run's container was
+# started from -- written into the run dir's `host.json` by `ralphctl
+# start`/`resume`, read from here by everything that reports or reproduces it.
+#
+# host.json is host-side state (ralphctl writes it, the engine never does), but
+# it is the only place this answer can exist: a process inside a container
+# cannot see the image it was created from -- nothing in /proc names it, and the
+# docker socket is not there unless the operator mounted it. So the engine
+# READS this record to answer "which engine is this run actually running?"
+# through `GET /status`, and `ralphctl resume` prefers it over re-deriving a tag
+# from possibly-changed sources (requirement H4: a resume must not swap the
+# engine mid-run). One reader for both, here, so the API and the CLI can never
+# disagree about the same file.
+HOST_FILE = "host.json"
+# `image` is the reference the container was started with, `imageId` the
+# daemon's content id for the image it actually got (`docker inspect
+# --format {{.Image}}` on the container, i.e. observed rather than assumed),
+# and the remaining three are the provenance `resolve_job_image` reported:
+# how the reference was arrived at (cli/main.py's IMAGE_SOURCE_* vocabulary),
+# the content hash it was tagged by (None when it was not content-derived, so
+# staleness is unknowable), the base it was derived from and the operator
+# Dockerfile that base was built from.
+IMAGE_RECORD_KEYS = ("image", "imageId", "imageSource", "imageHash",
+                     "imageBase", "imageDockerfile")
+# docker's own short-id width, for display only -- `--json` keeps the full id.
+IMAGE_ID_SHORT = 12
+
+
+def image_record_from(host_doc) -> dict:
+    """The job-image record carried by a parsed `host.json` document: every
+    IMAGE_RECORD_KEY present, None for anything the record does not say.
+
+    Absence is never a third case a consumer has to handle -- the same
+    discipline as `maxApproaches`/`model` in GET /status. A pre-v0.6 run dir, a
+    missing host.json, and a host.json whose container's image id could not be
+    observed all yield explicit nulls. Non-string junk is dropped rather than
+    propagated (defensive like `format_approach`): this file is written by
+    another process and every reader of it here is a viewer.
+    """
+    rec = dict.fromkeys(IMAGE_RECORD_KEYS)
+    if not isinstance(host_doc, dict):
+        return rec
+    for key in IMAGE_RECORD_KEYS:
+        val = host_doc.get(key)
+        if isinstance(val, str) and val.strip():
+            rec[key] = val.strip()
+    return rec
+
+
+def image_record(run_root: Path) -> dict:
+    """`image_record_from` over a run dir's host.json (absent/unreadable ->
+    all-None record, never an exception)."""
+    return image_record_from(read_json(Path(run_root) / HOST_FILE, None))
+
+
+def format_image_id(image_id) -> str:
+    """A docker-style short image id (12 hex, algorithm prefix dropped) for
+    display; '' when there is nothing to show."""
+    if not isinstance(image_id, str) or not image_id.strip():
+        return ""
+    val = image_id.strip()
+    _, _, digest = val.rpartition(":")
+    return (digest or val)[:IMAGE_ID_SHORT]
+
+
+def format_image(rec: dict | None) -> str:
+    """THE rendering of "which image is this run running":
+    `ralphd:ab12cd34ef56  (id 0f1e2d3c4b5a)`.
+
+    '' when nothing is recorded (callers omit the line entirely rather than
+    printing `image: None` -- the discipline of the `model:`/approach segments).
+    The id is appended only when it adds information: a reference the daemon
+    could not resolve when the run started has none, and a reference that *is*
+    the id needs no parenthetical repeat of itself.
+    """
+    rec = rec or {}
+    ref = rec.get("image")
+    short = format_image_id(rec.get("imageId"))
+    if not isinstance(ref, str) or not ref.strip():
+        return ""
+    ref = ref.strip()
+    if not short or short in ref:
+        return ref
+    return f"{ref}  (id {short})"
+
+
 # Task 023 (#8): the tasks.json `status` string -> /status `tasks` counts key
 # mapping, in ONE place. Both the engine (GET /status) and the host-side CLI
 # fallback (`ralphctl status` on an unreachable run) count the same tasks.json,

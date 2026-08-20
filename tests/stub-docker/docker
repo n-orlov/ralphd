@@ -41,7 +41,16 @@ just enough behavior for ralphctl to proceed. Knobs:
                               CONTENT to, so a test can read the recipe that
                               was actually built (task 034's generated,
                               never-on-disk-in-the-repo derived Dockerfile).
+  STUB_DOCKER_IMAGE_IDS       JSON {image ref: content id} answered by `docker
+                              image inspect --format {{.Id}} <ref>` and by
+                              `docker inspect --format {{.Image}} <container>`
+                              (task 036). Any ref this daemon has but that is
+                              not listed answers a deterministic fake id,
+                              `sha256:` + sha256(ref) -- so a test can predict
+                              it, and can stage a MOVED tag by listing a
+                              different id for it.
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -54,6 +63,33 @@ if log:
         f.write(json.dumps(argv) + "\n")
 
 cmd = argv[0] if argv else ""
+
+
+def _fake_image_id(ref):
+    """The id this stub daemon reports for an image ref it has, unless
+    STUB_DOCKER_IMAGE_IDS overrides it. Deterministic so tests can predict it."""
+    ids = json.loads(os.environ.get("STUB_DOCKER_IMAGE_IDS", "{}"))
+    if ref in ids:
+        return ids[ref]
+    return "sha256:" + hashlib.sha256(ref.encode()).hexdigest()
+
+
+def _last_run_image():
+    """The image ref of the most recent `docker run` in this stub's own log --
+    how `docker inspect --format {{.Image}} <container>` answers which image a
+    container is running (the stub's containers are all the same fake id)."""
+    if not log or not os.path.exists(log):
+        return None
+    ref = None
+    with open(log) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec and rec[0] == "run":
+                ref = rec[-1]
+    return ref
 
 
 def _parse_run_argv(argv):
@@ -130,6 +166,11 @@ elif cmd == "inspect":
             if cid not in containers:
                 sys.exit(1)
             print("true" if cid in running else "false")
+        elif fmt == "{{.Image}}":
+            ref = _last_run_image()
+            if ref is None:
+                sys.exit(1)
+            print(_fake_image_id(ref))
         else:
             labels = json.loads(os.environ.get("STUB_DOCKER_INSPECT_LABELS", "{}"))
             if cid not in labels:
@@ -159,6 +200,9 @@ elif cmd == "build":
     print(f"Successfully tagged {tag}")
 elif cmd == "image" and argv[1:2] == ["inspect"]:
     refs = _known_images()
-    if refs is not None:
-        sys.exit(0 if argv[-1] in refs else 1)
+    ref = argv[-1]
+    if refs is not None and ref not in refs:
+        sys.exit(1)
+    if "--format" in argv and argv[argv.index("--format") + 1] == "{{.Id}}":
+        print(_fake_image_id(ref))
 sys.exit(0)

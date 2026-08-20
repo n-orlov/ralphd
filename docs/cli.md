@@ -179,9 +179,42 @@ the inputs, look the tag up, build only on a miss:
   build. Commit the recipe next to your repo (`ci/Dockerfile`) and the job image
   is reproducible without you;
 - the run's `job.yaml` records `dockerfile:` (or `base_image:`), so
-  `ralphctl resume` replays the recipe the run started with rather than falling
-  back to `ralphd:dev`. It replays the *recipe*: if you edited the Dockerfile in
-  between, the resume builds and runs what it now means.
+  `ralphctl resume` can replay the recipe the run started with rather than
+  falling back to `ralphd:dev` — a *fallback*, used only when the image the run
+  actually ran is gone (see "Resuming on the same image" below).
+
+**Which image ran, and how it is recorded.** `start` writes the resolution into
+the run dir's `host.json` (and `GET /status` / `ralphctl status --json` report
+the same fields, see docs/api.md):
+
+| field | meaning |
+|-------|---------|
+| `image` | the reference the container was started with |
+| `imageId` | the daemon's content id for the image the container **actually got**, read from the container itself — so a pinned tag docker pulled, or a tag that moves later, is still identified |
+| `imageSource` | `pinned`, `cached`, `built`, `unhashable`, `recorded` (a resume reproducing the record) or `default` (a pre-v0.6 run dir with neither a record nor a recipe) |
+| `imageHash` | the content hash the tag was built from; absent for a pin, where staleness is unknowable |
+| `imageBase` / `imageDockerfile` | the base and the operator recipe behind a derived image |
+
+`ralphctl status` prints the first two as one line —
+`image:     ralphd:9f2c1a4b7d80  (id 0f1e2d3c4b5a)` — and omits the line
+entirely for a run dir that records no image.
+
+**Resuming on the same image.** `ralphctl resume` must not swap the engine
+mid-run, so it prefers that record over re-resolving anything, ranked:
+
+1. `--image <ref>` pins, as everywhere else;
+2. **the image this run started on**, from its own run state — by reference
+   while the reference still names the recorded id, by the recorded **id** once
+   a mutable tag (`ralphd:dev`) has moved. Nothing is hashed and nothing is
+   built on this path, so a resume after you edited the sources (or the
+   Dockerfile) continues on the same image it always ran;
+3. the recipe from `job.yaml` (`base_image:`/`dockerfile:`), replayed — and
+   rebuilt if it now means something else — but only once the recorded image is
+   genuinely gone from the daemon;
+4. `ralphd:dev`, for a pre-v0.6 run dir that recorded neither.
+
+Every step down from 2 is a warning on stderr naming what could not be
+reproduced; none of them refuses the resume.
 
 **Which image runs, and who gets to say.** `image`, `base_image` and
 `dockerfile` are three answers to one question, so they are settled as a unit:
@@ -403,6 +436,21 @@ observed a model yet (never `model: None`, same discipline as the approach
 segment). `--json` carries `model` and `modelRaw`, both explicitly `null` for a
 pre-v0.6 run dir — see “`model` and `modelRaw`” in docs/api.md for why the
 observed id is the honest one.
+
+An `image:` line names the job image the run is running it on (task 036, issue
+#20) — the reference plus the daemon's short id for the image the container
+actually got:
+
+```
+image:     ralphd:9f2c1a4b7d80  (id 0f1e2d3c4b5a)
+```
+
+The `(id …)` suffix appears only when an id was recorded, and the whole line is
+omitted for a run dir that records no image (pre-v0.6), never `image: None`.
+`--json` carries `image`, `imageId`, `imageSource`, `imageHash`, `imageBase` and
+`imageDockerfile`, all explicitly `null` when unrecorded — the same six fields
+`GET /status` serves, read from the same `host.json` record, and the same record
+`resume` reproduces.
 
 Human output includes a `duration:` line: while the job is still running this
 is the **elapsed-so-far** time since `startedAt` (labeled `(elapsed)`); once
@@ -1613,10 +1661,13 @@ absolutely instead); omit it to just continue with whatever budget remains.
 `--allow-docker`, `--image`, `--port`, `--api-bind`, `--network` (defaults
 to the network recorded at start time), `--no-detach` mirror
 `start`'s flags of the same name. `--image` on `resume` pins as always; with no
-flag, `resume` **replays the image recipe the run started with** — the
-`base_image:`/`dockerfile:` recorded in its `job.yaml`, re-resolved to the same
-`ralphd-derived:<hash>` tag when nothing changed (a lookup, not a build) — and
-falls back to `ralphd:dev` only for a run that recorded no ingredients at all.
+flag, `resume` **reproduces the image this run started on** — the reference and
+content id recorded in the run's `host.json` (`imageId`), reused without hashing
+or building anything, even after the sources or the Dockerfile changed. Only
+when that image is gone from the daemon does it fall back to replaying the
+`base_image:`/`dockerfile:` recipe recorded in `job.yaml`, and to `ralphd:dev`
+for a run that recorded neither; every step down is a warning on stderr. The
+full ranking is under "Resuming on the same image" in `start` above.
 The resolved `pi` config and creds/skills
 are restored too, since the container entrypoint re-copies `/config/pi`
 and the engine re-places `/config/creds` + `/config/skills` on every
@@ -1663,7 +1714,7 @@ and for `--llm`
 the hardcoded built-in default: explicit flag > `--template` > `ralphctl
 config` default > hardcoded default. `llm test`/`doctor`'s own
 `--image` flags are unaffected (still default to the hardcoded image), and
-`resume`'s replays the recipe the run started with (see `resume` below). Note
+`resume`'s prefers the image the run recorded (see `resume` below). Note
 that for the three image keys there is no hardcoded final fallback on `start`:
 with nothing set anywhere, `start` builds `ralphd:<hash>` from source instead of
 selecting a tag, and the three are ranked *as one unit* rather than key by key

@@ -32,6 +32,12 @@ The one-call summary. Response:
   "maxApproaches": 3,           // approach denominator; null for a pre-v0.6 run dir
   "model": "amazon-bedrock/eu.anthropic.claude-opus-5",  // model observed in use
   "modelRaw": "eu.anthropic.claude-opus-5",             // gateway id, when different
+  "image": "ralphd:9f2c1a4b7d80",   // job image this run is running (see below)
+  "imageId": "sha256:0f1e2d3c…",   // the image the container actually got
+  "imageSource": "built",          // pinned|cached|built|unhashable|recorded|default
+  "imageHash": "9f2c1a4b7d80",     // content hash it was tagged by; null if not content-derived
+  "imageBase": null,               // base it was derived from, when it is a derived image
+  "imageDockerfile": null,         // operator Dockerfile that base was built from
   "iteration": 7,
   "iterationsBudget": 50,
   "iterationsUsed": 7,
@@ -168,6 +174,32 @@ using" means for a run whose phases may use different tiers (`fast_model`).
 Per-iteration ids stay in `iterations/NNNN/meta.json`, where `model` is the ref
 that was requested (possibly `null`) and `modelResolved`/`modelRaw` are what
 actually answered.
+
+#### `image` and the job-image record
+
+Which job image this run is running — and, `imageId`, exactly *which* image that
+reference resolved to. A process inside a container cannot see the image it was
+created from (nothing in `/proc` names it, and the docker socket is not there
+unless the operator mounted it), so this is the **host's record**: `ralphctl
+start`/`resume` write it into the run dir's `host.json` and the engine reads it
+back per request (a `resume` rewrites it, so it is never cached at startup).
+
+| field | meaning |
+|-------|---------|
+| `image` | the reference the container was started with (`ralphd:<hash>`, `ralphd-derived:<hash>`, or whatever was pinned) |
+| `imageId` | the daemon's content id for the image the container **actually got**, observed from the container itself rather than assumed from the reference — so a pinned tag the daemon pulled, or a tag that moves tomorrow, is still identified |
+| `imageSource` | how the reference was arrived at: `pinned` (`--image`/`RALPHD_IMAGE`/template/registry), `cached` or `built` (a content-hashed tag looked up or built), `unhashable` (no source tree to hash), `recorded` (a `resume` reproducing what run state recorded), `default` (a pre-v0.6 run dir that recorded neither an image nor a recipe) |
+| `imageHash` | the content hash the image was tagged by; `null` whenever the reference was not derived from content, which means *staleness is unknowable* rather than *up to date* |
+| `imageBase` | the base image this one was derived from, for a derived image; `null` for the default image or a pin |
+| `imageDockerfile` | the operator Dockerfile that base was built from (`--dockerfile`), when there was one |
+
+All six are explicit `null`s for a run dir whose `host.json` records nothing
+(pre-v0.6, or a `host.json` written before the container's id could be
+observed) — absence is never a third case. `ralphctl status` renders the pair as
+`image: ralphd:9f2c1a4b7d80  (id 0f1e2d3c4b5a)`, and `ralphctl resume` prefers
+this record over re-deriving a tag from possibly-changed sources, so a resume
+continues on the image the run started on instead of silently swapping the
+engine mid-run (see docs/cli.md).
 
 #### `health` and `infraWait`
 
