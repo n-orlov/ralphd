@@ -21,8 +21,9 @@ The load-bearing invariants asserted below:
   crash and never a silently-different behaviour -- and the *effective* value
   is what `GET /config` reports, so the fallback is observable.
 * Nothing here computes money: task 010 only decides "may the built-in table
-  be consulted", so the knob's presence changes no cost field yet (task 011
-  wires the derivation). A test pins that so the two tasks stay separable.
+  be consulted", so the knob's presence changes no cost field on its own
+  (task 011 wired the derivation -- see tests/test_price_strategy_derive.py).
+  A test pins that the knob still never mutates the operator's own map.
 """
 
 from __future__ import annotations
@@ -357,14 +358,16 @@ def test_an_iterations_topup_on_resume_does_not_drop_the_strategy(ctl: Ctl):
 
 
 # --------------------------------------------------------------------------
-# task 010 is a knob, not a behaviour change: nothing derives money yet
+# the knob never mutates the operator's own map (task 011 landed the derivation)
 # --------------------------------------------------------------------------
 
-def test_selecting_aws_does_not_by_itself_price_anything(tmp_path):
-    """Task 011 wires the derivation; until then `aws` must change no cost
-    field. Pinning that keeps the two tasks (and their tests) separable: if
-    this starts failing, it is because 011 landed, and this test should then
-    be replaced by 011's own assertions rather than deleted quietly."""
+def test_selecting_aws_never_touches_the_operator_pricing_map(tmp_path):
+    """Task 011 wired the derivation (see tests/test_price_strategy_derive.py),
+    but it did so by *layering* the built-in table behind the operator map --
+    never by merging the shipped rates into it. So `pricing`/`cfg.pricing`
+    still mean exactly "what the operator configured", whatever the strategy
+    says, and `GET /config`'s `pricing` view stays null for a run that
+    configured none. `priceTables` is where the built-in table shows up."""
     from ralphd.engine.pricing import PricingMap
 
     cfg = JobConfig.load(_write_job(tmp_path / "job.yaml", price_strategy="aws"))
@@ -372,3 +375,4 @@ def test_selecting_aws_does_not_by_itself_price_anything(tmp_path):
     assert cfg.pricing == {}
     assert PricingMap.from_config(cfg.pricing) is None
     assert cfg.effective()["pricing"] is None
+    assert cfg.effective()["priceTables"]["names"] == ["builtin-aws-bedrock"]

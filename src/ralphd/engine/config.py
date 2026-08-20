@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from .pricing import PricingMap
+from .pricing import PricingMap, price_tables
 
 log = logging.getLogger("ralphd.config")
 
@@ -276,6 +276,12 @@ class JobConfig:
             # an unknown configured name shows up here as the `none` it
             # actually behaves as.
             "priceStrategy": self.price_strategy,
+            # Task 011 (#14): every table that may derive a cost, in the order
+            # they are consulted, so "which table produced this rate" is
+            # answerable from the API alone: `names`/`answers` name the
+            # operator map, the built-in AWS table, both, or "neither", and
+            # the built-in table's entry carries its as-of date + staleness.
+            "priceTables": price_tables(self.pricing, self.price_strategy),
         }
 
     def model_for(self, phase: str) -> str | None:

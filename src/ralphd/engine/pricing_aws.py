@@ -401,7 +401,8 @@ def pricing_map() -> PricingMap:
     alias/exact/longest-wildcard rules as an operator map, and `derive()` is
     the same arithmetic, so "which rules applied" has one answer.
     """
-    built = PricingMap.from_config({"aliases": ALIASES, "models": RATES})
+    built = PricingMap.from_config({"aliases": ALIASES, "models": RATES},
+                                   name=TABLE_NAME)
     if built is None:  # pragma: no cover - only reachable if RATES is emptied
         raise RuntimeError("built-in AWS Bedrock rate table is empty")
     if is_stale():
@@ -422,6 +423,7 @@ def describe(today: dt.date | None = None) -> dict:
 
     The full 100+ rate dump belongs in the module, not in a status payload; what
     an operator needs from an API is *which* table answered and whether it is
-    still credible.
+    still credible. `name` mirrors `table` so this entry is shaped like every
+    other entry in `pricing.price_tables()`'s list (task 011).
     """
-    return {**staleness(today), "aliases": len(ALIASES)}
+    return {"name": TABLE_NAME, **staleness(today), "aliases": len(ALIASES)}
