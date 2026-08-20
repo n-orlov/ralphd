@@ -2535,7 +2535,92 @@ def _cmd_llm_test(args):
 
 
 # ---------------------------------------------------------------- control
+# Task 018 (#17): what `ralphctl steer --list` says on stderr when it read the
+# history from the run dir instead of the run's API -- the steering twin of
+# `_LOGS_SNAPSHOT_NOTICE`/`_TASKS_SNAPSHOT_NOTICE`, worded the same way so an
+# operator learns one phrase. On stderr, never stdout, so `--json` stays a
+# clean document.
+_STEER_SNAPSHOT_NOTICE = (
+    "on-disk snapshot: the run's API is not reachable, showing the steering "
+    "messages recorded in the run dir")
+
+# Width of the MESSAGE preview column. A steering message is multi-line prose;
+# the table is an index (which messages exist, which the loop already applied),
+# so it shows the first words and `--json` carries every body in full -- the
+# terminal equivalent of the hub's click-to-open dialog (task 017).
+_STEER_PREVIEW_WIDTH = 48
+
+
+def _steer_preview(body: object, width: int = _STEER_PREVIEW_WIDTH) -> str:
+    """One line of a steering body for the table's MESSAGE column.
+
+    Whitespace (including the newlines of a multi-paragraph message) is
+    collapsed so an entry can never occupy more than its row, and an
+    over-long message is truncated with an ellipsis rather than wrapped --
+    the full text is one `--json` away.
+    """
+    text = " ".join(str(body or "").split())
+    if len(text) <= width:
+        return text
+    return text[:width - 1] + "\u2026"
+
+
+def cmd_steer_list(args) -> None:
+    """`ralphctl steer <run> --list` (task 018, #17): what has been steered.
+
+    Issue #17's complaint is that steering was write-only: an operator could
+    post a message and then had no way to see what was queued, what the loop
+    already applied, or what the text said. The hub grew that view in tasks
+    016/017; this is the same view in a terminal, and deliberately the same
+    CODE -- `ui_server.steering_list` -- rather than a second implementation,
+    so "the CLI and the hub show the same entries for the same run" is true by
+    construction instead of by test discipline alone. That helper is
+    live-first (the running engine decides when an entry becomes *applied*)
+    with an on-disk fallback through the ONE shared reader
+    (`engine.state.steering_entries`), so a finished or killed run's history
+    stays readable -- the `logs`/`tasks` pattern.
+
+    Exit 3 ("run not found") is still an error: no run dir means there is
+    nothing to fall back to. An unreachable API is not -- it is the snapshot
+    path, flagged on stderr.
+    """
+    _require_run(args.run_id)
+    live, entries = ui_server.steering_list(registry(), args.run_id)
+    if not live:
+        print(_STEER_SNAPSHOT_NOTICE, file=sys.stderr)
+    if args.json:
+        print(json.dumps({"live": live, "entries": entries}, indent=2))
+        return
+    if not entries:
+        # The wording lives in `ui_server` next to the hub's panel, so both
+        # surfaces say the same sentence (like `log_merge.NO_TRANSCRIPT`).
+        print(ui_server.NO_STEERING)
+        return
+    print(f"{'SEQ':>3}  {'STATE':<7}  {'ARRIVED':<25}  {'NAME':<18}  MESSAGE")
+    for e in entries:
+        seq = e.get("seq")
+        # `tsLocal` is absent for an entry the hub/CLI cannot see on disk
+        # (a live answer naming a file from another host): print `-`, never a
+        # made-up arrival time.
+        cells = (str(seq) if isinstance(seq, int) else "-",
+                 str(e.get("state") or "-"),
+                 str(e.get("tsLocal") or "-"),
+                 str(e.get("name") or e.get("file") or "-"),
+                 _steer_preview(e.get("body")))
+        print(f"{cells[0]:>3}  {cells[1]:<7}  {cells[2]:<25}  "
+              f"{cells[3]:<18}  {cells[4]}".rstrip())
+
+
 def cmd_steer(args):
+    if args.list:
+        # `--list` is a read: it must not consume stdin, and pairing it with
+        # anything that would SEND a message is a mistake worth naming rather
+        # than silently doing one of the two.
+        if args.message or args.file or args.now or args.name:
+            die(2, "--list only shows this run's steering messages; drop the "
+                   "message/--file/--name/--now")
+        cmd_steer_list(args)
+        return
     message = args.message or (Path(args.file).read_text() if args.file
                                else sys.stdin.read())
     if not message.strip():
@@ -3584,13 +3669,18 @@ def main() -> None:
                            "even if docker is available")
     s.set_defaults(func=cmd_llm)
 
-    s = sub.add_parser("steer", help="send steering guidance")
+    s = sub.add_parser("steer", help="send steering guidance (or --list what "
+                       "has been steered)")
     s.add_argument("run_id")
     s.add_argument("message", nargs="?")
     s.add_argument("--file")
     s.add_argument("--name")
     s.add_argument("--now", action="store_true",
                    help="also interrupt the current iteration")
+    s.add_argument("--list", action="store_true",
+                   help="list this run's steering messages (pending and "
+                        "applied) instead of sending one; works after the "
+                        "container is gone")
     s.set_defaults(func=cmd_steer)
 
     s = sub.add_parser("retry", help="wake a degraded run's infra backoff "
