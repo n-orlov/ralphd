@@ -359,6 +359,15 @@ def read_json(path: Path, default: Any = None) -> Any:
 # surfaces start disagreeing about which runs are zombies.
 NONTERMINAL_STATES = ("starting", "running")
 
+# Task 030 (#19): its complement -- the recorded `state` values that mean "no
+# engine owns this run any more", i.e. the ONE gate a destructive action may
+# open on. Lives here beside `NONTERMINAL_STATES` for the same reason: three
+# surfaces have to agree (`ralphctl stop`/`rm --force` and the hub's delete
+# endpoint), and neither of them may treat an absent, unreadable or
+# unrecognized state as permission -- membership in this tuple is the whole
+# test, so `unknown` can never accidentally pass it.
+TERMINAL_STATES = ("succeeded", "failed", "aborted")
+
 
 # Task 029 (#8): the run-dir marker recording that this run's termination was
 # *operator-initiated* (`ralphctl abort`, POST /abort from the hub or curl,

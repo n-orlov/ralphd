@@ -2101,6 +2101,33 @@ JSON endpoints served under `/api/`:
   waiting on an infra fault` refusal, so the UI can say "nothing to wake"
   instead of reporting a generic failure; `503` (with an `error`) only when
   the run's API is unreachable; `404` for an unknown run id.
+- `DELETE /api/runs/<id>` — delete a **finished** run's state (task 030, issue
+  #19): exactly what `ralphctl rm <id> --force --yes` does, in one HTTP call —
+  the leftover job container is stopped and removed, the run's labeled
+  siblings are reaped, and the run dir and job config dir are deleted. Answers
+  `200 {"removed": "<id>", "stoppedContainer": true|false}` (the shape
+  `ralphctl rm --json` prints, because it is the same act: the hub calls the
+  CLI's own removal sequence rather than a second one of its own).
+
+  The gate is deliberately **stricter** than `rm --force`'s: the run's
+  recorded `state` in status.json must be one of `succeeded`, `failed`,
+  `aborted`. Anything else answers `409` with `{error, runId, state}` and
+  touches **nothing at all** — not even a `docker inspect`:
+
+  | recorded state | answer |
+  | --- | --- |
+  | `succeeded` / `failed` / `aborted` | deleted (`200`) |
+  | `starting` / `running` | `409` "run is still active (state: …) — abort or stop it first" |
+  | absent, unreadable or unrecognized | `409` "cannot establish that this run has finished …" |
+
+  A run dir recording `running` whose container is already gone (a zombie) is
+  therefore refused here even though `ralphctl rm --force` would delete it:
+  the hub cannot tell a zombie from a live run whose port is merely filtered,
+  and an unreachable API is not the same fact as a finished job. The refusal
+  names the escape hatch (`ralphctl repair`, then `ralphctl rm --force`), so a
+  browser is never the only way to make progress. An unknown run id — and any
+  id that is not the plain name of a directory directly under
+  `<registry>/runs/`, e.g. a percent-encoded `..` — answers `404`.
 - Any other path is served from the static hub bundle packaged in the
   wheel (`src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css` — plain
   HTML/JS/CSS, no npm/node build step). A path that doesn't match a real
