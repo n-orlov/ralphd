@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from ..log_merge import iteration_dir, iteration_output_path
-from .redact import scrub_text
+from .redact import redact_job_yaml, scrub_text
 
 
 class RunDirLocked(Exception):
@@ -409,6 +409,19 @@ def read_operator_termination(run_root: Path) -> dict | None:
 _TASK_COUNT_KEYS = {"in-progress": "inProgress", "validation-failed": "validationFailed"}
 
 
+# The names of a run's well-known documents, in ONE place: `RunDir`'s
+# properties, `prd_path` and the run-document surfaces (task 021, #18.2) all
+# spell them from here, so "which file is the handoff notes" is a constant
+# rather than a string literal repeated per reader.
+PRD_FILE = "prd.md"
+COMPOSITE_PRD_FILE = "composite-prd.md"
+NOTES_FILE = "notes.md"
+FINDINGS_FILE = "review-findings.md"
+# `job.yaml` lives in the run's *config* dir (mounted read-only at `/config`),
+# not in the run dir -- see `run_documents`.
+JOB_CONFIG_FILE = "job.yaml"
+
+
 def prd_path(run_root: Path, original: bool = False) -> Path | None:
     """Which file *is* a run's PRD (task 056, #1) -- decided in ONE place.
 
@@ -431,10 +444,10 @@ def prd_path(run_root: Path, original: bool = False) -> Path | None:
     viewer must never write into a run dir).
     """
     root = Path(run_root)
-    composite = root / "composite-prd.md"
+    composite = root / COMPOSITE_PRD_FILE
     if not original and composite.exists():
         return composite
-    plain = root / "prd.md"
+    plain = root / PRD_FILE
     return plain if plain.exists() else None
 
 
@@ -1188,6 +1201,219 @@ def format_task_column(counts: dict, *, stale: bool = False) -> str:
     return " ".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Task 021 (#18.2): a run's state DOCUMENTS -- the prose an operator asks for
+# when a run looks wrong and there is no container left to ask.
+#
+# Four things, all already on disk and none of them reachable from any surface
+# until now: the worker's handoff `notes.md`, the reviewer's
+# `review-findings.md`, the `composite-prd.md` a later approach works from, and
+# the run's *effective* `job.yaml` -- the config as inlined at `start`, which is
+# the only record of what the run was actually launched with (a `resume`
+# re-reads that same file, so it is the truth `GET /config`'s effective view is
+# derived FROM).
+#
+# ONE shaping, here, for both surfaces: `ralphctl docs` (task 021) and the hub's
+# document dialogs (task 022) render the same dicts and the same wordings -- the
+# discipline `iteration_detail`/`iteration_summary_lines` established for #18.1.
+# On-disk only, like the iteration detail: these files are written by the engine
+# and the agent into directories the host holds, so a dead run's documents read
+# exactly like a live one's and there is nothing to fall back FROM (hence no
+# `live` flag and no snapshot notice).
+#
+# `job.yaml` is REDACTED, mechanically, by `redact.redact_job_yaml` -- see that
+# function for why name-masking and value-scrubbing are both needed.
+
+# Where a document lives: the run dir, or the run's job config dir (which the
+# CLI/hub know as `<registry>/configs/<run-id>` and the engine as `/config`).
+DOC_IN_RUN = "run"
+DOC_IN_CONFIG = "config"
+
+# `(key, file name, where, what it is)`. The key is what an operator types
+# (`ralphctl docs <run> notes`) and what the hub's dialog buttons carry; the
+# file name is accepted as an alias, so both spellings work.
+RUN_DOCUMENTS: tuple[tuple[str, str, str, str], ...] = (
+    ("notes", NOTES_FILE, DOC_IN_RUN,
+     "handoff notes the worker rewrites every iteration"),
+    ("findings", FINDINGS_FILE, DOC_IN_RUN,
+     "the reviewer's findings that sent the run into another approach"),
+    ("composite-prd", COMPOSITE_PRD_FILE, DOC_IN_RUN,
+     "the PRD text the agent works from (written when an approach restarts)"),
+    ("job", JOB_CONFIG_FILE, DOC_IN_CONFIG,
+     "effective job config as inlined at start, secret values redacted"),
+)
+
+# Wordings, server-side and shared (the `NO_PRD`/`NO_TRANSCRIPT` discipline): a
+# document this run never wrote, one that exists but is blank, one this reader
+# cannot get at, and the note that says a body was redacted.
+RUN_DOCUMENT_ABSENT = "(not written)"
+RUN_DOCUMENT_EMPTY = "(empty)"
+RUN_DOCUMENT_UNREADABLE = "(unreadable)"
+RUN_DOCUMENT_REDACTED_NOTICE = "secret values redacted"
+
+
+def run_document_keys() -> list[str]:
+    """The operator-facing document keys, in listing order."""
+    return [key for key, _, _, _ in RUN_DOCUMENTS]
+
+
+def run_document_key(name: str) -> str | None:
+    """Resolve what an operator typed to a document key: the key itself or the
+    file name (`notes`, `notes.md`), case-insensitively. None when it names no
+    known document (caller -> a usage error listing `run_document_keys()`)."""
+    wanted = str(name).strip().lower()
+    for key, filename, _, _ in RUN_DOCUMENTS:
+        if wanted in (key, filename.lower()):
+            return key
+    return None
+
+
+def _document_body(path: Path, redact_config_dir: Path | None) -> tuple[str, bool]:
+    """`(body, redacted)` for one existing document file."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return RUN_DOCUMENT_UNREADABLE, False
+    if redact_config_dir is None:
+        return text, False
+    return redact_job_yaml(text, config_dir=redact_config_dir), True
+
+
+def run_documents(run_root: Path, config_dir: Path | None = None, *,
+                  bodies: bool = True) -> list[dict]:
+    """Every known state document of a run, in `RUN_DOCUMENTS` order.
+
+    One entry per document, present or not -- *which* documents exist is
+    itself an answer an operator needs, so a file this run never wrote is
+    reported as an entry with `exists: false` rather than dropped:
+
+      `key`/`name`   the operator-facing key and the file name,
+      `where`        `run` or `config` (which directory it came from),
+      `title`        what the document is, in one line,
+      `path`         where it would be, absent when this reader has no
+                     directory to look in,
+      `available`    False only for that case (no `config_dir` given, so
+                     `job.yaml` is not *missing*, it is out of reach),
+      `exists`       whether the file is there,
+      `bytes`        its size on disk (0 when absent),
+      `redacted`     True for a body that went through
+                     `redact.redact_job_yaml` (only `job.yaml` does),
+      `body`         the text, redacted where applicable -- omitted entirely
+                     with `bodies=False` and for a document that does not
+                     exist, since an empty string would read like an empty
+                     file (`run_document_body` turns either into a wording).
+
+    `config_dir` is the run's job config dir (`<registry>/configs/<run-id>`
+    host-side, `/config` inside the container). Optional, so a caller holding
+    only a run dir still gets the three run-dir documents.
+
+    A plain function over paths, like `prd_path`/`steering_entries`: a
+    read-only viewer must never construct a `RunDir` (whose `__post_init__`
+    creates directories in somebody else's run dir).
+    """
+    root = Path(run_root)
+    cdir = Path(config_dir) if config_dir is not None else None
+    out = []
+    for key, filename, where, title in RUN_DOCUMENTS:
+        base = root if where == DOC_IN_RUN else cdir
+        entry = {"key": key, "name": filename, "where": where, "title": title,
+                 "available": base is not None, "exists": False, "bytes": 0,
+                 "redacted": False}
+        path = (base / filename) if base is not None else None
+        if path is not None:
+            entry["path"] = str(path)
+            try:
+                entry["exists"] = path.is_file()
+                entry["bytes"] = path.stat().st_size if entry["exists"] else 0
+            except OSError:
+                entry["exists"] = False
+        if entry["exists"] and bodies and path is not None:
+            # The config dir is BOTH where `job.yaml` lives and where this
+            # run's own secret values are staged, so it is exactly what the
+            # redactor needs. A run-dir document is prose the agent wrote and
+            # is served verbatim (transcript bytes were already scrubbed at
+            # write time -- see docs/architecture.md's redaction section).
+            body, redacted = _document_body(
+                path, cdir if where == DOC_IN_CONFIG else None)
+            entry["body"] = body
+            entry["redacted"] = redacted
+        out.append(entry)
+    return out
+
+
+def run_document(run_root: Path, key: str,
+                 config_dir: Path | None = None) -> dict | None:
+    """One document by key or file name (`run_document_key`'s aliases), or None
+    when the name matches no known document."""
+    resolved = run_document_key(key)
+    if resolved is None:
+        return None
+    for entry in run_documents(run_root, config_dir):
+        if entry["key"] == resolved:
+            return entry
+    return None
+
+
+def run_document_body(doc: dict) -> str:
+    """A document's body as something always printable: the text itself, or the
+    one wording for blank / never-written / out-of-reach."""
+    if not doc.get("exists"):
+        return RUN_DOCUMENT_ABSENT if doc.get("available", True) \
+            else RUN_DOCUMENT_UNREADABLE
+    body = doc.get("body")
+    if body is None:
+        return RUN_DOCUMENT_ABSENT
+    return body if body.strip() else RUN_DOCUMENT_EMPTY
+
+
+def _document_size_cell(doc: dict) -> str:
+    if doc.get("exists"):
+        return f"{doc.get('bytes', 0):,}"
+    return RUN_DOCUMENT_ABSENT if doc.get("available", True) \
+        else RUN_DOCUMENT_UNREADABLE
+
+
+def format_run_document_listing(docs: list[dict]) -> list[str]:
+    """The "which documents exist" table as text lines, worded ONCE: `ralphctl
+    docs <run>` prints these and the hub's document panel (task 022) labels its
+    buttons from the very same fields."""
+    lines = [f"{'DOCUMENT':<14}{'FILE':<20}{'SIZE':>13}  DESCRIPTION"]
+    for doc in docs:
+        lines.append(f"{doc.get('key', ''):<14}{doc.get('name', ''):<20}"
+                     f"{_document_size_cell(doc):>13}  {doc.get('title', '')}")
+    return lines
+
+
+def run_document_summary_lines(doc: dict) -> list[str]:
+    """One document's header block, worded ONCE: `ralphctl docs <run> <name>`
+    prints these above the body and the hub's dialog (task 022) shows the very
+    same lines, so the two surfaces cannot describe the same file differently.
+    """
+    if not isinstance(doc, dict):
+        return []
+    lines = [f"document:  {doc.get('key')}  ({doc.get('name')})",
+             f"purpose:   {doc.get('title')}",
+             f"size:      {_document_size_cell(doc)}"
+             + (" bytes" if doc.get("exists") else "")]
+    if doc.get("redacted"):
+        lines.append(f"note:      {RUN_DOCUMENT_REDACTED_NOTICE}")
+    return lines
+
+
+def format_run_document_header(name) -> str:
+    """The separator between a document's header block and its body -- the
+    `format_iteration_log_header` role for #18.2."""
+    return f"--- {name} ---"
+
+
+def run_document_text(doc: dict) -> str:
+    """The complete rendering of one document -- header block, separator, body
+    -- as the single string both surfaces show (`iteration_view`'s `text`)."""
+    return "\n".join([*run_document_summary_lines(doc),
+                      format_run_document_header(doc.get("name")),
+                      run_document_body(doc)])
+
+
 @dataclass
 class RunDir:
     """Layout of /run and helpers over it. Engine-owned."""
@@ -1218,19 +1444,19 @@ class RunDir:
 
     @property
     def prd_file(self) -> Path:
-        return self.root / "prd.md"
+        return self.root / PRD_FILE
 
     @property
     def composite_prd_file(self) -> Path:
-        return self.root / "composite-prd.md"
+        return self.root / COMPOSITE_PRD_FILE
 
     @property
     def notes_file(self) -> Path:
-        return self.root / "notes.md"
+        return self.root / NOTES_FILE
 
     @property
     def findings_file(self) -> Path:
-        return self.root / "review-findings.md"
+        return self.root / FINDINGS_FILE
 
     @property
     def steering_dir(self) -> Path:

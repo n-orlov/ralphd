@@ -20,13 +20,16 @@ from pathlib import Path
 import yaml
 
 from ..engine.config import PRICE_STRATEGIES, normalize_price_strategy
+from ..engine.redact import MASK
 
 _REF_RE = re.compile(r"^\$\{(env|file|cmd):(.*)\}$", re.DOTALL)
 
 # Placeholder printed by `ralphctl llm show` in place of any value that came
 # from the `env:` block or from a `${env:}`/`${file:}`/`${cmd:}` reference
-# inside `pi:` -- never the literal secret.
-MASK = "***REDACTED***"
+# inside `pi:` -- never the literal secret. Re-exported from
+# `engine.redact.MASK` (task 021, #18.2): the redacted `job.yaml` a run-document
+# surface prints masks values with the same word, and one spelling of "there is
+# a secret here" is the point.
 
 
 class ProfileError(Exception):

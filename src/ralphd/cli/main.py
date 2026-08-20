@@ -40,6 +40,7 @@ from ..engine.config import PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     NONTERMINAL_STATES,
+    RUN_DOCUMENT_ABSENT,
     TASK_STATUS_LABELS,
     elapsed_seconds,
     format_approach,
@@ -47,6 +48,7 @@ from ..engine.state import (
     format_duration,
     format_iteration_log_header,
     format_local_time,
+    format_run_document_listing,
     format_task_counts,
     iteration_detail,
     iteration_summary_lines,
@@ -54,6 +56,10 @@ from ..engine.state import (
     read_operator_termination,
     read_tasks_doc,
     record_operator_termination,
+    run_document,
+    run_document_keys,
+    run_document_text,
+    run_documents,
     tasks_read_notice,
     utc_from_epoch,
     utcnow,
@@ -3104,6 +3110,61 @@ def cmd_repair(args):
     sys.exit(0 if not issues else 1)
 
 
+def cmd_docs(args):
+    """A run's state documents (task 021, #18.2): `notes.md`,
+    `review-findings.md`, `composite-prd.md` and the effective `job.yaml`
+    -- the prose an operator goes looking for when a run ended badly, and
+    which until now was only reachable by knowing the registry layout and
+    `cat`-ing files (which is also how `job.yaml`'s secrets got read out
+    loud).
+
+    With no document named: the LISTING -- every known document with its size
+    or the fact that this run never wrote it (`state.RUN_DOCUMENT_ABSENT`),
+    because *which* documents exist is itself part of the answer. With one
+    named (key or file name, e.g. `notes` or `notes.md`): its header block
+    plus the whole body.
+
+    `job.yaml` is redacted mechanically -- masked by key name AND scrubbed by
+    value, see `engine.redact.redact_job_yaml` -- so this command is a safe
+    thing to paste into an issue, unlike the `cat` it replaces.
+
+    Purely on-disk, like `ralphctl iteration`: every one of these files is
+    written by the engine, the agent or `start` itself into directories the
+    host holds, so a live run and one whose container is long gone read
+    identically and there is no live API to fall back from.
+    """
+    _require_run(args.run_id)
+    root = run_root(args.run_id)
+    cdir = config_root(args.run_id)
+    if not args.name:
+        docs = run_documents(root, cdir, bodies=False)
+        out(args, {"runId": args.run_id, "documents": docs},
+            "\n".join([f"run:       {args.run_id}",
+                       *format_run_document_listing(docs)]))
+        return
+    doc = run_document(root, args.name, cdir)
+    if doc is None:
+        die(2, f"unknown document: {args.name} (expected one of "
+               f"{', '.join(run_document_keys())}, or a file name)")
+    if not doc["exists"]:
+        present = [d["key"] for d in run_documents(root, cdir, bodies=False)
+                   if d["exists"]]
+        die(1, f"run {args.run_id} has no {doc['name']} "
+               f"({RUN_DOCUMENT_ABSENT}; on disk: "
+               f"{', '.join(present) if present else 'none of them'})")
+    if args.json:
+        # `text` is the same complete rendering the human output prints (and
+        # the hub dialog shows, task 022), `body` the document alone.
+        print(json.dumps({"runId": args.run_id, **doc,
+                          "text": run_document_text(doc)}, indent=2))
+        return
+    print(f"run:       {args.run_id}")
+    text = run_document_text(doc)
+    # A document body normally ends in its own newline; `print` would add a
+    # second one and make the output not `cat`-like.
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+
+
 def cmd_artifacts(args):
     adir = run_root(args.run_id) / "artifacts"
     if args.action == "ls":
@@ -3692,6 +3753,14 @@ def main() -> None:
     s.add_argument("--no-log", action="store_true",
                    help="header only -- skip the transcript")
     s.set_defaults(func=cmd_iteration)
+
+    s = sub.add_parser("docs", help="a run's state documents: notes, review "
+                       "findings, composite PRD, effective job.yaml (redacted)")
+    s.add_argument("run_id")
+    s.add_argument("name", nargs="?",
+                   help="document key or file name (default: list them all)")
+    s.set_defaults(func=cmd_docs)
+
     # `logsf <id>` is a pure alias for `logs <id> -f`, rewritten in
     # _preprocess_logs_argv() before argparse ever sees "logsf".
 

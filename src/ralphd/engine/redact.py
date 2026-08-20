@@ -34,6 +34,7 @@ so short/common substrings (region codes, single words) are never mangled.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -61,6 +62,12 @@ KNOWN_LLM_ENV_NAMES = (
 # values (region codes, single words, empty strings) that happen to share a
 # secret-shaped variable name.
 MIN_SECRET_LEN = 8
+
+# What a masked value reads as, in ONE place: `ralphctl llm show`'s masked
+# profile env (cli/llm_profiles.MASK is this constant) and the redacted
+# `job.yaml` a run-document surface prints (task 021, #18.2) say the same word,
+# so an operator learns one spelling of "there is a secret here".
+MASK = "***REDACTED***"
 
 _lock = threading.Lock()
 _map: dict[str, str] = {}  # secret value -> redaction label, memory-only
@@ -174,17 +181,176 @@ def redaction_map_size() -> int:
         return len(_map)
 
 
-def scrub_text(text: str) -> str:
+def scrub_text(text: str, extra: dict[str, str] | None = None) -> str:
     """Replace every occurrence of any known secret value in `text` with
     `[REDACTED:<label>]`. Longest values first, so one secret value that
     happens to be a substring of another isn't left partially exposed.
     Cheap no-op when the redaction set is empty (the common case in tests
-    with no creds/LLM secrets configured)."""
+    with no creds/LLM secrets configured).
+
+    `extra` adds values known only to THIS caller, merged over the live map.
+    The live map is an *engine-process* thing (built by `refresh_redaction_map`
+    at startup); a host-side reader like `ralphctl docs` (task 021, #18.2) has
+    no live map at all and passes the set it computed itself
+    (`build_redaction_map` + `config_dir_secrets`), so one scrubber serves both
+    sides instead of a second implementation growing on the host.
+    """
     with _lock:
-        items = sorted(_map.items(), key=lambda kv: -len(kv[0]))
+        merged = dict(_map)
+    if extra:
+        merged.update(extra)
+    items = sorted(merged.items(), key=lambda kv: -len(kv[0]))
     if not items:
         return text
     for value, label in items:
         if value and value in text:
             text = text.replace(value, f"[REDACTED:{label}]")
     return text
+
+
+# ---------------------------------------------------------------------------
+# Task 021 (#18.2): printing a run's *effective* `job.yaml` back to an
+# operator, redacted.
+#
+# Two independent bounds, because either one alone leaks:
+#
+#   1. by NAME -- any config key whose name is secret-shaped (`api_token`, a
+#      hand-written `AWS_SECRET_ACCESS_KEY` inside a nested map) is masked
+#      whatever its value is, so a secret this host never knew about (a job.yaml
+#      copied in from elsewhere) is still masked;
+#   2. by VALUE -- every known secret value is scrubbed out of the rendered
+#      text, so a secret smuggled into an innocently-named key
+#      (`on_complete_cmd: "curl -H 'Authorization: Bearer ...'"`) is caught
+#      too. The value set is this host's own (`build_redaction_map`) plus the
+#      run's own config dir (`config_dir_secrets`).
+#
+# Both are mechanical, for the same reason the rest of this module is (see the
+# module doc string): a rule that depends on somebody remembering not to print
+# a field has already failed twice in this project.
+
+
+def is_secret_name(name: str) -> bool:
+    """Is `name` a secret-shaped config/env key name? The ONE predicate --
+    the same `_NAME_PATTERN`/`KNOWN_LLM_ENV_NAMES` pair that decides which env
+    vars are redaction candidates, so "secret-shaped" means one thing here."""
+    return bool(_NAME_PATTERN.search(str(name))) or str(name) in KNOWN_LLM_ENV_NAMES
+
+
+def mask_secret_names(value, name: str = ""):
+    """Recursively replace every node reached through a secret-shaped key name
+    with `MASK`, leaving everything else untouched (the shape of the document
+    is preserved -- an operator still sees THAT a token is configured, exactly
+    like `ralphctl llm show` does for a profile's env).
+
+    A `None` is left alone: "not set" is not a secret, and masking it would
+    claim a value exists.
+    """
+    if is_secret_name(name) and value is not None:
+        return MASK
+    if isinstance(value, dict):
+        return {k: mask_secret_names(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [mask_secret_names(v, name) for v in value]
+    return value
+
+
+def config_dir_secrets(config_dir: Path) -> dict[str, str]:
+    """Secret values a run's OWN job config dir holds, host-side (never
+    returned to anybody -- only fed to `scrub_text` as an `extra` set).
+
+    Sources, all of them files `ralphctl start` writes for one run:
+    `creds/*.env` plus the recognized extras (`git-credentials`, `netrc`),
+    `llm-wiring.json`'s resolved env, `env-wiring.json`'s `name=value` pairs,
+    and any `apiKey` in the staged `pi/models.json`. Best-effort throughout:
+    an unreadable or unexpected file contributes nothing rather than raising,
+    because this is a defense-in-depth layer over the name-based masking, not
+    a parser contract.
+    """
+    out: dict[str, str] = {}
+    cdir = Path(config_dir)
+    creds = cdir / "creds"
+    if creds.is_dir():
+        for p in sorted(creds.glob("*.env")):
+            _from_env_file(p, out)
+        _from_git_credentials(creds / "git-credentials", out)
+        _from_netrc(creds / "netrc", out)
+    wiring = _read_json_dict(cdir / "llm-wiring.json")
+    env = wiring.get("env")
+    if isinstance(env, dict):
+        for name, value in env.items():
+            if isinstance(value, str) and len(value) >= MIN_SECRET_LEN:
+                out.setdefault(value, f"llm-wiring:{name}")
+    extra_env = _read_json_dict(cdir / "env-wiring.json").get("extra_env")
+    if isinstance(extra_env, list):
+        for pair in extra_env:
+            name, _, value = str(pair).partition("=")
+            if value and len(value) >= MIN_SECRET_LEN:
+                out.setdefault(value, f"env-wiring:{name}")
+    _from_pi_models(cdir / "pi" / "models.json", out)
+    return out
+
+
+def _read_json_dict(path: Path) -> dict:
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _from_pi_models(path: Path, out: dict[str, str]) -> None:
+    """Every `apiKey`-ish string anywhere in a staged pi `models.json`."""
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(v, str) and is_secret_name(k) and len(v) >= MIN_SECRET_LEN:
+                    out.setdefault(v, f"models.json:{k}")
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    doc = _read_json_dict(path)
+    walk(doc)
+
+
+def job_yaml_secrets(config_dir: Path | None = None,
+                     home: Path | None = None) -> dict[str, str]:
+    """The value set used to scrub a rendered `job.yaml`: this host's own
+    secrets (`build_redaction_map`) plus the run's config dir, if given."""
+    out = dict(build_redaction_map(home))
+    if config_dir is not None:
+        out.update(config_dir_secrets(config_dir))
+    return out
+
+
+def redact_job_yaml(text: str, *, config_dir: Path | None = None,
+                    home: Path | None = None,
+                    secrets: dict[str, str] | None = None) -> str:
+    """A run's persisted `job.yaml` rendered safe to print (task 021, #18.2).
+
+    `job.yaml` is the `key: <json>` per line format `ralphctl start` writes
+    (see `cli/main.py:_read_job_yaml` and `engine/config.py`), so each line is
+    re-emitted with its value passed through `mask_secret_names` -- keeping the
+    file's own shape and key order, which is the point of showing it at all.
+    A line that does not parse is passed through untouched (a hand-edited
+    file must still be readable), and the whole result is then value-scrubbed.
+    """
+    values = secrets if secrets is not None else job_yaml_secrets(config_dir, home)
+    lines = []
+    for line in text.splitlines():
+        key, sep, raw = line.partition(": ")
+        if sep and key and not key[:1].isspace():
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                lines.append(line)
+                continue
+            lines.append(f"{key}: {json.dumps(mask_secret_names(value, key))}")
+        else:
+            lines.append(line)
+    out = "\n".join(lines)
+    if text.endswith("\n"):
+        out += "\n"
+    return scrub_text(out, values)
