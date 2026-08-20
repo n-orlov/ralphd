@@ -39,11 +39,17 @@ from .. import __version__
 from ..engine.config import PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
+    NO_ARTIFACTS,
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
     TASK_STATUS_LABELS,
+    artifact,
+    artifact_entries,
+    artifact_names,
+    artifact_text,
     elapsed_seconds,
     format_approach,
+    format_artifact_listing,
     format_cost,
     format_duration,
     format_iteration_log_header,
@@ -3165,18 +3171,65 @@ def cmd_docs(args):
     sys.stdout.write(text if text.endswith("\n") else text + "\n")
 
 
+# Where `ralphctl artifacts <run> pull` copies to when no destination is
+# given -- spelled once, since the parser's help text quotes it.
+_DEFAULT_ARTIFACTS_DEST = "./artifacts"
+
+
 def cmd_artifacts(args):
-    adir = run_root(args.run_id) / "artifacts"
-    if args.action == "ls":
-        files = [{"path": str(p.relative_to(adir)), "size": p.stat().st_size}
-                 for p in sorted(adir.rglob("*")) if p.is_file()]
-        out(args, files, "\n".join(f"{f['size']:>10}  {f['path']}" for f in files)
-            or "(no artifacts)")
-    else:
-        dest = Path(args.dest)
+    """What the job left behind in `artifacts/` (task 023, #18.3).
+
+    `ls` lists the tree (well-known files labelled with the name they can be
+    asked for); `show <name>` prints ONE artifact inline -- above all the
+    reflect phase's `report`/`suggestions`, which were previously reachable
+    only by knowing the registry layout and `cat`-ing files; `pull` copies the
+    whole directory out, unchanged.
+
+    Purely on-disk, like `ralphctl docs`/`iteration`: these files are written
+    by the agent into a directory the host holds, so a live run and one whose
+    container is long gone read identically and there is no live API to fall
+    back from.
+    """
+    _require_run(args.run_id)
+    root = run_root(args.run_id)
+    if args.action == "pull":
+        dest = Path(args.name or _DEFAULT_ARTIFACTS_DEST)
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(adir, dest, dirs_exist_ok=True)
+        shutil.copytree(root / "artifacts", dest, dirs_exist_ok=True)
         out(args, {"pulled": str(dest)}, f"artifacts copied to {dest}")
+        return
+    if args.action == "show":
+        if not args.name:
+            die(2, "artifacts show needs a name (one of "
+                   f"{', '.join(artifact_names())}, or a path under "
+                   "artifacts/)")
+        entry = artifact(root, args.name)
+        if entry is None:
+            die(2, f"not an artifact name: {args.name} (expected one of "
+                   f"{', '.join(artifact_names())}, or a path under "
+                   "artifacts/)")
+        if not entry["exists"]:
+            present = [e["path"] for e in artifact_entries(root)]
+            die(1, f"run {args.run_id} has no artifacts/{entry['path']} "
+                   f"({RUN_DOCUMENT_ABSENT}; on disk: "
+                   f"{', '.join(present) if present else 'nothing'})")
+        text = artifact_text(entry)
+        if args.json:
+            # `text` is the same complete rendering the human output prints
+            # (and the hub dialog shows, task 024), `body` the artifact alone.
+            print(json.dumps({"runId": args.run_id, **entry, "text": text},
+                             indent=2))
+            return
+        print(f"run:       {args.run_id}")
+        # An artifact normally ends in its own newline; `print` would add a
+        # second one and make the output not `cat`-like.
+        sys.stdout.write(text if text.endswith("\n") else text + "\n")
+        return
+    entries = artifact_entries(root)
+    out(args, {"runId": args.run_id, "artifacts": entries},
+        "\n".join([f"run:       {args.run_id}",
+                   *(format_artifact_listing(entries) if entries
+                     else [NO_ARTIFACTS])]))
 
 
 def cmd_ui(args):
@@ -3869,10 +3922,16 @@ def main() -> None:
                         "records the KEY only")
     s.set_defaults(func=cmd_repair)
 
-    s = sub.add_parser("artifacts")
+    s = sub.add_parser("artifacts", help="what the job left in artifacts/: "
+                       "list it, print one file (the reflect report, its "
+                       "suggested diff), or copy the tree out")
     s.add_argument("run_id")
-    s.add_argument("action", choices=["ls", "pull"], nargs="?", default="ls")
-    s.add_argument("dest", nargs="?", default="./artifacts")
+    s.add_argument("action", choices=["ls", "show", "pull"], nargs="?",
+                   default="ls")
+    s.add_argument("name", nargs="?", metavar="ARTIFACT|DEST",
+                   help=f"with `show`: {' / '.join(artifact_names())}, or a "
+                        "path under artifacts/; with `pull`: the destination "
+                        f"directory (default: {_DEFAULT_ARTIFACTS_DEST})")
     s.set_defaults(func=cmd_artifacts)
 
     s = sub.add_parser("doctor", help="preflight checks")

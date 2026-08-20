@@ -28,7 +28,7 @@ ralphctl steer brisk-otter-1408 "Skip the docs task; focus on tests"
 
 # Collect results when done (container exits by default; add --on-complete idle to keep it up for debugging)
 ralphctl status brisk-otter-1408
-ralphctl artifacts pull brisk-otter-1408 ./out/
+ralphctl artifacts brisk-otter-1408 pull ./out/
 ralphctl stop brisk-otter-1408
 ```
 
@@ -1089,10 +1089,76 @@ other recorded env wiring. `--json` prints `{"runId", "action": "env",
 for a malformed `KEY=VAL` argument (no `=`; no write, no audit event),
 `5` if the container is running.
 
-### `ralphctl artifacts <run-id> [ls|pull <dest>]`
+### `ralphctl artifacts <run-id> [ls|show <artifact>|pull <dest>]`
 
-List or download artifacts. `pull` copies from the (host-mounted) run dir directly;
-works with dead containers.
+What the job left behind in the run dir's `artifacts/` — above all the `reflect`
+phase's post-mortem and the prompt/skill diff it proposes (task 023, #18.3):
+
+```
+ralphctl artifacts <run-id>                # same as `ls`
+ralphctl artifacts <run-id> ls             # the whole tree: size, name, path
+ralphctl artifacts <run-id> show report    # one artifact: header block + body
+ralphctl artifacts <run-id> pull ./out/    # copy the tree out (default: ./artifacts)
+```
+
+`show` takes a well-known name or any path under `artifacts/`:
+
+| Name | Path | What it is |
+|------|------|------------|
+| `report` | `reflection/report.md` | the reflect phase's post-mortem report |
+| `suggestions` | `reflection/suggestions.diff` | the prompt/skill diff the reflect phase proposes (never applied) |
+| `reflect-failed` | `reflection/FAILED.md` | why the reflect phase left no report |
+
+```
+$ ralphctl artifacts brisk-otter-1408 ls
+run:       brisk-otter-1408
+      SIZE  NAME            PATH
+     3,120  report          reflection/report.md
+       844  suggestions     reflection/suggestions.diff
+     1,905                  reports/pricing-anomaly.md
+   142,338                  screenshots/hub/24-document-dialog.png
+
+$ ralphctl artifacts brisk-otter-1408 show suggestions
+run:       brisk-otter-1408
+artifact:  reflection/suggestions.diff  (suggestions)
+purpose:   the prompt/skill diff the reflect phase proposes (never applied)
+size:      844 bytes
+--- reflection/suggestions.diff ---
+--- a/prompts/worker.md
++++ b/prompts/worker.md
+@@
+-...
++...
+```
+
+- **One resolver, one traversal guard.** `report`,
+  `reflection/report.md` and `artifacts/reflection/report.md` are the same
+  artifact (so every spelling the listing shows also works as an argument), and
+  a name that is not addressing an artifact at all — empty, absolute, or
+  containing `..` — is a usage error (`2`), decided once in
+  `ralphd.engine.state.artifact_relpath` because the hub (task 024) puts that
+  string in a URL.
+- **A binary artifact is described, never printed**: `show` on a screenshot
+  prints `(binary file -- copy it out with ralphctl artifacts <run> pull)`
+  instead of spraying the terminal. A file that exists but is blank prints
+  `(empty)`; one that was never written exits `1` and names what *is* on disk —
+  the `ralphctl docs` rule, same words.
+- **Purely on-disk, no container needed and no snapshot notice**, like
+  `ralphctl docs`/`iteration`: the agent writes these files into a directory the
+  host holds, so a live run and one whose container is long gone read
+  identically. `pull` has always worked that way and still does.
+- `--json` on the listing prints `{runId, artifacts: [...]}` with
+  `path`/`key`/`title`/`file`/`available`/`exists`/`bytes`/`isText` and **no
+  bodies** (a listing must not ship the artifacts themselves — the hub polls
+  it); `--json show <artifact>` adds `body` and `text`, the complete rendering
+  the human view prints; `--json pull` prints `{pulled}`.
+- Exit codes: `0` · `1` the named artifact is not there · `2` not an artifact
+  name (the message lists the well-known ones) · `3` run not found. Pinned by
+  `tests/test_cli_artifacts.py`.
+- The listing and the header block are worded ONCE, by
+  `ralphd.engine.state.format_artifact_listing` / `artifact_summary_lines` /
+  `format_artifact_size`, so the hub's artifacts panel and dialog (task 024)
+  cannot describe the same file differently.
 
 ### `ralphctl skills <run-id> [ls|get <name> <dest>|add <dir>|rm <name>]`
 
