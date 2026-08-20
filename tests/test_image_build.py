@@ -197,7 +197,7 @@ def test_pinning_does_not_hash_even_in_process(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "image_exists", boom)
     assert main.resolve_job_image("some/where:tag") == {
         "image": "some/where:tag", "imageSource": main.IMAGE_SOURCE_PINNED,
-        "imageHash": None}
+        "imageHash": None, "imageBase": None}
 
 
 # --- a failed build aborts before any run state ---------------------------
@@ -314,6 +314,8 @@ def test_an_input_change_produces_a_new_tag_and_a_new_build(tree, stub_daemon):
     assert first["imageSource"] == main.IMAGE_SOURCE_BUILT
     assert first["imageHash"] == image.hash_image_inputs(tree).hash
     assert first["image"] == image.image_tag(first["imageHash"])
+    # nothing was derived from anything: this is the default image (task 034)
+    assert first["imageBase"] is None
 
     # same tree -> cache hit, no second build
     again = main.resolve_job_image(None, root=tree)
@@ -357,7 +359,7 @@ def test_no_source_tree_falls_back_observably(tmp_path, stub_daemon, capsys):
     res = main.resolve_job_image(None, root=tmp_path / "not-a-checkout")
     assert res == {"image": main.DEFAULT_IMAGE,
                    "imageSource": main.IMAGE_SOURCE_UNHASHABLE,
-                   "imageHash": None}
+                   "imageHash": None, "imageBase": None}
     err = capsys.readouterr().err
     assert main.IMAGE_NO_SOURCE_NOTICE in err
     assert main.DEFAULT_IMAGE in err and "--image" in err
