@@ -569,6 +569,62 @@ function faultBadge(runId, kind, child) {
   }, [child]);
 }
 
+// ---------------------------------------------------- cost breakdown (#18.5)
+
+// Task 028 (#18.5): the usage card showed ONE number -- what the run spent in
+// total -- and the per-phase/per-approach tables under it showed raw token
+// counts with no word on how much of that money is actually known. "Which
+// phase burned the tokens, and is this figure quoted, derived or unavailable?"
+// meant leaving the hub for `ralphctl cost` or reading status.json by hand.
+//
+// The cost cell is now the way in: it opens `GET /api/runs/<id>/cost`
+// (ui_server.py, on-disk only -- so this works for a run whose container is
+// long gone) in THE single `openTextDialog`, showing the server's own `text`,
+// i.e. exactly the block `ralphctl cost <run>` prints
+// (`state.cost_breakdown_lines`). Nothing here words a fact: the per-bucket
+// labels, the legend, the zero-quote anomaly notice and even "no usage
+// recorded" are the server's strings, so the dialog cannot label money
+// differently from the CLI -- and the cell's own headline stays `costDisplay`,
+// the string the card already showed, so opening the breakdown can never
+// contradict the number that was clicked.
+
+const COST_LOAD_FAILED = "failed to load the run's cost breakdown";
+
+// What the cell promises when hovered -- what #18.5 asked the dialog for.
+const COST_CELL_TITLE = "explain this cost: per-phase and per-approach usage, " +
+  "and whether each figure was quoted, derived or is unavailable";
+
+function costTitle(runId) {
+  return "Cost \u2014 " + String(runId);
+}
+
+async function openCostDialog(runId) {
+  const { ok, body } = await getJSON(
+    `/api/runs/${encodeURIComponent(runId)}/cost`);
+  const text = (ok && body && typeof body.text === "string" && body.text)
+    ? body.text
+    : COST_LOAD_FAILED;
+  return openTextDialog(costTitle(runId), text, null);
+}
+
+// A real <button> around the card's cost value (keyboard reachability and
+// Enter/Space come from the platform, like the fault badge and the document
+// rows), styled to keep the stat card's own look.
+//
+// No run id means no endpoint to ask: the cell is then left as the plain value
+// it always was rather than becoming a button that can only fail (the
+// `faultBadge` rule).
+function costCell(runId, child) {
+  if (!runId) return null;
+  return h("button", {
+    type: "button",
+    class: "cost-cell",
+    "data-cost-cell": "total",
+    title: COST_CELL_TITLE,
+    onclick: () => { openCostDialog(runId); },
+  }, [child]);
+}
+
 // --------------------------------------------------- steering history (#17)
 
 // Task 017 (#17): steering used to be write-only in the hub -- an operator
@@ -839,7 +895,8 @@ async function renderRunDetail(runId) {
       return;
     }
     renderSummary(summary, body);
-    renderUsage(document.getElementById("usage-box"), body.status && body.status.usage);
+    renderUsage(document.getElementById("usage-box"),
+                body.status && body.status.usage, runId);
     renderTasks(document.getElementById("task-box"), body.tasks);
     renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
     await loadLogs(runId);
@@ -1093,7 +1150,7 @@ function renderRetryNow(box, runId, live, wait) {
   box.appendChild(row);
 }
 
-function renderUsage(el, usage) {
+function renderUsage(el, usage, runId) {
   el.innerHTML = "";
   if (!usage) {
     el.appendChild(h("p", { class: "muted" }, ["(no usage data)"]));
@@ -1111,7 +1168,9 @@ function renderUsage(el, usage) {
   // got shown for an unknown cost in the first place (issue #10).
   const costText = usage.costDisplay ?? (cost != null ? "$" + Number(cost).toFixed(4) : null);
   if (costText != null) {
-    const card = statCard("cost", costText);
+    // Task 028 (#18.5): the headline stays exactly this string; the cell only
+    // becomes clickable, opening the breakdown behind it.
+    const card = statCard("cost", costText, (v) => costCell(runId, v));
     if (usage.costStatus) card.classList.add("cost-" + usage.costStatus);
     grid.appendChild(card);
   }
@@ -1138,10 +1197,16 @@ function renderUsage(el, usage) {
   }
 }
 
-function statCard(label, value) {
+// `wrap` (optional) may put the rendered value inside an affordance -- the
+// cost cell's dialog button (task 028). It receives the value's text node and
+// may return null, in which case the plain value is shown: an affordance that
+// cannot work is simply not offered.
+function statCard(label, value, wrap) {
+  const text = document.createTextNode(String(value));
+  const inner = wrap ? wrap(text) : null;
   return h("div", { class: "stat" }, [
     h("div", { class: "k" }, [label]),
-    h("div", { class: "v" }, [String(value)]),
+    h("div", { class: "v" }, [inner || text]),
   ]);
 }
 

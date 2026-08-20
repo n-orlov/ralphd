@@ -2042,3 +2042,160 @@ def test_run_detail_opens_the_fault_dialog_from_the_badge(tmp_path, pw):
         assert int(pw.eval_js("document.querySelectorAll('.infra-wait').length")) == 0
     finally:
         server.stop()
+
+
+# ------------------------- cost-breakdown dialog (#18.5, task 028) --------
+# --------------------------------------------------------------------------
+
+_COST_CELLS = "document.querySelectorAll('button.cost-cell').length"
+_COST_CELL_TEXT = (
+    "document.querySelector('button.cost-cell')"
+    " ? document.querySelector('button.cost-cell').textContent : ''")
+_COST_CARD_TEXT = (
+    "Array.from(document.querySelectorAll('.usage-grid .stat'))"
+    ".filter(s => s.querySelector('.k').textContent === 'cost')"
+    ".map(s => s.querySelector('.v').textContent).join('|')")
+
+# The verbatim iteration-1 usage of this very self-development run: the
+# AIGW/Bedrock route quoted $0 for half a million billed tokens (task 049), with
+# the per-phase/per-approach buckets the engine accumulates around it.
+_ZERO_QUOTE_USAGE = {
+    "input": 32, "output": 18320, "cacheRead": 438945, "cacheWrite": 48331,
+    "totalTokens": 505628, "costUSD": 0,
+    "byPhase": {"worker": {"totalTokens": 505628, "costUSD": 0}},
+    "byApproach": {"1": {"totalTokens": 505628, "costUSD": 0}},
+}
+
+# A run that mixes all three kinds of money: a provider-quoted phase, one whose
+# cost was derived from the host-side rate table, one nothing priced at all.
+_MIXED_USAGE = {
+    "input": 1200, "output": 3400, "totalTokens": 40000,
+    "costUSD": 0.5, "costDerivedUSD": 1.25, "costStatus": "partial",
+    "byPhase": {
+        "planning": {"input": 200, "output": 400, "totalTokens": 10000,
+                     "costUSD": 0.5},
+        "worker": {"input": 800, "output": 2600, "totalTokens": 20000,
+                   "costDerivedUSD": 1.25, "costStatus": "derived"},
+        "verify": {"input": 200, "output": 400, "totalTokens": 10000,
+                   "costUSD": 0, "costPriced": False, "costStatus": "unknown"},
+    },
+    "byApproach": {
+        "2": {"totalTokens": 10000, "costDerivedUSD": 1.25, "costStatus": "derived"},
+        "10": {"totalTokens": 30000, "costUSD": 0.5, "costStatus": "partial"},
+    },
+}
+
+
+def test_run_detail_opens_the_cost_dialog_from_the_cost_cell(tmp_path, pw):
+    """Task 028 (#18.5): the usage card showed ONE money string over tables of
+    raw token counts -- "which phase burned this, and is the figure quoted,
+    derived or unavailable?" meant leaving the hub for `ralphctl cost` or reading
+    status.json by hand.
+
+    Drives the cell with a real browser, for runs whose container is gone (the
+    on-disk case #18.5 exists for). Pins that the headline stays exactly the
+    string the card already showed, that the dialog body is the server's own
+    `state.cost_breakdown_text` (i.e. what `ralphctl cost` prints) as TEXT
+    NODES, that the per-phase/per-approach buckets and the derived/unavailable
+    labels are in it, that the single shared dialog does not stack across the 4s
+    `load()` rebuild behind it, that the cell is keyboard-reachable, and that
+    this run's own implausible zero quote (task 049) opens as `unavailable`
+    rather than `$0.00`.
+    """
+    from ralphd.cli.ui_server import cost_view
+
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-cost-mixed", state="succeeded",
+                    verdict="verified", usage=_MIXED_USAGE)
+    _write_dead_run(registry, "run-cost-zero", state="failed", verdict=None,
+                    usage=_ZERO_QUOTE_USAGE)
+    _write_dead_run(registry, "run-cost-quiet", state="succeeded",
+                    verdict="verified")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # -- the mixed run: click the cost cell ------------------------------
+        pw.open(f"{server.base}/#/run/run-cost-mixed")
+        cell = _wait_for(pw, _COST_CELL_TEXT, "$").strip('"')
+        # the headline is the card's own `costDisplay`, unchanged by becoming
+        # clickable -- the value cell holds exactly the same text
+        expected = cost_view(registry, "run-cost-mixed")["costDisplay"]
+        assert cell == expected, (cell, expected)
+        assert pw.eval_js(_COST_CARD_TEXT).strip('"') == expected
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        pw.click("button.cost-cell")
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "by phase:")
+        title = pw.eval_js("document.querySelector('.text-dialog .dialog-title')"
+                           ".textContent")
+        assert "run-cost-mixed" in title, title
+        # the buckets, and every kind of money labelled
+        for phase in ("planning", "worker", "verify"):
+            assert phase in body, body
+        assert "by approach:" in body, body
+        assert "derived" in body, body
+        assert "unavailable" in body, body
+        assert f"cost:      {expected}" in body, body
+        # ...and every line of it came from the server, verbatim
+        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
+                         ".textContent")
+        dialog_body = json.loads(raw) if raw.startswith('"') else raw
+        assert dialog_body == cost_view(registry, "run-cost-mixed")["text"]
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b')"
+            ".length")) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "28-cost-dialog.png")
+
+        # -- it survives a full 4s poll without stacking ---------------------
+        time.sleep(5.0)
+        assert int(pw.eval_js(_COST_CELLS)) == 1          # card re-rendered
+        assert int(pw.eval_js(_DIALOGS)) == 1             # ...behind ONE dialog
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- this run's own zero quote, opened by keyboard -------------------
+        # A <button> gets Enter/Space from the platform -- but the 4s `load()`
+        # replaces the card's nodes, so a focus taken just before one lands is
+        # lost through no fault of the button: retry the whole cycle.
+        pw.open(f"{server.base}/#/run/run-cost-zero")
+        cell = _wait_for(pw, _COST_CELL_TEXT, "unavailable").strip('"')
+        assert cell == "unavailable", cell     # never $0.00 (#10/task 049)
+        focus_js = (
+            "(() => { const el = document.querySelector('button.cost-cell');"
+            " el.focus();"
+            " return document.activeElement === el ? 'focused' : 'lost'; })()")
+        deadline = time.time() + 40
+        body = ""
+        while time.time() < deadline and "505,628" not in body:
+            if pw.eval_js(focus_js).strip('"') != "focused":
+                continue
+            assert pw.run("press", "Enter").returncode == 0
+            for _ in range(10):
+                body = pw.eval_js(
+                    "document.querySelector('.text-dialog')"
+                    " ? document.querySelector('.text-dialog').textContent : ''")
+                if "505,628" in body:
+                    break
+                time.sleep(0.2)
+        assert "cost:      unavailable" in body, body
+        assert "$0.00" not in body, body
+        # the anomaly is NAMED rather than leaving a column of `unavailable`s
+        assert "quoted" in body and "zero" in body, body
+        assert int(pw.eval_js(_DIALOGS)) == 1
+        pw.click(".text-dialog .dialog-close button")
+
+        # -- a run that recorded nothing: the cell says so, and opens ---------
+        pw.open(f"{server.base}/#/run/run-cost-quiet")
+        _wait_for(pw, "document.body.innerText", "succeeded")
+        # no usage at all -> the card has no cost cell to click (nothing was
+        # ever reported), and the endpoint would still answer honestly
+        assert int(pw.eval_js(_COST_CELLS)) == 0
+        assert cost_view(registry, "run-cost-quiet")["hasUsage"] is False
+    finally:
+        server.stop()

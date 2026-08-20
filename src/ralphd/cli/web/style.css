@@ -380,3 +380,20 @@ footer.autorefresh {
 }
 .fault-badge:hover { text-decoration: underline; }
 .fault-badge:focus-visible { outline: 2px solid var(--accent); }
+
+/* Task 028 (#18.5): the usage card's cost value opens the per-phase/per-approach
+   breakdown. Chrome stripped like `.fault-badge` -- the cell must still read as
+   the headline number it always was (`.stat .v` sizes it), only clickable. */
+.cost-cell {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2rem;
+}
+.cost-cell:hover { text-decoration: underline; }
+.cost-cell:focus-visible { outline: 2px solid var(--accent); }
