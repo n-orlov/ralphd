@@ -732,6 +732,7 @@ Send steering. Message from arg, `--file <f>`, or stdin.
 |--------|---------|
 | `--now` | also SIGINT the current iteration so guidance applies immediately |
 | `--name <slug>` | steering file slug |
+| `--list` | **show** this run's steering messages instead of sending one (task 018, #17) |
 
 The on-disk filename is always `NNN-<slug>.md`, where `NNN` is an
 engine-assigned monotonic sequence (never supplied by the caller). If
@@ -741,6 +742,43 @@ engine's own, so the result is never doubled (e.g. `--name 019-steering`
 does not yield `022-019-steering.md`).
 
 Exit `0` accepted · `5` job already finished.
+
+#### `ralphctl steer <run-id> --list`
+
+Steering used to be **write-only**: after posting a message there was no way to
+see what was queued, what the loop had already applied, or what the text said.
+`--list` is the terminal view of the same history the hub's run-detail
+"Steering history" panel shows — literally the same code
+(`ui_server.steering_list`), so the two surfaces cannot drift:
+
+```console
+$ ralphctl steer brisk-otter-1408 --list
+SEQ  STATE    ARRIVED                    NAME                MESSAGE
+  1  applied  2026-09-03 11:04:07 +0000  cost-zero-quote     A quoted cost of 0 beside 500k tokens is…
+  2  pending  2026-09-03 12:31:55 +0000  dont-pattern-kill   Never signal a process by pattern from…
+```
+
+* **Live-first, with an on-disk fallback.** A running job's own
+  `GET /steering` answers (it is the process that decides when an entry
+  becomes `applied`); when the container is gone the run dir's `steering/`
+  directory is read directly through the one shared reader
+  (`engine.state.steering_entries`), and stderr carries
+  `on-disk snapshot: the run's API is not reachable, showing the steering
+  messages recorded in the run dir` — the same phrase `logs` and `tasks` use.
+* `MESSAGE` is a one-line preview (whitespace collapsed, truncated with `…`);
+  `--json` carries every entry in full — `file`, `seq`, `name`, `ts`,
+  `tsLocal`, `state`, `consumed`, `bytes`, `hasBody`, `body` — plus
+  `live: true|false`, exactly the shape
+  `GET /api/runs/<id>/steering` serves.
+* A run nobody ever steered prints `(no steering messages)`
+  (`ui_server.NO_STEERING`, the hub's own wording), not zero bytes.
+* `--list` is a **read**: it never touches stdin, and combining it with a
+  message / `--file` / `--name` / `--now` is exit `2` rather than a surprise
+  POST. Unknown run id is exit `3`; an unreachable API is *not* an error here.
+
+Pinned by `tests/test_cli_steer_list.py` (including a real engine steered from
+the CLI: pending → applied → container gone, agreeing with the hub at every
+step).
 
 ### `ralphctl interrupt <run-id>`
 
