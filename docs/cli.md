@@ -1164,6 +1164,15 @@ one that quotes an implausible `$0` beside billable tokens (the live AIGW case,
 `free:` is still free: a declaration outranks every rate table, built-in ones
 included.
 
+**Which id gets priced (v0.6, #14).** The ref the job pinned (`model:`, or a
+per-phase `models:` entry) if there is one -- an operator naming a ref is
+choosing which rate applies, so an unknown pinned ref reports `unavailable`
+rather than borrowing the rate of whatever the gateway routed to. When nothing
+is pinned, pi picks its own model and the rate is looked up against the id pi
+*reported* using (`status.json`'s `model`, `meta.json`'s `modelResolved`) -- so
+`price_strategy: aws` derives money for an unpinned run too, which is the shape
+most real runs have.
+
 **Provenance, as-of date and refresh.** The rates mirror pi-ai's bundled
 Bedrock provider data (`@earendil-works/pi-ai/.../data/amazon-bedrock.json`,
 the same numbers pi itself prices a request with), cross-checkable against

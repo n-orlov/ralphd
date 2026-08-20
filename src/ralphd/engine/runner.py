@@ -232,7 +232,18 @@ class PiRunner:
                 usage = msg.get("usage") or {}
                 for key in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
                     result.usage[key] = result.usage.get(key, 0) + (usage.get(key) or 0)
-                _accumulate_cost(usage, result, pricing=pricing, model=model)
+                # Task 050 (#14): price against the id pi *reported* when the
+                # engine pinned no ref of its own. `model` is None for every
+                # unpinned run (`cfg.model_for(phase)` returns None and pi
+                # picks its own model) -- which is precisely the route
+                # `price_strategy: aws` was written for, so keying the rate
+                # lookup on the request alone meant it could never fire.
+                # A pinned ref still wins: an operator naming a ref decides
+                # which rate applies, even when it resolves to nothing (an
+                # unknown pinned ref stays `unavailable` rather than quietly
+                # borrowing the observed id's rate).
+                _accumulate_cost(usage, result, pricing=pricing,
+                                 model=model or result.model)
         return True
 
 
@@ -276,6 +287,11 @@ def _accumulate_cost(usage: dict, result: IterationResult,
     and a warning naming the anomaly. The single exception is declared, never
     inferred: `pricing.free` patterns (`PricingMap.is_free`) mark the usage
     `costFree: true` and keep the honest `$0.00`.
+
+    `model` is what the CALLER decided this message should be priced as: the
+    ref the engine requested if it pinned one, else the id pi reported having
+    resolved (task 050 -- see `_scan_line`). This function does not choose
+    between them; it only ever looks up the one id it was given.
     """
     cost = (usage.get("cost") or {}).get("total")
     billed = sum(int(usage.get(k) or 0) for k in state.COST_TOKEN_KEYS)

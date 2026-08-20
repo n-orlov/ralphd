@@ -143,6 +143,13 @@ from env vars set by the test:
                       engine pinned nothing, to a stub default -- which is the
                       shape behind task 012 (#14): pi picks its own model and
                       only its message stream knows which.
+  STUB_MODEL_PROVIDER the provider half of that pair, independently of
+                      STUB_MODEL (which only sets the model half, so a ref
+                      like `stubby/stub-model-1` stays one string). Together
+                      they let an UNPINNED run report a real gateway-shaped
+                      pair -- `amazon-bedrock` + `eu.anthropic.claude-opus-5`
+                      with no `--model` on the command line -- the route task
+                      050 (#14) prices from the observed id.
 
 Every invocation unconditionally records the exact prompt it received to
 `<run>/.stub-last-prompt` (overwritten) and appends it to
@@ -179,6 +186,8 @@ def _resolve_model():
             provider = ""
     if os.environ.get("STUB_MODEL"):
         model = os.environ["STUB_MODEL"]
+    if os.environ.get("STUB_MODEL_PROVIDER"):
+        provider = os.environ["STUB_MODEL_PROVIDER"]
     return provider, model
 
 
