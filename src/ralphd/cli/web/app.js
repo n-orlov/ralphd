@@ -243,9 +243,21 @@ function sortIndicator(key) {
 //
 // Exactly one dialog exists at a time: it is removed on close, so the 4s
 // `load()` rebuild of the page behind it can never accumulate stale copies.
+//
+// `showDialog` is that invariant, shared by every kind of dialog (the text
+// dialog below and task 031's delete confirmation): it removes ANY dialog
+// currently in the document before showing the new one, so two *different*
+// kinds cannot stack either.
+function showDialog(dlg) {
+  for (const previous of document.querySelectorAll("dialog")) previous.remove();
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.appendChild(dlg);
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "open");
+  return dlg;
+}
+
 function openTextDialog(title, text, note) {
-  const previous = document.getElementById("text-dialog");
-  if (previous) previous.remove();
   const dlg = h("dialog", { id: "text-dialog", class: "text-dialog" }, [
     h("h3", { class: "dialog-title" }, [String(title)]),
     note ? h("p", { class: "muted dialog-note" }, [String(note)]) : null,
@@ -256,11 +268,127 @@ function openTextDialog(title, text, note) {
       h("button", { type: "submit" }, ["close"]),
     ]),
   ]);
-  dlg.addEventListener("close", () => dlg.remove());
-  document.body.appendChild(dlg);
-  if (typeof dlg.showModal === "function") dlg.showModal();
-  else dlg.setAttribute("open", "open");
-  return dlg;
+  return showDialog(dlg);
+}
+
+// ------------------------------------------------------- delete a run (#19)
+
+// Task 031 (#19): deleting a finished run used to mean leaving the hub for
+// two `ralphctl` commands (`stop`, then `rm`). The run list and the run detail
+// page now offer it directly -- behind a confirmation naming the run id, and
+// for terminal runs ONLY.
+//
+// Discipline:
+//  * whether the control is offered at all is the SERVER's answer
+//    (`deletable`, from `ui_server.deletion_fields` -> the very gate
+//    `DELETE /api/runs/<id>` applies), never a state comparison re-spelled
+//    here -- a browser deciding for itself which states are "finished" is how
+//    a UI ends up offering to destroy work in flight;
+//  * when it is refused, the REASON shown is the server's sentence
+//    (`deleteRefusal`, `ui_server.DELETE_REFUSED_ACTIVE`/`_UNKNOWN`), text
+//    nodes only, so the hub cannot word a refusal differently from the
+//    endpoint that issued it;
+//  * the confirmation names the run id and says what will be removed, because
+//    this is the one irreversible action in the hub.
+
+const DELETE_LABEL = "delete";
+const DELETE_BUSY = "deleting…";
+const DELETE_FAILED = "delete failed: ";
+
+function deleteConfirmTitle(runId) {
+  return "Delete run — " + String(runId);
+}
+
+function deleteConfirmText(runId) {
+  return [
+    "Delete run " + String(runId) + " ?",
+    "",
+    "This removes that run's container, its sibling containers, its run",
+    "directory (transcripts, tasks.json, artifacts) and its job config —",
+    "the same removal ralphctl rm --force performs. It cannot be undone.",
+  ].join("\n");
+}
+
+async function requestRunDeletion(runId) {
+  const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}`,
+                           { method: "DELETE" });
+  const body = await resp.json().catch(() => ({}));
+  return { ok: resp.ok, status: resp.status, body };
+}
+
+// `after` is what the surface does once the run is really gone (the run list
+// reloads; the detail page of a run that no longer exists goes back to the
+// list). A failure leaves the dialog open with the server's own error text --
+// a refusal the button did not expect (the run started again between poll and
+// click) must be readable, not silently swallowed.
+function openDeleteDialog(runId, after) {
+  const statusEl = h("p", { class: "muted dialog-note", id: "delete-status" }, []);
+  const confirm = h("button", {
+    type: "button", class: "delete-confirm", id: "delete-confirm",
+  }, [DELETE_LABEL + " " + String(runId)]);
+  const dlg = h("dialog", { id: "delete-dialog", class: "text-dialog delete-dialog" }, [
+    h("h3", { class: "dialog-title" }, [deleteConfirmTitle(runId)]),
+    h("pre", { class: "dialog-body" }, [deleteConfirmText(runId)]),
+    statusEl,
+    h("form", { method: "dialog", class: "dialog-close" }, [
+      h("button", { type: "submit", class: "delete-cancel", id: "delete-cancel" },
+        ["cancel"]),
+      confirm,
+    ]),
+  ]);
+  confirm.addEventListener("click", async () => {
+    confirm.disabled = true;
+    statusEl.textContent = DELETE_BUSY;
+    let result;
+    try {
+      result = await requestRunDeletion(runId);
+    } catch (e) {
+      statusEl.textContent = DELETE_FAILED + e;
+      confirm.disabled = false;
+      return;
+    }
+    if (!result.ok) {
+      const b = result.body || {};
+      statusEl.textContent = DELETE_FAILED +
+        String(b.error || b.detail || b.title || result.status);
+      confirm.disabled = false;
+      return;
+    }
+    dlg.close();
+    if (after) after();
+  });
+  return showDialog(dlg);
+}
+
+// The affordance itself, shared by the run list's row and the run detail
+// page's action bar -- one control, so the two surfaces cannot disagree about
+// whether a run may be deleted or about why not.
+function deleteControl(runId, o, after) {
+  const deletable = o && o.deletable === true;
+  const reason = (o && typeof o.deleteRefusal === "string") ? o.deleteRefusal : "";
+  const attrs = {
+    type: "button",
+    class: "delete-run",
+    "data-delete-run": String(runId),
+  };
+  if (deletable) {
+    attrs.title = "delete this run (container, run dir and job config)";
+    attrs.onclick = () => { openDeleteDialog(runId, after); };
+  } else {
+    // Disabled, with the reason -- not hidden: an operator who came here to
+    // clean up must learn that the run is still active, not find a missing
+    // button and wonder whether the hub can do this at all.
+    attrs.disabled = "disabled";
+    attrs["data-delete-refused"] = "1";
+    if (reason) attrs.title = reason;
+  }
+  const cell = h("span", { class: "delete-cell" }, [
+    h("button", attrs, [DELETE_LABEL]),
+  ]);
+  if (!deletable && reason) {
+    cell.appendChild(h("span", { class: "muted delete-refusal" }, [reason]));
+  }
+  return cell;
 }
 
 // The PRD comes from the hub's `GET /api/runs/<id>/prd` (ui_server.py),
@@ -759,13 +887,18 @@ async function renderRunList() {
       return;
     }
     const table = h("table", { class: "run-list" }, [
-      h("thead", {}, [h("tr", {}, RUN_COLUMNS.map(col => h("th", {
+      h("thead", {}, [h("tr", {}, [...RUN_COLUMNS.map(col => h("th", {
         class: "sortable" + (runSort.key === col.key ? " sorted" : ""),
         "data-sort-key": col.key,
         "aria-sort": runSort.key !== col.key ? "none"
           : (runSort.dir < 0 ? "descending" : "ascending"),
         onclick: () => { toggleRunSort(col.key); load(); },
-      }, [col.label + sortIndicator(col.key)])))]),
+      }, [col.label + sortIndicator(col.key)])),
+        // Task 031 (#19): the delete affordance's column. Deliberately NOT a
+        // `RUN_COLUMNS` entry: it renders an action, not a value, so there is
+        // nothing to sort on and nothing for `ralphctl runs --sort` to mirror.
+        h("th", { class: "actions-col" }, [""]),
+      ])]),
     ]);
     const tbody = h("tbody", {});
     for (const r of sortRuns(runs)) {
@@ -784,6 +917,10 @@ async function renderRunList() {
         taskCell(r),
         h("td", {}, [`${r.iterationsUsed ?? 0}/${r.iterationsBudget ?? "?"}`]),
         h("td", { class: "muted" }, [String(r.startedAt || "")]),
+        // Task 031 (#19): delete this run, for a terminal run only, behind
+        // the confirmation. `load()` afterwards, so the row leaves the table
+        // as soon as it is really gone rather than at the next 4s poll.
+        h("td", { class: "actions-col" }, [deleteControl(r.runId, r, () => { load(); })]),
       ]));
     }
     table.appendChild(tbody);
@@ -807,6 +944,10 @@ async function renderRunDetail(runId) {
       type: "button", class: "open-prd", id: "open-prd",
       onclick: () => { openPrdDialog(runId); },
     }, ["view PRD"]),
+    // Task 031 (#19): ...and deleting the run, once it is over. Filled in by
+    // `load()` below, because whether it may be offered is a fact about the
+    // run's recorded state that only the payload knows (`deletable`).
+    h("span", { id: "delete-box" }, []),
   ]));
 
   const summary = h("div", { class: "card" }, [h("p", { class: "muted" }, ["loading…"])]);
@@ -895,6 +1036,7 @@ async function renderRunDetail(runId) {
       return;
     }
     renderSummary(summary, body);
+    renderDelete(document.getElementById("delete-box"), runId, body);
     renderUsage(document.getElementById("usage-box"),
                 body.status && body.status.usage, runId);
     renderTasks(document.getElementById("task-box"), body.tasks);
@@ -907,6 +1049,17 @@ async function renderRunDetail(runId) {
 
   await load();
   refreshTimer = setInterval(load, REFRESH_MS);
+}
+
+// Task 031 (#19): the run-detail page's delete control -- the same affordance
+// the run list's rows carry (`deleteControl`), reading the same server-decided
+// `deletable`/`deleteRefusal` from the detail payload. On success there is no
+// run left to show, so the hub returns to the list rather than leaving the
+// operator on a page that is about to 404.
+function renderDelete(box, runId, detail) {
+  if (!box) return;
+  box.innerHTML = "";
+  box.appendChild(deleteControl(runId, detail, () => { location.hash = "#/"; }));
 }
 
 // Task 026 (#18.4): the states whose badge is a way IN to the fault
