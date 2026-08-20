@@ -1419,6 +1419,256 @@ def run_document_text(doc: dict) -> str:
                       run_document_body(doc)])
 
 
+
+# ---------------------------------------------------------------------------
+# Artifacts (task 023, #18.3)
+#
+# `artifacts/` is where the job leaves everything it wants an operator to see
+# -- above all the reflect phase's post-mortem (`reflection/report.md`) and the
+# prompt/skill diff it proposes (`reflection/suggestions.diff`), which until
+# now could only be read by knowing the registry layout and `cat`-ing files.
+# The shaping lives here, once, exactly like `run_documents` (#18.2): the CLI
+# (`ralphctl artifacts`) and the hub (task 024) render the same dicts, so an
+# artifact cannot be described as missing in one surface and empty in the other.
+
+ARTIFACTS_DIR_NAME = "artifacts"
+
+# `(key, path under artifacts/, what it is)` for the artifacts an operator asks
+# for by name. Everything else in the tree is still listed and printable by its
+# path -- these are only the well-known names and their one-line descriptions.
+ARTIFACT_ALIASES: tuple[tuple[str, str, str], ...] = (
+    ("report", "reflection/report.md",
+     "the reflect phase's post-mortem report"),
+    ("suggestions", "reflection/suggestions.diff",
+     "the prompt/skill diff the reflect phase proposes (never applied)"),
+    ("reflect-failed", "reflection/FAILED.md",
+     "why the reflect phase left no report"),
+)
+
+# This run produced no artifacts at all -- the `NO_PRD`/`RUN_DOCUMENT_ABSENT`
+# discipline, wording server-side so the terminal and the hub agree. Kept
+# verbatim from what `ralphctl artifacts ls` has always printed.
+NO_ARTIFACTS = "(no artifacts)"
+
+# A file that is not text: printing it would spray a terminal (or a browser
+# dialog) with bytes, so both surfaces say so and name the way to get it.
+ARTIFACT_BINARY = "(binary file -- copy it out with `ralphctl artifacts <run> pull`)"
+
+# How much of a file the text/binary sniff looks at.
+ARTIFACT_SNIFF_BYTES = 8192
+
+
+def artifact_names() -> list[str]:
+    """The well-known artifact keys, in listing order."""
+    return [key for key, _, _ in ARTIFACT_ALIASES]
+
+
+def artifact_key(name) -> str | None:
+    """The well-known key for a name -- the key itself or the path it stands
+    for (`report`, `reflection/report.md`), case-insensitively -- or None for
+    any other artifact (which is addressed by its path and has no key)."""
+    wanted = str(name or "").strip().replace("\\", "/").lower()
+    wanted = wanted.removeprefix(f"{ARTIFACTS_DIR_NAME}/")
+    for key, path, _ in ARTIFACT_ALIASES:
+        if wanted in (key, path.lower()):
+            return key
+    return None
+
+
+def artifact_title(rel_path) -> str:
+    """The one-line description of a well-known artifact, or '' for the rest.
+    An arbitrary file the agent wrote describes itself by its path."""
+    key = artifact_key(rel_path)
+    for k, _, title in ARTIFACT_ALIASES:
+        if k == key:
+            return title
+    return ""
+
+
+def artifact_relpath(name) -> str | None:
+    """Resolve what an operator (or a URL) named to a path *under* the run's
+    `artifacts/` dir, or None when the name cannot be one.
+
+    Accepts a well-known key (`report`), a path relative to `artifacts/`
+    (`reflection/report.md`) and the same path spelled with the directory
+    (`artifacts/reflection/report.md`), so every spelling a listing shows also
+    works as an argument.
+
+    None for anything that is not addressing an artifact: an empty name, an
+    absolute path, or one containing `..`. That last one is the traversal
+    guard, and it lives HERE rather than in each caller precisely because the
+    hub (task 024) puts this string in a URL -- one resolver, one guard.
+    """
+    raw = str(name or "").strip().replace("\\", "/")
+    if "\x00" in raw or raw.startswith("/"):
+        return None
+    for key, path, _ in ARTIFACT_ALIASES:
+        if raw.lower() == key:
+            return path
+    raw = raw.removeprefix(f"{ARTIFACTS_DIR_NAME}/")
+    parts = [p for p in raw.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." for p in parts):
+        return None
+    return "/".join(parts)
+
+
+def _artifact_is_text(data: bytes) -> bool:
+    """Whether a file's leading bytes read as text. A NUL byte or a chunk that
+    will not decode is binary -- deliberately crude, because the only decision
+    it drives is "print this or point at `pull`"."""
+    if b"\x00" in data:
+        return False
+    try:
+        data.decode()
+    except UnicodeDecodeError:
+        # A multi-byte character cut in half by the sniff window is not a
+        # binary file; anything else is.
+        try:
+            data[:-4].decode()
+        except UnicodeDecodeError:
+            return False
+    return True
+
+
+def artifact_entry(run_root: Path, rel_path: str, *,
+                   bodies: bool = True) -> dict:
+    """One artifact as both surfaces see it (the `run_documents` entry shape):
+
+      `path`      its path relative to `artifacts/` (what a caller passes back),
+      `key`       the well-known key, or None,
+      `title`     the one-line description of a well-known artifact, else '',
+      `file`      the absolute path on this host,
+      `available` always True (an artifact is never out of reach the way
+                  `job.yaml` can be) -- kept so the shared size/absence
+                  wordings apply unchanged,
+      `exists`    whether the file is there,
+      `bytes`     its size on disk (0 when absent),
+      `isText`    whether it can be printed at all (`ARTIFACT_BINARY` if not),
+      `body`      the text -- omitted entirely with `bodies=False`, for a file
+                  that does not exist and for a binary one, since an empty
+                  string would read like an empty file (`artifact_body` turns
+                  each of those into its own wording).
+    """
+    rel = str(rel_path).replace("\\", "/")
+    path = Path(run_root) / ARTIFACTS_DIR_NAME / rel
+    entry = {"path": rel, "key": artifact_key(rel), "title": artifact_title(rel),
+             "file": str(path), "available": True, "exists": False,
+             "bytes": 0, "isText": True}
+    try:
+        entry["exists"] = path.is_file()
+        if entry["exists"]:
+            entry["bytes"] = path.stat().st_size
+    except OSError:
+        entry["exists"] = False
+        return entry
+    if not entry["exists"]:
+        return entry
+    try:
+        head = path.open("rb").read(ARTIFACT_SNIFF_BYTES)
+    except OSError:
+        entry["body"] = RUN_DOCUMENT_UNREADABLE
+        return entry
+    entry["isText"] = _artifact_is_text(head)
+    if bodies and entry["isText"]:
+        try:
+            entry["body"] = path.read_text(errors="replace")
+        except OSError:
+            entry["body"] = RUN_DOCUMENT_UNREADABLE
+    return entry
+
+
+def artifact_entries(run_root: Path, *, bodies: bool = False) -> list[dict]:
+    """Every file under a run's `artifacts/`, in path order, as `artifact_entry`
+    dicts. Bodies are off by default: a listing of a run's artifacts must not
+    ship the artifacts themselves (the hub polls it).
+
+    Only regular files: the directories are structure, not answers, and an
+    empty `artifacts/` (or none at all) is simply an empty list, which the
+    caller pairs with `NO_ARTIFACTS`.
+
+    A plain function over paths, like `run_documents`/`steering_entries`: a
+    read-only viewer must never construct a `RunDir` (whose `__post_init__`
+    creates directories in somebody else's run dir).
+    """
+    root = Path(run_root) / ARTIFACTS_DIR_NAME
+    try:
+        found = sorted(p for p in root.rglob("*") if p.is_file())
+    except OSError:
+        return []
+    return [artifact_entry(run_root, p.relative_to(root).as_posix(),
+                           bodies=bodies)
+            for p in found]
+
+
+def artifact(run_root: Path, name, *, bodies: bool = True) -> dict | None:
+    """One artifact by well-known key or path, or None when the name cannot
+    address an artifact at all (`artifact_relpath`'s guard -- the caller turns
+    that into a usage error, and a legal name that is simply not there into a
+    `not written` answer)."""
+    rel = artifact_relpath(name)
+    if rel is None:
+        return None
+    return artifact_entry(run_root, rel, bodies=bodies)
+
+
+def format_artifact_size(entry: dict) -> str:
+    """One artifact's size cell -- the document rule
+    (`format_run_document_size`) applied to artifacts, so a file's size and its
+    absence are worded identically wherever ralphd shows a file."""
+    return format_run_document_size(entry)
+
+
+def format_artifact_listing(entries: list[dict]) -> list[str]:
+    """The "what did this run leave behind" table as text lines, worded ONCE:
+    `ralphctl artifacts <run> ls` prints these and the hub's artifacts panel
+    (task 024) labels its rows from the very same fields. An empty list yields
+    only the header -- the caller prints `NO_ARTIFACTS` instead."""
+    lines = [f"{'SIZE':>10}  {'NAME':<16}PATH"]
+    for entry in entries:
+        lines.append(f"{format_artifact_size(entry):>10}  "
+                     f"{entry.get('key') or '':<16}{entry.get('path', '')}")
+    return lines
+
+
+def artifact_summary_lines(entry: dict) -> list[str]:
+    """One artifact's header block, worded ONCE: `ralphctl artifacts <run> show
+    <name>` prints these above the body and the hub's dialog (task 024) shows
+    the very same lines."""
+    if not isinstance(entry, dict):
+        return []
+    name = entry.get("key")
+    lines = [f"artifact:  {entry.get('path')}"
+             + (f"  ({name})" if name else "")]
+    if entry.get("title"):
+        lines.append(f"purpose:   {entry.get('title')}")
+    lines.append(f"size:      {format_artifact_size(entry)}"
+                 + (" bytes" if entry.get("exists") else ""))
+    return lines
+
+
+def artifact_body(entry: dict) -> str:
+    """An artifact's body as something always printable: the text itself, or
+    the one wording for blank / never-written / unreadable / binary."""
+    if not isinstance(entry, dict) or not entry.get("exists"):
+        return RUN_DOCUMENT_ABSENT
+    if not entry.get("isText", True):
+        return ARTIFACT_BINARY
+    body = entry.get("body")
+    if body is None:
+        return RUN_DOCUMENT_ABSENT
+    if body == RUN_DOCUMENT_UNREADABLE:
+        return RUN_DOCUMENT_UNREADABLE
+    return body if body.strip() else RUN_DOCUMENT_EMPTY
+
+
+def artifact_text(entry: dict) -> str:
+    """The complete rendering of one artifact -- header block, separator, body
+    -- as the single string both surfaces show (`run_document_text`'s role for
+    #18.3)."""
+    return "\n".join([*artifact_summary_lines(entry),
+                      format_run_document_header(entry.get("path")),
+                      artifact_body(entry)])
+
 @dataclass
 class RunDir:
     """Layout of /run and helpers over it. Engine-owned."""
