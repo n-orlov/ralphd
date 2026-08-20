@@ -888,6 +888,11 @@ class LoopSupervisor:
                     sawComplete=result.saw_complete, sawVerified=result.saw_verified,
                     error=result.error_message or None,
                     faultClass=fault_class,
+                    # Task 012 (#14): what pi actually used, next to the ref
+                    # the engine asked for (`model`, which is null whenever
+                    # the operator pinned nothing and pi picked its default).
+                    modelResolved=result.model,
+                    modelRaw=result.model_raw,
                     usage=result.usage)
         atomic_write_json(itdir / "meta.json", meta)
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"))
@@ -903,7 +908,18 @@ class LoopSupervisor:
             self.run.emit("log", level="error",
                           message=f"iteration {n} agent error: {result.error_message}")
         self._emit_task_changes()
-        self.run.update_status(currentIteration=None)
+        # Task 012 (#14): promote the observed model id to the run level, so
+        # `status.json` (and every surface reading it) names the model this run
+        # is actually talking to instead of `model: null`. Only ever written
+        # when this iteration observed one: an instant startup failure or a
+        # zero-traffic hang must not overwrite a known id with ignorance.
+        # Per-iteration ids stay in `iterations/NNNN/meta.json`; this is the
+        # latest one, which is what "which model is this run using" means.
+        patch = {"currentIteration": None}
+        if result.model:
+            patch["model"] = result.model
+            patch["modelRaw"] = result.model_raw
+        self.run.update_status(**patch)
         return result
 
     @staticmethod

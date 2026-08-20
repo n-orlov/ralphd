@@ -46,6 +46,14 @@ class IterationResult:
     # NDJSON event at all) within the configured startup window -- distinct
     # from `timed_out`, which is the *full* iteration_timeout_s firing.
     no_traffic_timeout: bool = False
+    # Task 012 (#14): the model pi actually used, as observed in its own
+    # message stream -- `model` is the pi-style `provider/model` ref, and
+    # `model_raw` the provider-side id when the two differ (see
+    # `state.model_ids`). Both stay None when no assistant message named a
+    # model (an instant startup failure, an in-band error with no traffic),
+    # so the engine can tell "nothing observed" from "observed nothing".
+    model: str | None = None
+    model_raw: str | None = None
 
     @property
     def saw_complete(self) -> bool:
@@ -214,6 +222,13 @@ class PiRunner:
                                if c.get("type") == "text")
                 if text.strip():
                     result.final_text = text
+                # Task 012 (#14): the model *pi resolved*, not the ref the
+                # engine asked for -- which may be None (pi's own default),
+                # exactly the case where run state used to say `model: null`
+                # while every message on the wire named a concrete id.
+                resolved, raw = state.model_ids(msg.get("provider"), msg.get("model"))
+                if resolved:
+                    result.model, result.model_raw = resolved, raw
                 usage = msg.get("usage") or {}
                 for key in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
                     result.usage[key] = result.usage.get(key, 0) + (usage.get(key) or 0)

@@ -1585,6 +1585,11 @@ def cmd_status(args):
         # null for it, so the on-disk fallback's `--json` says the same thing
         # (limit unknown) rather than omitting the key.
         status.setdefault("maxApproaches", None)
+        # Task 012 (#14): same for the resolved model id and the raw gateway id
+        # -- `GET /status` publishes explicit nulls for a run dir that never
+        # observed one, so the on-disk fallback's `--json` says the same thing.
+        status.setdefault("model", None)
+        status.setdefault("modelRaw", None)
         # Task 023 (#8): status.json itself carries no task counts -- the
         # engine synthesises them in GET /status from tasks.json, so the
         # on-disk fallback used to print `tasks: (none)` for a run dir with
@@ -1689,6 +1694,15 @@ def cmd_status(args):
         phase_line,
         f"iteration: {status.get('iterationsUsed')}/{status.get('iterationsBudget')}",
     ]
+    # Task 012 (#14): name the model the run is actually talking to, as pi
+    # resolved it -- omitted entirely (never `model: None`) when no iteration
+    # has observed one yet, the same discipline as the approach segment above.
+    # The raw gateway id is only shown when it differs from the resolved ref.
+    if status.get("model"):
+        model_line = f"model:     {status.get('model')}"
+        if status.get("modelRaw"):
+            model_line += f"  (gateway id: {status.get('modelRaw')})"
+        lines.append(model_line)
     if isinstance(cur_it, dict):
         at_update = ", at last update" if stale_since else ""
         lines.append(f"iteration elapsed: {format_duration(it_duration_s)} "

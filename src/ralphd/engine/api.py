@@ -131,6 +131,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # consumers render as a bare `approach` with no `/m` rather than
         # guessing a denominator (or crashing on a missing key).
         s.setdefault("maxApproaches", None)
+        # Task 012 (#14): the model this run is actually talking to, as pi
+        # resolved it (`modelRaw` = the provider-side id when it differs).
+        # An explicit null means no iteration has observed a model yet (or a
+        # pre-v0.6 run dir), never "the engine has no idea what it asked for".
+        s.setdefault("model", None)
+        s.setdefault("modelRaw", None)
         tasks_read = run.read_tasks_result()
         # Task 023 (#8): shared with the CLI's on-disk fallback (state.py).
         # Task 003 (#15): counts come from the hardened reader, so a request
