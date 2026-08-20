@@ -381,12 +381,17 @@ def steering_list(reg: Path, run_id: str, *, bodies: bool = True) -> tuple[bool,
 
     Returns `(live, entries)`; `entries` is `[]` for a run nobody ever
     steered (the caller pairs that with `NO_STEERING`).
+
+    Task 017 (#17): every entry also carries `tsLocal`, its arrival time
+    rendered by the ONE shared absolute-timestamp formatter
+    (`engine.state.format_local_time`) -- see `_with_steering_display`, the
+    same discipline as `startedAtLocal` on the detail card.
     """
     run_dir = reg / "runs" / run_id
     disk = {e["file"]: e for e in steering_entries(run_dir, bodies=bodies)}
     ok, _, resp = _proxy_json(reg, run_id, "GET", "/steering")
     if not (ok and isinstance(resp, list)):
-        return False, list(disk.values())
+        return False, [_with_steering_display(e) for e in disk.values()]
     entries = []
     for item in resp:
         if not isinstance(item, dict) or not isinstance(item.get("file"), str):
@@ -405,7 +410,7 @@ def steering_list(reg: Path, run_id: str, *, bodies: bool = True) -> tuple[bool,
         merged = {**base, **live_fields}
         if not bodies:
             merged.pop("body", None)
-        entries.append(_normalized_steering(merged))
+        entries.append(_with_steering_display(_normalized_steering(merged)))
     return True, entries
 
 
@@ -425,6 +430,29 @@ def _normalized_steering(entry: dict) -> dict:
     if "state" not in out:
         out["state"] = STEERING_APPLIED if out.get("consumed") else STEERING_PENDING
     out.setdefault("name", out.get("file"))
+    return out
+
+
+def _with_steering_display(entry: dict) -> dict:
+    """Task 017 (#17): attach `tsLocal`, the entry's arrival time as a string,
+    formatted server-side by `engine.state.format_local_time`.
+
+    The discipline of `_with_local_times`/`_with_cost_display`/
+    `_with_approach_display`: the browser renders a string Python formatted,
+    so "local" means the host running ralphd and the hub cannot grow a second
+    timestamp vocabulary that drifts from `ralphctl`'s.
+
+    Always recomputed from the entry's own `ts` (a forged `tsLocal` in a
+    proxied payload cannot claim an arrival time the timestamp does not
+    support), and *absent* when there is no `ts` at all -- a live entry naming
+    a file the hub cannot see has no arrival time, and `format_local_time`'s
+    `"n/a"` would read like one.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    out = {k: v for k, v in entry.items() if k != "tsLocal"}
+    if out.get("ts"):
+        out["tsLocal"] = format_local_time(out["ts"])
     return out
 
 

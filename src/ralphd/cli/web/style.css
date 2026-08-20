@@ -269,3 +269,30 @@ footer.autorefresh {
 }
 
 .text-dialog .dialog-close { margin-top: 0.6rem; }
+
+/* task 017 (#17): the steering history panel under the steer form. Each row
+   opens that message's body in the shared text dialog, so it advertises
+   itself like a task row does. */
+#steering-box h3, section h3.muted { font-size: 0.85rem; }
+
+.steering-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.steering-item {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.2rem 0.3rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.steering-item:hover, .steering-item:focus { background: rgba(127, 127, 127, 0.12); outline: none; }
+.steering-item:focus-visible { outline: 2px solid var(--accent); }
+.steering-item .steering-name { font-weight: 600; }
+.steering-item .steering-file { margin-left: auto; font-size: 0.78rem; }
+.steering-snapshot { font-size: 0.8rem; margin: 0.3rem 0 0; }

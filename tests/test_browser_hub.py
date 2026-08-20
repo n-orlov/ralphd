@@ -1310,3 +1310,162 @@ def test_run_list_tasks_column_renders_flags_and_sorts_on_progress(tmp_path, pw)
         assert "1 in-progress" in summary
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------
+# task 017 (#17): the run-detail steering history panel
+# --------------------------------------------------------------------------
+
+_STEERING_ITEMS = "document.querySelectorAll('.steering-item').length"
+_STEERING_ROW_TEXT = (
+    "[...document.querySelectorAll('.steering-item')]"
+    ".map(e => e.dataset.steeringState + ' ' + e.textContent).join(' | ')")
+_STEERING_STATES = (
+    "[...document.querySelectorAll('.steering-item')]"
+    ".map(e => e.dataset.steeringState).join(',')")
+_DIALOGS = "document.querySelectorAll('dialog.text-dialog').length"
+
+
+def test_run_detail_lists_steering_history_from_the_on_disk_snapshot(tmp_path, pw):
+    """Task 017 (#17): the hub's steering panel, for a run whose container is
+    gone -- the case that made #17 painful, since a finished run's steering
+    history was unreachable from every surface.
+
+    Pins the three things the panel exists to state (name, arrival time,
+    pending-vs-applied), the rendering discipline (a message body containing
+    markup and an inline `<script>` must survive as TEXT: the same reason the
+    PRD dialog never touches `innerHTML`), and that the shared single dialog
+    does not stack across the 4s `load()` rebuild behind it.
+    """
+    from ralphd.engine.state import STEERING_CONSUMED_FILE, format_local_time, steering_entries
+
+    registry = tmp_path / "registry"
+    applied_body = ("Stop deriving cost from <b>zero</b> quotes & "
+                    "do not <script>alert(1)</script>.\n")
+    pending_body = "Also: prefix every commit with `task NNN:`.\n"
+
+    run_dir = _write_dead_run(registry, "run-steer-hist", state="succeeded",
+                              verdict="verified")
+    sdir = run_dir / "steering"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / "001-cost-zero-quote.md").write_text(applied_body)
+    (sdir / "002-commit-prefix.md").write_text(pending_body)
+    (sdir / STEERING_CONSUMED_FILE).write_text(json.dumps(["001-cost-zero-quote.md"]))
+    # a run nobody ever steered, for the notice
+    _write_dead_run(registry, "run-unsteered", state="failed", verdict="unverified")
+
+    arrived = format_local_time(steering_entries(run_dir)[0]["ts"])
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-steer-hist")
+        _wait_for(pw, "document.body.innerText", "Steering history")
+        _wait_for_count_ge(pw, _STEERING_ITEMS, 2)
+
+        rows = pw.eval_js(_STEERING_ROW_TEXT)
+        # oldest first, as the engine numbered them; each row carries the
+        # state, the operator's own name, the server-formatted arrival time
+        # and the file name
+        assert rows.index("applied") < rows.index("pending"), rows
+        assert "cost-zero-quote" in rows and "commit-prefix" in rows, rows
+        assert "001-cost-zero-quote.md" in rows, rows
+        assert arrived in rows, (arrived, rows)
+        assert pw.eval_js(_STEERING_STATES).strip('"') == "applied,pending"
+        assert int(pw.eval_js(_DIALOGS)) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "19-steering-history.png")
+
+        # -- the body opens in THE shared dialog, as text ------------------
+        pw.click('.steering-item[data-steering-file="001-cost-zero-quote.md"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "Stop deriving cost")
+        assert "Stop deriving cost from <b>zero</b> quotes & " \
+               "do not <script>alert(1)</script>." in body, body
+        assert "state: applied" in body, body
+        assert arrived in body, body
+        assert "on-disk snapshot" in body, body
+        # ...and only that message
+        assert "commit-prefix" not in body and "task NNN" not in body, body
+        # text nodes only: nothing was parsed as markup
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b').length")) == 0
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+        pw.screenshot(SCREENSHOTS_DIR / "20-steering-dialog.png")
+
+        # -- it survives a full 4s poll without stacking -------------------
+        time.sleep(5.0)
+        assert int(pw.eval_js(_STEERING_ITEMS)) == 2       # the panel re-rendered
+        assert int(pw.eval_js(_DIALOGS)) == 1              # ...behind ONE dialog
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # the second message opens its OWN body (one dialog at a time)
+        pw.click('.steering-item[data-steering-file="002-commit-prefix.md"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "task NNN")
+        assert "state: pending" in body, body
+        assert "Stop deriving cost" not in body, body
+        assert int(pw.eval_js(_DIALOGS)) == 1
+
+        # -- a run nobody steered says so, in the server's wording ---------
+        from ralphd.cli.ui_server import NO_STEERING
+        pw.open(f"{server.base}/#/run/run-unsteered")
+        notice = _wait_for(pw,
+                           "(document.getElementById('steering-notice') || {})"
+                           ".textContent || ''", NO_STEERING)
+        assert NO_STEERING in notice
+        assert int(pw.eval_js(_STEERING_ITEMS)) == 0
+    finally:
+        server.stop()
+
+
+def test_steering_entry_appears_pending_then_flips_to_applied(tmp_path, pw, live):
+    """Task 017 (#17) against a REAL engine: the panel's whole point is that a
+    queued message is visibly *pending* until the loop reads it at an
+    iteration boundary, and *applied* afterwards -- so an operator can tell
+    "the agent has not seen this yet" from "the agent has it".
+
+    Steered through the hub's own form (the write surface #17 says was the
+    only surface), then watched through the same page.
+    """
+    run = live(run_id="steer-hub-ui",
+               job={"iterations": 8, "on_complete": "idle"},
+               stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "4"})
+    run.wait_api()
+
+    server = UiServer(run.registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/{run.run_id}")
+        _wait_for(pw, "document.body.innerText", "Steering history")
+
+        pw.fill("#steer-message", "Rendered pending, then applied.")
+        pw.fill("#steer-name", "from-browser")
+        pw.click("#steer-form button[type=submit]")
+        _wait_for(pw, "document.getElementById('steer-status').textContent", "sent")
+
+        # appears within one poll cycle, flagged pending
+        _wait_for(pw, _STEERING_STATES, "pending", timeout=20)
+        rows = pw.eval_js(_STEERING_ROW_TEXT)
+        assert "from-browser" in rows, rows
+        pw.screenshot(SCREENSHOTS_DIR / "21-steering-pending.png")
+
+        # ...and flips to applied once the loop consumes it at a boundary
+        _wait_for(pw, _STEERING_STATES, "applied", timeout=90)
+        assert int(pw.eval_js(_STEERING_ITEMS)) == 1
+        pw.screenshot(SCREENSHOTS_DIR / "22-steering-applied.png")
+
+        # the body is the message the operator typed, from the live run
+        pw.click(".steering-item")
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "Rendered pending")
+        assert "state: applied" in body, body
+        assert "on-disk snapshot" not in body, body      # this run is live
+    finally:
+        run.wait_terminal(timeout=120)
+        server.stop()

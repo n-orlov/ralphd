@@ -313,6 +313,97 @@ function openTaskDialog(t) {
   return openTextDialog(title, taskDialogText(t), null);
 }
 
+// --------------------------------------------------- steering history (#17)
+
+// Task 017 (#17): steering used to be write-only in the hub -- an operator
+// could post a message through the form below and then had no way to see what
+// was queued, what the loop had already applied, or what the text said. The
+// panel lists every entry `GET /api/runs/<id>/steering` reports (ui_server.py:
+// live-first with an on-disk fallback, so a dead run's history is still
+// readable) and opens each body in THE single `openTextDialog` -- text nodes
+// only, because a steering message is operator prose from outside this page's
+// trust boundary, exactly like the PRD.
+
+const STEERING_NO_BODY = "(empty message)";
+// A file the live engine named but the hub cannot see on disk (task 016 keeps
+// no body for it rather than inventing one).
+const STEERING_BODY_UNAVAILABLE =
+  "(no body available — the run's steering file is not on this host)";
+
+function steeringTitle(entry) {
+  const file = String(entry.file || "");
+  const name = String(entry.name || "");
+  return "Steering " + file + (name && name !== file ? " — " + name : "");
+}
+
+function openSteeringDialog(entry, live) {
+  const hasBody = typeof entry.body === "string";
+  const text = hasBody
+    ? (entry.body.trim() ? entry.body : STEERING_NO_BODY)
+    : STEERING_BODY_UNAVAILABLE;
+  const note = "state: " + String(entry.state || "unknown") +
+    (entry.tsLocal ? "   arrived " + String(entry.tsLocal) : "") +
+    (live ? "" : "   (on-disk snapshot — the run's API is not reachable)");
+  return openTextDialog(steeringTitle(entry), text, note);
+}
+
+function renderSteering(box, ok, body) {
+  box.innerHTML = "";
+  if (!ok || !body) {
+    box.appendChild(h("p", { class: "muted" }, ["failed to load steering history"]));
+    return;
+  }
+  const entries = Array.isArray(body.entries) ? body.entries : [];
+  const live = body.live === true;
+  if (entries.length === 0) {
+    // Wording comes from the server (`ui_server.NO_STEERING`), like the log
+    // tail's `NO_TRANSCRIPT` and the PRD's `NO_PRD`.
+    box.appendChild(h("p", { class: "muted", id: "steering-notice" },
+                      [String(body.notice || "")]));
+    return;
+  }
+  const list = h("div", { class: "steering-list", id: "steering-list" }, []);
+  for (const e of entries) {
+    const open = () => { openSteeringDialog(e, live); };
+    list.appendChild(h("div", {
+      class: "steering-item",
+      "data-steering-file": String(e.file || ""),
+      "data-steering-state": String(e.state || ""),
+      role: "button",
+      tabindex: "0",
+      title: "show this steering message",
+      onclick: open,
+      onkeydown: (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+      },
+    }, [
+      // pending vs applied is the fact the panel exists to state: an entry
+      // the loop has not read yet is still steerable, one it applied is
+      // history.
+      pill(e.state),
+      h("span", { class: "steering-name" }, [String(e.name || e.file || "")]),
+      // Absolute local time formatted server-side (`tsLocal`, by the same
+      // `engine.state.format_local_time` `ralphctl status` uses); an entry
+      // whose file the hub cannot see has no arrival time and claims none.
+      h("span", { class: "steering-at muted" }, [String(e.tsLocal || "")]),
+      h("span", { class: "steering-file muted" }, [String(e.file || "")]),
+    ]));
+  }
+  box.appendChild(list);
+  if (!live) {
+    box.appendChild(h("p", { class: "muted steering-snapshot" }, [
+      "(on-disk snapshot — the run's API is not reachable)",
+    ]));
+  }
+}
+
+async function loadSteering(runId) {
+  const box = document.getElementById("steering-box");
+  const { ok, body } = await getJSON(`/api/runs/${encodeURIComponent(runId)}/steering`);
+  if (!box) return;
+  renderSteering(box, ok, body);
+}
+
 // -------------------------------------------------------------- routing
 
 function router() {
@@ -423,6 +514,10 @@ async function renderRunDetail(runId) {
       h("button", { type: "submit" }, ["send"]),
     ]),
     h("div", { id: "steer-status", class: "muted" }, []),
+    // Task 017 (#17): the write surface above is no longer the whole story --
+    // what was queued and what the loop already applied is listed here.
+    h("h3", { class: "muted" }, ["Steering history"]),
+    h("div", { id: "steering-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
   ]);
 
   app.appendChild(summary);
@@ -453,6 +548,9 @@ async function renderRunDetail(runId) {
       if (resp.ok) {
         statusEl.textContent = "sent (" + (j.file || "ok") + ")";
         document.getElementById("steer-message").value = "";
+        // Task 017 (#17): show it in the history immediately rather than
+        // making the operator wait out the 4s poll to see their own message.
+        loadSteering(runId);
       } else {
         statusEl.textContent = "failed: " + (j.error || resp.status);
       }
@@ -475,6 +573,7 @@ async function renderRunDetail(runId) {
     renderTasks(document.getElementById("task-box"), body.tasks);
     renderTimeline(document.getElementById("timeline-box"), body.iterations || []);
     await loadLogs(runId);
+    await loadSteering(runId);
   }
 
   await load();
