@@ -26,11 +26,12 @@ import json
 import pytest
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
+from test_cli_ui import StubEngineApi, _write_dead_run, _write_run_with_api, ui
 
 from ralphd.cli.main import RUN_SORT_KEYS, sort_run_rows
 from ralphd.engine.state import format_approach
 
-__all__ = ["ctl", "unix_sock"]
+__all__ = ["ctl", "ui", "unix_sock"]
 
 
 # --------------------------------------------------------------------------
@@ -214,3 +215,108 @@ def test_status_and_runs_agree_for_the_same_run(ctl):
         doc = json.loads(ctl.run("--json", "status", run_id).stdout)
         assert cells[run_id] == format_approach(doc["approach"],
                                                 doc["maxApproaches"])
+
+
+# --------------------------------------------------------------------------
+# hub tier (task 008, #16): the same three renderings in the hub payloads
+# --------------------------------------------------------------------------
+#
+# `app.js` renders the *string* the server formatted (`approachDisplay`,
+# ui_server._with_approach_display -> the `format_approach` above), which is
+# why these black-box hub tests belong next to the CLI ones: they assert the
+# two surfaces cannot drift. The browser tier
+# (tests/test_browser_hub.py::test_run_list_and_detail_render_the_approach_
+# denominator) asserts the rendered cells and that the column still sorts
+# numerically.
+
+def _hub_rows(server) -> dict:
+    code, body = server.get("/api/runs")
+    assert code == 200, body
+    return {r["runId"]: r for r in body["runs"]}
+
+
+def _seed_hub_runs(registry) -> None:
+    for run_id, approach, max_approaches in _RUNS_FIXTURE:
+        over = {"approach": approach}
+        if max_approaches is not None:
+            over["maxApproaches"] = max_approaches
+        _write_dead_run(registry, run_id, **over)
+
+
+def test_hub_run_list_rows_carry_the_rendered_counter(tmp_path, ui):
+    registry = tmp_path / "registry"
+    _seed_hub_runs(registry)
+    rows = _hub_rows(ui(registry))
+    assert {k: v["approachDisplay"] for k, v in rows.items()} == {
+        "aaa-with-max": "2/3",
+        "bbb-no-max": "2",
+        "ccc-no-approach": "",
+    }
+    # the raw numbers travel untouched alongside the display string: the hub
+    # sorts its APPROACH column on `approach`, not on "10/12"
+    assert (rows["aaa-with-max"]["approach"],
+            rows["aaa-with-max"]["maxApproaches"]) == (2, 3)
+    assert rows["bbb-no-max"]["maxApproaches"] is None
+    assert rows["ccc-no-approach"]["approach"] is None
+
+
+def test_hub_run_list_never_invents_a_denominator(tmp_path, ui):
+    registry = tmp_path / "registry"
+    _seed_hub_runs(registry)
+    rows = _hub_rows(ui(registry))
+    assert "/" not in rows["bbb-no-max"]["approachDisplay"]
+    assert "/" not in rows["ccc-no-approach"]["approachDisplay"]
+
+
+def test_hub_run_detail_carries_the_rendered_counter(tmp_path, ui):
+    registry = tmp_path / "registry"
+    _seed_hub_runs(registry)
+    server = ui(registry)
+    for run_id, approach, max_approaches in _RUNS_FIXTURE:
+        code, body = server.get(f"/api/runs/{run_id}")
+        assert code == 200, body
+        assert body["live"] is False, "on-disk snapshot, container gone"
+        assert body["status"]["approachDisplay"] == format_approach(
+            approach, max_approaches)
+
+
+def test_hub_and_cli_render_the_same_string_for_the_same_run(tmp_path, ui):
+    """One formatter, two surfaces: whatever `ralphctl runs`/`status` print,
+    the hub payload says -- computed from the run's own recorded numbers."""
+    registry = tmp_path / "registry"
+    _seed_hub_runs(registry)
+    rows = _hub_rows(ui(registry))
+    for row in rows.values():
+        assert row["approachDisplay"] == format_approach(row["approach"],
+                                                        row["maxApproaches"])
+
+
+def test_hub_run_detail_recomputes_a_forged_display(tmp_path, ui):
+    """A status doc that carries its own `approachDisplay` cannot claim a
+    ladder position its counter fields do not support -- the field is always
+    recomputed from `approach`/`maxApproaches` (the discipline task 005 used
+    for `tasksLabel`/`tasksNotice`)."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "forged", approach=2, maxApproaches=3,
+                    approachDisplay="99/99")
+    code, body = ui(registry).get("/api/runs/forged")
+    assert code == 200, body
+    assert body["status"]["approachDisplay"] == "2/3"
+
+
+def test_hub_does_not_guess_a_limit_for_a_pre_v06_live_engine(tmp_path, ui):
+    """A live `GET /status` from an engine that predates `maxApproaches`
+    (task 006) is proxied verbatim; the hub renders `2` bare rather than
+    borrowing a denominator from anywhere."""
+    engine = StubEngineApi(status={"state": "running", "phase": "worker",
+                                   "approach": 2})
+    registry = tmp_path / "registry"
+    try:
+        _write_run_with_api(registry, "live-old", engine)
+        code, body = ui(registry).get("/api/runs/live-old")
+    finally:
+        engine.close()
+    assert code == 200, body
+    assert body["live"] is True
+    assert body["status"]["approachDisplay"] == "2"
+    assert "/" not in body["status"]["approachDisplay"]

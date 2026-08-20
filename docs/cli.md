@@ -1197,15 +1197,23 @@ prints `serving hub at http://<bind>:<port>` on startup. Ctrl-C to stop.
 JSON endpoints served under `/api/`:
 
 - `GET /api/runs` — run list (PRD req 21): `{"runs": [{runId, state,
-  verdict, phase, approach, iterationsUsed, iterationsBudget, startedAt,
-  containerGone}, ...]}`, read straight from every `runs/*/status.json` (no
+  verdict, phase, approach, maxApproaches, approachDisplay, iterationsUsed,
+  iterationsBudget, startedAt, containerGone}, ...]}`, read straight from every
+  `runs/*/status.json` (no
   live proxy calls, so listing stays cheap regardless of how many runs are
   dead). `containerGone` (task 024) is `true` only for a run whose recorded
   state is non-terminal (`starting`/`running`) while its API port does not
   accept a connection — i.e. the container died without recording a terminal
   state. Only those runs are probed, with a concurrent loopback TCP connect
   (~0.3s worst case for the whole sweep, no docker CLI involved); a terminal
-  run is unreachable by design and always reports `false`.
+  run is unreachable by design and always reports `false`. Task 008 (issue
+  #16) adds `approachDisplay` — the counter rendered as `2/3` by the one shared
+  formatter `ralphctl runs`/`status` print through
+  (`ralphd.engine.state.format_approach`) — next to (never replacing) the raw
+  `approach`/`maxApproaches` numbers the hub sorts the APPROACH column on.
+  Either raw number may be `null`: no `maxApproaches` renders a bare `2`
+  rather than borrowing this host's configured limit, and no `approach` at all
+  renders an empty string rather than `/3`.
 - `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, status,
   tasks, iterations}`. `status`/`tasks` are proxied live from the run's
   container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
@@ -1237,7 +1245,12 @@ JSON endpoints served under `/api/`:
   like `usage.costDisplay` and `startedAtLocal` — `app.js` never re-spells
   engine vocabulary. Both keys are present only when the read really was
   stale (and are stripped if the plan file forged them), so their absence
-  means "nothing to warn about", never "an old hub".
+  means "nothing to warn about", never "an old hub". Task 008 (#16) adds
+  `status.approachDisplay` the same way (see `GET /api/runs` above); it is
+  always recomputed from the payload's own `approach`/`maxApproaches`, so a
+  status doc carrying a forged `approachDisplay` cannot claim a ladder
+  position its counter fields do not support, and a live pre-v0.6 engine's
+  answer (no `maxApproaches`) renders a bare `2`.
 - `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
   fetches the run's FULL raw NDJSON backlog from the live container API
   (`GET /logs`, no `tail` param there), renders it through the exact same
@@ -1318,9 +1331,14 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   `STATE`/`VERDICT` in lifecycle order (`starting → running → succeeded →
   failed → aborted`, and no-verdict → `unverified` → `verified`) rather than
   alphabetically. The chosen sort lives outside the DOM, so the 4s refresh
-  rebuild preserves it.
+  rebuild preserves it. The **APPROACH** cell shows the server-rendered
+  `approachDisplay` (`10/12`, a bare `2` with no recorded limit, empty for a
+  run that never entered the ladder — task 008, issue #16), while the column
+  still sorts on the raw `approach` number, so approach 10 never sorts as the
+  string `"10/12"`.
 - **Run detail** (`#/run/<id>`) — summary card (state/verdict/phase/
-  approach/iterations/live-vs-snapshot/duration), a usage/cost panel
+  approach `n/m` (task 008, issue #16: the same `approachDisplay` string the
+  run list and `ralphctl status` show)/iterations/live-vs-snapshot/duration), a usage/cost panel
   (total tokens+cost plus the `byPhase`/`byApproach` breakdowns from PRD
   req 19 when present; an unknown/partial cost shows the shared
   `unavailable` wording, computed server-side by `ui_server` and delivered

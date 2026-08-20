@@ -116,6 +116,10 @@ const RUN_COLUMNS = [
   { label: "STATE", key: "state", value: r => lifecycleRank(RUN_STATE_ORDER, r.state) },
   { label: "VERDICT", key: "verdict", value: r => lifecycleRank(RUN_VERDICT_ORDER, r.verdict) },
   { label: "PHASE", key: "phase", value: r => String(r.phase || "") },
+  // Task 008 (#16): the CELL text is the server-rendered `n/m`
+  // (ui_server._with_approach_display -> engine.state.format_approach), while
+  // the SORT value stays the raw numerator -- sorting on "10/12" as a string
+  // would put approach 10 before approach 2.
   { label: "APPROACH", key: "approach", value: r => numOrNull(r.approach) },
   // numeric on iterationsUsed -- NOT the rendered "17/250" cell text
   { label: "ITERATIONS", key: "iterationsUsed", value: r => numOrNull(r.iterationsUsed) },
@@ -123,6 +127,16 @@ const RUN_COLUMNS = [
   // only sorts correctly while every run happens to use the same offset
   { label: "STARTED", key: "startedAt", value: r => isoToEpoch(r.startedAt) },
 ];
+
+function approachText(o) {
+  // Task 008 (#16): one accessor for both the run-list cell and the run-detail
+  // row. The server sends `approachDisplay` (formatted by the same
+  // `engine.state.format_approach` the CLI prints); the raw-counter fallback
+  // only matters for a payload that predates that field, and it deliberately
+  // shows the bare numerator rather than inventing a denominator here.
+  if (o && typeof o.approachDisplay === "string") return o.approachDisplay;
+  return String(!o || o.approach == null ? "" : o.approach);
+}
 
 function runColumn(key) {
   return RUN_COLUMNS.find(c => c.key === key) || RUN_COLUMNS[RUN_COLUMNS.length - 1];
@@ -313,7 +327,7 @@ async function renderRunList() {
           : [pill(r.state)]),
         h("td", {}, [pill(r.verdict)]),
         h("td", {}, [String(r.phase || "")]),
-        h("td", {}, [String(r.approach == null ? "" : r.approach)]),
+        h("td", {}, [approachText(r)]),
         h("td", {}, [`${r.iterationsUsed ?? 0}/${r.iterationsBudget ?? "?"}`]),
         h("td", { class: "muted" }, [String(r.startedAt || "")]),
       ]));
@@ -424,7 +438,7 @@ function renderSummary(el, detail) {
     ["state", pill(s.state)],
     ["verdict", pill(s.verdict)],
     ["phase", String(s.phase || "")],
-    ["approach", String(s.approach == null ? "" : s.approach)],
+    ["approach", approachText(s)],
     ["iterations", `${s.iterationsUsed ?? 0}/${s.iterationsBudget ?? "?"}`],
     ["live", detail.live ? "yes (proxied from container)" : "no (on-disk snapshot)"],
   ];

@@ -1088,3 +1088,98 @@ def test_run_detail_labels_a_stale_task_read_and_never_blinks_empty(tmp_path, pw
         assert cleared, "stale label never cleared after tasks.json parsed again"
     finally:
         server.stop()
+
+
+_APPROACH_CELLS = (
+    "[...document.querySelectorAll('table.run-list tbody tr')]"
+    ".map(tr => tr.children[0].textContent + '=' + tr.children[4].textContent)"
+    ".join(',')")
+
+_DETAIL_APPROACH_LINE = (
+    "[...document.querySelectorAll('div')].filter(d => d.firstChild"
+    " && d.firstChild.tagName === 'B'"
+    " && d.firstChild.textContent === 'approach: ')"
+    ".map(d => d.textContent).join('|')")
+
+
+def _approach_cells(session: Pw) -> dict:
+    raw = session.eval_js(_APPROACH_CELLS).strip('"')
+    return dict(pair.split("=", 1) for pair in raw.split(",") if "=" in pair)
+
+
+def test_run_list_and_detail_render_the_approach_denominator(tmp_path, pw):
+    """Task 008 (#16): the browser half of the approach counter.
+
+    #16's complaint is that `approach 2` alone says nothing about how much of
+    the review ladder is left, so both hub surfaces must show `n/m` -- the
+    run-list APPROACH cell and the run-detail summary row -- rendered from the
+    string the server formatted with the one shared formatter
+    (`engine.state.format_approach`, via `ui_server._with_approach_display`),
+    never a second JS spelling of it.
+
+    All three honest renderings are asserted from an ON-DISK snapshot with no
+    container at all (the state in which an operator most often reads these
+    pages): `10/12`, a bare `2` where the run dir records no `maxApproaches`,
+    and an empty cell for a run that never entered the ladder -- never `/3`.
+
+    The column must also still sort on the raw numerator: the fixtures are
+    picked so a string sort of the rendered cells ("10/12" < "2/3") puts
+    approach 10 in the wrong place.
+    """
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "aaa-ten", state="running", verdict=None,
+                    phase="worker", approach=10, maxApproaches=12,
+                    startedAt="2026-01-04T00:00:00Z")
+    _write_dead_run(registry, "bbb-two", state="failed", verdict="unverified",
+                    phase="worker", approach=2, maxApproaches=3,
+                    startedAt="2026-01-03T00:00:00Z")
+    # pre-v0.6 run dir: approach recorded, limit never was
+    _write_dead_run(registry, "ccc-bare", state="succeeded", verdict="verified",
+                    phase="review", approach=2,
+                    startedAt="2026-01-02T00:00:00Z")
+    _write_dead_run(registry, "ddd-none", state="failed", verdict="unverified",
+                    phase="planning", approach=None, maxApproaches=3,
+                    startedAt="2026-01-01T00:00:00Z")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(server.base)
+        _wait_for(pw, "document.body.innerText", "ddd-none")
+
+        cells = _approach_cells(pw)
+        assert cells == {"aaa-ten": "10/12", "bbb-two": "2/3",
+                         "ccc-bare": "2", "ddd-none": ""}, cells
+        assert "/" not in cells["ccc-bare"]
+        assert "None" not in pw.eval_js("document.body.innerText")
+        pw.screenshot(SCREENSHOTS_DIR / "16-approach-denominator.png")
+
+        # the APPROACH column still sorts on the raw numerator: descending is
+        # 10 before 2, which a sort of the cell TEXT would get wrong.
+        pw.click('th[data-sort-key="approach"]')
+        desc = ["ddd-none", "aaa-ten", "bbb-two", "ccc-bare"]
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != desc:
+            time.sleep(0.2)
+        assert _run_list_order(pw) == desc, _run_list_order(pw)
+        assert "\u25BC" in _sort_header_text(pw, "approach")
+        # ...and reversibly, with the run that never entered the ladder last
+        pw.click('th[data-sort-key="approach"]')
+        asc = ["bbb-two", "ccc-bare", "aaa-ten", "ddd-none"]
+        deadline = time.time() + 10
+        while time.time() < deadline and _run_list_order(pw) != asc:
+            time.sleep(0.2)
+        assert _run_list_order(pw) == asc, _run_list_order(pw)
+        # the cells survived the re-render unchanged
+        assert _approach_cells(pw)["aaa-ten"] == "10/12"
+
+        # -- run detail: the same three renderings -------------------------
+        for run_id, expected in [("aaa-ten", "10/12"), ("ccc-bare", "2"),
+                                 ("ddd-none", "")]:
+            pw.open(f"{server.base}/#/run/{run_id}")
+            _wait_for(pw, "document.body.innerText", "on-disk snapshot")
+            line = _wait_for(pw, _DETAIL_APPROACH_LINE, "approach: ")
+            assert line.strip('"') == "approach: " + expected, (run_id, line)
+        pw.screenshot(SCREENSHOTS_DIR / "17-approach-detail.png")
+    finally:
+        server.stop()
