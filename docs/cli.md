@@ -771,6 +771,12 @@ steering:  001-focus.md
   naming the ones on disk (`run X has no iteration 47 (iterations on disk:
   1..12)`), the same code the live `logs --iteration` path returns for the
   engine's 404. Pinned by `tests/test_cli_iteration_detail.py`.
+- The header block below the `run:` line is worded ONCE, by
+  `ralphd.engine.state.iteration_summary_lines`, and the hub's iteration
+  dialog (task 020, `GET /api/runs/<id>/iterations/<n>`) shows those very
+  lines — asserted line-for-line by
+  `tests/test_hub_iteration_dialog.py`, so the two surfaces cannot grow two
+  vocabularies for the same `meta.json`.
 
 ### `ralphctl tasks <run-id>`
 
@@ -1622,6 +1628,30 @@ JSON endpoints served under `/api/`:
   answers `entries: []` with `notice` set to `(no steering messages)`
   (constant `ui_server.NO_STEERING`, wording server-side like `NO_PRD`);
   `404` for an unknown run id.
+- `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, for the
+  hub's iteration dialog (task 020, issue #18.1): the exact dict `ralphctl
+  iteration` prints from (`ralphd.engine.state.iteration_detail` — `number`,
+  `phase`, `approach`, `hasMeta`, `startedAt`/`endedAt` plus their `*Local`
+  renderings, `durationS`/`durationDisplay`/`durationLabel`, `exitReason`,
+  `tokensDisplay`, `costDisplay`/`costStatus`, `hasTranscript`/
+  `transcriptBytes` and everything else `meta.json` records) plus `runId`,
+  `summaryLines` (that header block as labelled text lines, worded once by
+  `state.iteration_summary_lines`), `log` (the transcript rendered by the same
+  `log_render` pass the log tail above uses) and `text` — the complete dialog
+  body, i.e. `summaryLines` + the `--- log (N lines) ---` separator + `log`.
+  So every string the browser shows was formatted in Python, and the hub
+  cannot word an exit reason, duration or token count differently from
+  `ralphctl iteration <run> <n>`.
+  Unlike the log tail, the PRD and the steering history, this endpoint is
+  **on-disk only and has no `live` flag**: `iterations/NNNN/meta.json` and the
+  per-iteration transcript are the engine's own atomic writes into the run
+  dir, so there is nothing better a live container could say and nothing to
+  fall back *from* (the same reasoning as `ralphctl iteration`'s missing
+  snapshot notice). `?log=0` omits the transcript — the `log` key is then
+  *absent*, never an empty list, exactly like `ralphctl iteration --no-log`.
+  An iteration with no transcript answers with the single `(no transcript
+  yet)` line, and an unknown run id, an unknown iteration number or a
+  non-numeric one all answer `404` with a naming `error`.
 - `POST /api/runs/<id>/steer` — body `{"message": ..., "name": ...}`,
   forwarded to the run's live `POST /steering`. Returns the API's own
   response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`
@@ -1687,7 +1717,7 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   `unavailable` wording, computed server-side by `ui_server` and delivered
   as `usage.costDisplay` exactly like `startedAtLocal`, never re-derived
   from `costUSD` in the browser), a task table, an iteration timeline (number,
-  phase, model, duration once ended), a live log tail rendered with the
+  phase, model, duration once ended — each row clickable, see below), a live log tail rendered with the
   *same* pretty rules as `ralphctl logs` (iteration boundaries, streamed
   text, compact tool one-liners, elided thinking, malformed-line
   markers — reimplemented in `app.js`, not shared code, since the CLI is
@@ -1740,6 +1770,21 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   body for says so instead of showing an empty message. Sending through the
   form refreshes the panel immediately, so an operator sees their own message
   without waiting out the 4s poll.
+  The **iteration timeline** rows are clickable and keyboard-reachable
+  (`tabindex=0`, Enter/Space, `.timeline-clickable[role=button]`,
+  `data-iteration="<n>"`) and open that iteration's own story in the **same
+  single `<dialog>`** (task 020, issue #18.1): phase and approach, the
+  absolute start/end instants, the duration (labelled `total` or `elapsed`),
+  the exit reason (`clean exit`, `exit 7`, `error (exit N): …`, `iteration
+  timeout`, `no-traffic timeout`, `interrupted by operator`, with an
+  `[infra fault]` marker when the attempt was refunded), the model pi actually
+  used, that iteration's tokens and cost, the steering it consumed, the task it
+  verified — and then its full transcript. The whole body is the `text` string
+  `GET /api/runs/<id>/iterations/<n>` formatted (see above), inserted as text
+  nodes only, so a transcript full of `<` survives as text and the hub says
+  exactly what `ralphctl iteration <run> <n>` says. The endpoint is on-disk
+  only, so this works for a run whose container is long gone — hence no
+  snapshot label on this dialog.
   A **degraded** run (`health: degraded`/`infraWait` set — the run is
   sitting out an endpoint outage; see docs/api.md) gets a visually
   distinct card (`.card.degraded`) carrying the attempt number, phase,
