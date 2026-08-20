@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import state
-from .pricing import PricingMap
+from .pricing import PricingSource
 from .redact import scrub_text
 
 COMPLETE = "<promise>COMPLETE</promise>"
@@ -60,7 +60,7 @@ class PiRunner:
     """Runs `pi -p --mode json` as a subprocess, one call per iteration."""
 
     def __init__(self, workspace: Path, pi_bin: str = "pi",
-                 pricing: PricingMap | None = None):
+                 pricing: PricingSource | None = None):
         self.workspace = workspace
         self.pi_bin = pi_bin
         # Task 052 (#10): optional host-side rate table, consulted ONLY when
@@ -192,7 +192,7 @@ class PiRunner:
 
     @staticmethod
     def _scan_line(line: bytes, result: IterationResult,
-                   pricing: PricingMap | None = None,
+                   pricing: PricingSource | None = None,
                    model: str | None = None) -> bool:
         """Extract final assistant text + usage from pi's NDJSON events.
 
@@ -222,7 +222,7 @@ class PiRunner:
 
 
 def _accumulate_cost(usage: dict, result: IterationResult,
-                     pricing: PricingMap | None = None,
+                     pricing: PricingSource | None = None,
                      model: str | None = None) -> None:
     """Fold one message's `usage.cost.total` into `result.usage` (task 049, #10).
 

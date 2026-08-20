@@ -40,6 +40,15 @@ that billed tokens: it is a declaration by the operator, matched with the same
 rules as the rate table. Never infer "free" from a provider quoting zero --
 that is exactly the implausible-zero anomaly `state.is_zero_quote` exists to
 catch (`artifacts/reports/pricing-anomaly.md`).
+
+Task 011 (#14, v0.6) adds a SECOND possible source of rates -- the built-in
+AWS Bedrock table (`engine/pricing_aws.py`), engaged by
+`price_strategy: aws`. The two are composed, never merged: `resolve_pricing`
+returns a `PricingChain` with the operator map first, so an operator rate
+always wins and every derived number can still name the table it came from
+(`table_for`, `price_tables` -> `GET /config`). With the shipped default
+`price_strategy: none`, `resolve_pricing` returns the operator map itself and
+behaviour is byte-identical to pre-v0.6.
 """
 
 from __future__ import annotations
@@ -51,6 +60,16 @@ log = logging.getLogger("ralphd.pricing")
 
 # The usage counters a rate may be quoted for, in the order they are summed.
 RATE_KEYS = ("input", "output", "cacheRead", "cacheWrite")
+
+# Task 011 (#14): the names every surface uses to say WHICH table produced a
+# rate. The operator's own `pricing:` map is "operator map"; a built-in table
+# names itself (`pricing_aws.TABLE_NAME`); "neither" means nothing could price
+# the route at all, which is why such a cost stays `unavailable`.
+OPERATOR_TABLE = "operator map"
+NO_TABLE = "neither"
+# The one strategy name that engages the built-in AWS Bedrock table.
+# `config.PRICE_STRATEGIES` validates the knob; this is what acts on it.
+AWS_STRATEGY = "aws"
 
 
 @dataclass(frozen=True)
@@ -122,9 +141,14 @@ class PricingMap:
     # matched exactly like `models` keys (after aliasing). The only way a $0
     # with billable tokens is believed.
     free: tuple[str, ...] = ()
+    # Task 011 (#14): what this table is called wherever a surface has to say
+    # which one answered. Defaults to the operator map -- the only table an
+    # operator configures; `pricing_aws.pricing_map()` passes its TABLE_NAME.
+    name: str = OPERATOR_TABLE
 
     @classmethod
-    def from_config(cls, raw: object) -> PricingMap | None:
+    def from_config(cls, raw: object, *,
+                    name: str = OPERATOR_TABLE) -> PricingMap | None:
         """Parse the `pricing:` config value. None when absent/unusable."""
         if not isinstance(raw, dict) or not raw:
             return None
@@ -144,15 +168,15 @@ class PricingMap:
             if isinstance(free_raw, (list, tuple)) else ()
         models: dict[str, ModelRate] = {}
         if isinstance(models_raw, dict):
-            for name, entry in models_raw.items():
+            for model_id, entry in models_raw.items():
                 rate = ModelRate.parse(entry)
                 if rate is None:
-                    log.warning("pricing: ignoring unusable rate for %r", name)
+                    log.warning("pricing: ignoring unusable rate for %r", model_id)
                     continue
-                models[str(name)] = rate
+                models[str(model_id)] = rate
         if not models and not free:
             return None
-        return cls(models=models, aliases=aliases, free=free)
+        return cls(models=models, aliases=aliases, free=free, name=name)
 
     # -- lookup -----------------------------------------------------------
 
@@ -214,12 +238,151 @@ class PricingMap:
                 total += tokens * rate.per_mtok(key) / 1_000_000
         return round(total, 6)
 
+    def table_for(self, model: str | None) -> str:
+        """Which table can price `model`: this map's `name`, or `NO_TABLE`."""
+        return self.name if self.rate_for(model) is not None else NO_TABLE
+
     def describe(self) -> dict:
         """Non-secret summary for `GET /config` -- the rates as configured,
         so an operator can see *which* table produced a derived cost."""
         return {
-            "models": {name: {k: rate.per_mtok(k) for k in RATE_KEYS}
-                       for name, rate in sorted(self.models.items())},
+            "table": self.name,
+            "models": {model: {k: rate.per_mtok(k) for k in RATE_KEYS}
+                       for model, rate in sorted(self.models.items())},
             "aliases": dict(sorted(self.aliases.items())),
             "free": sorted(self.free),
         }
+
+    def summary(self) -> dict:
+        """One line about this table for the `priceTables` list (task 011):
+        its name and how much it knows, without dumping every rate twice."""
+        return {"name": self.name, "models": len(self.models),
+                "aliases": len(self.aliases), "free": len(self.free)}
+
+
+@dataclass(frozen=True)
+class PricingChain:
+    """Several rate tables consulted in order, most specific first (task 011).
+
+    Built by `resolve_pricing` when `price_strategy` engages a built-in table:
+    the operator's own `pricing:` map is always layer 0, so a rate an operator
+    typed for THEIR gateway always beats a shipped table's idea of the same id.
+    It is a duck-typed stand-in for a single `PricingMap` (`rate_for`,
+    `is_free`, `derive`, `table_for`, `describe`), so `PiRunner` and
+    `_accumulate_cost` need no idea whether one table or three answered.
+
+    Deliberately NOT a merged dict of rates: merging would lose which table a
+    number came from, and "which table priced this run" is the question this
+    whole feature exists to keep answerable.
+    """
+
+    layers: tuple[PricingMap, ...]
+
+    @property
+    def name(self) -> str:
+        return ", then ".join(layer.name for layer in self.layers) or NO_TABLE
+
+    def _layer_for(self, model: str | None) -> PricingMap | None:
+        """The first layer with a rate for `model` -- the one that answers."""
+        for layer in self.layers:
+            if layer.rate_for(model) is not None:
+                return layer
+        return None
+
+    # Deliberately NO chain-level `canonical()`: each layer aliases with its
+    # own table, so "the canonical id" is a per-layer answer, not a chain one.
+
+    def rate_for(self, model: str | None) -> ModelRate | None:
+        layer = self._layer_for(model)
+        return layer.rate_for(model) if layer else None
+
+    def is_free(self, model: str | None) -> bool:
+        """True when ANY layer declares the route free. Only an operator map
+        ever carries `free:` patterns -- a shipped table has no business
+        declaring someone else's route free -- so in practice this is the
+        operator's declaration, honoured whichever layer holds the rate."""
+        return any(layer.is_free(model) for layer in self.layers)
+
+    def derive(self, usage: dict, model: str | None) -> float | None:
+        """Derived USD from the FIRST layer that can price `model`, or None.
+
+        Never a sum and never an average across layers: exactly one table
+        prices a given message, and it is the most specific one.
+        """
+        layer = self._layer_for(model)
+        return layer.derive(usage, model) if layer else None
+
+    def table_for(self, model: str | None) -> str:
+        layer = self._layer_for(model)
+        return layer.name if layer else NO_TABLE
+
+    def describe(self) -> dict:
+        return {"table": self.name,
+                "tables": [layer.summary() for layer in self.layers]}
+
+    def summary(self) -> dict:
+        return {"name": self.name, "tables": [layer.summary()
+                                              for layer in self.layers]}
+
+
+# A resolved rate source: one table, a chain of them, or nothing configured.
+PricingSource = PricingMap | PricingChain
+
+
+def wants_aws(price_strategy: object) -> bool:
+    """True when `price_strategy` selects the built-in AWS Bedrock table.
+
+    Tolerant of casing/whitespace exactly like `config.normalize_price_strategy`
+    (which has already normalised it in every real code path) so a directly
+    built JobConfig or a hand-written test value cannot silently mean `none`.
+    """
+    return str(price_strategy or "").strip().lower() == AWS_STRATEGY
+
+
+def resolve_pricing(pricing_cfg: object,
+                    price_strategy: object = None) -> PricingSource | None:
+    """The effective rate source for a run (task 011, #14).
+
+    * `price_strategy` not `aws` -> exactly what pre-v0.6 ralphd used: the
+      operator's map, or None when there is none. Byte-identical behaviour is
+      the point, and `tests/test_price_strategy_derive.py` asserts it on a
+      fixture rather than trusting this sentence.
+    * `price_strategy: aws` -> the built-in AWS Bedrock table
+      (`pricing_aws.pricing_map()`), behind the operator's map when one is
+      configured, so an operator rate always wins.
+
+    Imported lazily: `pricing_aws` imports this module, and a run that never
+    opts in should not pay for building the table (nor see its staleness
+    warning).
+    """
+    operator = PricingMap.from_config(pricing_cfg)
+    if not wants_aws(price_strategy):
+        return operator
+    from . import pricing_aws
+    layers = [layer for layer in (operator, pricing_aws.pricing_map())
+              if layer is not None]
+    return PricingChain(tuple(layers)) if layers else None
+
+
+def price_tables(pricing_cfg: object,
+                 price_strategy: object = None) -> dict:
+    """What may derive a cost, in precedence order, for `GET /config`.
+
+    Answers "which table produced this rate" *before* anything is derived:
+    `names` in precedence order, `answers` as one human string (`"operator
+    map, then builtin-aws-bedrock"`, or `"neither"` when nothing is
+    configured), and one summary per table -- including the built-in table's
+    as-of date and staleness, which is the part an operator must be able to
+    distrust.
+    """
+    tables: list[dict] = []
+    operator = PricingMap.from_config(pricing_cfg)
+    if operator is not None:
+        tables.append(operator.summary())
+    if wants_aws(price_strategy):
+        from . import pricing_aws
+        tables.append(pricing_aws.describe())
+    names = [t["name"] for t in tables]
+    return {"names": names,
+            "answers": ", then ".join(names) or NO_TABLE,
+            "tables": tables}

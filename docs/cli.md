@@ -1128,6 +1128,27 @@ What the table does, and deliberately does not, resolve:
 - Lookups go through the same `PricingMap` rules as an operator map (one alias
   hop, exact key beats wildcard, longest wildcard prefix wins).
 
+**Which table produced a rate (v0.6, #14).** With `price_strategy: aws` the two
+tables are *layered*, never merged: the operator's `pricing:` map is consulted
+first and the built-in table only answers ids the operator map does not cover,
+so exactly one table prices any given message (never a sum of both) and its
+identity stays visible. `GET /config` reports it as `priceTables`:
+
+```json
+{"names": ["operator map", "builtin-aws-bedrock"],
+ "answers": "operator map, then builtin-aws-bedrock",
+ "tables": [{"name": "operator map", "models": 2, "aliases": 1, "free": 0},
+            {"name": "builtin-aws-bedrock", "asOf": "...", "stale": false, "models": 114}]}
+```
+
+`answers` reads `neither` when nothing can price the run's routes -- which is
+precisely why such a cost renders `unavailable` rather than `$0.00`. Both
+triggers reach the derivation: a provider that quotes **no** cost block, and
+one that quotes an implausible `$0` beside billable tokens (the live AIGW case,
+`artifacts/reports/pricing-anomaly.md`). A route declared free in `pricing:`
+`free:` is still free: a declaration outranks every rate table, built-in ones
+included.
+
 **Provenance, as-of date and refresh.** The rates mirror pi-ai's bundled
 Bedrock provider data (`@earendil-works/pi-ai/.../data/amazon-bedrock.json`,
 the same numbers pi itself prices a request with), cross-checkable against

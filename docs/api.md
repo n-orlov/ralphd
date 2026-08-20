@@ -416,6 +416,7 @@ contents, no LLM env values):
   "model": {"strategy": "quality-first", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
+  "priceTables": {"names": [], "answers": "neither", "tables": []},  // which table may price this run, in order
   "prompts": [{"name": "planning", "source": "builtin"}, ...],
   "skills": [{"name": "...", "origin": "mounted"}, ...],
   "creds": ["github", ...],
@@ -444,7 +445,8 @@ overrides set via `PUT /config/llm`, never their values.
 see which rates produced a derived cost:
 
 ```json
-{"models": {"openai/gpt-5": {"input": 1.25, "output": 10.0, "cacheRead": 0.125, "cacheWrite": 1.25}},
+{"table": "operator map",
+ "models": {"openai/gpt-5": {"input": 1.25, "output": 10.0, "cacheRead": 0.125, "cacheWrite": 1.25}},
  "aliases": {"aigw-openai/*": "openai/*"},
  "free": ["ollama/*"]}
 ```
@@ -478,6 +480,28 @@ this knob and always applies. The reported value is always the **effective**
 one: an unrecognised configured value degrades to `"none"` (with a warning in
 the engine log) rather than failing the job, so what this field says is what
 the run actually does.
+
+`priceTables` (v0.6, #14) answers *which* table may produce a rate for this
+run, before any money is derived — the operator map, the built-in AWS table,
+both (in the order they are consulted) or neither:
+
+```json
+{"names": ["operator map", "builtin-aws-bedrock"],
+ "answers": "operator map, then builtin-aws-bedrock",
+ "tables": [{"name": "operator map", "models": 2, "aliases": 1, "free": 0},
+            {"name": "builtin-aws-bedrock", "asOf": "2026-08-20", "asOfValid": true,
+             "ageDays": 12, "staleAfterDays": 180, "stale": false, "models": 114,
+             "aliases": 456, "source": "...", "refresh": "..."}]}
+```
+
+The order is precedence: the operator's `pricing:` map is always consulted
+first, so a rate an operator typed for *their* gateway wins over a shipped
+table's idea of the same model id, and exactly one table prices any given
+message (never a sum or an average of both). `answers` is the one human string
+surfaces use; `"neither"` means nothing can price this run's routes, which is
+why an unpriced cost then reads `unavailable`. The built-in entry carries its
+own as-of date and staleness so an operator can decide how much to trust a
+derived number (see "Built-in AWS Bedrock rate table" in `docs/cli.md`).
 
 ### `PATCH /config/budget`
 Raises (or lowers) the **iteration budget of a running job** without restarting

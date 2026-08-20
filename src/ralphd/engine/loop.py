@@ -22,7 +22,7 @@ from .config import (
 )
 from .faults import classify_fault
 from .llm import current_env
-from .pricing import PricingMap
+from .pricing import resolve_pricing
 from .runner import IterationResult, PiRunner
 from .state import (
     RunDir,
@@ -54,8 +54,12 @@ class LoopSupervisor:
         # Task 052 (#10): the host-side rate table (usually inlined into
         # job.yaml by `ralphctl start`) is parsed once, here -- the runner
         # consults it only for messages the provider quoted no price for.
+        # Task 011 (#14): `resolve_pricing` also layers the built-in AWS
+        # Bedrock table behind it when `price_strategy: aws`; with the default
+        # `none` it returns exactly the operator map (or None) as before.
         self.runner = PiRunner(workspace,
-                               pricing=PricingMap.from_config(cfg.pricing))
+                               pricing=resolve_pricing(cfg.pricing,
+                                                       cfg.price_strategy))
         # Seed from any already-completed iterations on disk (0 for a
         # fresh run dir) so a restarted engine numbers its next iteration
         # N+1 instead of reusing/duplicating past numbers (PRD req 16).
