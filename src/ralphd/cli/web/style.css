@@ -361,3 +361,22 @@ footer.autorefresh {
 .artifact-item .artifact-key { font-weight: 600; }
 .artifact-item .artifact-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .artifact-item .artifact-size { font-size: 0.78rem; }
+
+/* fault badge (task 026, #18.4) -- the way in to the fault explanation, on a
+   failed/aborted run's state pill and on a degraded card's infra-wait block.
+   A real <button> (keyboard/Enter/Space from the platform) stripped of its
+   chrome so the badge it wraps keeps its own look; the underline is the only
+   hint that it opens something. */
+.fault-badge {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2rem;
+}
+.fault-badge:hover { text-decoration: underline; }
+.fault-badge:focus-visible { outline: 2px solid var(--accent); }

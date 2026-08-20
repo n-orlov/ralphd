@@ -874,7 +874,10 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   `tests/test_cli_fault_explanation.py`.
 - The block below the `run:` line is worded ONCE, by
   `ralphd.engine.state.fault_summary_lines`, so the hub's fault dialog (task
-  026) explains the same fault in the same words.
+  026) explains the same fault in the same words: the hub's `GET
+  /api/runs/<id>/fault` serves this exact document (`--json`'s shape, `text`
+  included) and the badge on a degraded or failed run's card renders that `text`
+  verbatim — see the `ralphctl ui` section's run-detail description.
 
 ### `ralphctl docs <run-id> [name]`
 
@@ -1930,6 +1933,21 @@ JSON endpoints served under `/api/`:
   …)` wording rather than bytes, and one that is no longer there with `(not
   written)` rather than a `404`. `404` for an unknown run id or a name that
   cannot address an artifact at all.
+- `GET /api/runs/<id>/fault` — why this run is (or last was) in trouble, for
+  the hub's fault dialog behind the failure / infra-wait badge (task 026, issue
+  #18.4). Byte-for-byte the document `ralphctl fault <run> --json` prints: the
+  shared join `ralphd.engine.state.fault_explanation` produces (`hasFault`,
+  `faultClass`, `reason`, `signature`/`signatureDisplay`, `ladder`, `budget`,
+  `health`, `waiting`, `recovered`, `abortReason`, the failing iteration's own
+  `iterationDetail`, `notices`, `summaryLines`) plus `runId` and `text` — the
+  complete dialog body, i.e. exactly the block `ralphctl fault <run>` prints
+  below its `run:` line. So the hub cannot explain a fault differently from the
+  CLI. A run that never faulted is **not** an error: it answers `hasFault:
+  false` with `(no fault recorded)` as its `text`, so the badge that opens the
+  dialog never has to lie about having something to say. On-disk only, with no
+  `live` flag (status.json, `events.jsonl` and the iteration metas are the
+  engine's own writes), like the iteration/document/artifact endpoints above.
+  `404` for an unknown run id.
 - `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, for the
   hub's iteration dialog (task 020, issue #18.1): the exact dict `ralphctl
   iteration` prints from (`ralphd.engine.state.iteration_detail` — `number`,
@@ -2125,6 +2143,18 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   backoff wait is actually pending and only when the run's API is
   reachable: on a dead run the card says `read-only on-disk snapshot` and
   offers no button.
+  Both the degraded block and a **failed**/**aborted** run's `state:` pill carry
+  a **fault badge** (task 026, issue #18.4): a `<button class="fault-badge"
+  data-fault-badge="infra-wait|state">` — keyboard-reachable, Enter/Space from
+  the platform — opening the run's fault explanation in the same single
+  `<dialog>`. The body is the `text` string `GET /api/runs/<id>/fault` formatted
+  (see above), i.e. exactly what `ralphctl fault <run>` prints, as text nodes
+  only: the classification the engine acted on, which row of `engine/faults.py`'
+  signature table matched (family, pattern and the substring that matched), the
+  run's position on the retry ladder with its own recorded backoffs, and how much
+  of the outage budget is spent. Because the endpoint is on-disk this works with
+  the container long gone — and a run that never faulted carries no badge, so
+  there is nothing to click and nothing to explain.
   A run whose post-terminal **reflection failed** (`reflect.ok: false`)
   gets a `.reflect-failed` line -- `reflection: failed (<error>)`, the same
   wording `ralphctl status` prints -- since the failure deliberately leaves
