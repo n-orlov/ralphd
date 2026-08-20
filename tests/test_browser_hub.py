@@ -1469,3 +1469,113 @@ def test_steering_entry_appears_pending_then_flips_to_applied(tmp_path, pw, live
     finally:
         run.wait_terminal(timeout=120)
         server.stop()
+
+
+_TIMELINE_ITEMS = "document.querySelectorAll('.timeline-item').length"
+_TIMELINE_CLICKABLE = "document.querySelectorAll('.timeline-clickable[role=\"button\"]').length"
+
+
+def test_timeline_row_opens_the_iteration_dialog(tmp_path, pw):
+    """Task 020 (#18.1): clicking a timeline row opens THAT iteration's own
+    story -- phase, timestamps, duration, exit reason, tokens, cost and its
+    full log -- in the single shared text dialog.
+
+    Everything asserted here is a string Python formatted (`ui_server.
+    iteration_view` -> `state.iteration_summary_lines` + the shared
+    `log_render`), so the hub cannot word an exit reason or a cost differently
+    from `ralphctl iteration`; the fixture has no container at all, since the
+    endpoint is on-disk by design. Also pins the rendering discipline (a
+    transcript containing markup stays TEXT) and that the dialog does not
+    stack across the 4s `load()` rebuild behind it.
+    """
+    from ralphd.cli.ui_server import iteration_view
+    from ralphd.engine.state import EXIT_REASON_CLEAN, format_local_time
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-iter-dialog", state="failed",
+                              verdict="unverified")
+    metas = {
+        1: {"number": 1, "phase": "planning", "model": "stub-model", "approach": 1,
+            "startedAt": "2026-09-03T09:00:00Z", "endedAt": "2026-09-03T09:04:10Z",
+            "exitCode": 0, "error": None,
+            "usage": {"input": 10, "output": 20, "totalTokens": 30,
+                      "costUSD": 0.0125, "costPriced": True}},
+        2: {"number": 2, "phase": "worker", "model": "stub-model", "approach": 2,
+            "startedAt": "2026-09-03T09:05:00Z", "endedAt": "2026-09-03T09:22:51Z",
+            "exitCode": 7, "error": "pi exited with a broken pipe",
+            "usage": {"input": 18, "output": 2118, "totalTokens": 180661,
+                      "costUSD": 0.4231, "costPriced": True}},
+    }
+    texts = {1: "planning transcript line",
+             # markup in the transcript must survive as text, like a PRD body
+             2: "worker said <b>done</b> and <script>alert(1)</script>"}
+    for n, meta in metas.items():
+        d = run_dir / "iterations" / f"{n:04d}"
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps(meta))
+        (d / "output.jsonl").write_text(json.dumps(
+            {"type": "message_end",
+             "message": {"content": [{"type": "text", "text": texts[n]}]}}) + "\n")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-iter-dialog")
+        _wait_for_count_ge(pw, _TIMELINE_ITEMS, 2)
+        assert int(pw.eval_js(_TIMELINE_CLICKABLE)) == 2
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- the failed worker iteration -----------------------------------
+        pw.click('.timeline-item[data-iteration="2"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "iteration: 2")
+        title = pw.eval_js("document.querySelector('.text-dialog .dialog-title')"
+                           ".textContent")
+        assert "Iteration #2" in title and "run-iter-dialog" in title, title
+        assert "phase worker" in body and "approach 2" in body, body
+        assert format_local_time(metas[2]["startedAt"]) in body, body
+        assert format_local_time(metas[2]["endedAt"]) in body, body
+        assert "duration:  17m 51s  (total)" in body, body
+        assert "error (exit 7): pi exited with a broken pipe" in body, body
+        assert "180,661 total (in 18, out 2,118)" in body, body
+        assert "$0.4231" in body, body
+        assert "worker said <b>done</b> and <script>alert(1)</script>" in body, body
+        # ...and only THIS iteration's log
+        assert "planning transcript line" not in body, body
+        # every line came from the server's own `text`, verbatim
+        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
+                         ".textContent")
+        dialog_body = json.loads(raw) if raw.startswith('"') else raw
+        assert dialog_body == iteration_view(registry, "run-iter-dialog", 2)["text"]
+        # text nodes only: nothing in the transcript was parsed as markup
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b').length")) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "23-iteration-dialog.png")
+
+        # -- it survives a full 4s poll without stacking -------------------
+        time.sleep(5.0)
+        assert int(pw.eval_js(_TIMELINE_ITEMS)) == 2       # timeline re-rendered
+        assert int(pw.eval_js(_DIALOGS)) == 1              # ...behind ONE dialog
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- the other row opens its OWN iteration (keyboard-reachable) ----
+        pw.eval_js("document.querySelector('.timeline-item[data-iteration=\"1\"]')"
+                   ".focus() || 'focused'")
+        assert pw.eval_js(
+            "document.activeElement.getAttribute('data-iteration')").strip('"') == "1"
+        assert pw.run("press", "Enter").returncode == 0
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "iteration: 1")
+        assert "phase planning" in body, body
+        assert EXIT_REASON_CLEAN in body, body
+        assert "planning transcript line" in body, body
+        assert "worker said" not in body, body
+        assert int(pw.eval_js(_DIALOGS)) == 1
+    finally:
+        server.stop()

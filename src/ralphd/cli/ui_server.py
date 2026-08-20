@@ -12,6 +12,10 @@ Serves two things:
     timeout) when it is not -- including the log tail (task 039), the
     PRD (task 056) and the steering history (task 016), which all fall
     back to reading the run dir on disk so a dead run stays readable.
+    One read is on-disk ONLY by design: `GET
+    /api/runs/<id>/iterations/<n>` (task 020), because the engine writes
+    `iterations/NNNN/meta.json` and the transcript into the run dir
+    itself -- see `iteration_view`.
     Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
@@ -45,13 +49,16 @@ from ..engine.state import (
     TASKS_STALE_LABEL,
     format_approach,
     format_cost,
+    format_iteration_log_header,
     format_local_time,
+    iteration_detail,
+    iteration_summary_lines,
     prd_path,
     read_tasks_doc,
     steering_entries,
     tasks_read_notice,
 )
-from ..log_merge import NO_TRANSCRIPT, merged_lines
+from ..log_merge import NO_TRANSCRIPT, iteration_lines, merged_lines
 from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
@@ -330,6 +337,53 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     if tail:
         lines = lines[-tail:]
     return ok, lines or [NO_TRANSCRIPT]
+
+
+def iteration_view(reg: Path, run_id: str, number: int, *,
+                   log: bool = True) -> dict | None:
+    """One iteration's whole story for the hub's iteration dialog (task 020,
+    #18.1), or None when the run dir holds no such iteration (caller -> 404).
+
+    The payload is `engine.state.iteration_detail` -- the ONE shaping of
+    `iterations/NNNN/meta.json`, shared with `ralphctl iteration` (task 019) --
+    plus that iteration's transcript rendered by the SAME server-side renderer
+    the log tail uses (`rendered_log_lines`' `log_render.render_to_lines`), and
+    `text`: the complete dialog body, i.e. `state.iteration_summary_lines`
+    followed by `state.format_iteration_log_header` and the rendered lines.
+
+    So every string the browser shows was formatted in Python by the same
+    functions `ralphctl iteration` prints (the `costDisplay`/`startedAtLocal`
+    discipline, applied to a block of text): app.js only puts `text` into a
+    text node.
+
+    Deliberately NO live-API branch, unlike the log tail / PRD / steering
+    endpoints: `meta.json` and the transcript are written by the engine itself
+    into the run dir, so the on-disk copy is authoritative even while the
+    container is alive (see `state.iteration_detail`) -- there is nothing to
+    fall back FROM, hence no `live` flag and no snapshot notice to render.
+    An empty render still answers with `log_merge.NO_TRANSCRIPT` rather than
+    `[]`, so the dialog says *why* it shows no log.
+    """
+    run_dir = reg / "runs" / run_id
+    detail = iteration_detail(run_dir, number)
+    if detail is None:
+        return None
+    summary = iteration_summary_lines(detail)
+    body = list(summary)
+    lines: list[str] | None = None
+    if log:
+        raw = "".join(iteration_lines(run_dir, number))
+        lines = render_to_lines(raw, tty=False, state=new_render_state()) \
+            or [NO_TRANSCRIPT]
+        body += [format_iteration_log_header(len(lines)), *lines]
+    out = {"runId": run_id, **detail, "summaryLines": summary,
+           "text": "\n".join(body)}
+    # `log` is absent (not empty) when the caller asked for no transcript --
+    # an empty list would claim the iteration produced none (`ralphctl
+    # iteration --no-log`'s own rule).
+    if lines is not None:
+        out["log"] = lines
+    return out
 
 
 def prd_text(reg: Path, run_id: str) -> tuple[bool, str]:
@@ -685,6 +739,29 @@ class Handler(BaseHTTPRequestHandler):
                 live, entries = steering_list(reg, run_id)
                 self._send_json({"live": live, "entries": entries,
                                  "notice": "" if entries else NO_STEERING})
+                return
+            if (len(segs) == 5 and segs[:2] == ["api", "runs"]
+                    and segs[3] == "iterations"):
+                # Task 020 (#18.1): one iteration's header + transcript for
+                # the hub's iteration dialog. Purely on-disk (see
+                # `iteration_view`): meta.json is the engine's own atomic
+                # write, so there is no live answer to prefer.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                try:
+                    number = int(segs[4])
+                except ValueError:
+                    self._send_json({"error": f"bad iteration number {segs[4]!r}"}, 404)
+                    return
+                view = iteration_view(reg, run_id, number,
+                                      log=qs.get("log", ["1"])[0] != "0")
+                if view is None:
+                    self._send_json(
+                        {"error": f"run {run_id} has no iteration {number}"}, 404)
+                    return
+                self._send_json(view)
                 return
             if len(segs) == 3 and segs[:2] == ["api", "runs"]:
                 run_id = segs[2]

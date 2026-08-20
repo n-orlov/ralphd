@@ -313,6 +313,35 @@ function openTaskDialog(t) {
   return openTextDialog(title, taskDialogText(t), null);
 }
 
+// ------------------------------------------------- iteration detail (#18.1)
+
+// Task 020 (#18.1): a timeline row used to be a dead summary -- phase, model,
+// duration -- and "why did iteration 47 end like that, and what did the agent
+// actually do in it" meant leaving the hub for `ralphctl iteration`/the run
+// dir. Clicking a row now opens that iteration's own story in THE single
+// `openTextDialog`.
+//
+// Every string in the dialog was formatted in Python by
+// `state.iteration_summary_lines` + the shared `log_render` renderer and
+// arrives as one `text` blob (ui_server.iteration_view), so the hub cannot
+// word an exit reason, a duration or a token count differently from `ralphctl
+// iteration`, and the transcript is rendered by the same code as the log tail.
+// The endpoint is purely on-disk, so this works for a dead run with no
+// container -- hence no live/snapshot note here (unlike the PRD dialog).
+function iterationTitle(runId, number) {
+  return "Iteration #" + String(number) + " — " + String(runId);
+}
+
+async function openIterationDialog(runId, number) {
+  const path = `/api/runs/${encodeURIComponent(runId)}/iterations/` +
+    encodeURIComponent(String(number));
+  const { ok, body } = await getJSON(path);
+  const text = (ok && body && typeof body.text === "string" && body.text)
+    ? body.text
+    : "(failed to load iteration " + String(number) + ")";
+  return openTextDialog(iterationTitle(runId, number), text, null);
+}
+
 // --------------------------------------------------- steering history (#17)
 
 // Task 017 (#17): steering used to be write-only in the hub -- an operator
@@ -571,7 +600,7 @@ async function renderRunDetail(runId) {
     renderSummary(summary, body);
     renderUsage(document.getElementById("usage-box"), body.status && body.status.usage);
     renderTasks(document.getElementById("task-box"), body.tasks);
-    renderTimeline(document.getElementById("timeline-box"), body.iterations || []);
+    renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
     await loadLogs(runId);
     await loadSteering(runId);
   }
@@ -917,7 +946,7 @@ function renderTasks(el, tasks) {
   el.appendChild(table);
 }
 
-function renderTimeline(el, iterations) {
+function renderTimeline(el, iterations, runId) {
   el.innerHTML = "";
   if (iterations.length === 0) {
     el.appendChild(h("p", { class: "muted" }, ["(no iterations yet)"]));
@@ -928,7 +957,27 @@ function renderTimeline(el, iterations) {
     const dur = it.endedAt
       ? fmtDuration(durationBetween(it.startedAt, it.endedAt))
       : (it.startedAt ? "running…" : "");
-    const row = h("div", { class: "timeline-item" }, [
+    // Task 020 (#18.1): the whole row is the affordance -- clickable and
+    // keyboard-reachable (Enter/Space), like a task row -- opening that
+    // iteration's header block and transcript.
+    const number = it.number ?? null;
+    const open = number == null ? null : () => { openIterationDialog(runId, number); };
+    // Attributes are only set when there is something to click: `h()` would
+    // otherwise stringify a null into `role="null"`/`onclick="null"`.
+    const attrs = {
+      class: "timeline-item" + (open ? " timeline-clickable" : ""),
+      "data-iteration": number == null ? "" : String(number),
+    };
+    if (open) {
+      attrs.role = "button";
+      attrs.tabindex = "0";
+      attrs.title = "show this iteration's detail and log";
+      attrs.onclick = open;
+      attrs.onkeydown = (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+      };
+    }
+    const row = h("div", attrs, [
       h("span", { class: "num" }, ["#" + (it.number ?? "?")]),
       // Task 048 (#4): when the iteration ran, not just how long it took --
       // server-formatted absolute local time (`startedAtLocal`), with the

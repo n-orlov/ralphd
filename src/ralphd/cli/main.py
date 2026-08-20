@@ -45,9 +45,11 @@ from ..engine.state import (
     format_approach,
     format_cost,
     format_duration,
+    format_iteration_log_header,
     format_local_time,
     format_task_counts,
     iteration_detail,
+    iteration_summary_lines,
     parse_utc,
     read_operator_termination,
     read_tasks_doc,
@@ -2110,47 +2112,15 @@ def cmd_iteration(args):
         print(json.dumps(doc, indent=2))
         return
 
-    it_line = f"iteration: {detail['number']}"
-    if detail.get("phase"):
-        it_line += f"  phase {detail['phase']}"
-    if detail.get("approach") is not None:
-        it_line += f"  approach {detail['approach']}"
-    lines = [f"run:       {args.run_id}", it_line]
-    if not detail["hasMeta"]:
-        # An iteration dir with no readable meta.json: the transcript is still
-        # here, the metadata is genuinely unknown -- said out loud rather than
-        # rendered as a row of `None`s.
-        lines.append("!! no readable meta.json for this iteration "
-                     "(nothing known but the transcript)")
-    if detail.get("startedAtLocal"):
-        lines.append(f"started:   {detail['startedAtLocal']}")
-    if detail.get("endedAtLocal"):
-        lines.append(f"ended:     {detail['endedAtLocal']}")
-    lines += [
-        f"duration:  {detail['durationDisplay']}  ({detail['durationLabel']})",
-        f"exit:      {detail['exitReason']}",
-    ]
-    # The model pi actually used, with the raw gateway id only when it adds
-    # information -- exactly `ralphctl status`' model line (task 012).
-    model = detail.get("modelResolved") or detail.get("model")
-    if model:
-        model_line = f"model:     {model}"
-        if detail.get("modelRaw") and detail["modelRaw"] != model:
-            model_line += f"  (gateway id: {detail['modelRaw']})"
-        lines.append(model_line)
-    lines += [
-        f"tokens:    {detail['tokensDisplay']}",
-        f"cost:      {detail['costDisplay']}",
-    ]
-    steering = detail.get("steeringConsumed") or []
-    if steering:
-        lines.append(f"steering:  {', '.join(str(s) for s in steering)}")
-    if detail.get("verifiedTask"):
-        lines.append(f"verified:  task {detail['verifiedTask']} "
-                     f"-> {detail.get('verifyOutcome')}")
+    it_line = f"run:       {args.run_id}"
+    # Task 020 (#18.1): the header block is worded ONCE, in
+    # `state.iteration_summary_lines`, and shown verbatim by the hub's
+    # iteration dialog too -- only this `run:` line (the id the operator
+    # typed) belongs to the CLI.
+    lines = [it_line] + iteration_summary_lines(detail)
     print("\n".join(lines))
     if log_lines is not None:
-        print(f"--- log ({len(log_lines)} lines) ---")
+        print(format_iteration_log_header(len(log_lines)))
         for line in log_lines:
             print(line)
 

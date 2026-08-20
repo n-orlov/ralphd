@@ -162,6 +162,12 @@ tr.row-warning td { background: #fffaf0; }
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .timeline-item .phase { font-weight: 600; width: 6rem; flex: none; }
 .timeline-item .dur { color: var(--muted); width: 4.5rem; flex: none; text-align: right; }
+/* task 020 (#18.1): a timeline row opens that iteration's detail dialog --
+   same affordance treatment as a task row and a steering entry. */
+.timeline-clickable { cursor: pointer; }
+.timeline-clickable:hover, .timeline-clickable:focus {
+  background: rgba(127, 127, 127, 0.12); outline: none; }
+.timeline-clickable:focus-visible { outline: 2px solid var(--accent); }
 
 #logbox {
   background: #0d1117;

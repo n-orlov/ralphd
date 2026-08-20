@@ -576,6 +576,12 @@ ITERATION_DERIVED_KEYS = (
 DURATION_TOTAL = "total"
 DURATION_ELAPSED = "elapsed"
 
+# Said out loud for an iteration dir whose meta.json is absent or truncated:
+# the transcript is still readable, the metadata is genuinely unknown, and a
+# row of `None`s would look like recorded facts.
+ITERATION_NO_META_NOTICE = ("!! no readable meta.json for this iteration "
+                            "(nothing known but the transcript)")
+
 
 def _one_line(text: str, limit: int) -> str:
     """Collapse whitespace and truncate -- an error message is arbitrary text
@@ -667,6 +673,68 @@ def format_tokens(usage: dict | None) -> str:
         return USAGE_NONE
     head = f"{total:,} total" if total is not None else "total unreported"
     return f"{head} ({', '.join(parts)})" if parts else head
+
+
+def format_iteration_log_header(count: int) -> str:
+    """The separator between one iteration's header block and its transcript
+    (task 019/020, #18.1) -- worded here so `ralphctl iteration` and the hub's
+    iteration dialog announce the same line count the same way."""
+    return f"--- log ({count} lines) ---"
+
+
+def iteration_summary_lines(detail: dict) -> list[str]:
+    """One iteration's header block as labelled text lines (tasks 019/020,
+    #18.1): the `iteration_detail` payload rendered for a human, ONCE.
+
+    `ralphctl iteration <run> <n>` prints these under its own `run:` line and
+    the hub's iteration dialog (task 020) shows the very same lines inside
+    `openTextDialog`, so the two surfaces cannot word the same meta.json
+    differently -- the discipline `format_task_column`/`format_approach`
+    already follow, applied to a whole block instead of one cell.
+
+    Every value here is a display string `iteration_detail` already derived
+    (`durationDisplay`, `exitReason`, `tokensDisplay`, `costDisplay`, the
+    `*Local` instants), and a line is OMITTED rather than printed empty when
+    the underlying fact was never recorded -- an absent `endedAt` means the
+    iteration has no end, not an end of `None`.
+    """
+    if not isinstance(detail, dict):
+        return []
+    head = f"iteration: {detail.get('number')}"
+    if detail.get("phase"):
+        head += f"  phase {detail['phase']}"
+    if detail.get("approach") is not None:
+        head += f"  approach {detail['approach']}"
+    lines = [head]
+    if not detail.get("hasMeta"):
+        lines.append(ITERATION_NO_META_NOTICE)
+    if detail.get("startedAtLocal"):
+        lines.append(f"started:   {detail['startedAtLocal']}")
+    if detail.get("endedAtLocal"):
+        lines.append(f"ended:     {detail['endedAtLocal']}")
+    lines += [
+        f"duration:  {detail.get('durationDisplay')}  ({detail.get('durationLabel')})",
+        f"exit:      {detail.get('exitReason')}",
+    ]
+    # The model pi actually used, with the raw gateway id only when it adds
+    # information -- exactly `ralphctl status`' model line (task 012).
+    model = detail.get("modelResolved") or detail.get("model")
+    if model:
+        model_line = f"model:     {model}"
+        if detail.get("modelRaw") and detail["modelRaw"] != model:
+            model_line += f"  (gateway id: {detail['modelRaw']})"
+        lines.append(model_line)
+    lines += [
+        f"tokens:    {detail.get('tokensDisplay')}",
+        f"cost:      {detail.get('costDisplay')}",
+    ]
+    steering = detail.get("steeringConsumed") or []
+    if steering:
+        lines.append(f"steering:  {', '.join(str(s) for s in steering)}")
+    if detail.get("verifiedTask"):
+        lines.append(f"verified:  task {detail['verifiedTask']} "
+                     f"-> {detail.get('verifyOutcome')}")
+    return lines
 
 
 def iteration_detail(run_root: Path, number: int) -> dict | None:
