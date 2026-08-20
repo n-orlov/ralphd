@@ -678,10 +678,12 @@ IMAGE_SOURCE_DEFAULT = "default"
 # -- hash the inputs, look the tag up, build only on a miss -- and only the
 # ingredients differ.
 IMAGE_NO_SOURCE_TO_DERIVE = (
-    "cannot derive a job image from base {base}: no ralphd source tree next "
-    f"to this install (no {image.SOURCE_MARKER}), so there is no engine to "
-    "layer on top of it. Install ralphd from a checkout, or pin a finished "
-    "image with --image (which is run as-is, not used as a base).")
+    "cannot derive a job image from base {base}: no ralphd source to layer on "
+    f"top of it -- no checkout next to this install (no {image.SOURCE_MARKER}) "
+    f"and no packaged image inputs inside it (no "
+    f"{image.PACKAGED_DIR_NAME}/{image.SOURCE_MARKER}). Install ralphd from a "
+    "checkout or a wheel that ships its image inputs, or pin a finished image "
+    "with --image (which is run as-is, not used as a base).")
 IMAGE_BASE_AND_PIN_NOTICE = (
     "--image and --base-image/--dockerfile are different things: --image (or "
     "RALPHD_IMAGE, or a template's or the registry's image) pins a finished "
@@ -740,10 +742,23 @@ IMAGE_BUILD_ELIDED_NOTICE = (
     f"... more than {IMAGE_BUILD_ECHO_LINES} lines of build output; "
     f"showing the last {IMAGE_BUILD_TAIL_LINES} only if the build fails")
 IMAGE_NO_SOURCE_NOTICE = (
-    "cannot hash the job image inputs: no ralphd source tree next to this "
-    f"install (no {image.SOURCE_MARKER}), so nothing can be built from "
-    f"content -- falling back to {DEFAULT_IMAGE}. Pin one with --image, or "
-    "see docs/architecture.md on installing from a checkout.")
+    "cannot hash the job image inputs: no ralphd checkout next to this install "
+    f"(no {image.SOURCE_MARKER}) and no packaged image inputs inside it (no "
+    f"{image.PACKAGED_DIR_NAME}/{image.SOURCE_MARKER}), so nothing can be "
+    f"built from content -- falling back to {DEFAULT_IMAGE}. Pin one with "
+    "--image, or see docs/architecture.md on where the image inputs come from.")
+# Task 038 (#20 H4), the packaging interaction, decided: a wheel/pipx install
+# ships the image inputs as package data and builds from a staged copy of them.
+# Said out loud on every such build, because it is a different provenance for
+# the same tag -- the inputs are the ones frozen at install time, not a working
+# tree the operator can edit -- and requirement H4 asks for the packaging
+# fallback to be observable rather than a silent behaviour change.
+IMAGE_PACKAGED_INPUTS_NOTICE = (
+    "job image inputs come from this install's own package data ({where}): "
+    f"there is no ralphd checkout next to it (no {image.SOURCE_MARKER}), so "
+    "container/ and the install recipe are taken from the wheel and the "
+    "installed engine is staged into a build context. This produces the same "
+    "content-hashed tag a checkout of this version builds.")
 
 
 def image_exists(ref: str) -> bool:
@@ -923,6 +938,30 @@ def _derived_job_image(base: str, src: Path,
     return {"image": derived.tag, "imageSource": IMAGE_SOURCE_BUILT, **fields}
 
 
+@contextlib.contextmanager
+def _image_inputs_tree(supply: image.InputsSupply):
+    """Yield a build context for `supply` -- staging package data if that is
+    where this install's image inputs live (task 038, requirement H4).
+
+    A checkout yields its own tree and nothing is copied. A wheel/pipx install
+    yields a temporary context assembled by `image.stage_inputs`, which lives
+    exactly as long as the build that needs it: the context is derived data, so
+    leaving it behind (in the install directory, or anywhere else) would be
+    litter that the next build has to distrust.
+
+    Never silent: the staged case announces itself on stderr, since the same tag
+    is then built from inputs frozen at install time rather than from a tree the
+    operator can edit.
+    """
+    if supply.kind == image.INPUTS_CHECKOUT:
+        yield supply.root
+        return
+    print("ralphctl: " + IMAGE_PACKAGED_INPUTS_NOTICE.format(
+        where=supply.packaged), file=sys.stderr)
+    with tempfile.TemporaryDirectory(prefix="ralphd-image-inputs-") as td:
+        yield image.stage_inputs(supply, Path(td))
+
+
 def resolve_job_image(selected: str | None, *, base: str | None = None,
                       dockerfile: str | None = None,
                       root: Path | None = None) -> dict:
@@ -948,6 +987,11 @@ def resolve_job_image(selected: str | None, *, base: str | None = None,
     so the two are alternative spellings of the same ingredient and passing
     both is a usage error.
 
+    The build context is this install's image inputs: its checkout when there is
+    one, otherwise (task 038) a staged copy of the inputs the wheel ships, which
+    hashes to the same tag. Only an install with neither falls back to
+    DEFAULT_IMAGE, and it says so.
+
     Dies (exit 1) on a failed build, exit 2 on contradictory input. Callers
     must call this *before* creating any run state -- requirement H4: no
     half-registered run.
@@ -959,46 +1003,47 @@ def resolve_job_image(selected: str | None, *, base: str | None = None,
     if selected:
         return {"image": selected, "imageSource": IMAGE_SOURCE_PINNED,
                 "imageHash": None, "imageBase": None, "imageDockerfile": None}
-    src = image.source_root(root)
-    if src is None:
+    supply = image.find_inputs(root)
+    if not supply.buildable:
         if base or dockerfile:
             # Deriving needs the engine source to install: there is no
             # fallback that could honour the operator's base, so this is an
-            # error rather than task 038's observable-but-silent default.
+            # error rather than the observable default below.
             die(1, IMAGE_NO_SOURCE_TO_DERIVE.format(
                 base=base or f"the image built from {dockerfile}"))
         print(f"ralphctl: warning: {IMAGE_NO_SOURCE_NOTICE}", file=sys.stderr)
         return {"image": DEFAULT_IMAGE, "imageSource": IMAGE_SOURCE_UNHASHABLE,
                 "imageHash": None, "imageBase": None, "imageDockerfile": None}
-    recipe = None
-    if dockerfile:
-        # The operator's own recipe becomes a hash-tagged base image; the job
-        # image is then derived from that tag by the H2 path below.
-        recipe = _dockerfile_base_image(dockerfile)
-        base = recipe.tag
-    if base:
-        return _derived_job_image(
-            base, src, dockerfile=recipe.dockerfile if recipe else None)
-    tree = image.hash_image_inputs(src)
-    tag = image.image_tag(tree.hash)
-    if not tree.complete:
-        # A hash over a partial input set is still a real hash of what is
-        # there, but the build is likely to fail on the missing piece -- say so
-        # now rather than letting `pip install /opt/ralphd` explain it.
-        print(f"ralphctl: warning: image inputs missing from {src}: "
-              f"{', '.join(tree.missing)}", file=sys.stderr)
-    if image_exists(tag):
-        return {"image": tag, "imageSource": IMAGE_SOURCE_CACHED,
+    with _image_inputs_tree(supply) as src:
+        recipe = None
+        if dockerfile:
+            # The operator's own recipe becomes a hash-tagged base image; the
+            # job image is then derived from that tag by the H2 path below.
+            recipe = _dockerfile_base_image(dockerfile)
+            base = recipe.tag
+        if base:
+            return _derived_job_image(
+                base, src, dockerfile=recipe.dockerfile if recipe else None)
+        tree = image.hash_image_inputs(src)
+        tag = image.image_tag(tree.hash)
+        if not tree.complete:
+            # A hash over a partial input set is still a real hash of what is
+            # there, but the build is likely to fail on the missing piece -- say
+            # so now rather than letting `pip install /opt/ralphd` explain it.
+            print(f"ralphctl: warning: image inputs missing from {src}: "
+                  f"{', '.join(tree.missing)}", file=sys.stderr)
+        if image_exists(tag):
+            return {"image": tag, "imageSource": IMAGE_SOURCE_CACHED,
+                    "imageHash": tree.hash, "imageBase": None,
+                    "imageDockerfile": None}
+        code, tail, elided = _build_image(tag, src, src / image.SOURCE_MARKER)
+        if code != 0:
+            _report_build_failure(code, tail, elided,
+                                  f"{tag} from {src} ({image.SOURCE_MARKER})")
+        print(f"ralphctl: built job image {tag}", file=sys.stderr)
+        return {"image": tag, "imageSource": IMAGE_SOURCE_BUILT,
                 "imageHash": tree.hash, "imageBase": None,
                 "imageDockerfile": None}
-    code, tail, elided = _build_image(tag, src, src / image.SOURCE_MARKER)
-    if code != 0:
-        _report_build_failure(code, tail, elided,
-                              f"{tag} from {src} ({image.SOURCE_MARKER})")
-    print(f"ralphctl: built job image {tag}", file=sys.stderr)
-    return {"image": tag, "imageSource": IMAGE_SOURCE_BUILT,
-            "imageHash": tree.hash, "imageBase": None,
-            "imageDockerfile": None}
 
 
 def _image_record_fields(resolved: dict, container: str) -> dict:
@@ -1069,8 +1114,9 @@ IMAGE_MISSING_NOTE = (
     "{ref} is not on this daemon and is not this source tree's job image "
     "({expected}), so nothing here builds it: a run on {ref} cannot start")
 IMAGE_NO_SOURCE_HASH_NOTE = (
-    "{ref} cannot be compared against a source hash: there is no ralphd "
-    "source tree next to this install (no {marker}) to hash")
+    "{ref} cannot be compared against a source hash: this install has neither "
+    "a ralphd checkout next to it (no {marker}) nor packaged image inputs "
+    "inside it to hash")
 IMAGE_DERIVED_NOTE = (
     "{ref} is a derived image, whose hash covers the base image it was layered "
     "onto as well as ralphd's source, so it is not comparable to a bare source "
@@ -1116,17 +1162,27 @@ def image_tag_kind(ref: str | None) -> tuple[str, str | None]:
 
 
 def current_source_hash(root: Path | None = None) -> tuple[Path | None, str | None]:
-    """`(source root, content hash of the image inputs)`, or `(None, None)`.
+    """`(where the image inputs are, content hash of them)`, or `(None, None)`.
 
-    `(None, None)` is the wheel/pipx case -- no `container/` to hash -- and it
-    means staleness is unknowable, never "fresh": there is nothing to compare
-    a tag against. One hash per `doctor` invocation (cheap by construction,
-    task 032: excluded directories are pruned, not walked).
+    `(None, None)` means this install has neither a checkout nor packaged image
+    inputs, and it means staleness is unknowable, never "fresh": there is
+    nothing to compare a tag against. For a wheel/pipx install (task 038) the
+    inputs *are* there -- shipped as package data -- so they are staged into a
+    throwaway context and hashed, which yields the same hash the checkout of
+    that version yields; the directory reported is the package data itself,
+    since the staged copy is gone by the time this returns.
+
+    One hash per `doctor` invocation (cheap by construction, task 032: excluded
+    directories are pruned, not walked).
     """
-    src = image.source_root(root)
-    if src is None:
-        return None, None
-    return src, image.hash_image_inputs(src).hash
+    supply = image.find_inputs(root)
+    if supply.kind == image.INPUTS_CHECKOUT and supply.root is not None:
+        return supply.root, image.hash_image_inputs(supply.root).hash
+    if supply.kind == image.INPUTS_PACKAGED:
+        with tempfile.TemporaryDirectory(prefix="ralphd-image-inputs-") as td:
+            staged = image.stage_inputs(supply, Path(td))
+            return supply.packaged, image.hash_image_inputs(staged).hash
+    return None, None
 
 
 def _comparable_image_hash(kind: str, tag_hash: str | None,
@@ -4407,6 +4463,7 @@ def cmd_doctor(args):
     reg.mkdir(parents=True, exist_ok=True)
     reg_cfg = _registry_config(reg)
     # Requirement H4: source hash vs the tag in use, not mere existence.
+    inputs = image.find_inputs()
     src_root, source_hash = current_source_hash()
     image_verdict, image_ok = _doctor_image_staleness(args, reg_cfg, source_hash)
     checks["image"] = image_ok
@@ -4434,6 +4491,11 @@ def cmd_doctor(args):
     strays = _stray_sibling_containers()
     dangling = _dangling_registry_entries()
     image_verdict["sourceRoot"] = str(src_root) if src_root else None
+    # Task 038: *where* those inputs came from -- a checkout, this install's own
+    # package data (a wheel/pipx install), or nowhere. Reported as a field, and
+    # as a line below for the packaged case, so the packaging fallback is
+    # observable rather than a silent difference in what gets built.
+    image_verdict["inputs"] = inputs.kind
     # host-network jobs share the host's network namespace, so docker's
     # normal port-publish isolation (`-p host:container`) doesn't apply --
     # the API binds `--api-bind` directly on the host. Report-only, never
@@ -4460,6 +4522,9 @@ def cmd_doctor(args):
     report += (f"\n{'!' if stale_mark else ' '} job image "
                f"({image_verdict['staleness']}, from "
                f"{image_verdict['where']}): {image_verdict['note']}")
+    if inputs.kind == image.INPUTS_PACKAGED:
+        report += "\n  " + IMAGE_PACKAGED_INPUTS_NOTICE.format(
+            where=inputs.packaged)
     if stale_runs:
         report += f"\n! {IMAGE_STALE_RUNS_HEADING}"
         for e in stale_runs:

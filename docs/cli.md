@@ -136,8 +136,25 @@ An explicit reference — `--image <ref>`, the `RALPHD_IMAGE` environment
 variable, a `--template`'s `image:`, or the registry's `image`
 (`ralphctl config set image ...`) — **pins exactly that image**: nothing is
 hashed and nothing is built, which is how you deliberately run an older
-engine. If ralphd is installed without its sources (a wheel/pipx install has no
-`container/` to hash) `start` says so on stderr and falls back to `ralphd:dev`.
+engine.
+
+A `pipx`/wheel install has no checkout next to it, so the wheel **ships the
+image inputs as package data** (`ralphd/_image/`: `container/`,
+`pyproject.toml` and the two metadata files `pip install` reads). `start` then
+stages those, plus the installed engine itself, into a build context laid out
+exactly like a checkout — which hashes to the same `ralphd:<hash>` a checkout
+of that version builds, so the two share the image cache. It is never silent:
+each such build prints
+
+```
+ralphctl: job image inputs come from this install's own package data (…/ralphd/_image): …
+```
+
+and `doctor` reports it as `imageStaleness.inputs` (`checkout` / `packaged` /
+`none`). Only an install with *neither* a checkout nor package data can hash
+nothing: that says so on stderr too and falls back to `ralphd:dev`. See
+[architecture.md](architecture.md) for why the shipped-inputs option was chosen
+over pinning a published tag.
 
 Bring your own base image (`--base-image <ref>`) — when your repo needs a
 toolchain the default image does not carry (a JDK, a Go toolchain, a specific
@@ -1941,8 +1958,11 @@ Four verdicts, because two would have to lie:
 hand-built tag (`ralphd:dev`); a **derived** `ralphd-derived:<hash>`, whose hash
 covers its base image as well as ralphd's source; a **base**
 `ralphd-base:<hash>`, whose hash covers an operator's build context; and an
-install with no source tree next to it (no `container/Dockerfile` to hash — the
-pipx case). The three tag namespaces are never compared with each other.
+install with nothing to hash — neither a checkout (no `container/Dockerfile`)
+nor packaged image inputs. The three tag namespaces are never compared with
+each other. A `pipx` install *is* comparable: its package data hashes to the
+same source hash a checkout does, so it gets a real verdict, and `inputs` says
+where that hash came from.
 
 `imageStaleness` fields: `image` (the reference reported on, `null` when the
 registry supplies a `base_image:`/`dockerfile:` and the job image is therefore
@@ -1951,7 +1971,10 @@ in `imageBase` instead of a tag being guessed), `imageKind`
 (`default`/`derived`/`base`/`unhashed`/`none`), `imageHash` (the comparable
 hash, `null` when there is none), `imageSource` (task 036's provenance word for
 a run's recorded image), `sourceHash`/`sourceImage`/`sourceRoot` (this tree's
-hash, the tag it produces, and where it was hashed), `present`, `staleness`,
+hash, the tag it produces, and where it was hashed), `inputs` (where this
+install's image inputs came from: `checkout`, `packaged` — a wheel/pipx
+install's own package data, also named in an extra report line — or `none`),
+`present`, `staleness`,
 `where` (which level supplied the reference: `--image` > `RALPHD_IMAGE` > the
 registry's `image:` > this source tree's inputs) and `note` (the sentence the
 human report prints — worded once, so text and JSON cannot disagree).

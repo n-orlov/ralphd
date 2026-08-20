@@ -1261,12 +1261,56 @@ lookups and precedence live in `cli/main.py`.
 Because only the first of the three hashes is a function of ralphd's source
 alone, `ralphctl doctor`'s staleness check has **four** answers, not two:
 `fresh`, `stale`, `missing` and `unknowable` -- the last one for a pin, either
-of the other two namespaces, and an install with no `container/` to hash. A
+of the other two namespaces, and an install with nothing to hash. A
 reference that cannot be compared to a source hash is never reported as up to
 date (see [cli.md](cli.md#job-image-staleness-20-h4)). The same verdict is
 applied per live run against the image its own `host.json` records, which is
 the case the whole mechanism exists for: a running job executing an engine that
 predates the fix it is watching for.
+
+### Where the image inputs come from in a `pipx` install (v0.6, #20 H4)
+
+Content-hashing the image assumes the inputs are on disk, and a
+`pipx install ralphd` has no checkout next to it. Requirement H4 asked for one
+of two answers, chosen and written down. **Decision: the wheel ships the image
+inputs as package data**, and a build from such an install stages them into a
+context:
+
+| | |
+|---|---|
+| shipped | `ralphd/_image/` = `container/`, `pyproject.toml`, `README.md`, `LICENSE` (`cli/image.py: PACKAGED_FILES`, mapped into the wheel by `pyproject.toml`'s `force-include` -- no second copy in the repo) |
+| staged at build time | that package data, plus the **installed** `ralphd` package copied to `src/ralphd`, into a temporary context laid out exactly like a checkout |
+| result | the same `ralphd:<hash>` a checkout of that version builds |
+
+Why not the other option, a pinned *published* tag? v0.6 publishes no image (an
+explicit non-goal), so the fallback would name a reference that cannot be
+pulled -- trading "cannot tell which engine you are running" for "cannot start
+at all", and re-introducing a hand-maintained tag as the thing that decides
+which engine runs. Shipping the inputs keeps the property the whole requirement
+exists for: whatever way ralphd was installed, the tag is a function of the
+engine that is actually installed.
+
+Why the inputs and not just the Dockerfile: the default image's build context
+*is* the install recipe (`COPY . /opt/ralphd` then `pip install /opt/ralphd`), so
+a wheel carrying only `container/Dockerfile` would build an image with no engine
+in it -- and `pip install` also reads the `readme`/license `pyproject.toml`
+declares, hence those two files. The engine source is not shipped twice: the
+installed package is the source, and staging it means the image contains exactly
+the engine the host CLI is running.
+
+The layout is a copy, not a symlink farm, and the copy walks by the same rules
+the hash uses (`_collect`: caches pruned, symlinks recreated, the executable bit
+preserved), which is what makes the tag come out identical rather than merely
+similar; `_image/` itself is left out of the staged `src/ralphd`, since a
+checkout has no such directory. The staged context is deleted with the build
+that needed it -- derived data, never litter the next build has to distrust.
+
+None of this is silent, which was the other half of the requirement: `start`
+prints where the inputs came from on every packaged build, `doctor` reports
+`imageStaleness.inputs` (`checkout` / `packaged` / `none`) plus a line naming the
+package-data directory, and an install with *neither* a checkout nor package
+data still warns and falls back to `ralphd:dev` -- the one case where staleness
+remains `unknowable` because there is genuinely nothing to hash.
 
 ## 9. Failure containment
 

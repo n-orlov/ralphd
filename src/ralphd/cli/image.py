@@ -44,6 +44,21 @@ so hashing it would make the tag depend on the run's own output. The rule of
 thumb: if changing the file cannot change what `ralphd-engine` does inside the
 container, it is not an input.
 
+A wheel install, and where the inputs live (task 038, requirement H4)
+--------------------------------------------------------------------
+`pipx install ralphd` has no checkout next to it, so there is no `container/`
+directory on disk to hash. The decision (documented with its reasoning in
+`docs/architecture.md`) is to **ship the image inputs as package data**: the
+wheel carries `PACKAGED_FILES` under `<installed ralphd>/_image/`, and the
+engine source the recipe installs is the installed package itself. `find_inputs`
+answers *where* the inputs are (`INPUTS_CHECKOUT` / `INPUTS_PACKAGED` /
+`INPUTS_NONE` -- absence is still an answer, never a guess), and `stage_inputs`
+assembles the packaged half into a build context laid out exactly like a
+checkout, so the same tree hashes to the same `ralphd:<hash>` a checkout of the
+same version builds. The alternative the PRD offered -- falling back to a
+pinned *published* tag -- would mean pinning a reference nobody publishes yet
+(v0.6 ships no registry image), i.e. a name that cannot be pulled.
+
 Determinism, and what "cheap" means
 -----------------------------------
 The digest must be reproducible on another machine and in another checkout
@@ -144,9 +159,34 @@ NODE_MAJOR_RE = re.compile(r"setup_(\d+)\.x")
 PI_PIN = "PI_VERSION"
 
 # The file that marks a directory as a ralphd source root worth hashing --
-# i.e. a checkout, as opposed to a `pipx`/wheel install that has no
-# `container/` at all (the packaging interaction task 038 decides).
+# i.e. a checkout, or (task 038) the packaged copy of the same inputs inside a
+# wheel install, which is laid out identically on purpose.
 SOURCE_MARKER = "container/Dockerfile"
+
+# Where the image inputs live inside an installed wheel: `ralphd/_image/`
+# (task 038, requirement H4's packaging interaction). Underscored so it cannot
+# collide with an importable submodule name, and *inside* the package because
+# that is the only place a wheel can put data that survives `pipx install`.
+PACKAGED_DIR_NAME = "_image"
+
+# What that directory has to carry for the staged context to be an installable
+# recipe: the image inputs proper minus the engine source (which is the
+# installed package itself), plus the two metadata files `pyproject.toml`
+# points at -- `pip install <context>` fails outright without the readme it
+# declares, so "the wheel ships the Dockerfile" is not enough on its own.
+# `pyproject.toml`'s `force-include` mapping must cover exactly these (a test
+# reads the mapping and compares, so packaging and code cannot drift apart).
+PACKAGED_FILES = ("container", "pyproject.toml", "README.md", "LICENSE")
+
+# The two of them without which there is nothing to build at all -- checked
+# before calling a directory a packaged supply.
+PACKAGED_REQUIRED = (SOURCE_MARKER, "pyproject.toml")
+
+# Where the image inputs were found. Vocabulary, so no surface invents its own
+# word for "this install has no checkout but ships its own inputs".
+INPUTS_CHECKOUT = "checkout"  # a source tree next to the install
+INPUTS_PACKAGED = "packaged"  # package data inside a wheel/pipx install
+INPUTS_NONE = "none"          # neither -- staleness unknowable, nothing to build
 
 # Directory names pruned outright, never traversed. Two kinds: version
 # control and caches (nothing about them reaches the image), and directories a
@@ -295,6 +335,150 @@ def source_root(start: Path | str | None = None) -> Path | None:
     base = Path(start) if start is not None else Path(__file__).resolve().parents[3]
     base = Path(base).resolve()
     return base if (base / SOURCE_MARKER).is_file() else None
+
+
+# ------------------------------------- a wheel install's own inputs (038, H4)
+# `pipx install ralphd` leaves no checkout behind, so `source_root()` is None
+# and -- before this task -- nothing could be hashed or built: `start` fell
+# back to the legacy `ralphd:dev` tag with a warning. The decision is to ship
+# the inputs *inside* the wheel and assemble a build context from them, so a
+# wheel install builds by content exactly like a checkout does. Two halves,
+# both here because both are "which files are the inputs": where they are
+# (`find_inputs`) and how the packaged half becomes a context (`stage_inputs`).
+
+
+def package_dir() -> Path:
+    """The installed `ralphd` package directory (`.../site-packages/ralphd`).
+
+    Read from this file's location for the same reason `source_root` is: it is
+    the one thing that is true whether ralphd was installed as a wheel, with
+    `pipx`, or editable out of a checkout.
+    """
+    return Path(__file__).resolve().parents[1]
+
+
+def packaged_inputs(pkg: Path | str | None = None) -> Path | None:
+    """The packaged image inputs directory shipped in the wheel, or None.
+
+    None means this install carries no package data to build from -- which,
+    together with no checkout, is the honest `INPUTS_NONE`. Only
+    `PACKAGED_REQUIRED` is insisted on here: the readme and license are needed
+    by `pip install` and are asserted present by a packaging test, but a wheel
+    that lost one of them is still better described by what it *does* have.
+    """
+    base = Path(pkg) if pkg is not None else package_dir()
+    d = Path(base).resolve() / PACKAGED_DIR_NAME
+    if all((d / rel).is_file() for rel in PACKAGED_REQUIRED):
+        return d
+    return None
+
+
+@dataclass(frozen=True)
+class InputsSupply:
+    """Where this install's image inputs are, and what has to happen to use them.
+
+    `kind` is one of INPUTS_CHECKOUT / INPUTS_PACKAGED / INPUTS_NONE -- the
+    observable answer surfaces (`start`'s notice, `doctor`'s report) quote it
+    rather than re-deriving it. `root` is a ready-to-build context and is set
+    for a checkout only; `packaged` is the package-data directory and `package`
+    the installed package that `stage_inputs` assembles a context out of.
+    """
+
+    kind: str
+    root: Path | None = None
+    packaged: Path | None = None
+    package: Path | None = None
+
+    @property
+    def buildable(self) -> bool:
+        """Can a job image be produced from this install at all?"""
+        return self.kind != INPUTS_NONE
+
+    @property
+    def where(self) -> Path | None:
+        """The directory to *name* when reporting where the inputs came from."""
+        return self.root if self.kind == INPUTS_CHECKOUT else self.packaged
+
+
+def find_inputs(root: Path | str | None = None,
+                pkg: Path | str | None = None) -> InputsSupply:
+    """Where the image inputs are for this install: checkout, package data, or
+    nowhere.
+
+    A checkout wins: in an editable or checkout install its tree is the live
+    source, and hashing package data instead would tag an image built from the
+    files as they were at install time. `root` given explicitly means "this
+    tree or nothing" -- a caller naming a tree is not asking to be given
+    somebody else's inputs -- so the packaged fallback is only consulted when
+    nobody named one.
+    """
+    src = source_root(root)
+    if src is not None:
+        return InputsSupply(INPUTS_CHECKOUT, root=src)
+    if root is None or pkg is not None:
+        found = packaged_inputs(pkg)
+        if found is not None:
+            return InputsSupply(INPUTS_PACKAGED, packaged=found,
+                                package=found.parent)
+    return InputsSupply(INPUTS_NONE)
+
+
+def stage_inputs(supply: InputsSupply, dest: Path | str) -> Path:
+    """Assemble a packaged supply into a build context under `dest`; return it.
+
+    The context is laid out exactly like a checkout -- `container/`,
+    `pyproject.toml` and the metadata files from the package data, plus the
+    installed package copied to `src/ralphd` -- because that is what makes the
+    resulting tag *the same tag*: `hash_image_inputs` sees the same relative
+    paths, modes, sizes and contents it would see in a checkout of the same
+    version, so a `pipx` install and a checkout agree on `ralphd:<hash>` instead
+    of each maintaining its own image.
+
+    The copy walks with `_collect`, i.e. by exactly the rules that decide what
+    is hashed (excluded dirs pruned, symlinks recreated rather than followed),
+    so "the context contains what the hash covers" is one definition rather than
+    two that can drift. `PACKAGED_DIR_NAME` is left out of the staged
+    `src/ralphd`: a checkout has no such directory, and copying it in would
+    change the hash and nest the inputs inside themselves.
+    """
+    if supply.kind != INPUTS_PACKAGED or not supply.packaged or not supply.package:
+        raise ImageInputError(
+            f"nothing to stage: image inputs are {supply.kind!r}, and only "
+            f"{INPUTS_PACKAGED!r} inputs have to be assembled into a context")
+    dest = Path(dest).resolve()
+    for rel in PACKAGED_FILES:
+        if (supply.packaged / rel).exists():
+            _copy_into(supply.packaged, rel, dest, rel)
+    _copy_into(supply.package.parent, supply.package.name, dest, "src/ralphd",
+               prune={PACKAGED_DIR_NAME})
+    return dest
+
+
+def _copy_into(src_root: Path, rel: str, dest_root: Path, dest_rel: str,
+               prune: frozenset[str] | set[str] = frozenset()) -> None:
+    """Copy one input path into the staged context, preserving what is hashed.
+
+    "What is hashed" is the executable bit and the bytes (see `_entry_digest`),
+    so those two are what this reproduces; mtimes and ownership are deliberately
+    not carried over, since nothing about the tag or the build depends on them.
+    """
+    files: dict[str, Path] = {}
+    _collect(src_root, rel, files, [])
+    prefix = f"{rel}/"
+    for path_rel, path in files.items():
+        tail = path_rel[len(prefix):] if path_rel.startswith(prefix) else ""
+        target = dest_root / dest_rel / tail if tail else dest_root / dest_rel
+        if tail and any(part in prune for part in tail.split("/")):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.islink(path):
+            os.symlink(os.readlink(path), target)
+            continue
+        with open(path, "rb") as fh, open(target, "wb") as out:
+            while chunk := fh.read(_CHUNK):
+                out.write(chunk)
+        if path.stat().st_mode & 0o111:
+            target.chmod(target.stat().st_mode | 0o111)
 
 
 def _entry_digest(path: Path) -> tuple[str, str, int, str]:
