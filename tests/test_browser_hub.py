@@ -1717,3 +1717,134 @@ def test_run_detail_opens_the_state_document_dialogs(tmp_path, pw):
         assert int(pw.eval_js(_DIALOGS)) == 1
     finally:
         server.stop()
+
+
+_ARTIFACT_ITEMS = "document.querySelectorAll('.artifact-item').length"
+_ARTIFACT_ROW_TEXT = (
+    "[...document.querySelectorAll('.artifact-item')]"
+    ".map(e => e.dataset.artifact + ' [' + e.dataset.artifactKey + '] '"
+    " + e.textContent).join(' | ')")
+
+
+def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw):
+    """Task 024 (#18.3): what the job left behind in `artifacts/` -- above all
+    the reflect phase's post-mortem report and the prompt/skill diff it proposes
+    -- is browsable from the run detail page and opens in a dialog, for a run
+    whose container is gone (the case that made #18.3 painful: reading the
+    reflect output meant knowing the registry layout and `cat`-ing files).
+
+    Pins the listing (every file under `artifacts/`, well-known ones labelled
+    with the name `ralphctl artifacts show` takes), the dialog payload (the
+    server's own `state.artifact_text`, i.e. exactly what `ralphctl artifacts
+    <run> show` prints), the rendering discipline (a report full of markup and a
+    diff full of `<`/`>` survive as TEXT), that the single shared dialog does not
+    stack across the 4s `load()` rebuild behind it, and that a run which left
+    nothing behind says so in the server's wording instead of showing an empty
+    panel.
+    """
+    from ralphd.cli.ui_server import artifact_view
+    from ralphd.engine.state import NO_ARTIFACTS
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-arts-dialog", state="failed",
+                              verdict="unverified")
+    _write_dead_run(registry, "run-arts-none", state="succeeded",
+                    verdict="verified")
+    reflection = run_dir / "artifacts" / "reflection"
+    reflection.mkdir(parents=True)
+    report = ("# Reflection report\n\nApproach 1 died on <b>requirement C</b> & "
+              "<script>alert(1)</script>\nnext: widen the browser tier\n")
+    (reflection / "report.md").write_text(report)
+    (reflection / "suggestions.diff").write_text(
+        "--- a/prompts/worker.md\n+++ b/prompts/worker.md\n"
+        "@@ -1,2 +1,3 @@\n Worker prompt\n+Run <every> tier before claiming done.\n")
+    (run_dir / "artifacts" / "reports").mkdir()
+    (run_dir / "artifacts" / "reports" / "pricing-anomaly.md").write_text(
+        "# Pricing anomaly\n\nThe gateway quoted 0 for 505,628 tokens.\n")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-arts-dialog")
+        _wait_for_count_ge(pw, _ARTIFACT_ITEMS, 3)
+        rows = pw.eval_js(_ARTIFACT_ROW_TEXT)
+        # every file is listed by its path; the well-known two carry the name
+        # `ralphctl artifacts show` takes, the third is keyless but present
+        assert "reflection/report.md [report]" in rows, rows
+        assert "reflection/suggestions.diff [suggestions]" in rows, rows
+        assert "reports/pricing-anomaly.md []" in rows, rows
+        assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 3
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- the reflect report ---------------------------------------------
+        pw.click('button.artifact-item[data-artifact-key="report"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "artifact:  reflection/report.md")
+        title = pw.eval_js("document.querySelector('.text-dialog .dialog-title')"
+                           ".textContent")
+        assert "reflection/report.md" in title and "run-arts-dialog" in title, title
+        assert "widen the browser tier" in body, body
+        # markup in an agent-authored report stays TEXT, like a PRD body
+        assert "<b>requirement C</b>" in body, body
+        assert "<script>alert(1)</script>" in body, body
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b').length")) == 0
+        # every line came from the server's own `text`, verbatim
+        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
+                         ".textContent")
+        dialog_body = json.loads(raw) if raw.startswith('"') else raw
+        assert dialog_body == artifact_view(registry, "run-arts-dialog",
+                                            "report")["text"]
+        assert "Pricing anomaly" not in body, body
+        pw.screenshot(SCREENSHOTS_DIR / "25-artifact-dialog.png")
+
+        # -- it survives a full 4s poll without stacking -------------------
+        time.sleep(5.0)
+        assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 3      # panel re-rendered
+        assert int(pw.eval_js(_DIALOGS)) == 1             # ...behind ONE dialog
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- the suggested diff, keyboard-reachable -------------------------
+        # A <button> gets Enter/Space from the platform -- but the 4s `load()`
+        # poll legitimately replaces the panel's nodes, so a focus taken just
+        # before one lands is lost through no fault of the button: retry the
+        # whole focus+Enter cycle (never a mouse click here).
+        focus_js = (
+            "(() => { const el = document.querySelector('button.artifact-item"
+            "[data-artifact-key=\"suggestions\"]'); el.focus();"
+            " return document.activeElement === el ? 'focused' : 'lost'; })()")
+        deadline = time.time() + 40
+        body = ""
+        while time.time() < deadline and "suggestions.diff" not in body:
+            if pw.eval_js(focus_js).strip('"') != "focused":
+                continue
+            assert pw.run("press", "Enter").returncode == 0
+            for _ in range(10):
+                body = pw.eval_js(
+                    "document.querySelector('.text-dialog')"
+                    " ? document.querySelector('.text-dialog').textContent : ''")
+                if "suggestions.diff" in body:
+                    break
+                time.sleep(0.2)
+        assert "artifact:  reflection/suggestions.diff" in body, body
+        # a diff is nothing but `<`/`>`/`+`/`-`: it must arrive verbatim
+        assert "+Run <every> tier before claiming done." in body, body
+        assert "--- a/prompts/worker.md" in body, body
+        assert int(pw.eval_js(_DIALOGS)) == 1
+        pw.click(".text-dialog .dialog-close button")
+
+        # -- a run that left nothing behind says so ------------------------
+        pw.open(f"{server.base}/#/run/run-arts-none")
+        notice = _wait_for(pw, "document.querySelector('#artifacts-notice')"
+                               " ? document.querySelector('#artifacts-notice')"
+                               ".textContent : ''", NO_ARTIFACTS)
+        assert NO_ARTIFACTS in notice, notice
+        assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 0
+    finally:
+        server.stop()
