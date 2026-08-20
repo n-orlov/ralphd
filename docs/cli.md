@@ -1070,6 +1070,49 @@ printing `$0.00`. A `pricing:` map may consist of `free:` alone.
 - No map configured (the default) changes nothing: unpriced traffic stays
   `unavailable`, never a guessed number.
 
+#### Built-in AWS Bedrock rate table (`builtin-aws-bedrock`)
+
+Hand-writing `pricing:` is why it is usually unset, and it is unnecessary for
+the most common unpriced route: an AIGW-style gateway in front of Bedrock bills
+exactly Bedrock list price, so ralphd ships those rates itself
+(`src/ralphd/engine/pricing_aws.py`, v0.6, #14). A cost computed from it is
+still **derived** (`costDerivedUSD`, `~$0.45 derived`) -- a built-in table is
+not a provider quote -- and an operator `pricing:` map always wins over it.
+Selecting it per route is the job of the `price_strategy` knob, which lands with
+the table in v0.6 (see `docs/llm-profiles.md`).
+
+What the table does, and deliberately does not, resolve:
+
+- The `<provider>/` segment pi and the gateways prepend
+  (`amazon-bedrock/`, `aigw-openai/`, `bedrock-mantle/`, ...) is **aliased
+  away**: it carries no pricing information, and the same
+  `openai.gpt-5.6-sol` costs the same through either gateway.
+- The region segment (`eu.`, `us.`, `jp.`, `au.`, `global.`) is **kept**: EU
+  sits ~10% above us-east and some ids differ far more, so
+  `eu.anthropic.claude-opus-5` has its own entry rather than borrowing
+  us-east's price.
+- An id the table does not know resolves to **nothing**, so the cost stays
+  `unavailable` instead of borrowing a neighbouring model's or region's rate.
+- A `0` cache rate is never stored; as with an operator map, an absent cache
+  rate falls back to the `input` rate rather than to a silent `$0`.
+- Lookups go through the same `PricingMap` rules as an operator map (one alias
+  hop, exact key beats wildcard, longest wildcard prefix wins).
+
+**Provenance, as-of date and refresh.** The rates mirror pi-ai's bundled
+Bedrock provider data (`@earendil-works/pi-ai/.../data/amazon-bedrock.json`,
+the same numbers pi itself prices a request with), cross-checkable against
+<https://aws.amazon.com/bedrock/pricing/>. The mirror is generated, carries a
+machine-readable as-of date (`pricing_aws.AS_OF`) and reports its own
+staleness (`pricing_aws.staleness()`: `asOf`, `ageDays`, `staleAfterDays`,
+`stale`, `source`, `sourceVersion`, `refresh`) -- a rate table with no as-of
+date is a future lie, so building the map logs a warning once it is older than
+`staleAfterDays`. AWS changes prices; refresh with:
+
+```console
+$ python tools/refresh_bedrock_rates.py            # rewrite the table + as-of date
+$ python tools/refresh_bedrock_rates.py --check    # non-zero if out of date
+```
+
 ### `ralphctl doctor`
 
 Preflight checks (`checks` in `--json` output; overall `ok` is the AND of all
