@@ -47,6 +47,7 @@ from ..engine.state import (
     format_duration,
     format_local_time,
     format_task_counts,
+    iteration_detail,
     parse_utc,
     read_operator_termination,
     read_tasks_doc,
@@ -55,7 +56,7 @@ from ..engine.state import (
     utc_from_epoch,
     utcnow,
 )
-from ..log_merge import NO_TRANSCRIPT
+from ..log_merge import NO_TRANSCRIPT, iteration_numbers
 from ..log_merge import iteration_lines as _iteration_lines
 from ..log_merge import merged_lines as _merged_lines
 from . import llm_profiles, ui_server
@@ -2059,6 +2060,101 @@ def cmd_logs(args):
         sys.exit(_SIGINT_EXIT_CODE)
 
 
+# Task 019 (#18.1): what `ralphctl iteration` says when the asked-for
+# iteration is not in the run dir. Exit 1 (generic error), the same code the
+# live `logs --iteration <n>` path already exits with when the engine answers
+# 404 for it -- "run not found" (3) is a different fact and stays reserved for
+# a run dir that does not exist at all.
+def _iteration_span(numbers: list[int]) -> str:
+    if not numbers:
+        return "none recorded yet"
+    if len(numbers) == 1:
+        return str(numbers[0])
+    return f"1..{numbers[-1]}" if numbers == list(range(1, numbers[-1] + 1)) \
+        else ", ".join(str(n) for n in numbers)
+
+
+def cmd_iteration(args):
+    """One iteration's own story: phase, model, timestamps, duration, exit
+    reason, that iteration's tokens and cost, and its full transcript
+    (task 019, #18.1 -- the hub's iteration dialog, task 020, renders the same
+    shaped payload).
+
+    Purely on-disk: `iterations/NNNN/meta.json` and that iteration's
+    transcript are written
+    by the engine into the run dir, so this works identically for a running job
+    and for one whose container is long gone -- there is nothing to fall back
+    from, hence no `--live`-style notice (see `state.iteration_detail`).
+    """
+    _require_run(args.run_id)
+    root = run_root(args.run_id)
+    detail = iteration_detail(root, args.number)
+    if detail is None:
+        die(1, f"run {args.run_id} has no iteration {args.number} "
+               f"(iterations on disk: {_iteration_span(iteration_numbers(root))})")
+    tty = sys.stdout.isatty()
+    log_lines = None
+    if not args.no_log:
+        # The transcript goes through the same merge + renderer `ralphctl logs
+        # --iteration N` uses, so the two commands cannot render the same
+        # events differently; `--json` never gets ANSI (tty=False).
+        raw = _snapshot_raw_text(args.run_id, args.number, 0)
+        log_lines = _pretty_log_lines(raw, tty and not args.json, 0)
+
+    if args.json:
+        doc = {"runId": args.run_id, **detail}
+        # `log` is absent (not empty) with --no-log: an empty list would claim
+        # the iteration produced no transcript.
+        if log_lines is not None:
+            doc["log"] = log_lines
+        print(json.dumps(doc, indent=2))
+        return
+
+    it_line = f"iteration: {detail['number']}"
+    if detail.get("phase"):
+        it_line += f"  phase {detail['phase']}"
+    if detail.get("approach") is not None:
+        it_line += f"  approach {detail['approach']}"
+    lines = [f"run:       {args.run_id}", it_line]
+    if not detail["hasMeta"]:
+        # An iteration dir with no readable meta.json: the transcript is still
+        # here, the metadata is genuinely unknown -- said out loud rather than
+        # rendered as a row of `None`s.
+        lines.append("!! no readable meta.json for this iteration "
+                     "(nothing known but the transcript)")
+    if detail.get("startedAtLocal"):
+        lines.append(f"started:   {detail['startedAtLocal']}")
+    if detail.get("endedAtLocal"):
+        lines.append(f"ended:     {detail['endedAtLocal']}")
+    lines += [
+        f"duration:  {detail['durationDisplay']}  ({detail['durationLabel']})",
+        f"exit:      {detail['exitReason']}",
+    ]
+    # The model pi actually used, with the raw gateway id only when it adds
+    # information -- exactly `ralphctl status`' model line (task 012).
+    model = detail.get("modelResolved") or detail.get("model")
+    if model:
+        model_line = f"model:     {model}"
+        if detail.get("modelRaw") and detail["modelRaw"] != model:
+            model_line += f"  (gateway id: {detail['modelRaw']})"
+        lines.append(model_line)
+    lines += [
+        f"tokens:    {detail['tokensDisplay']}",
+        f"cost:      {detail['costDisplay']}",
+    ]
+    steering = detail.get("steeringConsumed") or []
+    if steering:
+        lines.append(f"steering:  {', '.join(str(s) for s in steering)}")
+    if detail.get("verifiedTask"):
+        lines.append(f"verified:  task {detail['verifiedTask']} "
+                     f"-> {detail.get('verifyOutcome')}")
+    print("\n".join(lines))
+    if log_lines is not None:
+        print(f"--- log ({len(log_lines)} lines) ---")
+        for line in log_lines:
+            print(line)
+
+
 class _TerminalModeGuard:
     """Task 016: owns termios save/restore for `ralphctl logs -f` on a
     TTY, in the MAIN thread, for the entire duration of the follow loop.
@@ -3617,6 +3713,15 @@ def main() -> None:
     s.add_argument("--raw", action="store_true",
                    help="raw NDJSON passthrough (no pretty rendering)")
     s.set_defaults(func=cmd_logs)
+
+    s = sub.add_parser("iteration", help="one iteration's detail: phase, "
+                       "timing, exit reason, tokens/cost and its full log")
+    s.add_argument("run_id")
+    s.add_argument("number", type=int, metavar="N",
+                   help="iteration number, as shown by `status`/`logs`")
+    s.add_argument("--no-log", action="store_true",
+                   help="header only -- skip the transcript")
+    s.set_defaults(func=cmd_iteration)
     # `logsf <id>` is a pure alias for `logs <id> -f`, rewritten in
     # _preprocess_logs_argv() before argparse ever sees "logsf".
 

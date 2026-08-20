@@ -700,6 +700,78 @@ wording for the same run (one definition, `ralphd.log_merge.NO_TRANSCRIPT`).
 transcript honestly is zero events, so its stdout stays byte-empty. Pinned
 by `tests/test_no_transcript_message.py`.
 
+### `ralphctl iteration <run-id> <n>`
+
+One iteration's own story: what it was, how long it took, why it ended, what it
+cost, and its full transcript. `logs --iteration n` answers *what did the agent
+do*; this answers *what happened to iteration n* (task 019, #18.1).
+
+```
+ralphctl iteration <run-id> <n> [--no-log]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `<n>` | iteration number, as printed by `status` (`iteration: 17/250`), the `logs` boundary lines and the hub timeline |
+| `--no-log` | header only — skip the transcript |
+
+```
+$ ralphctl iteration brisk-otter-1408 2
+run:       brisk-otter-1408
+iteration: 2  phase worker  approach 1
+started:   2026-09-02 10:00:00 +0200
+ended:     2026-09-02 10:17:51 +0200
+duration:  17m 51s  (total)
+exit:      clean exit
+model:     amazon-bedrock/eu.anthropic.claude-opus-5  (gateway id: eu.anthropic.claude-opus-5)
+tokens:    180,661 total (in 18, out 2,118, cache read 136,849, cache write 41,676)
+cost:      $0.4231
+steering:  001-focus.md
+--- log (169 lines) ---
+…
+```
+
+- **`exit:` is the one-line verdict**, ranked from the raw signals the engine
+  records (they overlap — a timed-out iteration also has an exit code): `still
+  running` · `interrupted by operator` · `no-traffic timeout (the model never
+  answered)` · `iteration timeout` · `error (exit N): <message>` · `clean exit`
+  · `exit N` · `unknown`. A non-null fault classification
+  (`engine/faults.py`, the reason an attempt was retried and refunded) is
+  appended as `[infra fault]`/`[work fault]` — alongside the signal, never
+  instead of it. One definition (`engine.state.format_exit_reason`), shared with
+  the hub's iteration dialog.
+- **Purely on-disk, no container needed and no snapshot notice.**
+  `iterations/NNNN/meta.json` is written by the engine itself, atomically, at
+  the start and the end of every iteration, so the run dir is authoritative for
+  a running job and for one whose container is long gone alike. `duration:`
+  therefore says `(elapsed)` instead of `(total)` for an iteration still in
+  flight.
+- **Unknown is not zero.** An iteration dir whose `meta.json` is absent or
+  truncated (a crash mid-write) prints `!! no readable meta.json for this
+  iteration` and `exit: unknown` — not a row of `None`s and not a clean exit —
+  while still printing the transcript that *is* there. A cost the provider
+  never priced (including a quote of `$0` next to billable tokens, see
+  `status`' cost rules) renders `unavailable`, never `$0.0000`.
+- **`cost:`/`tokens:`** are that iteration alone, through the shared
+  `format_cost` (4 decimals — one iteration is small money) and token
+  formatter; only counters the provider actually reported are named.
+- The transcript is rendered by the same merge and renderer
+  `logs --iteration n` uses, so the two commands cannot show the same events
+  differently; an iteration that wrote none prints `(no transcript yet)`.
+- `--json` prints the whole `meta.json` verbatim (`exitCode`, `interrupted`,
+  `timedOut`, `noTrafficTimeout`, `error`, `faultClass`, `usage`,
+  `steeringConsumed`, `modelResolved`/`modelRaw`, `verifiedTask`/`verifyOutcome`)
+  plus the derived fields the human view shows: `exitReason`, `durationS`,
+  `durationDisplay`, `durationLabel`, `startedAtLocal`/`endedAtLocal`,
+  `tokensDisplay`, `costDisplay`, `costStatus`, `hasMeta`, `hasTranscript`,
+  `transcriptBytes`, and `log` (the rendered lines, never ANSI). With
+  `--no-log` the `log` key is **absent** rather than empty — an empty list
+  would claim the iteration produced no transcript.
+- Exit codes: `0` · `3` run not found · `1` no such iteration in that run,
+  naming the ones on disk (`run X has no iteration 47 (iterations on disk:
+  1..12)`), the same code the live `logs --iteration` path returns for the
+  engine's 404. Pinned by `tests/test_cli_iteration_detail.py`.
+
 ### `ralphctl tasks <run-id>`
 
 Task table (or full `tasks.json` with `--json`).

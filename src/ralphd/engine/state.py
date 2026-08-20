@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
+from ..log_merge import iteration_dir, iteration_output_path
 from .redact import scrub_text
 
 
@@ -518,6 +519,231 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
             entry["body"] = text
         out.append(entry)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Task 019 (#18.1): one iteration's story, shaped ONCE.
+#
+# `iterations/NNNN/meta.json` has always held everything an operator asks when
+# something looks wrong in iteration 47 -- phase, model, start/end, exit code,
+# the raw failure signals and that iteration's token/cost usage -- and no
+# surface rendered it: `ralphctl logs --iteration 47` served the transcript,
+# the hub timeline showed a summary row, and the *why did this one end like
+# that* had to be reconstructed from exitCode/timedOut/noTrafficTimeout/error
+# by hand. `iteration_detail()` below is the single shaping of that record,
+# and `format_exit_reason()` the single wording of the verdict, so `ralphctl
+# iteration` (task 019) and the hub's iteration dialog (task 020) cannot grow
+# two vocabularies for the same file -- the discipline `steering_entries`
+# above and `format_task_column` below already follow.
+#
+# Note this is a pure on-disk read with no live-API fallback, unlike the plan
+# (`read_tasks_doc`) or the steering list: `meta.json` is written by the ENGINE
+# itself, atomically, at the start and the end of every iteration, so the run
+# dir is the authoritative copy even while the container is alive (the engine's
+# own `GET /iterations/{n}` just serves this file back).
+
+# The verdict vocabulary. `unknown` is the honest answer for an iteration whose
+# meta.json is missing or truncated -- ignorance, not a clean exit (#15's rule
+# applied to a second reader).
+EXIT_REASON_UNKNOWN = "unknown"
+EXIT_REASON_RUNNING = "still running"
+EXIT_REASON_CLEAN = "clean exit"
+EXIT_REASON_INTERRUPTED = "interrupted by operator"
+EXIT_REASON_NO_TRAFFIC = "no-traffic timeout (the model never answered)"
+EXIT_REASON_TIMEOUT = "iteration timeout"
+# Longest error text carried into the one-line reason; the full string stays in
+# the `error` field for anyone who wants all of it.
+EXIT_REASON_ERROR_MAX = 200
+
+# Rendered for an iteration that recorded no usage at all (a crash before the
+# first token) -- for its tokens and for its cost. Never "0 tokens" and never
+# "$0.00": nobody counted.
+USAGE_NONE = "(none)"
+TOKEN_LABELS = (("input", "in"), ("output", "out"),
+                ("cacheRead", "cache read"), ("cacheWrite", "cache write"))
+
+# Keys `iteration_detail` derives itself. Stripped from the meta.json passthrough
+# first, so a hand-edited (or hostile) meta.json cannot smuggle in a display
+# string the raw fields do not support -- the `_with_approach_display`
+# discipline, applied at the source this time.
+ITERATION_DERIVED_KEYS = (
+    "hasMeta", "startedAtLocal", "endedAtLocal", "durationS", "durationDisplay",
+    "durationLabel", "exitReason", "costDisplay", "costStatus", "tokensDisplay",
+    "hasTranscript", "transcriptBytes",
+)
+
+# Whether a duration is final or still growing (`ralphctl status`' own words).
+DURATION_TOTAL = "total"
+DURATION_ELAPSED = "elapsed"
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse whitespace and truncate -- an error message is arbitrary text
+    (it can be a whole traceback) and this goes on one line."""
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
+def format_exit_reason(meta: dict | None) -> str:
+    """Why iteration `meta` ended, in one line (task 019, #18.1).
+
+    The raw signals `loop._run_iteration_once` records are ranked, first match
+    winning, because they overlap (a timed-out iteration also has an exit code,
+    an interrupted one usually has an error message):
+
+      no/unreadable meta -> `unknown`   (nothing is claimed)
+      no `endedAt`       -> `still running`
+      `interrupted`      -> operator interrupt (`POST /interrupt`, abort)
+      `noTrafficTimeout` -> the startup watchdog fired: no tokens at all
+      `timedOut`         -> the per-iteration limit fired
+      `error`            -> `error (exit N): <message>`
+      `exitCode == 0`    -> `clean exit`
+      other int exitCode -> `exit N`
+
+    A non-null `faultClass` (`engine/faults.py`' verdict, the reason an attempt
+    was retried and refunded) is appended as ` [infra fault]`/` [work fault]`
+    rather than replacing the signal it was derived from. Defensive like
+    `format_duration`: junk in, a word out, never an exception -- this feeds a
+    renderer.
+    """
+    if not isinstance(meta, dict):
+        return EXIT_REASON_UNKNOWN
+    reason = _exit_reason_core(meta)
+    fault = meta.get("faultClass")
+    if isinstance(fault, str) and fault:
+        reason += f" [{fault} fault]"
+    return reason
+
+
+def _exit_reason_core(meta: dict) -> str:
+    if not meta.get("endedAt"):
+        return EXIT_REASON_RUNNING
+    if meta.get("interrupted"):
+        return EXIT_REASON_INTERRUPTED
+    if meta.get("noTrafficTimeout"):
+        return EXIT_REASON_NO_TRAFFIC
+    if meta.get("timedOut"):
+        return EXIT_REASON_TIMEOUT
+    code = meta.get("exitCode")
+    code_is_int = isinstance(code, int) and not isinstance(code, bool)
+    error = meta.get("error")
+    if error:
+        detail = _one_line(error, EXIT_REASON_ERROR_MAX)
+        return (f"error (exit {code}): {detail}" if code_is_int
+                else f"error: {detail}")
+    if code == 0 and code_is_int:
+        return EXIT_REASON_CLEAN
+    if code_is_int:
+        return f"exit {code}"
+    return EXIT_REASON_UNKNOWN
+
+
+def format_tokens(usage: dict | None) -> str:
+    """One iteration's token counters for humans (task 019, #18.1):
+    `180,661 total (in 18, out 2,118, cache read 136,849, cache write 41,676)`.
+
+    Only counters actually present are named -- a provider that reports no
+    cache split gets no zeroed cache fields invented for it -- and a usage
+    dict with nothing countable renders `TOKENS_NONE`, never `0 tokens`.
+    Cost is deliberately NOT part of this string: it goes through
+    `format_cost`, the one formatter that knows what is unknown (`USAGE_NONE`
+    is shared with it for the nothing-recorded case).
+    """
+    if not isinstance(usage, dict):
+        return USAGE_NONE
+
+    def count(key):
+        raw = usage.get(key)
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+    parts = [f"{label} {n:,}" for key, label in TOKEN_LABELS
+             if (n := count(key)) is not None]
+    total = count("totalTokens")
+    if total is None and not parts:
+        return USAGE_NONE
+    head = f"{total:,} total" if total is not None else "total unreported"
+    return f"{head} ({', '.join(parts)})" if parts else head
+
+
+def iteration_detail(run_root: Path, number: int) -> dict | None:
+    """Everything known about one iteration of a run, or None when the run dir
+    holds no such iteration (task 019, #18.1).
+
+    `iterations/NNNN/meta.json` verbatim (so nothing the engine records is
+    dropped -- `steeringConsumed`, `verifiedTask`/`verifyOutcome`,
+    `modelResolved`/`modelRaw`, the raw failure signals) PLUS the derived
+    display fields both detail surfaces need:
+
+      `hasMeta`          False for an iteration dir whose meta.json is absent
+                         or truncated -- the transcript is still readable, and
+                         the fields simply are not known,
+      `startedAtLocal`/`endedAtLocal`  absolute instants through the one shared
+                         `format_local_time` (absent when there is no such
+                         timestamp -- its `n/a` would read like a real one),
+      `durationS`/`durationDisplay`    how long it ran (`elapsed_seconds` +
+                         `format_duration`), with `durationLabel` saying which
+                         it is -- `total` for a finished iteration, `elapsed`
+                         for one still in flight (the wording `ralphctl
+                         status`' duration line already uses),
+      `exitReason`       `format_exit_reason` above,
+      `tokensDisplay`    `format_tokens` above,
+      `costDisplay`      `format_cost(usage, decimals=4)` -- 4 decimals
+                         because a single iteration is small money; a cost
+                         nobody knows renders `unavailable`, never `$0.0000`,
+      `costStatus`       `cost_status`' verdict (None/derived/partial/unknown),
+      `hasTranscript`/`transcriptBytes`  whether this iteration wrote any
+                         transcript at all (via `log_merge.
+                         iteration_output_path`, which owns the file name; the
+                         log itself is rendered by the caller through
+                         `log_merge`/`cli.log_render`, where transcript
+                         rendering lives).
+
+    The log lines are NOT part of this dict on purpose: rendering them is the
+    job of `log_merge.iteration_lines` plus the shared renderer, and a caller
+    that only wants the header (a hub timeline row, `--no-log`) must not pay
+    for reading a 20 MB transcript.
+    """
+    d = iteration_dir(Path(run_root), number)
+    if not d.is_dir():
+        return None
+    raw = read_json(d / "meta.json")
+    has_meta = isinstance(raw, dict)
+    meta = raw if has_meta else {}
+    detail = {k: v for k, v in meta.items() if k not in ITERATION_DERIVED_KEYS}
+    recorded = meta.get("number")
+    detail["number"] = (recorded if isinstance(recorded, int)
+                        and not isinstance(recorded, bool) else number)
+    detail["hasMeta"] = has_meta
+    for key in ("startedAt", "endedAt"):
+        if detail.get(key):
+            detail[key + "Local"] = format_local_time(detail[key])
+    duration = elapsed_seconds(detail.get("startedAt"), detail.get("endedAt"))
+    detail["durationS"] = round(duration, 3) if duration is not None else None
+    detail["durationDisplay"] = format_duration(duration)
+    # An unfinished iteration's duration is elapsed-so-far, not a total: said
+    # out loud in the same two words `ralphctl status`' duration line uses,
+    # rather than left for each surface to guess.
+    detail["durationLabel"] = (DURATION_TOTAL if detail.get("endedAt")
+                               else DURATION_ELAPSED)
+    # `raw`, not `meta`: an absent/truncated meta.json is `unknown` (nothing is
+    # known), while an existing one with no `endedAt` is `still running` -- the
+    # empty dict must not silently promise the second.
+    detail["exitReason"] = format_exit_reason(raw if has_meta else None)
+    usage = detail.get("usage") if isinstance(detail.get("usage"), dict) else None
+    detail["tokensDisplay"] = format_tokens(usage)
+    detail["costDisplay"] = format_cost(usage, decimals=4) or USAGE_NONE
+    detail["costStatus"] = cost_status(usage)
+    try:
+        size = iteration_output_path(run_root, number).stat().st_size
+    except OSError:
+        size = 0
+    detail["transcriptBytes"] = size
+    detail["hasTranscript"] = size > 0
+    return detail
 
 
 # ---------------------------------------------------------------------------

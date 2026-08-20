@@ -39,12 +39,52 @@ BOUNDARY_TYPE = "ralphd.iteration"
 NO_TRANSCRIPT = "(no transcript yet)"
 
 
+# The run dir's per-iteration layout, spelled in ONE place: `<run>/iterations/
+# NNNN/` holding `prompt.md`, `output.jsonl` and `meta.json`. Every reader of a
+# single iteration (this module's `iteration_lines`, `engine.state.
+# iteration_detail` for the CLI/hub iteration-detail views, task 019) goes
+# through the two helpers below rather than re-spelling the zero padding.
+ITERATIONS_DIR = "iterations"
+
+
 def iteration_dirs(run_root: Path) -> list[Path]:
     """Iteration directories in execution order (`0001`, `0002`, ...)."""
-    itroot = Path(run_root) / "iterations"
+    itroot = Path(run_root) / ITERATIONS_DIR
     if not itroot.exists():
         return []
     return sorted(itroot.iterdir())
+
+
+def iteration_dir(run_root: Path, number: int) -> Path:
+    """The directory holding iteration `number`'s transcript and `meta.json`
+    (not necessarily existing -- callers check)."""
+    return Path(run_root) / ITERATIONS_DIR / f"{number:04d}"
+
+
+def iteration_output_path(run_root: Path, number: int) -> Path:
+    """Where iteration `number`'s raw transcript lives. Which file *is* the
+    transcript is this module's business (see the grep guard in
+    tests/test_log_merge.py), so readers that only need its size or existence
+    -- `engine.state.iteration_detail`'s `hasTranscript`/`transcriptBytes` --
+    ask here instead of spelling the name a second time."""
+    return iteration_dir(run_root, number) / "output.jsonl"
+
+
+def iteration_numbers(run_root: Path) -> list[int]:
+    """The iteration numbers a run dir actually holds, in execution order.
+
+    Derived from the directory names (`0001` -> 1), not from any index: the
+    dirs ARE the record. A name that is not a number is ignored rather than
+    raising, so a stray file in `iterations/` cannot break a reader (task 019,
+    which uses this to tell an operator which iterations exist).
+    """
+    out = []
+    for d in iteration_dirs(run_root):
+        try:
+            out.append(int(d.name))
+        except ValueError:
+            continue
+    return out
 
 
 def boundary_line(meta: dict, event: str) -> str:
@@ -129,7 +169,7 @@ def iteration_lines(run_root: Path, number: int, tail: int = 0,
     Returns `[]` for an iteration that has no transcript on disk.
     """
     scrub = scrub or (lambda text: text)
-    path = Path(run_root) / "iterations" / f"{number:04d}" / "output.jsonl"
+    path = iteration_output_path(run_root, number)
     if not path.exists():
         return []
     lines = [scrub(line if line.endswith("\n") else line + "\n")
