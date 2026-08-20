@@ -67,6 +67,35 @@ DEFAULT_INFRA_RETRY_BACKOFF_MAX_S = 300.0
 # resets on any successful iteration.
 DEFAULT_INFRA_OUTAGE_BUDGET_S = 4 * 3600.0
 
+# Task 010 (#14): how a cost is derived when the provider quotes none (or
+# quotes an implausible zero -- see state.is_zero_quote). `none` is the
+# shipped default: without an explicit opt-in ralphd never puts a number it
+# invented next to a run, exactly as before v0.6. `aws` engages the built-in
+# AWS Bedrock rate table (engine/pricing_aws.py); an operator `pricing:` map
+# is independent of this knob and always applies.
+PRICE_STRATEGIES = ("none", "aws")
+DEFAULT_PRICE_STRATEGY = "none"
+
+
+def normalize_price_strategy(value: object) -> str:
+    """Coerce a configured price strategy to a known name.
+
+    An unknown/misspelled value degrades to `none` with a warning rather than
+    killing the engine: a typo in an optional cost annotation must never stop
+    a job from running, and falling back to `none` can only ever *withhold* a
+    derived number, never invent one. The effective value is visible in
+    `GET /config` (`priceStrategy`), so the fallback is observable.
+    """
+    if value is None or value == "":
+        return DEFAULT_PRICE_STRATEGY
+    name = str(value).strip().lower()
+    if name in PRICE_STRATEGIES:
+        return name
+    log.warning("price_strategy %r is not one of %s -- using %r",
+                value, "|".join(PRICE_STRATEGIES), DEFAULT_PRICE_STRATEGY)
+    return DEFAULT_PRICE_STRATEGY
+
+
 # Phase names with a builtin prompt (see src/ralphd/prompts/); the only names
 # accepted by the prompts CRUD API (PRD req 10).
 PROMPT_NAMES = ("planning", "worker", "review", "task-verify")
@@ -140,6 +169,13 @@ class JobConfig:
     # never merged into provider-reported `costUSD`. Overridable per run with
     # RALPHD_PRICING (a JSON object of the same shape).
     pricing: dict = field(default_factory=dict)
+    # Task 010 (#14): `none` (default) | `aws`. When `aws`, a route the
+    # provider did not price (or priced with an implausible zero) is costed
+    # from the built-in AWS Bedrock table; the result is still published as
+    # *derived*, never as provider-quoted `costUSD`. Overridable per run with
+    # RALPHD_PRICE_STRATEGY, and settable from an LLM profile / `ralphctl
+    # start --price-strategy` (both land in job.yaml on the host side).
+    price_strategy: str = DEFAULT_PRICE_STRATEGY
     extra: dict = field(default_factory=dict)
 
     # "reflect" (post-job self-reflection, PRD req 24) mirrors "review"'s tier
@@ -155,6 +191,13 @@ class JobConfig:
                      "review": "strong", "verify": "fast",
                      "reflect": "strong"},
     }
+
+    def __post_init__(self) -> None:
+        # Normalise here, not only in `load`, so a JobConfig built directly
+        # (tests, the API, future callers) can never carry an unknown
+        # strategy that a downstream `== "aws"` check would silently treat as
+        # "not aws" with no warning.
+        self.price_strategy = normalize_price_strategy(self.price_strategy)
 
     @classmethod
     def load(cls, path: Path | None = None) -> JobConfig:
@@ -185,6 +228,8 @@ class JobConfig:
             else:
                 if isinstance(parsed, dict):
                     cfg.pricing = parsed
+        if v := os.environ.get("RALPHD_PRICE_STRATEGY"):
+            cfg.price_strategy = normalize_price_strategy(v)
         return cfg
 
     def effective(self) -> dict:
@@ -226,6 +271,11 @@ class JobConfig:
             # operator reading a derived cost can see which rates produced it.
             "pricing": (pm.describe()
                         if (pm := PricingMap.from_config(self.pricing)) else None),
+            # Task 010 (#14): which built-in rate table (if any) may derive a
+            # cost for an unpriced route -- always the *effective* value, so
+            # an unknown configured name shows up here as the `none` it
+            # actually behaves as.
+            "priceStrategy": self.price_strategy,
         }
 
     def model_for(self, phase: str) -> str | None:

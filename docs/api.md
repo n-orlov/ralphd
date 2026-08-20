@@ -415,6 +415,7 @@ contents, no LLM env values):
   "flags": {"vigilant": false, "onComplete": "idle"},
   "model": {"strategy": "quality-first", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
   "pricing": null,                 // or the resolved host-side rate table, see below
+  "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
   "prompts": [{"name": "planning", "source": "builtin"}, ...],
   "skills": [{"name": "...", "origin": "mounted"}, ...],
   "creds": ["github", ...],
@@ -458,6 +459,25 @@ default is `null` — no map, and unpriced traffic then stays
 `unknown` rather than being guessed at. A configured map is consulted **only**
 when the provider quoted no price, and its output is published separately as
 `costDerivedUSD` (see the usage contract above).
+
+`priceStrategy` (v0.6, #14) is the separate switch for the **built-in** rate
+tables ralphd ships (currently `aws`, the Bedrock table in
+`src/ralphd/engine/pricing_aws.py`):
+
+| Value | Meaning |
+|-------|---------|
+| `"none"` (default) | no built-in table is consulted; a route the provider did not price stays `unknown`/`unavailable` |
+| `"aws"` | the built-in AWS Bedrock table may price an unquoted route, published as `costDerivedUSD` (`~$0.45 derived`), never as `costUSD` |
+
+Set it in `job.yaml` (`price_strategy`), per run via `RALPHD_PRICE_STRATEGY`,
+in an LLM profile (`price_strategy:`, see `docs/llm-profiles.md`), registry-wide
+with `ralphctl config set price_strategy aws`, or per job with `ralphctl start
+--price-strategy aws` (which persists it into the run's `job.yaml`, so a later
+`resume` uses the same strategy). An operator `pricing:` map is independent of
+this knob and always applies. The reported value is always the **effective**
+one: an unrecognised configured value degrades to `"none"` (with a warning in
+the engine log) rather than failing the job, so what this field says is what
+the run actually does.
 
 ### `PATCH /config/budget`
 Raises (or lowers) the **iteration budget of a running job** without restarting
