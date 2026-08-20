@@ -36,6 +36,7 @@ from typing import Self
 import yaml
 
 from .. import __version__
+from ..engine.config import PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     NONTERMINAL_STATES,
@@ -618,6 +619,11 @@ _TEMPLATE_SCALAR_FIELDS = {
     "reflect": False, "on_complete": "exit", "on_complete_cmd": None, "timeout": 480,
     "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
     "model": None, "fast_model": None, "thinking": None,
+    # Task 010 (#14): None here means "nobody on the host decided" -- the
+    # profile may then supply one, and if nothing does the key is omitted
+    # from job.yaml so the engine's own default (`none`) applies. The default
+    # lives in engine/config.DEFAULT_PRICE_STRATEGY alone.
+    "price_strategy": None,
     "image": DEFAULT_IMAGE, "network": None,
     # default lives in AUTO_RESUME_DEFAULT alone (task 026) -- never a
     # second literal here
@@ -632,7 +638,8 @@ _TEMPLATE_SCALAR_FIELDS = {
 # the others share their field name.
 _REGISTRY_CONFIG_FIELD_KEYS = {"image": "image", "on_complete": "on_complete",
                                "llm": "default_llm_profile", "network": "network",
-                               "auto_resume": "auto_resume"}
+                               "auto_resume": "auto_resume",
+                               "price_strategy": "price_strategy"}
 
 
 def _apply_template(args) -> Path | None:
@@ -737,6 +744,14 @@ def cmd_start(args):
         # exact rates the run started with. Absent key -> no map -> an
         # unpriced iteration stays *unknown* (never a made-up $0).
         "pricing": _registry_config(registry()).get("pricing") or None,
+        # Task 010 (#14): which built-in rate table may derive a cost for an
+        # unpriced route. Explicit flag > template > registry config.yaml >
+        # the profile's own `price_strategy:` (a gateway profile knows what
+        # bills it) > omitted, i.e. the engine default `none`. Persisted here
+        # so `ralphctl resume` (which re-runs this same job.yaml) keeps the
+        # strategy the run started with.
+        "price_strategy": args.price_strategy or (
+            llm_profile.get("price_strategy") if llm_profile else None),
     }
     (cdir / "job.yaml").write_text(
         "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))
@@ -2361,6 +2376,7 @@ def cmd_llm(args):
             print(f"description: {doc.get('description') or '(none)'}")
             print(f"model: {doc.get('model') or '(unset)'}")
             print(f"fast_model: {doc.get('fast_model') or '(unset)'}")
+            print(f"price_strategy: {doc.get('price_strategy') or '(unset)'}")
             print("env:")
             for k, v in doc["env"].items():
                 print(f"  {k} = {v}")
@@ -2919,7 +2935,8 @@ def cmd_ui(args):
 # which doctor already reads independently.
 _CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
                 "default_llm_profile": None, "network": None,
-                "auto_resume": ("true", "false")}
+                "auto_resume": ("true", "false"),
+                "price_strategy": PRICE_STRATEGIES}
 # keys stored as real booleans in `<registry>/config.yaml` (task 026)
 _CONFIG_BOOL_KEYS = {"auto_resume"}
 
@@ -2927,9 +2944,9 @@ _CONFIG_BOOL_KEYS = {"auto_resume"}
 def cmd_config(args):
     """Registry-wide defaults at `<registry>/config.yaml` (PRD req 25):
     `image`, `on_complete`, `default_llm_profile`, `network`,
-    `auto_resume`. `start` layers these in between a `--template`'s value
-    and the hardcoded fallback (see `_apply_template`); `doctor` reads
-    `default_llm_profile` directly."""
+    `auto_resume`, `price_strategy`. `start` layers these in between a
+    `--template`'s value and the hardcoded fallback (see `_apply_template`);
+    `doctor` reads `default_llm_profile` directly."""
     if args.key not in _CONFIG_KEYS:
         die(2, f"unknown config key: {args.key} (expected one of "
                 f"{', '.join(sorted(_CONFIG_KEYS))})")
@@ -3354,6 +3371,12 @@ def main() -> None:
     s.add_argument("--model-strategy", default=None,
                    choices=["quality-first", "cost-optimized", "balanced"])
     s.add_argument("--thinking", help="pi thinking level")
+    s.add_argument("--price-strategy", default=None, choices=list(PRICE_STRATEGIES),
+                   help="derive a cost for routes the provider does not price "
+                        "(or prices with an implausible zero): 'aws' uses the "
+                        "built-in AWS Bedrock rate table, 'none' leaves such a "
+                        "cost unknown [default: none, or the template/registry/"
+                        "llm-profile value]")
     s.add_argument("--llm", default=None,
                    help="LLM profile: host|none, or a name from "
                         "<registry>/llm-profiles/<name>.yaml (docs/llm-profiles.md) "

@@ -15,6 +15,8 @@ A profile is a YAML file in `~/.ralphd/llm-profiles/<name>.yaml`:
 description: what this points at
 model: provider/model-id            # default model for jobs using this profile
 fast_model: provider/cheap-model-id # optional: "fast" tier for cost strategies
+price_strategy: aws                 # optional: none|aws — built-in rate table for
+                                    # routes this gateway does not price itself
 
 env:                                # env vars set in the container
   SOME_API_KEY: "literal-value"     # literal … # pragma: allowlist secret
@@ -43,6 +45,17 @@ Resolution rules:
   the run dir or image.
 - `model`/`fast_model` map onto the job's model-strategy tiers unless overridden by
   `--model*` flags.
+- `price_strategy` (v0.6, optional) declares which built-in rate table may derive a
+  cost for routes this endpoint bills without quoting a price — `aws` for an
+  AIGW/Bedrock-style gateway (it bills Bedrock list price, so ralphd's built-in
+  table knows the rate), `none` to leave such a cost `unavailable`. Omit the key
+  to have no opinion. `ralphctl start` uses it only when nothing more specific
+  decided (explicit `--price-strategy` > `--template` > `ralphctl config set
+  price_strategy` > this field), and writes the result into the run's `job.yaml`.
+  A derived cost is always marked derived (`~$0.45 derived`), never passed off as
+  a provider quote; see `docs/cli.md` ("Built-in AWS Bedrock rate table") and
+  `docs/api.md` (`priceStrategy`). An unknown value here is an error at `start`
+  time, not a silent fallback.
 - `--llm-env KEY=VAL` on `start` layers on top of the profile.
 - `ralphctl llm test <profile>` verifies a profile end-to-end with a one-token
   completion in a throwaway container.

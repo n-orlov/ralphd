@@ -68,6 +68,8 @@ ralphctl start --prd <file|-> [options]
 | `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state) |
 | `--model <id>` | profile default | default model (pi model ID) |
 | `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced\|custom` |
+| `--thinking <level>` | — | pi thinking level |
+| `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--model-<phase> <id>` | — | per-phase override (`planning\|worker\|review\|verify`) |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
@@ -912,7 +914,9 @@ by every `<name>.yaml` under `<registry>/llm-profiles/`, in that order.
 `***REDACTED***` and every `pi:` field that came from a
 `${env:}`/`${file:}`/`${cmd:}` reference likewise masked -- literal `pi:`
 fields (e.g. `baseUrl`) stay visible so the resolved shape is still useful
-for diagnosis. `host`/`none` have no file to resolve; `show` reports them as
+for diagnosis. `model`/`fast_model`/`price_strategy` are printed as declared
+(`(unset)` when the profile has no opinion). `host`/`none` have no file to
+resolve; `show` reports them as
 built-in with nothing to redact. Exit `3` for an unknown profile name (no such
 `<name>.yaml`); a profile that fails to *resolve* (unset `${env:}` var,
 unreadable `${file:}`, failing `${cmd:}`) exits `1` with the same diagnostic
@@ -1002,7 +1006,9 @@ Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
 `ralphctl doctor` resolves it as an LLM profile name, see below), `network`
 (any string; same values `--network` accepts, e.g. `host`), `auto_resume`
 (`true`/`false` — validated on `set` and stored as a real boolean; the
-registry-wide default for `start --auto-resume`).
+registry-wide default for `start --auto-resume`), `price_strategy`
+(`none`/`aws` — validated on `set`; the registry-wide default for
+`start --price-strategy`).
 
 - `get` prints `<key>: <value>`, or `<key>: (unset)` if the key has never
   been `set` — this is not an error (exit `0` either way).
@@ -1015,7 +1021,8 @@ registry-wide default for `start --auto-resume`).
   `null` for an unset `get`).
 
 `ralphctl start` layers these in as the **registry-wide fallback** for the
-same-named flags (`--image`, `--on-complete`, `--network`, `--auto-resume`)
+same-named flags (`--image`, `--on-complete`, `--network`, `--auto-resume`,
+`--price-strategy`)
 and for `--llm`
 (via `default_llm_profile`), between an explicit flag/`--template` value and
 the hardcoded built-in default: explicit flag > `--template` > `ralphctl
@@ -1078,8 +1085,31 @@ exactly Bedrock list price, so ralphd ships those rates itself
 (`src/ralphd/engine/pricing_aws.py`, v0.6, #14). A cost computed from it is
 still **derived** (`costDerivedUSD`, `~$0.45 derived`) -- a built-in table is
 not a provider quote -- and an operator `pricing:` map always wins over it.
-Selecting it per route is the job of the `price_strategy` knob, which lands with
-the table in v0.6 (see `docs/llm-profiles.md`).
+
+**Selecting it: the `price_strategy` knob (v0.6).** The table is consulted only
+when a run opts in, because a number ralphd invented must never appear beside a
+run that never asked for one:
+
+```console
+$ ralphctl start --prd prd.md --price-strategy aws     # this job
+$ ralphctl config set price_strategy aws               # every job on this host
+```
+
+Accepted values are `none` (the default: an unpriced route stays
+`unavailable`) and `aws` (the built-in Bedrock table may derive a cost). The
+resolution order is the usual one — explicit `--price-strategy` >
+`--template`'s `job.yaml` > `ralphctl config set price_strategy` >
+the `--llm` profile's own `price_strategy:` (see `docs/llm-profiles.md`: a
+gateway profile is what knows which table bills its routes) > the engine
+default `none`. `start` writes the resolved value into the run's `job.yaml`
+(`price_strategy`), so `ralphctl resume` keeps the strategy the run started
+with instead of re-deriving it from the resuming shell. A single run can also
+be pointed at a strategy with `RALPHD_PRICE_STRATEGY=aws`, and the effective
+value is visible in `GET /config` (`priceStrategy`). An unrecognised value
+in `job.yaml`/the env degrades to `none` with a warning in the engine log
+rather than failing the job — the fallback can only withhold a derived number,
+never invent one — while `--price-strategy`/`config set` reject a bad value up
+front (exit `2`).
 
 What the table does, and deliberately does not, resolve:
 

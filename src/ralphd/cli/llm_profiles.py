@@ -19,6 +19,8 @@ from pathlib import Path
 
 import yaml
 
+from ..engine.config import PRICE_STRATEGIES, normalize_price_strategy
+
 _REF_RE = re.compile(r"^\$\{(env|file|cmd):(.*)\}$", re.DOTALL)
 
 # Placeholder printed by `ralphctl llm show` in place of any value that came
@@ -147,8 +149,9 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
                     redact: bool = False) -> dict:
     """Load and fully resolve a named profile.
 
-    Returns ``{"description", "model", "fast_model", "env", "mounts",
-    "pi"}`` where `env` is a `str -> str` dict of fully-resolved values,
+    Returns ``{"description", "model", "fast_model", "price_strategy",
+    "env", "mounts", "pi"}`` where `env` is a `str -> str` dict of
+    fully-resolved values,
     `mounts` is a list of `host:container[:ro]` strings (host side
     `~`-expanded), and `pi` is the resolved `pi:` fragment (or `None`).
 
@@ -168,6 +171,12 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
     useful for diagnosis. `mounts` (host paths) are never masked.
     """
     doc = load_profile_doc(reg, name)
+    price_strategy = doc.get("price_strategy")
+    if price_strategy is not None and \
+            normalize_price_strategy(price_strategy) != str(price_strategy).strip().lower():
+        raise ProfileError(
+            f"llm profile '{name}': price_strategy: {price_strategy!r} is not one "
+            f"of {'|'.join(PRICE_STRATEGIES)}")
     combined = dict(host_env if host_env is not None else os.environ)
     resolved_env: dict[str, str] = {}
     env_section = doc.get("env") or {}
@@ -197,6 +206,11 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         "description": doc.get("description"),
         "model": doc.get("model"),
         "fast_model": doc.get("fast_model"),
+        # Task 010 (#14): a gateway profile knows which rate table can price
+        # its routes, so the profile is where that belongs -- `ralphctl start`
+        # inlines it into job.yaml unless an explicit --price-strategy (or a
+        # template/registry default) already decided.
+        "price_strategy": price_strategy,
         "env": resolved_env,
         "mounts": mounts,
         "pi": pi_fragment,
