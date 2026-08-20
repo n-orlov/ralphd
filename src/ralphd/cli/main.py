@@ -1368,7 +1368,23 @@ def cmd_runs(args):
                          "iterationsBudget": status.get("iterationsBudget"),
                          "iterations": f"{used}"
                                        f"/{status.get('iterationsBudget', '?')}",
-                         "startedAt": status.get("startedAt")})
+                         "startedAt": status.get("startedAt"),
+                         # Task 015 (#21): the same TASKS fields the hub's run
+                         # list carries, built by the same
+                         # `TasksRead.row_fields` -- raw counts (what `--sort
+                         # tasks` compares and what a machine consumer wants),
+                         # `tasksDisplay`/`tasksColumn` rendered by the
+                         # engine's formatters, `tasksTrouble` in `ralphctl
+                         # status`' exact wording, plus task 002's
+                         # `tasksStale`/`tasksSource`.
+                         #
+                         # ONE local hardened read per listed row -- after the
+                         # `--state` filter, so a filtered-out run costs
+                         # nothing -- with `persist=False`, because the CLI is
+                         # a viewer and must not leave a last-good cache in
+                         # somebody else's run dir (`ui_server._row_tasks`
+                         # reads exactly the same way).
+                         **read_tasks_doc(d, persist=False).row_fields})
     # One ordering for both surfaces: --json is the human table's rows in the
     # same sequence, so a script and a reader never disagree about "first".
     rows = sort_run_rows(rows, getattr(args, "sort", None),
@@ -1377,9 +1393,9 @@ def cmd_runs(args):
         print(json.dumps(rows, indent=2))
     else:
         fmt = ("{runId:<24} {state:<10} {verdict:<10} {phase:<9} {approach:<8} "
-               "{iterations:<7} {startedAt}")
+               "{tasks:<12} {iterations:<7} {startedAt}")
         print(fmt.format(runId="RUN", state="STATE", verdict="VERDICT",
-                         phase="PHASE", approach="APPROACH",
+                         phase="PHASE", approach="APPROACH", tasks="TASKS",
                          iterations="ITER", startedAt="STARTED"))
         for r in rows:
             print(fmt.format(
@@ -1390,6 +1406,14 @@ def cmd_runs(args):
                 # `--sort approach` compares, exactly like `iterationsUsed`
                 # vs the "7/250" string.
                 approach=str(r["approachDisplay"]),
+                # Task 015 (#21): `5/7`, blank for a run with no plan (never
+                # `0/0`), plus the trouble marker when a task is
+                # validation-failed/in-progress and `stale` when the fraction
+                # came from the last-good payload -- the hub cell's text,
+                # flattened by `format_task_column`. The flag SENTENCES do not
+                # fit a column: they are in `--json`'s `tasksTrouble` and in
+                # `ralphctl status <run>`'s summary, verbatim.
+                tasks=str(r["tasksColumn"]),
                 iterations=str(r["iterations"]),
                 # Task 048 (#4)'s shared absolute formatter for the human
                 # column; --json keeps the raw ISO value for sorting/consumers.

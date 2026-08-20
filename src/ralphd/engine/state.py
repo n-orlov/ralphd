@@ -572,6 +572,40 @@ class TasksRead:
         wording so a surface holding only the serialised contract agrees."""
         return tasks_read_notice(self.source, self.stale)
 
+    @property
+    def row_fields(self) -> dict:
+        """Task 013/015 (#21): the task-progress fields ONE run-list row
+        carries, for every surface that lists runs -- the hub's `/api/runs`
+        (`cli/ui_server.py:_row_tasks`) and `ralphctl runs`.
+
+        Lives on the read rather than in either surface so the two cannot
+        drift: same field names, same raw counts, same server-rendered
+        strings, same `{tasksStale,tasksSource}` contract. Each surface still
+        does its OWN read (the hub asserts exactly one per row, `persist=False`
+        -- a viewer writes nothing into somebody else's run dir).
+
+        Raw counts travel beside the rendered strings so a table can sort on
+        progress numerically (`app.js taskRatio` / `cli/main.py _task_ratio`)
+        instead of on cell text, exactly like `approach`/`approachDisplay`.
+        """
+        counts = self.counts
+        fraction = format_task_fraction(counts)
+        return {
+            "tasksTotal": counts.get("total", 0),
+            "tasksCompleted": counts.get("completed", 0),
+            "tasksInProgress": counts.get("inProgress", 0),
+            "tasksValidationFailed": counts.get("validationFailed", 0),
+            "tasksDisplay": fraction,
+            # A plan-less run gets no summary either: `0/0 completed` would be
+            # a claim about a plan that does not exist.
+            "tasksSummary": format_task_counts(counts) if fraction else "",
+            "tasksTrouble": format_task_trouble(counts),
+            # The flattened one-string cell `ralphctl runs` prints (the hub
+            # composes the same parts as styled spans instead).
+            "tasksColumn": format_task_column(counts, stale=self.stale),
+            **self.contract,
+        }
+
 
 def _remember_tasks(key: str, doc: dict) -> None:
     with _tasks_last_good_lock:
@@ -674,6 +708,14 @@ TASK_STATUS_LABELS = {"inProgress": "in-progress",
 # on its own: `ralphctl runs` flags the same two.
 TASK_TROUBLE_KEYS = ("validationFailed", "inProgress")
 
+# Task 015 (#21): the one glyph that says "this plan has trouble in it" in a
+# COLUMN, where the flag sentences themselves do not fit. Spelled here so the
+# hub cell (`app.js taskCell`, which appends the same `\u26A0`) and `ralphctl
+# runs` mark the same fact with the same character; the *wording* of what is
+# wrong stays `format_task_trouble`'s, served verbatim in `--json` and printed
+# in full by `ralphctl status`.
+TASK_TROUBLE_MARKER = "\u26a0"
+
 # What `format_task_counts` says for a run with no counts at all.
 NO_TASKS = "(none)"
 
@@ -738,6 +780,35 @@ def format_task_trouble(counts: dict) -> list[str]:
         if value:
             out.append(f"{value} {TASK_STATUS_LABELS.get(key, key)}")
     return out
+
+
+def format_task_column(counts: dict, *, stale: bool = False) -> str:
+    """Task 015 (#21): the compact TASKS cell for a run-list ROW, as one
+    string -- `5/7`, `5/7 \u26a0` when something is validation-failed or
+    in-progress, `5/7 \u26a0 stale` when the fraction came from the last-good
+    payload (task 002's reader).
+
+    This is the hub cell's text content flattened for a terminal column: the
+    fraction is `format_task_fraction`'s, the trouble decision is
+    `format_task_trouble`'s and the stale label is `TASKS_STALE_LABEL` -- one
+    vocabulary, no second spelling of any of the three. The flag *sentences*
+    do not fit a column, so they travel in `--json` (`tasksTrouble`) and in
+    `ralphctl status`' sentence instead of being abbreviated here into a
+    private wording.
+
+    Empty string for a run with no plan (never `0/0`), and then no marker
+    either: there is nothing to be in trouble about, and an `unreadable` read
+    is ignorance rather than a stuck plan.
+    """
+    fraction = format_task_fraction(counts)
+    if not fraction:
+        return ""
+    parts = [fraction]
+    if format_task_trouble(counts):
+        parts.append(TASK_TROUBLE_MARKER)
+    if stale:
+        parts.append(TASKS_STALE_LABEL)
+    return " ".join(parts)
 
 
 @dataclass

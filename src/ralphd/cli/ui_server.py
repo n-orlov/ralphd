@@ -43,9 +43,6 @@ from ..engine.state import (
     format_approach,
     format_cost,
     format_local_time,
-    format_task_counts,
-    format_task_fraction,
-    format_task_trouble,
     prd_path,
     read_tasks_doc,
     tasks_read_notice,
@@ -161,22 +158,13 @@ def _row_tasks(run_dir: Path) -> dict:
     sentence) and `tasksTrouble` (`['1 validation-failed']`, worded exactly as
     that sentence words it). The raw counts travel alongside so the browser can
     sort numerically on progress rather than on the rendered string.
+
+    Task 015 (#21): the field set itself is `TasksRead.row_fields`, shared with
+    `ralphctl runs` -- the two surfaces that list runs cannot disagree about a
+    run's progress, because there is only one place the row is built. The READ
+    stays here (one per row, `persist=False`, no proxy call).
     """
-    res = read_tasks_doc(run_dir, persist=False)
-    counts = res.counts
-    fraction = format_task_fraction(counts)
-    return {
-        "tasksTotal": counts.get("total", 0),
-        "tasksCompleted": counts.get("completed", 0),
-        "tasksInProgress": counts.get("inProgress", 0),
-        "tasksValidationFailed": counts.get("validationFailed", 0),
-        "tasksDisplay": fraction,
-        # A plan-less run gets no summary either: `0/0 completed` would be a
-        # claim about a plan that does not exist.
-        "tasksSummary": format_task_counts(counts) if fraction else "",
-        "tasksTrouble": format_task_trouble(counts),
-        **res.contract,
-    }
+    return read_tasks_doc(run_dir, persist=False).row_fields
 
 
 def run_list(reg: Path) -> list[dict]:
