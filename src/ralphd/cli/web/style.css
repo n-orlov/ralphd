@@ -302,3 +302,33 @@ footer.autorefresh {
 .steering-item .steering-name { font-weight: 600; }
 .steering-item .steering-file { margin-left: auto; font-size: 0.78rem; }
 .steering-snapshot { font-size: 0.8rem; margin: 0.3rem 0 0; }
+
+/* Task 022 (#18.2): the run's state documents (notes, review findings,
+   composite PRD, redacted job.yaml). An existing document is a <button>
+   opening the shared text dialog; one this run never wrote is a plain span
+   stating that fact, so absence is visible without being clickable. */
+.document-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.document-item {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: baseline;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.document-item:hover, .document-item:focus { background: rgba(127, 127, 127, 0.12); outline: none; }
+.document-item:focus-visible { outline: 2px solid var(--accent); }
+.document-item .document-size { font-size: 0.78rem; }
+.document-absent { cursor: default; opacity: 0.65; }
+.document-absent:hover { background: none; }

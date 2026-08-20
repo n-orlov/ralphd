@@ -1579,3 +1579,141 @@ def test_timeline_row_opens_the_iteration_dialog(tmp_path, pw):
         assert int(pw.eval_js(_DIALOGS)) == 1
     finally:
         server.stop()
+
+
+_DOCUMENT_ITEMS = "document.querySelectorAll('.document-item').length"
+_DOCUMENT_BUTTONS = "document.querySelectorAll('button.document-item').length"
+_DOCUMENT_ROW_TEXT = (
+    "[...document.querySelectorAll('.document-item')]"
+    ".map(e => e.dataset.document + ' ' + e.textContent).join(' | ')")
+
+
+def test_run_detail_opens_the_state_document_dialogs(tmp_path, pw):
+    """Task 022 (#18.2): the run's own prose -- the worker's handoff notes, the
+    reviewer's findings, the composite PRD and the effective `job.yaml` -- is
+    one click away on the run detail page, for a run whose container is gone
+    (the case that made #18.2 painful: reading them meant knowing the registry
+    layout and `cat`-ing files on the host).
+
+    Pins what each dialog shows (the server's own `state.run_document_text`,
+    i.e. exactly what `ralphctl docs` prints), that `job.yaml` arrives REDACTED
+    (a staged secret value and a masked key name never reach the page), the
+    rendering discipline (a notes body full of markup and an inline `<script>`
+    survives as TEXT), that a document this run never wrote is stated rather
+    than clickable, and that the single shared dialog does not stack across the
+    4s `load()` rebuild behind it.
+    """
+    from ralphd.cli.llm_profiles import MASK
+    from ralphd.cli.ui_server import document_view
+    from ralphd.engine.state import JOB_CONFIG_FILE, RUN_DOCUMENT_ABSENT
+
+    secret = "ghp_browserDocsSecret0123456789"
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-docs-dialog", state="failed",
+                              verdict="unverified")
+    notes = ("# Handoff notes\n\nstate: <b>5/7</b> done & "
+             "<script>alert(1)</script>\nnext: task 023\n")
+    (run_dir / "notes.md").write_text(notes)
+    (run_dir / "review-findings.md").write_text(
+        "# Review findings\n\nApproach 1 missed requirement C.\n")
+    # deliberately NOT written: composite-prd.md (this run never restarted)
+    cdir = registry / "configs" / "run-docs-dialog"
+    (cdir / "creds").mkdir(parents=True)
+    (cdir / "creds" / "github.env").write_text(f"GITHUB_TOKEN={secret}\n")
+    (cdir / JOB_CONFIG_FILE).write_text(
+        'run_id: "run-docs-dialog"\niterations: 25\n'
+        'api_token: "tok_abcdefgh12345678"\n'
+        f'on_complete_cmd: "curl -H \'Authorization: Bearer {secret}\' https://ci"\n'
+        'env: {"AWS_REGION": "eu-west-1"}\n')
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-docs-dialog")
+        _wait_for_count_ge(pw, _DOCUMENT_ITEMS, 4)
+        rows = pw.eval_js(_DOCUMENT_ROW_TEXT)
+        assert "notes notes.md" in rows, rows
+        assert "findings review-findings.md" in rows, rows
+        assert "job job.yaml" in rows, rows
+        # a never-written document is listed, in the server's own wording, and
+        # is NOT a button (there is nothing to open)
+        assert f"composite-prd composite-prd.md {RUN_DOCUMENT_ABSENT}" in rows, rows
+        assert int(pw.eval_js(_DOCUMENT_BUTTONS)) == 3
+        assert int(pw.eval_js(
+            "document.querySelectorAll('[data-document-absent]').length")) == 1
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- the worker's notes --------------------------------------------
+        pw.click('button.document-item[data-document="notes"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "document:  notes")
+        title = pw.eval_js("document.querySelector('.text-dialog .dialog-title')"
+                           ".textContent")
+        assert "notes.md" in title and "run-docs-dialog" in title, title
+        assert "next: task 023" in body, body
+        # markup in an agent-authored document stays TEXT, like a PRD body
+        assert "<b>5/7</b>" in body and "<script>alert(1)</script>" in body, body
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog script, .text-dialog b').length")) == 0
+        # every line came from the server's own `text`, verbatim
+        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
+                         ".textContent")
+        dialog_body = json.loads(raw) if raw.startswith('"') else raw
+        assert dialog_body == document_view(registry, "run-docs-dialog", "notes")["text"]
+        assert "missed requirement C" not in body, body
+        pw.screenshot(SCREENSHOTS_DIR / "24-document-dialog.png")
+
+        # -- it survives a full 4s poll without stacking -------------------
+        time.sleep(5.0)
+        assert int(pw.eval_js(_DOCUMENT_ITEMS)) == 4      # panel re-rendered
+        assert int(pw.eval_js(_DIALOGS)) == 1             # ...behind ONE dialog
+        assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
+
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- job.yaml, redacted, keyboard-reachable ------------------------
+        # A <button> gets Enter/Space from the platform -- but the 4s `load()`
+        # poll legitimately replaces the panel's nodes, so a focus taken just
+        # before one lands is lost through no fault of the button. Hence: take
+        # the focus and press Enter, retrying the whole cycle until the dialog
+        # opens (what is asserted is that the button IS focusable and that
+        # Enter alone opens it -- never a mouse click here).
+        focus_js = (
+            "(() => { const el = document.querySelector('button.document-item"
+            "[data-document=\"job\"]'); el.focus();"
+            " return document.activeElement === el ? 'focused' : 'lost'; })()")
+        deadline = time.time() + 40
+        body = ""
+        while time.time() < deadline and "document:  job" not in body:
+            if pw.eval_js(focus_js).strip('"') != "focused":
+                continue
+            assert pw.run("press", "Enter").returncode == 0
+            for _ in range(10):
+                body = pw.eval_js(
+                    "document.querySelector('.text-dialog')"
+                    " ? document.querySelector('.text-dialog').textContent : ''")
+                if "document:  job" in body:
+                    break
+                time.sleep(0.2)
+        assert "document:  job" in body, body
+        assert MASK in body, body
+        assert secret not in body, "the staged secret value reached the page"
+        assert "tok_abcdefgh12345678" not in body, body
+        # ...and the harmless config still readable
+        assert "iterations: 25" in body and "eu-west-1" in body, body
+        assert int(pw.eval_js(_DIALOGS)) == 1
+
+        # -- the findings open their OWN document ---------------------------
+        pw.click(".text-dialog .dialog-close button")
+        pw.click('button.document-item[data-document="findings"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "document:  findings")
+        assert "missed requirement C" in body, body
+        assert "next: task 023" not in body, body
+        assert int(pw.eval_js(_DIALOGS)) == 1
+    finally:
+        server.stop()

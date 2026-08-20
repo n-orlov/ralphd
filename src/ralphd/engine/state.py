@@ -1366,7 +1366,12 @@ def run_document_body(doc: dict) -> str:
     return body if body.strip() else RUN_DOCUMENT_EMPTY
 
 
-def _document_size_cell(doc: dict) -> str:
+def format_run_document_size(doc: dict) -> str:
+    """One document's size cell, worded ONCE: its byte count when the file is
+    there, else the one wording for never-written / out-of-reach. `ralphctl
+    docs`' listing and header block print it and the hub's document panel
+    (task 022) labels its buttons with it, so a file cannot be described as
+    missing in one surface and empty in the other."""
     if doc.get("exists"):
         return f"{doc.get('bytes', 0):,}"
     return RUN_DOCUMENT_ABSENT if doc.get("available", True) \
@@ -1380,7 +1385,7 @@ def format_run_document_listing(docs: list[dict]) -> list[str]:
     lines = [f"{'DOCUMENT':<14}{'FILE':<20}{'SIZE':>13}  DESCRIPTION"]
     for doc in docs:
         lines.append(f"{doc.get('key', ''):<14}{doc.get('name', ''):<20}"
-                     f"{_document_size_cell(doc):>13}  {doc.get('title', '')}")
+                     f"{format_run_document_size(doc):>13}  {doc.get('title', '')}")
     return lines
 
 
@@ -1393,7 +1398,7 @@ def run_document_summary_lines(doc: dict) -> list[str]:
         return []
     lines = [f"document:  {doc.get('key')}  ({doc.get('name')})",
              f"purpose:   {doc.get('title')}",
-             f"size:      {_document_size_cell(doc)}"
+             f"size:      {format_run_document_size(doc)}"
              + (" bytes" if doc.get("exists") else "")]
     if doc.get("redacted"):
         lines.append(f"note:      {RUN_DOCUMENT_REDACTED_NOTICE}")

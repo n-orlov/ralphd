@@ -342,6 +342,95 @@ async function openIterationDialog(runId, number) {
   return openTextDialog(iterationTitle(runId, number), text, null);
 }
 
+// --------------------------------------------------- state documents (#18.2)
+
+// Task 022 (#18.2): a run's prose -- the worker's handoff `notes.md`, the
+// reviewer's `review-findings.md`, the `composite-prd.md` an approach restart
+// wrote, and the effective `job.yaml` -- used to be reachable only by knowing
+// the registry layout and `cat`-ing files on the host (which is also how
+// `job.yaml`'s secrets got read out loud). The panel lists what
+// `GET /api/runs/<id>/documents` reports and opens each existing document in
+// THE single `openTextDialog`.
+//
+// Every string shown was formatted in Python: the button's size cell is
+// `state.format_run_document_size` (`sizeDisplay`) and the dialog body is
+// `state.run_document_text`, the very text `ralphctl docs <run> <name>` prints
+// -- and `job.yaml` arrives already redacted by the server, so there is no raw
+// body in this page to leak. Text nodes only: these documents are
+// agent/operator-authored markdown from outside this page's trust boundary,
+// exactly like a PRD. The endpoint is on-disk, so this works for a dead run
+// with no container (hence no live/snapshot note, like the iteration dialog).
+
+const DOCUMENT_LOAD_FAILED = "failed to load the run's state documents";
+
+function documentTitle(runId, doc) {
+  return String(doc.name || doc.key || "document") + " — " + String(runId);
+}
+
+async function openDocumentDialog(runId, doc) {
+  const key = String(doc.key || doc.name || "");
+  const path = `/api/runs/${encodeURIComponent(runId)}/documents/` +
+    encodeURIComponent(key);
+  const { ok, body } = await getJSON(path);
+  const text = (ok && body && typeof body.text === "string" && body.text)
+    ? body.text
+    : "(failed to load " + key + ")";
+  return openTextDialog(documentTitle(runId, doc), text, null);
+}
+
+function renderDocuments(box, ok, body, runId) {
+  box.innerHTML = "";
+  if (!ok || !body) {
+    box.appendChild(h("p", { class: "muted" }, [DOCUMENT_LOAD_FAILED]));
+    return;
+  }
+  const docs = Array.isArray(body.documents) ? body.documents : [];
+  const list = h("div", { class: "document-list", id: "document-list" }, []);
+  for (const d of docs) {
+    const label = String(d.name || d.key || "");
+    const size = String(d.sizeDisplay || "");
+    if (d.exists === true) {
+      // A <button> rather than a role=button div: keyboard reachability and
+      // Enter/Space come for free from the platform here.
+      list.appendChild(h("button", {
+        type: "button",
+        class: "document-item",
+        "data-document": String(d.key || ""),
+        title: String(d.title || ""),
+        onclick: () => { openDocumentDialog(runId, d); },
+      }, [
+        label,
+        h("span", { class: "muted document-size" }, [" " + size]),
+      ]));
+    } else {
+      // A document this run never wrote (or one whose config dir is out of
+      // reach) gets no dialog -- but its absence is itself an answer, stated
+      // in the server's own wording rather than by omitting the row.
+      list.appendChild(h("span", {
+        class: "document-item document-absent",
+        "data-document": String(d.key || ""),
+        "data-document-absent": "1",
+        title: String(d.title || ""),
+      }, [label, h("span", { class: "muted document-size" }, [" " + size])]));
+    }
+  }
+  box.appendChild(list);
+  if (body.notice) {
+    // Wording comes from the server (`ui_server.NO_DOCUMENTS`), like the log
+    // tail's `NO_TRANSCRIPT` and the steering panel's `NO_STEERING`.
+    box.appendChild(h("p", { class: "muted", id: "documents-notice" },
+                      [String(body.notice)]));
+  }
+}
+
+async function loadDocuments(runId) {
+  const box = document.getElementById("documents-box");
+  const { ok, body } = await getJSON(
+    `/api/runs/${encodeURIComponent(runId)}/documents`);
+  if (!box) return;
+  renderDocuments(box, ok, body, runId);
+}
+
 // --------------------------------------------------- steering history (#17)
 
 // Task 017 (#17): steering used to be write-only in the hub -- an operator
@@ -527,6 +616,12 @@ async function renderRunDetail(runId) {
   ]));
 
   const summary = h("div", { class: "card" }, [h("p", { class: "muted" }, ["loading…"])]);
+  // Task 022 (#18.2): the run's own prose -- notes, review findings, the
+  // composite PRD and the redacted job.yaml -- one click away.
+  const docSec = h("section", {}, [
+    h("h2", {}, ["State documents"]),
+    h("div", { id: "documents-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
+  ]);
   const usageSec = h("section", {}, [h("h2", {}, ["Usage / cost"]), h("div", { id: "usage-box" })]);
   const taskSec = h("section", {}, [h("h2", {}, ["Tasks"]), h("div", { id: "task-box" })]);
   const timelineSec = h("section", {}, [h("h2", {}, ["Iteration timeline"]), h("div", { id: "timeline-box" })]);
@@ -550,6 +645,7 @@ async function renderRunDetail(runId) {
   ]);
 
   app.appendChild(summary);
+  app.appendChild(docSec);
   app.appendChild(usageSec);
   app.appendChild(taskSec);
   app.appendChild(timelineSec);
@@ -603,6 +699,7 @@ async function renderRunDetail(runId) {
     renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
     await loadLogs(runId);
     await loadSteering(runId);
+    await loadDocuments(runId);
   }
 
   await load();
