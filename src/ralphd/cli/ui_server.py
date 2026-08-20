@@ -26,7 +26,11 @@ Serves two things:
     Control routes are proxies too: `POST
     /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
-    now" button on a degraded run-detail card.
+    now" button on a degraded run-detail card. `DELETE /api/runs/<id>`
+    (task 030) is the one route that is neither a read nor a proxy: it
+    performs `ralphctl rm --force`'s removal through the CLI's own
+    `remove_run_state`, for a run whose recorded state is terminal and for
+    no other -- see `delete_run`/`deletion_refusal`.
   - The static hub bundle (plain HTML/JS/CSS, no build step) from the
     `web/` directory next to this file (task 034: run list, run detail
     with task table/iteration timeline/live log tail/steering
@@ -55,6 +59,7 @@ from ..engine.state import (
     STEERING_APPLIED,
     STEERING_PENDING,
     TASKS_STALE_LABEL,
+    TERMINAL_STATES,
     artifact,
     artifact_entries,
     artifact_summary_lines,
@@ -114,6 +119,26 @@ NO_DOCUMENTS = "(no state documents on disk)"
 # instantly -- this timeout only bounds the pathological "port filtered,
 # nothing answers at all" case.
 API_PROBE_TIMEOUT_S = 0.3
+
+# Task 030 (#19): the hub's delete refusals, worded ONCE here (the
+# `NO_PRD`/`NO_STEERING`/`NO_DOCUMENTS` discipline) so the endpoint's response
+# and -- task 031 -- the disabled button's explanation are literally the same
+# sentence, and so app.js never invents a reason of its own.
+DELETE_REFUSED_ACTIVE = ("run is still active (state: {state}) — abort or stop "
+                         "it first")
+DELETE_REFUSED_UNKNOWN = ("cannot establish that this run has finished (state: "
+                          "{state}) — check ralphctl repair, then delete it "
+                          "with ralphctl rm --force")
+# What a status.json that is absent, unreadable or records something this build
+# does not recognize is called in those sentences. It is NOT a state value: it
+# is the admission that we have none.
+UNKNOWN_STATE = "unknown"
+
+# Recorded in the run's operator-termination marker when the hub deletes a run
+# whose job container was still around (`_teardown_container`'s `reason`), so
+# the audit trail says WHICH surface took the run down -- the CLI's own
+# wording for the same act is "stopped by operator (`ralphctl rm --force`)".
+DELETE_TERMINATION_REASON = "stopped by operator (hub delete)"
 
 
 def _read_json(path: Path, default=None):
@@ -899,6 +924,86 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     }
 
 
+def _cli():
+    """The host-side CLI module, imported lazily.
+
+    `cli/main.py` imports THIS module at import time (`ralphctl ui` boots the
+    hub), so the dependency can only go the other way at call time. Nothing on
+    a read path uses it -- only the delete endpoint, which deliberately reuses
+    the CLI's removal sequence (`main.remove_run_state`) instead of growing a
+    second one here.
+    """
+    from . import main as cli_main
+    return cli_main
+
+
+def deletion_refusal(status: dict) -> str | None:
+    """Why this run must not be deleted right now -- or None when it may be.
+
+    The hub's gate (task 030, #19), deliberately STRICTER than
+    `ralphctl rm --force`'s: the recorded `state` must be in
+    `TERMINAL_STATES`, full stop. `rm --force` may also delete a run dir whose
+    container is already gone while status.json still says `running` (an
+    operator at a terminal, having read `repair`'s diagnosis, can decide that);
+    a one-click button in a browser may not, because "the API does not answer"
+    is not the same fact as "the job is over", and the hub cannot tell a
+    zombie from a run whose port is merely filtered.
+
+    An absent, unreadable or unrecognized state is refused with its own
+    wording rather than being called active: the honest answer is that we do
+    not know, and unknown is not permission for a destructive action (the same
+    rule task 002 applies to an unreadable tasks.json, here with teeth).
+    """
+    state = status.get("state")
+    if state in TERMINAL_STATES:
+        return None
+    if state in NONTERMINAL_STATES:
+        return DELETE_REFUSED_ACTIVE.format(state=state)
+    return DELETE_REFUSED_UNKNOWN.format(
+        state=state if isinstance(state, str) and state else UNKNOWN_STATE)
+
+
+def delete_run(reg: Path, run_id: str) -> tuple[int, dict]:
+    """Perform `rm --force`'s removal for a terminal run. Returns
+    (http status, payload) -- never raises for an ordinary refusal.
+
+    Success payload is `ralphctl rm --json`'s own shape
+    (`{"removed": <run id>, "stoppedContainer": <bool>}`) because it is the
+    same act: the container teardown, the sibling reaping and both
+    directories come from `main.remove_run_state`, the ONE removal sequence.
+    A refusal answers 409 with the reason `deletion_refusal` worded and the
+    recorded state, and touches NOTHING -- not even a `docker inspect`.
+    """
+    runs_dir = reg / "runs"
+    run_dir = runs_dir / run_id
+    # A run id arrives as one URL segment and is about to be handed to
+    # `shutil.rmtree`: refuse anything that is not the plain name of a direct
+    # child of `<registry>/runs` (`..`, an absolute path, a nested path),
+    # rather than trusting the caller's spelling.
+    if (not run_id or run_id in (".", "..") or "/" in run_id or "\\" in run_id
+            or run_dir.parent.resolve() != runs_dir.resolve()
+            or not run_dir.is_dir()):
+        return 404, {"error": f"run {run_id} not found"}
+    status = _read_json(run_dir / "status.json", {}) or {}
+    reason = deletion_refusal(status)
+    if reason:
+        return 409, {"error": reason, "runId": run_id,
+                     "state": status.get("state")}
+    cli = _cli()
+    # The CLI resolves a run's directories from RALPHD_REGISTRY, while the hub
+    # was handed its registry explicitly (`make_server`). `ralphctl ui` passes
+    # exactly `registry()`, so these agree in every real deployment -- but a
+    # mismatch would mean deleting some OTHER registry's run, so it stops here
+    # instead of guessing which of the two is meant.
+    if cli.registry().resolve() != reg.resolve():
+        return 500, {"error": "hub registry does not match RALPHD_REGISTRY — "
+                              "refusing to delete", "runId": run_id}
+    container_exists = cli.container_record_exists(run_id)
+    cli.remove_run_state(run_id, container_exists=container_exists,
+                         reason=DELETE_TERMINATION_REASON)
+    return 200, {"removed": run_id, "stoppedContainer": container_exists}
+
+
 class Handler(BaseHTTPRequestHandler):
     """Bound to a registry path via `make_handler_class()`."""
 
@@ -1129,6 +1234,26 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
                                 code)
+                return
+            self._send_json({"error": "no such endpoint"}, 404)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def do_DELETE(self):
+        # Task 030 (#19): DELETE /api/runs/<id> -- the hub's one-command
+        # delete, i.e. `ralphctl rm --force`'s removal sequence behind the
+        # run-id confirm dialog task 031 puts in front of it. Terminal runs
+        # ONLY; everything else answers 409 with the reason and changes
+        # nothing (see `delete_run`/`deletion_refusal`).
+        parts = urlsplit(self.path)
+        segs = [s for s in parts.path.split("/") if s]
+        try:
+            if len(segs) == 3 and segs[:2] == ["api", "runs"]:
+                # Path segments are NOT unquoted for us; a percent-encoded
+                # traversal must be seen for what it is before `delete_run`
+                # guards against it.
+                code, payload = delete_run(self.registry, unquote(segs[2]))
+                self._send_json(payload, code)
                 return
             self._send_json({"error": "no such endpoint"}, 404)
         except Exception as e:

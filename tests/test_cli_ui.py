@@ -27,9 +27,9 @@ from tests.conftest import RALPHCTL, free_port
 
 
 class UiServer:
-    def __init__(self, registry: Path):
+    def __init__(self, registry: Path, env: dict | None = None):
         self.port = free_port()
-        env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
+        env = {**os.environ, "RALPHD_REGISTRY": str(registry), **(env or {})}
         self.proc = subprocess.Popen(
             [str(RALPHCTL), "ui", "--port", str(self.port), "--bind", "127.0.0.1"],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -65,6 +65,15 @@ class UiServer:
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def delete(self, path: str) -> tuple[int, dict]:
+        """Task 030 (#19): the hub's DELETE endpoint."""
+        req = urllib.request.Request(f"{self.base}{path}", method="DELETE")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
     def stop(self):
         if self.proc.poll() is None:
             self.proc.terminate()
@@ -78,8 +87,8 @@ class UiServer:
 def ui(tmp_path):
     servers = []
 
-    def make(registry):
-        s = UiServer(registry)
+    def make(registry, env: dict | None = None):
+        s = UiServer(registry, env=env)
         s.wait_ready()
         servers.append(s)
         return s

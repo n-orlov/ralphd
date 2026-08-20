@@ -43,6 +43,7 @@ from ..engine.state import (
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
     TASK_STATUS_LABELS,
+    TERMINAL_STATES,
     artifact,
     artifact_entries,
     artifact_names,
@@ -947,7 +948,10 @@ def cmd_start(args):
         sys.exit(0 if status.get("verdict") == "verified" else 1)
 
 
-TERMINAL_STATES = ("succeeded", "failed", "aborted")
+# Recorded states that mean the job is over, so `stop`/`rm --force` may take
+# its containers and directories away. Defined ONCE in engine/state.py beside
+# `NONTERMINAL_STATES` (task 030) because the hub's delete endpoint gates on
+# exactly the same tuple; re-exported here under its historical name.
 
 
 def _has_later_state_event(run_id: str, ev_id) -> bool:
@@ -2888,6 +2892,45 @@ def cmd_stop(args):
     out(args, {"stopped": args.run_id}, f"stopped {args.run_id} (run dir kept)")
 
 
+def container_record_exists(run_id: str) -> bool:
+    """Does docker still know a container by this run's job container name?
+
+    The one spelling of that question (task 030, #19): `ralphctl rm` asks it
+    to decide whether it must refuse or stop first, and the hub's delete
+    endpoint asks it through this same function -- so the two surfaces cannot
+    drift on the container NAME or on what "exists" means.
+    """
+    return sh([DOCKER, "inspect", job_container_name(run_id)]).returncode == 0
+
+
+def remove_run_state(run_id: str, *, container_exists: bool,
+                     reason: str) -> None:
+    """Take a run's containers and both of its directories away.
+
+    The ONE removal sequence (task 030, #19), shared by `ralphctl rm` and the
+    hub's `DELETE /api/runs/<id>`: leftover job container through
+    `_teardown_container` (i.e. exactly `stop`'s path), siblings reaped even
+    when there was no job container left to stop, then the run dir and the
+    job config dir.
+
+    Deliberately gate-free: whether this run MAY be deleted is the caller's
+    question, and the two callers ask it differently on purpose -- `rm`
+    accepts a zombie dir whose container is already gone, the hub insists on
+    a recorded terminal state (see `ui_server.deletion_refusal`). Mixing the
+    gate in here would force one policy on both.
+    """
+    if container_exists:
+        # Exactly `stop`'s path (shutdown, job container, siblings, marker),
+        # so a forced removal cannot drift from `stop` -- see
+        # _teardown_container.
+        _teardown_container(run_id, reason)
+    else:
+        # No container record: nothing to stop, but siblings can outlive it.
+        _reap_siblings(run_id)
+    shutil.rmtree(run_root(run_id), ignore_errors=True)
+    shutil.rmtree(config_root(run_id), ignore_errors=True)
+
+
 def cmd_rm(args):
     """Delete a run's state. Plain `rm` refuses while a container record
     exists (the safe default, unchanged); `--force` stops that container
@@ -2901,8 +2944,7 @@ def cmd_rm(args):
     explicit -- `abort`, or `stop --force`.
     """
     run_id = args.run_id
-    container_exists = sh(
-        [DOCKER, "inspect", job_container_name(run_id)]).returncode == 0
+    container_exists = container_record_exists(run_id)
     if container_exists and not args.force:
         die(5, "container still exists — `stop` first (or `rm --force`)")
     if not run_root(run_id).exists():
@@ -2915,16 +2957,8 @@ def cmd_rm(args):
         reply = input(f"delete all state for {run_id}? [y/N] ")
         if reply.lower() != "y":
             sys.exit(1)
-    if container_exists:
-        # Exactly `stop`'s path (shutdown, job container, siblings, marker),
-        # so `rm --force` cannot drift from `stop` -- see _teardown_container.
-        _teardown_container(run_id,
-                            "stopped by operator (`ralphctl rm --force`)")
-    else:
-        # No container record: nothing to stop, but siblings can outlive it.
-        _reap_siblings(run_id)
-    shutil.rmtree(run_root(run_id), ignore_errors=True)
-    shutil.rmtree(config_root(run_id), ignore_errors=True)
+    remove_run_state(run_id, container_exists=container_exists,
+                     reason="stopped by operator (`ralphctl rm --force`)")
     out(args, {"removed": run_id, "stoppedContainer": container_exists},
         f"stopped and removed {run_id}" if container_exists
         else f"removed {run_id}")
