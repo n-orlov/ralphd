@@ -1184,10 +1184,33 @@ Shut down an **idle finished** container (calls `/shutdown`, then `docker rm`).
 For a running job, refuses with exit `5` — use `abort` first, or `--force` to
 abort+stop in one step. Run dir is never deleted by `stop`.
 
-### `ralphctl rm <run-id>`
+### `ralphctl rm <run-id> [--force]`
 
-Delete a run's registry dir (history, artifacts, workspace-if-internal). Requires
-the container to be gone. Asks confirmation unless `--yes`.
+Delete a run's registry dir (history, artifacts, workspace-if-internal) and its
+persisted config dir, and reap any containers still labeled `ralphd.run=<run-id>`.
+Asks confirmation unless `--yes`.
+
+Plain `rm` requires the container to be gone: while a container record exists it
+exits `5` with "container still exists — `stop` first (or `rm --force`)".
+
+`--force` (task 029, #19) stops that container first and then deletes, so
+disposing of a finished run is one command instead of `stop` + `rm`. It runs
+exactly `stop`'s teardown (`/shutdown`, `docker rm -f` the job container, reap
+the run's siblings, record the operator-termination marker), so the sibling and
+label discipline is the same one `stop` uses.
+
+`--force` is a shortcut past a **stale** container, not a way to kill live work:
+it deletes only when the run's recorded state is terminal (`succeeded`,
+`failed`, `aborted`). Anything else — `starting`/`running`, an unrecognized
+state, or a `status.json` that is missing or unreadable — exits `5` with
+"job still running (state: …) — `abort` first, then `rm --force`" and touches
+nothing at all: no container is removed and neither directory is deleted.
+Killing a live job stays explicit (`abort`, or `stop --force`).
+
+A run with no container record is unaffected by `--force`: it takes the plain
+path (siblings reaped, both directories deleted), so a zombie run dir still
+recording `running` remains deletable as before. `--json` prints
+`{"removed": "<run-id>", "stoppedContainer": true|false}`.
 
 ### `ralphctl repair <run-id>`
 
