@@ -40,6 +40,7 @@ from urllib.parse import parse_qs, urlsplit
 from ..engine.state import (
     NONTERMINAL_STATES,
     TASKS_STALE_LABEL,
+    format_approach,
     format_cost,
     format_local_time,
     prd_path,
@@ -159,7 +160,14 @@ def run_list(reg: Path) -> list[dict]:
                 "state": status.get("state"),
                 "verdict": status.get("verdict"),
                 "phase": status.get("phase"),
+                # Task 008 (#16): the raw counter stays exactly as it was (the
+                # hub sorts the APPROACH column numerically on it) and the
+                # denominator travels alongside it, rendered once here by the
+                # shared formatter -- see `_with_approach_display`.
                 "approach": status.get("approach"),
+                "maxApproaches": status.get("maxApproaches"),
+                "approachDisplay": format_approach(status.get("approach"),
+                                                   status.get("maxApproaches")),
                 "iterationsUsed": status.get("iterationsUsed"),
                 "iterationsBudget": status.get("iterationsBudget"),
                 "startedAt": status.get("startedAt"),
@@ -354,6 +362,27 @@ def _with_cost_display(doc: dict) -> dict:
     return {**doc, "usage": out_usage}
 
 
+def _with_approach_display(doc: dict) -> dict:
+    """Task 008 (#16): attach the rendered approach counter (`2/3`) to a status
+    doc server-side, by the same one shared formatter `ralphctl status`/`runs`
+    use (`engine.state.format_approach`) -- the discipline of
+    `_with_local_times`/`_with_cost_display`/`_with_tasks_read_label`: the
+    browser displays a string the server formatted, so the hub cannot grow a
+    second denominator vocabulary that drifts from the CLI's.
+
+    Always computed from the doc's OWN `approach`/`maxApproaches` and always
+    written (empty string when there is no approach), so a forged
+    `approachDisplay` in a proxied payload cannot claim a ladder position that
+    the counter fields do not support. A live answer from a pre-v0.6 engine
+    carries no `maxApproaches`, which `format_approach` renders as a bare `2`
+    rather than guessing this host's configured limit.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    return {**doc, "approachDisplay": format_approach(doc.get("approach"),
+                                                     doc.get("maxApproaches"))}
+
+
 def _with_tasks_read_label(tasks: dict) -> dict:
     """Task 005 (#15): render the read's provenance into the two display
     strings the browser shows -- `tasksLabel` (the short badge, e.g. `stale`)
@@ -431,7 +460,7 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # state it means the container died without recording a terminal
         # state, which the card renders with the warning treatment.
         "containerGone": container_gone(status, ok_s),
-        "status": _with_cost_display(_with_local_times(status)),
+        "status": _with_approach_display(_with_cost_display(_with_local_times(status))),
         "tasks": tasks,
         "iterations": iterations,
     }
