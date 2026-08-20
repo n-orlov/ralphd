@@ -115,8 +115,30 @@ _INFRA_SIGNATURE_RES = tuple(
 # clause per branch of the ladder below, so the CLI and the hub cannot word the
 # same verdict differently (task 025, #18.4).
 FAULT_REASON_NOT_A_FAILURE = "no failure signal recorded (nothing to explain)"
+# Steering 004 (task 025, #18.4): the abort/interrupt carve-out has THREE
+# wordings, because its input has three possible causes and only one of them
+# can be established. `operator_abort` (LoopSupervisor.operator_abort_requested)
+# is true for POST /abort, for POST /interrupt *and* for the engine giving up on
+# its own (an exhausted outage budget, a signal from anywhere -- loop.py's own
+# comment says the flag cannot tell them apart), so the explanation must not
+# name the operator unless `operator_abort_recorded`
+# (LoopSupervisor._operator_abort_recorded) says an abort came from outside.
+# The live counter-example: a `pkill` against the engine set `_abort_reason` to
+# "signal 15" with no operator anywhere near a /abort request.
 FAULT_REASON_OPERATOR_ABORT = (
-    "an operator-initiated abort/interrupt -- never retried as an outage")
+    "an operator-requested abort/interrupt -- never retried as an outage")
+FAULT_REASON_ABORT_RECORDED = (
+    "an abort or interrupt is recorded for this run -- nothing here is retried "
+    "as an outage (who asked for it is not established: a POST /abort, an "
+    "operator interrupt and the engine giving up on its own all set this same "
+    "flag)")
+FAULT_REASON_ABORT_INTERRUPTED = (
+    "a signal ended this iteration and an abort/interrupt is recorded for the "
+    "run -- nothing here is retried as an outage (what sent the signal is not "
+    "established; the run's own abort reason is reported verbatim beside this)")
+FAULT_REASON_INTERRUPTED = (
+    "a signal ended this iteration after it had reached the model -- it did "
+    "not fail on its own")
 FAULT_REASON_NO_TRAFFIC_TIMEOUT = (
     "the startup watchdog fired: no LLM traffic within the startup window")
 FAULT_REASON_SIGNATURE = "the error text matched a known infra signature"
@@ -162,6 +184,7 @@ def explain_fault(
     no_traffic_timeout: bool = False,
     produced_traffic: bool = False,
     operator_abort: bool = False,
+    operator_abort_recorded: bool = False,
 ) -> dict:
     """``classify_fault``'s verdict *with its reasoning*, from exactly the same
     inputs (task 025, #18.4).
@@ -177,6 +200,26 @@ def explain_fault(
 
     ``classify_fault`` delegates here, so there is exactly ONE ladder: an
     explanation can never describe a decision the engine did not make.
+
+    Steering 004: ``operator_abort`` means "an abort or interrupt is recorded
+    for this run", NOT "an operator did this" -- the caller's flag
+    (``LoopSupervisor.operator_abort_requested``) is equally true for a POST
+    /abort, a POST /interrupt and the engine giving up on its own, and its own
+    docstring says it cannot tell them apart. So the reason for that branch is
+    worded neutrally unless ``operator_abort_recorded``
+    (``LoopSupervisor._operator_abort_recorded``: an abort that arrived from
+    outside) establishes the operator; when it does, and only then, this says
+    "operator-requested". ``operator_abort_recorded`` is an *explanation-only*
+    input: it never changes ``faultClass`` (asserted in
+    tests/test_cli_fault_explanation.py).
+
+    Known and deliberate imprecision (issue #23, still open): the ``faultClass``
+    values themselves are unchanged by this reasoning. An engine-side give-up
+    and a signal from anywhere are still classified ``"work"`` by the abort
+    carve-out even though nobody attempted any work, and a signal-terminated
+    iteration that never reached the model is still classified ``"infra"`` by
+    the no-traffic rule. Only the *wording* distinguishes them here; #23 is
+    where the classification is revisited.
     """
     signature = matched_signature(error_text)
     is_failure = (
@@ -190,9 +233,16 @@ def explain_fault(
         return {"faultClass": None, "reason": FAULT_REASON_NOT_A_FAILURE,
                 "signature": signature}
     if operator_abort:
-        # The operator asked for this to stop; nothing here is retryable
-        # (see the task 003 paragraph in `classify_fault`).
-        return {"faultClass": "work", "reason": FAULT_REASON_OPERATOR_ABORT,
+        # An abort/interrupt is on the record, so nothing here is retryable
+        # (see the task 003 paragraph in `classify_fault`) -- but say only
+        # what the inputs support about WHO ended it (steering 004).
+        if operator_abort_recorded:
+            reason = FAULT_REASON_OPERATOR_ABORT
+        elif interrupted:
+            reason = FAULT_REASON_ABORT_INTERRUPTED
+        else:
+            reason = FAULT_REASON_ABORT_RECORDED
+        return {"faultClass": "work", "reason": reason,
                 "signature": signature}
     if no_traffic_timeout:
         return {"faultClass": "infra",
@@ -202,8 +252,11 @@ def explain_fault(
         return {"faultClass": "infra", "reason": FAULT_REASON_SIGNATURE,
                 "signature": signature}
     if produced_traffic:
-        return {"faultClass": "work", "reason": FAULT_REASON_WORK,
-                "signature": None}
+        # Steering 004: "the agent reached the model and then failed" is the
+        # wrong answer to "what killed my iteration?" when a signal did. The
+        # verdict is the same `work` either way (#23) -- the reason is not.
+        reason = FAULT_REASON_INTERRUPTED if interrupted else FAULT_REASON_WORK
+        return {"faultClass": "work", "reason": reason, "signature": None}
     return {"faultClass": "infra",
             "reason": FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED,
             "signature": None}
@@ -218,6 +271,7 @@ def classify_fault(
     no_traffic_timeout: bool = False,
     produced_traffic: bool = False,
     operator_abort: bool = False,
+    operator_abort_recorded: bool = False,
 ) -> FaultClass | None:
     """Classify one finished iteration's failure signal.
 
@@ -284,6 +338,12 @@ def classify_fault(
     returns this same verdict together with the reason it chose and the
     signature that matched. This function is the verdict half of that one
     decision -- there is no second copy of the branching to drift.
+
+    Steering 004: ``operator_abort_recorded`` is accepted and forwarded purely
+    so the *explanation* can distinguish an abort that came from outside from
+    the engine giving up on its own; it does not (and must not) change any
+    verdict this function returns. Wording the difference is task 025's scope;
+    re-classifying these shapes is issue #23.
     """
     return explain_fault(
         error_text=error_text,
@@ -293,4 +353,5 @@ def classify_fault(
         no_traffic_timeout=no_traffic_timeout,
         produced_traffic=produced_traffic,
         operator_abort=operator_abort,
+        operator_abort_recorded=operator_abort_recorded,
     )["faultClass"]

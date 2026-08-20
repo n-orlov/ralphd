@@ -799,7 +799,11 @@ class LoopSupervisor:
             timed_out=result.timed_out,
             no_traffic_timeout=result.no_traffic_timeout,
             produced_traffic=bool(result.final_text) or bool(result.usage),
-            operator_abort=self.operator_abort_requested)
+            operator_abort=self.operator_abort_requested,
+            # Steering 004: the verdict is decided by the flag above; this one
+            # only lets `explain_fault` word the reason honestly (an abort that
+            # arrived from outside vs. this engine giving up on its own).
+            operator_abort_recorded=self._operator_abort_recorded)
 
     async def _run_iteration_once(self, phase: str, extra: str = "",
                                   prompt_name: str | None = None):

@@ -562,7 +562,11 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
 EXIT_REASON_UNKNOWN = "unknown"
 EXIT_REASON_RUNNING = "still running"
 EXIT_REASON_CLEAN = "clean exit"
-EXIT_REASON_INTERRUPTED = "interrupted by operator"
+# Steering 004: NOT "interrupted by operator" -- `IterationResult.interrupted`
+# is set by any delivered signal (POST /interrupt, POST /abort, the engine's own
+# give-up, a SIGTERM from outside the container), and this reader cannot tell
+# which. It says what it knows; `ralphctl fault` says the rest.
+EXIT_REASON_INTERRUPTED = "interrupted (a signal ended the iteration)"
 EXIT_REASON_NO_TRAFFIC = "no-traffic timeout (the model never answered)"
 EXIT_REASON_TIMEOUT = "iteration timeout"
 # Longest error text carried into the one-line reason; the full string stays in
@@ -1728,14 +1732,19 @@ FAULT_LADDER_REFLECT_DELAY = (
 FAULT_RECOVERED_NOTICE = "the endpoint recovered: a later iteration reached the model"
 
 # The verdict recorded by the engine and the one this shaping re-derives from
-# the same meta.json disagree. The usual, legitimate cause is the operator
-# carve-out (`operator_abort`, task 003 of #11): an abort/interrupt is recorded
-# as a `work` fault though its error text and traffic look infra, and that
-# input is not part of the iteration's meta.json. Never silently resolved --
-# the ENGINE's verdict is what the run acted on, and the divergence is shown.
+# the same meta.json disagree. The usual, legitimate cause is the abort carve-out
+# (`operator_abort`, task 003 of #11): an abort or interrupt recorded for the run
+# -- by the operator, or by the engine giving up on its own -- makes a failure a
+# `work` fault though its error text and traffic look infra, and that input is
+# not part of the iteration's meta.json. Never silently resolved -- the ENGINE's
+# verdict is what the run acted on, and the divergence is shown.
+#
+# Steering 004: this notice does NOT name the operator as the cause, because the
+# engine's input could not (see `faults.explain_fault`); the run's own
+# `abortReason` is reported verbatim beside it instead.
 FAULT_VERDICT_DIVERGED_NOTICE = (
     "!! the engine recorded a different class than this error alone implies "
-    "(usually an operator abort/interrupt, which is never retried)")
+    "(usually an abort/interrupt recorded for the run, which is never retried)")
 
 # Event types the explanation reads, so a huge events.jsonl is not held in
 # memory to answer one question.
@@ -1917,6 +1926,16 @@ def fault_explanation(run_root: Path) -> dict:
     reaching the model), and `abortReason` when the run gave up. `hasFault` is
     False only when there is genuinely nothing to explain -- then every other
     field is null and the renderers print `NO_FAULT`.
+
+    Steering 004: the re-derivation deliberately passes NO abort input to
+    `faults.explain_fault` -- whether an abort/interrupt was recorded is not
+    part of an iteration's meta.json, and guessing it from status.json's
+    `abortReason` would mislabel every run whose engine gave up *after* the
+    fault (the usual infra-budget case) as an abort. So the abort branch's
+    reasons never appear here; an iteration a signal ended is named as that
+    (`FAULT_REASON_INTERRUPTED`), `FAULT_VERDICT_DIVERGED_NOTICE` says when the
+    engine's own verdict differs, and the `gave up:` line quotes the run's
+    recorded `abortReason` verbatim rather than attributing it to anyone.
     """
     root = Path(run_root)
     status = read_json(root / "status.json", {}) or {}

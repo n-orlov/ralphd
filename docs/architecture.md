@@ -1347,10 +1347,18 @@ Three deliberate details:
   worth retrying) or the *operator* did (`POST /abort`, `POST /interrupt`).
   The text cannot decide it, so `"aborted"` is deliberately **not** in the
   signature table: `classify_fault(operator_abort=...)` takes the loop's real
-  bookkeeping (`LoopSupervisor.operator_abort_requested`) and an
-  operator-initiated termination is never `"infra"`, regardless of text,
+  bookkeeping (`LoopSupervisor.operator_abort_requested`) and a recorded
+  abort/interrupt is never `"infra"`, regardless of text,
   traffic or watchdog state. Otherwise the wrapper would sit in backoff
   re-running the very iteration the operator just stopped.
+
+  That flag is true for a `POST /abort`, a `POST /interrupt` *and* for the
+  engine giving up on its own (an exhausted outage budget, a signal from
+  anywhere), and cannot tell them apart. The **explanation** surfaces
+  (`ralphctl fault`, the hub dialog) therefore say "operator-requested" only
+  when `LoopSupervisor._operator_abort_recorded` establishes it and otherwise
+  say an abort/interrupt is recorded without naming a cause (steering 004); the
+  `faultClass` itself stays coarse, which is issue #23.
 
 Anything else that produced **no** LLM traffic at all is classified `"infra"`
 too: an unclassifiable no-traffic failure is far likelier to be an

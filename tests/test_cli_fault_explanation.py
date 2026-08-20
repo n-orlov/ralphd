@@ -46,6 +46,9 @@ from pathlib import Path
 import pytest
 
 from ralphd.engine.faults import (
+    FAULT_REASON_ABORT_INTERRUPTED,
+    FAULT_REASON_ABORT_RECORDED,
+    FAULT_REASON_INTERRUPTED,
     FAULT_REASON_NO_TRAFFIC_TIMEOUT,
     FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED,
     FAULT_REASON_NOT_A_FAILURE,
@@ -231,16 +234,129 @@ def test_explain_fault_names_the_branch_that_decided():
         FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED
     aborted = explain_fault(error_text="aborted", operator_abort=True)
     assert aborted["faultClass"] == "work"
-    assert aborted["reason"] == FAULT_REASON_OPERATOR_ABORT
+    assert aborted["reason"] == FAULT_REASON_ABORT_RECORDED
+    assert explain_fault(error_text="aborted", operator_abort=True,
+                         operator_abort_recorded=True)["reason"] == \
+        FAULT_REASON_OPERATOR_ABORT
 
 
 def test_operator_abort_still_reports_the_signature_it_overrode():
     """The carve-out changes the VERDICT, not the facts: an operator has to be
     able to see the error text looked infra and was deliberately not retried."""
-    exp = explain_fault(error_text=DNS_ERROR, operator_abort=True)
+    exp = explain_fault(error_text=DNS_ERROR, operator_abort=True,
+                        operator_abort_recorded=True)
     assert exp["faultClass"] == "work"
     assert exp["reason"] == FAULT_REASON_OPERATOR_ABORT
     assert exp["signature"]["family"] == "dns"
+
+
+# ------------------------------ steering 004: a reason may not out-claim its
+# input. `operator_abort` is true for a POST /abort, a POST /interrupt AND the
+# engine giving up on its own (loop.py's own comment says the flag cannot tell
+# them apart), so only `operator_abort_recorded` may be explained as a person.
+def test_a_recorded_abort_alone_is_never_blamed_on_the_operator():
+    """THE real case: this run's iteration 38 -- a `pkill` against the engine
+    set `_abort_reason` to "signal 15", so `operator_abort_requested` was true
+    with no operator anywhere near a /abort request. It produced traffic, wrote
+    no error text and was interrupted."""
+    exp = explain_fault(error_text="", exit_code=None, interrupted=True,
+                        produced_traffic=True, operator_abort=True)
+    assert exp["faultClass"] == "work", "classification unchanged (issue #23)"
+    assert exp["reason"] == FAULT_REASON_ABORT_INTERRUPTED
+    assert "operator" not in exp["reason"].lower(), exp["reason"]
+    assert exp["reason"] != FAULT_REASON_WORK
+
+    # ... and with nothing interrupted either (an engine-side give-up scored
+    # against a plain nonzero exit): still neutral.
+    quiet = explain_fault(error_text="boom", exit_code=2, produced_traffic=True,
+                          operator_abort=True)
+    assert quiet["reason"] == FAULT_REASON_ABORT_RECORDED
+    # it may LIST the operator among the possible causes; it may not pick one
+    assert "not established" in quiet["reason"], quiet["reason"]
+    assert "operator-requested" not in quiet["reason"], quiet["reason"]
+
+
+def test_an_established_operator_abort_is_allowed_to_say_operator():
+    """`_operator_abort_recorded` is what POST /abort sets and the engine's own
+    give-up does not -- the one input that establishes a person."""
+    exp = explain_fault(error_text="", interrupted=True, produced_traffic=True,
+                        operator_abort=True, operator_abort_recorded=True)
+    assert exp["faultClass"] == "work"
+    assert exp["reason"] == FAULT_REASON_OPERATOR_ABORT
+    assert "operator-requested" in exp["reason"]
+
+
+def test_a_signal_terminated_iteration_is_named_as_one():
+    """"What killed my iteration?" -- "the agent reached the model and then
+    failed" is the wrong answer when a signal ended it."""
+    killed = explain_fault(error_text="", exit_code=None, interrupted=True,
+                           produced_traffic=True)
+    assert killed["faultClass"] == "work"
+    assert killed["reason"] == FAULT_REASON_INTERRUPTED
+    # the genuine work failure is untouched
+    failed = explain_fault(error_text="pytest failed: 3 tests", exit_code=1,
+                           produced_traffic=True)
+    assert failed["reason"] == FAULT_REASON_WORK
+
+
+@pytest.mark.parametrize("kw", [
+    {"error_text": "aborted", "interrupted": True, "operator_abort": True},
+    {"error_text": "aborted", "interrupted": True, "produced_traffic": True,
+     "operator_abort": True},
+    {"error_text": DNS_ERROR, "operator_abort": True},
+    {"no_traffic_timeout": True, "operator_abort": True},
+    {"exit_code": 0},
+])
+def test_operator_abort_recorded_is_explanation_only(kw):
+    """The new input words the reason; it must not move a single verdict --
+    re-classifying these shapes is issue #23 and stays out of task 025."""
+    plain = explain_fault(**kw)
+    known = explain_fault(**kw, operator_abort_recorded=True)
+    assert plain["faultClass"] == known["faultClass"]
+    assert classify_fault(**kw) == classify_fault(
+        **kw, operator_abort_recorded=True)
+    assert plain["signature"] == known["signature"]
+
+
+def test_the_loop_threads_who_recorded_the_abort_into_the_explanation(
+        tmp_path, monkeypatch):
+    """End of the wire: `LoopSupervisor._classify_result`'s own inputs, fed to
+    `explain_fault`, must word an engine-side give-up and an operator's abort
+    differently -- while returning the same verdict for both."""
+    import ralphd.engine.loop as loop_mod
+    from ralphd.engine.config import JobConfig
+    from ralphd.engine.runner import IterationResult
+    from ralphd.engine.state import RunDir
+
+    seen: list[dict] = []
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return classify_fault(**kwargs)
+
+    monkeypatch.setattr(loop_mod, "classify_fault", spy)
+
+    def reason_for(abort: str, *, recorded: bool):
+        root = tmp_path / ("recorded" if recorded else "selfgiveup")
+        sup = loop_mod.LoopSupervisor(JobConfig(run_id="unit"),
+                                      RunDir(root=root), root)
+        sup._abort_reason = abort
+        sup._operator_abort_recorded = recorded
+        result = IterationResult(exit_code=None, interrupted=True)
+        result.final_text = "partial work"  # traffic: it reached the model
+        seen.clear()
+        verdict = sup._classify_result(result)
+        assert len(seen) == 1, seen
+        assert seen[-1]["operator_abort"] is True
+        assert seen[-1]["operator_abort_recorded"] is recorded
+        return explain_fault(**seen[-1])["reason"], verdict
+
+    killed, killed_verdict = reason_for("signal 15", recorded=False)
+    asked, asked_verdict = reason_for("aborted by operator", recorded=True)
+    assert killed == FAULT_REASON_ABORT_INTERRUPTED
+    assert "operator" not in killed.lower(), killed
+    assert asked == FAULT_REASON_OPERATOR_ABORT
+    assert killed_verdict == asked_verdict == "work", "verdicts unchanged (#23)"
 
 
 # --------------------------------------------------------- unit: formatters
@@ -400,6 +516,38 @@ def test_verdict_divergence_is_shown_not_resolved(tmp_path):
     assert FAULT_VERDICT_DIVERGED_NOTICE in lines
     assert any(line.startswith("gave up:") and "wrong PRD" in line
                for line in lines), lines
+
+
+def test_a_signal_killed_iteration_is_not_explained_as_an_operators_doing(tmp_path):
+    """Steering 004, through the whole shaping: this run's own iteration 38 --
+    interrupted, traffic recorded, no error text, and `abortReason: signal 15`
+    from a `pkill` nobody's operator asked for. The explanation may say a signal
+    ended it and may quote the recorded reason verbatim; it may NOT say a person
+    did it, and it may not say the agent "reached the model and then failed"."""
+    registry, run_dir = _dead_run(tmp_path, state="failed",
+                                  abortReason="signal 15")
+    _write_iteration(run_dir, 38, _fault_meta(
+        38, error=None, exitCode=None, interrupted=True, faultClass="work",
+        usage={"totalTokens": 505628, "outputTokens": 18320}))
+
+    exp = fault_explanation(run_dir)
+    assert exp["faultClass"] == "work", "the engine's verdict is untouched (#23)"
+    assert exp["reason"] == FAULT_REASON_INTERRUPTED
+    assert exp["reason"] not in (FAULT_REASON_OPERATOR_ABORT, FAULT_REASON_WORK)
+    assert exp["notices"] == [], "derived and recorded agree: nothing diverged"
+
+    lines = fault_summary_lines(exp)
+    because = [line for line in lines if line.startswith("because:")]
+    assert because and "operator" not in because[0].lower(), lines
+    assert any(line.startswith("gave up:") and "signal 15" in line
+               for line in lines), lines
+
+    # and the same through the CLI an operator would actually type
+    out = _ctl(registry, "fault", "faulty")
+    assert out.returncode == 0, out.stderr
+    assert FAULT_REASON_INTERRUPTED in out.stdout
+    assert "operator-requested" not in out.stdout
+    assert "operator-initiated" not in out.stdout
 
 
 def test_the_error_text_is_never_printed_twice(tmp_path):
