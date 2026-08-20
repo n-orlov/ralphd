@@ -8,11 +8,11 @@ import logging
 import os
 import signal
 import sys
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import uvicorn
 
+from .. import __version__
 from .api import create_app
 from .config import CONFIG_DIR, RUN_DIR, WORKSPACE_DIR, JobConfig
 from .creds import place_creds
@@ -34,10 +34,18 @@ EXIT_SCHEMA_TOO_NEW = 4
 
 
 def _version() -> str:
-    try:
-        return version("ralphd")
-    except PackageNotFoundError:
-        return "unknown"
+    """The version of the code that is running, not of the metadata beside it.
+
+    This used to read `importlib.metadata.version("ralphd")`, which is the
+    version recorded when the distribution was *installed*: in an editable
+    checkout whose version literal has moved on (or a run from a source tree
+    with no dist-info at all) it disagreed with the very same number
+    `GET /version` reports from `ralphd.__version__`, and could answer
+    "unknown". One source of truth -- the package literal -- so
+    `ralphd-engine --version`, `ralphctl --version` and `GET /version`
+    cannot tell three stories (tests/test_packaging_metadata.py).
+    """
+    return __version__
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
