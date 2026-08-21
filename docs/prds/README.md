@@ -5,10 +5,13 @@ its standing rules, and its definition of done. This directory keeps the ones
 ralphd was built with, so the reasoning behind a wave of work survives the run
 that executed it.
 
-Every file here is the **verbatim** input, byte-identical to
-`~/.ralphd/runs/<run-id>/prd.md` (and to `~/.ralphd/configs/<run-id>/prd.md`,
+Every file here for a wave that has **run** is the verbatim input, byte-identical
+to `~/.ralphd/runs/<run-id>/prd.md` (and to `~/.ralphd/configs/<run-id>/prd.md`,
 which is what a `resume` re-reads). The five `selfdev-*.md` files were recovered
-from that storage after the fact — the earlier waves were never committed.
+from that storage after the fact — the earlier waves were never committed. A row
+whose outcome reads `not started` is the other direction: the brief is committed
+first and there is no run dir to be byte-identical to yet, so the run id names
+the launch it is written for, not a run that exists.
 
 | Run | File | Outcome | Iterations | Tokens | Cost |
 |---|---|---|---|---|---|
@@ -19,6 +22,7 @@ from that storage after the fact — the earlier waves were never committed.
 | `selfdev-roadmap-4` | [selfdev-roadmap-4.md](selfdev-roadmap-4.md) | succeeded / verified | 43 | 27.6M | $17.35 |
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
+| `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | not started | — | — | — |
 
 Notes worth keeping with the documents:
 
@@ -56,6 +60,16 @@ Notes worth keeping with the documents:
   (`ralphctl start --price-strategy aws`) derives ≈ $374 — an estimate at that
   table's rates, not money any provider quoted. Full evidence in
   `artifacts/reports/issue-traceability.md`.
+- **`v0.7-trustworthy-unattended.md` has not run yet.** It is committed ahead of
+  its launch so the brief is reviewable — and because `--prd` reads a file, a
+  committed one is the reproducible input. Its `not started` row exists because
+  this index requires every PRD in the directory to have exactly one, so the row
+  is filled in when the run ends rather than invented now. It carries a caveat
+  about the iteration cell above: v0.6's `145` is what the engine recorded, and
+  issue #32 (which that wave's PRD asks to fix) means the true charged figure was
+  lower — 27 iterations faulted on infrastructure and only 10 refunds survived
+  the run's resumes. The row is not being corrected: it faithfully reports what
+  was written, and rewriting it would hide the defect instead of fixing it.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
