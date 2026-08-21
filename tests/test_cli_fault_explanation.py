@@ -46,6 +46,7 @@ from pathlib import Path
 import pytest
 
 from ralphd.engine.faults import (
+    FAULT_CLASS_SIGNAL,
     FAULT_REASON_ABORT_INTERRUPTED,
     FAULT_REASON_ABORT_RECORDED,
     FAULT_REASON_INTERRUPTED,
@@ -261,7 +262,8 @@ def test_a_recorded_abort_alone_is_never_blamed_on_the_operator():
     no error text and was interrupted."""
     exp = explain_fault(error_text="", exit_code=None, interrupted=True,
                         produced_traffic=True, operator_abort=True)
-    assert exp["faultClass"] == "work", "classification unchanged (issue #23)"
+    assert exp["faultClass"] == "work", "classification unchanged (the abort " \
+        "carve-out is deliberately coarse -- #49)"
     assert exp["reason"] == FAULT_REASON_ABORT_INTERRUPTED
     assert "operator" not in exp["reason"].lower(), exp["reason"]
     assert exp["reason"] != FAULT_REASON_WORK
@@ -288,14 +290,20 @@ def test_an_established_operator_abort_is_allowed_to_say_operator():
 
 def test_a_signal_terminated_iteration_is_named_as_one():
     """"What killed my iteration?" -- "the agent reached the model and then
-    failed" is the wrong answer when a signal ended it."""
+    failed" is the wrong answer when a signal ended it.
+
+    RETARGETED by task 013 (#49): steering 004 fixed the *reason* here and left
+    the verdict at `work`; the verdict is now `signal` too. The reason string is
+    deliberately unchanged, so the surfaces that quote it read as before."""
     killed = explain_fault(error_text="", exit_code=None, interrupted=True,
                            produced_traffic=True)
-    assert killed["faultClass"] == "work"
+    assert killed["faultClass"] == FAULT_CLASS_SIGNAL
+    assert killed["faultClass"] != "work"
     assert killed["reason"] == FAULT_REASON_INTERRUPTED
     # the genuine work failure is untouched
     failed = explain_fault(error_text="pytest failed: 3 tests", exit_code=1,
                            produced_traffic=True)
+    assert failed["faultClass"] == "work"
     assert failed["reason"] == FAULT_REASON_WORK
 
 
@@ -309,7 +317,7 @@ def test_a_signal_terminated_iteration_is_named_as_one():
 ])
 def test_operator_abort_recorded_is_explanation_only(kw):
     """The new input words the reason; it must not move a single verdict --
-    re-classifying these shapes is issue #23 and stays out of task 025."""
+    re-classifying these shapes is issue #49 and stayed out of task 025."""
     plain = explain_fault(**kw)
     known = explain_fault(**kw, operator_abort_recorded=True)
     assert plain["faultClass"] == known["faultClass"]
@@ -356,7 +364,8 @@ def test_the_loop_threads_who_recorded_the_abort_into_the_explanation(
     assert killed == FAULT_REASON_ABORT_INTERRUPTED
     assert "operator" not in killed.lower(), killed
     assert asked == FAULT_REASON_OPERATOR_ABORT
-    assert killed_verdict == asked_verdict == "work", "verdicts unchanged (#23)"
+    assert killed_verdict == asked_verdict == "work", \
+        "the abort carve-out's verdict is unchanged by #49 part 1"
 
 
 # --------------------------------------------------------- unit: formatters
@@ -531,10 +540,26 @@ def test_a_signal_killed_iteration_is_not_explained_as_an_operators_doing(tmp_pa
         usage={"totalTokens": 505628, "outputTokens": 18320}))
 
     exp = fault_explanation(run_dir)
-    assert exp["faultClass"] == "work", "the engine's verdict is untouched (#23)"
+    assert exp["faultClass"] == "work", "the engine's verdict is untouched"
     assert exp["reason"] == FAULT_REASON_INTERRUPTED
     assert exp["reason"] not in (FAULT_REASON_OPERATOR_ABORT, FAULT_REASON_WORK)
-    assert exp["notices"] == [], "derived and recorded agree: nothing diverged"
+    # RETARGETED by task 013 (#49): this meta.json was written by a pre-#49
+    # engine, which recorded `work` for a shape the ladder now calls `signal`.
+    # The recorded verdict still stands -- a reader never overwrites what the
+    # engine wrote -- and the disagreement is said out loud rather than hidden,
+    # which is exactly what the notice is for.
+    assert FAULT_VERDICT_DIVERGED_NOTICE in exp["notices"], exp["notices"]
+
+    # ... and an iteration recorded by a post-#49 engine agrees with the
+    # re-derivation, so no notice at all.
+    (run_dir / "iterations" / "0038" / "meta.json").write_text(json.dumps(
+        _fault_meta(38, error=None, exitCode=None, interrupted=True,
+                    faultClass=FAULT_CLASS_SIGNAL,
+                    usage={"totalTokens": 505628, "outputTokens": 18320})))
+    fresh = fault_explanation(run_dir)
+    assert fresh["faultClass"] == FAULT_CLASS_SIGNAL
+    assert fresh["reason"] == FAULT_REASON_INTERRUPTED
+    assert fresh["notices"] == [], "derived and recorded agree: nothing diverged"
 
     lines = fault_summary_lines(exp)
     because = [line for line in lines if line.startswith("because:")]

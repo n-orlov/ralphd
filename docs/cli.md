@@ -1009,8 +1009,11 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   says an abort/interrupt is recorded and that who asked for it is not
   established, and `gave up:` quotes the recorded reason verbatim (`signal 15`)
   instead of attributing it to a person who may not exist. The *classification*
-  of these shapes is unchanged and still coarse — an engine-side give-up is
-  still `work` — which is issue #23, not this surface's business.
+  of the abort/interrupt shapes stays deliberately coarse — an engine-side
+  give-up is still `work`, because that branch's job is "never retry this as an
+  outage" — which is issue #49, not this surface's business. A signal that ended
+  an iteration with **no** abort recorded for the run is its own `signal` class
+  (#49 part 1, task 013).
 - **`signature:`** is the row of `engine/faults.py`'s `INFRA_SIGNATURES` table
   that matched: its family (`dns` · `tcp` · `stream` · `tls` · `sdk` ·
   `http-5xx` · `backpressure` · `bedrock-stream` · `capacity`), what that

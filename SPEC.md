@@ -1886,7 +1886,8 @@ producing an error anyone can classify.
 
 `classify_fault()` takes `error_text`, `exit_code`, `interrupted`,
 `timed_out`, `no_traffic_timeout`, `produced_traffic` and `operator_abort`,
-and applies exactly this order:
+and applies exactly this order (the verdicts are `None`, `"infra"`, `"work"`
+and — since task 013, #49 — `"signal"`, the tuple `faults.FAULT_CLASSES`):
 
 1. If none of the failure signals in §8.1 is present, return `None`. Nothing
    downstream runs for a successful iteration.
@@ -1900,32 +1901,48 @@ and applies exactly this order:
    `"infra"`. The signature wins over traffic: a gateway-level DNS or
    connection failure that the agent surfaced after streaming partway is still
    the provider's fault.
-5. Otherwise, if `produced_traffic` is true, return `"work"`.
-6. Otherwise return `"infra"`.
+5. Otherwise, if `produced_traffic` is true and `interrupted` is set, return
+   `"signal"` (task 013, #49). A signal ended an iteration that had already
+   reached the model, with no abort recorded for this run: it was terminated
+   before it could fail on its own, so it is not the agent's `work` failure
+   (`work` is the class that burns approach and task-failure bookkeeping), and
+   nothing about it looks like an outage, so it is not retried either — the
+   retry wrapper acts on `"infra"` alone. `interrupted` is set from the agent
+   process's own exit status (a negative code, or 130) and from nothing else.
+6. Otherwise, if `produced_traffic` is true, return `"work"`.
+7. Otherwise return `"infra"`.
 
 `produced_traffic` is derived in `LoopSupervisor._classify_result()` as
 `bool(result.final_text) or bool(result.usage)` — the agent said something, or
 tokens were accounted for.
 
-Step 6 is the interesting default. **An unclassifiable failure that produced
+Step 7 is the interesting default. **An unclassifiable failure that produced
 no traffic at all is treated as infra, because nothing ran.** The alternative
 default charges the job for an iteration in which the agent never reached the
-model, which is precisely the accounting error §8.1 exists to prevent. Step 5
+model, which is precisely the accounting error §8.1 exists to prevent. Step 6
 is the counterweight: once traffic exists, an unrecognised error is the
 agent's own problem and stays `"work"`, so it keeps consuming approach and
 task-failure bookkeeping instead of being retried forever.
+
+A signal-terminated iteration that never reached the model deliberately keeps
+falling through to step 7 (`"infra"`) rather than to step 5's `"signal"`: with
+zero traffic it is textually indistinguishable from a provider-side stream
+abort, and "nothing ran, so nothing is charged" is the rule step 7 exists to
+enforce.
 
 A bare `aborted` error is genuinely ambiguous and is therefore decided from
 inputs rather than from the signature table: the agent runtime reports an
 operator `/abort` or `/interrupt` and a provider-side stream abort with the
 *same* text, so no regex can separate them. `operator_abort` (step 2) and
-`produced_traffic` (steps 5 and 6) decide it instead — a bare `aborted` with no
+`produced_traffic` (steps 6 and 7) decide it instead — a bare `aborted` with no
 traffic and no recorded operator abort is `"infra"`, one with a recorded
 operator abort is `"work"`.
 
 **Known limitation.** A bare `aborted` arriving *after* real traffic with no
-operator abort recorded classifies as `"work"`, so a provider-side stream abort
-mid-iteration can still cost an approach. Adding `aborted` to the signature
+operator abort recorded classifies as `"work"` (step 6) whenever the agent
+process itself exited cleanly — an in-band `aborted` carries no signal, so step
+5 does not catch it — so a provider-side stream abort mid-iteration can still
+cost an approach. Adding `aborted` to the signature
 table is not a fix: it would reclassify every operator interrupt that had
 already produced traffic as an infra fault and retry against the operator's
 explicit instruction. The candidate discriminator, and why it is not settled,

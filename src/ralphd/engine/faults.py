@@ -20,7 +20,28 @@ from __future__ import annotations
 
 import re
 
-FaultClass = str  # "infra" | "work"
+FaultClass = str  # "infra" | "work" | "signal"
+
+# The three verdicts, as constants, because task 013 (#49) added the third one
+# and "is this class one of the ones we know about" became a question worth
+# being able to ask in one place (tests/test_fault_classifier.py asserts the
+# tuple is exactly what the ladder below can return).
+FAULT_CLASS_INFRA = "infra"
+FAULT_CLASS_WORK = "work"
+# Task 013 (#49): an iteration a signal ended after it had reached the model.
+# It is neither of the other two: the endpoint was not broken (nothing here
+# looks like an outage, so retrying it as one would fight whatever sent the
+# signal), and the agent did not fail on its own either -- it was terminated
+# before it could. Scoring that as `work` was the defect: `work` is the class
+# that burns approach/task-failure bookkeeping, so an iteration killed by an
+# OOM kill, a stray `pkill` (requirement I's own subject) or a `docker stop`
+# of the agent's process group used to be charged to the agent as a failure it
+# never committed. It is deliberately NOT retried (the infra wrapper acts on
+# `"infra"` alone): a signal usually means something outside the run wants it
+# to stop, and relaunching into that is how a retry loop fights its operator.
+FAULT_CLASS_SIGNAL = "signal"
+FAULT_CLASSES: tuple[str, ...] = (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
+                                 FAULT_CLASS_SIGNAL)
 
 # Text signatures that mean "the fault is in reaching/using the LLM
 # endpoint itself", independent of whether any traffic was ever observed.
@@ -136,6 +157,10 @@ FAULT_REASON_ABORT_INTERRUPTED = (
     "a signal ended this iteration and an abort/interrupt is recorded for the "
     "run -- nothing here is retried as an outage (what sent the signal is not "
     "established; the run's own abort reason is reported verbatim beside this)")
+# Task 013 (#49): this reason now also carries its own class
+# (`FAULT_CLASS_SIGNAL`); the wording was already right, the verdict beside it
+# was not. The text is deliberately unchanged so the surfaces that quote it
+# (`ralphctl fault`, the hub dialog) read the same as before.
 FAULT_REASON_INTERRUPTED = (
     "a signal ended this iteration after it had reached the model -- it did "
     "not fail on its own")
@@ -190,7 +215,8 @@ def explain_fault(
     inputs (task 025, #18.4).
 
     Returns ``{"faultClass", "reason", "signature"}`` where ``faultClass`` is
-    what ``classify_fault`` returns (None / "infra" / "work"), ``reason`` is
+    what ``classify_fault`` returns (None / "infra" / "work" / "signal"),
+    ``reason`` is
     the one clause from the ``FAULT_REASON_*`` vocabulary naming which branch
     of the ladder decided it, and ``signature`` is ``matched_signature``'s dict
     (present whenever the error text matches a known signature, even when
@@ -213,13 +239,20 @@ def explain_fault(
     input: it never changes ``faultClass`` (asserted in
     tests/test_cli_fault_explanation.py).
 
-    Known and deliberate imprecision (issue #23, still open): the ``faultClass``
-    values themselves are unchanged by this reasoning. An engine-side give-up
-    and a signal from anywhere are still classified ``"work"`` by the abort
-    carve-out even though nobody attempted any work, and a signal-terminated
-    iteration that never reached the model is still classified ``"infra"`` by
-    the no-traffic rule. Only the *wording* distinguishes them here; #23 is
-    where the classification is revisited.
+    Task 013 (#49): a signal that ended an iteration which HAD reached the
+    model is now its own class, ``FAULT_CLASS_SIGNAL`` -- see that constant for
+    why it is neither ``"work"`` nor ``"infra"`` and why it is not retried.
+
+    Known and deliberate imprecision that remains (issue #49, which replaced
+    the now-closed #23 as the owner of this taxonomy): an engine-side give-up
+    and an abort from anywhere are still classified ``"work"`` by the abort
+    carve-out above -- deliberately, because that branch's whole job is "never
+    retry this as an outage" -- even though nobody attempted any work; only the
+    *wording* distinguishes those. And a signal-terminated iteration that never
+    reached the model stays ``"infra"`` by the no-traffic rule below, on
+    purpose: with zero traffic it is textually indistinguishable from a
+    provider-side stream abort, and treating "nothing ran" as retryable and
+    refundable is exactly the accounting rule that rule exists to enforce.
     """
     signature = matched_signature(error_text)
     is_failure = (
@@ -253,10 +286,19 @@ def explain_fault(
                 "signature": signature}
     if produced_traffic:
         # Steering 004: "the agent reached the model and then failed" is the
-        # wrong answer to "what killed my iteration?" when a signal did. The
-        # verdict is the same `work` either way (#23) -- the reason is not.
-        reason = FAULT_REASON_INTERRUPTED if interrupted else FAULT_REASON_WORK
-        return {"faultClass": "work", "reason": reason, "signature": None}
+        # wrong answer to "what killed my iteration?" when a signal did -- it
+        # got the *reason* right here. Task 013 (#49) finishes the job: the
+        # verdict is no longer `work` either, because `work` is what burns the
+        # bookkeeping for a failure the agent did not commit. `interrupted`
+        # means the agent process died on a signal (a negative exit code, or
+        # 130 -- runner.py sets it from nothing else), and this branch is only
+        # reached with no abort recorded for the run (the carve-out above owns
+        # that case) and no infra signature in the error.
+        if interrupted:
+            return {"faultClass": FAULT_CLASS_SIGNAL,
+                    "reason": FAULT_REASON_INTERRUPTED, "signature": None}
+        return {"faultClass": FAULT_CLASS_WORK, "reason": FAULT_REASON_WORK,
+                "signature": None}
     return {"faultClass": "infra",
             "reason": FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED,
             "signature": None}
@@ -314,10 +356,17 @@ def classify_fault(
 
     Returns ``"work"`` for the case squarely inside the agent's own
     responsibility: it produced real LLM traffic (assistant text and/or
-    token usage were observed) and *then* exited nonzero/timed out/was
-    interrupted, with no recognized infra signature in its error text --
-    and for an *operator-initiated* termination (see below), which is
-    nobody's fault but must never be retried as an outage.
+    token usage were observed) and *then* exited nonzero or timed out, with
+    no recognized infra signature in its error text -- and for an
+    *operator-initiated* termination (see below), which is nobody's fault but
+    must never be retried as an outage.
+
+    Task 013 (#49): returns ``"signal"`` for the shape that used to be folded
+    into ``"work"`` -- an iteration that reached the model and was then ended
+    by a signal, with no abort recorded for this run. It was terminated before
+    it could fail on its own, so it is not the agent's failure; nothing about
+    it looks like an endpoint outage either, so it is not retried. See
+    ``FAULT_CLASS_SIGNAL``.
 
     Task 003 (#11): ``operator_abort`` is the caller's real abort/interrupt
     bookkeeping (``LoopSupervisor.operator_abort_requested``: POST /abort
@@ -342,8 +391,9 @@ def classify_fault(
     Steering 004: ``operator_abort_recorded`` is accepted and forwarded purely
     so the *explanation* can distinguish an abort that came from outside from
     the engine giving up on its own; it does not (and must not) change any
-    verdict this function returns. Wording the difference is task 025's scope;
-    re-classifying these shapes is issue #23.
+    verdict this function returns. Wording the difference was task 025's scope;
+    re-classifying these shapes is issue #49 -- task 013 took the signal case
+    out of ``"work"``. (This paragraph used to name #23, now closed.)
     """
     return explain_fault(
         error_text=error_text,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from ralphd.engine.faults import classify_fault
+from ralphd.engine.faults import FAULT_CLASS_SIGNAL, classify_fault
 
 
 def test_success_is_not_a_failure():
@@ -107,12 +107,19 @@ def test_timed_out_with_traffic_and_no_infra_text_classifies_work():
     ) == "work"
 
 
-def test_interrupted_with_traffic_and_no_infra_text_classifies_work():
-    assert classify_fault(
+def test_interrupted_with_traffic_and_no_infra_text_classifies_signal():
+    # RETARGETED by task 013 (#49), not deleted: this shape used to be `work`,
+    # which charged the agent for a failure a signal committed. It is now its
+    # own class -- see faults.FAULT_CLASS_SIGNAL. Everything else about the
+    # ladder is unchanged, so this stays here beside the shapes it neighbours.
+    verdict = classify_fault(
         error_text="",
         interrupted=True,
         produced_traffic=True,
-    ) == "work"
+    )
+    assert verdict == FAULT_CLASS_SIGNAL
+    assert verdict != "work", "the whole point of #49 part 1"
+    assert verdict != "infra", "and it is not retried as an outage either"
 
 
 # -- task 001 (#11): an error recorded at exit 0 is still a failure ---------
