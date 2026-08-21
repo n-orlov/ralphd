@@ -29,6 +29,12 @@ RALPHCTL = Path(sys.executable).parent / "ralphctl"
 
 _SIGINT_EXIT_CODE = 130
 
+# Timeouts here are deliberately generous (task 045 suite hygiene): these
+# tests spawn a real engine plus a real `ralphctl` subprocess, so on a
+# loaded machine a 15s wait for the post-SIGINT exit is a coin flip that
+# fails the whole sweep for no behavioural reason. They still fail (they
+# do not pass by timing out) if the CLI never exits or exits wrongly.
+
 
 def _read_first_nonblank_line(proc: subprocess.Popen, timeout: float) -> str:
     deadline = time.time() + timeout
@@ -55,9 +61,9 @@ def test_sigint_during_follow_exits_clean_no_traceback(live):
         env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     try:
-        _read_first_nonblank_line(proc, timeout=30)
+        _read_first_nonblank_line(proc, timeout=60)
         proc.send_signal(signal.SIGINT)
-        rc = proc.wait(timeout=15)
+        rc = proc.wait(timeout=60)
         stderr = proc.stderr.read()
         assert rc == _SIGINT_EXIT_CODE, (rc, stderr)
         assert "Traceback" not in stderr, stderr

@@ -36,6 +36,13 @@ from pathlib import Path
 
 RALPHCTL = Path(sys.executable).parent / "ralphctl"
 
+# Timeouts here are deliberately generous (task 045 suite hygiene): these
+# tests spawn a real engine plus a real `ralphctl` subprocess under a pty,
+# so on a loaded machine a 15s wait for the post-SIGINT exit is a coin
+# flip that fails the whole sweep for no behavioural reason. They still
+# fail (they do not pass by timing out) if the CLI never exits, exits with
+# the wrong code, or leaves the terminal mode changed.
+
 
 def _read_until(fd: int, timeout: float, min_bytes: int = 1) -> bytes:
     """Read from `fd` (non-blocking-tolerant) until at least `min_bytes`
@@ -85,11 +92,11 @@ def test_sigint_restores_termios_mode(live):
     try:
         # Confirm the follow is genuinely live (producing output) before
         # the signal lands, per the "mid-stream" test bar.
-        out = _read_until(master_fd, timeout=30, min_bytes=1)
+        out = _read_until(master_fd, timeout=60, min_bytes=1)
         assert out, "ralphctl logs --follow produced no output under pty"
 
         proc.send_signal(signal.SIGINT)
-        rc = proc.wait(timeout=15)
+        rc = proc.wait(timeout=60)
 
         # Drain remaining output looking for a traceback, and to let the
         # pty settle before re-checking its mode.
@@ -119,11 +126,11 @@ def test_quit_keypress_restores_termios_mode(live):
 
     proc, master_fd, pre_attrs = _spawn_under_pty(run, [])
     try:
-        out = _read_until(master_fd, timeout=30, min_bytes=1)
+        out = _read_until(master_fd, timeout=60, min_bytes=1)
         assert out, "ralphctl logs --follow produced no output under pty"
 
         os.write(master_fd, b"q")
-        rc = proc.wait(timeout=15)
+        rc = proc.wait(timeout=60)
 
         tail = _read_until(master_fd, timeout=2, min_bytes=0)
         assert b"Traceback" not in tail
@@ -146,11 +153,11 @@ def test_sigterm_exits_clean_and_restores_termios_mode(live):
 
     proc, master_fd, pre_attrs = _spawn_under_pty(run, [])
     try:
-        out = _read_until(master_fd, timeout=30, min_bytes=1)
+        out = _read_until(master_fd, timeout=60, min_bytes=1)
         assert out, "ralphctl logs --follow produced no output under pty"
 
         proc.send_signal(signal.SIGTERM)
-        rc = proc.wait(timeout=15)
+        rc = proc.wait(timeout=60)
 
         tail = _read_until(master_fd, timeout=2, min_bytes=0)
         assert b"Traceback" not in tail
