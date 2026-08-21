@@ -145,12 +145,15 @@ See [cli.md](cli.md#ralphctl-start) for the full list.
 ralphctl watch brisk-otter-1408
 ```
 
-A live TUI: task table, current phase/approach/iteration, budget and cost
-gauges, a scrolling tail of agent output, and any pending steering. Read-only;
-press `q` to quit. In a non-TTY context (e.g. piped to a script), it streams
-NDJSON events instead of drawing the TUI.
+A live **event stream** (not a TUI — the CLI ships no curses framework): one
+line per event as the run emits it, replayed from the start of the run, so you
+see iteration boundaries, task changes, steering and the terminal verdict as
+they happen. Read-only; Ctrl+C stops it. With `--json` (or piped to a script)
+each line is the raw event object instead — NDJSON.
 
-For the raw or historical transcript instead of the live TUI, use `logs`
+For a rendered snapshot of the plan, budget and cost instead, use `ralphctl
+status`/`ralphctl tasks` (or the hub, `ralphctl ui`). For the raw or historical
+transcript, use `logs`
 (the "whole-job console" — every iteration merged in order):
 
 ```bash

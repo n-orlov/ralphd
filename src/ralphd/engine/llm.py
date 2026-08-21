@@ -7,7 +7,7 @@ lets the operator rotate an expired key / switch endpoints without restarting
 the container.
 
 Two pieces, both container-local -- never the run dir, never events.jsonl,
-never job.json (mirrors creds.py's secrecy discipline):
+never the job config (mirrors creds.py's secrecy discipline):
 
 - `env`: fully replaces the env-override set, written to
   `<overlay>/llm/env.json`. `LoopSupervisor` reads it fresh via

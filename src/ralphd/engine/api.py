@@ -526,7 +526,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         `env` (when given) replaces the whole env-override set applied to
         subsequent `pi` invocations; `pi` (when given) is deep-merged into
         `~/.pi/agent/models.json` immediately. Neither ever lands in the
-        run dir, events, or job.json."""
+        run dir, events, or the job config."""
         body = body or {}
         env = body.get("env")
         pi_fragment = body.get("pi")

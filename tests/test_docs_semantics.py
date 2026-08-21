@@ -19,6 +19,30 @@ the class of rot the semantic pass found by hand:
 * every install line named the *console script* (`pipx install ralphctl`) as
   the distribution to install, which is `ralphd`.
 
+Task 043b (#22) is slice 2, the same pass over `docs/cli.md` and
+`docs/architecture.md`, and its checks live in the second half of this module:
+
+* `--model-strategy` was documented with a fourth `custom` preset the parser
+  rejects and `JobConfig.STRATEGY_TIERS` has never defined, and the presets
+  were described in prose that had `balanced` routing only two phases strong;
+* `ralphctl runs --state` was documented as a four-value choice set, omitting
+  `starting` (it is an exact match on the recorded state, and every state a
+  run dir can hold is filterable);
+* the hub's log tail was documented as "reimplemented in `app.js`, not shared
+  code" three screens after the endpoint it belongs to documents the opposite
+  (task 014 moved the rendering server-side into `cli/log_render.py`);
+* `resume` was documented as *not* replaying `--forward-env`/`--llm-env`/
+  `--env` and as taking those flags again itself — it does replay them (from
+  `env-wiring.json`) and has no such flags;
+* the run dir was documented as mounted at `/run` holding a redacted
+  `job.json`; it is `/run/ralphd`, there is no `job.json` anywhere (the job
+  config is `<config-dir>/job.yaml`, verbatim at rest and redacted when read
+  out), and the tree omitted five files the code writes;
+* the phase-prompt list named a nonexistent `AGENT.md`, omitted `reflect.md`,
+  and claimed all prompts are API-overridable (`PROMPT_NAMES` has four);
+* the hub was documented as serving two endpoints with its static bundle
+  "still pending", and the job image as a published `ghcr.io` reference.
+
 Each check is written against the code, not against the corrected prose, so it
 keeps failing if the behaviour moves again.
 """
@@ -42,6 +66,8 @@ from ralphd.engine.state import RunDir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 API_DOC = REPO_ROOT / "docs" / "api.md"
+CLI_DOC = REPO_ROOT / "docs" / "cli.md"
+ARCH_DOC = REPO_ROOT / "docs" / "architecture.md"
 ENGINE_DIR = REPO_ROOT / "src" / "ralphd" / "engine"
 DOC_FILES = [REPO_ROOT / "README.md", *sorted((REPO_ROOT / "docs").glob("*.md")),
              REPO_ROOT / "SPEC.md"]
@@ -345,3 +371,478 @@ def test_the_install_check_is_substantive():
     found = [token for path in DOC_FILES
              for token in INSTALL_RE.findall(path.read_text())]
     assert len(found) >= 4, found
+
+
+# ===========================================================================
+# Task 043b (#22): the same pass over docs/cli.md and docs/architecture.md.
+# ===========================================================================
+
+# ---- a documented value list is the parser's own choice set ---------------
+
+ALTERNATION_RE = re.compile(
+    r"(?<![\w./-])([a-z][A-Za-z0-9-]*(?:\\?\|[a-z][A-Za-z0-9-]*)+)(?![\w./-])")
+
+
+def _parser_choices() -> dict[str, set[str]]:
+    """{flag: its argparse choices} over every subcommand."""
+    from ralphd.cli.main import build_parser
+    parser = build_parser()
+    sub = parser._subparsers._group_actions[0]
+    found: dict[str, set[str]] = {}
+    for command in sub.choices.values():
+        for action in command._actions:
+            if action.choices and action.option_strings:
+                for flag in action.option_strings:
+                    found[flag] = set(action.choices)
+    return found
+
+
+def _choice_problems(text: str, choices: dict[str, set[str]]) -> list[str]:
+    """Lines documenting a flag with an alternation that is not its choices.
+
+    An alternation (`a|b|c`, or `a\\|b\\|c` inside a markdown table) on a line
+    that documents the flag and names at least one real choice is a claim about
+    the whole choice set, so it has to *be* the whole choice set.
+    """
+    problems = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for flag, valid in choices.items():
+            if flag not in line:
+                continue
+            for span in ALTERNATION_RE.findall(line):
+                claimed = set(re.split(r"\\?\|", span))
+                if not claimed & valid or claimed == valid:
+                    continue
+                problems.append(
+                    f"{lineno}: {flag} documented as {sorted(claimed)}, "
+                    f"parser accepts {sorted(valid)}")
+    return problems
+
+
+def test_every_documented_value_list_is_the_parsers_own_choice_set():
+    choices = _parser_choices()
+    assert "--model-strategy" in choices and "--on-complete" in choices
+    problems = _choice_problems(CLI_DOC.read_text(), choices)
+    assert not problems, (
+        "docs/cli.md documents flag values argparse would reject (or omits "
+        f"ones it accepts): {problems}")
+
+
+def test_the_choice_set_check_would_catch_the_invented_model_strategy():
+    choices = _parser_choices()
+    old = ("| `--model-strategy <s>` | quality-first | "
+           "`quality-first\\|cost-optimized\\|balanced\\|custom` \u2014 which phase "
+           "gets `--model` |")
+    assert _choice_problems(old, choices)
+    assert "custom" not in choices["--model-strategy"]
+    # ...and `custom` is not a preset either: it would silently resolve as
+    # quality-first, which is why the doc could not be quietly "made true".
+    assert "custom" not in JobConfig.STRATEGY_TIERS
+    # the check is not vacuous: the corrected row passes
+    assert not _choice_problems(old.replace("\\|custom", ""), choices)
+
+
+# ---- `runs --state` filters on every state a run dir can record -----------
+
+def _documented_state_filter(text: str) -> set[str]:
+    span = re.search(r"--state ([a-z|]+)", text)
+    assert span, "docs/cli.md no longer shows `ralphctl runs --state`'s values"
+    return set(span.group(1).split("|"))
+
+
+def test_the_documented_state_filter_names_every_state_a_run_can_record():
+    from ralphd.engine.state import NONTERMINAL_STATES, TERMINAL_STATES
+    every = set(NONTERMINAL_STATES) | set(TERMINAL_STATES)
+    assert _documented_state_filter(CLI_DOC.read_text()) == every, (
+        "`ralphctl runs --state` is an exact match on the recorded state, so "
+        f"every one of {sorted(every)} is filterable")
+
+
+def test_the_state_filter_check_would_catch_the_missing_starting_state():
+    from ralphd.engine.state import NONTERMINAL_STATES
+    old = "ralphctl runs [--state running|succeeded|failed|aborted]"
+    assert "starting" in NONTERMINAL_STATES
+    assert _documented_state_filter(old) != (
+        set(NONTERMINAL_STATES) | {"succeeded", "failed", "aborted"})
+
+
+# ---- the hub renders no log lines of its own ------------------------------
+
+REIMPLEMENT_RE = re.compile(r"reimplement", re.IGNORECASE)
+# Same per-mention hatch as the paused-phase check: prose that *denies* the
+# client-side renderer names it without promising it.
+REIMPLEMENT_DENIALS = ("no longer", "does not", "never", "used to", "pre-014",
+                       "pre-task-014", "reimplements none", "rather than")
+
+
+def _reimplementation_claims(text: str) -> list[str]:
+    hits = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        low = line.lower()
+        if not REIMPLEMENT_RE.search(low):
+            continue
+        if "app.js" not in low and "browser" not in low:
+            continue
+        if any(d in low for d in REIMPLEMENT_DENIALS):
+            continue
+        hits.append(f"{lineno}: {line.strip()}")
+    return hits
+
+
+def test_no_doc_claims_the_browser_reimplements_the_log_rendering():
+    """Task 014 moved the rendering server-side; the code, not the prose, is
+    the reason no doc may claim otherwise."""
+    hub = (REPO_ROOT / "src" / "ralphd" / "cli" / "ui_server.py").read_text()
+    assert "log_render" in hub, "the hub no longer renders through log_render"
+    app_js = (REPO_ROOT / "src" / "ralphd" / "cli" / "web" / "app.js").read_text()
+    for event_rule in ("thinking_delta", "tool_call", "message_end"):
+        assert event_rule not in app_js, (
+            f"app.js branches on {event_rule} again: it renders pi events "
+            "itself, and the docs' shared-renderer claim is now the wrong one")
+    offenders = {}
+    for path in DOC_FILES:
+        hits = _reimplementation_claims(path.read_text())
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    assert not offenders, (
+        "the hub displays lines `cli/log_render.py` already rendered; these "
+        f"docs still credit the browser with the rendering: {offenders}")
+
+
+def test_the_reimplementation_check_would_catch_the_old_run_detail_claim():
+    assert _reimplementation_claims(
+        "markers \u2014 reimplemented in `app.js`, not shared code, since the CLI "
+        "is Python and the bundle is browser JS), and a steering form")
+    assert not _reimplementation_claims(
+        "lines (one per DOM element, via `textContent`); it does not "
+        "reimplement any event-to-text rendering rules of its own")
+
+
+# ---- the run-dir tree is the run dir -------------------------------------
+
+def _run_dir_tree_names(text: str) -> set[str]:
+    """Entry names of architecture.md's `~/.ralphd/runs/<run-id>/` tree."""
+    block = re.search(r"```\n~/\.ralphd/runs/<run-id>/(.*?)```", text, re.DOTALL)
+    assert block, "docs/architecture.md no longer draws the run-dir tree"
+    names = set()
+    for line in block.group(1).splitlines():
+        entry = re.match(r"^[\u2502\u251c\u2514\u2500\s]+([^\s#]+)", line)
+        if not entry:
+            continue
+        name = entry.group(1).split("#")[0]
+        if name and not name.endswith("/"):
+            names.add(name)
+    return names
+
+
+def _run_dir_file_names(root: Path) -> set[str]:
+    """Every file `RunDir` itself puts directly in a run dir."""
+    from ralphd.engine.state import (
+        HOST_FILE,
+        OPERATOR_TERMINATION_FILE,
+        TASKS_LAST_GOOD_NAME,
+        RunDir,
+    )
+    run = RunDir(root=root)
+    names = set()
+    for attr in dir(type(run)):
+        if attr.startswith("_") or not isinstance(
+                getattr(type(run), attr, None), property):
+            continue
+        value = getattr(run, attr)
+        if isinstance(value, Path) and value.parent == run.root and value.suffix:
+            names.add(value.name)
+    return names | {HOST_FILE, OPERATOR_TERMINATION_FILE, TASKS_LAST_GOOD_NAME,
+                    "events.jsonl"}
+
+
+def test_the_run_dir_tree_lists_every_file_the_run_dir_holds(tmp_path):
+    documented = _run_dir_tree_names(ARCH_DOC.read_text())
+    missing = sorted(_run_dir_file_names(tmp_path) - documented)
+    assert not missing, (
+        "docs/architecture.md's run-dir tree omits files the engine writes "
+        f"into every run dir: {missing}")
+
+
+def test_the_run_dir_tree_invents_no_file():
+    """Every name in the tree must be a name the shipped code spells."""
+    source = "\n".join(p.read_text() for p in
+                       sorted((REPO_ROOT / "src").rglob("*.py")))
+    invented = sorted(n for n in _run_dir_tree_names(ARCH_DOC.read_text())
+                      if n not in source and not n.startswith("00"))
+    assert not invented, (
+        "docs/architecture.md's run-dir tree names files nothing writes: "
+        f"{invented}")
+
+
+def test_the_run_dir_tree_checks_would_catch_the_old_tree(tmp_path):
+    old = ("```\n~/.ralphd/runs/<run-id>/          # mounted at /run\n"
+           "\u251c\u2500\u2500 job.json            # immutable job config as launched\n"
+           "\u251c\u2500\u2500 status.json         # engine-maintained\n"
+           "\u251c\u2500\u2500 tasks.json          # task state (source of truth)\n```")
+    names = _run_dir_tree_names(old)
+    assert "job.json" in names and "host.json" not in names
+    assert _run_dir_file_names(tmp_path) - names   # the omissions
+    source = "\n".join(p.read_text() for p in
+                       sorted((REPO_ROOT / "src").rglob("*.py")))
+    assert "job.json" not in source                # ...and the invention
+
+
+def test_the_job_config_is_a_yaml_file_in_the_config_dir():
+    """`job.json` never existed: the job config is `<config-dir>/job.yaml`,
+    written verbatim by `start` and redacted only when read out."""
+    from ralphd.engine.state import JOB_CONFIG_FILE
+    assert JOB_CONFIG_FILE == "job.yaml"
+    cli = (REPO_ROOT / "src" / "ralphd" / "cli" / "main.py").read_text()
+    assert '"job.yaml"' in cli or "'job.yaml'" in cli
+    from ralphd.engine.redact import redact_job_yaml
+    assert callable(redact_job_yaml)
+    offenders = {}
+    for path in [*DOC_FILES, *sorted((REPO_ROOT / "src").rglob("*.py"))]:
+        hits = [f"{i}: {line.strip()}" for i, line
+                in enumerate(path.read_text().splitlines(), start=1)
+                if "job.json" in line]
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    assert not offenders, (
+        "nothing writes a `job.json`; the job config is "
+        f"`<config-dir>/{JOB_CONFIG_FILE}`: {offenders}")
+
+
+# ---- phase prompts: the shipped set, and which of them the API can replace -
+
+PROMPTS_DIR = REPO_ROOT / "src" / "ralphd" / "prompts"
+
+
+def _documented_prompt_files(text: str) -> set[str]:
+    return set(re.findall(r"`([A-Za-z-]+\.md)`",
+                         _section(text, "### Phase prompts")))
+
+
+def test_the_documented_phase_prompts_are_the_shipped_ones():
+    shipped = {p.name for p in PROMPTS_DIR.glob("*.md")}
+    assert shipped, PROMPTS_DIR
+    assert _documented_prompt_files(ARCH_DOC.read_text()) == shipped, (
+        f"docs/architecture.md's phase-prompt list is not {sorted(shipped)}")
+
+
+def test_only_the_api_replaceable_prompts_are_documented_as_such():
+    from ralphd.engine.config import PROMPT_NAMES
+    section = _section(ARCH_DOC.read_text(), "### Phase prompts")
+    shipped = {p.stem for p in PROMPTS_DIR.glob("*.md")}
+    mount_only = shipped - set(PROMPT_NAMES)
+    assert mount_only, (
+        "every shipped prompt is now in PROMPT_NAMES -- say so plainly and "
+        "delete this check")
+    for name in mount_only:
+        assert name in section, (
+            f"`{name}` cannot be replaced through PUT /config/prompts/"
+            f"{{name}} (PROMPT_NAMES = {list(PROMPT_NAMES)}); the section must "
+            "say so instead of promising all prompts are overridable")
+
+
+def test_the_prompt_checks_would_catch_the_old_claim():
+    old = ("### Phase prompts\n\nPrompt templates live in the image at "
+           "`/opt/ralphd/prompts/` -- one per phase (`planning.md`, "
+           "`worker.md`, `review.md`, `task-verify.md`, plus the "
+           "workspace-level agent instructions file `AGENT.md`). All are "
+           "**overridable**.\n")
+    documented = _documented_prompt_files(old)
+    shipped = {p.name for p in PROMPTS_DIR.glob("*.md")}
+    assert documented != shipped
+    assert "AGENT.md" in documented and not list(REPO_ROOT.rglob("AGENT.md"))
+    assert "reflect.md" in shipped and "reflect.md" not in documented
+
+
+# ---- the model-strategy table is STRATEGY_TIERS ---------------------------
+
+def _documented_strategy_table(text: str) -> dict[str, dict[str, str]]:
+    section = _section(text, "### Model strategy")
+    header = None
+    table: dict[str, dict[str, str]] = {}
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip(" `") for c in line.strip("|").split("|")]
+        if header is None:
+            header = cells[1:]
+            continue
+        if set("".join(cells)) <= set("-: "):
+            continue
+        preset = cells[0].split(" ")[0].strip(" `")
+        table[preset] = dict(zip(header, cells[1:]))
+    return table
+
+
+def test_the_documented_model_strategy_presets_are_strategy_tiers():
+    assert _documented_strategy_table(ARCH_DOC.read_text()) == \
+        JobConfig.STRATEGY_TIERS, (
+        "docs/architecture.md's preset table is not JobConfig.STRATEGY_TIERS")
+
+
+def test_the_strategy_table_check_would_catch_the_old_prose():
+    old = ("### Model strategy\n\nPresets: `quality-first` (default; one "
+           "strong model everywhere), `cost-optimized` (strong model for "
+           "planning only), `balanced` (strong for planning + review).\n")
+    assert _documented_strategy_table(old) != JobConfig.STRATEGY_TIERS
+    # the prose was wrong about `balanced`, not just vague: reflect is strong
+    assert JobConfig.STRATEGY_TIERS["balanced"]["reflect"] == "strong"
+
+
+# ---- the hub: the bundle ships, and the endpoint list is complete ---------
+
+# The claim spans a line break in the wording it had, so this reads the
+# paragraph, not the line (`_paused_phase_claims`' line scope would miss it).
+PENDING_BUNDLE_RE = re.compile(
+    r"bundle[^.]{0,160}?(still pending|is pending|not implemented|not yet "
+    r"(?:shipped|implemented))", re.IGNORECASE)
+
+
+def _pending_bundle_claims(text: str) -> list[str]:
+    flat = re.sub(r"\s+", " ", text)
+    return [m.group(0) for m in PENDING_BUNDLE_RE.finditer(flat)]
+
+
+def test_the_static_hub_bundle_ships_and_no_doc_calls_it_pending():
+    from ralphd.cli.ui_server import STATIC_DIR
+    for name in ("index.html", "app.js", "style.css"):
+        assert (STATIC_DIR / name).is_file(), name
+    offenders = {}
+    for path in DOC_FILES:
+        hits = _pending_bundle_claims(path.read_text())
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    assert not offenders, (
+        f"the hub bundle ships in {STATIC_DIR.relative_to(REPO_ROOT)}; these "
+        f"docs still call it pending: {offenders}")
+
+
+def _hub_route_segments() -> set[str]:
+    """The literals the hub's dispatcher compares path segments against."""
+    source = (REPO_ROOT / "src" / "ralphd" / "cli" / "ui_server.py").read_text()
+    segments: set[str] = set()
+    for line in source.splitlines():
+        if "segs" in line:
+            segments |= set(re.findall(r'"([a-z][a-z-]*)"', line))
+    return segments - {"api", "runs"}
+
+
+def test_every_hub_endpoint_segment_is_documented_in_the_ui_section():
+    section = _section(CLI_DOC.read_text(), "### `ralphctl ui")
+    missing = sorted(s for s in _hub_route_segments() if s not in section)
+    assert not missing, (
+        "docs/cli.md's `ralphctl ui` section presents the whole JSON surface, "
+        f"so it must document these routes too: {missing}")
+
+
+def test_every_ralphctl_subcommand_has_its_own_section_in_cli_md():
+    from ralphd.cli.main import build_parser
+    verbs = set(build_parser()._subparsers._group_actions[0].choices)
+    doc = CLI_DOC.read_text()
+    documented = {verb for line in doc.splitlines() if line.startswith("#")
+                  for verb in re.findall(r"`ralphctl ([a-z-]+)", line)}
+    missing = sorted(verbs - documented)
+    assert not missing, (
+        f"docs/cli.md documents no section for: {missing}")
+
+
+def test_the_hub_and_command_completeness_checks_are_substantive():
+    assert len(_hub_route_segments()) >= 10, _hub_route_segments()
+    section = _section(CLI_DOC.read_text(), "### `ralphctl ui")
+    assert "nonexistent-route" not in section
+    assert not _section(CLI_DOC.read_text(), "### `ralphctl ui").startswith("#\n")
+
+
+# ---- the job image is built, not pulled -----------------------------------
+
+def test_no_doc_names_a_published_registry_image_for_the_job_image():
+    from ralphd.cli import image
+    assert "/" not in image.IMAGE_REPO, image.IMAGE_REPO
+    assert image.image_tag("deadbee") == f"{image.IMAGE_REPO}:deadbee"
+    offenders = {}
+    for path in DOC_FILES:
+        hits = [f"{i}: {line.strip()}" for i, line
+                in enumerate(path.read_text().splitlines(), start=1)
+                if "ghcr.io" in line or "docker.io/" in line]
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    assert not offenders, (
+        f"v0.6 publishes no image; the job image is {image.IMAGE_REPO}:<hash> "
+        f"built from the checkout: {offenders}")
+
+
+def test_the_pending_bundle_check_would_catch_the_old_claim():
+    assert _pending_bundle_claims(
+        "gracefully instead of erroring (see [cli.md](cli.md)). The static "
+        "bundle\nserved at non-`/api` paths is still pending (v0.3, task 034).")
+    assert not _pending_bundle_claims(
+        "The static bundle served at non-`/api` paths (`src/ralphd/cli/web/`) "
+        "landed in v0.3 task 034.")
+
+
+# ---- `ralphctl watch` is an event stream, not a TUI ------------------------
+
+TUI_CLAIM_RE = re.compile(
+    r"(?:^|[^\w-])(TUI|curses|gauges?|scrolling tail|press `?q`?)", re.IGNORECASE)
+# The docs are allowed -- required, even -- to say the opposite.
+TUI_DENIALS = ("not a tui", "no tui", "no curses", "ships no", "bubbletea",
+               "instead of drawing", "rather than a tui", "no framework")
+
+
+def _tui_claims(text: str) -> list[str]:
+    """Lines that credit `watch` with a full-screen UI it does not have."""
+    hits = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        low = line.lower()
+        if "watch" not in low and "tui" not in low:
+            continue
+        if not TUI_CLAIM_RE.search(line):
+            continue
+        if any(d in low for d in TUI_DENIALS):
+            continue
+        hits.append(f"{lineno}: {line.strip()}")
+    return hits
+
+
+def test_ralphctl_watch_is_an_event_stream_and_no_doc_promises_a_tui():
+    """`cmd_watch` prints one line per SSE event; there is no screen, no
+    key handling and no gauge anywhere in the CLI (SPEC: no TUI framework)."""
+    import inspect
+
+    from ralphd.cli import main as cli_main
+    assert "_follow_events" in inspect.getsource(cli_main.cmd_watch)
+    follow = inspect.getsource(cli_main._follow_events)
+    assert "data: " in follow and "print(" in follow, follow
+    for absent in ("curses", "gauge", "tcsetattr", "cbreak"):
+        assert absent not in follow.lower(), (
+            f"_follow_events now does {absent!r}: `watch` grew a UI and the "
+            "docs' event-stream description is the wrong one")
+    # ...and the whole CLI imports no TUI/curses framework
+    cli_source = "\n".join(p.read_text() for p in
+                          sorted((REPO_ROOT / "src" / "ralphd" / "cli").rglob("*.py")))
+    assert not re.search(r"^\s*import (curses|rich|textual|blessed)",
+                         cli_source, re.MULTILINE), "the CLI imports a TUI library"
+    offenders = {}
+    for path in DOC_FILES:
+        hits = _tui_claims(path.read_text())
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    assert not offenders, (
+        "`ralphctl watch` prints `[ts] type {...}` lines (NDJSON with "
+        f"--json); these docs still describe a TUI: {offenders}")
+
+
+def test_the_tui_check_would_catch_the_old_watch_description():
+    assert _tui_claims(
+        "Live TUI: task table, phase/approach/iteration header, budget + cost "
+        "gauges,\nscrolling tail of agent output, pending steering. Read-only; "
+        "`q` quits.") == [
+        ("1: Live TUI: task table, phase/approach/iteration header, budget + "
+         "cost gauges,")]
+    assert _tui_claims("A live TUI, `q` to quit")
+    assert _tui_claims("the `watch` cost gauge renders through format_cost")
+    assert _tui_claims("`ralphctl watch` renders a TUI:\ntask table, current "
+                       "phase/iteration, tail of agent output, budget gauge.")
+    assert not _tui_claims(
+        "Live **event stream**, not a TUI: `watch` subscribes to the run's\n"
+        "`GET /events?since=0` and prints one line per event as it arrives.")
