@@ -1090,6 +1090,86 @@ def test_run_detail_labels_a_stale_task_read_and_never_blinks_empty(tmp_path, pw
         server.stop()
 
 
+# The pills under test. `#task-box`'s status column is children[1] (id /
+# status / title), so `in-progress` and `pending` share one column and one
+# font: whatever height a `pending` pill has is the one-line height here.
+# NB: height, not `getClientRects().length` -- an inline-block is one atomic
+# box however many lines its *content* wraps onto, so counting rects reports 1
+# for a visibly split pill and would pass vacuously.
+_PILL = "document.querySelector('#task-box .pill-in-progress')"
+_REF_PILL = "document.querySelector('#task-box .pill-pending')"
+_PILL_CELL = f"{_PILL}.closest('td')"
+_PILL_HEIGHT = f"{_PILL}.getBoundingClientRect().height"
+_PILL_WIDTH = f"{_PILL}.getBoundingClientRect().width"
+_REF_HEIGHT = f"{_REF_PILL}.getBoundingClientRect().height"
+_PILL_CELL_WIDTH = f"{_PILL_CELL}.getBoundingClientRect().width"
+# Squeeze the status column far below the pill's natural width, the way a real
+# narrow window does. `table-layout: fixed` makes the header widths binding.
+# Injected as a stylesheet, not as inline styles on the table: the hub repolls
+# every 4 s and `renderTasks` rebuilds the whole table, so inline styles are
+# silently dropped mid-test (they were, and the squeeze became a no-op).
+_SQUEEZE = """(() => {
+  const s = document.createElement('style');
+  s.id = 'squeeze-probe';
+  s.textContent = '#task-box table{table-layout:fixed;width:90px}'
+    + '#task-box th:nth-child(1){width:20px}'
+    + '#task-box th:nth-child(2){width:24px}'
+    + '#task-box th:nth-child(3){width:46px}';
+  document.head.appendChild(s);
+  return document.querySelectorAll('#task-box thead th').length;
+})()"""
+
+
+def test_a_hyphenated_status_pill_never_breaks_across_two_lines(tmp_path, pw):
+    """Operator report (21 Aug 2026): the `in-progress` pill rendered split
+    over two lines, border and all, in the running hub.
+
+    Cause: `.pill` was `display: inline-block` with no `white-space` rule, so
+    the hyphen in `in-progress` (and in `validation-failed`) is a soft-wrap
+    opportunity. Squeeze the column and the badge comes apart -- measured on
+    the live hub, the same pill was 17.6px tall with `nowrap` and 31.6px
+    without.
+
+    This drives the real geometry rather than asserting on the CSS text: the
+    pill is measured in a column deliberately narrower than the pill's own
+    text, and must stay exactly as tall as the un-hyphenated `pending` pill
+    beside it. The overflow assertion guards against a vacuous pass -- if the
+    squeeze did not constrain the pill, its width would not exceed the cell.
+    """
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-pill-wrap", state="running", verdict=None)
+    (run_dir / "tasks.json").write_text(json.dumps(STALE_TASKS_PLAN))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-pill-wrap")
+        _wait_for(pw, "document.body.innerText", "second task")
+        assert "in-progress" in pw.eval_js(f"{_PILL}.textContent")
+        one_line = float(pw.eval_js(_REF_HEIGHT))
+        assert one_line > 0
+        # unsqueezed, it is one line -- the baseline the operator should see.
+        assert abs(float(pw.eval_js(_PILL_HEIGHT)) - one_line) < 0.5
+
+        assert int(pw.eval_js(_SQUEEZE)) == 3
+        width = float(pw.eval_js(_PILL_WIDTH))
+        height = float(pw.eval_js(_PILL_HEIGHT))
+        cell = float(pw.eval_js(_PILL_CELL_WIDTH))
+        assert width > cell, (
+            f"squeeze did not constrain the pill (pill {width}px <= cell"
+            f" {cell}px); the wrap assertion below would pass vacuously")
+        # `pending` shares the squeezed column, so it re-measures the one-line
+        # height under exactly the constraint the pill under test now faces.
+        one_line = float(pw.eval_js(_REF_HEIGHT))
+        assert abs(height - one_line) < 0.5, (
+            f"the in-progress pill grew to {height}px in a {cell}px column"
+            f" while the pending pill beside it stayed {one_line}px -- it broke at"
+            " the hyphen; .pill needs white-space: nowrap")
+        pw.screenshot(SCREENSHOTS_DIR / "pill-nowrap-squeezed.png")
+    finally:
+        server.stop()
+
+
 _APPROACH_CELLS = (
     "[...document.querySelectorAll('table.run-list tbody tr')]"
     ".map(tr => tr.children[0].textContent + '=' + tr.children[4].textContent)"

@@ -70,8 +70,14 @@ tr:hover td { background: #f6f8fa; }
 
 a { color: var(--accent); }
 
+/* `white-space: nowrap` is load-bearing, not cosmetic: hyphenated labels
+   (`in-progress`, `validation-failed`) offer the hyphen as a soft-wrap
+   opportunity, so in a narrow column the pill broke across two lines with the
+   border drawn around each fragment -- reported from the running hub. A pill is
+   one atomic badge; let it overflow its cell rather than come apart. */
 .pill {
   display: inline-block;
+  white-space: nowrap;
   padding: 0.05rem 0.5rem;
   border-radius: 1rem;
   font-size: 0.78rem;
