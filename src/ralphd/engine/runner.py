@@ -162,6 +162,16 @@ class PiRunner:
                 if not startup_timeout_s:
                     return
                 try:
+                    # Task 011 (#28) audit of this wait_for: safe. The
+                    # awaitable is a fresh `first_traffic.wait()` coroutine
+                    # created right here, so the task wait_for cancels on
+                    # timeout is private to this call and is never awaited
+                    # again -- the shape that made the old pump_task idiom
+                    # re-raise CancelledError cannot arise. TimeoutError, not
+                    # CancelledError, is what comes out. (A CancelledError
+                    # DOES come out when the caller's `finally` cancels
+                    # watchdog_task, which is exactly what that cancel means;
+                    # the caller suppresses it there.)
                     await asyncio.wait_for(first_traffic.wait(), timeout=startup_timeout_s)
                 except TimeoutError:
                     result.no_traffic_timeout = True
@@ -208,10 +218,20 @@ class PiRunner:
                 with contextlib.suppress(asyncio.CancelledError):
                     await watchdog_task
             try:
+                # Task 011 (#28) audit of this wait_for: safe, for the same
+                # reason as the watchdog's -- `self._proc.wait()` is a fresh
+                # coroutine, and the retry below builds ANOTHER one instead
+                # of re-awaiting the task this call cancelled.
                 await asyncio.wait_for(self._proc.wait(),
                                        timeout=SHUTDOWN_GRACE_S)
             except TimeoutError:
-                self._proc.kill()
+                # ...one real race though: the process may exit between the
+                # timeout and the kill, and asyncio's Process.kill() raises
+                # ProcessLookupError once returncode is set. Reaping it is
+                # all that is left to do, so don't let it become a spurious
+                # "engine iteration failure".
+                with contextlib.suppress(ProcessLookupError):
+                    self._proc.kill()
                 await self._proc.wait()
             result.exit_code = self._proc.returncode
         finally:

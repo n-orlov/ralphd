@@ -864,9 +864,47 @@ class LoopSupervisor:
                     prompt, itdir / "output.jsonl", model=model,
                     thinking=self.cfg.thinking, timeout_s=timeout,
                     extra_env=current_env(), startup_timeout_s=startup_timeout_s)
-            except Exception as exc:
-                # an engine-side iteration failure (stream error, OS error)
-                # must cost one iteration, not the whole job
+            except BaseException as exc:
+                # THE CONTAINMENT BOUNDARY for an iteration (task 011, #28).
+                #
+                # Where: this one `await`, the narrowest scope that covers
+                # everything the agent subprocess and its plumbing can throw.
+                # Why here and not further out: the code BELOW this block is
+                # what makes a failed attempt legible -- meta.json's
+                # endedAt/faultClass, iteration.end, the usage accounting,
+                # the infra refund. A guard placed around the whole run (see
+                # `except Exception` in _run_job_core) can only end the job
+                # with an "engine error"; a guard placed here turns any
+                # explosion into an ordinary recorded failed iteration and
+                # lets the loop carry on.
+                #
+                # Why BaseException and not Exception: task 010's defect was
+                # an `asyncio.CancelledError` leaking out of the runner's own
+                # timeout plumbing, and CancelledError is a BaseException --
+                # so `except Exception` here could not see it and one
+                # iteration blowing its timeout took the whole engine down.
+                # The narrow catch was the second half of that bug: the
+                # runner is fixed, but nothing structural stopped the next
+                # stray cancellation from ending the job, so the boundary is
+                # widened deliberately rather than left to trust.
+                #
+                # Two things are deliberately NOT contained:
+                #  * KeyboardInterrupt / SystemExit -- the engine is being
+                #    shut down by its supervisor and must unwind, not
+                #    swallow it and start another iteration;
+                #  * a cancellation that was genuinely requested on THIS
+                #    task from outside (`cancelling()` counts cancel() calls
+                #    on us, and is 0 for a CancelledError that merely leaked
+                #    out of inner plumbing) -- ralphctl/asyncio asked this
+                #    coroutine to stop, so honour it.
+                cur = asyncio.current_task()
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)) or (
+                        isinstance(exc, asyncio.CancelledError)
+                        and cur is not None and cur.cancelling() > 0):
+                    raise
+                # an engine-side iteration failure (stream error, OS error,
+                # a stray cancellation) must cost one iteration, not the
+                # whole job
                 result = IterationResult(exit_code=None)
                 result.error_message = f"engine iteration failure: {exc!r}"
         finally:
@@ -1534,6 +1572,13 @@ class LoopSupervisor:
                                    **self._unconsumed_steering_patch())
             return state
         except Exception as exc:  # engine bug — record, don't vanish
+            # Deliberately still `Exception`, not BaseException: the
+            # per-iteration containment boundary in _run_iteration_once
+            # (task 011, #28) is where a stray cancellation is absorbed, so
+            # anything reaching here that is NOT an Exception is a real
+            # shutdown request (KeyboardInterrupt/SystemExit, or a cancel()
+            # on this coroutine) and must unwind the engine rather than be
+            # rewritten into a terminal "engine error" verdict.
             self.run.emit("log", level="error", message=f"engine error: {exc!r}")
             self.run.update_status(state="failed", verdict="unverified",
                                    phase=None, endedAt=utcnow(),
