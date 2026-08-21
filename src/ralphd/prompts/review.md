@@ -21,6 +21,16 @@ trusting nothing the worker wrote about its own work.
    counter (even if exhausted) never substitutes for this check -- it exists
    specifically because that automated skip could otherwise let rewritten
    criteria dodge every independent check.
+6. Account, per task id, for every task whose final status is not `completed`
+   (`skipped`, `failed`, still `pending`): say whether its scope was delivered
+   elsewhere — name the commits — or is genuinely missing. A skipped task is
+   shippable; a skipped task nobody looked at is not — requirement coverage, not
+   task status, decides the verdict.
+7. Cross-check every evidence artifact the PRD asked for (traceability reports,
+   closure records, index rows) against the run state it describes: counts
+   against `tasks.json`, shas against `git log`, cost and token figures against
+   `status.json`, paths and test ids against the tree. An un-derived number is
+   the likeliest untrue claim a run ships.
 
 ## Verdict
 
