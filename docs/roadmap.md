@@ -34,7 +34,8 @@ decision:
   demand) — the file-based analogue of original Ralph's AWS Secrets approach
 - ✅ LLM profiles: format + `host`/`none` built-ins + bedrock and gateway example
   profiles **with acceptance tests proving both**
-- ⏳ Docker image published (amd64/arm64); `pipx install ralphctl` — the image
+- ⏳ Docker image published (amd64/arm64); `pipx install ralphd` from an index —
+  the image
   builds and runs locally (proven by the docker-sibling e2e tier) but has never
   been pushed to a registry, and the package has never been published to PyPI;
   not attempted (no CI/publishing pipeline exists in this environment)

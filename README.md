@@ -66,7 +66,9 @@ model, fault model, both operator surfaces, testing — see [SPEC.md](SPEC.md).
 Implemented and in use: the engine loop, the container API, `ralphctl`, the web
 hub, LLM profiles, and the resilience/self-recovery layer, covered by a test
 suite that includes a real docker-sibling tier and a real browser tier. What is
-not done: a published Docker image and `pipx` packaging. See
+not done: **publishing** — no Docker image is pushed to a registry and the
+`ralphd` distribution is not on PyPI, so both are installed from a checkout
+(`pipx install .`, `docker build`). See
 [docs/roadmap.md](docs/roadmap.md) for the version-by-version state and
 [SPEC.md](SPEC.md#15-deferred) for what is deliberately deferred.
 

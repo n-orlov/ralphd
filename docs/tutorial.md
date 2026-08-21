@@ -14,9 +14,14 @@ see [llm-profiles.md](llm-profiles.md); for how the pieces fit together see
 ## 1. Install
 
 ```bash
-pipx install ralphctl
-# or: uvx ralphctl --help
+git clone https://github.com/n-orlov/ralphd.git
+cd ralphd
+pipx install .          # installs the ralphd distribution, which provides ralphctl
 ```
+
+v0.6 is **not published to PyPI**, so there is no `pipx install ralphd` from an
+index yet (see [roadmap.md](roadmap.md)) — install from a checkout as above.
+`pip install -e .` in a virtualenv works too and is what the test suite uses.
 
 `ralphctl` needs a working `docker` CLI on your `PATH` (or `podman`, with
 `RALPHD_DOCKER=podman` set). It talks to the docker daemon directly — there is

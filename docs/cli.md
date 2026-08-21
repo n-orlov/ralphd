@@ -11,8 +11,11 @@ driven by a **human at a terminal or by an AI agent** — hence:
 - all state is derivable from `~/.ralphd/` + the container APIs; there is no hidden
   session state
 
-Install: `pipx install ralphctl` (or `uvx ralphctl …`). Requires a working
-`docker` CLI (or `podman` with `RALPHD_DOCKER=podman`).
+Install: the distribution is **`ralphd`** (it provides the `ralphctl` console
+script, plus `ralphd-engine` for the in-container engine) and is not on PyPI in
+v0.6 — install it from a checkout with `pipx install .` (or `pip install -e .`
+for development). Requires a working `docker` CLI (or `podman` with
+`RALPHD_DOCKER=podman`).
 
 ## Quick start
 
