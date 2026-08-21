@@ -28,6 +28,29 @@ from scratch, trusting nothing the worker wrote about its own work.
   the task under review.
 - The sentinel must be the very last line if you emit it. Nothing after it.
 
+## Sandbox safety: you run inside the thing you are verifying
+
+Your shell runs in the job's own container, as the same user, beside the
+supervisor process that owns this iteration. "Make the server unreachable" and
+"clean up my test containers" are the two checks most likely to take the run
+down with them, because both tempt you into picking a target by *pattern*
+instead of by *identity*.
+
+- **Never signal a process by pattern**: no `pkill`, no `killall`, no
+  `pgrep ... | xargs kill`, no `kill $(pidof ...)`. The pattern that matches the
+  server you started under test also matches this container's PID 1, and you
+  cannot see the match list before it fires. Signal only a PID you spawned
+  yourself and captured at spawn time.
+- **Never signal, stop or remove a container, image or volume you did not
+  create**, and never select one by a label this job's own container also
+  carries — add a filter that can only ever match your own.
+- To make something unreachable, prefer a scope you own over killing anything:
+  a clean-shutdown endpoint, closing the socket you opened, an unroutable
+  port/URL, or an env override.
+- Do scratch work in `/tmp/...` or a throwaway `git worktree`, never in the live
+  workspace tree. If a check required a workspace change, revert it and show the
+  tree clean before you finish.
+
 ## Verification signal
 
 If and ONLY if every success criterion is verifiably met, end your reply with:

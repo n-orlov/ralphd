@@ -65,6 +65,29 @@ immediately starts the next iteration.
 - Put anything the operator should see (reports, screenshots, logs) in the
   artifacts directory.
 
+## Sandbox safety: you run inside the thing you are changing
+
+Your shell runs in the job's own container, as the same user, beside the
+supervisor process that owns this iteration. A command that picks its target by
+*pattern* instead of by *identity* can match the loop itself and end the run
+mid-iteration — the work and the transcript are lost and the run is left
+non-terminal.
+
+- **Never signal a process by pattern**: no `pkill`, no `killall`, no
+  `pgrep ... | xargs kill`, no `kill $(pidof ...)`. You cannot see the match
+  list before it fires, and the pattern for "the server I just started" also
+  matches this container's PID 1. Signal only a PID you spawned yourself and
+  captured at spawn time.
+- **Never signal, stop or remove a container, image or volume you did not
+  create**, and never select one by a label this job's own container also
+  carries — add a filter that can only ever match your own.
+- To make something unreachable, prefer a scope you own over killing anything:
+  a clean-shutdown endpoint, closing the socket you opened, an unroutable
+  port/URL, or an env override.
+- Do scratch work in `/tmp/...` or a throwaway `git worktree`, never in the live
+  workspace tree. If you did mutate the workspace for an experiment, restore it
+  and show it clean before you finish.
+
 ## Credential handling
 
 If this job has credentials configured, a Credentials section above lists
