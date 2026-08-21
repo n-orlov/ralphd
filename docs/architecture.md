@@ -1533,7 +1533,17 @@ Three deliberate details:
   (`ralphctl fault`, the hub dialog) therefore say "operator-requested" only
   when `LoopSupervisor._operator_abort_recorded` establishes it and otherwise
   say an abort/interrupt is recorded without naming a cause (steering 004); the
-  `faultClass` itself stays coarse, which is issue #23.
+  `faultClass` for *that branch* stays deliberately coarse (its job is "never
+  retry this as an outage"), which is issue #49.
+- **A signal is its own class** (task 013, #49). An iteration that reached the
+  model and was then ended by a signal, with **no** abort recorded for the run
+  (an OOM kill, a stray `pkill`, a `docker stop` of the agent's process group),
+  is `faultClass: "signal"` — not `"work"`, which is the class that burns
+  approach and task-failure bookkeeping and would charge the agent for a failure
+  a signal committed, and not `"infra"` either, so the retry wrapper (which acts
+  on `"infra"` alone) never relaunches into whatever wanted the run stopped.
+  Requirement I's own subject: an iteration that `pkill`s something is exactly
+  how this shape arises.
 
 Anything else that produced **no** LLM traffic at all is classified `"infra"`
 too: an unclassifiable no-traffic failure is far likelier to be an

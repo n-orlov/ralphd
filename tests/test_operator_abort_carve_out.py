@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from ralphd.engine.config import JobConfig
-from ralphd.engine.faults import classify_fault
+from ralphd.engine.faults import FAULT_CLASS_SIGNAL, classify_fault
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
@@ -51,13 +51,21 @@ def test_bare_aborted_with_operator_abort_is_not_infra():
 def test_bare_aborted_with_traffic_is_not_infra():
     # The other half of "only when there was no traffic": an agent that made
     # real LLM calls and then got aborted is not an endpoint outage.
-    assert classify_fault(
+    #
+    # RETARGETED by task 013 (#49): the property this test guards -- never
+    # `infra`, so the wrapper never retries it -- is unchanged. What changed is
+    # the class it lands in: an *interrupted* iteration with traffic is now
+    # `signal` rather than `work`, because a signal ended it before it could
+    # fail on its own. The carve-out cases below are untouched.
+    verdict = classify_fault(
         error_text="aborted",
         exit_code=None,
         interrupted=True,
         produced_traffic=True,
         operator_abort=False,
-    ) == "work"
+    )
+    assert verdict != "infra"
+    assert verdict == FAULT_CLASS_SIGNAL
 
 
 @pytest.mark.parametrize(
