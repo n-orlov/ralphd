@@ -9,6 +9,7 @@ as the CLI evolves.
 
 from __future__ import annotations
 
+import importlib
 import re
 import subprocess
 import sys
@@ -682,3 +683,111 @@ def test_a_fake_api_route_or_field_in_the_docs_is_reported():
     assert _field_problems(fake.replace("noSuchField", "tasksSource")) == []
     assert _field_problems("prose about `noSuchField` counts too") == [
         "noSuchField"]
+
+
+# --------------------------------------------------------------------------
+# Task 043b: "pinned by tests/test_x.py" is a name claim like any other.
+# Docs cite the test that pins a behaviour so a reader can go read it; a
+# citation of a file that does not exist (renamed, never written, or lost in a
+# rebase) sends them nowhere and quietly un-pins the claim.
+# --------------------------------------------------------------------------
+
+TEST_PATH_RE = re.compile(r"tests/(test_[a-z0-9_]+\.py)")
+
+
+def _missing_cited_tests(text: str) -> list[str]:
+    return sorted({name for name in TEST_PATH_RE.findall(text)
+                   if not (REPO_ROOT / "tests" / name).is_file()})
+
+
+def test_every_test_file_cited_by_the_docs_exists():
+    offenders = {}
+    for path in [REPO_ROOT / "README.md", REPO_ROOT / "SPEC.md",
+                 *sorted((REPO_ROOT / "docs").glob("*.md"))]:
+        missing = _missing_cited_tests(path.read_text())
+        if missing:
+            offenders[str(path.relative_to(REPO_ROOT))] = missing
+    assert not offenders, (
+        f"docs cite test files that do not exist: {offenders}")
+
+
+def test_the_cited_test_check_is_substantive():
+    doc = "\n".join(p.read_text() for p in sorted((REPO_ROOT / "docs").glob("*.md")))
+    assert len(set(TEST_PATH_RE.findall(doc))) >= 15
+    assert _missing_cited_tests("pinned by tests/test_no_such_thing.py")
+    assert not _missing_cited_tests("pinned by tests/test_docs_semantics.py")
+
+
+# --------------------------------------------------------------------------
+# Task 043b: a documented dotted code path (`ralphd.engine.state.format_cost`)
+# is the reader's pointer at the single definition a claim rests on. When the
+# function is renamed or moved, the prose still *sounds* precise -- this makes
+# the pointer verifiable.
+# --------------------------------------------------------------------------
+
+DOTTED_RE = re.compile(r"`(ralphd\.[A-Za-z_][A-Za-z0-9_.]*)`")
+
+
+def _import_or_none(name: str):
+    """The module, or None when that dotted prefix is not importable.
+
+    A doc may write `ralphd.engine.state.format_cost` (module + attribute) or
+    `ralphd.iteration` (not Python at all), so every prefix length has to be
+    tried and a failure is an answer, not an error.
+    """
+    try:
+        return importlib.import_module(name)
+    except Exception:
+        return None
+
+
+def _resolves(dotted: str) -> bool:
+    parts = dotted.split(".")
+    for depth in range(len(parts), 1, -1):
+        module = _import_or_none(".".join(parts[:depth]))
+        if module is None:
+            continue
+        obj = module
+        for attr in parts[depth:]:
+            if not hasattr(obj, attr):
+                return False
+            obj = getattr(obj, attr)
+        return True
+    return False
+
+
+def _dotted_claims(text: str) -> set[str]:
+    """Dotted names that are claims about *Python*.
+
+    `ralphd.iteration` (an event type), `ralphd.run`/`ralphd.role` (docker
+    label namespaces) share the prefix and are not code paths: they are
+    excluded by requiring the two-segment prefix to be an importable module.
+    """
+    claims = set()
+    for dotted in DOTTED_RE.findall(text):
+        prefix = ".".join(dotted.split(".")[:2])
+        if _import_or_none(prefix) is None:
+            continue
+        claims.add(dotted)
+    return claims
+
+
+def test_every_dotted_code_path_in_the_docs_resolves():
+    offenders = {}
+    for path in [REPO_ROOT / "README.md", REPO_ROOT / "SPEC.md",
+                 *sorted((REPO_ROOT / "docs").glob("*.md"))]:
+        broken = sorted(d for d in _dotted_claims(path.read_text())
+                        if not _resolves(d))
+        if broken:
+            offenders[str(path.relative_to(REPO_ROOT))] = broken
+    assert not offenders, (
+        f"docs point at code paths that no longer exist: {offenders}")
+
+
+def test_the_dotted_path_check_is_substantive():
+    doc = "\n".join(p.read_text() for p in sorted((REPO_ROOT / "docs").glob("*.md")))
+    assert len(_dotted_claims(doc)) >= 20
+    assert not _resolves("ralphd.engine.state.no_such_function")
+    assert _resolves("ralphd.engine.state.format_cost")
+    assert _dotted_claims("`ralphd.log_merge.NO_TRANSCRIPT`")
+    assert not _dotted_claims("the `ralphd.iteration` boundary event")

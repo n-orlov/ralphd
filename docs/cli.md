@@ -75,7 +75,7 @@ ralphctl start --prd <file|-> [options]
 | `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state) |
 | `--model <id>` | profile default | default model (pi model ID) |
 | `--fast-model <id>` | profile default | model for phases a `cost-optimized`/`balanced` strategy routes to the cheap tier |
-| `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced\|custom` — which phase gets `--model` and which gets `--fast-model`. A true per-phase override (`model_overrides`, keys `planning\|worker\|review\|verify\|reflect`) is a `job.yaml` key only: no `start` flag sets it |
+| `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced` — the three presets `JobConfig.STRATEGY_TIERS` defines (anything else is a usage error): which phase gets `--model` and which gets `--fast-model`. A true per-phase override (`model_overrides`, keys `planning\|worker\|review\|verify\|reflect`) is a `job.yaml` key only: no `start` flag sets it |
 | `--thinking <level>` | — | pi thinking level |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
@@ -350,10 +350,15 @@ a missing/invalid docker socket with `--allow-docker`).
 List all runs (live and historical) from the registry, **newest first**.
 
 ```
-ralphctl runs [--state running|succeeded|failed|aborted]
+ralphctl runs [--state starting|running|succeeded|failed|aborted]
               [--sort runId|state|verdict|phase|approach|tasks|iterationsUsed|startedAt]
               [--reverse]
 ```
+
+`--state` is an **exact match** on the recorded `state` — every state a run
+dir can hold, `starting` included — and not a constrained choice set: an
+unrecognised value simply matches nothing (exit `0`, empty table), whereas an
+unrecognised `--sort` key is a usage error (exit `2`, below).
 
 Columns: run ID, state, verdict, phase, approach, tasks, iterations
 used/budget, started (absolute local time via the shared formatter, see
@@ -631,12 +636,16 @@ run defaults them to `"ok"`/`null`, matching `GET /status`), and `reflect`
 
 ### `ralphctl watch <run-id>`
 
-Live TUI: task table, phase/approach/iteration header, budget + cost gauges,
-scrolling tail of agent output, pending steering. Read-only; `q` quits.
-Non-TTY/`--json`: streams SSE events as NDJSON instead (usable by agents).
-The cost gauge renders through the one shared cost formatter
-(`engine/state.format_cost`, task 051), so an unpriced/mixed total reads
-`unavailable` there too rather than `$0.0000`.
+Live **event stream**, not a TUI: `watch` subscribes to the run's
+`GET /events?since=0` and prints one line per event as it arrives —
+`[<ts>] <type> <the event's remaining fields as JSON>` — replaying the whole
+run from event 0 first. With `--json` (or any non-TTY use) each line is the
+raw event object instead, i.e. NDJSON a script can parse. Read-only; Ctrl+C
+stops it. There is deliberately no curses/framework UI on this path (the CLI
+is stdlib-only, see SPEC § "Packaging"); the run's live task table, gauges and
+cost figures are `ralphctl status`, `ralphctl tasks` and the hub (`ralphctl
+ui`), which render through the shared formatters (`engine/state.format_cost`
+and friends, so an unpriced total reads `unavailable` rather than `$0.0000`).
 
 The stream is replayed from the start of the run's `events.jsonl`, which is
 append-only **across resumes** — so it can contain a terminal `state` event
@@ -1701,11 +1710,10 @@ full ranking is under "Resuming on the same image" in `start` above.
 The resolved `pi` config and creds/skills
 are restored too, since the container entrypoint re-copies `/config/pi`
 and the engine re-places `/config/creds` + `/config/skills` on every
-startup. Anything from a bare `--forward-env`/`--llm-env`/`--env` (as
-opposed to `--llm` itself) at the *original* `start` is not re-derived by
-`resume` — pass those again explicitly on the `resume` invocation if
-needed (`resume` has no such flags of its own; use `start`'s wiring only
-for `--llm`-derived env/mounts, which now survives automatically).
+startup. A bare `--forward-env`/`--llm-env`/`--env` from the *original*
+`start` is replayed too, from `env-wiring.json` (the bullet above) — and it
+has to be, since `resume` has no such flags of its own to pass those values
+again with.
 
 Exit codes: `3` unknown run, `5` the run's container is still alive (a live
 engine already holds the run dir's flock; `abort`/`stop` it first), `2` a
@@ -2476,8 +2484,9 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   phase, model, duration once ended — each row clickable, see below), a live log tail rendered with the
   *same* pretty rules as `ralphctl logs` (iteration boundaries, streamed
   text, compact tool one-liners, elided thinking, malformed-line
-  markers — reimplemented in `app.js`, not shared code, since the CLI is
-  Python and the bundle is browser JS), and a steering form that `POST`s
+  markers — rendered **server-side** by the shared `ralphd.cli.log_render`
+  module, see `GET /api/runs/<id>/logs` above: `app.js` prints the lines it
+  is handed and reimplements none of those rules), and a steering form that `POST`s
   to `/api/runs/<id>/steer` and reports the created file name back, plus the
   **steering history** panel below it (task 017, issue #17, described below).
   A **view PRD** button (task 056, issue #1) opens the run's PRD in a modal

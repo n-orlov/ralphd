@@ -1,6 +1,8 @@
 # ralphd Architecture
 
-Status: design, targets v0.1 unless marked otherwise.
+Status: as shipped in v0.6.0 unless marked otherwise (subsections dated to an
+earlier version are historical design notes, kept because the reasoning still
+explains the code).
 
 ## 1. Overview
 
@@ -44,9 +46,13 @@ Design invariants:
 - **Fresh context per iteration.** Each iteration is a new `pi` process; continuity
   flows exclusively through state files (below). This bounds context growth and makes
   every iteration resumable and interruptible.
-- **`tasks.json` is the source of truth**, written atomically (write-temp + rename).
-  Killing an iteration mid-flight loses at most that iteration's uncommitted
-  reasoning, never task state.
+- **`tasks.json` is the source of truth.** The engine's own writes to it
+  (fingerprints, validation notes, approach archiving) are atomic (write-temp +
+  rename), so killing an iteration mid-flight loses at most that iteration's
+  uncommitted reasoning, never task state. The *agent* writes it too, and its
+  writes are not atomic — which is why every reader goes through one hardened
+  read path (§3, "Reading `tasks.json`: unknown is not zero") instead of
+  assuming it can never catch a half-written file.
 - **Signals are exact sentinels** (`<promise>COMPLETE</promise>`,
   `<promise>VERIFIED</promise>`, `<task-verified>id</task-verified>`) scanned from
   the agent's final output; prompts instruct the agent to emit them only as its
@@ -80,12 +86,17 @@ Design invariants:
 
 ### Phase prompts
 
-Prompt templates live in the image at `/opt/ralphd/prompts/` — one per phase
-(`planning.md`, `worker.md`, `review.md`, `task-verify.md`, plus the workspace-level
-agent instructions file `AGENT.md`). All are **overridable**: a file of the same name
-in `/config/prompts/` (mapped by the CLI) takes precedence, and can be replaced at
-runtime via the API (`PUT /config/prompts/{name}`), taking effect next iteration.
-Prompts are authored fresh for this project.
+Prompt templates ship inside the installed package (`src/ralphd/prompts/`) —
+one per phase: `planning.md`, `worker.md`, `review.md`, `task-verify.md` and
+`reflect.md`. Every one of them is **overridable by mount**: a file of the same
+name in `/config/prompts/` (mapped by the CLI) takes precedence, resolved per
+iteration through the config overlay order (§5). Runtime replacement over the
+API (`PUT /config/prompts/{name}`, taking effect next iteration) covers the
+four phases `engine/config.py: PROMPT_NAMES` lists — `reflect` is deliberately
+not among them (it is not listed by `GET /config/prompts` or
+`ralphctl prompts ls` either), so the post-terminal reflection prompt can only
+be replaced by a mount or in the image. Prompts are authored fresh for this
+project.
 
 ### Vigilant mode
 
@@ -362,9 +373,16 @@ before this feature.
 ### Model strategy
 
 Each phase resolves its model independently: per-phase override → strategy preset →
-job default. Presets: `quality-first` (default; one strong model everywhere),
-`cost-optimized` (strong model for planning only), `balanced` (strong for planning +
-review). "Strong" and "fast" tiers are just two model IDs in job config — any model
+job default. The presets are `JobConfig.STRATEGY_TIERS`, in full — which phase
+draws the strong model and which the fast one:
+
+| preset | planning | worker | review | verify | reflect |
+|--------|----------|--------|--------|--------|---------|
+| `quality-first` (default) | strong | strong | strong | strong | strong |
+| `cost-optimized` | strong | fast | fast | fast | fast |
+| `balanced` | strong | fast | strong | fast | strong |
+
+"Strong" and "fast" tiers are just two model IDs in job config — any model
 pi can reach is valid in either slot. The engine sets the model per-iteration via
 pi's model selection flag/env on the subprocess.
 
@@ -400,24 +418,31 @@ With `reflect` absent/`false` (the default), no extra iteration runs at all —
 
 ## 3. State model
 
-All run state lives in `/run` inside the container, which is **always a host
+All run state lives in `/run/ralphd` inside the container (the engine's
+`RALPHD_RUN_DIR`, `engine/config.py: RUN_DIR`), which is **always a host
 bind-mount** of `~/.ralphd/runs/<run-id>/`. This is what makes history survive the
 container and lets the CLI read state even when the container is dead.
 
 ```
-~/.ralphd/runs/<run-id>/          # mounted at /run in the container
-├── job.json            # immutable job config as launched (redacted: no secrets)
+~/.ralphd/runs/<run-id>/          # mounted at /run/ralphd in the container
 ├── status.json         # engine-maintained: phase, iteration, approach, verdict
+├── host.json           # host-side facts ralphctl recorded: apiUrl, container,
+│                       #   workspace path(s), network, resolved image
 ├── prd.md              # original PRD
 ├── composite-prd.md    # approach ≥2 only
 ├── tasks.json          # task state (source of truth)
 ├── .tasks-last-good.json # fallback copy, written ONLY when a read of tasks.json fails
 ├── notes.md            # agent handoff notes, ≤50 lines enforced by prompt
 ├── review-findings.md  # written by failed reviews
+├── vigilant-verified.json # task ids that have passed a verify iteration
+├── operator-termination.json # what the operator asked for (abort/interrupt)
+├── .lock               # the engine's exclusive flock (self-protection, below)
 ├── steering/           # steering inbox: 001-*.md, 002-*.md …
+│   └── .consumed.json  # which of them an iteration has already been given
 ├── iterations/         # per-iteration record
 │   └── 0007/
 │       ├── meta.json   # phase, model, start/end, exit code, signal seen, usage
+│       ├── prompt.md   # the exact prompt this iteration was given
 │       └── output.jsonl# full agent transcript (pi session log)
 ├── approaches/         # archived tasks.json/notes.md per finished approach
 ├── artifacts/          # anything the agent is told to persist (reports, screenshots)
@@ -508,7 +533,7 @@ and write nothing at all. The two alternatives were considered and rejected: an
 engine-maintained atomic mirror is a second source of truth, and telling an LLM
 to write atomically is unenforceable (readers would still have to cope).
 
-The **workspace** (`/workspace`) is separate from `/run`: it is the repo checkout the
+The **workspace** (`/workspace`) is separate from `/run/ralphd`: it is the repo checkout the
 agent edits. Two modes, chosen per job:
 
 - `--workspace <host-dir>` — bind-mount an existing checkout (preferred; the
@@ -780,7 +805,7 @@ Everything the job needs is mapped in by the CLI. Three mount points:
 
 | Mount | Contents | Writable at runtime |
 |-------|----------|--------------------|
-| `/run` | run state (always host-mounted) | engine-owned |
+| `/run/ralphd` | run state (always host-mounted) | engine-owned |
 | `/workspace` | code | agent-owned |
 | `/config` | prompts overrides, skills, creds, pi settings | via API (`/config/*`) |
 
@@ -789,6 +814,8 @@ Everything the job needs is mapped in by the CLI. Three mount points:
 ```
 /config/
 ├── job.yaml            # job config (PRD ref, budgets, mode flags, model strategy)
+├── llm-wiring.json     # `--llm`-derived env/mounts, so `resume` reproduces them (§9)
+├── env-wiring.json     # resolved --forward-env/--llm-env/--env pairs (§9)
 ├── prompts/            # optional phase-prompt overrides
 ├── skills/             # agent skills, exposed to pi as workspace skills
 ├── creds/              # operator-prepared credential env files + extras
@@ -797,6 +824,9 @@ Everything the job needs is mapped in by the CLI. Three mount points:
 │   └── setup.sh        # optional: run once before first iteration
 └── pi/                 # pi settings fragments (models.json, provider config)
 ```
+
+Both `*-wiring.json` files are mode `0600` and never served by any HTTP route;
+the rest of `/config` is the operator's own input.
 
 - **Skills**: directories of instruction files (`SKILL.md` convention), forwarded
   **explicitly and scoped per job** — `ralphctl start --skills <dir>` (repeatable),
@@ -828,7 +858,8 @@ Everything the job needs is mapped in by the CLI. Three mount points:
   the job loop starts) places them at **`~/.creds/*.env`** (agent-owned, mode
   `0600`) inside the container -- not the container entrypoint script, so that
   secret handling stays inside the same process that already guarantees
-  values never reach `/run`, `events.jsonl`, stdout, or `job.json` (only file
+  values never reach `/run/ralphd`, `events.jsonl`, stdout, or the job config
+  (only file
   *names* are ever logged).
   **The agent knows where to look**: every phase prompt lists the available cred
   file names and the usage rule — *source the file you need, in the shell where
@@ -838,7 +869,7 @@ Everything the job needs is mapped in by the CLI. Three mount points:
   non-env extras keep their conventional placement (`gitconfig`,
   `git-credentials`, `netrc`, `ssh/`), and an executable `setup.sh` still runs
   once at container start as the escape hatch. Nothing credential-shaped is
-  ever written to `/run` (which is host-visible history) or logged.
+  ever written to `/run/ralphd` (which is host-visible history) or logged.
   **The prompt-level rule that makes this hold in practice**: every tool
   call's arguments and stdout land verbatim in the run's iteration
   transcript, so the creds note (`loop.py:_creds_note()`) and the worker
@@ -865,7 +896,7 @@ Everything the job needs is mapped in by the CLI. Three mount points:
 
 In real containers `/config` is mounted **read-only** (`ro`) from the host, by
 design: the operator-provided config is immutable job input, and the run dir
-(`/run`) must never carry credential-shaped content. But the runtime
+(`/run/ralphd`) must never carry credential-shaped content. But the runtime
 config-CRUD API (`/config/*` PUT/DELETE routes — skills, creds, prompts, llm)
 needs *somewhere* writable to land mutations that must survive for the rest
 of the job and be visible to the next iteration.
@@ -985,7 +1016,14 @@ corrupted run state.
   engine require `Authorization: Bearer <t>` on every route; combine with
   `--api-bind 0.0.0.0` for LAN/remote access. The CLI stores the token in the run
   registry (`~/.ralphd/runs/<id>/.api-token`, mode 0600) and sends it automatically.
-- `job.json` is stored redacted (no secret values). The creds API, however, is
+- The job config itself (`<config-dir>/job.yaml`) is written **verbatim**, not
+  redacted at rest: it is a private host-side file (like `llm-wiring.json` /
+  `env-wiring.json` next to it) that only ever reaches the container as a
+  read-only mount, and no HTTP route serves it. Redaction happens where it is
+  *read out* — `ralphctl docs <run> job` and the hub's document dialog mask by
+  key name and scrub by value through `engine/redact.py: redact_job_yaml()`, so
+  a secret an operator put in e.g. `on_complete_cmd` is not printed or
+  screenshotted. The creds API, however, is
   full CRUD **including read-back** — by design, the API bearer token *is* the
   job's credential boundary. Protect it accordingly: keep the default
   loopback-only bind unless the token is set, and treat `--api-bind 0.0.0.0`
@@ -1163,22 +1201,37 @@ is bidirectional and immediate.
 
 ```
 ~/.ralphd/
-├── config.yaml         # defaults: image, ports, on_complete, default llm profile
-├── llm-profiles/       # named LLM profiles (see llm-profiles.md)
-└── runs/<run-id>/      # one dir per job, bind-mounted as /run (above)
+├── config.yaml          # registry-wide defaults (`ralphctl config`): image,
+│                        #   on_complete, default_llm_profile, network, …
+├── llm-profiles/        # named LLM profiles (see llm-profiles.md)
+├── templates/<name>/    # optional job templates (`start --template`)
+├── configs/<run-id>/    # per-job config dir, bind-mounted read-only as /config:
+│                        #   job.yaml, prompts/, skills/, creds/, pi/,
+│                        #   llm-wiring.json, env-wiring.json (§5, §9)
+└── runs/<run-id>/       # one dir per job, bind-mounted as /run/ralphd (above)
 ```
 
 Run IDs are generated (`adjective-animal-HHMM` style) or supplied with `--run-id`.
 `ralphctl runs` lists history by scanning `runs/*/status.json`; live status merges
-in the container API when the container is up. `ralphctl watch` renders a TUI:
-task table, current phase/iteration, tail of agent output, budget gauge.
+in the container API when the container is up. `ralphctl watch` streams that
+run's events as they arrive (one line per event, NDJSON with `--json`) — not a
+TUI: the host side ships no curses/TUI framework at all.
 `ralphctl ui [--port N]` (PRD reqs 21-22) serves the same registry over a
-stdlib-only HTTP server (`http.server`; no `fastapi`/`uvicorn` on this path):
-`GET /api/runs` (run list) and `GET /api/runs/<id>` (`/logs`, `/steer`) proxy
-to each run's live container API when reachable and fall back to the on-disk
-`status.json`/`tasks.json` snapshot otherwise, so a dead run degrades
-gracefully instead of erroring (see [cli.md](cli.md)). The static bundle
-served at non-`/api` paths is still pending (v0.3, task 034).
+stdlib-only HTTP server (`http.server`; no `fastapi`/`uvicorn` on this path).
+Its JSON surface is a family of `GET /api/runs[/<id>[/…]]` reads — run list,
+run detail, log tail, PRD, steering history, state documents, artifacts, one
+iteration, the fault explanation, the cost breakdown — plus two proxies
+(`POST .../steer`, `POST .../retry`) and one mutation (`DELETE /api/runs/<id>`,
+terminal runs only). Every endpoint is enumerated with its exact payload in
+[cli.md](cli.md#ralphctl-ui---port-n---bind-addr); the rule they share is that
+the two live-answer reads (log tail, PRD, steering) proxy each run's container
+API when reachable and fall back to the on-disk
+`status.json`/`tasks.json`/transcript snapshot otherwise, so a dead run degrades
+gracefully instead of erroring, while the rest are on-disk by design (the files
+they read are the engine's own atomic writes, so there is nothing better a live
+container could say). The static bundle served at non-`/api` paths
+(`src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css`, shipped in the
+wheel, no build step) landed in v0.3 task 034.
 
 **Shared server-side log renderer (task 014).** `GET /api/runs/<id>/logs`
 does not proxy the run's raw NDJSON `/logs` transcript verbatim to the
@@ -1203,7 +1256,11 @@ exactly one `[thinking…]` line.
 
 ## 8. Docker image
 
-`ghcr.io/…/ralphd` (multi-arch), containing: Python 3.12 (engine), Node 22 +
+The default job image is **built locally from this checkout** and tagged
+`ralphd:<hash>` (`cli/image.py: IMAGE_REPO`, below) — v0.6 publishes no image to
+any registry, so there is nothing to pull; see [roadmap.md](roadmap.md) for the
+deferred publishing work. `container/Dockerfile` builds it, containing: Python
+3.12 (engine), Node 22 +
 a **pinned** pi CLI version (npm silently resolves an old pi when the node
 engine requirement isn't met — pin both, upgrade deliberately),
 git, ripgrep, curl/jq, build essentials, and a non-root `agent` user. Deliberately

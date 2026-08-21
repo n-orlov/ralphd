@@ -4,7 +4,7 @@ $HOME/.creds (and conventional extras), entirely inside the engine.
 This replaces the shell placement that used to live in
 container/entrypoint.sh -- doing it here means it happens under the same
 process that already promises never to leak secret *values* into the run
-dir, events, stdout, or job.json: we only ever log file *names*, never
+dir, events, stdout, or the job config: we only ever log file *names*, never
 contents, and we never call RunDir.emit()/print() with file contents.
 """
 
