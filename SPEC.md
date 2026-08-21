@@ -805,7 +805,8 @@ engine — and ends the current iteration and nothing else. Abort is sticky:
 `abort(reason)` records the reason, interrupts the agent, and makes
 `budget_left()` false from then on, so every phase's existing "out of budget" exit
 path unwinds the run to terminal `aborted` with `reason` set. `SIGTERM`/`SIGINT`
-to the engine itself become `abort("signal ...")`. Shutdown follows `on_complete`:
+to the engine itself become `abort_on_signal(sig)` — the same unwinding, but a
+different *termination class* (below). Shutdown follows `on_complete`:
 `exit` tears the container down, `idle` keeps the API alive until the container is
 stopped or `POST /shutdown` arrives — an explicit debugging opt-in.
 
@@ -819,8 +820,25 @@ resurrected.** Three mechanisms enforce it:
   episode fights an operator who asked the run to stop — the agent reports an
   operator `SIGINT` with the same bare error text a provider-side stream abort
   produces, and only this flag tells them apart.
-- Host-side auto-resume buckets a run with that file as `operator_terminated`
-  and refuses to resume it.
+- Host-side auto-resume buckets a run with an **operator-class** marker as
+  `operator_terminated` and refuses to resume it.
+
+**A self-inflicted termination is a different class, and is recoverable.** The
+marker carries `class`: `operator` when the abort was claimed through
+`POST /abort` (`ralphctl abort`, `ralphctl stop`, the hub's button), and
+`self-inflicted` when a signal reached the engine with no such request behind it
+— the agent `pkill`ing its own supervisor from inside the container being the
+motivating case. A process cannot see who signalled it, so the class is decided
+by **attribution, not provenance** (`state.TERMINATION_CLASS_SELF`); a marker
+with no `class` field at all (every marker written before v0.7) reads as
+`operator`, the only default that cannot resurrect a run somebody killed on
+purpose. The self-inflicted record also carries `evidence` — the last tool call
+before the signal, read back out of `iterations/NNNN/output.jsonl` — and a
+`reason` that says all of that instead of a bare `signal 15`, both mirrored into
+`status.json`'s `termination` field (§5.2) for every reader that is not
+auto-resume. The residual: a raw `docker stop` by an operator who bypassed
+`ralphctl` is indistinguishable from a self-inflicted signal and is therefore
+resumable.
 
 ## 5. Data model
 
@@ -900,6 +918,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `modelRaw` | string \| null | the provider's own id when it differs from the resolved reference (a gateway-local spelling); `null` when it does not |
 | `verdict` | string \| null | `verified` \| `unverified`; `null` until terminal |
 | `reason` | string | why a non-succeeded run ended, or the grace-review note |
+| `termination` | object \| null | present once the run was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null` |
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
 | `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md` |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
@@ -2369,6 +2388,10 @@ requested. Without it, a container killed mid-abort — `SIGKILL`, a forced
 stop, a host reboot — leaves a run dir indistinguishable from a crash, and the
 sweep would helpfully restart the job the operator just killed. The marker
 makes that impossible, and such runs land in the `operatorTerminated` bucket.
+The refusal asks `is_operator_termination()`, not "does the file exist": a
+**self-inflicted** termination (§4.6) is an ordinary zombie from here on and is
+resumed like any other, which is what makes the agent accidentally killing its
+own supervisor a recoverable event rather than a permanent one.
 
 ## 9. HTTP API
 

@@ -532,6 +532,28 @@ Human output also renders (task 003):
   summary card (mirroring the `.steering-warning` banner above), so an
   operator watching a run through the hub sees why it failed without
   fetching `--json`.
+- `termination:` (task 015, #46) -- shown only for a run a **signal** ended with
+  no operator abort behind it, i.e. `status.json`'s `termination.class` is
+  `self-inflicted`:
+
+  ```
+  termination: self-inflicted (signal 15) — no operator abort was recorded; eligible for auto-resume
+               last tool call before the signal: bash({"command": "pkill -f
+               ralphd-engine"}) in iteration 37
+               (iterations/0037/output.jsonl)
+  ```
+
+  The evidence line is the last tool call recorded in the run's transcripts
+  (`iterations/NNNN/output.jsonl`), which for the motivating case -- the agent
+  killing its own supervisor from inside the container -- is the answer itself.
+  This exists because the bare `reason: signal 15` this class used to print told
+  an operator nothing they could act on; the `reason` now says the same thing in
+  words, and this line names the class and the evidence as fields. An
+  **operator** abort prints no such line: `reason: aborted by operator` already
+  says it, and the operator is the one who asked. So every run that is not a
+  self-inflicted termination keeps byte-identical human output. A self-inflicted
+  termination is also *eligible for auto-resume*, unlike an operator abort --
+  see `doctor --fix` below.
 - `tasks:` -- a one-line summary of the `tasks` counts dict, e.g.
   `7/7 completed` when everything is done, or `5/7 completed (1
   in-progress, 1 pending)` when it is not, instead of a raw JSON dump of
@@ -2066,14 +2088,30 @@ whose container *vanished on its own*. Two carve-outs make that true:
   container came back) between the registry scan and the restart is reported
   as `recovered` and left alone;
 * `ralphctl abort` and `ralphctl stop` record the operator's intent in the run
-  dir as `operator-termination.json` (`{action, at, reason, source}`; the
+  dir as `operator-termination.json` (`{action, at, reason, source, class}`; the
   engine writes the same file the moment `POST /abort` arrives, so an abort
   whose container dies before it can write a terminal state is still marked).
-  A run carrying that marker is reported under `operatorTerminated` with `not
-  auto-resumed: terminated by the operator …` and is never restarted, even
-  with `auto_resume` on. `ralphctl stop --force` is the sharp case it exists
-  for: it removes the container while `status.json` may still say `running`,
-  which on disk is otherwise indistinguishable from a crash.
+  A run carrying that marker with `class: "operator"` is reported under
+  `operatorTerminated` with `not auto-resumed: terminated by the operator …`
+  and is never restarted, even with `auto_resume` on. `ralphctl stop --force`
+  is the sharp case it exists for: it removes the container while `status.json`
+  may still say `running`, which on disk is otherwise indistinguishable from a
+  crash.
+
+**But a self-inflicted kill IS resumed** (task 015, #46). A `SIGTERM`/`SIGINT`
+that reaches the engine with no `POST /abort` behind it is recorded with
+`class: "self-inflicted"` instead, and the refusal above asks the class, not
+merely whether the file exists. The case this is for: an iteration that
+`pkill`s its own supervisor, or takes down the job container from a sibling it
+started -- an accident, and precisely what self-recovery should recover from,
+whereas the pre-v0.7 reading stranded such a run forever. A marker with no
+`class` field (written before v0.7) reads as `operator`, so an old run dir can
+only ever be treated more conservatively, never less. Two consequences worth
+knowing: the crash-loop guard below is what stops a run that kills itself every
+time from looping, and **a raw `docker stop` of a job container** (bypassing
+`ralphctl stop`, which posts `/abort` first) is indistinguishable from a
+self-inflicted signal and will therefore be resumed -- use `ralphctl stop` if you
+mean it to stay stopped.
 
 **Crash-loop guard.** A run whose container dies seconds after every resume
 (broken image, missing credential, corrupt run dir) must not be resurrected

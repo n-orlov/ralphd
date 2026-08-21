@@ -385,16 +385,64 @@ TERMINAL_STATES = ("succeeded", "failed", "aborted")
 # patch would race the engine and could be silently clobbered.
 OPERATOR_TERMINATION_FILE = "operator-termination.json"
 
+# Task 015 (#46): WHICH termination this marker records. Until v0.7 the file's
+# mere existence meant "an operator did this", and `LoopSupervisor.abort()`
+# wrote it for *every* way a run can be told to stop -- including the engine's
+# own SIGTERM/SIGINT handler. So a run shot from inside its own container (the
+# agent's `pkill -f ralphd-engine`, an OOM-adjacent `docker stop` of the job
+# from a sibling it started) recorded `{"action": "abort", "reason":
+# "signal 15", "source": "engine"}` and became permanently unrecoverable: the
+# never-resurrect guarantee below is exactly right for a run the operator
+# killed and exactly wrong for one killed by accident from inside, which is
+# the case where resuming is the whole point of auto-resume.
+#
+# What the engine can and cannot establish, honestly: a process cannot see who
+# sent it a signal (no sender uid/pid is available to an asyncio signal
+# handler), so the class is decided by ATTRIBUTION, not by provenance -- an
+# abort somebody claimed through the API (`POST /abort`, i.e. `ralphctl abort`
+# and `ralphctl stop`, and the hub's abort button) is `operator`; a bare signal
+# nobody claimed is `self-inflicted`. `ralphctl stop --force`/`rm --force`
+# reach the same verdict from the other side: they POST /abort first and then
+# overwrite this marker host-side (source `cli`), so the operator's intent wins
+# whichever half of the race lands last. Residual, documented in docs/cli.md:
+# a raw `docker stop` of a job container by an operator who bypassed ralphctl
+# entirely is indistinguishable from a self-inflicted signal and is therefore
+# resumable -- the deliberate trade, since the alternative (the pre-v0.7
+# reading) permanently strands every accidental self-kill.
+TERMINATION_CLASS_OPERATOR = "operator"
+TERMINATION_CLASS_SELF = "self-inflicted"
+TERMINATION_CLASSES: tuple[str, ...] = (TERMINATION_CLASS_OPERATOR,
+                                        TERMINATION_CLASS_SELF)
+# How much of a tool call's arguments the evidence keeps, and how much of a
+# transcript's tail is scanned for it: a transcript can be tens of MB, and
+# the last tool call is by construction at its end.
+TERMINATION_EVIDENCE_ARGS_MAX = 200
+TERMINATION_EVIDENCE_TAIL_BYTES = 256 * 1024
+
 
 def record_operator_termination(run_root: Path, action: str,
-                                reason: str = "", source: str = "") -> dict:
+                                reason: str = "", source: str = "",
+                                termination_class: str =
+                                TERMINATION_CLASS_OPERATOR,
+                                evidence: dict | None = None) -> dict:
     """Write OPERATOR_TERMINATION_FILE into a run dir. `action` is the
     operator verb ("abort"/"stop"), `source` says who recorded it
     ("engine"/"cli"). Idempotent: a later record overwrites an earlier one
     (the most recent operator intent is the one that counts). Missing run
-    dir -> no-op, so callers never have to guard."""
+    dir -> no-op, so callers never have to guard.
+
+    Task 015 (#46): `termination_class` is one of TERMINATION_CLASSES and
+    defaults to `operator`, so every pre-existing caller keeps its exact
+    meaning; `evidence` is the optional dict a self-inflicted termination
+    carries (see `last_tool_call`). The class is stored under `"class"` and
+    read back through `termination_class()`, which is the ONE place the
+    back-compat reading of a marker without one lives.
+    """
     doc = {"action": action, "at": utcnow(),
-           "reason": reason or "", "source": source or ""}
+           "reason": reason or "", "source": source or "",
+           "class": termination_class or TERMINATION_CLASS_OPERATOR}
+    if evidence:
+        doc["evidence"] = evidence
     if not run_root.is_dir():
         return doc
     atomic_write_json(run_root / OPERATOR_TERMINATION_FILE, doc)
@@ -408,6 +456,112 @@ def read_operator_termination(run_root: Path) -> dict | None:
     if not isinstance(doc, dict) or not doc.get("action"):
         return None
     return doc
+
+
+def termination_class(doc: dict | None) -> str | None:
+    """Which class a termination marker records (task 015, #46): one of
+    TERMINATION_CLASSES, or None for no marker at all.
+
+    A marker with no `class` field -- every marker written before v0.7 -- reads
+    as `operator`, and so does any unrecognized value. That default is the safe
+    one in the only direction that matters: it can only ever *refuse* to
+    resurrect a run, never resurrect one the operator killed.
+    """
+    if not isinstance(doc, dict) or not doc.get("action"):
+        return None
+    cls = doc.get("class")
+    if cls not in TERMINATION_CLASSES:
+        return TERMINATION_CLASS_OPERATOR
+    return cls
+
+
+def is_operator_termination(doc: dict | None) -> bool:
+    """True when this marker records a termination an operator asked for --
+    THE question auto-resume's never-resurrect refusal asks (task 015, #46).
+    False for no marker and for a self-inflicted one, which stays eligible for
+    recovery."""
+    return termination_class(doc) == TERMINATION_CLASS_OPERATOR
+
+
+def _transcript_tail_lines(path: Path) -> list[str]:
+    """The last TERMINATION_EVIDENCE_TAIL_BYTES of an NDJSON transcript, split
+    into whole lines (a partial first line is dropped). Never raises."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as fh:
+            if size > TERMINATION_EVIDENCE_TAIL_BYTES:
+                fh.seek(size - TERMINATION_EVIDENCE_TAIL_BYTES)
+                fh.readline()  # discard the partial line we landed inside
+            blob = fh.read()
+    except OSError:
+        return []
+    return blob.decode("utf-8", "replace").splitlines()
+
+
+def last_tool_call(run_root: Path) -> dict | None:
+    """The most recent tool call this run's transcripts recorded, or None
+    (task 015, #46).
+
+    The evidence a self-inflicted termination carries: "signal 15" tells an
+    operator nothing, while "the last thing this run did before the signal was
+    `bash` with this command line" is usually the whole answer -- the agent's
+    own `pkill`/`docker stop`/`kill` is right there in the arguments. It is
+    already on disk in the iteration's transcript (`log_merge`'s
+    `iteration_output_path`, the one place that file's name is spelled), so this
+    reads it rather than asking the runner to remember anything.
+
+    Returns ``{"iteration", "tool", "args", "transcript"}``: the iteration
+    number, the tool name, its arguments rendered as JSON and truncated to
+    TERMINATION_EVIDENCE_ARGS_MAX chars (and run through `scrub_text`, because
+    a tool call's arguments can contain a credential value and this ends up on
+    disk in two documents), and the run-relative transcript path the evidence
+    came from. Iterations are searched newest-first and only
+    `tool_execution_start` events carry arguments (docs/json.md), so this is
+    the last *started* call -- which is the one that was in flight when the
+    signal arrived. Absent/unreadable/junk transcripts yield None: evidence is
+    a nice-to-have, never a reason for the abort path to raise.
+    """
+    for number in reversed(iteration_numbers(run_root)):
+        path = iteration_output_path(run_root, number)
+        for line in reversed(_transcript_tail_lines(path)):
+            line = line.strip()
+            if not line or "tool_execution_start" not in line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict) or \
+                    event.get("type") != "tool_execution_start":
+                continue
+            args = event.get("args") or event.get("arguments") or {}
+            try:
+                rendered = json.dumps(args, sort_keys=True)
+            except (TypeError, ValueError):
+                rendered = str(args)
+            rendered = scrub_text(rendered)
+            if len(rendered) > TERMINATION_EVIDENCE_ARGS_MAX:
+                rendered = rendered[:TERMINATION_EVIDENCE_ARGS_MAX] + "..."
+            return {"iteration": number,
+                    "tool": str(event.get("toolName") or "?"),
+                    "args": rendered,
+                    # run-relative, and spelled by the module that owns the
+                    # file name rather than a second time here
+                    "transcript": str(path.relative_to(run_root))}
+    return None
+
+
+def format_last_tool_call(evidence: dict | None) -> str:
+    """One line naming the evidence `last_tool_call` found, for a human-facing
+    `reason`/status line (task 015, #46). Empty string when there is none --
+    a run killed before its first tool call has nothing to show, and saying
+    "unknown" would be noise."""
+    if not isinstance(evidence, dict) or not evidence.get("tool"):
+        return ""
+    return (f"last tool call before the signal: {evidence['tool']}"
+            f"({evidence.get('args') or ''}) in iteration "
+            f"{evidence.get('iteration')} "
+            f"({evidence.get('transcript')})")
 
 
 # Task 036 (#20 H4): the host's record of WHICH IMAGE a run's container was

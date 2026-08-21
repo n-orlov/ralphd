@@ -96,6 +96,7 @@ keys with no section of their own below:
 | `updatedAt` | last write of any field — every `update_status` stamps it |
 | `endedAt` | the terminal write; `null` while the run is still going |
 | `reason` | why a non-succeeded run ended, or the note an off-budget grace review left |
+| `termination` | present once the run was told to stop — see below |
 | `graceReview` | present and `true` when an off-budget grace review verified the run |
 | `unconsumedSteering` | steering files still pending at the terminal write |
 | `steering` | live counts — `{pending, consumed}` over `steering/NNN-*.md`, added by the API rather than stored |
@@ -287,6 +288,46 @@ A failed reflection **never** changes the run's `state`, `verdict` or
 `reason` — the job is already over when reflect runs. Surfaced by
 `ralphctl status` and the hub run-detail card, and emitted as a
 `reflect_done` event.
+
+#### `termination`
+
+Absent from `status.json` (and `null` in `GET /status`) unless something told
+this run to stop. Then it says **which class** of termination it was:
+
+```json
+"termination": {
+  "class": "self-inflicted", "action": "abort", "signal": "15",
+  "at": "2026-08-18T09:31:20Z",
+  "reason": "self-inflicted termination: signal 15 ended the engine with no operator abort recorded, ...",
+  "evidence": {"iteration": 37, "tool": "bash",
+               "args": "{\"command\": \"pkill -f ralphd-engine\"}",
+               "transcript": "iterations/0037/output.jsonl"}
+}
+```
+
+`class` is `"operator"` when the abort was asked for through `POST /abort`
+(which is what `ralphctl abort`, `ralphctl stop` and the hub's abort button all
+do), and `"self-inflicted"` when a `SIGTERM`/`SIGINT` reached the engine with no
+such request behind it — an iteration killing its own supervisor from inside the
+container being the case this exists for. A process cannot see who signalled it,
+so the class is decided by *attribution*: an abort somebody claimed versus a
+signal nobody did. `signal` is the signal number as a string, or `null` for an
+abort that arrived through the API.
+
+`evidence` is the last tool call the run's transcripts recorded before the
+signal, read back out of `iterations/NNNN/output.jsonl` — `null` when there is
+none (killed before its first tool call) and, for an operator abort, nothing
+worth showing. Arguments are truncated and pass through the same secret
+scrubbing as `events.jsonl`.
+
+The class is load-bearing rather than cosmetic: host-side auto-resume refuses to
+resurrect an **operator**-class termination (`ralphctl doctor --fix`, see
+[cli.md](cli.md)) and resumes a self-inflicted one like any other crashed
+container. The same record, with the same fields, is written into the run dir as
+`operator-termination.json` before the loop unwinds, so a container that dies
+mid-abort still leaves the class on disk; a marker with no `class` field (any
+run dir written before v0.7) reads as `operator`. `ralphctl status` prints a
+`termination:` line for the self-inflicted class only.
 
 ### `GET /tasks`
 Full `tasks.json`, plus the same `tasksStale`/`tasksSource` pair `GET /status`
