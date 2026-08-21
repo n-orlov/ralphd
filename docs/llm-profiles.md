@@ -76,7 +76,8 @@ Forward the host's existing LLM setup into the container:
    on the host and injects the literal resolved value into the copied
    `models.json` (mode 0600, in the job's config dir — never the run dir).
    Trade-off: the value is frozen at start time; for long jobs with
-   short-lived tokens, rotate mid-run via `PUT /config/llm` / `ralphctl llm set`.
+   short-lived tokens, rotate mid-run via the container API's
+   `PUT /config/llm` (see "Mid-run rotation" below).
 3. Forward ONLY standard, vendor-documented credential env vars when set:
    `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
    `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`,
@@ -129,7 +130,7 @@ pi's Bedrock provider uses the standard AWS SDK credential chain, so mounting
 `~/.aws` (config + SSO/credential cache) plus region is sufficient. Works with
 static keys, SSO sessions, and assumed roles; token refresh caveats (e.g. expired
 SSO mid-run) are surfaced as iteration failures and fixable live via
-`ralphctl llm set`.
+`PUT /config/llm`.
 
 ### Generic OpenAI/Anthropic-compatible gateway (endpoint + API key)
 
@@ -153,12 +154,13 @@ pi:
 
 This is the shape for corporate AI gateways (endpoint URL + rotating API key):
 point `baseUrl` at the gateway, pick the wire API it speaks, list the model IDs it
-fronts. Key rotation mid-run: `ralphctl llm set <run-id> --profile gateway`
-re-resolves `${cmd:…}` and pushes the fresh key via `PUT /config/llm`.
+fronts. Key rotation mid-run: re-resolve the profile on the host (`ralphctl
+llm show gateway` prints it redacted) and push the fresh key with
+`PUT /config/llm`.
 
 ## Mid-run rotation
 
-`PUT /config/llm` (wrapped by `ralphctl llm set`) replaces the container's LLM env
+`PUT /config/llm` replaces the container's LLM env
 and pi fragments atomically; the next iteration's `pi` process picks them up. Use
 cases: expired gateway keys, expired SSO, switching a stuck job to a different
 model/provider without losing loop state.

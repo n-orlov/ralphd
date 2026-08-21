@@ -2,8 +2,9 @@
 
 `ralphctl start --llm <profile>` resolves a profile *once*, on the host, at
 container start (docs/llm-profiles.md); this module is the *mid-run* path:
-`PUT /config/llm` (wrapped by `ralphctl llm set`) lets the operator rotate an
-expired key / switch endpoints without restarting the container.
+`PUT /config/llm` (called directly -- there is no `ralphctl llm set` wrapper)
+lets the operator rotate an expired key / switch endpoints without restarting
+the container.
 
 Two pieces, both container-local -- never the run dir, never events.jsonl,
 never job.json (mirrors creds.py's secrecy discipline):

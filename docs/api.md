@@ -661,8 +661,8 @@ current inventory at iteration start). Credential values never appear in
 ### `PUT /config/llm`
 Body: `{"env": {"KEY": "value", ...}, "pi": { ...models.json fragment... }}`.
 Replaces the LLM endpoint configuration; the engine re-merges pi settings and
-applies env to subsequent iterations. Used by `ralphctl llm set` for mid-run
-endpoint/key rotation. `204`.
+applies env to subsequent iterations. Mid-run endpoint/key rotation, called
+directly: there is no `ralphctl llm set` wrapper in v0.6 (docs/cli.md). `204`.
 
 ## Versioning
 
