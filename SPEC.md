@@ -336,6 +336,63 @@ docker run -d --name ralphd-<run-id> --init \
   touching any other file. Because a `flock` is kernel-held and process-lifetime, a
   `SIGKILL`ed engine leaves no stale lock and a fresh one can start immediately.
 
+#### The job image
+
+Until v0.6 `container/Dockerfile` existed and nothing built it: `--image` only
+ever *selected* a tag somebody had built by hand, so a run could quietly execute
+a ten-day-old engine against today's source. The image is now **a function of
+its inputs**, resolved and built by `ralphctl start` itself. Three tag
+namespaces, because the three hashes are not comparable and a staleness check
+must not confuse them:
+
+| reference | means | hash covers |
+|---|---|---|
+| `ralphd:<hash>` | the default job image, built from this checkout | `container/`, `pyproject.toml`, `src/ralphd/` (`cli/image.py: IMAGE_INPUTS`) |
+| `ralphd-base:<hash>` | an operator's own Dockerfile, built as a **base** | that Dockerfile's name plus its whole build context |
+| `ralphd-derived:<hash>` | the engine and `pi` layered onto a base | the base reference, the image inputs and the generated recipe |
+
+- **A supplied image or Dockerfile is an ingredient, never the job image.** It
+  has no `ralphd-engine` in it, so `render_derived_dockerfile()` generates a
+  recipe layering the engine and `pi` — at the version `container/Dockerfile`
+  pins, copied rather than restated — onto it, and the derived tag is what runs.
+  The base itself is neither probed nor run.
+- **Three keys, one unit.** `image` (pin a finished image: no hash, no build),
+  `base_image` and `dockerfile` are three answers to one question, so the most
+  specific level that answers *any* of them settles all three — command line,
+  then the `--template`'s `job.yaml`, then the registry `config.yaml`, then
+  "build `ralphd:<hash>` from source". Two of the three at one level is a usage
+  error (§10.7), since there is nothing to rank them by.
+- **Build on a cache miss only.** The tag is `HASH_LENGTH` hex of a content
+  digest over the inputs (`hash_image_inputs()`), so each build is one
+  `docker image inspect` and a build only when that tag is absent; a repeat
+  `start` on unchanged sources is a lookup and nothing else, and nothing is ever
+  tagged `latest`.
+- **Recorded, then reproduced.** `host.json` carries `IMAGE_RECORD_KEYS` — the
+  `image` reference, the daemon's observed `imageId`, `imageSource`
+  (`pinned` \| `cached` \| `built` \| `unhashable` \| `recorded` \| `default`),
+  the `imageHash` it was tagged by, and `imageBase`/`imageDockerfile` for a
+  derived image. That record is what lets `GET /status` and `ralphctl status` say
+  which engine a run is *actually* on, and lets `resume` reproduce the image
+  instead of re-resolving it from sources that have since changed (§10.2).
+- **Staleness has four answers, not two.** `ralphctl doctor` reports `fresh`,
+  `stale`, `missing` or `unknowable` — the last for a pin, for either of the
+  other two namespaces, and for an install with nothing to hash — because a
+  reference that cannot be compared to a source hash must never be reported as
+  up to date. The same verdict is applied per live run against the image its own
+  `host.json` records, which is the case the mechanism exists for: a job
+  executing an engine that predates the fix it is being watched for.
+- **An install with no checkout next to it still hashes.** The wheel ships the
+  image inputs as package data (`ralphd/_image/`, `cli/image.py:
+  PACKAGED_FILES`) and a build stages them plus the *installed* package into a
+  temporary context laid out exactly like a checkout, producing the same
+  `ralphd:<hash>` a checkout of that version builds. `doctor` names which of the
+  two it found as `imageStaleness.inputs` (`checkout` \| `packaged` \| `none`);
+  with neither, `start` warns and staleness stays `unknowable`.
+- **`cli/image.py` is docker-free by construction.** It owns the declarative
+  half — which files are inputs, what they hash to, the text of the generated
+  recipe — while running builds, cache lookups and precedence live in
+  `cli/main.py` (§3.5).
+
 ### 3.3 Host layout
 
 Everything host-side lives under one directory, `~/.ralphd/`, overridable in full via
@@ -358,7 +415,7 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 │   ├── vigilant-verified.json   # engine-owned record of tasks that passed verify
 │   ├── operator-termination.json# durable record of an operator abort/stop
 │   ├── auto-resume.json         # crash-loop guard: attempts, lastAt, maxAttempts
-│   ├── host.json                # container id, port, apiUrl, image, network, workspace
+│   ├── host.json                # container id, port, apiUrl, the image record (§3.2), network, workspace
 │   └── .api-token (0600) · .lock
 └── configs/<run-id>/            # bind-mounted at /config, read-only
     ├── job.yaml                 # the job config as launched
@@ -469,22 +526,24 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
 | `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); phase→model resolution via `STRATEGY_TIERS`. |
-| `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, and the shared duration/time/cost formatters both sides render with. |
+| `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
 | `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, grace review, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
 | `src/ralphd/engine/runner.py` | `PiRunner.run()` + `IterationResult`: spawn one `pi` process, pump and scrub its NDJSON into `output.jsonl`, parse events and usage, scan for the exact sentinels, enforce the iteration timeout and the startup-window watchdog, and kill the process group on every exit path. |
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
 | `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, or `None`, with `_INFRA_TEXT_PATTERNS` as the single reviewable signature table (one commented line per family) and the `aborted`/operator carve-out. No engine state. |
-| `src/ralphd/engine/pricing.py` | `PricingMap`: the optional host-side per-million-token rate table with gateway alias globs, used *only* when the provider quoted no price, producing a cost marked derived and never merged into `costUSD`. |
+| `src/ralphd/engine/pricing.py` | `PricingMap`: the optional host-side per-million-token rate table with gateway alias globs and declared-free patterns, used *only* when the provider quoted no usable price, producing a cost marked derived and never merged into `costUSD`. `PricingChain` layers the operator map over a built-in table so exactly one of them prices any message, and `resolve_pricing()` builds whichever of the two `price_strategy` asks for (§8.6). |
+| `src/ralphd/engine/pricing_aws.py` | The shipped AWS Bedrock rate table: canonical per-model USD/Mtok rates, a generated alias map for the gateway spellings, and a machine-readable `AS_OF` date with a `staleness()` verdict. Exposed as a `PricingMap` through `pricing_map()`, so there is one matcher rather than a second resolver, and refreshed by `tools/refresh_bedrock_rates.py`. |
 | `src/ralphd/engine/redact.py` | The mechanical secret scrubber: build the value set from env vars and placed cred files, rebuild it after any creds/llm mutation, keep it in memory only, and expose `scrub_text` to the three write/serve points. Enforces the ≥8-character floor. |
 | `src/ralphd/engine/creds.py` | `place_creds()`: `/config/creds` (plus overlay and tombstones) → `~/.creds/*.env` at `0600`, conventional extras (`gitconfig`, `git-credentials`, `netrc`, `ssh/`), and the one-shot `setup.sh` escape hatch. Logs names, never contents. |
 | `src/ralphd/engine/skills.py` | `place_skills()`: rebuild `~/.pi/agent/skills/` from scratch (symlinks) out of mounted skills, API-origin overlay skills that win over same-named mounted ones, and tombstones — cheap enough to re-run after every mutation, so skill CRUD needs no restart. |
 | `src/ralphd/engine/llm.py` | The mid-run LLM path: `PUT /config/llm` writes the env-override set to the overlay (read fresh each iteration) and deep-merges a `models.json` fragment into the file `pi` itself reads, so a rotated key applies to the next invocation. |
 | `src/ralphd/cli/main.py` | `ralphctl`: every subcommand, the `docker run` assembly for `start`/`resume`, the registry and its defaults, templates, run-id generation, the API client, `--json` output and exit codes, `logs`/`watch` streaming and `tail`-style argv preprocessing, `doctor`/`doctor --fix`/`repair`, the auto-resume opt-in and its crash-loop guard, and `AUTO_RESUME_DEFAULT` as the single default literal. |
 | `src/ralphd/cli/log_render.py` | The shared NDJSON→lines pretty renderer: iteration/phase headers, streamed assistant text, tool calls as one-liners, thinking collapsed to a single marker per block, per-iteration usage/cost footers, errors highlighted. `tty=False` yields plain text with no ANSI and no `\r`. Lives here, not in `main.py`, because the hub must import it without a cycle. |
-| `src/ralphd/cli/ui_server.py` | The hub server: `/api/runs` and `/api/runs/<id>[/logs,/prd,/steer,/retry]` over the registry, proxying a run's live API with a short timeout and falling back to the run dir (`"live": false`) rather than 500-ing; renders log tails through `log_render` server-side so the browser only displays lines; serves the static bundle with `index.html` fallback. |
+| `src/ralphd/cli/image.py` | The job image, declaratively and docker-free: which files are inputs (`IMAGE_INPUTS`), how they hash to a tag, the packaged-inputs fallback for an install with no checkout (`PACKAGED_FILES`), and the text of the generated derived recipe (§3.2). Runs no builds — `cli/main.py` does that. |
+| `src/ralphd/cli/ui_server.py` | The hub server: `/api/runs` and `/api/runs/<id>[/logs,/prd,/steering,/documents,/artifacts,/fault,/cost,/iterations/<n>,/steer,/retry]` over the registry (`DELETE /api/runs/<id>` for a terminal run), proxying a run's live API with a short timeout and falling back to the run dir (`"live": false`) rather than 500-ing on the four views that have a live answer at all; renders log tails, cost breakdowns, fault explanations and iteration detail through the same modules `ralphctl` prints, server-side, so the browser only displays strings; serves the static bundle with `index.html` fallback. |
 | `src/ralphd/cli/llm_profiles.py` | Named-profile loading and host-side resolution: `${env:}`/`${file:}`/`${cmd:}` references evaluated exactly once, before the container starts, into `env`/`mounts`/`pi`. The `host` and `none` built-ins never reach this module. `MASK` is what `llm show` prints instead of a value. |
 | `src/ralphd/cli/web/index.html` | The hub shell — one page, no framework, no build step. |
-| `src/ralphd/cli/web/app.js` | Hub behaviour: run list with client-side sorting whose state lives outside the DOM (the table is rebuilt every few seconds), run detail with task table, iteration timeline, log tail, steering form, PRD and task dialogs, degraded card with countdown and retry-now. Agent-authored text is rendered with `textContent` only, never `innerHTML`. |
+| `src/ralphd/cli/web/app.js` | Hub behaviour: run list with client-side sorting whose state lives outside the DOM (the table is rebuilt every few seconds), run detail with task table, iteration timeline, log tail, steering form and history, state-document/artifact/fault/cost/iteration dialogs, the delete affordance, degraded card with countdown and retry-now. Agent-authored text is rendered with `textContent` only, never `innerHTML`. |
 | `src/ralphd/cli/web/style.css` | Hub styling, including the warning/degraded/snapshot treatments the JS keys off. |
 | `src/ralphd/{cli,engine}/__init__.py` | Empty package markers. |
 ## 4. The loop
@@ -784,6 +843,7 @@ strictly append-only.
 ├── operator-termination.json # the operator's abort/stop intent (§4.6), when recorded
 ├── auto-resume.json         # host-side crash-loop guard bookkeeping
 ├── host.json                # host-side container/registry metadata
+├── .tasks-last-good.json    # last `tasks.json` that parsed; written only on a failed read (§5.3)
 ├── .api-token               # the run's API bearer token, mode 0600
 ├── .lock                    # exclusive flock held by the live engine; holds its pid
 ├── steering/
@@ -829,7 +889,9 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `iterationsBudget` | int | the current iteration budget, including in-flight top-ups |
 | `currentIteration` | object \| null | `{number, phase, model, startedAt}` while an iteration runs, or `{phase, note}` while retrying after an infra fault; `null` otherwise |
 | `approach` | int | the approach running now |
-| `maxApproaches` | int | configured approach ceiling |
+| `maxApproaches` | int | configured approach ceiling, so every surface can render `approach 2/3` rather than a bare number |
+| `model` | string \| null | the model reference the run's iterations actually reported, `provider/model`; `null` until an iteration observes one |
+| `modelRaw` | string \| null | the provider's own id when it differs from the resolved reference (a gateway-local spelling); `null` when it does not |
 | `verdict` | string \| null | `verified` \| `unverified`; `null` until terminal |
 | `reason` | string | why a non-succeeded run ended, or the grace-review note |
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
@@ -849,8 +911,10 @@ price of zero**:
 | field | where | meaning |
 |---|---|---|
 | `costUSD` | iteration usage and every bucket | money the provider actually quoted |
-| `costPriced` | iteration usage | `false` when tokens were billed that the provider quoted no price for |
-| `costDerivedUSD` / `costDerived` | iteration usage and buckets | money computed from the host-side pricing map, kept in its own field so it can never be summed with a quoted price |
+| `costPriced` | iteration usage | `false` when tokens were billed that the provider quoted no usable price for |
+| `costZeroQuoted` | iteration usage | `true` when the provider quoted exactly `0` for non-zero billable tokens — an *implausible zero*, recorded as unknown rather than as free (§8.6) |
+| `costFree` | iteration usage and buckets | `true` only when a route the operator **declared** free priced this traffic, which is the one way a `$0.00` over billable tokens is believed |
+| `costDerivedUSD` / `costDerived` | iteration usage and buckets | money computed from a rate table (operator map or built-in), kept in its own field so it can never be summed with a quoted price |
 | `costStatus` | buckets only | absent (fully priced) \| `partial` (`costUSD` is a lower bound) \| `unknown` (no price at all) \| `derived` |
 | `costDisplay` | added by readers | the rendered string from `state.format_cost()` — e.g. `unavailable`, `$0.56+ (partial, rest unavailable)`, `~$0.45 derived` |
 
@@ -859,7 +923,16 @@ so every surface words an unknown cost identically. `autoResume` is likewise not
 engine-written — the host merges `{attempts, lastAt, maxAttempts}` (plus
 `iterationsUsed`, `gaveUp`, `reason`) from `auto-resume.json` into the status
 payload it serves, and the `tasks` counts and `steering: {pending, consumed}`
-summary are synthesized from `tasks.json` and `steering/` on read.
+summary are synthesized from `tasks.json` and `steering/` on read — the counts
+through the hardened reader of §5.3, which also attaches its
+`tasksStale`/`tasksSource` contract beside them.
+
+`model` is the model *observed* in an iteration's own `message_end`, not the
+reference the engine requested: the requested one is `null` exactly when the
+agent picks its own model, which is the case a reader most needs an answer for.
+It is written only when an iteration observes one, so a zero-traffic attempt
+cannot erase a known id, and the per-iteration ids stay in `meta.json` (§5.5)
+while `status.json` answers "which model is this run using".
 
 ```json
 {
@@ -952,6 +1025,43 @@ to the published keys (`in-progress` → `inProgress`, `validation-failed` →
 `validationFailed`) in one place, so the engine and the host-side fallback can
 never disagree about the same file.
 
+**Reading it: unknown is not zero.** This file is written by the *agent*, with
+whatever atomicity its tooling happens to have, and a plan is rewritten many
+times per iteration. A reader that catches `JSONDecodeError` and falls back to a
+default therefore reports `0/0 tasks` for a run with a full plan, for as long as
+the write window lasts — a lie the engine cannot fix in the writer, only in the
+read path. So there is exactly one read path, `state.read_tasks_doc()`, returning
+a `TasksRead` whose `source` distinguishes the four cases that used to collapse
+into one:
+
+| `tasksSource` | means | `tasksStale` |
+|---|---|---|
+| `absent` | no `tasks.json` yet — an empty plan really is the truth | `false` |
+| `file` | parsed straight off disk, empty plan included | `false` |
+| `last-good` | it would not parse; this is the last payload that did | `true` |
+| `unreadable` | it would not parse and nothing ever did — ignorance, not an empty plan | `true` |
+
+A parse failure is re-read a bounded number of times first
+(`TASKS_READ_ATTEMPTS` attempts `TASKS_READ_DELAY` apart, ~30ms worst case),
+which is longer than an agent's rewrite and shorter than any request budget.
+The last-good payload is held in memory and mirrored to
+`<run-dir>/.tasks-last-good.json` **only at the moment a read actually fails**,
+never on the happy path: the file exists so the fallback survives an engine
+restart, not as a second copy of the plan that could drift from `tasks.json` or
+be mistaken for it. A read-only viewer of somebody else's run dir passes
+`persist=False` and writes nothing at all.
+
+`TasksRead.contract` — `{tasksStale, tasksSource}` — travels with every payload
+that carries such a read: `GET /tasks`, `GET /status` (as siblings of the `tasks`
+counts, never keys inside them, which summarisers iterate as statuses), the hub's
+run payloads, `ralphctl tasks --json`. `tasksStale` is always present, so its
+absence means "an older engine wrote this" and never "fresh", and
+`TasksRead.notice` words the condition once for every surface. Progress cells are
+rendered from the same read too (`TasksRead.row_fields`: raw counts plus
+`tasksDisplay`/`tasksSummary`/`tasksTrouble`/`tasksColumn`), which is how
+`ralphctl runs`' and the hub's `TASKS` columns cannot disagree — and why a
+plan-less run shows an empty cell rather than `0/0`.
+
 ### 5.4 events.jsonl
 
 Append-only, one JSON object per line, `id` monotonically increasing from 1 and
@@ -996,7 +1106,9 @@ killed iteration still says what it was doing) and once when it ends.
 |---|---|---|
 | `number` | int | iteration number, matching the directory name |
 | `phase` | string | `planning` \| `worker` \| `verify` \| `review` \| `reflect` |
-| `model` | string \| null | resolved model reference; `null` means the agent's own default |
+| `model` | string \| null | the model reference the engine *requested*; `null` means the agent's own default |
+| `modelResolved` | string \| null | the `provider/model` reference the iteration's own messages reported — the answer when `model` is `null` |
+| `modelRaw` | string \| null | the provider's own id, when it differs from the resolved reference |
 | `approach` | int \| null | the approach this iteration belongs to |
 | `startedAt` / `endedAt` | string | UTC ISO-8601; a missing `endedAt` means the iteration never finished |
 | `steeringConsumed` | array | steering file names this iteration took |
@@ -1249,8 +1361,9 @@ seconds), `RALPHD_INFRA_RETRY_BACKOFF_MAX_S`, `RALPHD_INFRA_RETRY_MAX`,
 
 1. an explicit flag on `ralphctl start`;
 2. the `--template`'s `job.yaml` value (§6.7);
-3. the registry default in `<registry>/config.yaml` — only for the six keys that
-   have one: `image`, `on_complete`, `network`, `auto_resume`,
+3. the registry default in `<registry>/config.yaml` — only for the eight keys
+   that have one (`ralphctl config set`): the three image supply keys `image`,
+   `base_image` and `dockerfile`, plus `on_complete`, `network`, `auto_resume`,
    `default_llm_profile` (the fallback for `--llm`) and `price_strategy`;
 4. the hardcoded default in `ralphctl` (`_TEMPLATE_SCALAR_FIELDS`).
 
@@ -1438,7 +1551,9 @@ templates/<name>/
 `job.yaml` may set `iterations`, `max_approaches`, `vigilant`, `reflect`,
 `on_complete`, `on_complete_cmd`, `timeout` and `iteration_timeout` (both in
 **minutes**, defaults `480` and `45`), `model_strategy`, `llm`, `model`,
-`fast_model`, `thinking`, `image`, `network` and `auto_resume`, plus three
+`fast_model`, `thinking`, `price_strategy`, `network` and `auto_resume`, plus the
+three image supply keys `image`, `base_image` and `dockerfile` (settled as one
+unit, §3.2), plus three
 path-valued keys resolved relative to the template directory: `skills` (a list of
 directory names), `creds` (one directory name) and `prd` (a filename, default
 `prd.md`).
@@ -1492,6 +1607,7 @@ pi:                                  # pi provider config for this container
 | `description` | string | free text, shown by `ralphctl llm show` |
 | `model` | string | default strong-tier model ref for a job started with this profile; an explicit `--model` beats it |
 | `fast_model` | string | default fast-tier ref; `--fast-model` beats it |
+| `price_strategy` | string | which built-in rate table may derive a cost for this profile's routes (§8.6); one of `PRICE_STRATEGIES`, validated at resolve time so a typo is a `ProfileError` rather than a silent `none`. `--price-strategy` and a template/registry value beat it |
 | `env` | mapping | env vars for the container. Entries resolve top to bottom and each one joins the resolution environment, so a later entry — and `mounts`/`pi` — may reference an earlier one |
 | `mounts` | list | `host:container[:ro]` specs added to `docker run`; the host side is `~`-expanded |
 | `pi` | mapping | written to `<config-dir>/pi/models.json` (`0600`) and copied to `~/.pi/agent/` by the entrypoint |
@@ -2024,11 +2140,26 @@ zero.**
 | price reported | added to `costUSD`; `costPriced` set to `true` unless already `false` |
 | no price, tokens billed | `costPriced: false`, and **nothing** added to `costUSD` |
 | no price, nothing billed | `costUSD` accumulates an integer `0` — `$0` is the truth |
+| a price of exactly `0`, tokens billed | treated as *no price*: `costPriced: false`, nothing added to `costUSD`, plus `costZeroQuoted: true` and a warning naming the model |
+| a price of `0` on a route declared free | `costUSD: 0.0`, `costPriced: true`, `costFree: true` — the one believable `$0.00` |
 
 A fully unpriced iteration therefore has no `costUSD` key at all — unknown, not
 zero — and a mixed one keeps its priced subtotal flagged. Real gateways bill
 plenty of tokens while reporting no cost block, and coercing that to zero
 reports a whole run as `$0.0000` with no way to tell "free" from "unknown".
+
+**An implausible zero is not a price either.** `pi` zero-fills its cost block
+when the resolved model definition carries no rates, so a gateway can quote
+`costUSD: 0` with `costPriced: true` over half a million billable tokens — which
+is exactly what happened to the run that produced this section
+(`artifacts/reports/pricing-anomaly.md`). `state.is_zero_quote()` recognises the
+shape — a quoted zero alongside non-zero `billable_tokens()`, with the
+no-traffic sentinel and a declared-free route exempted — and `cost_status()`
+applies it **on read as well as on write**, so a run dir written by an older
+engine reports honestly rather than confidently. Freeness is only ever
+*declared*, never inferred from a zero: `pricing.free` patterns mark the usage
+`costFree: true`, the only bool carried up into the `byPhase`/`byApproach`
+rollups.
 
 `cost_status()` in `src/ralphd/engine/state.py` collapses a usage dict to
 `None` (fully priced, or nothing billed), `"derived"`, `"partial"` or
@@ -2048,7 +2179,7 @@ by `COST_UNAVAILABLE = "unavailable"`,
 
 **An unknown cost renders as `unavailable` and never as `$0.0000`.** Only a
 float `costUSD` counts as a quote (`_has_reported_price`); the integer `0` a
-no-traffic iteration contributes is not one.
+no-traffic iteration contributes is not one, and neither is an implausible zero.
 
 An optional host-side pricing map fills the gap the provider leaves — for a
 gateway-local model id, no upstream table can ever know the rate. It lives
@@ -2061,16 +2192,47 @@ to zero, since pricing cached tokens at `$0` is the same class of lie this
 feature exists to remove. `aliases:` resolves a local model id to a canonical
 one in exactly one hop, longest pattern first, with a trailing `*` preserving
 the matched tail (`"aigw-openai/*"` to `"openai/*"`); `models:` then prefers an
-exact key over the longest wildcard. A malformed entry is logged and ignored
-rather than fatal — a typo in an optional cost annotation must never stop a job
-from running — and an empty map derives nothing.
+exact key over the longest wildcard; `free:` lists the patterns whose `$0.00` is
+to be believed. A malformed entry is logged and ignored rather than fatal — a
+typo in an optional cost annotation must never stop a job from running — and an
+empty map derives nothing.
+
+**A shipped rate table is opt-in, and says how old it is.** Writing a map by
+hand is the wrong ask for a route whose public rates are published, so
+`engine/pricing_aws.py` ships the AWS Bedrock rates (USD/Mtok, one entry per
+model id) with a generated alias map for the gateway spellings, exposed as an
+ordinary `PricingMap` through `pricing_map()` so there is one matcher rather
+than a second resolver. Region prefixes are deliberately *not* collapsed — an
+EU or AU route is not priced at the US rate — and an unknown id resolves to
+nothing, because `unavailable` beats a guessed neighbour. The table carries a
+machine-readable `AS_OF` date, `STALE_AFTER_DAYS`, and a `staleness()` verdict
+surfaced through `GET /config`; `tools/refresh_bedrock_rates.py` regenerates and
+re-checks it.
+
+Which tables may price a run is one knob, `price_strategy`
+(`PRICE_STRATEGIES = ("none", "aws")`, default `none`; settable in `job.yaml`, an
+LLM profile, the registry config, `RALPHD_PRICE_STRATEGY`, or
+`ralphctl start --price-strategy`, and reported by `GET /config` as the
+**effective** value, so an unrecognised setting shows as the `none` it behaves
+as). `resolve_pricing()` builds either the operator map alone or a
+`PricingChain` of operator map then built-in table; a chain never merges rate
+dicts — the first layer that can price an id answers for it, so exactly one
+table prices any message and an operator's typed rate always wins over a shipped
+one. `GET /config`'s `priceTables` names the layers in precedence order (`"operator
+map"`, the built-in table's `TABLE_NAME`, or `NO_TABLE` when nothing can price
+this run), which is the difference between "this run's cost is unknown" and
+"nothing here could ever have priced it".
 
 **A derived cost is never conflated with a provider-reported one.** It
 accumulates into its own `costDerivedUSD` field, carries its own `costDerived`
 marker, is never folded into `costUSD`, and is always rendered with a `~` and
 the word `derived`. `costPriced` stays `false` either way, because the provider
-still quoted nothing, and `costDerived: false` means at least one unpriced
-message had no rate, so part of the cost remains genuinely unknown.
+still quoted nothing usable, and `costDerived: false` means at least one unpriced
+message had no rate, so part of the cost remains genuinely unknown. Derivation
+fires for an implausible zero exactly as it does for an absent price — otherwise
+the feature would miss the route it was written for — and it prices the id the
+iteration *observed* when the operator pinned no model reference, since an
+unpinned run is precisely the one whose id the engine never chose.
 `GET /config` reports the map through `PricingMap.describe()`.
 
 Rendering happens once, on the server. `costDisplay` — the output of
@@ -2210,7 +2372,7 @@ exists asks this route rather than probing.
 | `GET` | `/healthz` | liveness; auth-exempt; `{"ok": true}` |
 | `GET` | `/version` | engine version and API version |
 | `GET` | `/status` | the whole run state — see §9.3 |
-| `GET` | `/tasks` | the task list as recorded on disk |
+| `GET` | `/tasks` | the task list as recorded on disk, plus the `tasksStale`/`tasksSource` read contract (§5.3) |
 | `GET` | `/prd` | the PRD as markdown; `?original=true` for the pre-composite text; `404` when absent |
 | `GET` | `/notes` | the run's accumulated notes as markdown |
 | `GET` | `/iterations` | every iteration's `meta.json`, in order |
@@ -2280,7 +2442,11 @@ result:
 
 - `health` defaults to `"ok"` and `infraWait` to `null`;
 - `reflect` defaults to `null`, meaning "no reflect iteration has finished";
-- `tasks` is replaced with computed counts via `task_counts()`, and `steering`
+- `maxApproaches`, `model` and `modelRaw` default to `null`, so a pre-v0.6 run
+  dir yields an explicit "not known for this run" rather than a denominator or a
+  model id guessed in from the live config;
+- `tasks` is replaced with computed counts via `task_counts()`, carrying
+  `tasksStale`/`tasksSource` beside them (§5.3), and `steering`
   with `{"pending": N, "consumed": N}`.
 
 **The absence of a field is never a third case a consumer has to handle.** A
@@ -2538,9 +2704,9 @@ gateway outage plausibly lasts.
 **Scalar job settings resolve through one fixed precedence chain:** an
 explicit CLI flag, then the `--template`'s `job.yaml`, then the registry-wide
 default in `<registry>/config.yaml` (`ralphctl config set`), then the
-hardcoded default in the table above. Only `image`, `on_complete`,
-`default_llm_profile` (feeding `--llm`), `network`, `auto_resume` and
-`price_strategy` have a registry-wide layer; the rest skip straight from
+hardcoded default in the table above. Only `image`, `base_image`, `dockerfile`,
+`on_complete`, `default_llm_profile` (feeding `--llm`), `network`, `auto_resume`
+and `price_strategy` have a registry-wide layer; the rest skip straight from
 template to hardcoded default. Every flag defaults to `None` in the parser
 rather than to its real value, so "not given" stays distinguishable from
 "given the value the default happens to be" and the chain can be applied
@@ -3080,8 +3246,18 @@ Every header is click-to-sort; clicking the active column reverses it; the
 active column carries a `▲`/`▼` indicator and an `aria-sort` attribute. The
 default is `STARTED` descending — newest first. Sort keys are the raw payload
 values, not the rendered cell text, so `ITERATIONS` sorts numerically on
-`iterationsUsed` rather than on the `"17/250"` string, `STARTED` on the parsed
-instant, and `STATE`/`VERDICT` in lifecycle order.
+`iterationsUsed` rather than on the `"17/250"` string, `TASKS` on the
+`tasksCompleted`/`tasksTotal` ratio rather than on `"5/7"` (a run with no plan
+has no value and sorts last ascending), `STARTED` on the parsed instant, and
+`STATE`/`VERDICT` in lifecycle order.
+
+**The cells themselves are rendered by the server**, not composed in the
+browser: `approachDisplay` (`2/3`, bare `2` when the run recorded no ceiling,
+empty when it never reached an approach), `tasksDisplay` with its trouble flags
+and stale pill, `costDisplay`. The raw numbers travel beside them for sorting.
+The same strings are what `ralphctl runs` prints, from the same formatters in
+`engine/state.py`, so a terminal and a browser tab cannot word the same run
+differently.
 
 **The chosen sort lives outside the DOM.** `load()` rebuilds the whole table
 every 4 seconds, so sort state held in the markup would be destroyed on each
@@ -3091,34 +3267,57 @@ A run flagged `containerGone` gets a highlighted row (`tr.row-warning`) and a
 `⚠ container gone` marker next to its state pill, so a zombie does not look
 like a healthy `running` run in the list either.
 
-The list endpoint reads `status.json` and nothing else, so listing stays cheap
-however many dead runs the registry holds. Only rows that *could* be zombies —
-recorded state non-terminal — are probed, concurrently, with a bare loopback TCP
-connect on a 0.3s timeout and a thread pool capped at 8; no `docker` CLI is
-involved, deliberately, since the hub has to work where the docker socket is
-not. A terminal run is unreachable by design and always reports
-`containerGone: false`.
+The list endpoint reads `status.json` and nothing else per run, plus exactly one
+hardened `tasks.json` read per row (§5.3, `persist=False`: a viewer writes
+nothing into somebody else's run dir), so listing stays cheap however many dead
+runs the registry holds and **makes no live API call at all** while rendering.
+Only rows that *could* be zombies — recorded state non-terminal — are probed,
+concurrently, with a bare loopback TCP connect on a 0.3s timeout and a thread
+pool capped at 8; no `docker` CLI is involved, deliberately, since the hub has to
+work where the docker socket is not. A terminal run is unreachable by design and
+always reports `containerGone: false`.
 
 ### 11.3 Run detail
 
 `#/run/<id>` renders one run from a single payload —
-`{runId, live, containerGone, status, tasks, iterations}` — where `status` and
-`tasks` are proxied from the container when its API answers and read from disk
-otherwise, and `iterations` is always read from `iterations/*/meta.json`.
+`{runId, live, containerGone, deletable, deleteRefusal, status, tasks,
+iterations}` — where
+`status` and `tasks` are proxied from the container when its API answers and read
+from disk otherwise, and `iterations` is always read from
+`iterations/*/meta.json`. Every panel below it is one further endpoint, and only
+four of them have a live answer to prefer at all: the run payload, the log tail,
+the PRD and the steering history proxy the container and fall back to the run dir;
+the iteration, document, artifact, fault and cost views are **on-disk only by
+design**, because the engine, the agent and `start` write those files into the run
+dir themselves and a live proxy would only add a way to disagree.
 
-- **Summary card** — state, verdict, phase, approach, iterations, duration, and
-  an explicit provenance row: `live: yes (proxied from container)` or
-  `no (on-disk snapshot)`.
+- **Summary card** — state, verdict, phase, approach as `2/3`, iterations,
+  duration, and an explicit provenance row: `live: yes (proxied from container)`
+  or `no (on-disk snapshot)`.
 - **Usage panel** — total tokens and cost, plus the `byPhase` and `byApproach`
-  breakdowns when present.
+  breakdowns when present. The cost cell opens a **cost dialog**: the same
+  per-phase and per-approach breakdown `ralphctl cost` prints, with quoted,
+  derived and unavailable money each labelled as such (§8.6).
 - **Task table** — one row per task, each clickable and keyboard-reachable
   (`role="button"`, `tabindex=0`, Enter and Space), opening that task's detail
   in a modal `<dialog>`: `status`, `priority`, `dependsOn` when set,
   `successCriteria` — the text the task is actually judged against — and any
   `validationNotes`. The records are already in the run-detail payload, so
-  opening one costs no request.
+  opening one costs no request. A read served from the last-good payload (§5.3)
+  is labelled `stale` with the reader's own sentence, and the table keeps showing
+  the plan instead of blinking empty while an agent rewrites `tasks.json`.
 - **Iteration timeline** — per iteration: `#N`, absolute local start time,
-  phase, model, an error pill when it failed, and duration once it ended.
+  phase, model, an error pill when it failed, and duration once it ended. Each
+  row opens an **iteration dialog** carrying that iteration's whole story —
+  phase, timestamps, duration, exit reason, tokens, cost and its full rendered
+  transcript — byte-identical to what `ralphctl iteration <id> <n>` prints.
+- **State documents panel** — one row per run document: the worker's `notes.md`,
+  `review-findings.md`, `composite-prd.md` and the run's `job.yaml` **with
+  secrets redacted**, each opening its body in a dialog. A document that was
+  never written is listed as such rather than omitted: absence is an answer.
+- **Artifacts panel** — what the job left behind under `artifacts/`, size and
+  path per entry, with a text artifact (the reflection report first among them)
+  opening in a dialog and a binary one reported as such rather than mangled.
 - **PRD dialog** — a *view PRD* button fed by the run's PRD endpoint, which
   proxies the live route and falls back to the run dir, so it works for a dead
   run too. Which file counts as "the PRD" — `composite-prd.md` when the engine
@@ -3126,8 +3325,13 @@ otherwise, and `iterations` is always read from `iterations/*/meta.json`.
   `ralphd.engine.state.prd_path` that the engine's own route uses, so the live
   and on-disk answers can never disagree. A run dir with no PRD answers with
   the single line `(no PRD recorded)` rather than an empty string.
-- **Steering form** — posts to the hub's steer endpoint, which forwards to the
-  run's live `POST /steering`, and reports the created file name back.
+- **Steering form and history** — the form posts to the hub's steer endpoint,
+  which forwards to the run's live `POST /steering`, and reports the created file
+  name back; under it, every message the run has received, oldest first, with its
+  arrival time and a `pending`/`applied` pill, each opening its full body in a
+  dialog. A message queued from the form appears immediately rather than after
+  the next poll, and flips to `applied` at the iteration boundary that consumed
+  it.
 - **Degraded card** — `health: degraded`/`infraWait` set produces a distinct
   `.card.degraded` carrying the attempt number, phase, error, the episode's
   wait against the outage budget, and a countdown to `nextAttemptAt` ticking
@@ -3136,7 +3340,9 @@ otherwise, and `iterations` is always read from `iterations/*/meta.json`.
   API is reachable; on a dead run the card says `read-only on-disk snapshot`
   and offers none. The engine's status code is passed through, notably its
   `409 not waiting on an infra fault`, so the UI can say "nothing to wake"
-  instead of reporting a generic failure.
+  instead of reporting a generic failure. The badge itself opens a **fault
+  dialog**: `ralphctl fault`'s explanation of what went wrong, which signals
+  classified it (§8.3) and what the loop did about it.
 - **Container-gone warning** — a run recorded `starting`/`running` whose API
   has stopped answering gets `.card.warning` (one CSS rule shared with
   `.card.degraded`) plus a `.container-gone` block pointing at
@@ -3148,9 +3354,20 @@ otherwise, and `iterations` is always read from `iterations/*/meta.json`.
 - **Failed reflection** — `reflection: failed (<error>)` on a `.reflect-failed`
   line, in the same wording `ralphctl status` uses and for the same reason: the
   failure leaves `state`, `verdict` and `reason` untouched.
+- **Delete affordance** — a **finished** run can be deleted from here, which is
+  the browser end of `ralphctl rm --force`: the button is enabled exactly when
+  the server says the deletion would be accepted (`deletable`, with the refusal
+  sentence when it would not), and pressing it opens a confirm dialog that
+  requires the run id to be **typed back** before `DELETE /api/runs/<id>` is
+  sent. A non-terminal run is refused by the server, not merely hidden by the
+  UI, and the deletion runs through the CLI's own removal code rather than a
+  second implementation.
 
 Only one dialog exists at a time and closing it removes it, so the 4-second
-refresh running behind it cannot accumulate copies.
+refresh running behind it cannot accumulate copies. Every dialog body is built
+from text nodes — the strings in them are agent- and provider-authored — and is
+formatted by the *server*, using the same modules `ralphctl` prints with, so the
+browser displays exactly what the terminal shows.
 
 ### 11.4 Live transcript
 
@@ -3642,7 +3859,7 @@ the tiering is a matter of which stub a module reaches for.
 
 | tier | how it runs | modules | what it proves | cost |
 | --- | --- | --- | --- | --- |
-| **Pure unit** | no subprocess at all | `test_fault_classifier.py`, `test_pricing_map.py`, `test_log_merge.py`, `test_durations.py`, `test_faults`-adjacent helpers | pure functions: the infra signature table, pricing arithmetic, transcript merging, duration formatting | milliseconds |
+| **Pure unit** | no subprocess at all | `test_fault_classifier.py`, `test_pricing_map.py`, `test_pricing_aws.py`, `test_log_merge.py`, `test_durations.py`, `test_fault_class_meta.py` | pure functions: the infra signature table, pricing arithmetic and the shipped rate table, transcript merging, duration formatting | milliseconds |
 | **Live engine + stub `pi`** | a real `ralphd-engine` process launched directly, no docker, with `tests/stub-pi/pi` first on `PATH` | ~50 modules | the whole loop, the API, retry/refund, reflection, steering, budgets, crash-and-resume — everything the engine does | seconds per module |
 | **CLI + recording stub `docker`** | `RALPHD_DOCKER` points at `tests/stub-docker/docker`, which appends every argv to a log and fakes just enough daemon behaviour | ~20 modules | that `ralphctl` builds the right `docker run` — labels, mounts, `-e` wiring, ports, network mode — and that `resume` reproduces it | seconds |
 | **Real docker siblings** (`-m docker`) | builds `container/Dockerfile` as a real image and drives the real daemon | `test_docker_sibling_e2e.py`, `test_sibling_cleanup_job_safe.py`, `test_cli_docker_integration.py`, `test_image_real_build.py` | the image actually works: creds land at `~/.creds`, skills are symlinked, the API is reachable, `stop` reaps, `resume` continues, `--no-detach` exits on the right verdict, the documented cleanup command spares the job container, and (`test_image_real_build.py`) the *generated* derived recipe really builds on a minimal base and really runs `ralphd-engine` | minutes; needs a socket |
@@ -3784,10 +4001,12 @@ nobody noticed.
   resolved for *that* run, so operators repeat the same multi-flag
   `--forward-env`/`--llm-env`/`--env` incantation on every launch. Worth
   building on the second profile-shaped use case, not the first.
-- **A published Docker image and `pipx` packaging.** The image builds and runs
-  locally — the `-m docker` tier proves it — and the wheel builds, but there is
-  no publishing pipeline to push either to a registry or to PyPI, so `--image`
-  points at a locally built tag and installation is `pip install -e .`.
+- **Publishing the Docker image and the wheel.** The image builds locally and is
+  content-hashed (§3.2) — including from a `pipx`-style install, whose wheel
+  ships the image inputs as package data — and the `-m docker` tier proves the
+  built image runs. What is deferred is the *publishing* pipeline: nothing pushes
+  a tag to a registry or a wheel to PyPI, so `--image` names a locally built tag
+  and there is no `ralphd` to install from an index yet.
 
 ---
 
