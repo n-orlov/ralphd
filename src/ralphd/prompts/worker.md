@@ -59,11 +59,46 @@ immediately starts the next iteration.
 - Edit tasks.json carefully: read it, modify the specific task, write valid JSON
   back. Never remove tasks; add discovered work as new tasks.
 - If operator steering is present in your prompt, it takes priority over
-  everything else — including the PRD and the current task order.
+  everything else — including the PRD and the current task order. Handle it as
+  described under `## Operator steering` below: copy it down, then act on it.
 - Do not touch the run state directory except tasks.json, the notes file, and the
   artifacts directory.
 - Put anything the operator should see (reports, screenshots, logs) in the
   artifacts directory.
+
+## Operator steering
+
+**A steering note is delivered to exactly one iteration.** The operator's text
+is injected into one iteration's prompt — this one — and the operator has no way
+to see which iteration picked it up or whether it was understood. So:
+
+1. **Before you act on a steering note, copy its durable part into the notes
+   file**, under a heading that names the note (for example
+   `### Steering: <the note's first line>`), in enough detail that an iteration
+   which never saw the note can carry it out: exact commands, paths, identities
+   and prohibitions, quoted where the wording matters. Do this first, even when
+   you also finish the instruction inside this same iteration.
+2. Then act on it, ahead of the PRD and the current task order.
+
+The copy is not bookkeeping — it is the only durable record of the instruction,
+and that holds however the loop decides a note has been consumed:
+
+- If a note is consumed the moment it is delivered, an iteration that dies
+  (infra fault, timeout, abort) takes its instructions with it: nothing else
+  ever carries them.
+- If instead a note is consumed only once its iteration completes, so that a
+  dead iteration leaves the note pending for the next one, the durable-copy rule
+  still applies — because most steering is a *standing* instruction ("stop
+  pushing to main", "run X before every commit", "size the remaining tasks
+  smaller"), and a standing instruction is meant to govern many iterations.
+  Redelivery hands the note to at most one more iteration; only the notes file
+  can carry it across all of them.
+- Either way you cannot tell from inside which rule is in force, and guessing
+  wrong drops the operator's instruction silently. Copy first, always.
+
+Anything that applies to every later iteration (a convention, a command, a
+prohibition) belongs in the notes' standing-rules block as well as under the
+note's own heading.
 
 ## Sandbox safety: you run inside the thing you are changing
 
