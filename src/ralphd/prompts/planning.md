@@ -53,7 +53,13 @@ A clear, linear plan (most plans) should omit both fields entirely — plain
 list order is the default and requires no annotation.
 
 4. Write brief handoff notes to the notes file (max 50 lines): key facts about the
-   workspace a fresh worker needs (test command, entry points, gotchas).
+   workspace a fresh worker needs (test command, entry points, gotchas). Open the
+   file with a `## Standing rules` block: the conventions every later iteration
+   must follow, which only you have read the PRD to find — commit title format,
+   branch and push target, commit identity, credential file paths, the test
+   commands measured in step 2b, and each prohibition the PRD states. Workers
+   rewrite the rest of the notes every iteration; this block is what must survive
+   that rewrite, so keep it self-contained.
 
 ## Rules
 
