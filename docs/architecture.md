@@ -142,6 +142,23 @@ worker left it -- it is not marked `validation-failed`, `failed`, or otherwise
 penalized. The verify iteration's `meta.json` records `verifyOutcome: "error"`
 for these attempts (distinct from `"pass"`/`"fail"`).
 
+Task 012 (#45) generalized that from "errored out" to **reached no verdict**,
+because an in-band error is only one of the ways an attempt can end without a
+verifier ever finishing: the full `iteration_timeout_s` firing (`timed_out`), the
+startup-window watchdog killing a silent agent (`no_traffic_timeout`) and a
+signal (`interrupted`) all record no `error_message` at all, so they used to fall
+through to the verdict-miss bookkeeping -- burning a validation attempt and
+writing a `validationNotes` that blamed the worker for the engine's own timeout.
+All four shapes are now the same case, decided in one place
+(`LoopSupervisor._verify_no_verdict`): retried within the same bounded budget,
+and if no attempt reaches a verdict, `status`, `validationAttempts` and
+`validationNotes` come out byte-for-byte as they went in (as they do when the
+iteration budget ran out before any verify iteration could run at all). The
+record distinguishes the two outcomes in words as well as in `verifyOutcome`: a
+negative verdict says a verifier ran to completion and did not emit the sentinel,
+while a no-verdict path says the verifier never reached a verdict and names what
+ended it.
+
 ### Criteria fingerprinting and edited-after-failure detection (task 008)
 
 Every task gets a `criteriaFingerprint` (sha256 of its `successCriteria` text)
