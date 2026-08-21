@@ -2,7 +2,7 @@
 
 That table is the only place a wave's *outcome* is written down in the repo, and
 it is pure prose: nothing reads it, every number in it was typed by hand from a
-run's `status.json`, and each row outlives the run dir it was copied from. Three
+run's `status.json`, and each row outlives the run dir it was copied from. Four
 ways it can lie, all checked here rather than by eye:
 
 * a row points at a PRD that is not in the directory (or a recovered PRD sits
@@ -13,16 +13,18 @@ ways it can lie, all checked here rather than by eye:
   against what `engine.state.format_cost` renders for that run's own recorded
   usage payload (kept here as a fixture), so if the classification of an
   implausible zero quote ever changes, this test makes the row change with it;
-* the token total drifts from those same counters, or the row silently drops
-  the marker that says the numbers are a snapshot the run took of itself while
-  still running (a run cannot count the iterations that document it);
+* the token total drifts from those same counters, or a count cell still wears
+  the `+` snapshot marker the row carried while the run was writing it. That
+  run has finished; the cells now hold final figures read from a settled
+  `status.json`, so the marker must be *absent* -- kept on, it would present a
+  closed record as a floor forever;
 * the outcome cell's task tally is not the plan's. A wave's row says how many
-  of its planned tasks were verified, and that pair of numbers is the easiest
+  of its planned tasks were completed, and that pair of numbers is the easiest
   thing in the table to mistype or to carry over from a neighbouring run's
   numbering -- the first draft of the v0.6 row said `58 of 59` for a 55-task
   plan. The tally is kept here as a fixture beside `V06_USAGE`, the row and the
   prose note are both compared against it, and the two numbers must add up with
-  the failure count.
+  the count of tasks that never got there.
 
 Each check is paired with a mutation of the real text into the wording it
 replaced, so a check that stops discriminating fails.
@@ -39,28 +41,33 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PRD_DIR = REPO_ROOT / "docs" / "prds"
 INDEX = PRD_DIR / "README.md"
 
-# This run's own recorded usage rollup, copied verbatim from
-# `<run-dir>/status.json` at the iteration that wrote the v0.6 row: an
-# implausible zero quote (`costUSD: 0` with `costPriced: true`) beside 310M
-# billed tokens. The row's cost and token cells are derived from it below.
+# This run's own recorded usage rollup, copied verbatim from the
+# `<run-dir>/status.json` the run left behind when it ended: an implausible zero
+# quote (`costUSD: 0` -- and no `costPriced` marker at all, so the
+# classification rests on the zero beside billable tokens) next to 332M billed
+# tokens. The row's cost and token cells are derived from it below.
 V06_RUN_ID = "selfdev-v06-release"
 V06_USAGE = {
-    "input": 9536,
-    "output": 2603118,
-    "cacheRead": 289908196,
-    "cacheWrite": 17637400,
-    "totalTokens": 310158250,
+    "input": 10094,
+    "output": 2732870,
+    "cacheRead": 310853886,
+    "cacheWrite": 18551959,
+    "totalTokens": 332148809,
     "costUSD": 0,
-    "costPriced": True,
+    "costPriced": None,
 }
-# This run's own plan, counted from `<run-dir>/tasks.json` (the loop's source of
-# truth) at the iteration that wrote the v0.6 row: 55 tasks, of which 54 reached
-# `completed` and one (043d, the whole-SPEC rewrite) is terminally `failed`.
-# Unlike the iteration and token cells this is NOT a floor -- no task is added
-# after the plan is finished -- so the tally carries no snapshot marker.
-V06_TASKS = {"total": 55, "completed": 54, "failed": 1}
+# This run's own plan, counted from the `<run-dir>/tasks.json` it ended with
+# (the loop's source of truth): 55 tasks, of which 54 reached `completed` and one
+# (043d, the whole-SPEC rewrite) is `skipped` -- relabelled from `failed` by
+# operator instruction so the run could leave its task loop and reach review,
+# with its three consumed `validationAttempts` left in place as the record.
+# `skipped` is not a claim that the task met its criteria; it did not.
+V06_TASKS = {"total": 55, "completed": 54, "skipped": 1}
 
-# The numbers are a floor: the run was still running when it wrote its own row.
+# The marker the row wore while the run that wrote it was still running: the
+# counts were then a floor, because a run cannot count the iterations that
+# document and verify it. The run has since finished and the cells hold its
+# final figures, so this marker must now be ABSENT from both of them.
 SNAPSHOT_MARKER = "+"
 
 ROW = re.compile(r"^\|\s*`(?P<run>[^`]+)`\s*\|(?P<rest>.*)\|\s*$")
@@ -173,14 +180,17 @@ def test_a_row_pricing_the_implausible_zero_is_caught():
 def _count_problems(text: str) -> list[str]:
     iterations, tokens = _v06_cells(text)[2:4]
     total = V06_USAGE["totalTokens"] / 1_000_000
-    expected = f"{total:.1f}M{SNAPSHOT_MARKER}"
+    expected = f"{total:.1f}M"
     problems = []
     if tokens != expected:
         problems.append(f"token cell {tokens!r} is not the recorded {expected!r}")
-    if not iterations.rstrip(SNAPSHOT_MARKER).isdigit():
-        problems.append(f"iteration cell {iterations!r} is not a count")
-    if not iterations.endswith(SNAPSHOT_MARKER):
-        problems.append(f"iteration cell {iterations!r} drops the snapshot marker")
+    if not iterations.isdigit():
+        problems.append(f"iteration cell {iterations!r} is not a final count")
+    for name, cell in (("iteration", iterations), ("token", tokens)):
+        if SNAPSHOT_MARKER in cell:
+            problems.append(
+                f"{name} cell {cell!r} still marks a finished run's count "
+                f"as a snapshot floor")
     return problems
 
 
@@ -188,19 +198,25 @@ def test_the_v06_row_counts_match_the_recorded_usage():
     assert _count_problems(_index_text()) == []
 
 
-def test_a_row_presenting_the_snapshot_as_final_is_caught():
+def test_a_row_presenting_a_finished_runs_counts_as_a_snapshot_is_caught():
+    # The wording this row shipped with while the run was still writing it.
     cells = _v06_cells(_index_text())
+    marked = [f"{c}{SNAPSHOT_MARKER}" for c in cells[2:4]]
     text = _index_text().replace(
-        f"| {cells[2]} | {cells[3]} |",
-        f"| {cells[2].rstrip(SNAPSHOT_MARKER)} | {cells[3].rstrip(SNAPSHOT_MARKER)} |")
-    problems = _count_problems(text)
-    assert any("drops the snapshot marker" in p for p in problems)
-    assert any("is not the recorded" in p for p in problems)
+        f"| {cells[2]} | {cells[3]} |", f"| {marked[0]} | {marked[1]} |")
+    assert _count_problems(text) == [
+        f"token cell {marked[1]!r} is not the recorded {cells[3]!r}",
+        f"iteration cell {marked[0]!r} is not a final count",
+        (f"iteration cell {marked[0]!r} still marks a finished run's count "
+         f"as a snapshot floor"),
+        (f"token cell {marked[1]!r} still marks a finished run's count "
+         f"as a snapshot floor"),
+    ]
 
 
 TALLY = re.compile(
     r"(?P<completed>\d+) of (?:the )?(?P<total>\d+) (?:planned )?tasks")
-FAILED = re.compile(r"(?P<failed>\d+) failed")
+SKIPPED = re.compile(r"(?P<skipped>\d+) skipped")
 
 
 def _tally_problems(text: str) -> list[str]:
@@ -208,10 +224,10 @@ def _tally_problems(text: str) -> list[str]:
     problems: list[str] = []
     total = V06_TASKS["total"]
     completed = V06_TASKS["completed"]
-    failed = V06_TASKS["failed"]
-    if completed + failed != total:
+    skipped = V06_TASKS["skipped"]
+    if completed + skipped != total:
         problems.append(
-            f"fixture is inconsistent: {completed} + {failed} != {total}")
+            f"fixture is inconsistent: {completed} + {skipped} != {total}")
 
     outcome = _v06_cells(text)[1]
     m = TALLY.search(outcome)
@@ -221,12 +237,12 @@ def _tally_problems(text: str) -> list[str]:
         problems.append(
             f"outcome cell says {m.group('completed')} of {m.group('total')} "
             f"tasks, the plan holds {completed} of {total}")
-    f = FAILED.search(outcome)
-    if not f:
-        problems.append(f"outcome cell {outcome!r} hides the failed task")
-    elif int(f.group("failed")) != failed:
+    s = SKIPPED.search(outcome)
+    if not s:
+        problems.append(f"outcome cell {outcome!r} hides the skipped task")
+    elif int(s.group("skipped")) != skipped:
         problems.append(
-            f"outcome cell counts {f.group('failed')} failed, the plan {failed}")
+            f"outcome cell counts {s.group('skipped')} skipped, the plan {skipped}")
 
     note = _v06_note(text)
     n = TALLY.search(note)
@@ -246,8 +262,8 @@ def test_the_v06_row_states_the_plans_own_task_tally():
 def test_a_row_carrying_another_runs_task_numbering_is_caught():
     # The wording this row shipped with first: a 59-task plan that never existed.
     text = _index_text().replace(
-        f"{V06_TASKS['completed']} of {V06_TASKS['total']} tasks verified",
-        "58 of 59 tasks verified")
+        f"{V06_TASKS['completed']} of {V06_TASKS['total']} tasks completed",
+        "58 of 59 tasks completed")
     assert _tally_problems(text) == [
         "outcome cell says 58 of 59 tasks, the plan holds 54 of 55"]
 
@@ -260,13 +276,13 @@ def test_a_note_disagreeing_with_the_row_is_caught():
         "the note says 58 of 59 tasks, the plan holds 54 of 55"]
 
 
-def test_a_row_hiding_the_failed_task_is_caught():
+def test_a_row_hiding_the_skipped_task_is_caught():
     cells = _v06_cells(_index_text())
     text = _index_text().replace(
         f"| {cells[1]} |", f"| succeeded / all {V06_TASKS['total']} tasks verified |")
     assert _tally_problems(text) == [
         "outcome cell 'succeeded / all 55 tasks verified' states no task tally",
-        "outcome cell 'succeeded / all 55 tasks verified' hides the failed task",
+        "outcome cell 'succeeded / all 55 tasks verified' hides the skipped task",
     ]
 
 
@@ -275,10 +291,25 @@ def _v06_note(text: str) -> str:
     return para[:para.index("\n- ") if "\n- " in para else len(para)]
 
 
-def test_the_note_explains_why_the_counts_are_a_floor():
+def test_the_note_records_what_the_finished_run_actually_did():
     lowered = " ".join(_v06_note(_index_text()).lower().split())
-    for phrase in ("snapshot", "cannot count the iterations",
-                   "closed on github", "still running"):
+    for phrase in (
+        # how it ended, and on which approach -- it never replanned
+        "succeeded", "verified", "approach 1",
+        # the 145/155 gap is explained, not left as an apparent contradiction
+        "refunded",
+        # 043d: the status, the attempts it burned, and the plain admission
+        "skipped", "three validation attempts",
+        "claim that it met its criteria", "it did not",
+        # ...beside where its scope actually landed
+        "b923af2", "168a041", "cc8c8a2",
+        "closed on github",
+    ):
         assert phrase in lowered, f"the v0.6 note no longer says {phrase!r}"
-    # The derived estimate must be marked as one, never as what was billed.
+    # The derived figure must be marked an estimate, never as what was billed.
     assert "estimate" in lowered
+    # The counts are final now: nothing may still call them a running snapshot.
+    assert "still running" not in lowered
+    # The token magnitude the note reasons about is the recorded counter's.
+    billed = f"{V06_USAGE['totalTokens'] / 1_000_000:.0f}m billed tokens"
+    assert billed in lowered, f"the v0.6 note no longer says {billed!r}"
