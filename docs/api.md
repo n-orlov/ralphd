@@ -344,8 +344,8 @@ the infra-retry wrapper acts on:
 | `faultClass` | meaning |
 |--------------|---------|
 | `null` | not a failure: clean exit, no error recorded, not interrupted/timed out |
-| `"infra"` | the LLM endpoint/provider/network broke (no traffic within the startup window, or a recognized infra error signature) — the attempt is retried and refunded, never charged to the iteration budget |
-| `"work"` | the agent really ran (LLM traffic observed) and then failed on its own, or an abort/interrupt was recorded for the run — an operator's, or the engine giving up on its own — which is never retried as an outage (the *explanation* surfaces name which of the two only when it can be established; the class cannot tell them apart, issue #49) |
+| `"infra"` | the LLM endpoint/provider/network broke (no traffic within the startup window, a recognized infra error signature, or a bare `aborted` that arrived within two minutes of the iteration's start with no abort recorded for the run — a stream the provider hung up on) — the attempt is retried and refunded, never charged to the iteration budget |
+| `"work"` | the agent really ran (LLM traffic observed) and then failed on its own — including a bare `aborted` that arrived more than two minutes in, which is no longer distinguishable from an agent that worked and then aborted — or an abort/interrupt was recorded for the run — an operator's, or the engine giving up on its own — which is never retried as an outage (the *explanation* surfaces name which of the two only when it can be established; the class cannot tell them apart, issue #49) |
 | `"signal"` | the agent reached the model and was then ended by a signal, with no abort recorded for this run (an OOM kill, a stray `pkill`, a `docker stop` of its process group) — it was terminated before it could fail, so it is neither the agent's work failure nor an endpoint outage, and it is **not** retried (a signal usually means something outside the run wants it to stop) |
 
 The field is absent only while an iteration is still in flight (before its

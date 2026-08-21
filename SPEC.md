@@ -1885,7 +1885,8 @@ producing an error anyone can classify.
 ### 8.2 Infra versus work
 
 `classify_fault()` takes `error_text`, `exit_code`, `interrupted`,
-`timed_out`, `no_traffic_timeout`, `produced_traffic` and `operator_abort`,
+`timed_out`, `no_traffic_timeout`, `produced_traffic`, `operator_abort` and —
+since task 014 (#49 part 2) — `duration_s`,
 and applies exactly this order (the verdicts are `None`, `"infra"`, `"work"`
 and — since task 013, #49 — `"signal"`, the tuple `faults.FAULT_CLASSES`):
 
@@ -1909,12 +1910,27 @@ and — since task 013, #49 — `"signal"`, the tuple `faults.FAULT_CLASSES`):
    nothing about it looks like an outage, so it is not retried either — the
    retry wrapper acts on `"infra"` alone. `interrupted` is set from the agent
    process's own exit status (a negative code, or 130) and from nothing else.
-6. Otherwise, if `produced_traffic` is true, return `"work"`.
+6. Otherwise, if `produced_traffic` is true, return `"work"` — **unless** the
+   error is a bare `aborted` and the iteration ran for no longer than
+   `faults.ABORTED_STREAM_MAX_DURATION_S` (120s), in which case return
+   `"infra"` (task 014, #49 part 2, the answer to what was §16's open question
+   1 — see §17). A one-word `aborted` that arrived within two minutes, after
+   traffic, with a clean exit status and no abort recorded for the run is the
+   provider hanging up mid-stream: no iteration that did real work finishes,
+   let alone fails with a one-word error, that fast. Past the threshold, or
+   with the duration unknown (`duration_s=None`: nothing is known, so nothing
+   is reclassified), it stays `"work"`.
 7. Otherwise return `"infra"`.
 
 `produced_traffic` is derived in `LoopSupervisor._classify_result()` as
 `bool(result.final_text) or bool(result.usage)` — the agent said something, or
-tokens were accounted for.
+tokens were accounted for. `duration_s` is `IterationResult.duration_s`, the
+agent subprocess's own wall-clock; the on-disk re-derivation in
+`state.fault_explanation` passes the iteration record's `durationS` instead, so
+the explanation reaches the same verdict the engine did. The threshold is
+absolute rather than a fraction of `iteration_timeout_s` precisely because the
+cap is not part of an iteration's `meta.json`, so a fraction could not be
+re-derived from the record.
 
 Step 7 is the interesting default. **An unclassifiable failure that produced
 no traffic at all is treated as infra, because nothing ran.** The alternative
@@ -1933,20 +1949,23 @@ enforce.
 A bare `aborted` error is genuinely ambiguous and is therefore decided from
 inputs rather than from the signature table: the agent runtime reports an
 operator `/abort` or `/interrupt` and a provider-side stream abort with the
-*same* text, so no regex can separate them. `operator_abort` (step 2) and
-`produced_traffic` (steps 6 and 7) decide it instead — a bare `aborted` with no
-traffic and no recorded operator abort is `"infra"`, one with a recorded
-operator abort is `"work"`.
+*same* text, so no regex can separate them. `operator_abort` (step 2),
+`interrupted` (step 5), `duration_s` (step 6) and `produced_traffic` (steps 6
+and 7) decide it instead — a bare `aborted` with a recorded operator abort is
+`"work"`; with no traffic and no recorded abort it is `"infra"`; with traffic
+and no recorded abort it is `"signal"` when a signal killed the process,
+`"infra"` when it arrived inside `ABORTED_STREAM_MAX_DURATION_S`, and `"work"`
+only past that threshold.
 
-**Known limitation.** A bare `aborted` arriving *after* real traffic with no
-operator abort recorded classifies as `"work"` (step 6) whenever the agent
-process itself exited cleanly — an in-band `aborted` carries no signal, so step
-5 does not catch it — so a provider-side stream abort mid-iteration can still
-cost an approach. Adding `aborted` to the signature
-table is not a fix: it would reclassify every operator interrupt that had
+**What is left, deliberately.** A bare `aborted` arriving after real traffic
+*more* than `ABORTED_STREAM_MAX_DURATION_S` into an iteration still classifies
+as `"work"` (step 6), so a provider-side abort late in a long iteration can
+still cost an approach. That is the residual half of the trade-off task 014
+took: past two minutes the shape is no longer distinguishable from an agent
+that ran, worked and then aborted, and the alternative — adding `aborted` to
+the signature table — would reclassify every operator interrupt that had
 already produced traffic as an infra fault and retry against the operator's
-explicit instruction. The candidate discriminator, and why it is not settled,
-is in §16.
+explicit instruction.
 
 ### 8.3 The infra signature table
 
@@ -4037,19 +4056,7 @@ nobody noticed.
 
 Genuinely unresolved, with the trade-off as it currently stands.
 
-1. **Can a provider-side stream abort mid-iteration be told from an operator's
-   abort?** Not from the text: `pi` records both as the bare in-band error
-   `aborted`, so `classify_fault()` decides from the loop's own bookkeeping —
-   with an operator abort recorded it is `work` and never retried; with no
-   operator abort and no traffic it is `infra`. The unresolved case is **a bare
-   `aborted` after real traffic with no operator abort recorded**, which falls
-   through to `work`, so a provider-side abort partway through a long iteration
-   still costs an approach. The discriminator would be that the iteration ended
-   well inside its own timeout — a stream that died on its own, not a process
-   that ran out of time — but that is a duration heuristic layered on a taxonomy
-   whose whole virtue is that one function decides everything from recorded
-   facts, and it needs a threshold nobody can derive from first principles.
-2. **Does the outage budget belong per-episode or per-job?** It is per-episode:
+1. **Does the outage budget belong per-episode or per-job?** It is per-episode:
    `_reset_infra_episode()` clears the attempt counter, the accumulated wait and
    the instant-failure streak the moment any iteration reaches the model, so a
    job hitting a short glitch every hour is never starved by the earlier ones.
@@ -4057,7 +4064,7 @@ Genuinely unresolved, with the trade-off as it currently stands.
    endpoint — twelve separate near-budget episodes are permitted where one long
    one is not. A per-job cap would bound that, at the price of failing a job
    that was, by every local measure, recovering fine.
-3. **Should a derived cost ever be shown without its marker?** It never is:
+2. **Should a derived cost ever be shown without its marker?** It never is:
    host-side pricing lands in its own `costDerivedUSD` field, carries
    `costDerived`, and renders as `~$0.45 derived` everywhere. That is right for
    auditability and slightly hostile for budgeting — an operator comparing two
@@ -4066,7 +4073,7 @@ Genuinely unresolved, with the trade-off as it currently stands.
    question and is also exactly the kind of quiet estimate the marker exists to
    prevent. An explicit opt-in ("show me blended totals, I know what I am
    reading") is the shape of a fix, not yet a decision.
-4. **How much autonomy should the agent have over its own container?** A great
+3. **How much autonomy should the agent have over its own container?** A great
    deal: with `--allow-docker` it can inspect, and in principle delete, the
    container it is running in. The mitigations are identification
    (`ralphd.role`, `RALPHD_SELF_CONTAINER_ID`) plus prompt guidance, and
@@ -4075,7 +4082,7 @@ Genuinely unresolved, with the trade-off as it currently stands.
    dropping the socket removes the toolchain-in-a-sibling pattern that makes a
    thin image viable; PID-namespace isolation (§15) helps with signals but not
    with `docker rm`.
-5. **Should the retroactive scrub reach a dead run's snapshot?** Write-time
+4. **Should the retroactive scrub reach a dead run's snapshot?** Write-time
    scrubbing is the accepted host-side guarantee, because the only way to give
    an off-engine reader the retroactive catch is to persist the redaction map,
    which would put every secret value on disk in plaintext beside the transcript
@@ -4085,7 +4092,7 @@ Genuinely unresolved, with the trade-off as it currently stands.
    gap stays, or secrets-at-rest get a real mechanism (a keyring, an external
    secret manager) that the map could then safely use — a larger decision than
    this one.
-6. **Should the reflection diff ever be applied automatically?**
+5. **Should the reflection diff ever be applied automatically?**
    `suggestions.diff` is a proposal by construction: nothing applies it, and the
    prompt forbids the agent from doing so. That keeps every run reproducible
    against known prompt material, and it also makes the loop's self-improvement
@@ -4093,3 +4100,41 @@ Genuinely unresolved, with the trade-off as it currently stands.
    close the gap without giving the loop write access to its own prompts
    mid-flight, and would have to answer what happens when two runs propose
    conflicting edits.
+
+---
+
+## 17. Answered questions
+
+Questions that stood in §16 until a wave had the evidence to settle them. They
+are recorded here with the answer and what it was decided *from*, rather than
+edited in place in §16, so the reasoning that closed one is still readable next
+to the reasoning that opened it. §16's remaining questions renumbered when an
+entry moved out of it; each entry below names the number it used to carry.
+
+1. **Can a provider-side stream abort mid-iteration be told from an operator's
+   abort?** (§16 question 1 through v0.6; answered by task 014, #49 part 2.)
+   **Yes, for the case that mattered, and from duration.** Not from the text —
+   `pi` records both as the bare in-band error `aborted` — so the ladder decides
+   it from the loop's own bookkeeping plus how long the iteration ran: with an
+   abort recorded it is `"work"` and never retried (§8.2 step 2); with a signal
+   after traffic it is `"signal"` (step 5); with traffic, a clean exit, no
+   recorded abort and a duration inside `faults.ABORTED_STREAM_MAX_DURATION_S`
+   it is `"infra"`, so it is retried and refunded (step 6); past that threshold
+   it stays `"work"`.
+
+   The threshold that "nobody can derive from first principles" was derived
+   from a run instead. In `selfdev-v06-release`, iteration 145 recorded
+   `error: aborted` with `faultClass: "work"` **39 seconds** into a 45-minute
+   `iteration_timeout_s` — the leading edge of a DNS outage whose next five
+   iterations matched an infra signature and were correctly retried and
+   refunded. Same outage, opposite treatment, decided only by whether a token
+   had been emitted before the stream died; and 145 was charged an approach
+   *and* consumed a steering note. The constant is 120s: three times the
+   observed 39s, and ~4% of the default cap, so an iteration that really did
+   work cannot land under it. It is absolute rather than a fraction of
+   `iteration_timeout_s` because the cap is not part of an iteration's
+   `meta.json`, and `state.fault_explanation` has to re-derive the same verdict
+   from that record alone.
+
+   What is deliberately *not* answered: the same shape more than 120s in. See
+   §8.2's "What is left, deliberately".

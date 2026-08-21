@@ -998,6 +998,8 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   classifier's own words: the startup watchdog fired (no LLM traffic at all) ·
   the error text matched a known infra signature · the agent reached the model
   and then failed · a signal ended the iteration after it had reached the model
+  · a bare `aborted` ended it well inside its own timeout with no abort recorded
+  for the run (the provider hung up mid-stream)
   · no traffic and no recognized signature (an unclassifiable no-traffic failure
   is treated as infra) · an abort/interrupt recorded for the run, which is never
   retried as an outage.
@@ -1013,7 +1015,9 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   give-up is still `work`, because that branch's job is "never retry this as an
   outage" — which is issue #49, not this surface's business. A signal that ended
   an iteration with **no** abort recorded for the run is its own `signal` class
-  (#49 part 1, task 013).
+  (#49 part 1, task 013). A bare `aborted` after traffic with no abort recorded
+  that ended within two minutes of the iteration's start is `infra` — a stream
+  the provider hung up on, retried and refunded (#49 part 2, task 014).
 - **`signature:`** is the row of `engine/faults.py`'s `INFRA_SIGNATURES` table
   that matched: its family (`dns` · `tcp` · `stream` · `tls` · `sdk` ·
   `http-5xx` · `backpressure` · `bedrock-stream` · `capacity`), what that

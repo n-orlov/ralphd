@@ -800,6 +800,11 @@ class LoopSupervisor:
             no_traffic_timeout=result.no_traffic_timeout,
             produced_traffic=bool(result.final_text) or bool(result.usage),
             operator_abort=self.operator_abort_requested,
+            # Task 014 (#49 part 2): how long the agent actually ran -- the ONE
+            # shape it decides is a bare in-band `aborted` after traffic (a
+            # provider-side stream abort, retried and refunded, rather than an
+            # approach charged to the agent). None when no subprocess ran.
+            duration_s=result.duration_s,
             # Steering 004: the verdict is decided by the flag above; this one
             # only lets `explain_fault` word the reason honestly (an abort that
             # arrived from outside vs. this engine giving up on its own).

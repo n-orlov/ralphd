@@ -43,6 +43,40 @@ FAULT_CLASS_SIGNAL = "signal"
 FAULT_CLASSES: tuple[str, ...] = (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
                                  FAULT_CLASS_SIGNAL)
 
+# Task 014 (#49 part 2): how long an iteration may have run and still have its
+# bare in-band `aborted` read as a provider-side stream abort rather than as the
+# agent's own failure. SPEC 16 Q1 called this discriminator "a threshold nobody
+# can derive from first principles"; the `selfdev-v06-release` run supplies it
+# empirically. Iteration 145 of that run recorded `error: aborted` with
+# `faultClass: "work"` **39 seconds** into an `iteration_timeout_s` of
+# 45 minutes (2700s, the default) -- the leading edge of a DNS outage whose next
+# five iterations matched an infra signature and were correctly retried and
+# refunded. Same outage, opposite treatment, decided only by whether a token had
+# been emitted before the stream died; and 145 was charged for an approach AND
+# destroyed a steering note.
+#
+# 120s is chosen as three times that observed 39s (so the shape that motivated
+# the rule is not sitting on the boundary) while staying ~4% of the default
+# 45-minute cap: an iteration doing real work reaches the model, plans, edits
+# files and runs tests, which is minutes at the very least, so a *worked* whole
+# iteration cannot land under this bar. Deliberately absolute rather than a
+# fraction of `iteration_timeout_s`: the cap is not recorded in an iteration's
+# meta.json, so a fraction could not be re-derived by `state.fault_explanation`
+# from the on-disk record and the explanation would diverge from the verdict.
+ABORTED_STREAM_MAX_DURATION_S = 120.0
+
+# A *bare* `aborted` -- the whole error text, not `aborted: Premature close`
+# (which the `stream` signature family owns) and not a longer message that
+# merely mentions the word. pi writes exactly this string as the in-band
+# errorMessage for a stream that was aborted at either end.
+_BARE_ABORTED_RE = re.compile(r"^aborted[.!]?$", re.IGNORECASE)
+
+
+def is_bare_aborted(error_text: str | None) -> bool:
+    """True when ``error_text`` is pi's bare ``aborted`` and nothing else
+    (task 014, #49)."""
+    return bool(_BARE_ABORTED_RE.match((error_text or "").strip()))
+
 # Text signatures that mean "the fault is in reaching/using the LLM
 # endpoint itself", independent of whether any traffic was ever observed.
 #
@@ -173,6 +207,12 @@ FAULT_REASON_WORK = (
 FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED = (
     "no LLM traffic at all and no recognized signature -- an unclassifiable "
     "no-traffic failure is treated as infra")
+# Task 014 (#49 part 2): the answer to SPEC 16 Q1 -- a bare `aborted` that
+# arrived after real traffic, with no abort recorded for the run, and well
+# inside the iteration's own timeout, is the provider hanging up mid-stream.
+FAULT_REASON_ABORTED_STREAM = (
+    "a bare `aborted` ended this iteration well inside its own timeout with no "
+    "abort recorded for the run -- the provider hung up mid-stream")
 
 
 def matched_signature(error_text: str | None) -> dict | None:
@@ -210,6 +250,7 @@ def explain_fault(
     produced_traffic: bool = False,
     operator_abort: bool = False,
     operator_abort_recorded: bool = False,
+    duration_s: float | None = None,
 ) -> dict:
     """``classify_fault``'s verdict *with its reasoning*, from exactly the same
     inputs (task 025, #18.4).
@@ -242,6 +283,14 @@ def explain_fault(
     Task 013 (#49): a signal that ended an iteration which HAD reached the
     model is now its own class, ``FAULT_CLASS_SIGNAL`` -- see that constant for
     why it is neither ``"work"`` nor ``"infra"`` and why it is not retried.
+
+    Task 014 (#49 part 2, closing SPEC 16 Q1): ``duration_s`` is how long the
+    agent process actually ran (``IterationResult.duration_s``; the on-disk
+    re-derivation passes the iteration's recorded ``durationS``). It decides
+    exactly ONE shape -- a bare ``aborted`` after real traffic, with no abort
+    recorded, that ended within ``ABORTED_STREAM_MAX_DURATION_S`` -- which is
+    ``"infra"`` rather than ``"work"``. An unknown (``None``) duration never
+    fires that branch: nothing is known, so nothing is reclassified.
 
     Known and deliberate imprecision that remains (issue #49, which replaced
     the now-closed #23 as the owner of this taxonomy): an engine-side give-up
@@ -297,6 +346,22 @@ def explain_fault(
         if interrupted:
             return {"faultClass": FAULT_CLASS_SIGNAL,
                     "reason": FAULT_REASON_INTERRUPTED, "signature": None}
+        # Task 014 (#49 part 2): the answer to SPEC 16 Q1. A bare `aborted`
+        # with a CLEAN exit status (so no signal: `interrupted` is False and
+        # the branch above did not fire) that arrived within
+        # ABORTED_STREAM_MAX_DURATION_S is the provider hanging up mid-stream,
+        # not the agent failing: no real work iteration finishes -- let alone
+        # fails with a one-word error -- inside two minutes, and every other
+        # reading of a bare `aborted` is already owned by a branch above (an
+        # operator/engine abort by the carve-out, a signal by the branch
+        # above, `aborted: Premature close` by the `stream` signature family).
+        # Being `infra` it is retried and refunded, which is the whole point:
+        # iteration 145 of selfdev-v06-release was charged an approach for one
+        # of these while the five iterations after it were refunded.
+        if (is_bare_aborted(error_text) and duration_s is not None
+                and duration_s <= ABORTED_STREAM_MAX_DURATION_S):
+            return {"faultClass": FAULT_CLASS_INFRA,
+                    "reason": FAULT_REASON_ABORTED_STREAM, "signature": None}
         return {"faultClass": FAULT_CLASS_WORK, "reason": FAULT_REASON_WORK,
                 "signature": None}
     return {"faultClass": "infra",
@@ -314,6 +379,7 @@ def classify_fault(
     produced_traffic: bool = False,
     operator_abort: bool = False,
     operator_abort_recorded: bool = False,
+    duration_s: float | None = None,
 ) -> FaultClass | None:
     """Classify one finished iteration's failure signal.
 
@@ -361,6 +427,13 @@ def classify_fault(
     *operator-initiated* termination (see below), which is nobody's fault but
     must never be retried as an outage.
 
+    Task 014 (#49 part 2) narrows ``"work"`` once more, closing SPEC 16 Q1: a
+    bare ``aborted`` that arrived after real traffic, with no abort recorded
+    for the run and a clean exit status, within
+    ``ABORTED_STREAM_MAX_DURATION_S`` of the iteration's start is ``"infra"``
+    (a stream the provider hung up on), so it is retried and refunded instead
+    of costing an approach. Past that threshold it stays ``"work"``.
+
     Task 013 (#49): returns ``"signal"`` for the shape that used to be folded
     into ``"work"`` -- an iteration that reached the model and was then ended
     by a signal, with no abort recorded for this run. It was terminated before
@@ -404,4 +477,5 @@ def classify_fault(
         produced_traffic=produced_traffic,
         operator_abort=operator_abort,
         operator_abort_recorded=operator_abort_recorded,
+        duration_s=duration_s,
     )["faultClass"]

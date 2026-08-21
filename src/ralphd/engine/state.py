@@ -2076,6 +2076,15 @@ def fault_explanation(run_root: Path) -> dict:
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
             produced_traffic=bool(usage) or bool(detail.get("sawComplete")),
+            # Task 014 (#49 part 2): the recorded wall-clock of the iteration,
+            # so the re-derivation reaches the same verdict the engine did for
+            # a bare `aborted` after traffic (an absolute threshold, not a
+            # fraction of iteration_timeout_s, exactly because the cap is not
+            # part of this record -- see ABORTED_STREAM_MAX_DURATION_S).
+            duration_s=(detail.get("durationS")
+                        if isinstance(detail.get("durationS"), (int, float))
+                        and not isinstance(detail.get("durationS"), bool)
+                        else None),
         )
         exp.update(hasFault=True,
                    faultClass=recorded,
