@@ -25,6 +25,12 @@ log = logging.getLogger("ralphd.runner")
 # exceed asyncio's 64 KiB default readline limit
 STREAM_LIMIT = 16 * 1024 * 1024
 
+# Task 010 (#28): how long a timed-out iteration is given to shut down
+# gracefully -- first for its output pump to drain whatever pi writes on the
+# way out, then for the process itself to exit before it is SIGKILLed. A
+# module constant so tests can compress it instead of sleeping for real.
+SHUTDOWN_GRACE_S = 30
+
 
 @dataclass
 class IterationResult:
@@ -164,20 +170,46 @@ class PiRunner:
             pump_task = asyncio.ensure_future(pump())
             watchdog_task = asyncio.ensure_future(startup_watchdog())
             try:
-                await asyncio.wait_for(pump_task, timeout=timeout_s)
-            except TimeoutError:
-                result.timed_out = True
-                self.interrupt()
-                try:
-                    await asyncio.wait_for(pump_task, timeout=30)
-                except TimeoutError:
-                    pass
+                # Task 010 (#28): asyncio.wait(), NOT asyncio.wait_for(), on
+                # the timeout path. wait_for cancels the future it timed out
+                # on and awaits that cancellation, so the old idiom's second
+                # `await asyncio.wait_for(pump_task, timeout=30)` re-awaited
+                # an already-cancelled task -- which re-raises
+                # CancelledError. CancelledError is a BaseException, so it
+                # slipped past every `except Exception` between here and the
+                # loop's per-iteration guard: an iteration that merely blew
+                # its timeout took the whole engine down instead of being
+                # recorded as one failed iteration. asyncio.wait() leaves the
+                # task alone, so the pump survives the timeout and we can
+                # SIGINT pi and still drain what it writes on the way out.
+                done, _ = await asyncio.wait({pump_task}, timeout=timeout_s)
+                if done:
+                    # Surface an engine-side pump failure (stream/OS error)
+                    # exactly as the old wait_for did: the caller turns it
+                    # into one failed iteration.
+                    await pump_task
+                else:
+                    result.timed_out = True
+                    self.interrupt()
+                    done, _ = await asyncio.wait({pump_task},
+                                                 timeout=SHUTDOWN_GRACE_S)
+                    if not done:
+                        # pi ignored the SIGINT (or is wedged in a read):
+                        # stop pumping. The outer `finally` SIGKILLs the
+                        # process group, and this iteration is already
+                        # recorded as timed out.
+                        pump_task.cancel()
+                    # Either way the timeout verdict stands, so a late pump
+                    # error must not replace it with an exception.
+                    with contextlib.suppress(BaseException):
+                        await pump_task
             finally:
                 watchdog_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await watchdog_task
             try:
-                await asyncio.wait_for(self._proc.wait(), timeout=30)
+                await asyncio.wait_for(self._proc.wait(),
+                                       timeout=SHUTDOWN_GRACE_S)
             except TimeoutError:
                 self._proc.kill()
                 await self._proc.wait()

@@ -94,6 +94,21 @@ from env vars set by the test:
                       than the broken-environment instant-failure carve-out
                       (LoopSupervisor.INSTANT_FAILURE_MAX_DURATION_S = 5s)
                       must push the attempt's duration past that window.
+  STUB_TIMEOUT_HANG_COUNT  after the first STUB_TIMEOUT_HANG_SKIP
+                      invocations (default 0), the next N invocations of the
+                      stub (any phase) emit ONE normal assistant message_end
+                      -- real text and real token usage, so the engine has
+                      observed genuine LLM traffic and its startup-window
+                      watchdog is satisfied -- and then hang forever without
+                      writing anything else. The only thing that can end such
+                      an invocation is the engine's own FULL iteration timeout
+                      (`iteration_timeout_s`), which is exactly the shape task
+                      010 (#28) is about: the timeout must cost one failed
+                      iteration, never the whole engine. Set
+                      `iteration_timeout_s` in job.yaml to a couple of
+                      seconds so the timeout fires quickly.
+  STUB_TIMEOUT_HANG_SKIP  how many invocations behave normally before
+                      STUB_TIMEOUT_HANG_COUNT starts (default 0).
   STUB_REFLECT_FAIL   make the `reflect` invocation (only) fail, whatever
                       invocation number it happens to be -- unlike the
                       globally-counted fault knobs above, so a test does not
@@ -435,6 +450,30 @@ def emit_final(text, tool_call=None, thinking_text=None):
         "type": "message_end",
         "message": _message,
     }))
+
+
+# STUB_TIMEOUT_HANG_COUNT (task 010, #28): traffic, then a hang that only the
+# engine's FULL iteration timeout can end. Deliberately different from
+# STUB_INFRA_HANG_COUNT, which produces zero output and is therefore killed
+# much earlier by the startup-window watchdog: here the engine has already
+# seen a complete assistant message with billed tokens, so no fail-fast
+# mechanism applies and `iteration_timeout_s` is the only way out.
+_timeout_hang_count = int(os.environ.get("STUB_TIMEOUT_HANG_COUNT", "0"))
+_timeout_hang_skip = int(os.environ.get("STUB_TIMEOUT_HANG_SKIP", "0"))
+if _timeout_hang_count:
+    _th_marker = marker("timeout-hang-count")
+    _thseen = 0
+    if os.path.exists(_th_marker):
+        _thseen = int(open(_th_marker).read())
+    with open(_th_marker, "w") as _f:
+        _f.write(str(_thseen + 1))
+    if _timeout_hang_skip <= _thseen < _timeout_hang_skip + _timeout_hang_count:
+        emit_final("working on it (about to hang past the iteration timeout)")
+        sys.stdout.flush()
+        sys.stderr.write("stub: simulated hang past the iteration timeout\n")
+        sys.stderr.flush()
+        time.sleep(9999)
+        sys.exit(1)
 
 
 if "Role: Planner" in prompt:
