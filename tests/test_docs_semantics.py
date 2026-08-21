@@ -56,6 +56,19 @@ independent verification of task 043b), and they have checks here too:
   `GET /tasks` and publishes a `live` flag (which is how `docs/cli.md`
   documents it, so the two docs contradicted each other).
 
+Round 3 (the second independent verification of 043b) found three more, in the
+first two sections of `docs/architecture.md`:
+
+* the workspace was offered as "host bind-mount or named volume" (and in
+  README's diagram as "mounted or volume"); `_parse_workspace_specs` resolves
+  a host directory and exits 2 for anything else, so a volume name never
+  reaches docker, and §3 of the same doc always listed the two real modes;
+* the shared iteration budget was called `max_iterations`; the field, the
+  `job.yaml` key and the published budget are all `iterations` (that check is
+  the identifier scan in `test_docs_consistency.py`, the name layer);
+* the engine was called `ralphd`, which is the *distribution*; the installed
+  console script is `ralphd-engine`.
+
 Each check is written against the code, not against the corrected prose, so it
 keeps failing if the behaviour moves again.
 """
@@ -1091,3 +1104,102 @@ def test_the_live_answer_check_would_catch_the_old_two_reads_claim():
              "the rest - the run list, one iteration - are on-disk by design. "
              "The static bundle landed in v0.3.")
     assert not _live_answer_problems(fixed, LIVE_VIEW_LABELS)
+
+
+# ---- the workspace has two modes, and neither is a volume ----------------
+# Round 3 of the semantic pass (found by the independent verification of
+# 043b): the overview bullet offered "host bind-mount or named volume" and
+# README's diagram "(mounted or volume)", while the only workspace flag
+# resolves a host path and exits 2 for anything that is not a directory --
+# a volume name can never reach docker. §3 of the same doc has always
+# enumerated the two real modes.
+
+CLI_MAIN = REPO_ROOT / "src" / "ralphd" / "cli" / "main.py"
+
+VOLUME_MODE_RE = re.compile(
+    r"(?:bind[- ])?mount(?:ed|s)?\s+or\s+(?:a\s+)?(?:named\s+)?volume"
+    r"|(?:named\s+)?volume\s+or\s+(?:a\s+)?(?:bind[- ])?mount(?:ed)?",
+    re.IGNORECASE)
+VOLUME_DENIALS = ("there is no", "no named-volume", "never a volume",
+                  "not a volume")
+
+
+def _volume_workspace_claims(text: str) -> list[str]:
+    """Sentences offering a volume as a way to supply the workspace."""
+    flat = re.sub(r"\s+", " ", text)
+    claims = []
+    for m in VOLUME_MODE_RE.finditer(flat):
+        window = flat[max(0, m.start() - 140):m.end() + 140]
+        if "workspace" not in window.lower():
+            continue  # the sibling-container cache volumes are real
+        if any(d in window.lower() for d in VOLUME_DENIALS):
+            continue
+        claims.append(window.strip())
+    return claims
+
+
+def test_the_workspace_is_a_host_path_and_no_doc_offers_a_volume():
+    from ralphd.cli.main import _parse_workspace_specs
+
+    # Code side: the one workspace flag resolves a host directory, so a
+    # volume name is a startup error, not a second mode.
+    with pytest.raises(SystemExit) as exc:
+        _parse_workspace_specs(["ralphd-workspace-volume-that-is-no-dir"])
+    assert exc.value.code == 2
+    assert _parse_workspace_specs([str(REPO_ROOT)]) == [(None, REPO_ROOT)]
+    main_src = CLI_MAIN.read_text()
+    assert "volume create" not in main_src and "--mount" not in main_src
+
+    offenders = {}
+    for path in DOC_FILES:
+        claims = _volume_workspace_claims(path.read_text())
+        if claims:
+            offenders[str(path.relative_to(REPO_ROOT))] = claims
+    assert not offenders, (
+        f"docs offer a workspace mode the CLI cannot take: {offenders}")
+
+
+def test_the_volume_mode_check_would_catch_the_old_overview_bullet():
+    assert _volume_workspace_claims(
+        "- a **workspace**: the code being worked on (host bind-mount or "
+        "named volume)")
+    assert _volume_workspace_claims(
+        "|  ~/.ralphd/llm-profiles/    |  /workspace (mounted or volume)   |")
+    assert _volume_workspace_claims(
+        "the workspace arrives as a named volume or bind mount")
+    # A cache volume for a sibling toolchain is a different thing entirely,
+    # and the corrected bullet names the two real modes.
+    assert not _volume_workspace_claims(
+        "Mount a **named volume** for the toolchain's caches, or bind-mount "
+        "a host dir, so a rebuild does not re-download its dependencies.")
+    assert not _volume_workspace_claims(
+        "- a **workspace**: the code being worked on, either an existing host "
+        "checkout bind-mounted in or a directory the engine creates on the "
+        "run dir (there is no named-volume mode)")
+
+
+# ---- the engine is the console script pyproject installs ------------------
+
+PYPROJECT = REPO_ROOT / "pyproject.toml"
+ENGINE_ENTRY_POINT = "ralphd.engine.main"
+
+
+def _console_scripts() -> dict[str, str]:
+    import tomllib
+
+    with PYPROJECT.open("rb") as fh:
+        return tomllib.load(fh)["project"]["scripts"]
+
+
+def test_the_overview_names_the_engines_real_console_script():
+    scripts = _console_scripts()
+    engine = [name for name, target in scripts.items()
+              if target.startswith(ENGINE_ENTRY_POINT)]
+    assert len(engine) == 1, scripts
+    match = re.search(r"the \*\*engine\*\* \(`([A-Za-z0-9_.-]+)`",
+                      ARCH_DOC.read_text())
+    assert match, "docs/architecture.md's overview no longer names the engine"
+    assert match.group(1) == engine[0], (
+        f"the overview calls the engine {match.group(1)!r}; the installed "
+        f"console script is {engine[0]!r} (the distribution is named "
+        f"{'ralphd'!r}, which is not a command)")

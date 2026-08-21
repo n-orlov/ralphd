@@ -22,7 +22,7 @@ outputs. The CLI is documented to be driven by a human **or** by another AI agen
 │     └───────────────────────┼──────► │  :7777   │  spawns `pi` per iter   │ │
 │                             │        │          └─────────────────────────┘ │
 │  ~/.ralphd/runs/<id>/  ◄────┼────────┼── bind-mounted run dir (history)     │
-│  ~/.ralphd/llm-profiles/    │        │  /workspace (mounted or volume)      │
+│  ~/.ralphd/llm-profiles/    │        │  /workspace (bind-mount or clone)    │
 └─────────────────────────────┘        └──────────────────────────────────────┘
 ```
 

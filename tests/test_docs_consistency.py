@@ -791,3 +791,83 @@ def test_the_dotted_path_check_is_substantive():
     assert _resolves("ralphd.engine.state.format_cost")
     assert _dotted_claims("`ralphd.log_merge.NO_TRANSCRIPT`")
     assert not _dotted_claims("the `ralphd.iteration` boundary event")
+
+
+# --------------------------------------------------------------------------
+# Task 043b (#22): a backticked snake_case identifier in the operator docs is
+# a claim that the codebase spells a thing that way. The dotted-path check
+# above catches a wrong *module* path; this catches the bare name -- the
+# failure mode found by the independent verification of 043b, where
+# docs/architecture.md called the shared iteration budget `max_iterations`
+# while the field, the job.yaml key and the published budget are all
+# `iterations`, so the documented name is inert (an unknown job.yaml key
+# lands in JobConfig.extra and is silently ignored).
+# --------------------------------------------------------------------------
+
+IDENTIFIER_RE = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
+
+# SPEC.md is deliberately out of scope: its snake_case names include pi's own
+# stream event types (`turn_start`, `agent_end`, ...), which are another
+# project's vocabulary and could not be found in this repo's source.
+IDENTIFIER_DOCS = [REPO_ROOT / "README.md",
+                   *sorted((REPO_ROOT / "docs").glob("*.md"))]
+
+
+# The doc-check modules quote the *wrong* wording they exist to catch, so
+# reading them into the corpus would make every caught name look real.
+CORPUS_EXCLUDED = {"test_docs_consistency.py", "test_docs_semantics.py"}
+# Text the repo actually ships or runs. Compiled caches are skipped: a .pyc of
+# an excluded module would smuggle its strings back in.
+CORPUS_SUFFIXES = {".py", ".js", ".css", ".html", ".md", ".json", ".yaml",
+                   ".yml", ".toml", ".txt", ".sh", ".cfg", ""}
+
+
+def _code_corpus() -> str:
+    """Everything shipped plus the tests, as one blob.
+
+    Tests count: a doc may point at a fixture (`engine_factory`) that exists
+    nowhere else, and that is still a real name in this repo.
+    """
+    parts = []
+    for base in ("src", "tests"):
+        for path in sorted((REPO_ROOT / base).rglob("*")):
+            if not path.is_file() or path.name in CORPUS_EXCLUDED:
+                continue
+            if path.suffix not in CORPUS_SUFFIXES or "__pycache__" in path.parts:
+                continue
+            parts.append(path.read_text(errors="replace"))
+    return "\n".join(parts)
+
+
+def _absent_identifiers(text: str, corpus: str) -> list[str]:
+    return sorted({name for name in IDENTIFIER_RE.findall(text)
+                   if not re.search(rf"\b{re.escape(name)}\b", corpus)})
+
+
+def test_every_backticked_identifier_in_the_docs_exists_in_the_code():
+    corpus = _code_corpus()
+    offenders = {}
+    for path in IDENTIFIER_DOCS:
+        absent = _absent_identifiers(path.read_text(), corpus)
+        if absent:
+            offenders[str(path.relative_to(REPO_ROOT))] = absent
+    assert not offenders, (
+        f"docs name identifiers the code does not have: {offenders}")
+
+
+def test_the_identifier_check_is_substantive():
+    corpus = _code_corpus()
+    doc = "\n".join(p.read_text() for p in IDENTIFIER_DOCS)
+    assert len(set(IDENTIFIER_RE.findall(doc))) >= 40
+    # The exact wording the verification of 043b caught, and the wording that
+    # replaced it.
+    assert _absent_identifiers(
+        "one shared iteration budget (`max_iterations`)", corpus) \
+        == ["max_iterations"]
+    assert not _absent_identifiers(
+        "one shared iteration budget (`iterations` in `job.yaml`, published "
+        "as `budgets.iterations`)", corpus)
+    # A tests-only fixture name is a real name, and dotted/attribute spellings
+    # are the dotted check's business, not this one's.
+    assert not _absent_identifiers("`engine_factory`", corpus)
+    assert not _absent_identifiers("`ralphd.engine.state.format_cost`", corpus)
