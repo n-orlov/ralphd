@@ -16,6 +16,13 @@ from scratch, trusting nothing the worker wrote about its own work.
    `validation-failed` and add a `validationNotes` field with a concrete
    description of what failed and what evidence you observed. Do NOT emit the
    sentinel line.
+5. If this failing verdict is the task's LAST available attempt (tasks.json
+   shows `validationAttempts` at 2, so a third miss marks it `failed`), write
+   `validationNotes` as a handoff: name the residual gap in one sentence, list
+   which criteria DID verify and with what evidence, and propose a concrete
+   follow-up task (title plus successCriteria) closing just that gap — so the
+   next worker carves out the gap instead of the loop stalling on a `failed`
+   task.
 
 ## Rules
 
