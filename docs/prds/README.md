@@ -18,7 +18,7 @@ from that storage after the fact — the earlier waves were never committed.
 | `selfdev-roadmap-3` | [selfdev-roadmap-3.md](selfdev-roadmap-3.md) | succeeded / verified | 41 | 43.7M | $21.07 |
 | `selfdev-roadmap-4` | [selfdev-roadmap-4.md](selfdev-roadmap-4.md) | succeeded / verified | 43 | 27.6M | $17.35 |
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
-| `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | still running / 54 of 55 tasks verified, 1 failed | 143+ | 310.2M+ | unavailable |
+| `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
 
 Notes worth keeping with the documents:
 
@@ -33,21 +33,29 @@ Notes worth keeping with the documents:
   gateway route whose model ids the provider never priced — the bug that run
   fixed (issue #10): unknown cost is no longer collapsed into `$0.0000`. The fix
   is not retroactive, so this run's own numbers stay zero.
-- **`v0.6-first-release.md`'s row is the run's own snapshot of itself**, read
-  from that run's `status.json` by the iteration that wrote the row, which is
-  why its counts carry a `+`: the run was still running, and a run cannot
-  count the iterations that document and verify it. The outcome, honestly:
-  every issue in the brief (#14–#22) is closed on GitHub with a closing comment
-  (`artifacts/reports/issue-closure.md`), 54 of the 55 planned tasks are
-  completed, and one — a whole-SPEC rewrite — is recorded `failed` after three
-  validation attempts, its scope having landed in three narrower commits
-  instead. The cost is `unavailable` rather than unpriced-and-silent: the
-  gateway quoted `costUSD: 0` with `costPriced: true` beside 310M billed
-  tokens, and the work in this very wave (issue #14) classifies that
-  implausible zero as unknown on read instead of rendering `$0.00`. Feeding the
-  same recorded counters through the built-in AWS Bedrock table this wave
-  shipped (`ralphctl start --price-strategy aws`) derives ≈ $350 — an estimate,
-  and a floor. Full evidence in `artifacts/reports/issue-traceability.md`.
+- **`v0.6-first-release.md`'s row is that run's final record**, read from its
+  `status.json` after it ended: `state: succeeded`, `verdict: verified` (the
+  review passed at raw iteration 154), on approach 1 of a possible 10 — it
+  never replanned. The iteration cell is the 145 the engine counted against a
+  300 budget, not the 155 raw iteration slots the log holds: the 10-slot
+  difference is attempts classified as infrastructure faults, which are retried
+  and refunded rather than charged to the budget (`iterationsUsed`, task 001a).
+  The outcome, honestly: every issue in the brief (#14–#22) is closed on GitHub
+  with a closing comment (`artifacts/reports/issue-closure.md`),
+  54 of the 55 planned tasks are `completed`, and one — `043d`, a whole-SPEC
+  rewrite — is recorded `skipped` with all three validation attempts consumed
+  (`validationAttempts: 3`, left in place as the record). `skipped` is **not** a
+  claim that it met its criteria: it did not. It was relabelled from `failed` by
+  operator instruction so the run could leave its task loop and reach the review
+  phase, and the scope it was meant to cover shipped in three narrower commits
+  instead (`b923af2`, `168a041`, `cc8c8a2`). The cost is `unavailable` rather
+  than unpriced-and-silent: the gateway quoted `costUSD: 0` beside 332M billed
+  tokens, and the work in this very wave (issue #14) classifies that implausible
+  zero as unknown on read instead of rendering `$0.00`. Feeding the same
+  recorded counters through the built-in AWS Bedrock table this wave shipped
+  (`ralphctl start --price-strategy aws`) derives ≈ $374 — an estimate at that
+  table's rates, not money any provider quoted. Full evidence in
+  `artifacts/reports/issue-traceability.md`.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
