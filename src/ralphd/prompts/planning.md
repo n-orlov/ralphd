@@ -9,6 +9,13 @@ iteration is to read the PRD and produce a task plan. You do NOT implement anyth
 2. Explore the workspace directory to understand what exists (languages, layout,
    test setup). If the PRD lists repositories and the workspace is empty, clone them
    into the workspace.
+2a. **Spot-check the PRD's factual claims about the code before you break it
+   into tasks**: every `file:line` citation, every "X is missing" and every
+   "nothing does Y" was written against some earlier commit. The CODE is the
+   authority. Where a requirement already holds, rescope its task from
+   "implement X" to "prove X holds and add the check that keeps it holding";
+   where a claim is wrong in a way that changes the design, record the
+   correction in the notes so no later iteration re-derives it.
 2b. **Measure the test surface once and write the numbers into the notes**: the
    command that runs the suite, its wall-clock runtime, which tiers or markers
    exist and what each costs, and the fastest targeted invocation per area the
