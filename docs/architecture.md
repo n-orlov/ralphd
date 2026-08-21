@@ -10,10 +10,13 @@ ralphd is a job-scoped autonomous coding loop. A **job** is one PRD (product
 requirements document / task description) executed to verified completion. Each job
 runs in its own Docker container. The container holds:
 
-- the **engine** (`ralphd`, Python): loop supervisor + HTTP API server, PID 1
+- the **engine** (`ralphd-engine`, Python): loop supervisor + HTTP API server, PID 1
 - the **agent runtime**: [pi](https://pi.dev) CLI, spawned as a subprocess once per
   iteration
-- a **workspace**: the code being worked on (host bind-mount or named volume)
+- a **workspace**: the code being worked on, either an existing host checkout
+  bind-mounted in or a directory the engine creates on the run dir and the
+  planning iteration clones into (§3 "State model"; there is no named-volume
+  mode)
 
 The host side is driven entirely by **`ralphctl`** (Python CLI): it prepares config,
 starts the container, talks to the API, and maintains the run registry at
@@ -22,7 +25,9 @@ network beyond reaching the configured LLM endpoint.
 
 ## 2. The loop
 
-The loop has three phase types drawing on one shared **iteration budget** (`max_iterations`):
+The loop has three phase types drawing on one shared **iteration budget**
+(`iterations` in `job.yaml`, `JobConfig.iterations`, published as
+`budgets.iterations`):
 
 ```
 job start
