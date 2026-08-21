@@ -685,14 +685,20 @@ Task-failure bookkeeping, all in `_verify_task()`:
 | condition | effect |
 |---|---|
 | sentinel emitted | task id added to `vigilant-verified.json`; `signal` event `taskVerified` |
-| verdict miss (no sentinel, no error) | `validationAttempts` incremented; `status` forced to `validation-failed` and a default `validationNotes` added if the verifier wrote none |
+| verdict miss (a verifier ran to completion, no sentinel, no error) | `validationAttempts` incremented; `status` forced to `validation-failed` and a default `validationNotes` added if the verifier wrote none |
 | `validationAttempts` reaches 3 | `status` forced to `failed` |
 | task already at `validationAttempts >= 3` | verification skipped |
-| the verify iteration errored out before any verdict | retried up to `MAX_VERIFY_ERROR_RETRIES` (3) **without** consuming a validation attempt; if it keeps erroring, `status` and `validationAttempts` are left exactly as they were |
+| the verify iteration reached **no verdict at all** — an in-band agent/provider error, the full `iteration_timeout_s`, the startup-window watchdog, or a signal (`error_message` / `timed_out` / `no_traffic_timeout` / `interrupted`) | retried up to `MAX_VERIFY_ERROR_RETRIES` (3) **without** consuming a validation attempt; if no attempt ever reaches a verdict, `status`, `validationAttempts` and `validationNotes` are left byte-for-byte as they were |
+| no verify iteration ran at all (budget gone) | same: nothing observed, nothing recorded against the task |
 
-The last row is the load-bearing one: an infrastructure fault must never be
-recorded as a failed validation, and the verify iteration's `meta.json` keeps the
-distinction on disk (`verifiedTask`, `verifyOutcome`).
+The last two rows are the load-bearing ones (task 012, #45): absence of a
+verdict is not a negative verdict, so neither an infrastructure fault nor one of
+the engine's own timeouts/interrupts may be recorded as a failed validation, and
+the note written on those paths says the verifier never reached a verdict rather
+than quoting the missing sentinel. The verify iteration's `meta.json` keeps the
+distinction on disk: `verifyOutcome: "error"` means no verdict was reached,
+`"fail"` means a verifier judged the criteria unmet (`verifiedTask`,
+`verifyOutcome`).
 
 Independently of vigilant mode, every worker pass fingerprints success criteria:
 `_ensure_criteria_baseline()` stores a `criteriaFingerprint` (sha256 of

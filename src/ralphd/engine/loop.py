@@ -1887,6 +1887,42 @@ class LoopSupervisor:
                 f"successCriteria: {t.get('successCriteria', '')}\n")
         return "".join(lines)
 
+    @staticmethod
+    def _verify_no_verdict(result: IterationResult) -> str:
+        """Why this verify attempt produced NO verdict at all, phrased for a
+        log line -- or "" when the verifier did reach one (pass or fail).
+
+        Task 012 (#45): the verify path's "was this a verdict?" question used
+        to be `result.error_message` alone, i.e. only pi's own in-band error.
+        But an iteration the engine itself ended -- SIGINT (`interrupted`),
+        the full `iteration_timeout_s` (`timed_out`), the startup-window
+        watchdog (`no_traffic_timeout`) -- records no error_message at all,
+        so it fell through to the verdict-miss bookkeeping below: the task
+        was marked `validation-failed`, a validation attempt was burned, and
+        `validationNotes` claimed "Verifier did not emit the task-verified
+        sentinel" -- literally true of the bytes on disk, and thoroughly
+        misleading about what happened, since no verifier ever finished
+        reading the criteria. Three of those and the task is `failed`
+        forever, with the record blaming the worker for the engine's own
+        timeout.
+
+        Absence of a verdict is not a negative verdict, whatever ended the
+        attempt: every branch here means "the verifier never reached a
+        verdict", and _verify_task must leave `status`, `validationAttempts`
+        and `validationNotes` byte-for-byte alone. error_message stays first
+        so its existing wording (and the log lines keyed off it) is
+        unchanged.
+        """
+        if result.error_message:
+            return f"errored out ({result.error_message!r})"
+        if result.timed_out:
+            return "hit its iteration timeout"
+        if result.no_traffic_timeout:
+            return "was killed by the startup watchdog (no LLM traffic)"
+        if result.interrupted:
+            return "was interrupted by a signal"
+        return ""
+
     async def _verify_task(self, task: dict) -> bool:
         """Run one verify iteration (with bounded retry on transient agent/
         provider errors) for a newly-completed task.
@@ -1894,8 +1930,9 @@ class LoopSupervisor:
         Returns True when the verifier emits the correct sentinel,
         False otherwise -- either because the task genuinely failed
         verification (status forced to validation-failed or failed) or
-        because verification kept erroring out / ran out of budget before
-        ever producing a real verdict (task's status left untouched).
+        because verification never reached a verdict at all / ran out of
+        budget before producing one (task's status left untouched -- see
+        _verify_no_verdict).
         """
         tid = task["id"]
         # Skip tasks that have already exhausted their verification budget
@@ -1921,6 +1958,10 @@ class LoopSupervisor:
 
             sentinel = f"<task-verified>{tid}</task-verified>"
             verified = sentinel in (result.final_text or "")
+            # Task 012 (#45): "" only when a verifier actually reached a
+            # verdict; anything else means this attempt says nothing at all
+            # about the task.
+            no_verdict = self._verify_no_verdict(result)
 
             # Enrich verify iteration meta.json with verifiedTask + verifyOutcome
             itdir = self.run.iteration_dir(verify_iter_n)
@@ -1933,7 +1974,10 @@ class LoopSupervisor:
                 meta["verifiedTask"] = tid
                 if verified:
                     meta["verifyOutcome"] = "pass"
-                elif result.error_message:
+                elif no_verdict:
+                    # "error" == no verdict reached (agent/provider error,
+                    # timeout, interrupt); "fail" == a verifier judged the
+                    # criteria unmet.
                     meta["verifyOutcome"] = "error"
                 else:
                     meta["verifyOutcome"] = "fail"
@@ -1945,35 +1989,57 @@ class LoopSupervisor:
                 log.info("task %s verified", tid)
                 return True
 
-            if result.error_message and error_retries < self.MAX_VERIFY_ERROR_RETRIES:
+            if no_verdict and error_retries < self.MAX_VERIFY_ERROR_RETRIES:
                 error_retries += 1
                 self.run.emit(
                     "log", level="warning",
                     message=(
-                        f"verify iteration for task {tid} errored out before "
-                        f"emitting a verdict ({result.error_message!r}); "
-                        f"retrying verification ({error_retries}/"
-                        f"{self.MAX_VERIFY_ERROR_RETRIES}) without consuming "
-                        "a validation attempt"))
+                        f"verify iteration for task {tid} {no_verdict} "
+                        f"before emitting a verdict; retrying verification "
+                        f"({error_retries}/{self.MAX_VERIFY_ERROR_RETRIES}) "
+                        "without consuming a validation attempt"))
                 continue
 
             break
 
-        if result is not None and result.error_message and not verified:
-            # Either exhausted the bounded error-retry budget or ran out of
-            # iteration budget while retrying -- in both cases this is an
-            # infrastructure fault, not a verified failure, so the task's
-            # status and validationAttempts are left exactly as they were.
+        if result is None:
+            # The budget (iterations, deadline, or an abort) ran out between
+            # the caller's check and here, so no verify iteration ran at all.
+            # Same rule as every other no-verdict path (task 012, #45):
+            # nothing was observed about this task, so nothing is recorded
+            # against it.
+            self.run.emit(
+                "log", level="warning",
+                message=(
+                    f"no verify iteration ran for task {tid} (no budget "
+                    "left); leaving task status, validationAttempts and "
+                    "validationNotes unchanged (not a validation failure)"))
+            return False
+
+        if not verified and self._verify_no_verdict(result):
+            # Either exhausted the bounded retry budget or ran out of
+            # iteration budget while retrying. Task 012 (#45): the verifier
+            # never reached a verdict -- an infrastructure fault, a timeout or
+            # an interrupt, not a verified failure -- so the task's status,
+            # validationAttempts and validationNotes are left exactly as they
+            # were. The message says WHICH of the two things happened: an
+            # operator reading it must be able to tell "the verifier judged
+            # this unmet" from "the verifier never got to judge".
+            reason = self._verify_no_verdict(result)
+            what = (f"kept erroring ({result.error_message!r})"
+                    if result.error_message
+                    else f"never reached a verdict ({reason})")
             self.run.emit(
                 "log", level="error",
                 message=(
-                    f"verify iteration for task {tid} kept erroring "
-                    f"({result.error_message!r}); leaving task status and "
-                    "validationAttempts unchanged (not a validation failure)"))
+                    f"verify iteration for task {tid} {what}; leaving task "
+                    "status, validationAttempts and validationNotes "
+                    "unchanged (not a validation failure)"))
             return False
 
-        # Verification failed with an explicit (non-error) verdict miss:
-        # ensure status is validation-failed and increment counter
+        # Verification failed with an explicit (non-error) verdict miss: a
+        # verifier ran to completion and did not emit the sentinel. Ensure
+        # status is validation-failed and increment the counter.
         tasks_data = self.run.read_tasks()
         for t in tasks_data.get("tasks", []):
             if t["id"] == tid:
@@ -1983,7 +2049,9 @@ class LoopSupervisor:
                     t["status"] = "validation-failed"
                     if not t.get("validationNotes"):
                         t["validationNotes"] = (
-                            "Verifier did not emit the task-verified sentinel."
+                            "Verifier ran to completion and reached a negative "
+                            "verdict: it did not emit the task-verified "
+                            "sentinel."
                         )
                 if attempts >= 3:
                     t["status"] = "failed"
