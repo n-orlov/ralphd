@@ -44,7 +44,7 @@ refund, status/event surfacing).
 | `tests/test_fault_classifier.py::test_unclassifiable_no_traffic_failure_defaults_to_infra` | unclassifiable no-traffic case defaults to infra |
 | `tests/test_fault_classifier.py::test_work_exit_with_traffic_classifies_work` | traffic + nonzero exit → work |
 | `tests/test_fault_classifier.py::test_timed_out_with_traffic_and_no_infra_text_classifies_work` | full-timeout with traffic and no infra text → work |
-| `tests/test_fault_classifier.py::test_interrupted_with_traffic_and_no_infra_text_classifies_work` | interrupted with traffic, no infra text → work |
+| `tests/test_fault_classifier.py::test_interrupted_with_traffic_and_no_infra_text_classifies_signal` | interrupted with traffic, no infra text → `work` when this report was written; retargeted to the third verdict `signal` by task 013 (#49), same corner of the ladder |
 | `tests/test_infra_fault_retry.py::test_startup_watchdog_kills_hang_within_startup_window_not_full_timeout` | e2e: hung stub killed within startup window, not full iteration timeout |
 | `tests/test_infra_fault_retry.py::test_infra_hang_retry_does_not_consume_budget_then_recovers` | e2e: infra retry doesn't burn budget; later-healthy stub reaches VERIFIED |
 | `tests/test_infra_fault_retry.py::test_infra_retries_exhausted_ends_terminal_with_infra_reason` | e2e: exhausted retries end terminal with a `reason` naming the infra fault |
