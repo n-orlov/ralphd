@@ -3,15 +3,18 @@
 Versions are milestones, not promises of dates. Each version is releasable on its
 own; scope may shift between minors, not the ordering of the big rocks.
 
-> **Status (v0.5 close-out):** v0.1 through v0.5's engine/CLI/hub-UI feature
+> **Status (v0.6 close-out):** v0.1 through v0.6's engine/CLI/hub-UI feature
 > scope is implemented and covered by black-box tests, including a real
 > docker-sibling e2e tier and a real browser e2e tier for the hub — see
 > `artifacts/reports/traceability.md` (v0.1–v0.4 requirements),
-> `artifacts/reports/issue-traceability.md` (v0.5: backlog issues #1–#11, #13
-> → requirement letter → task → commit → tests) and
+> `artifacts/reports/issue-traceability.md` (backlog issues → requirement
+> letter → task → commit → tests: v0.5's #1–#11/#13, plus v0.6's #14–#22 as
+> requirement I lands them) and
 > `artifacts/reports/v0.5-definition-of-done.md` (evidence per DoD bullet).
-> What remains outside that scope: publishing a built Docker image + `pipx`
-> packaging (never attempted, no CI to do it from).
+> The job image now **builds** locally, content-hash-tagged, from a checkout or
+> a `pipx`-style install (v0.6, requirement H). What remains outside the
+> scope of every version so far: *publishing* that image to a registry and the
+> wheel to an index — see the deferred list.
 
 ## v0.1 — the working loop (MVP)
 
@@ -35,10 +38,11 @@ decision:
 - ✅ LLM profiles: format + `host`/`none` built-ins + bedrock and gateway example
   profiles **with acceptance tests proving both**
 - ⏳ Docker image published (amd64/arm64); `pipx install ralphd` from an index —
-  the image
-  builds and runs locally (proven by the docker-sibling e2e tier) but has never
-  been pushed to a registry, and the package has never been published to PyPI;
-  not attempted (no CI/publishing pipeline exists in this environment)
+  the image is built and run locally by `start`/`resume` themselves (v0.6
+  requirement H, proven by the docker-sibling e2e tier and the real-build
+  tier) but has never been pushed to a registry, and the package has never
+  been published to PyPI; publishing is not attempted (no CI/publishing
+  pipeline exists in this environment) and is deferred explicitly below
 - Docs: the design docs kept in sync with reality (ongoing) + a tutorial ✅
   (`docs/tutorial.md`)
 
@@ -156,6 +160,105 @@ Phase 2 — operator surfaces:
   DOM, newest-first by default), with `ralphctl runs --sort/--reverse` parity (#9)
 - ✅ PRD dialog and clickable task detail in the hub (#1, #2)
 
+## v0.6 — first-release polish
+
+Full PRD: [`docs/prds/v0.6-first-release.md`](prds/v0.6-first-release.md).
+Driven by the release-hygiene backlog (#14–#22) and by three defects this
+project's own runs kept hitting: numbers on screen that were wrong rather than
+unknown, a run that could not explain itself without an operator reading the
+run dir by hand, and a job image nothing ever built. Requirement letters below
+are the PRD's.
+
+Phase 1 — stop printing wrong numbers:
+
+- ✅ **A. A mid-write `tasks.json` is never served as "no tasks" (#15).** One
+  hardened read path (`read_tasks_doc`) behind every surface: a bounded re-read
+  on a parse failure, then the last successfully parsed payload flagged stale,
+  with **absent**, **unparseable** and **parsed-empty** kept apart instead of
+  collapsing into one default. The last-good cache is written only on the sad
+  path, so it is a fallback for a file being rewritten and never a mirror; the
+  stale flag is rendered by `GET /tasks`, `GET /status`, `ralphctl tasks` and
+  the hub table, which a browser test drives through an agent-style rewrite to
+  prove it does not blink
+- ✅ **B. Approach `n/m` on every surface (#16).** `maxApproaches` in
+  `status.json` (written at the first status write, so a job that dies in
+  startup still has its denominator), one shared `format_approach` renderer in
+  `ralphctl status`, `ralphctl runs`, the hub run list and run detail; a
+  pre-v0.6 `status.json` renders `2` bare rather than inventing a ceiling, a
+  run with no approach yet renders empty, and the column still sorts numerically
+- ✅ **C. Derived cost from a built-in AWS Bedrock table, and a model id you can
+  see (#14).** A shipped Bedrock rate table with an alias map for the gateway
+  forms, a machine-readable as-of date and a staleness signal, reusing
+  `PricingMap`'s matching rules; selected by `price_strategy` (LLM profile,
+  `ralphctl start --price-strategy`, replayed by `resume`), with an operator
+  `pricing:` map still winning and `price_strategy: none` byte-identical to
+  v0.5. Derived money stays derived (`costDerivedUSD`), `GET /config` names
+  which table answered, and the resolved/raw model ids are recorded per
+  iteration and in `status.json` — including the id `pi` chose when the run
+  pinned none, which is what makes the derivation fire on an unpinned route.
+  An **implausible zero quote** (a quoted `costUSD` of 0 beside hundreds of
+  thousands of billed tokens, which is what this project's own gateway sends)
+  is now classified as unknown instead of `$0.00`; only a route that declares
+  itself free reads as free
+- ✅ **D. Task progress in the run list (#21).** A `TASKS` column (`5/7`,
+  blank rather than `0/0` for a plan-less run) in the hub and in
+  `ralphctl runs`, sorting on the completion fraction with plan-less runs last,
+  flagging validation-failed and in-progress in `_summarize_tasks`' own
+  wording, from one hardened local read per row and no live proxy call
+
+Phase 2 — make the run explain itself:
+
+- ✅ **E. Steering is readable, not just writable (#17).** `GET /steering` on
+  the engine, a hub steering-history panel (pending/applied, body in the single
+  dialog) and `ralphctl steer --list` (`--json`), all through one live-first,
+  on-disk-fallback reader, so a post-mortem still sees what was sent
+- ✅ **F. Click to view details, across the run detail page (#18).** Five new
+  dialogs, each with its CLI counterpart: iteration detail
+  (`ralphctl iteration`), the run state documents including a redacted
+  `job.yaml` (`ralphctl docs`), artifacts and the reflection report
+  (`ralphctl artifacts`), the fault explanation (`ralphctl fault`) and the
+  per-phase/per-approach cost breakdown (`ralphctl cost`). Text nodes only,
+  exactly one dialog alive across a poll, every view answerable from the
+  on-disk snapshot with the container gone
+- ✅ **G. Deleting a dead run takes one command (#19).** `ralphctl rm --force`
+  stops a leftover container and then removes state, while plain `rm` keeps
+  refusing and `--force` still refuses a *running* job outright; the hub grows
+  a delete affordance for terminal runs only, behind a confirm dialog naming
+  the run id and disabled with a reason while a run is active
+
+Phase 3 — the image lifecycle:
+
+- ✅ **H. The job image builds itself, and a job can bring its own (#20).**
+  `start`/`resume` hash the image inputs and build `ralphd:<hash>` only on a
+  cache miss, so running a stale engine is structurally impossible; a
+  user-supplied image is a **base** (`ralphd-base:<hash>`) that ralphd layers
+  the engine and `pi` onto (`ralphd-derived:<hash>`); `--dockerfile`,
+  `job.yaml` and registry `config.yaml` supply it with the most specific
+  winning; the resolved reference is recorded in run state so `resume`
+  reproduces the image the run started with rather than the current hash; a
+  failed build fails `start` before any run state exists; `doctor` reports
+  staleness; and a `pipx`-style install hashes the same inputs shipped as
+  package data
+
+Phase 4 — close the loop:
+
+- ⏳ **I. Close #14–#22 from inside the run (#14–#22).** The wave's own last
+  requirement, done after the final verification sweep passes: it extends
+  `artifacts/reports/issue-traceability.md` with an issue → requirement → task
+  → commit → tests section per issue, closes each issue over the GitHub REST
+  API with a comment naming that evidence, and writes
+  `artifacts/reports/issue-closure.md` as the auditable record (issue number,
+  status code, resulting state, comment url). Read those two reports for what
+  actually closed; an issue that did not fully land is left open and named in
+  both
+- ✅ **J. Release hygiene and the doc audit (#22).** A deliberate first-release
+  version asserted against this roadmap, the dead `cli` extra dropped and every
+  remaining requirement tied to the place it is used, every evidence report
+  under `artifacts/reports/` re-read by the suite, a documented-but-nonexistent
+  CLI flag or API field now failing the suite, and the semantic pass over
+  `README.md`, `docs/` and `SPEC.md` — each correction landed with the check
+  that would have caught it
+
 ## Later / explicitly deferred
 
 - `auto_resume` defaulting to **ON** in a later version. v0.5 ships opt-in
@@ -175,6 +278,12 @@ Phase 2 — operator surfaces:
   there; rationale: prompt rules alone did not prevent the iteration-103
   pkill incident, so engine-level self-protection is needed, not just
   prompt-level guidance.
+- Publishing the Docker image and the wheel. The image builds locally and is
+  content-hashed (v0.6 requirement H) — including from a `pipx`-style install,
+  whose wheel ships the image inputs as package data — and the docker tier
+  proves the built image runs. What is deferred is the *publishing* pipeline:
+  nothing pushes a tag to a registry or a wheel to PyPI, so `--image` names a
+  locally built tag and there is no `ralphd` to install from an index yet.
 - Remote/daemon mode (running ralphd on a server, CLI over the network) — the
   token+bind options already make this *possible*; making it *nice* (TLS, discovery)
   is deferred
