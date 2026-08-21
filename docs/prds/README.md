@@ -18,7 +18,7 @@ from that storage after the fact — the earlier waves were never committed.
 | `selfdev-roadmap-3` | [selfdev-roadmap-3.md](selfdev-roadmap-3.md) | succeeded / verified | 41 | 43.7M | $21.07 |
 | `selfdev-roadmap-4` | [selfdev-roadmap-4.md](selfdev-roadmap-4.md) | succeeded / verified | 43 | 27.6M | $17.35 |
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
-| `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | still running / 58 of 59 tasks verified, 1 failed | 143+ | 310.2M+ | unavailable |
+| `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | still running / 54 of 55 tasks verified, 1 failed | 143+ | 310.2M+ | unavailable |
 
 Notes worth keeping with the documents:
 
@@ -38,7 +38,7 @@ Notes worth keeping with the documents:
   why its counts carry a `+`: the run was still running, and a run cannot
   count the iterations that document and verify it. The outcome, honestly:
   every issue in the brief (#14–#22) is closed on GitHub with a closing comment
-  (`artifacts/reports/issue-closure.md`), 58 of the 59 planned tasks are
+  (`artifacts/reports/issue-closure.md`), 54 of the 55 planned tasks are
   completed, and one — a whole-SPEC rewrite — is recorded `failed` after three
   validation attempts, its scope having landed in three narrower commits
   instead. The cost is `unavailable` rather than unpriced-and-silent: the

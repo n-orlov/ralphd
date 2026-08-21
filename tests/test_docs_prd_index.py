@@ -15,7 +15,14 @@ ways it can lie, all checked here rather than by eye:
   implausible zero quote ever changes, this test makes the row change with it;
 * the token total drifts from those same counters, or the row silently drops
   the marker that says the numbers are a snapshot the run took of itself while
-  still running (a run cannot count the iterations that document it).
+  still running (a run cannot count the iterations that document it);
+* the outcome cell's task tally is not the plan's. A wave's row says how many
+  of its planned tasks were verified, and that pair of numbers is the easiest
+  thing in the table to mistype or to carry over from a neighbouring run's
+  numbering -- the first draft of the v0.6 row said `58 of 59` for a 55-task
+  plan. The tally is kept here as a fixture beside `V06_USAGE`, the row and the
+  prose note are both compared against it, and the two numbers must add up with
+  the failure count.
 
 Each check is paired with a mutation of the real text into the wording it
 replaced, so a check that stops discriminating fails.
@@ -46,6 +53,13 @@ V06_USAGE = {
     "costUSD": 0,
     "costPriced": True,
 }
+# This run's own plan, counted from `<run-dir>/tasks.json` (the loop's source of
+# truth) at the iteration that wrote the v0.6 row: 55 tasks, of which 54 reached
+# `completed` and one (043d, the whole-SPEC rewrite) is terminally `failed`.
+# Unlike the iteration and token cells this is NOT a floor -- no task is added
+# after the plan is finished -- so the tally carries no snapshot marker.
+V06_TASKS = {"total": 55, "completed": 54, "failed": 1}
+
 # The numbers are a floor: the run was still running when it wrote its own row.
 SNAPSHOT_MARKER = "+"
 
@@ -184,11 +198,85 @@ def test_a_row_presenting_the_snapshot_as_final_is_caught():
     assert any("is not the recorded" in p for p in problems)
 
 
-def test_the_note_explains_why_the_counts_are_a_floor():
-    text = _index_text()
+TALLY = re.compile(
+    r"(?P<completed>\d+) of (?:the )?(?P<total>\d+) (?:planned )?tasks")
+FAILED = re.compile(r"(?P<failed>\d+) failed")
+
+
+def _tally_problems(text: str) -> list[str]:
+    """Every place the v0.6 row states a task tally, against the plan itself."""
+    problems: list[str] = []
+    total = V06_TASKS["total"]
+    completed = V06_TASKS["completed"]
+    failed = V06_TASKS["failed"]
+    if completed + failed != total:
+        problems.append(
+            f"fixture is inconsistent: {completed} + {failed} != {total}")
+
+    outcome = _v06_cells(text)[1]
+    m = TALLY.search(outcome)
+    if not m:
+        problems.append(f"outcome cell {outcome!r} states no task tally")
+    elif (int(m.group("completed")), int(m.group("total"))) != (completed, total):
+        problems.append(
+            f"outcome cell says {m.group('completed')} of {m.group('total')} "
+            f"tasks, the plan holds {completed} of {total}")
+    f = FAILED.search(outcome)
+    if not f:
+        problems.append(f"outcome cell {outcome!r} hides the failed task")
+    elif int(f.group("failed")) != failed:
+        problems.append(
+            f"outcome cell counts {f.group('failed')} failed, the plan {failed}")
+
+    note = _v06_note(text)
+    n = TALLY.search(note)
+    if not n:
+        problems.append("the v0.6 note states no task tally")
+    elif (int(n.group("completed")), int(n.group("total"))) != (completed, total):
+        problems.append(
+            f"the note says {n.group('completed')} of {n.group('total')} tasks, "
+            f"the plan holds {completed} of {total}")
+    return problems
+
+
+def test_the_v06_row_states_the_plans_own_task_tally():
+    assert _tally_problems(_index_text()) == []
+
+
+def test_a_row_carrying_another_runs_task_numbering_is_caught():
+    # The wording this row shipped with first: a 59-task plan that never existed.
+    text = _index_text().replace(
+        f"{V06_TASKS['completed']} of {V06_TASKS['total']} tasks verified",
+        "58 of 59 tasks verified")
+    assert _tally_problems(text) == [
+        "outcome cell says 58 of 59 tasks, the plan holds 54 of 55"]
+
+
+def test_a_note_disagreeing_with_the_row_is_caught():
+    text = _index_text().replace(
+        f"{V06_TASKS['completed']} of the {V06_TASKS['total']} planned tasks",
+        "58 of the 59 planned tasks")
+    assert _tally_problems(text) == [
+        "the note says 58 of 59 tasks, the plan holds 54 of 55"]
+
+
+def test_a_row_hiding_the_failed_task_is_caught():
+    cells = _v06_cells(_index_text())
+    text = _index_text().replace(
+        f"| {cells[1]} |", f"| succeeded / all {V06_TASKS['total']} tasks verified |")
+    assert _tally_problems(text) == [
+        "outcome cell 'succeeded / all 55 tasks verified' states no task tally",
+        "outcome cell 'succeeded / all 55 tasks verified' hides the failed task",
+    ]
+
+
+def _v06_note(text: str) -> str:
     para = text[text.index("v0.6-first-release.md`'s row"):]
-    para = para[:para.index("\n- ") if "\n- " in para else len(para)]
-    lowered = " ".join(para.lower().split())
+    return para[:para.index("\n- ") if "\n- " in para else len(para)]
+
+
+def test_the_note_explains_why_the_counts_are_a_floor():
+    lowered = " ".join(_v06_note(_index_text()).lower().split())
     for phrase in ("snapshot", "cannot count the iterations",
                    "closed on github", "still running"):
         assert phrase in lowered, f"the v0.6 note no longer says {phrase!r}"
