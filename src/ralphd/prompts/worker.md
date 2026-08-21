@@ -50,7 +50,10 @@ immediately starts the next iteration.
    criteria genuinely hold; otherwise leave it `in-progress` with a note of where
    you got stuck added to the notes file.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
-   endlessly): current state, next step, any discovered gotchas.
+   endlessly): current state, next step, any discovered gotchas. **Preserve the
+   notes' `## Standing rules` block verbatim** through every rewrite — it is the
+   only place the job's conventions survive between iterations, and a rewrite that
+   drops or paraphrases it drops them for good.
 
 ## Rules
 
@@ -67,6 +70,10 @@ immediately starts the next iteration.
   (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
   chain two whole-suite runs, and background a long run
   (`nohup ... > /tmp/suite.log 2>&1 &`), polling it instead of blocking on it.
+- **Re-read the notes' `## Standing rules` block before your first commit** and
+  obey it from that commit on: commit title format, branch and push target,
+  commit identity, credential paths, prohibitions. A breach already pushed is
+  rarely worth rewriting history for — record the deviation instead.
 - Do not touch the run state directory except tasks.json, the notes file, and the
   artifacts directory.
 - Put anything the operator should see (reports, screenshots, logs) in the
