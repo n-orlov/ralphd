@@ -148,8 +148,10 @@ ralphctl watch brisk-otter-1408
 A live **event stream** (not a TUI — the CLI ships no curses framework): one
 line per event as the run emits it, replayed from the start of the run, so you
 see iteration boundaries, task changes, steering and the terminal verdict as
-they happen. Read-only; Ctrl+C stops it. With `--json` (or piped to a script)
-each line is the raw event object instead — NDJSON.
+they happen. Read-only; Ctrl+C stops it. Ask for the raw event objects with
+the global `--json` flag (`ralphctl --json watch brisk-otter-1408`) — NDJSON,
+one object per line. Nothing else changes the format: piping the default
+output does not turn it into JSON.
 
 For a rendered snapshot of the plan, budget and cost instead, use `ralphctl
 status`/`ralphctl tasks` (or the hub, `ralphctl ui`). For the raw or historical

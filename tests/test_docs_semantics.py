@@ -43,6 +43,19 @@ Task 043b (#22) is slice 2, the same pass over `docs/cli.md` and
 * the hub was documented as serving two endpoints with its static bundle
   "still pending", and the job image as a published `ghcr.io` reference.
 
+Slice 2's own prose then needed two corrections of its own (found by the
+independent verification of task 043b), and they have checks here too:
+
+* `ralphctl watch` was documented as switching to raw event objects on
+  "any non-TTY use" (also in `docs/tutorial.md`); `_follow_events` branches on
+  `args.json` and nothing else, and the real command with stdout on a pipe
+  prints the rendered `[<ts>] <type> {…}` lines;
+* the hub's live-answer reads were called "the two (log tail, PRD,
+  steering)" -- three names for two -- and run detail was put on the
+  "on-disk by design" side although `run_detail()` proxies `GET /status` and
+  `GET /tasks` and publishes a `live` flag (which is how `docs/cli.md`
+  documents it, so the two docs contradicted each other).
+
 Each check is written against the code, not against the corrected prose, so it
 keeps failing if the behaviour moves again.
 """
@@ -846,3 +859,235 @@ def test_the_tui_check_would_catch_the_old_watch_description():
     assert not _tui_claims(
         "Live **event stream**, not a TUI: `watch` subscribes to the run's\n"
         "`GET /events?since=0` and prints one line per event as it arrives.")
+
+
+# ---- `watch`'s raw-event format is the --json flag, not the stream ---------
+#
+# Task 043b, second pass: the rewritten `watch` paragraph carried the old
+# claim that "any non-TTY use" (a pipe) also switches the output to raw event
+# objects. `_follow_events` branches on `args.json` and on nothing else -- the
+# flag is a plain top-level `store_true` and no code assigns it -- so a script
+# reading a pipe gets exactly the same `[<ts>] <type> {...}` lines a terminal
+# does unless it asks for `--json`.
+
+STREAM_SHAPE_WORDS_RE = re.compile(r"raw event|event object|NDJSON|JSON object",
+                                   re.IGNORECASE)
+STREAM_PIPE_WORDS_RE = re.compile(
+    r"non-tty|not a tty|no tty|\bpipes?\b|\bpiped\b|\bpiping\b|non-interactive|"
+    r"not a terminal|isn't a terminal", re.IGNORECASE)
+# Saying that the format does NOT depend on the stream is the correction, not
+# the defect.
+STREAM_DENIALS_RE = re.compile(
+    r"does not depend|never depends|only switch|nothing else changes|"
+    r"does not turn it into|regardless of", re.IGNORECASE)
+
+
+def _tty_conditional_stream_claims(text: str) -> list[str]:
+    """Sentences that make the raw-event output of an event stream conditional
+    on the stream being a pipe rather than on the `--json` flag."""
+    hits = []
+    for para in re.split(r"\n\s*\n", text):
+        flat = re.sub(r"\s+", " ", para).strip()
+        if "--json" not in flat:
+            continue
+        for sentence in re.split(r"(?<=[.;]) ", flat):
+            if "--json" not in sentence:
+                continue
+            if not STREAM_SHAPE_WORDS_RE.search(sentence):
+                continue
+            if not STREAM_PIPE_WORDS_RE.search(sentence):
+                continue
+            if STREAM_DENIALS_RE.search(sentence):
+                continue
+            hits.append(sentence)
+    return hits
+
+
+def test_the_event_stream_format_switches_on_the_json_flag_only():
+    """Code side of the claim: one branch, `args.json`, nowhere assigned."""
+    import inspect
+
+    from ralphd.cli import main as cli_main
+    follow = inspect.getsource(cli_main._follow_events)
+    assert "args.json" in follow, follow
+    for absent in ("isatty", "stdout.isatty", "os.isatty"):
+        assert absent not in follow, (
+            f"_follow_events now consults {absent!r}: the docs' 'the format "
+            "depends only on --json' claim would be the wrong one")
+    action = next(a for a in cli_main.build_parser()._actions
+                  if "--json" in a.option_strings)
+    assert action.nargs == 0 and action.const is True and action.default is False, (
+        "--json is no longer a plain flag; its default may now come from the "
+        f"stream: {action!r}")
+    cli_source = "\n".join(p.read_text() for p in
+                         sorted((REPO_ROOT / "src" / "ralphd" / "cli").rglob("*.py")))
+    assert not re.search(r"\bargs\.json\s*=[^=]", cli_source), (
+        "something assigns args.json, so --json may no longer be the only "
+        "switch the event stream honours")
+
+
+def test_no_doc_makes_the_event_stream_format_depend_on_a_pipe():
+    offenders = {}
+    for path in DOC_FILES:
+        hits = _tty_conditional_stream_claims(path.read_text())
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    assert not offenders, (
+        "`ralphctl watch` prints its rendered lines whether stdout is a "
+        "terminal or a pipe; only the global --json flag switches to raw "
+        f"event objects. These docs still claim otherwise: {offenders}")
+
+
+def test_the_stream_format_check_would_catch_the_old_non_tty_claim():
+    assert _tty_conditional_stream_claims(
+        "run from event 0 first. With `--json` (or any non-TTY use) each line "
+        "is the\nraw event object instead, i.e. NDJSON a script can parse.")
+    assert _tty_conditional_stream_claims(
+        "Non-TTY/`--json`: streams SSE events as NDJSON.")
+    assert _tty_conditional_stream_claims(
+        "With `--json` (or piped to a script) each line is the raw event "
+        "object instead - NDJSON.")
+    assert not _tty_conditional_stream_claims(
+        "With the global `--json` flag each line is the raw event object "
+        "instead, i.e. NDJSON a script can parse. That flag is the only "
+        "switch: piping the default output still gives you the rendered "
+        "lines.")
+
+
+def test_a_piped_watch_prints_rendered_lines_and_json_only_on_demand(tmp_path):
+    """Empirical side: the real `ralphctl watch` over a stub SSE API, with
+    stdout on a pipe (never a TTY in a test), prints `[<ts>] <type> {...}`
+    lines that are NOT parseable as JSON -- and the same run with the global
+    `--json` flag prints one JSON object per line."""
+    import os
+    import subprocess
+
+    from tests.conftest import RALPHCTL
+    from tests.test_cli_watch_resumed_run import StubEventApi, _seed
+
+    events = [
+        {"id": 1, "ts": "2026-01-01T00:00:00Z", "type": "iteration", "n": 1},
+        {"id": 2, "ts": "2026-01-01T00:00:01Z", "type": "state",
+         "state": "succeeded"},
+    ]
+    outputs = {}
+    for label, argv in (("default", []), ("json", ["--json"])):
+        registry = tmp_path / label
+        api: StubEventApi
+        _, api = _seed(registry, "piped-run", events, state="succeeded")
+        try:
+            proc = subprocess.run(
+                [str(RALPHCTL), *argv, "watch", "piped-run"],
+                env={**os.environ, "RALPHD_REGISTRY": str(registry)},
+                capture_output=True, text=True, timeout=60)
+        finally:
+            api.close()
+        assert proc.returncode == 0, proc.stderr
+        outputs[label] = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+
+    assert outputs["default"] == [
+        '[2026-01-01T00:00:00Z] iteration {"n": 1}',
+        '[2026-01-01T00:00:01Z] state {"state": "succeeded"}',
+    ], outputs["default"]
+    for line in outputs["default"]:
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(line)
+    assert [json.loads(ln) for ln in outputs["json"]] == events, outputs["json"]
+
+
+# ---- which hub reads answer live, and which are on-disk by design ---------
+
+UI_SERVER = REPO_ROOT / "src" / "ralphd" / "cli" / "ui_server.py"
+
+# The words architecture.md's hub paragraph uses for each hub view function
+# that asks the run's container API first. The *set* of such functions is
+# derived from the code (`_proxying_hub_views`); this map only translates a
+# function name into the prose's label for it.
+LIVE_VIEW_LABELS = {
+    "run_detail": "run detail",
+    "rendered_log_lines": "log tail",
+    "prd_text": "PRD",
+    "steering_list": "steering history",
+}
+NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+
+
+def _proxying_hub_views() -> set[str]:
+    """Hub view functions that read the run's live container API before
+    falling back to the on-disk snapshot -- i.e. those calling `_proxy_text`
+    or `_proxy_json` with a `GET`. The `POST` proxies (`steer`, `retry`) are
+    mutations, not reads, and are deliberately not in this set."""
+    tree = ast.parse(UI_SERVER.read_text())
+    views: set[str] = set()
+    for top in tree.body:
+        if not isinstance(top, ast.FunctionDef):
+            continue
+        for node in ast.walk(top):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            if node.func.id == "_proxy_text":
+                views.add(top.name)
+            elif node.func.id == "_proxy_json":
+                method = node.args[2] if len(node.args) > 2 else None
+                if isinstance(method, ast.Constant) and method.value == "GET":
+                    views.add(top.name)
+    return views
+
+
+def _live_answer_problems(text: str, labels: dict[str, str]) -> list[str]:
+    """Ways the prose's live-vs-on-disk split disagrees with `labels`."""
+    flat = re.sub(r"\s+", " ", text)
+    match = re.search(r"the ([a-z]+) live-answer reads \(([^)]*)\)", flat)
+    if not match:
+        return ["no doc states which of the hub's reads answer live"]
+    problems = []
+    if NUMBER_WORDS.get(match.group(1)) != len(labels):
+        problems.append(f"counted {match.group(1)!r}, there are {len(labels)}")
+    listed = {part.strip(" `") for part in match.group(2).split(",")}
+    if listed != set(labels.values()):
+        problems.append(f"lists {sorted(listed)}, the code says "
+                        f"{sorted(labels.values())}")
+    rest = flat.split("while the rest", 1)[-1].split("The static bundle", 1)[0]
+    for label in labels.values():
+        if label in rest:
+            problems.append(f"calls {label!r} on-disk by design; it proxies")
+    return problems
+
+
+def test_the_hub_reads_the_docs_call_live_are_the_ones_that_proxy():
+    proxying = _proxying_hub_views()
+    assert proxying == set(LIVE_VIEW_LABELS), (
+        "the set of hub views that proxy a live run changed; docs/architecture."
+        f"md's live-answer sentence and LIVE_VIEW_LABELS must follow: {proxying}")
+    # Every one of them publishes the `live` flag the docs promise, and none
+    # of the on-disk-only routes does.
+    assert UI_SERVER.read_text().count('"live"') == len(proxying)
+    problems = _live_answer_problems(ARCH_DOC.read_text(), LIVE_VIEW_LABELS)
+    assert not problems, f"docs/architecture.md: {problems}"
+
+
+def test_cli_md_documents_the_same_live_reads_as_the_code():
+    section = _section(CLI_DOC.read_text(), "### `ralphctl ui")
+    flat = re.sub(r"\s+", " ", section)
+    # The run-detail endpoint is one of the live-answer reads: its own entry
+    # must say so, since architecture.md now classifies it that way too.
+    detail = flat.split("`GET /api/runs/<id>`", 1)[-1].split(
+        "`GET /api/runs/<id>/logs", 1)[0]
+    assert "live" in detail and "on-disk" in detail, detail[:400]
+
+
+def test_the_live_answer_check_would_catch_the_old_two_reads_claim():
+    old = ("the rule they share is that the two live-answer reads (log tail, "
+           "PRD, steering) proxy each run's container API when reachable and "
+           "fall back to the on-disk snapshot otherwise, so a dead run "
+           "degrades gracefully instead of erroring, while the rest are "
+           "on-disk by design. The static bundle served at non-`/api` paths "
+           "landed in v0.3.")
+    problems = _live_answer_problems(old, LIVE_VIEW_LABELS)
+    assert any("counted" in p for p in problems), problems
+    assert any("lists" in p for p in problems), problems
+    fixed = ("the four live-answer reads (run detail, log tail, PRD, steering "
+             "history) proxy each run's container API when reachable, while "
+             "the rest - the run list, one iteration - are on-disk by design. "
+             "The static bundle landed in v0.3.")
+    assert not _live_answer_problems(fixed, LIVE_VIEW_LABELS)

@@ -639,8 +639,13 @@ run defaults them to `"ok"`/`null`, matching `GET /status`), and `reflect`
 Live **event stream**, not a TUI: `watch` subscribes to the run's
 `GET /events?since=0` and prints one line per event as it arrives —
 `[<ts>] <type> <the event's remaining fields as JSON>` — replaying the whole
-run from event 0 first. With `--json` (or any non-TTY use) each line is the
-raw event object instead, i.e. NDJSON a script can parse. Read-only; Ctrl+C
+run from event 0 first. With the global `--json` flag (`ralphctl --json watch
+<run-id>` — it belongs to the top-level parser, so it goes *before* the verb)
+each line is the raw event object instead, i.e. NDJSON a script can parse.
+That flag is the only switch: the rendering does **not** depend on whether
+stdout is a terminal, so piping the default output to a file or another
+process still gives you the `[<ts>] <type> {…}` lines, byte for byte, and a
+script that wants objects must ask for them. Read-only; Ctrl+C
 stops it. There is deliberately no curses/framework UI on this path (the CLI
 is stdlib-only, see SPEC § "Packaging"); the run's live task table, gauges and
 cost figures are `ralphctl status`, `ralphctl tasks` and the hub (`ralphctl
