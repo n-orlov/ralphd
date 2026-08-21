@@ -10,9 +10,13 @@ Verified: `git log -p 5472453..HEAD | grep -i 'gh issue close'` and a
 tree-wide grep for `gh issue close` both return nothing.
 
 - Baseline commit (PRD): `5472453` "docs: PRD for v0.5".
-- Machine check: `tests/test_issue_traceability.py` re-reads this file and
-  asserts every commit sha listed below exists in `git log` and every test path
-  (and every test node id) listed below exists in the tree.
+- Machine check: this file is re-read by the suite -- every commit sha listed
+  below must exist, and every test path (and every test node id) listed below
+  must exist in the tree. Those three checks are
+  `tests/test_report_claims.py` over `tests/report_claims.py`, applied to every
+  report in this directory since task 041; `tests/test_issue_traceability.py`
+  keeps what is specific to this report (its per-issue sections, how much
+  evidence it must still carry, and the closing-command guard).
 - Requirement letters are the PRD's (`/run/ralphd/prd.md`, sections A–N).
 
 ## Summary

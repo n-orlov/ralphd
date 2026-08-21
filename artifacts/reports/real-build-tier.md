@@ -19,8 +19,8 @@ context is *streamed to the daemon by the client*, so paths that only exist
 inside this container (`/tmp/...`, `/workspace`) are fine — nothing is
 bind-mounted — and the containers that verify the image need no mounts at all
 to answer `--version`. This supersedes the by-hand
-`artifacts/derived-image-smoke.log` written while task 034 landed (run-dir
-artifact), which explicitly left this tier to task 039.
+`<run-dir>/artifacts/derived-image-smoke.log` written while task 034 landed
+(run-dir artifact), which explicitly left this tier to task 039.
 
 ## What the tier asserts
 
@@ -59,7 +59,8 @@ $ python -m pytest tests/test_image_real_build.py -m docker -q
 5 passed in 105.14s (0:01:45)
 ```
 
-Full log: `artifacts/task-039-real-build-tier.log` in this run's run dir.
+Full log: `<run-dir>/artifacts/task-039-real-build-tier.log` in this run's
+run dir.
 
 Mutation-checked before commit: removing `ENV PATH=/opt/ralphd-venv/bin:$PATH`
 from the generated recipe in `src/ralphd/cli/image.py` still *builds*, and

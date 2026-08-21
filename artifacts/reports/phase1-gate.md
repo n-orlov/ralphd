@@ -48,7 +48,7 @@ Modified (as opposed to newly added) test files between `5472453..HEAD`:
 | `tests/test_cli_docker.py` | argv assertions | 034: job container now carries `--label ralphd.role=job` and `RALPHD_SELF_CONTAINER_ID`; reaping still filters on the run id only |
 | `tests/test_cli_resume.py` | argv/wiring assertions | 026/032: `auto_resume` survives resume via the recorded start-time wiring; resume appends a `running` state event |
 | `tests/test_e2e.py` | events-replay loop now breaks on a *terminal* state event | 032: a `running` state event is appended on resume, so "last state event" is no longer necessarily terminal — consumers must reconcile against terminality, which is exactly the #13 fix |
-| `tests/test_reflection.py` | failure branch added | 019: reflect outcome recorded in `status.json` + `artifacts/reflection/FAILED.md` |
+| `tests/test_reflection.py` | failure branch added | 019: reflect outcome recorded in `status.json` + `<run-dir>/artifacts/reflection/FAILED.md` |
 | `tests/test_secret_redaction.py` | on-disk snapshot assertion added | 042: documented decision = write-time-only scrubbing, redaction map never persisted; the on-disk reader must therefore see no unscrubbed secret |
 | `tests/test_docs_consistency.py` | new guards (+112 lines) | 025/030/036/043: single-story dead-run remedy, roadmap deferred note, sibling-only cleanup rule in all 4 doc copies, resilience section §10 |
 | `tests/test_browser_hub.py`, `tests/test_cli_ui.py` | new degraded / dead-run / reflect-failed / snapshot cases | 012-014, 017, 020, 024, 039: `health`/`infraWait` status contract, retry-now button, warning treatment for a dead run, on-disk log snapshot label |

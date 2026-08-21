@@ -25,7 +25,9 @@ replay them on resume (`src/ralphd/cli/main.py: cmd_start`, `cmd_resume`).
 
 ## 001a — infra-fault classification, fail-fast, retry/backoff (operator steering)
 
-`src/ralphd/engine/fault_classifier.py` (pure classifier) +
+`src/ralphd/engine/faults.py` (pure classifier; it was named
+fault_classifier.py in this wave and renamed in v0.5 -- the test module keeps
+the old name) +
 `src/ralphd/engine/loop.py` (startup watchdog, retry/backoff, budget
 refund, status/event surfacing).
 
