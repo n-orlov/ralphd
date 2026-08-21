@@ -4741,7 +4741,15 @@ def _preprocess_logs_argv(argv: list[str]) -> list[str]:
     return result
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The whole CLI surface, as one inspectable object.
+
+    Split out of `main()` so the flag set is readable *without* running the
+    CLI: `tests/test_docs_consistency.py` walks this parser tree (including
+    every sub-subparser) to check that every flag docs/cli.md documents really
+    exists. Parsing `--help` text instead would only see what argparse chose
+    to print.
+    """
     p = argparse.ArgumentParser(prog="ralphctl",
                                 description="Operate ralphd autonomous coding jobs")
     p.add_argument("--version", action="version", version=__version__)
@@ -5078,7 +5086,11 @@ def main() -> None:
     s.add_argument("--bind", default="127.0.0.1")
     s.set_defaults(func=cmd_ui)
 
-    args = p.parse_args(_preprocess_logs_argv(sys.argv[1:]))
+    return p
+
+
+def main() -> None:
+    args = build_parser().parse_args(_preprocess_logs_argv(sys.argv[1:]))
     args.func(args)
 
 

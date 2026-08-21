@@ -6,8 +6,8 @@ driven by a **human at a terminal or by an AI agent** — hence:
 - every command supports `--json` for machine-readable output (stable schema);
   default output is human-oriented tables/text
 - exit codes are meaningful and documented per command
-- no command is interactive unless explicitly marked; prompts are suppressed with
-  `--yes` or when stdout is not a TTY
+- no command is interactive unless explicitly marked; the one that is (`rm`)
+  takes `--yes`, and every prompt is skipped when stdout is not a TTY
 - all state is derivable from `~/.ralphd/` + the container APIs; there is no hidden
   session state
 
@@ -34,12 +34,16 @@ ralphctl stop brisk-otter-1408
 
 ## Global flags
 
+Two, and only two — everything else belongs to a subcommand:
+
 | Flag | Meaning |
 |------|---------|
 | `--json` | machine-readable output on stdout, logs to stderr |
-| `--quiet` | suppress non-essential output |
-| `--registry <dir>` | override `~/.ralphd` |
-| `--yes` | assume yes on confirmations |
+| `--version` | print the ralphd version and exit |
+
+There is no global `--registry`, `--quiet` or `--yes`: point ralphctl at another
+registry with the `RALPHD_REGISTRY` environment variable, and see `rm --yes`
+for the one confirmation prompt.
 
 Global exit codes: `0` success · `1` generic error · `2` usage error ·
 `3` run not found · `4` container/API unreachable · `5` operation invalid in
@@ -67,17 +71,16 @@ ralphctl start --prd <file|-> [options]
 | `--vigilant` | off | per-task verification |
 | `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state) |
 | `--model <id>` | profile default | default model (pi model ID) |
-| `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced\|custom` |
+| `--fast-model <id>` | profile default | model for phases a `cost-optimized`/`balanced` strategy routes to the cheap tier |
+| `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced\|custom` — which phase gets `--model` and which gets `--fast-model`. A true per-phase override (`model_overrides`, keys `planning\|worker\|review\|verify\|reflect`) is a `job.yaml` key only: no `start` flag sets it |
 | `--thinking <level>` | — | pi thinking level |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
-| `--model-<phase> <id>` | — | per-phase override (`planning\|worker\|review\|verify`) |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
 | `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
 | `--skills <dir>` | — | mount a skills directory (repeatable) |
 | `--creds <dir>` | — | mount a credentials directory (see below) |
 | `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below |
-| `--prompt-override <dir>` | — | phase-prompt override directory |
 | `--image <ref>` | built from source (`ralphd:<hash>`) | pin an exact engine image instead of building one — see "The job image" below; falls back to the registry's `image` (`ralphctl config`) if set |
 | `--base-image <ref>` | — | build the job image **on top of** this one — see "Bring your own base image" below. Mutually exclusive with `--image` |
 | `--dockerfile <path>` | — | build **this** Dockerfile (with its own directory as the build context) into that base image instead of naming one that already exists — see "Bring your own base image" below. Mutually exclusive with `--image` and `--base-image` |
@@ -92,7 +95,7 @@ ralphctl start --prd <file|-> [options]
 | `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. Falls back to the registry's `network` (`ralphctl config`) if set. |
 | `--api-token <t\|auto>` | none | require bearer auth (`auto` generates + stores) |
 | `--env KEY=VAL` | — | extra container env (repeatable) |
-| `--detach/--no-detach` | detach | `--no-detach` streams events until completion, exit code mirrors job verdict (0 verified / 1 otherwise) |
+| `--no-detach` | detached | stream events until completion instead of returning at launch; the exit code mirrors the job verdict (0 verified / 1 otherwise) |
 
 Credentials (`--creds <dir>`) — **env-file convention**: prepare every credential
 set the job needs as a `<name>.env` file (`KEY=value` lines) in one directory:
@@ -1586,16 +1589,23 @@ iteration). `ls` reflects the new source as `api` immediately after `set`.
 `<run-id>` has no run dir at all; exit `4` if the run exists but its
 container/API is unreachable.
 
+There is no start-time `--prompt-override` flag: a prompt is either overridden
+live with `set` (the run's own config dir is a read-only mount, written by
+`start`) or replaced in the source tree of the image being built.
+
 ### `ralphctl llm`
 
-LLM profile management + mid-run rotation:
+LLM profile inspection:
 
 ```
 ralphctl llm profiles                 # list profiles (~/.ralphd/llm-profiles)
 ralphctl llm show <profile>           # resolved (redacted) view
 ralphctl llm test <profile>           # spin up a throwaway container, 1-token ping
-ralphctl llm set <run-id> --profile <p>   # rotate a running job's endpoint/key
 ```
+
+Mid-run rotation of a live job's endpoint/key is an **API-only** capability in
+v0.6 (`PUT /config/llm`, docs/api.md): there is no `ralphctl llm set` wrapper
+yet.
 
 `profiles` lists the two built-ins (`host`, `none`, tagged `(builtin)`) followed
 by every `<name>.yaml` under `<registry>/llm-profiles/`, in that order.
