@@ -25,8 +25,12 @@ from .llm import current_env
 from .pricing import resolve_pricing
 from .runner import IterationResult, PiRunner
 from .state import (
+    TERMINATION_CLASS_OPERATOR,
+    TERMINATION_CLASS_SELF,
     RunDir,
     atomic_write_json,
+    format_last_tool_call,
+    last_tool_call,
     prd_path,
     record_operator_termination,
     utc_from_epoch,
@@ -213,7 +217,68 @@ class LoopSupervisor:
         return True
 
     def abort(self, reason: str = "") -> None:
-        self._abort_reason = reason or "aborted by operator"
+        """End this run because an *operator* asked (POST /abort, which is
+        what `ralphctl abort`, `ralphctl stop` and the hub's abort button all
+        go through). Records the `operator` termination class -- the one
+        auto-resume must never resurrect.
+        """
+        self._record_abort(reason or "aborted by operator",
+                          TERMINATION_CLASS_OPERATOR)
+
+    def abort_on_signal(self, sig) -> None:
+        """End this run because a SIGTERM/SIGINT reached the engine and nobody
+        claimed it (task 015, #46). Called only from engine/main.py's signal
+        handler.
+
+        This used to be plain `abort(f"signal {sig}")`, which recorded an
+        *operator* termination and so made the run permanently unrecoverable --
+        auto-resume's never-resurrect refusal firing on the one shape it should
+        recover from: a run shot from inside its own container (the agent's own
+        `pkill -f ralphd-engine`, a `docker stop` of the job from a sibling it
+        started). See `state.TERMINATION_CLASS_SELF` for why attribution, not
+        provenance, is what decides the class, and what the residual
+        misreading is.
+
+        An abort an operator already claimed through the API is never
+        downgraded: `ralphctl abort` followed by the container being taken down
+        delivers this signal too, and the operator's intent is the one that
+        counts. The reason text and the evidence are still recorded, because
+        "and then a signal arrived" is true either way.
+        """
+        claimed = self._operator_abort_recorded
+        evidence = last_tool_call(self.run.root)
+        detail = format_last_tool_call(evidence)
+        if claimed:
+            reason = (f"{self._abort_reason} (signal {sig!s} then ended the "
+                      f"engine)")
+        else:
+            # Requirement E: `ralphctl status` must stop reporting a bare
+            # `reason: signal 15`, which says nothing an operator can act on.
+            # Everything this path knows goes into the text: the class, why the
+            # engine believes it, and the run's own last action before it died.
+            reason = (
+                f"self-inflicted termination: signal {sig!s} ended the engine "
+                "with no operator abort recorded, so it came from inside this "
+                "run's own container (or a raw `docker stop`, which "
+                "`ralphctl stop` is not); this run stays eligible for "
+                "auto-resume")
+        if detail:
+            reason = f"{reason}. {detail}"
+        self._record_abort(
+            reason,
+            TERMINATION_CLASS_OPERATOR if claimed else TERMINATION_CLASS_SELF,
+            signal=str(sig), evidence=evidence)
+
+    def _record_abort(self, reason: str, termination_class: str,
+                      signal: str | None = None,
+                      evidence: dict | None = None) -> None:
+        """THE one implementation of "this run is ending on someone's
+        instruction": the in-memory abort bookkeeping, the on-disk marker and
+        the `termination` status field, in that order, for both classes (task
+        015, #46). Two copies of this sequence is how the class and the marker
+        would drift apart.
+        """
+        self._abort_reason = reason
         self._operator_abort_recorded = True
         self._operator_interrupted = True
         # Task 029 (#8): record the operator's intent on disk *now*, before
@@ -224,7 +289,16 @@ class LoopSupervisor:
         # resurrect a job the operator just killed.
         record_operator_termination(self.run.root, "abort",
                                     reason=self._abort_reason,
-                                    source="engine")
+                                    source="engine",
+                                    termination_class=termination_class,
+                                    evidence=evidence)
+        # ... and in status.json, which is what every reader that is not
+        # auto-resume already polls: the class is a field of its own rather
+        # than something to be parsed back out of `reason`.
+        self.run.update_status(termination={
+            "class": termination_class, "action": "abort", "at": utcnow(),
+            "signal": signal, "reason": self._abort_reason,
+            "evidence": evidence})
         self.runner.interrupt()
 
     # -- prompts -----------------------------------------------------------

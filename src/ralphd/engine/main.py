@@ -172,8 +172,13 @@ async def amain() -> int:
 
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
+        # Task 015 (#46): `abort_on_signal`, not `abort` -- a signal nobody
+        # claimed through the API is recorded as a *self-inflicted*
+        # termination (with the last tool call before it as evidence), so a run
+        # shot from inside its own container is still eligible for auto-resume
+        # while an operator's abort remains one auto-resume never resurrects.
         asyncio.get_running_loop().add_signal_handler(
-            sig, lambda s=sig: (loop.abort(f"signal {s!s}"), stop.set()))
+            sig, lambda s=sig: (loop.abort_on_signal(s), stop.set()))
 
     job_task = asyncio.create_task(loop.run_job())
     final_state = await job_task

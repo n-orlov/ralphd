@@ -45,6 +45,7 @@ from ..engine.state import (
     RUN_DOCUMENT_ABSENT,
     TASK_STATUS_LABELS,
     TERMINAL_STATES,
+    TERMINATION_CLASS_SELF,
     artifact,
     artifact_entries,
     artifact_names,
@@ -61,11 +62,13 @@ from ..engine.state import (
     format_image,
     format_image_id,
     format_iteration_log_header,
+    format_last_tool_call,
     format_local_time,
     format_run_document_listing,
     format_task_counts,
     image_record,
     image_record_from,
+    is_operator_termination,
     iteration_detail,
     iteration_summary_lines,
     parse_utc,
@@ -2245,6 +2248,32 @@ def _format_reason_lines(reason) -> list[str]:
     return lines
 
 
+def _format_termination_lines(termination) -> list[str]:
+    """Task 015 (#46): the `termination:` line(s) for a run a signal ended with
+    no operator behind it -- the class, and the last tool call before the
+    signal as evidence.
+
+    Nothing at all for every other run, so their human output is byte-identical
+    to before: an *operator* abort needs no line here (its `reason:` already
+    says `aborted by operator` and the operator is the one who asked), and a
+    run with no `termination` record was never told to stop. The one case this
+    exists for is the one `reason: signal 15` used to answer with nothing.
+    """
+    if not isinstance(termination, dict):
+        return []
+    if termination.get("class") != TERMINATION_CLASS_SELF:
+        return []
+    sig = termination.get("signal")
+    head = (f"self-inflicted (signal {sig})" if sig else "self-inflicted")
+    lines = [(f"termination: {head} — no operator abort was recorded; "
+              "eligible for auto-resume")]
+    detail = format_last_tool_call(termination.get("evidence"))
+    if detail:
+        wrapped = textwrap.wrap(detail, width=64) or [detail]
+        lines.extend(f"             {part}" for part in wrapped)
+    return lines
+
+
 def _format_reflect_lines(reflect) -> list[str]:
     """Task 020 (#5): the `reflection:` line(s) for a run whose post-terminal
     `reflect` iteration failed -- e.g.
@@ -2595,6 +2624,10 @@ def cmd_status(args):
     # `reason` (set by the engine on terminal failed/aborted states, or the
     # engine-error path) -- previously only visible via --json.
     lines.extend(_format_reason_lines(status.get("reason")))
+    # Task 015 (#46): ... and when a signal nobody claimed ended the run, the
+    # class and the evidence, because `reason: signal 15` on its own told an
+    # operator nothing they could act on.
+    lines.extend(_format_termination_lines(status.get("termination")))
     lines.append(f"tasks:     {_summarize_tasks(status.get('tasks') or {})}")
     lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
     # Task 020 (#5): a failed post-terminal reflection is otherwise invisible
@@ -4267,6 +4300,14 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
     matches a non-terminal recorded state -- but the scan-to-resume window is
     real, and "resumed a job that had already succeeded" is unrecoverable.
 
+    Task 015 (#46) narrows the first of those refusals to what it always
+    meant: `is_operator_termination` (not "a marker exists"), so a
+    *self-inflicted* termination -- a signal that reached the engine with no
+    operator abort behind it, e.g. the agent killing its own supervisor -- is
+    resumed like any other crashed container instead of being stranded
+    forever. It is not a separate bucket: from here on it IS an ordinary
+    zombie, and the crash-loop guard below is what stops it looping.
+
     Returns `{resumed: [...], skipped: [...], failed: [{runId, error}],
     waiting: [{runId, attempts, nextAttemptAt}],
     gaveUp: [{runId, attempts, reason}],
@@ -4286,7 +4327,7 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
     for entry in dangling:
         run_id = entry["runId"]
         term = read_operator_termination(run_root(run_id))
-        if term is not None:
+        if is_operator_termination(term):
             operator_terminated.append(
                 {"runId": run_id, "action": term.get("action"),
                  "at": term.get("at"), "reason": term.get("reason") or ""})
