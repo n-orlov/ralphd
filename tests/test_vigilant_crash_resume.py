@@ -140,9 +140,10 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
               if m.get("verifiedTask") == "001" and m.get("verifyOutcome") == "pass"]
     assert len(passing) == 1
 
-    # The persisted verified-task record now durably records task 001.
+    # The persisted verified-task record now durably records task 001, keyed
+    # by the approach it belongs to (issue #29 -- ids renumber per approach).
     verified_after = json.loads((e2.run_dir / "vigilant-verified.json").read_text())
-    assert "001" in verified_after
+    assert "1:001" in verified_after
 
     tasks_final = json.loads((e2.run_dir / "tasks.json").read_text())["tasks"]
     assert tasks_final[0]["status"] == "completed"

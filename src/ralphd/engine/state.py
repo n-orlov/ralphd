@@ -2577,16 +2577,41 @@ class RunDir:
     # two cases across a crash/resume boundary, since both leave the task
     # showing status "completed" in the very first snapshot the new process
     # ever reads.
+    # Entries are stored **approach-namespaced** on disk (`"2:001"`), because
+    # every approach's planning pass rewrites tasks.json renumbering its tasks
+    # from "001". A flat list of bare ids therefore has approach 2's task 001
+    # colliding with approach 1's already-verified task 001, so every completed
+    # task in every approach after the first reads as already verified and
+    # `pending_verify` computes empty forever -- silently disabling per-task
+    # verification for exactly the corrective approaches that most need it
+    # (issue #29). The approach number is engine-owned status, so the key stays
+    # stable across crash/resume, which is the whole point of the file.
     @property
     def vigilant_verified_file(self) -> Path:
         return self.root / "vigilant-verified.json"
 
+    def _current_approach(self) -> int:
+        return self.read_status().get("approach") or 1
+
     def read_verified_tasks(self) -> set[str]:
-        return set(read_json(self.vigilant_verified_file, []))
+        """Bare ids already verified **in the current approach**. Unprefixed
+        entries are read as approach 1's, so a run whose file predates the
+        namespacing does not re-verify approach 1's work on resume."""
+        approach = self._current_approach()
+        verified: set[str] = set()
+        for entry in read_json(self.vigilant_verified_file, []):
+            prefix, sep, task_id = str(entry).partition(":")
+            if not sep:
+                if approach == 1:
+                    verified.add(prefix)
+                continue
+            if prefix == str(approach):
+                verified.add(task_id)
+        return verified
 
     def mark_task_verified(self, task_id: str) -> None:
-        verified = self.read_verified_tasks()
-        verified.add(task_id)
+        verified = {str(e) for e in read_json(self.vigilant_verified_file, [])}
+        verified.add(f"{self._current_approach()}:{task_id}")
         atomic_write_json(self.vigilant_verified_file, sorted(verified))
 
     # -- resume (PRD req 16) ---------------------------------------------
