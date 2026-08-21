@@ -806,16 +806,19 @@ def test_the_dotted_path_check_is_substantive():
 
 IDENTIFIER_RE = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
 
-# SPEC.md is deliberately out of scope: its snake_case names include pi's own
-# stream event types (`turn_start`, `agent_end`, ...), which are another
-# project's vocabulary and could not be found in this repo's source.
-IDENTIFIER_DOCS = [REPO_ROOT / "README.md",
+# Task 043d (#22): SPEC.md is in scope now that its state/API/hub sections name
+# real code (`read_tasks_doc`, `price_strategy`, `hash_image_inputs`, ...) -- with
+# one hatch, because a handful of its names belong to *pi*'s stream vocabulary
+# rather than to this repo, and no amount of grepping src/ will find them.
+PI_STREAM_EVENTS = {"turn_start", "turn_end", "agent_start", "agent_end"}
+IDENTIFIER_DOCS = [REPO_ROOT / "README.md", REPO_ROOT / "SPEC.md",
                    *sorted((REPO_ROOT / "docs").glob("*.md"))]
 
 
 # The doc-check modules quote the *wrong* wording they exist to catch, so
 # reading them into the corpus would make every caught name look real.
-CORPUS_EXCLUDED = {"test_docs_consistency.py", "test_docs_semantics.py"}
+CORPUS_EXCLUDED = {"test_docs_consistency.py", "test_docs_semantics.py",
+                   "test_spec_state_surface.py"}
 # Text the repo actually ships or runs. Compiled caches are skipped: a .pyc of
 # an excluded module would smuggle its strings back in.
 CORPUS_SUFFIXES = {".py", ".js", ".css", ".html", ".md", ".json", ".yaml",
@@ -841,7 +844,8 @@ def _code_corpus() -> str:
 
 def _absent_identifiers(text: str, corpus: str) -> list[str]:
     return sorted({name for name in IDENTIFIER_RE.findall(text)
-                   if not re.search(rf"\b{re.escape(name)}\b", corpus)})
+                   if name not in PI_STREAM_EVENTS
+                   and not re.search(rf"\b{re.escape(name)}\b", corpus)})
 
 
 def test_every_backticked_identifier_in_the_docs_exists_in_the_code():
@@ -859,6 +863,15 @@ def test_the_identifier_check_is_substantive():
     corpus = _code_corpus()
     doc = "\n".join(p.read_text() for p in IDENTIFIER_DOCS)
     assert len(set(IDENTIFIER_RE.findall(doc))) >= 40
+    # SPEC.md is in the corpus of documents, and carries real names
+    spec = (REPO_ROOT / "SPEC.md").read_text()
+    assert len(set(IDENTIFIER_RE.findall(spec))) >= 40
+    assert _absent_identifiers("`read_tasks_docs`", corpus) == ["read_tasks_docs"]
+    assert not _absent_identifiers("`read_tasks_doc`", corpus)
+    # the hatch is exactly pi's stream vocabulary, and nothing else
+    assert not _absent_identifiers("`turn_start` `agent_end`", corpus)
+    for name in PI_STREAM_EVENTS:
+        assert not re.search(rf"\b{name}\b", corpus), name
     # The exact wording the verification of 043b caught, and the wording that
     # replaced it.
     assert _absent_identifiers(
