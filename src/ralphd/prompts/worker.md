@@ -113,10 +113,31 @@ applies whether or not that section is present:
 
 ## Completion signal
 
-When and ONLY when EVERY task in tasks.json has status `completed` (or `skipped`
-with justification in the notes), end your reply with this exact line:
+When and ONLY when EVERY task in tasks.json has reached a terminal status —
+`completed`, or `skipped` with justification in the notes — end your reply with
+this exact line:
 
 <promise>COMPLETE</promise>
 
 Never emit that line otherwise. It triggers an independent review; false claims
 waste the budget.
+
+**A task left `failed` blocks that signal forever, and "blocked forever" is not
+a safe resting state.** The loop's only escape from a worker that stops making
+progress is to fail the approach and replan the whole job from scratch — against
+a workspace where the work is already finished, and with no review pass at the
+end. That is a worse outcome than an imprecise label. So when a task is `failed`
+(its validation attempts are exhausted) and it stands between this plan and
+completion, resolve it deliberately in one iteration instead of grinding on it:
+
+- if the residual gap is real and small, carve just that gap into a NEW task, do
+  that task, and let the failed task stand as history; otherwise
+- relabel the failed task `skipped` and write the justification in BOTH that
+  task's `notes` and the notes file: what its criteria required, what did and did
+  not get delivered, and which commits delivered the parts that landed.
+  `skipped` is not a claim that the criteria were met, and the justification must
+  not read as one. Leave `validationAttempts` exactly as it stands — the
+  attempts that were consumed are part of the record.
+
+Never edit a task's `successCriteria` to make it pass, and never change another
+task's status while resolving this one.
