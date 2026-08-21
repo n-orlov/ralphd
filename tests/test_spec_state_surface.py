@@ -3,6 +3,11 @@
 Task 043c derived SPEC's section 10 tables from `cli.main.build_parser`. This is
 the same treatment for everything else this wave changed, section by section:
 
+  * 3.2's job-image block is the image modules' own vocabulary: the three tag
+    namespaces, the `imageSource` and `imageStaleness.inputs` value sets,
+    `doctor`'s staleness verdicts, the `host.json` record keys and every
+    constant/function it points at come from `cli/image.py`, `cli/main.py` and
+    `engine/state.py`;
   * 3.5's module map lists every module the package actually ships (the old one
     knew nothing of `cli/image.py` or `engine/pricing_aws.py`);
   * 5.1's run-dir tree holds every file `RunDir` puts in a run dir -- which now
@@ -42,6 +47,10 @@ CLI_DIR = SRC / "cli"
 
 COUNT_WORDS = {5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
                10: "ten"}
+# Small counts live apart from COUNT_WORDS on purpose: 6.2's key-count check
+# flags *any* number word it finds in the paragraph, and that paragraph legitimately
+# says "three answers to one question" about the image keys.
+SMALL_COUNTS = {2: "two", 3: "three", 4: "four"}
 
 
 def _spec_section(heading: str) -> str:
@@ -75,6 +84,203 @@ def _without(section: str, needle: str) -> str:
     low = needle.lower()
     return "\n".join(line for line in section.splitlines()
                      if low not in line.lower())
+
+
+# --------------------------------------------------------------------------
+# 3.2: the job-image lifecycle, in the image modules' own vocabulary
+#
+# The block is prose about a mechanism whose every noun is a constant somewhere
+# in `cli/image.py`, `cli/main.py` or `engine/state.py` -- and none of those
+# nouns is a bare backticked `snake_case` word, so `test_docs_consistency`'s
+# identifier scan cannot see a single one of them. These checks read the code.
+# --------------------------------------------------------------------------
+
+JOB_IMAGE_HEADING = "#### The job image"
+
+
+def _job_image_block(section: str) -> str:
+    """SPEC 3.2's `#### The job image` block, heading line included."""
+    start = section.find(JOB_IMAGE_HEADING)
+    if start < 0:
+        return ""
+    rest = section[start + len(JOB_IMAGE_HEADING):]
+    end = rest.find("\n#### ")
+    return JOB_IMAGE_HEADING + (rest if end < 0 else rest[:end])
+
+
+def _flat(text: str) -> str:
+    """One line, so a check never depends on where the prose wraps."""
+    return re.sub(r"\s+", " ", text)
+
+
+def _pipe_lists(flat: str) -> list[set[str]]:
+    """Every ``a` \\| `b` \\| `c`` enumeration in the block, as value sets."""
+    token = r"`[a-z][a-z0-9-]*`"
+    return [set(re.findall(r"`([a-z][a-z0-9-]*)`", m.group(0)))
+            for m in re.finditer(rf"{token}(?:\s*\\\|\s*{token})+", flat)]
+
+
+def _image_modules() -> dict:
+    from ralphd.cli import image as image_mod
+    from ralphd.cli import main as cli
+    from ralphd.engine import state
+    return {"cli/image.py": image_mod, "cli/main.py": cli,
+            "engine/state.py": state}
+
+
+def _prefixed_values(module, prefix: str) -> set[str]:
+    """A vocabulary declared as `PREFIX_* = "value"` module constants."""
+    return {v for name, v in vars(module).items()
+            if name.startswith(prefix) and isinstance(v, str)}
+
+
+def _job_image_problems(section: str) -> list[str]:
+    from ralphd.cli import image as image_mod
+    from ralphd.cli import main as cli
+    from ralphd.engine.state import IMAGE_RECORD_KEYS
+
+    block = _job_image_block(section)
+    if not block:
+        return [f"3.2 has no {JOB_IMAGE_HEADING!r} block"]
+    flat = _flat(block)
+    problems: list[str] = []
+
+    # -- the three tag namespaces, and only those three
+    repos = {image_mod.IMAGE_REPO, image_mod.BASE_REPO, image_mod.DERIVED_REPO}
+    rows = [cells for cells in _table_rows(block) if cells[0].startswith("`")]
+    refs = {cells[0].strip("` ") for cells in rows}
+    documented = {ref.split(":")[0] for ref in refs}
+    problems += [f"3.2's table has no row for the {repo}:<hash> namespace"
+                 for repo in sorted(repos - documented)]
+    problems += [f"3.2's table invents the tag namespace {extra}"
+                 for extra in sorted(documented - repos)]
+    problems += [f"3.2's table row {ref} is not spelled <repo>:<hash>"
+                 for ref in sorted(refs) if not ref.endswith(":<hash>")]
+    counted = re.search(r"(\w+) tag namespaces", flat)
+    if not counted:
+        problems.append("3.2 no longer counts the tag namespaces")
+    elif counted.group(1).lower() != SMALL_COUNTS.get(len(repos)):
+        problems.append(f"3.2 says there are {counted.group(1)} tag namespaces, "
+                        f"the code has {len(repos)}")
+
+    # -- what the default tag hashes over is IMAGE_INPUTS
+    default = [cells for cells in rows
+               if cells[0].strip("` ").startswith(f"{image_mod.IMAGE_REPO}:")]
+    if default:
+        covers = default[0][-1]
+        problems += [f"3.2's {image_mod.IMAGE_REPO}:<hash> row does not name the "
+                     f"image input {entry}"
+                     for entry in image_mod.IMAGE_INPUTS if entry not in covers]
+        if "IMAGE_INPUTS" not in covers:
+            problems.append("3.2's default row does not point at IMAGE_INPUTS")
+
+    # -- the imageSource and imageStaleness.inputs vocabularies, in full
+    lists = _pipe_lists(flat)
+    vocabularies = {
+        "imageSource": _prefixed_values(cli, "IMAGE_SOURCE_"),
+        "imageStaleness.inputs": _prefixed_values(image_mod, "INPUTS_"),
+    }
+    for label, values in vocabularies.items():
+        if f"`{label}`" not in flat and label not in flat:
+            problems.append(f"3.2 does not name {label}")
+        if values not in lists:
+            problems.append(f"3.2 does not enumerate {label} as "
+                            f"{sorted(values)} (found {[sorted(x) for x in lists]})")
+
+    # -- doctor's staleness verdicts, counted and named
+    verdicts = set(cli.IMAGE_STALENESS_VERDICTS)
+    reported = re.search(r"doctor` reports (.*?)(?:\u2014|\.)", flat)
+    if not reported:
+        problems.append("3.2 no longer says what doctor reports")
+    else:
+        named = set(re.findall(r"`([a-z]+)`", reported.group(1)))
+        if named != verdicts:
+            problems.append(f"3.2 says doctor reports {sorted(named)}, the code "
+                            f"has {sorted(verdicts)}")
+    answers = re.search(r"Staleness has (\w+) answers", flat)
+    if not answers:
+        problems.append("3.2 no longer counts the staleness answers")
+    elif answers.group(1).lower() != SMALL_COUNTS.get(len(verdicts)):
+        problems.append(f"3.2 promises {answers.group(1)} staleness answers, the "
+                        f"code has {len(verdicts)}")
+
+    # -- the host.json record `resume` reproduces the image from
+    problems += [f"3.2 does not name the host.json record key {key}"
+                 for key in IMAGE_RECORD_KEYS if f"`{key}`" not in flat]
+    if image_mod.PACKAGED_DIR_NAME not in flat:
+        problems.append("3.2 does not name the packaged-inputs directory "
+                        f"{image_mod.PACKAGED_DIR_NAME}")
+
+    # -- every constant and function it points at exists
+    modules = _image_modules()
+    spans = re.findall(r"`([^`]+)`", flat)
+    for span in spans:
+        for name in re.findall(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b", span):
+            if not any(hasattr(mod, name) for mod in modules.values()):
+                problems.append(f"3.2 names the constant {name}, which "
+                                f"{'/'.join(modules)} do not define")
+        for name in re.findall(r"\b([a-z_][a-z0-9_]+)\(\)", span):
+            if not any(callable(getattr(mod, name, None))
+                       for mod in modules.values()):
+                problems.append(f"3.2 names the function {name}(), which "
+                                f"{'/'.join(modules)} do not define")
+    return problems
+
+
+def test_the_job_image_block_is_the_image_modules_own_vocabulary():
+    from ralphd.cli import image as image_mod
+    from ralphd.cli import main as cli
+    # the vocabularies exist as constants, so the check below reads code
+    assert len(_prefixed_values(cli, "IMAGE_SOURCE_")) == 6
+    assert len(_prefixed_values(image_mod, "INPUTS_")) == 3
+    assert len(cli.IMAGE_STALENESS_VERDICTS) == 4
+    problems = _job_image_problems(_spec_section("### 3.2"))
+    assert not problems, f"SPEC.md 3.2 misstates the job image: {problems}"
+
+
+def test_the_job_image_check_reads_the_code_not_only_the_prose(monkeypatch):
+    """A seventh `imageSource` in the code fails the spec until it is written up."""
+    from ralphd.cli import main as cli
+    monkeypatch.setattr(cli, "IMAGE_SOURCE_GUESSED", "guessed", raising=False)
+    assert _job_image_problems(_spec_section("### 3.2"))
+
+
+# Each mutation is a wording SPEC.md could plausibly carry (and, for the first
+# five, one it did carry before task 043d) -- the block's own facts, changed.
+JOB_IMAGE_MUTATIONS = {
+    "block deleted": lambda s: s.replace(JOB_IMAGE_HEADING, "#### Other"),
+    "derived namespace renamed":
+        lambda s: s.replace("ralphd-derived:", "ralphd-layered:"),
+    "base namespace renamed":
+        lambda s: s.replace("ralphd-base:", "ralphd-basis:"),
+    "tag namespaces miscounted": lambda s: s.replace("Three tag", "Two tag"),
+    "image inputs incomplete":
+        lambda s: s.replace(", `src/ralphd/`", ""),
+    "imageSource vocabulary guessed":
+        lambda s: re.sub(r"`pinned`.*?`default`",
+                         r"`pinned` \\| `cached` \\| `built` \\| `guessed`", s,
+                         flags=re.DOTALL),
+    "staleness reduced to two answers":
+        lambda s: re.sub(r"`fresh`.*?`unknowable`", "`fresh` or `stale`", s,
+                         flags=re.DOTALL),
+    "inputs kinds renamed":
+        lambda s: re.sub(r"`checkout`.*?`none`", r"`repo` \\| `wheel`", s,
+                         flags=re.DOTALL),
+    "record key dropped":
+        lambda s: s.replace("/`imageDockerfile`", ""),
+    "hashing function misnamed":
+        lambda s: s.replace("hash_image_inputs()", "hash_image_input()"),
+    "recipe function misnamed":
+        lambda s: s.replace("render_derived_dockerfile()", "render_dockerfile()"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(JOB_IMAGE_MUTATIONS))
+def test_the_job_image_check_would_catch_the_wording_it_replaced(label):
+    section = _spec_section("### 3.2")
+    mutated = JOB_IMAGE_MUTATIONS[label](section)
+    assert mutated != section, f"mutation {label!r} changed nothing"
+    assert _job_image_problems(mutated), f"3.2 check survives {label}"
 
 
 # --------------------------------------------------------------------------
