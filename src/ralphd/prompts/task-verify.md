@@ -23,6 +23,13 @@ from scratch, trusting nothing the worker wrote about its own work.
   do not complete other tasks, do not modify any files other than tasks.json.
 - Be strict: "probably fine" is not verified. If you cannot check something,
   that is a failure, not a pass.
+- **Budget your test runs against the iteration clock.** The cap is hard and has
+  no grace period: an iteration killed at the cap loses its uncommitted work and
+  is recorded as a validation failure though nothing was wrong with the work.
+  Run only the targeted test modules that cover the criteria in front of you
+  (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
+  chain two whole-suite runs, and background such a run, polling it instead of
+  blocking on it.
 - Write tasks.json atomically (read → modify → write valid JSON back). Never
   remove tasks or fields; only update `status` and add `validationNotes` on
   the task under review.

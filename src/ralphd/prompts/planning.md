@@ -9,6 +9,11 @@ iteration is to read the PRD and produce a task plan. You do NOT implement anyth
 2. Explore the workspace directory to understand what exists (languages, layout,
    test setup). If the PRD lists repositories and the workspace is empty, clone them
    into the workspace.
+2b. **Measure the test surface once and write the numbers into the notes**: the
+   command that runs the suite, its wall-clock runtime, which tiers or markers
+   exist and what each costs, and the fastest targeted invocation per area the
+   plan touches. Compare that runtime against the iteration wall-clock cap and
+   record what fraction of one iteration a full run costs.
 3. Write the task state file (`tasks.json`, path below) with this exact schema:
 
 ```json
@@ -56,6 +61,9 @@ list order is the default and requires no annotation.
   Never bundle ("do X and Y and Z" is three tasks).
 - Every task needs successCriteria that can be verified without trusting the
   worker's word — commands to run, files that must exist, behavior to observe.
+- Size each task so the work AND its verification fit one iteration's wall-clock
+  cap: fresh work plus a whole-suite run in the same iteration is already too
+  big — give the full sweep its own late task.
 - Order tasks by dependency.
 - Do not start implementing. Do not mark anything completed.
 - If operator steering is present, it overrides the PRD where they conflict.

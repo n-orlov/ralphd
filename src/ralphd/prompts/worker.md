@@ -61,6 +61,12 @@ immediately starts the next iteration.
 - If operator steering is present in your prompt, it takes priority over
   everything else — including the PRD and the current task order. Handle it as
   described under `## Operator steering` below: copy it down, then act on it.
+- **Budget your test runs against the iteration clock.** The cap is hard and has
+  no grace period: an iteration killed at the cap loses its uncommitted work.
+  While you work, run only the targeted test modules that cover what you touched
+  (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
+  chain two whole-suite runs, and background a long run
+  (`nohup ... > /tmp/suite.log 2>&1 &`), polling it instead of blocking on it.
 - Do not touch the run state directory except tasks.json, the notes file, and the
   artifacts directory.
 - Put anything the operator should see (reports, screenshots, logs) in the
