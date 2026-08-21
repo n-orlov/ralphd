@@ -53,7 +53,12 @@ immediately starts the next iteration.
    endlessly): current state, next step, any discovered gotchas. **Preserve the
    notes' `## Standing rules` block verbatim** through every rewrite — it is the
    only place the job's conventions survive between iterations, and a rewrite that
-   drops or paraphrases it drops them for good.
+   drops or paraphrases it drops them for good. **Never write a count into the
+   notes that you did not derive from `tasks.json` in this same iteration**
+   ("52/55 done"): every later iteration copies it forward, and one of them
+   eventually prints it in a deliverable as fact. Record how to recompute it
+   instead — name the source and the operation ("tally task statuses in
+   tasks.json").
 
 ## Rules
 
