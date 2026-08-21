@@ -538,10 +538,16 @@ elif "Role: Worker" in prompt:
         picked["status"] = "completed"
         with open(tasks_file, "w") as f:
             json.dump(d, f)
-    # record steering whenever a worker iteration sees it
-    if "Operator steering" in prompt:
+    # record steering whenever a worker iteration sees it. Anchor on the
+    # engine's *injected* header (loop.py writes
+    # "## Operator steering (MUST take priority)" / "... (pending, ...)"),
+    # not on the bare words, which also appear in worker.md's own prose about
+    # how to handle steering. Take the last occurrence so appended context
+    # cannot shadow it.
+    steering_marker = "## Operator steering ("
+    if steering_marker in prompt:
         with open(marker("saw-steering"), "a") as f:
-            f.write(prompt[prompt.index("Operator steering"):][:2000])
+            f.write(prompt[prompt.rindex(steering_marker):][:2000])
     if all(t["status"] == "completed" for t in d["tasks"]):
         text = "everything finished"
         if echo_secrets:
