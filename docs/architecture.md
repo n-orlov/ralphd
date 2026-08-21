@@ -1224,12 +1224,16 @@ iteration, the fault explanation, the cost breakdown — plus two proxies
 (`POST .../steer`, `POST .../retry`) and one mutation (`DELETE /api/runs/<id>`,
 terminal runs only). Every endpoint is enumerated with its exact payload in
 [cli.md](cli.md#ralphctl-ui---port-n---bind-addr); the rule they share is that
-the two live-answer reads (log tail, PRD, steering) proxy each run's container
-API when reachable and fall back to the on-disk
+the four live-answer reads (run detail, log tail, PRD, steering history) proxy
+each run's container API when reachable and fall back to the on-disk
 `status.json`/`tasks.json`/transcript snapshot otherwise, so a dead run degrades
-gracefully instead of erroring, while the rest are on-disk by design (the files
-they read are the engine's own atomic writes, so there is nothing better a live
-container could say). The static bundle served at non-`/api` paths
+gracefully instead of erroring (each of those payloads carries a `live` flag
+saying which side answered), while the rest — the run list, one iteration, the
+state documents, the artifacts, the fault explanation and the cost breakdown —
+are on-disk by design (the files they read are the engine's own atomic writes,
+so there is nothing better a live container could say; the run list only ever
+*probes* liveness, with a loopback TCP connect, never an HTTP round trip).
+The static bundle served at non-`/api` paths
 (`src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css`, shipped in the
 wheel, no build step) landed in v0.3 task 034.
 
