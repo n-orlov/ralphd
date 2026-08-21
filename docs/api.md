@@ -5,7 +5,12 @@ Each job container serves this HTTP API (default `:7777`, published to
 API token is configured, every route requires `Authorization: Bearer <token>` and
 replies `401` otherwise.
 
-Errors use RFC 7807 problem+json: `{"type", "title", "status", "detail"}`.
+Errors are JSON in FastAPI's `{"detail": {...}}` envelope, and the body inside
+it is problem-*shaped* — `{"title", "status", "detail"}`, built by the one
+helper `ralphd.engine.api.problem`. It is not RFC 7807 on the wire: there is no
+`type` member and the media type is plain `application/json`. The one route-less
+reply is the auth middleware's `401`, which has no `detail` envelope around it:
+`{"title": "unauthorized", "status": 401}`.
 
 ## Conventions
 
@@ -26,8 +31,9 @@ The one-call summary. Response:
 ```json
 {
   "runId": "brisk-otter-1408",
+  "schemaVersion": 1,              // run-dir schema this state was written under
   "state": "running",              // starting|running|succeeded|failed|aborted
-  "phase": "worker",               // planning|worker|verify|review|null
+  "phase": "worker",               // planning|worker|verify|review|null; never "paused"
   "approach": 1,
   "maxApproaches": 3,           // approach denominator; null for a pre-v0.6 run dir
   "model": "amazon-bedrock/eu.anthropic.claude-opus-5",  // model observed in use
@@ -42,8 +48,12 @@ The one-call summary. Response:
   "iterationsBudget": 50,
   "iterationsUsed": 7,
   "verdict": null,                 // "verified" | "unverified" | null while running
+  "reason": null,                  // why a non-succeeded run ended (also the grace-review note)
   "onComplete": "idle",
+  "createdAt": "2026-08-08T13:08:09Z",
   "startedAt": "2026-08-08T13:08:11Z",
+  "updatedAt": "2026-08-08T14:02:33Z",
+  "endedAt": null,                 // written once, on the terminal write
   "deadlineAt": "2026-08-08T21:08:11Z",
   "infraWaitTotalS": 62.5,
   "health": "ok",                  // "ok" | "degraded"
@@ -59,6 +69,7 @@ The one-call summary. Response:
   "tasksStale": false,             // see "Stale task reads" below
   "tasksSource": "file",           // absent|file|last-good|unreadable
   "steering": {"pending": 0, "consumed": 2},
+  "unconsumedSteering": [],        // steering files still pending at the terminal write
   "usage": {
     "input": 812345, "output": 90123, "totalTokens": 902468, "costUSD": 14.20,
     "byPhase": {
@@ -72,6 +83,26 @@ The one-call summary. Response:
   }
 }
 ```
+
+The payload is the run dir's own `status.json` **verbatim**, plus the fields
+only a live engine can add: the task counts and their `tasksStale`/`tasksSource`
+provenance, the `steering` counts, and the host-recorded `image*` record. The
+keys with no section of their own below:
+
+| field | meaning |
+|-------|---------|
+| `schemaVersion` | the run-dir schema this state was written under; a run dir whose recorded version is newer than the engine build refuses to start (see `docs/architecture.md`) |
+| `createdAt` / `startedAt` | first status write (state `starting`) / when the loop entered `running` |
+| `updatedAt` | last write of any field — every `update_status` stamps it |
+| `endedAt` | the terminal write; `null` while the run is still going |
+| `reason` | why a non-succeeded run ended, or the note an off-budget grace review left |
+| `graceReview` | present and `true` when an off-budget grace review verified the run |
+| `unconsumedSteering` | steering files still pending at the terminal write |
+| `steering` | live counts — `{pending, consumed}` over `steering/NNN-*.md`, added by the API rather than stored |
+
+There is no `paused` value anywhere in this payload: `POST /pause` holds the
+loop at the next iteration boundary without changing `state` or `phase` (see
+`POST /pause` below). The full `status.json` field table is SPEC §5.
 
 `usage.byPhase` breaks the same running totals down by iteration phase
 (`planning`/`worker`/`verify`/`review`) and `usage.byApproach` by approach
@@ -457,8 +488,16 @@ No-op `409` if no iteration is running. Body optional:
 interrupt.
 
 ### `POST /pause` / `POST /resume`
-Pause finishes the current iteration, then holds before the next one
-(`state: running`, `phase: paused` reported in `/status`). Resume releases it.
+Pause finishes the current iteration, then holds before the next one; resume
+releases it. `200 {"paused": true}` / `200 {"resumed": true}`.
+
+A pause is deliberately **not** a state: `state` stays `running` and `phase`
+keeps naming the phase that ran last — there is no `phase: "paused"`, for the
+same reason there is no `state: "degraded"` (it would break every consumer's
+terminal-state logic). What is observable is the `log` event the pause emits
+(`paused at next iteration boundary`, then `resumed`), in `GET /events` and
+`events.jsonl`. `POST /pause` is `409` on a finished run; `POST /resume` is
+always accepted (releasing a run that was never paused is a no-op).
 
 ### `POST /retry`
 Wakes an infra backoff wait immediately instead of waiting for
@@ -498,7 +537,7 @@ contents, no LLM env values):
   "budgets": {"iterations": 25, "maxApproaches": 3, "jobTimeoutS": 28800, "iterationTimeoutS": 2700,
               "infraStartupTimeoutS": 150.0, "infraRetryBackoffS": [2, 5, 15, 30, 60, 120, 300],
               "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0},
-  "flags": {"vigilant": false, "onComplete": "idle"},
+  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false},
   "model": {"strategy": "quality-first", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
@@ -666,5 +705,10 @@ directly: there is no `ralphctl llm set` wrapper in v0.6 (docs/cli.md). `204`.
 
 ## Versioning
 
-`GET /version` → `{"ralphd": "0.6.0", "api": 1, "pi": "<pi version>"}`. Breaking
-API changes bump `api`; `ralphctl` checks compatibility on connect.
+`GET /version` → `{"ralphd": "0.6.0", "api": 1}` — the package version and the
+API contract version (`ralphd.API_VERSION`), and nothing else: the engine does
+not report pi's version here (`GET /iterations` reports the model each iteration
+actually used, which is the version-shaped question operators ask). Breaking API
+changes bump `api`. Nothing enforces that yet — `ralphctl` does **not** call this
+route or compare versions on connect in v0.6; it is published for operators and
+other clients to check.
