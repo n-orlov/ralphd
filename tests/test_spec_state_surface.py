@@ -23,7 +23,9 @@ the same treatment for everything else this wave changed, section by section:
     and `engine/pricing_aws.py`, and every `cost*` marker the runner writes has to
     be documented somewhere in the spec;
   * 9.2's endpoint table is the FastAPI app's own route set, both directions;
-  * 11's hub sections name every `/api/runs/<id>/<sub>` the hub serves;
+  * 11's hub sections name every `/api/runs/<id>/<sub>` the hub serves, and
+    11.2/11.3's approach cell is what the hub's own rows render for the three
+    cases the shared formatter has (ceiling known, no ceiling, no approach yet);
   * 15 defers nothing the code now does.
 
 Every check is paired with a test showing it fails on the wording it replaced, so
@@ -771,6 +773,176 @@ def test_the_run_detail_payload_shape_is_the_servers_own(tmp_path):
         f"SPEC.md 11.3 states the payload as {sorted(documented)}, run_detail "
         f"returns {sorted(payload)}")
     assert "deletable" in payload  # task 031 (#19)
+
+
+# --------------------------------------------------------------------------
+# 11.2/11.3: the approach cell is `format_approach`'s own three renderings
+#
+# Task 043e (#22): 043d documented the denominator in both hub sections and
+# nothing checked it -- the payload key is camelCase, so
+# `test_docs_consistency`'s backticked-identifier scan cannot see it, and
+# reverting either sentence to its pre-v0.6 bare "approach" wording left every
+# SPEC-reading test green. These checks render the three cases through the hub
+# itself and hold the prose against what came back.
+# --------------------------------------------------------------------------
+
+SERVER_RENDERED_MARK = "rendered by the server"
+
+# (run id, approach, maxApproaches) -- the three cases `format_approach` has.
+APPROACH_FIXTURE = (
+    ("aaa-both-known", 2, 3),
+    ("bbb-no-ceiling", 2, None),
+    ("ccc-pre-approach", None, 3),
+)
+
+
+def _seed_approach_registry(registry: Path) -> None:
+    for run_id, approach, max_approaches in APPROACH_FIXTURE:
+        run = registry / "runs" / run_id
+        run.mkdir(parents=True, exist_ok=True)
+        doc = {"runId": run_id, "state": "failed", "approach": approach}
+        if max_approaches is not None:  # a pre-v0.6 run dir has no ceiling
+            doc["maxApproaches"] = max_approaches
+        (run / "status.json").write_text(json.dumps(doc))
+
+
+def _hub_approach_cells(registry: Path) -> tuple[dict[str, str], str]:
+    """The hub's own approach cells: three terminal runs, real rows, no
+    container. Returns the rendered cell per run and the payload key that
+    carried them -- both derived, so the prose is checked against the code."""
+    from ralphd.cli.ui_server import run_detail, run_list
+    _seed_approach_registry(registry)
+    rows = {r["runId"]: r for r in run_list(registry)}
+    keys = sorted({k for row in rows.values() for k, v in row.items()
+                   if "approach" in k.lower() and isinstance(v, str)})
+    assert len(keys) == 1, f"expected one rendered approach key, got {keys}"
+    key = keys[0]
+    cells = {run_id: rows[run_id][key] for run_id, _, _ in APPROACH_FIXTURE}
+    # 11.3's summary card renders the SAME string the list cell does.
+    detail = run_detail(registry, "aaa-both-known")["status"][key]
+    assert detail == cells["aaa-both-known"], (detail, cells)
+    return cells, key
+
+
+@pytest.fixture
+def approach_cells(tmp_path):
+    return _hub_approach_cells(tmp_path / "registry")
+
+
+def _server_rendered_paragraph(section: str) -> str:
+    for para in re.split(r"\n\s*\n", section):
+        if SERVER_RENDERED_MARK in para:
+            return _flat(para)
+    return ""
+
+
+def _summary_card_bullet(section: str) -> str:
+    for bullet in re.split(r"\n(?=- )", section):
+        if "Summary card" in bullet:
+            return _flat(bullet)
+    return ""
+
+
+def _approach_cell_problems(cells: dict[str, str], key: str,
+                           list_section: str, detail_section: str) -> list[str]:
+    problems = []
+    para = _server_rendered_paragraph(list_section)
+    if not para:
+        problems.append("SPEC.md 11.2 no longer says the run-list cells are "
+                        f"{SERVER_RENDERED_MARK}")
+    elif f"`{key}`" not in para:
+        problems.append(f"SPEC.md 11.2 does not name the `{key}` the hub sends")
+    else:
+        spelled = re.search(rf"`{key}`\s*\(([^)]*)\)", para)
+        if not spelled:
+            problems.append(f"SPEC.md 11.2 names `{key}` without saying how it "
+                            "renders the three cases")
+        else:
+            said = spelled.group(1)
+            for run_id, rendered in sorted(cells.items()):
+                if rendered and f"`{rendered}`" not in said:
+                    problems.append(
+                        f"SPEC.md 11.2 does not show the `{rendered}` the hub "
+                        f"renders for a run like {run_id}")
+                elif not rendered and not re.search(r"empty|blank", said,
+                                                     re.IGNORECASE):
+                    problems.append(
+                        "SPEC.md 11.2 does not say the cell is empty for a run "
+                        f"like {run_id}, which never reached an approach")
+    bullet = _summary_card_bullet(detail_section)
+    denominator = cells["aaa-both-known"]
+    if not bullet:
+        problems.append("SPEC.md 11.3 has no summary-card bullet")
+    elif f"`{denominator}`" not in bullet:
+        problems.append(
+            f"SPEC.md 11.3's summary card does not render the approach as "
+            f"`{denominator}`, which is what the hub shows")
+    return problems
+
+
+def test_the_hub_approach_cell_is_the_shared_formatters_own_renderings(
+        approach_cells):
+    cells, key = approach_cells
+    # the three cases really are three different answers (task 007's contract)
+    assert cells["aaa-both-known"] != cells["bbb-no-ceiling"]
+    assert "/" not in cells["bbb-no-ceiling"]
+    assert cells["ccc-pre-approach"] == ""
+    problems = _approach_cell_problems(cells, key, _spec_section("### 11.2"),
+                                       _spec_section("### 11.3"))
+    assert not problems, f"SPEC.md section 11: {problems}"
+
+
+def test_the_approach_cell_check_reads_the_code_not_only_the_prose(
+        tmp_path, monkeypatch):
+    """Reword the formatter and the unchanged SPEC must start failing -- the
+    check cannot be satisfied by prose that merely agrees with itself."""
+    from ralphd.cli import ui_server
+    monkeypatch.setattr(ui_server, "format_approach",
+                        lambda a, m: "" if a in (None, "") else
+                        (f"{a} of {m}" if m not in (None, "") else str(a)))
+    cells, key = _hub_approach_cells(tmp_path / "registry")
+    assert cells["aaa-both-known"] == "2 of 3"
+    assert _approach_cell_problems(cells, key, _spec_section("### 11.2"),
+                                   _spec_section("### 11.3"))
+
+
+APPROACH_MUTATIONS = {
+    # the exact pre-043d wording of 11.3's summary-card list
+    "11.3 bullet loses the denominator":
+        ("### 11.3", "approach as `2/3`,", "approach,"),
+    "11.3 bullet drops the approach entirely":
+        ("### 11.3", "phase, approach as `2/3`, iterations,", "phase, iterations,"),
+    # 11.2's server-rendered-cells paragraph, gone as a whole
+    "11.2 loses the server-rendered paragraph":
+        ("### 11.2", SERVER_RENDERED_MARK, None),
+    "11.2 stops naming the payload key":
+        ("### 11.2", "`approachDisplay`", "`approachCell`"),
+    "11.2 stops spelling the renderings":
+        ("### 11.2", ("(`2/3`, bare `2` when the run recorded no ceiling, "
+                      "empty when it never reached an approach)"), "(server-side)"),
+    "11.2 keeps the denominator but forgets the bare case":
+        ("### 11.2", "bare `2` when the run recorded no ceiling, ", ""),
+    "11.2 keeps both numbers but forgets the pre-approach case":
+        ("### 11.2", ", empty when it never reached an approach", ""),
+}
+
+
+@pytest.mark.parametrize("label", sorted(APPROACH_MUTATIONS))
+def test_the_approach_cell_check_would_catch_the_wording_it_replaced(
+        label, approach_cells):
+    cells, key = approach_cells
+    heading, old, new = APPROACH_MUTATIONS[label]
+    sections = {h: _spec_section(h) for h in ("### 11.2", "### 11.3")}
+    real = sections[heading]
+    if new is None:  # drop the whole paragraph holding `old`
+        mutated = "\n\n".join(p for p in re.split(r"\n\s*\n", real)
+                              if old not in p)
+    else:
+        assert old in _flat(real), f"SPEC.md {heading} no longer says {old!r}"
+        mutated = _flat(real).replace(old, new)
+    sections[heading] = mutated
+    assert _approach_cell_problems(cells, key, sections["### 11.2"],
+                                   sections["### 11.3"]), label
 
 
 def test_the_hub_delete_route_exists_and_is_described():
