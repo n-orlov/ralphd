@@ -218,12 +218,13 @@ PRD requirement letter (`docs/prds/v0.6-first-release.md`, sections A–J), the
 tasks that implemented it, the commits, and the tests that cover it.
 
 Unlike v0.5, this wave's requirement **I** is to close the issues *from inside
-the run*: task 047 closes #14–#22 through the GitHub REST API (`curl`, no `gh`
-CLI, no token value in any argument or log) and records per issue the number,
-the HTTP status, the resulting state and the comment url in `issue-closure.md`
-beside this file. Every section below therefore carries a `**Closure:**` line,
-and `tests/test_issue_traceability.py` holds those lines against that record:
-a section may not claim a closure the record does not show.
+the run*: task 047 closed #14–#22 through the GitHub REST API (a small
+`urllib` script, no `gh` CLI, no token value in any argument or log) and
+recorded per issue the number, the HTTP status, the resulting state and the
+comment url in `artifacts/reports/issue-closure.md` beside this file. Every
+section below therefore carries a `**Closure:**` line, and
+`tests/test_issue_traceability.py` holds those lines against that record: a
+section may not claim a closure the record does not show.
 
 - Baseline commit (PRD, this run's HEAD at start): `0963c9b`.
 - Final verification sweep: `81a955c` — 1956 passed, 0 failed, 0 skipped across
@@ -249,7 +250,7 @@ a section may not claim a closure the record does not show.
 | #19 deleting a dead run takes one command | G | 029, 030, 031 | `ff76a01`, `584a512`, `a7dd650` |
 | #20 build the job image, and let a job bring its own | H | 032–039 | `48c8515` … `c42ffe5` |
 | #22 release hygiene and the doc audit | J | 040–045, 043b–043e, 046, 048 | `0ed3be1` … `81a955c` |
-| #14–#22 closing them from inside the run | I | 046 (this report), 047 | this report + `issue-closure.md` |
+| #14–#22 closing them from inside the run | I | 046 (this report), 047 | this report + `artifacts/reports/issue-closure.md` |
 
 ### Numbering gaps in the task→commit mapping (deliberate — do not "fix" them)
 
@@ -315,8 +316,12 @@ next run**, which is exactly what requirement C asked for. Full anomaly write-up
 | 004 hub server and `ralphctl tasks` reuse the hardened reader | `9bbe300` | `tests/test_tasks_stale_cli.py::test_tasks_of_a_dead_run_serves_the_last_good_plan_flagged_stale`, `::test_hub_run_detail_never_renders_an_empty_table_under_a_rewrite_loop`, `::test_neither_host_side_read_json_will_touch_tasks_json`, `::test_tasks_of_a_live_run_is_unchanged` |
 | 005 the stale label in the hub task table, proven not to blink | `badd26e` | `tests/test_browser_hub.py::test_run_detail_labels_a_stale_task_read_and_never_blinks_empty`, `tests/test_tasks_stale_cli.py::test_hub_run_detail_carries_the_stale_label_strings`, `::test_a_forged_label_in_tasks_json_cannot_fake_staleness`, `::test_a_live_pre_v06_engine_answer_gets_no_invented_label` |
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/15/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/15#issuecomment-5368507712),
+state change `PATCH .../issues/15` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:50Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #16 — approach `n/m` on every surface (requirement B)
 
@@ -333,8 +338,12 @@ write), `src/ralphd/engine/state.py` (`format_approach`, the one renderer),
 Its SPEC 11.2/11.3 prose got its own code-derived check later, in task 043e
 (`cc8c8a2`) — see #22.
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/16/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/16#issuecomment-5368507946),
+state change `PATCH .../issues/16` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:52Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #14 — honest cost, derived rates, and a model id you can see (requirement C)
 
@@ -356,8 +365,12 @@ result in `issue-closure.md`.
 Evidence from this run itself is in *This run's own cost* above, and in
 `artifacts/reports/pricing-anomaly.md` §7.
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/14/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/14#issuecomment-5368507414),
+state change `PATCH .../issues/14` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:48Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #21 — task progress in the run list (requirement D, depends on A)
 
@@ -371,8 +384,12 @@ result in `issue-closure.md`.
 | 014 the hub TASKS column: ratio sort, trouble flags, blank sorts last | `bedd3d8` | `tests/test_browser_hub.py::test_run_list_tasks_column_renders_flags_and_sorts_on_progress`, `tests/test_hub_task_counts.py::test_the_tasks_column_sorts_on_the_ratio_not_the_rendered_text`, `::test_the_ratio_orders_five_sevenths_above_a_hundred_of_two_fifty` |
 | 015 the same column in `ralphctl runs`, agreeing with `ralphctl status` | `0d494ef` | `tests/test_cli_runs_tasks_column.py::test_the_column_never_renders_zero_over_zero`, `::test_cli_and_hub_rows_carry_the_identical_task_fields`, `::test_cmd_runs_reads_each_plan_once_through_the_hardened_reader`, `::test_cmd_runs_does_not_read_the_plan_of_a_filtered_out_run`, `::test_runs_json_carries_the_raw_counts_and_the_flag_wording` |
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/21/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/21#issuecomment-5368509058),
+state change `PATCH .../issues/21` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:59Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #17 — steering must be readable, not just writable (requirement E)
 
@@ -386,8 +403,12 @@ result in `issue-closure.md`.
 | 017 the run-detail steering history, pending then applied, in one dialog | `29be8d8` | `tests/test_browser_hub.py::test_run_detail_lists_steering_history_from_the_on_disk_snapshot`, `::test_steering_entry_appears_pending_then_flips_to_applied`, `tests/test_hub_steering.py::test_an_entry_with_no_timestamp_claims_no_arrival_time`, `::test_a_forged_tslocal_from_a_live_answer_is_recomputed` |
 | 018 `ralphctl steer --list` over the same code path, live and dead | `b19348c` | `tests/test_cli_steer_list.py::test_list_of_a_dead_run_prints_pending_and_applied`, `::test_list_does_not_consume_stdin_or_send_anything`, `::test_cli_and_hub_agree_for_a_live_run`, `::test_real_engine_live_then_container_gone` |
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/17/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/17#issuecomment-5368508187),
+state change `PATCH .../issues/17` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:53Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #18 — click to view details, across the run detail page (requirement F)
 
@@ -410,8 +431,12 @@ CLI text rather than re-worded.
 | 027 #18.5 `ralphctl cost` by phase and approach, priced / derived / unavailable | `985f982` | `tests/test_cli_cost_breakdown.py::test_cost_source_words_each_kind_of_money`, `::test_cost_breakdown_lines_label_priced_derived_and_unavailable`, `::test_an_implausible_zero_is_unavailable_and_names_the_anomaly`, `::test_a_run_with_no_usage_says_so_instead_of_zero` |
 | 028 #18.5 the hub cost dialog on the cost cell, headline unchanged | `0df8694` | `tests/test_browser_hub.py::test_run_detail_opens_the_cost_dialog_from_the_cost_cell`, `tests/test_hub_cost_dialog.py::test_cost_view_text_is_what_ralphctl_cost_prints`, `::test_cost_view_headline_is_the_string_the_card_already_shows`, `::test_cost_view_renders_the_implausible_zero_quote_as_unavailable` |
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/18/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/18#issuecomment-5368508395),
+state change `PATCH .../issues/18` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:55Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #19 — deleting a dead run takes one command, and works from the hub (requirement G)
 
@@ -425,8 +450,12 @@ sequence for both surfaces), `src/ralphd/cli/ui_server.py` (`delete_run`,
 | 030 DELETE /api/runs/<id>, terminal runs only, refusal carries its reason | `584a512` | `tests/test_hub_delete.py::test_a_terminal_run_may_be_deleted`, `::test_an_active_run_is_refused_with_its_state_named`, `::test_a_state_we_cannot_read_is_not_permission`, `::test_delete_uses_the_cli_removal_sequence`, `::test_delete_refuses_a_traversal_shaped_run_id` |
 | 031 the hub affordance: confirm dialog naming the run id, disabled + reason | `a7dd650` | `tests/test_browser_hub.py::test_run_list_and_detail_delete_a_run_behind_a_confirm_dialog`, `tests/test_hub_delete_affordance.py::test_the_fields_are_exactly_the_gate_for_every_status_shape`, `::test_a_forged_deletable_in_status_json_cannot_offer_a_deletion`, `::test_deletable_predicts_what_the_endpoint_answers` |
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/19/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/19#issuecomment-5368508618),
+state change `PATCH .../issues/19` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:56Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #20 — build the job image, and let a job bring its own (requirement H)
 
@@ -448,8 +477,12 @@ result in `issue-closure.md`.
 
 Verdict, cost and evidence for the real-build tier: `artifacts/reports/real-build-tier.md`.
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`.
+**Closure:** closed — closing comment `POST .../issues/20/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/20#issuecomment-5368508830),
+state change `PATCH .../issues/20` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:11:58Z;
+recorded in `artifacts/reports/issue-closure.md`.
 
 ## #22 — release hygiene and the doc audit (requirement J)
 
@@ -495,7 +528,11 @@ evidence, not noise:
 - **Net effect on #22:** the requirement holds; no SPEC claim from this wave is
   left unchecked. The failure is a process record, not an outstanding gap.
 
-**Closure:** pending — task 047 closes it via the REST API and records the
-result in `issue-closure.md`; the closing comment says plainly that sub-task
-043d ended `failed` while its scope landed in `b923af2`, `168a041` and
-`cc8c8a2`.
+**Closure:** closed — closing comment `POST .../issues/22/comments`
+HTTP 201
+(https://github.com/n-orlov/ralphd/issues/22#issuecomment-5368509311),
+state change `PATCH .../issues/22` HTTP 200, state re-read
+as `closed` (`completed`) at 2026-08-21T10:12:01Z;
+recorded in `artifacts/reports/issue-closure.md`. The comment says plainly
+that sub-task 043d ended `failed` while its scope landed in `b923af2`,
+`168a041` and `cc8c8a2`.

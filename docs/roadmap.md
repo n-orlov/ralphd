@@ -242,8 +242,8 @@ Phase 3 — the image lifecycle:
 
 Phase 4 — close the loop:
 
-- ⏳ **I. Close #14–#22 from inside the run (#14–#22).** The wave's own last
-  requirement, done after the final verification sweep passes: it extends
+- ✅ **I. Close #14–#22 from inside the run (#14–#22).** The wave's own last
+  requirement, done after the final verification sweep passed: it extends
   `artifacts/reports/issue-traceability.md` with an issue → requirement → task
   → commit → tests section per issue, closes each issue over the GitHub REST
   API with a comment naming that evidence, and writes
