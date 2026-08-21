@@ -1249,9 +1249,9 @@ seconds), `RALPHD_INFRA_RETRY_BACKOFF_MAX_S`, `RALPHD_INFRA_RETRY_MAX`,
 
 1. an explicit flag on `ralphctl start`;
 2. the `--template`'s `job.yaml` value (§6.7);
-3. the registry default in `<registry>/config.yaml` — only for the five keys that
-   have one: `image`, `on_complete`, `network`, `auto_resume` and
-   `default_llm_profile` (the fallback for `--llm`);
+3. the registry default in `<registry>/config.yaml` — only for the six keys that
+   have one: `image`, `on_complete`, `network`, `auto_resume`,
+   `default_llm_profile` (the fallback for `--llm`) and `price_strategy`;
 4. the hardcoded default in `ralphctl` (`_TEMPLATE_SCALAR_FIELDS`).
 
 The winner is written into `job.yaml`, and **only non-null keys are written** — an
@@ -2397,10 +2397,16 @@ iteration's failure from infra retry.
 ## 10. ralphctl
 
 `ralphctl` is the host-side control surface: one command that starts job
-containers, follows them, steers them, and reads their run dirs. It is a
-single module, `src/ralphd/cli/main.py`, on the standard library alone
+containers, follows them, steers them, and reads their run dirs. It lives in
+`src/ralphd/cli/` — `main.py` (the parser and every command), plus
+`log_render.py` for the transcript, `ui_server.py` for the hub (§11),
+`image.py` for the job-image hash and `llm_profiles.py` for the profiles — on
+the standard library alone
 (`argparse`, `urllib.request`, `json`, `subprocess`, plus `yaml` for the
 registry config) — no HTTP client library, no curses dependency, no framework.
+It also reuses the engine's own reader/formatter helpers (`engine/state.py`)
+rather than restating them, which is why a run dir renders identically in the
+terminal and in the browser.
 That keeps `pipx install ralphd` small on a machine that only ever *drives*
 jobs; the server dependencies stay on the engine side of the same wheel,
 inside the job image.
@@ -2424,7 +2430,7 @@ subcommand is mandatory.
 |---------|--------------|
 | `start` | launch a new job container from a PRD (and optional template) |
 | `runs` | list every run in the registry as a table, newest first |
-| `status <id>` | one-screen state of a run: state, verdict, phase, tasks, usage |
+| `status <id>` | one-screen state of a run: state, verdict, phase, approach, tasks, usage |
 | `tasks <id>` | the run's task list with per-task status |
 | `watch <id>` | follow the run's `events.jsonl` stream until its real terminus |
 | `interrupt <id>` | SIGINT the current iteration, adding no guidance |
@@ -2432,16 +2438,20 @@ subcommand is mandatory.
 | `unpause <id>` | release an operator pause |
 | `resume <id>` | start a fresh container over an existing run dir |
 | `logs <id>` | the agent transcript, pretty-rendered, tail- and follow-capable |
+| `iteration <id> <n>` | one iteration's own story: phase, timing, exit reason, its tokens and cost, its transcript |
+| `fault <id>` | why the run is (or last was) in trouble: class, matched signature, retry ladder, outage budget |
+| `cost <id>` | what the run spent, per phase and per approach, with priced, derived and unavailable money labelled |
+| `docs <id> [name]` | the run's state documents: notes, review findings, composite PRD, the redacted effective job config |
 | `skills <id> …` | `ls`/`get`/`add`/`rm` skills on a live job |
 | `creds <id> …` | `ls`/`get`/`add`/`rm` runtime credentials on a live job |
 | `prompts <id> …` | `ls`/`set` phase prompt overrides on a live job |
-| `llm …` | `profiles`/`show`/`test` LLM profiles, `set` to rotate a live job |
-| `steer <id> [msg]` | queue operator guidance for the next iteration |
+| `llm …` | `profiles`/`show`/`test` LLM profiles on the host |
+| `steer <id> [msg]` | queue operator guidance for the next iteration, or `--list` what has been queued |
 | `retry <id>` | wake a degraded run out of its infra backoff wait immediately |
 | `budget <id> <+N\|N>` | change a running job's iteration budget in flight |
 | `abort <id>` | terminate the job, recording state `aborted` |
 | `stop <id>` | shut down and remove an idle finished container |
-| `rm <id>` | delete a run's registry dir |
+| `rm <id>` | delete a run's registry dir (`--force` stops a leftover container first) |
 | `repair <id>` | diagnose (or, guarded, patch) an inconsistent run dir |
 | `artifacts <id> …` | `ls`/`pull` the run's artifacts straight off disk |
 | `doctor` | preflight the host, report strays and zombies, optionally recover |
@@ -2452,6 +2462,22 @@ subcommand is mandatory.
 from one loop and therefore take exactly one argument — the run id — and
 nothing else. These are the six commands typed most often, and none of them
 has an option worth remembering.
+
+**Rotating a live job's model is not in this set.** `llm` reads the host's
+profiles — `profiles`, `show`, `test` — and nothing more: a profile decides how
+a *new* container is wired (§7), so changing one has no effect on a running job,
+and the way to move a run onto a different route is `abort`/`resume` (or
+`prompts set`/`steer` for the work itself). The three hot-swap verbs are
+`skills`, `creds` and `prompts`, because those are the inputs an iteration
+re-reads at its next boundary.
+
+**Four of these commands read nothing but the run dir** — `iteration`, `fault`,
+`cost` and `docs`, the detail surfaces of §10.5. They never call the API, not
+even when the container is up, because everything they render (`meta.json`, the
+transcript, `status.json`'s fault and usage blocks, the run's own prose) is
+written by the engine atomically, so the run dir is authoritative for a live job
+and a long-dead one alike. There is therefore no live/snapshot distinction to
+report and no notice to print.
 
 `logsf <id>` is an alias for `logs <id> --follow`, and `logs <id> -100`,
 `-100f` and `-f` are tail-style shorthands. Argparse cannot parse a bare
@@ -2481,6 +2507,7 @@ returns immediately.
 | `--fast-model REF` | unset | model for cheap/auxiliary work |
 | `--model-strategy S` | `quality-first` | one of `quality-first`, `cost-optimized`, `balanced` |
 | `--thinking LEVEL` | unset | `pi` thinking level |
+| `--price-strategy S` | `none` | derive a cost for routes the provider does not price (or prices with an implausible zero): `aws` uses the built-in Bedrock rate table (§8.6) |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |
 | `--llm-env KEY=VAL` | none | extra env for the LLM wiring; repeatable |
 | `--forward-env NAME\|PREFIX_*` | none | forward host env var(s) by name or prefix; repeatable |
@@ -2488,7 +2515,9 @@ returns immediately.
 | `--skills DIR` | none | skill dir (or a dir of them); repeatable |
 | `--creds DIR` | none | copy `*.env` plus recognized extras into the job's creds |
 | `--allow-docker` | off | mount the host docker socket — root-equivalent host access |
-| `--image REF` | `ralphd:dev`, or `$RALPHD_IMAGE` | job image |
+| `--image REF` | built `ralphd:<hash>`, or `$RALPHD_IMAGE` | pin a finished job image and run it as-is, hashing and building nothing (§3.2) |
+| `--base-image REF` | none | build the job image *on top of* this image: it only has to carry your toolchain, ralphd layers the engine and `pi` onto it and runs the derived `ralphd-derived:<hash>`. Mutually exclusive with `--image` |
+| `--dockerfile PATH` | none | build this Dockerfile (its own directory is the build context) into that base image instead of naming one that already exists; recorded in `job.yaml` and replayed by `resume` |
 | `--on-complete idle\|exit` | `exit` | keep the container idling after completion, or tear it down |
 | `--on-complete-cmd CMD` | none | in-container shell hook run once on reaching a terminal state |
 | `--timeout MINUTES` | `480` | whole-job wall-clock budget |
@@ -2510,11 +2539,15 @@ gateway outage plausibly lasts.
 explicit CLI flag, then the `--template`'s `job.yaml`, then the registry-wide
 default in `<registry>/config.yaml` (`ralphctl config set`), then the
 hardcoded default in the table above. Only `image`, `on_complete`,
-`default_llm_profile` (feeding `--llm`), `network` and `auto_resume` have a
-registry-wide layer; the rest skip straight from template to hardcoded
-default. Every flag defaults to `None` in the parser rather than to its real
-value, so "not given" stays distinguishable from "given the value the default
-happens to be" and the chain can be applied honestly.
+`default_llm_profile` (feeding `--llm`), `network`, `auto_resume` and
+`price_strategy` have a registry-wide layer; the rest skip straight from
+template to hardcoded default. Every flag defaults to `None` in the parser
+rather than to its real value, so "not given" stays distinguishable from
+"given the value the default happens to be" and the chain can be applied
+honestly. The image flags are the one place where the *level* wins whole
+rather than the key: `--dockerfile`, `--base-image` and `--image` are three
+answers to one question, so the most specific level that answers it at all
+settles all three (§3.2).
 
 `--no-detach` turns `start` into a blocking call: it follows the event stream
 and, on the terminal event, polls `/status` one last time, exiting `0` only
@@ -2551,13 +2584,25 @@ is the supported way to correct a recorded value.
 
 `resume` recomputes only what must change for a new container: a fresh port
 (`--port`, else a free ephemeral one), `--api-bind`, `--network` (defaulting
-to the network recorded at start time), `--image`, `--allow-docker`, and the
+to the network recorded at start time), `--allow-docker`, and the
 budget — `--iterations +10` tops it up in `job.yaml` before the container
 starts, a bare `--iterations 30` sets it absolutely, omitting it continues
 with whatever remains. It refuses a run whose container is currently running
 (exit `5`), because a live engine already holds that run dir's lock; a
 container that merely *exited* is `docker rm -f`'d first to free the
 `ralphd-<run-id>` name.
+
+**The image is reproduced, not re-resolved.** A resume must not swap the engine
+out from under a half-finished run, so it ranks `--image <ref>` first (an
+explicit pin, as everywhere else), then **the image this run started on**, read
+from its own run state — by reference while that reference still names the
+recorded image id, by the recorded id once a mutable tag has moved. Only when
+that image is genuinely gone from the daemon does it replay the run's own
+`base_image:`/`dockerfile:` recipe from `job.yaml`, rebuilding it if it now
+means something else, and only a run dir that recorded neither falls back to the
+default reference. Every step down from the recorded image is a warning on
+stderr naming what could not be reproduced; none of them refuses the resume
+(§3.2).
 
 **A resumed run always appends an explicit `running` state event.** The engine
 emits it unconditionally at startup (`src/ralphd/engine/loop.py`, carrying
@@ -2688,6 +2733,7 @@ piped follow never touches stdin.
 |---------|--------|------|
 | `steer <id> <msg>` | queue guidance, consumed at the next iteration boundary | redirecting the work |
 | `steer <id> --now` | queue it and SIGINT the current iteration | stopping active harm |
+| `steer <id> --list` | show what has been queued and what the loop has applied | before steering again |
 | `interrupt <id>` | SIGINT the current iteration, no guidance | the agent is stuck in one long call |
 | `pause <id>` | hold the loop at the next iteration boundary | you need to look before it continues |
 | `unpause <id>` | release the pause | after looking |
@@ -2712,6 +2758,16 @@ own `NNN-` prefix has it stripped first, so a slug copy-pasted from an earlier
 steering file does not yield `022-019-steering.md`. Steering is cheap and safe
 because it applies at a boundary; `--now` is the sharp version, for stopping
 harm rather than reprioritizing.
+
+**Steering is not write-only.** `steer <id> --list` prints the same history the
+hub's run-detail steering panel shows — sequence, `pending`/`applied` state,
+arrival time, `--name`, and a one-line preview of each message, with `--json`
+carrying every body in full. It asks the live engine first, because the engine is
+the process that decides when an entry becomes `applied`, and falls back to
+reading the run dir's `steering/` directory when the container is gone (one
+notice on stderr, the same wording `logs` and `tasks` use). `--list` is a read:
+it never touches stdin, and combining it with a message, `--file`, `--name` or
+`--now` is a usage error rather than a send.
 
 `retry` targets a **degraded** run — `health: degraded` with a populated
 `infraWait`, sitting out an LLM-endpoint outage on an escalating backoff. It
@@ -2746,8 +2802,21 @@ may still say `running`, which on disk is otherwise indistinguishable from a
 crash.
 
 `rm` deletes a run's registry dir — history, artifacts, and the workspace if it
-was internal. It requires the container to be gone (exit `5` otherwise) and
-asks for confirmation on a TTY unless `--yes` is given; declining exits `1`.
+was internal — plus its persisted config dir. It requires the container to be
+gone (exit `5` otherwise) and asks for confirmation on a TTY unless `--yes` is
+given; declining exits `1`.
+
+`rm --force` makes disposing of a finished run **one** command instead of `stop`
+then `rm`: it runs exactly `stop`'s teardown first (`/shutdown`, `docker rm -f`
+the job container, reap the run's siblings, record the operator-termination
+marker) and then deletes both directories. It is a shortcut past a *stale*
+container, not a way to kill live work — it deletes only when the run's recorded
+state is terminal, and anything else (`starting`/`running`, an unrecognized
+state, a missing or unreadable `status.json`) exits `5` having touched nothing at
+all: no container removed, no directory deleted. Killing a live job stays
+explicit (`abort`, or `stop --force`). A run with no container record takes the
+plain path, so a zombie run dir still recording `running` remains deletable as
+before.
 
 `repair <id>` sits one step outside the control set: it does not talk to a
 running engine but validates a run dir left inconsistent by a crash, reporting
@@ -2776,15 +2845,34 @@ same information. Human output is a block of aligned labels:
 
 ```
 run:       v05-smoke
-state:     running
+state:     running  (live api: True)
 verdict:   unverified
-duration:  1h 12m
+duration:  1h 12m  (elapsed)
 started:   2026-08-19 09:14:02 +0300
-phase:     review
+phase:     review  approach 2/3
 iteration: 5/8
+model:     amazon-bedrock/eu.anthropic.claude-opus-5  (gateway id: eu.anthropic.claude-opus-5)
+image:     ralphd:9f2c1a4b7d80  (id 0f1e2d3c4b5a)
 tasks:     5/7 completed (1 in-progress, 1 pending)
 usage:     $0.56, 625k tokens (planning $0.10 / worker $0.40 / review $0.06)
 ```
+
+Three of those lines answer "which run am I actually looking at", and each is
+printed only when the run state carries it. `phase:` carries the **approach
+counter against its limit** — `approach 2/3` when the run's `maxApproaches` is
+recorded, a bare `approach 2` when it is not (a pre-v0.6 run dir, where the
+denominator is unknown and is never guessed from this host's config), and no
+approach segment at all for a run that has not entered the review ladder.
+`model:` names the id `pi`
+**resolved**, as observed in its own message stream, not the ref the operator
+asked for — which is `null` exactly when nothing was pinned — with the
+`(gateway id: …)` suffix only when the provider's own id differs. `image:` names
+the job image the container actually got, reference plus the daemon's short id.
+The `model:` and `image:` lines are omitted rather than printed as `None`, and
+`--json` carries the raw
+fields (`approach`/`maxApproaches`, `model`/`modelRaw`,
+`image`/`imageId`/`imageSource`/`imageHash`/`imageBase`/`imageDockerfile`),
+explicitly `null` when unknown.
 
 Additional lines appear only when they have something to say, which keeps a
 healthy run's output short:
@@ -2810,9 +2898,31 @@ healthy run's output short:
   `running` with no container and nothing ever happens again.
 - `!! UNCONSUMED STEERING:` — in bold, guidance queued but not yet picked up.
 
-`ralphctl tasks <id>` prints one line per task, `[<status>] <id> <title>`, from
-the live `GET /tasks`. With `--json` it is the raw payload, carrying each task's
-`successCriteria`, `dependsOn`, `priority` and `validationNotes`.
+`ralphctl tasks <id>` prints one line per task, `[<status>] <id> <title>`,
+asking the live `GET /tasks` first and reading the run dir's `tasks.json` when
+the container is gone. Neither path ever answers "no tasks" for a plan it merely
+failed to parse: the agent rewrites `tasks.json` by truncate-and-write, so a read
+that lands mid-write is re-read briefly and then served from the last version
+that *did* parse, marked stale on stderr (§5.3). With `--json` it is the raw
+payload, carrying each task's `successCriteria`, `dependsOn`, `priority` and
+`validationNotes`, plus the `tasksStale`/`tasksSource` flags that say which read
+answered.
+
+**Four commands answer the questions `status` deliberately does not.** Each reads
+the run dir alone (§10.1) and takes `--json`:
+
+| command | the question |
+|---------|--------------|
+| `iteration <id> <n>` | what happened to iteration `n`: phase, start/end, duration, why it ended, its own tokens and cost, and its full transcript (`--no-log` for the header alone) |
+| `fault <id>` | why the run is in trouble: the fault's class, the signature its error text matched, the retry ladder so far, what is left of the outage budget |
+| `cost <id>` | what it spent, per phase and per approach, with quoted, derived and unavailable money each labelled as such (§8.6) |
+| `docs <id> [name]` | the prose the run left behind — `notes.md`, `review-findings.md`, `composite-prd.md` — and the effective `job.yaml` with secret values redacted |
+
+A missing iteration exits `1` naming the ones that do exist, an unknown document
+name exits `2` listing the keys, and an unknown run is exit `3` as everywhere
+else. Each of the four renders the same text its hub dialog shows (§11.3), from
+one shared shaping in `engine/state.py`, so the terminal and the browser cannot
+grow two vocabularies for the same file.
 
 `ralphctl artifacts <id> ls|pull [dest]` reads `<run-dir>/artifacts` **directly
 off disk**, so it works for a dead container, a finished run, and a run whose
@@ -2842,9 +2952,10 @@ without it cannot occur, and a `failed` run still leaves useful state — read
 it is what an external orchestrator drives ralphd through, and it is
 deliberately sufficient to run a job end to end without ever parsing human
 output. It is honoured by `start`, `runs`, `status`, `tasks`, `watch`,
-`resume`, `steer`, `interrupt`, `pause`, `unpause`, `retry`, `budget`, `abort`,
-`stop`, `rm`, `repair`, `artifacts`, `doctor`, `config`, and the `ls`-style
-actions of `skills`, `creds`, `prompts` and `llm`. `logs` uses `--raw`
+`resume`, `steer` (including `--list`), `interrupt`, `pause`, `unpause`,
+`retry`, `budget`, `abort`, `stop`, `rm`, `repair`, `iteration`, `fault`,
+`cost`, `docs`, `artifacts`, `doctor`, `config`, and the `ls`-style actions of
+`skills`, `creds`, `prompts` and `llm`. `logs` uses `--raw`
 instead, since its machine form is the engine's own NDJSON.
 
 The shape follows two rules. Proxying commands print the engine's response
@@ -2868,33 +2979,40 @@ It exits at the run's real terminus, including on a resumed run whose log
 still carries an earlier episode's terminal event (§10.3).
 
 `ralphctl runs` sorts with `--sort {approach,iterationsUsed,phase,runId,
-startedAt,state,verdict}` and `--reverse`, defaulting to `startedAt`
+startedAt,state,tasks,verdict}` and `--reverse`, defaulting to `startedAt`
 descending — newest first, not the alphabetical order a directory listing
 yields. Keys sort on raw payload values, not rendered cell text:
-`iterationsUsed` numerically rather than on the `"17/250"` string, `startedAt`
+`iterationsUsed` numerically rather than on the `"17/250"` string, `approach`
+on the bare counter rather than on the rendered `10/12`, `tasks` on the
+**completion ratio** so `5/7` outranks `100/250`, `startedAt`
 on the parsed instant so ISO values with different UTC offsets order correctly,
 and `state`/`verdict` in lifecycle order (`starting → running → succeeded →
 failed → aborted`, and no-verdict → `unverified` → `verified`). Missing values
 sort last, and the run id breaks ties so the order is total and stable.
 `startedAt`, `iterationsUsed` and `approach` start descending; `--reverse`
-flips whichever direction the key starts with.
+flips whichever direction the key starts with. A run with no plan at all has no
+ratio rather than a zero one, so it sorts last ascending instead of pretending to
+be 0% done — the same "unknown is not zero" rule that keeps its TASKS cell blank
+instead of `0/0`.
 
-**Those seven keys are exactly the hub's seven sortable columns, and both
+**Those eight keys are exactly the hub's eight sortable columns, and both
 surfaces use one implementation** (`sort_run_rows`/`RUN_SORT_KEYS` in
 `main.py`, mirrored by `RUN_COLUMNS` in `app.js` against the same raw fields).
 `--json` emits the human table's rows in the same sequence, so a script and a
-reader never disagree about which run is first.
+reader never disagree about which run is first, and it carries the raw counts
+(`approach`/`maxApproaches`, `tasksCompleted`/`tasksTotal` and the
+validation-failed / in-progress flags) beside the rendered cells.
 
 ### 10.7 Exit codes
 
 | code | meaning | examples |
 |------|---------|----------|
 | `0` | success | including a fallback that served on-disk data |
-| `1` | generic error | `docker run` failed; malformed `status.json`; a `doctor`/`repair` run that found issues; `--no-detach` finishing unverified; a declined `rm` confirmation |
-| `2` | usage error | argparse rejection; missing `--prd`; a run id that already exists; a `--workspace`/`--creds`/`--skills` path that is not a directory; an unnamed second `--workspace`; a malformed `--iterations`/`budget` spec; an invalid `--set-state` value or `--env KEY=VAL`; an invalid `prompts set` phase; a non-`.env` `creds add`; a `skills add` dir with no `SKILL.md`; an unknown `config` key or invalid value |
+| `1` | generic error | `docker run` failed; malformed `status.json`; a `doctor`/`repair` run that found issues; `--no-detach` finishing unverified; a declined `rm` confirmation; an `iteration <n>` or `docs <name>` that was never written |
+| `2` | usage error | argparse rejection; missing `--prd`; a run id that already exists; a `--workspace`/`--creds`/`--skills` path that is not a directory; an unnamed second `--workspace`; a malformed `--iterations`/`budget` spec; an invalid `--set-state` value or `--env KEY=VAL`; an invalid `prompts set` phase; a non-`.env` `creds add`; a `skills add` dir with no `SKILL.md`; an unknown `config` key or invalid value; an unknown `docs` name; `steer --list` combined with a message to send; two of `--image`/`--base-image`/`--dockerfile` set at one level; a `--dockerfile` path that is not a file with a `FROM` |
 | `3` | run or profile not found | no such run dir; an unknown `--template`; an unknown LLM profile name |
 | `4` | container or API unreachable | `API unreachable: …`; no `apiUrl` recorded; `could not connect to event stream` |
-| `5` | operation invalid in the current job state | HTTP `409` from the engine; `resume`/`repair` against a running container; `stop` on a live job without `--force`; `rm` while the container exists; `budget` below `iterationsUsed`; `steer` on a finished job; `retry` on a run that is not waiting |
+| `5` | operation invalid in the current job state | HTTP `409` from the engine; `resume`/`repair` against a running container; `stop` on a live job without `--force`; `rm` while the container exists; `rm --force` on a run whose recorded state is not terminal; `budget` below `iterationsUsed`; `steer` on a finished job; `retry` on a run that is not waiting |
 | `130` | a follow was interrupted with Ctrl+C | `logs -f`, `logsf` |
 
 Code `5` is the one worth designing against: the command was well-formed and
@@ -2952,10 +3070,10 @@ than crashing the server.
 ### 11.2 Run list
 
 The default view (`#/`) is a table of every run under the registry, refreshed
-every 4 seconds, with the run id linking to its detail view. Its seven columns
-are exactly the seven `ralphctl runs --sort` keys:
+every 4 seconds, with the run id linking to its detail view. Its eight columns
+are exactly the eight `ralphctl runs --sort` keys:
 
-`RUN ID` · `STATE` · `VERDICT` · `PHASE` · `APPROACH` · `ITERATIONS` ·
+`RUN` · `STATE` · `VERDICT` · `PHASE` · `APPROACH` · `TASKS` · `ITERATIONS` ·
 `STARTED`
 
 Every header is click-to-sort; clicking the active column reverses it; the
