@@ -221,6 +221,17 @@ no actionable task left (`state.TASK_ACTIONABLE_STATUSES`), the loop emits a
 warning `log` event naming them and their kinds, and enters `review`. Entry only
 -- the reviewer still decides whether the run succeeded.
 
+Every surface that *counts* task statuses reports both meanings (task 025, #33)
+without learning a sixth status: `state.task_counts()` keeps counting both kinds
+under `failed` -- so its status keys still sum to `total` -- and adds the
+sub-counts `failedValidationExhausted`/`failedRequirementUnmet`, which sum to
+`failed`. The words come from the same two places for everyone
+(`TASK_STATUS_LABELS` for a tally, `format_task_status()` for one record), and
+the per-task map `state.task_failure_kinds()` is served as `taskFailureKinds` by
+`GET /tasks`, `ralphctl tasks --json` and the hub's run-detail payload, so the
+browser renders a derived kind rather than re-deriving it in JS. `ralphctl runs`
+and the hub's TASKS cell flag a `failed` plan as trouble under either meaning.
+
 ### No-progress escalation guard vs. instant startup/infra failures (task 059)
 
 The worker loop's stagnation guard (3 consecutive worker iterations with no

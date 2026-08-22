@@ -33,7 +33,12 @@ def test_task_dialog_reuses_the_single_text_dialog_implementation():
 
 def test_task_rows_are_clickable_and_keyboard_reachable():
     rows = APP_JS.split("function renderTasks(")[1].split("\nfunction ")[0]
-    assert "openTaskDialog(t)" in rows, rows
+    # Task 025 (#33) RETARGETED the call from `openTaskDialog(t)`: the dialog
+    # now also needs the payload it derives a failed task's KIND from
+    # (`doc.taskFailureKinds`, server-derived), so the row hands over both the
+    # record and the document it came out of. The affordance itself -- what
+    # this test is about -- is unchanged.
+    assert "openTaskDialog(t, doc)" in rows, rows
     assert 'class: "task-row"' in rows, rows
     assert 'tabindex: "0"' in rows, rows
     assert "onkeydown" in rows and 'ev.key === "Enter"' in rows, rows

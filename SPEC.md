@@ -1136,6 +1136,31 @@ to the published keys (`in-progress` → `inProgress`, `validation-failed` →
 `validationFailed`) in one place, so the engine and the host-side fallback can
 never disagree about the same file.
 
+**Counting both meanings of `failed` (task 025, #33).** A failure kind is not a
+status, so it gets no status key of its own: both kinds keep counting under
+`failed`, and the breakdown travels as the **sub-counts**
+`failedValidationExhausted`/`failedRequirementUnmet` beside them
+(`state.TASK_COUNT_SUBKEYS`, present only for the kinds actually in the plan).
+Two invariants hold for every plan, including one written before the label
+existed (the kind is derived, above):
+
+* the status keys sum to `total` — what "the tallies add up" means, and the
+  reason no surface had to learn a sixth status;
+* the sub-counts sum to `failed`.
+
+The *wording* is one vocabulary too (`state.TASK_STATUS_LABELS` /
+`format_task_status`): `1 failed (validation-exhausted)` in a tally, `failed
+(validation-exhausted)` on the task itself. A summary renders the kinds
+*instead of* a plain `2 failed` whenever they are known, so one failed task is
+never counted twice in the same sentence; plain `failed` remains the fallback
+for a counts dict carrying no sub-counts (a pre-v0.7 engine's `GET /status`),
+and it is a *trouble* flag under both meanings — `ralphctl runs`' `⚠` and the
+hub's TASKS cell mark a plan that gave up, not just one mid-flight. The
+per-task half of the same answer is `state.task_failure_kinds()`, published as
+`taskFailureKinds` by every surface that serves the plan itself (`GET /tasks`,
+`ralphctl tasks --json`, the hub's run-detail payload) so no renderer
+re-implements the migration rule — `app.js` included.
+
 **Reading it: unknown is not zero.** This file is written by the *agent*, with
 whatever atomicity its tooling happens to have, and a plan is rewritten many
 times per iteration. A reader that catches `JSONDecodeError` and falls back to a

@@ -67,7 +67,8 @@ The one-call summary. Response:
     "startedAt": "2026-08-08T14:02:33Z"
   },
   "tasks": {"total": 9, "completed": 4, "inProgress": 1,
-            "pending": 3, "validationFailed": 1, "failed": 0},
+            "pending": 2, "validationFailed": 1, "failed": 1,
+            "failedRequirementUnmet": 1},   // sub-counts, see below
   "tasksStale": false,             // see "Stale task reads" below
   "tasksSource": "file",           // absent|file|last-good|unreadable
   "steering": {"pending": 0, "consumed": 2},
@@ -362,8 +363,29 @@ run dir written before v0.7) reads as `operator`. `ralphctl status` prints a
 
 ### `GET /tasks`
 Full `tasks.json`, plus the same `tasksStale`/`tasksSource` pair `GET /status`
-carries (appended after the file's own keys, so a plan key of either name
-cannot forge the flag).
+carries and the derived `taskFailureKinds` map (both appended after the file's
+own keys, so a plan key of any of those names cannot forge them).
+
+#### Both meanings of a `failed` task (`taskFailureKinds`, task 025, issue #33)
+
+`failed` means either *a verifier judged this requirement unmet* or *the engine
+spent this task's validation rounds*, told apart by the `failureKind` label on
+the record (SPEC §5.3). Both endpoints publish which, without inventing a sixth
+status:
+
+| field | endpoint | shape |
+|---|---|---|
+| `taskFailureKinds` | `GET /tasks` | `{"014": "validation-exhausted"}` — one entry per failed task, **absent entirely** when nothing failed (for a derived map, empty and absent state the same fact) |
+| `tasks.failedValidationExhausted` / `tasks.failedRequirementUnmet` | `GET /status` | the same answer in aggregate, present only for the kinds actually in the plan |
+
+The kind counts are **sub-counts of `failed`**, not statuses: the status keys
+still sum to `total` and the two kind keys sum to `failed`, so a consumer can
+keep tallying exactly as before. Both are **derived** through
+`ralphd.engine.state.task_failure_kind`, so a `tasks.json` written before v0.7
+(no `failureKind` key at all) answers too — at or past three recorded
+`validationAttempts` it reads as `validation-exhausted`, otherwise as
+`requirement-unmet` — and an unrecognised label can never produce a third
+meaning.
 
 #### Stale task reads (`tasksStale`/`tasksSource`)
 

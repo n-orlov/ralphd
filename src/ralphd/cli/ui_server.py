@@ -61,6 +61,7 @@ from ..engine.state import (
     NONTERMINAL_STATES,
     STEERING_APPLIED,
     STEERING_PENDING,
+    TASK_FAILURE_KINDS_FIELD,
     TASKS_STALE_LABEL,
     TERMINAL_STATES,
     artifact,
@@ -86,6 +87,7 @@ from ..engine.state import (
     run_document_text,
     run_documents,
     steering_entries,
+    task_failure_kinds,
     tasks_read_notice,
 )
 from ..log_merge import NO_TRANSCRIPT, iteration_lines, merged_lines
@@ -848,6 +850,26 @@ def _with_approach_display(doc: dict) -> dict:
                                                      doc.get("maxApproaches"))}
 
 
+def _with_task_failure_kinds(tasks: dict) -> dict:
+    """Task 025 (#33): the `taskFailureKinds` map -- `{task id: kind}` for every
+    failed task -- DERIVED from the task list in a LIVE `GET /tasks` payload.
+
+    Derived rather than trusted for the same reason `_with_tasks_read_label`
+    re-derives its label: the payload may come from a pre-v0.7 engine (no such
+    field, and no `failureKind` on the records either), and it may carry a
+    forged key of that name written by the agent into tasks.json. One call to
+    `engine.state.task_failure_kinds` -- the function `GET /tasks` and `ralphctl
+    tasks` use -- so the hub cannot read a failed task differently from the CLI.
+    Absent entirely when nothing failed, exactly as `TasksRead.payload` omits it
+    on the on-disk path (which needs no second derivation).
+    """
+    out = {k: v for k, v in tasks.items() if k != TASK_FAILURE_KINDS_FIELD}
+    kinds = task_failure_kinds(tasks.get("tasks") or [])
+    if kinds:
+        out[TASK_FAILURE_KINDS_FIELD] = kinds
+    return out
+
+
 def _with_tasks_read_label(tasks: dict) -> dict:
     """Task 005 (#15): render the read's provenance into the two display
     strings the browser shows -- `tasksLabel` (the short badge, e.g. `stale`)
@@ -904,14 +926,19 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     # no flags at all; inventing `tasksStale: false` there would claim
     # freshness nobody vouched for.
     tasks_read = read_tasks_doc(run_dir, persist=False)
-    tasks = {**tasks_read.doc, **tasks_read.contract}
+    tasks = tasks_read.payload
     # The payload has always carried a `tasks` list for a plan-less run
     # (app.js renders `d.tasks.tasks`); with `tasksSource: "absent"` alongside
     # it, an empty list here is a stated fact rather than a swallowed error.
     tasks.setdefault("tasks", [])
     ok_t, _, live_tasks = _proxy_json(reg, run_id, "GET", "/tasks")
     if ok_t and isinstance(live_tasks, dict):
-        tasks = live_tasks
+        # Task 025 (#33): the local read already carries the derived failure
+        # kinds (`TasksRead.payload`); a LIVE answer gets them derived here, so
+        # a pre-v0.7 engine's plan -- and a `taskFailureKinds` key an agent
+        # wrote into tasks.json itself -- cannot reach the browser unlabelled
+        # or forged. Exactly ONE derivation on each path, never both.
+        tasks = _with_task_failure_kinds(live_tasks)
     tasks = _with_tasks_read_label(tasks)
 
     iterations = []
