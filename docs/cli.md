@@ -1669,7 +1669,7 @@ size:      844 bytes
   same size cells — an artifact cannot be described as missing in one surface
   and empty in the other.
 
-### `ralphctl suggestions <run-id> [show|apply] [--target DIR] [--yes]`
+### `ralphctl suggestions <run-id> [show|apply] [--target DIR] [--yes] [--ignore-conflicts]`
 
 A finished run's reflect phase may leave `artifacts/reflection/suggestions.diff`:
 a unified diff proposing edits to the loop's own material (`src/ralphd/prompts/`,
@@ -1685,6 +1685,7 @@ ralphctl suggestions <run-id> show               # the diff + what it would touc
 ralphctl suggestions <run-id> apply              # the same, then stops: nothing written (exit 2)
 ralphctl suggestions <run-id> apply --yes        # the same, then writes, all-or-nothing
 ralphctl suggestions <run-id> apply --yes --target ~/src/ralphd
+ralphctl suggestions <run-id> apply --yes --ignore-conflicts  # another run's diff also fits these files: this one wins
 ```
 
 ```
@@ -1730,19 +1731,46 @@ image:     5adb7924fa1b -> 63644df115a2  (the next `start` builds and runs it)
   check is scriptable with no write path involved.
 - Re-running `apply --yes` on a diff that already landed is refused as `the
   change is already present in the file` rather than applied twice.
-- **Purely on-disk**, like `ralphctl docs`/`artifacts`: the diff is a file in the
-  run dir and the target is a directory on this host, so this verb never talks
-  to a container or an API and works identically for a run whose container is
-  long gone.
+- **Never mid-flight** (requirement P part 2). An `apply` is refused, exit `1`,
+  while a run that is *really running* is tied to the target tree — either its
+  `host.json` `imageHash` says it is executing the image built from exactly this
+  tree, or the tree is (contains, or sits inside) its mounted workspace. Both
+  runs and reasons are named. The image tie is the one worth spelling out: the
+  write cannot reach the live container, whose prompts are baked into its image —
+  and that *is* the damage, because the checkout would silently stop describing
+  the run you are watching. There is no override flag; apply to a copy
+  (`--target DIR`) or wait for the run to finish, since a diff reaches a job only
+  through the next `start` either way. A run recorded non-terminal whose
+  container is gone does not block anything (that is `doctor`'s condition, and
+  liveness is asked with the same three-valued docker question `resume` uses).
+- **Two runs proposing edits to the same prompt are refused, not merged.** While
+  another run's `suggestions.diff` *also still applies* to a file in this plan,
+  `apply` exits `1` naming that run, its diff and the shared paths (`show` lists
+  them under `--- other runs proposing edits to the same files ---`). Applying
+  both would corrupt nothing — the matcher is context-exact — it would produce a
+  third version of the prompt that neither run proposed, and nothing would say
+  so. `--ignore-conflicts` is the explicit "this run's suggestions win"; the
+  other diff is then re-planned against what was written and refused by the
+  matcher rather than landing quietly on top. A sibling diff that no longer
+  applies is not a conflict — it can never be written.
+- **Almost purely on-disk**, like `ralphctl docs`/`artifacts`: the diff is a file
+  in the run dir and the target is a directory on this host, so this verb never
+  talks to a run's API and works identically for a run whose container is long
+  gone. The one exception is the mid-flight refusal above: one `docker inspect`
+  per run that is both recorded non-terminal and tied to this tree, and none at
+  all otherwise.
 - `--json` prints `{runId, diff, target, paths, applies, failures, imageHash,
-  written, applied}` (plus `imageHashBefore` after a write, and `reason` for the
-  `apply`-without-`--yes` stop), so the plan can be inspected programmatically
-  before an operator decides.
+  written, applied, liveRuns, conflicts}` (plus `imageHashBefore` after a write,
+  and `reason` for the `apply`-without-`--yes` stop), so the plan — including
+  both refusal conditions — can be inspected programmatically before an operator
+  decides.
 - Exit codes: `0` shown or applied · `1` no `suggestions.diff` in that run, an
-  unreadable diff (the message names the offending line), or a diff that does
-  not apply · `2` `apply` without `--yes`, a `--target` that is not a directory,
-  or no checkout to default to · `3` run not found. Pinned by
-  `tests/test_cli_suggestions_verb.py`.
+  unreadable diff (the message names the offending line), a diff that does not
+  apply, a live run tied to the target tree, or an unresolved conflict with
+  another run's diff · `2` `apply` without `--yes`, a `--target` that is not a
+  directory, or no checkout to default to · `3` run not found. Pinned by
+  `tests/test_cli_suggestions_verb.py` and
+  `tests/test_cli_suggestions_guards.py`.
 
 ### `ralphctl skills <run-id> [ls|get <name> <dest>|add <dir>|rm <name>]`
 

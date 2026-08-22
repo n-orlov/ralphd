@@ -355,10 +355,13 @@ def test_json_prints_the_plan_before_a_write_and_the_hashes_after(
     assert wet["imageHash"] != wet["imageHashBefore"]
 
 
-def test_the_verb_reads_the_run_dir_and_a_tree_and_talks_to_nothing_else(
+def test_the_verb_reads_the_run_dir_and_a_tree_and_never_an_api(
         tmp_path, tree):
-    """On-disk like `ralphctl docs`/`artifacts`: no container, no API, and so
-    no live/snapshot distinction to report."""
+    """On-disk like `ralphctl docs`/`artifacts`: no API, and so no
+    live/snapshot distinction to report. Task 029 narrowed this by exactly one
+    docker question -- "is a run that is tied to this tree still running" --
+    which lives in its own helper and is pinned by
+    tests/test_cli_suggestions_guards.py; the *verb* still talks to neither."""
     import inspect
     source = inspect.getsource(cli_main.cmd_suggestions)
     for forbidden in ("DOCKER", "docker(", "api(", "urllib",

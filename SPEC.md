@@ -2904,7 +2904,7 @@ subcommand is mandatory.
 | `rm <id>` | delete a run's registry dir (`--force` stops a leftover container first) |
 | `repair <id>` | diagnose (or, guarded, patch) an inconsistent run dir |
 | `artifacts <id> …` | `ls`/`pull` the run's artifacts straight off disk |
-| `suggestions <id> …` | `show` a finished run's reflection diff and exactly what it would touch, and `apply` it to a checkout on an explicit `--yes` |
+| `suggestions <id> …` | `show` a finished run's reflection diff and exactly what it would touch, and `apply` it to a checkout on an explicit `--yes`; refused while a live run is executing that tree, and while another run's diff also fits the same file (`--ignore-conflicts` picks this one) |
 | `doctor` | preflight the host, report strays and zombies, optionally recover |
 | `config get\|set` | registry-wide defaults in `<registry>/config.yaml` |
 | `ui` | serve the local web hub in the foreground (§11) |
@@ -4392,19 +4392,6 @@ Genuinely unresolved, with the trade-off as it currently stands.
    gap stays, or secrets-at-rest get a real mechanism (a keyring, an external
    secret manager) that the map could then safely use — a larger decision than
    this one.
-5. **Should the reflection diff ever be applied automatically?**
-   `suggestions.diff` is a proposal by construction: nothing in the loop applies
-   it, and the prompt forbids the agent from doing so. That keeps every run
-   reproducible against known prompt material. What it also did, until v0.7, was
-   make the loop's self-improvement depend entirely on an operator reading a diff
-   and retyping it. The **host-side review-and-apply verb** now closes that gap
-   without giving the loop write access to its own prompts mid-flight:
-   `ralphctl suggestions <id> [show|apply --yes]` (§10.1) plans a diff against a
-   checkout, shows it before writing anything, refuses what does not fit, and
-   leaves the *next* `start` to build the changed tree. Still open, and the
-   reason this entry stays here: automatic application (no), what happens when
-   two runs propose conflicting edits to the same prompt, and whether an
-   operator can take six of eight suggestions.
 
 ---
 
@@ -4443,3 +4430,47 @@ entry moved out of it; each entry below names the number it used to carry.
 
    What is deliberately *not* answered: the same shape more than 120s in. See
    §8.2's "What is left, deliberately".
+
+2. **Should the reflection diff ever be applied automatically?** (§16 question 6
+   through v0.6, question 5 after task 014's move; answered by tasks 028, 041
+   and 029, requirement P.) **No — and it no longer has to be, because an
+   operator can now apply it in one command.** `suggestions.diff` stays a
+   proposal by construction: nothing in the loop applies it and the reflect
+   prompt still forbids the agent from doing so, so every run remains
+   reproducible against prompt material that was known before it started. What
+   that cost, until v0.7, was the whole self-improvement loop: v0.6's diff was
+   read by hand and retyped as eight GitHub issues, which is exactly Phase 0 of
+   this wave's PRD. `ralphctl suggestions <id> [show|apply --yes]` (§10.1)
+   closes the gap from the *host* side — it plans a diff against a checkout,
+   prints the diff and the files it would touch before the single all-or-nothing
+   writer runs, refuses what does not fit naming the hunk, and leaves the **next**
+   `start` to build the changed tree, because the content hash of `src/ralphd/`
+   moved. The loop never gains write access to its own prompts; an operator's
+   explicit `--yes` does.
+
+   **Never mid-flight**, and that is a refusal rather than a convention: an
+   `apply` is refused, exit 1, while any run recorded non-terminal *whose
+   container is really running* is tied to the target tree — either because
+   `host.json`'s `imageHash` says it is executing the image built from exactly
+   this tree, or because the tree is (contains, or sits inside) its mounted
+   workspace. The first tie is the subtle one: the write cannot reach the live
+   container at all, since the prompts are baked into its image, and that is the
+   damage — the checkout would silently stop describing the run being watched.
+   No override exists because none is needed: `--target` a copy, or wait, and
+   the diff still reaches a job only through the next `start`.
+
+   **Two runs proposing edits to the same prompt** are refused with both diffs
+   named, never merged: while another run's `suggestions.diff` also still applies
+   to a file in this plan, `apply` exits 1 naming that run, its diff and the
+   shared paths. Applying both would not corrupt anything — the matcher is
+   context-exact — it would produce a third version of the prompt that neither
+   run proposed and no one reviewed as a whole, and nothing would say so.
+   `--ignore-conflicts` is the operator's explicit "this run's suggestions win";
+   the diff that lost is then re-planned against what was actually written and
+   refused by the matcher (`the change is already present`, `no such context`)
+   rather than quietly landing on top. A sibling diff that no longer applies is
+   not a conflict at all: it can never be written, so it can take nothing.
+
+   What this entry does not settle: taking six of eight suggestions. Partial
+   application is requirement P part 3; whatever it lands — selection or a
+   documented refusal — is stated in docs/cli.md's section for the verb.

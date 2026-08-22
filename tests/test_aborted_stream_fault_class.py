@@ -333,4 +333,9 @@ def test_the_open_question_moved_out_of_section_16_rather_than_being_edited():
         assert needle in answered, f"the answer omits its evidence: {needle}"
     # and §16 still holds the questions that are genuinely open
     assert "Does the outage budget belong per-episode or per-job?" in questions
-    assert "Should the reflection diff ever be applied automatically?" in questions
+    # ("Should the reflection diff ever be applied automatically?" stood here
+    # until task 029 moved it out with its own answer -- §17 entry 2, checked by
+    # tests/test_cli_suggestions_guards.py. What this assertion is for is that
+    # §16 still carries a question nothing has answered yet.)
+    assert ("How much autonomy should the agent have over its own container?"
+            in questions)

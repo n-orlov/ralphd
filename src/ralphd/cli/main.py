@@ -4404,6 +4404,147 @@ SUGGESTIONS_NEEDS_YES = (
 # (path, `@@` header, reason) comes from `patch.HunkFailure`, never from here.
 SUGGESTIONS_REFUSED = "refusing to apply a diff that does not fit the target"
 
+# ------------------------------------------- the two refusals of P part 2 (029)
+# "Never mid-flight", made checkable. Two things can tie the tree a diff is
+# about to be written into to a job that is running *right now*, and both of
+# them are the requirement's case:
+#
+#   * the run is executing an image built from exactly this tree -- host.json's
+#     `imageHash` is the content hash `start` tagged that image by, so the
+#     prompt files about to be rewritten are the ones it is running. Nothing
+#     reaches the live container (the prompts are baked in), which is precisely
+#     the damage: from that moment the checkout no longer says what the run
+#     under observation is doing, and SPEC's "every run stays reproducible
+#     against known prompt material" stops being true for it;
+#   * the tree is (or contains, or sits inside) the run's mounted workspace --
+#     then the write lands in a directory a live iteration is editing, on top of
+#     whatever it has half-finished there.
+#
+# Deliberately no override flag: applying to a copy is always available
+# (`--target`), and a diff reaches a job only through the *next* `start`, so
+# waiting costs nothing. The recorded state alone is not enough to refuse on --
+# a run recorded `running` whose container is long gone would block every apply
+# forever (`doctor` owns that condition) -- so a tie is confirmed with the same
+# three-valued liveness question `resume`/`repair` ask.
+SUGGESTIONS_MIDFLIGHT_REFUSED = (
+    "refusing to write the material a live run is executing under")
+SUGGESTIONS_MIDFLIGHT_WORKFLOW = (
+    "apply to a copy of the tree instead (`--target DIR`), or let the run "
+    "finish first -- a diff reaches a job only through the next `start`, never "
+    "mid-flight")
+SUGGESTIONS_MIDFLIGHT_HEADER = "--- live runs tied to this tree ---"
+MIDFLIGHT_REASON_IMAGE = ("it is executing the image built from this tree "
+                          "(imageHash {hash})")
+MIDFLIGHT_REASON_WORKSPACE = "this tree is its mounted workspace ({path})"
+
+# SPEC §16's conflict question: what happens when two runs propose edits to the
+# same prompt. Answer: the second one is never taken silently, because the verb
+# refuses to apply either while both still apply, and names both diffs. The
+# matcher is context-exact, so applying both in sequence does not corrupt a file
+# -- it produces a *third* version of it that neither run proposed and nobody
+# reviewed, and the operator would never be told that is what happened. Only a
+# sibling diff that would still be written counts as a conflict: one whose own
+# plan no longer applies (stale, or already landed) can take nothing from this
+# one. `--ignore-conflicts` is the operator's explicit "this run's suggestions
+# win" -- a second act, like `--yes`, never a default.
+SUGGESTIONS_CONFLICT_REFUSED = (
+    "refusing to apply one of two diffs that both propose edits to the same "
+    "file")
+SUGGESTIONS_CONFLICT_WORKFLOW = (
+    "decide which run's suggestions win: re-run with `--ignore-conflicts` to "
+    "apply this one (the other diff is then re-planned against what was "
+    "written, and refused if it no longer fits), or apply the other run's diff "
+    "instead")
+SUGGESTIONS_CONFLICT_HEADER = "--- other runs proposing edits to the same files ---"
+
+
+def _suggestions_tree_ties(rdir: Path, root: Path, source_hash: str) -> list[str]:
+    """Why one run dir is tied to the target tree, in the wording shown -- an
+    empty list when it is not tied to it at all.
+
+    Containment counts in *both* directions for the workspace tie: a diff path
+    under a workspace mounted inside the tree is as much a live iteration's file
+    as the other way round, and this is a refusal, so the generous reading is
+    the safe one.
+    """
+    reasons = []
+    rec = image_record(rdir)
+    if rec.get("imageHash") and rec["imageHash"] == source_hash:
+        reasons.append(MIDFLIGHT_REASON_IMAGE.format(hash=source_hash))
+    meta = _read_json(rdir / "host.json", {}) or {}
+    spelled = [meta.get("workspace")]
+    if isinstance(meta.get("workspaces"), dict):
+        spelled += list(meta["workspaces"].values())
+    for value in spelled:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            ws = Path(value).expanduser().resolve()
+        except OSError:                                   # pragma: no cover
+            continue
+        if ws == root or ws in root.parents or root in ws.parents:
+            reasons.append(MIDFLIGHT_REASON_WORKSPACE.format(path=ws))
+    return reasons
+
+
+def _suggestions_midflight(root: Path, source_hash: str) -> list[dict]:
+    """Every run that is running *right now* and tied to the target tree.
+
+    One status.json read per run, the tie computed from files, and the docker
+    liveness question asked only for a run that both claims to be non-terminal
+    and is tied to this tree -- so a registry full of finished runs costs no
+    docker calls at all.
+    """
+    runs_dir = registry() / "runs"
+    if not runs_dir.is_dir():
+        return []
+    live = []
+    for d in sorted(runs_dir.iterdir()):
+        status = _read_json(d / "status.json", {})
+        if not isinstance(status, dict) or \
+                status.get("state") not in NONTERMINAL_STATES:
+            continue
+        reasons = _suggestions_tree_ties(d, root, source_hash)
+        if not reasons:
+            continue
+        if _container_liveness(job_container_name(d.name)) != CONTAINER_RUNNING:
+            continue
+        live.append({"runId": d.name, "state": status.get("state"),
+                     "reasons": reasons})
+    return live
+
+
+def _suggestions_conflicts(root: Path, run_id: str,
+                          plan: patch.PatchPlan) -> list[dict]:
+    """Other runs whose own `suggestions.diff` still applies to a file this plan
+    would write (SPEC §16's two-runs question).
+
+    A sibling diff is planned against the same tree, in memory, exactly the way
+    this one was: unreadable or non-applying siblings are not conflicts, because
+    they can never be written and so can never take anything from this diff.
+    """
+    runs_dir = registry() / "runs"
+    mine = {c.path for c in plan.changes}
+    if not mine or not runs_dir.is_dir():
+        return []
+    found = []
+    for d in sorted(runs_dir.iterdir()):
+        if d.name == run_id:
+            continue
+        rel = artifact_relpath("suggestions")
+        diff = d / "artifacts" / rel
+        try:
+            other = patch.plan_text(root, diff.read_text())
+        except (OSError, UnicodeDecodeError, patch.PatchError):
+            continue
+        if not other.ok:
+            continue
+        shared = sorted(mine & {c.path for c in other.changes})
+        if shared:
+            found.append({"runId": d.name, "diff": f"artifacts/{rel}",
+                          "paths": shared})
+    return found
+
 
 def _suggestions_target(args) -> Path:
     """The tree a reflection diff is applied to.
@@ -4450,8 +4591,15 @@ def cmd_suggestions(args):
 
     Applying edits the target *tree*, never a live run: a job runs the prompts
     baked into its image, so the diff is picked up by the next `start`, which
-    builds a new image because the content hash moved. That is also why nothing
-    here talks to a container.
+    builds a new image because the content hash moved.
+
+    Two more refusals, both from requirement P part 2 (task 029), both reported
+    by `show` and only refused for `apply`, because `show` writes nothing:
+    a tree a run is executing under right now is never written
+    (`SUGGESTIONS_MIDFLIGHT_REFUSED`), and two runs whose diffs both apply to
+    the same file are refused with both named rather than merged into a version
+    neither proposed (`SUGGESTIONS_CONFLICT_REFUSED`, overridable by an explicit
+    `--ignore-conflicts`).
     """
     _require_run(args.run_id)
     entry = _suggestions_diff(args.run_id)
@@ -4464,6 +4612,9 @@ def cmd_suggestions(args):
         die(1, f"unreadable diff: {e}")
     before = image.hash_image_inputs(root)
     apply_it = args.action == "apply" and args.yes
+    asking_to_write = args.action == "apply"
+    midflight = _suggestions_midflight(root, before.hash)
+    conflicts = _suggestions_conflicts(root, args.run_id, plan)
 
     lines = [f"run:       {args.run_id}",
              f"diff:      artifacts/{entry['path']} "
@@ -4474,12 +4625,25 @@ def cmd_suggestions(args):
              text if text.endswith("\n") else text + "\n",
              SUGGESTIONS_PLAN_HEADER,
              *patch.format_plan(plan)]
+    # Both conditions are *shown* beside the plan whatever the action is: an
+    # operator running `show` on a host that also hosts runs needs to know the
+    # apply would be refused before typing it, and the refusal message below is
+    # then the same information on stderr.
+    if midflight:
+        lines += [SUGGESTIONS_MIDFLIGHT_HEADER,
+                  *(f"run {r['runId']} ({r['state']}): {reason}"
+                    for r in midflight for reason in r["reasons"])]
+    if conflicts:
+        lines += [SUGGESTIONS_CONFLICT_HEADER,
+                  *(f"run {c['runId']}: {c['diff']} also rewrites "
+                    f"{', '.join(c['paths'])}" for c in conflicts)]
     body = "\n".join(lines)
     payload = {"runId": args.run_id, "diff": f"artifacts/{entry['path']}",
                "target": str(root), "paths": list(plan.paths),
                "applies": plan.ok,
                "failures": [str(f) for f in plan.failures],
-               "imageHash": before.hash, "written": [], "applied": False}
+               "imageHash": before.hash, "written": [], "applied": False,
+               "liveRuns": midflight, "conflicts": conflicts}
 
     if not plan.ok:
         # Shown in full first (the operator needs the diff to understand the
@@ -4487,6 +4651,21 @@ def cmd_suggestions(args):
         out(args, payload, body)
         die(1, SUGGESTIONS_REFUSED + ": "
                + "; ".join(str(f) for f in plan.failures))
+    if asking_to_write and midflight:
+        # Shown first, like every other outcome, then refused: exit 1 (a
+        # refusal), not 2 (a usage error) -- the command was well formed and the
+        # answer is "not while that run is running".
+        out(args, payload, body)
+        die(1, f"{SUGGESTIONS_MIDFLIGHT_REFUSED}: "
+               + "; ".join(f"run {r['runId']}: " + " and ".join(r["reasons"])
+                           for r in midflight)
+               + f" -- {SUGGESTIONS_MIDFLIGHT_WORKFLOW}")
+    if asking_to_write and conflicts and not args.ignore_conflicts:
+        out(args, payload, body)
+        die(1, f"{SUGGESTIONS_CONFLICT_REFUSED}: "
+               + "; ".join(f"run {c['runId']}'s {c['diff']} also rewrites "
+                           f"{', '.join(c['paths'])}" for c in conflicts)
+               + f" -- {SUGGESTIONS_CONFLICT_WORKFLOW}")
     if not apply_it:
         asked = args.action == "apply"
         if asked:
@@ -5445,6 +5624,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with `apply`: the explicit act that writes; without "
                         "it `apply` shows the plan and exits 2 having written "
                         "nothing")
+    s.add_argument("--ignore-conflicts", action="store_true",
+                   help="with `apply --yes`: write even though another run's "
+                        "suggestions.diff also applies to one of these files "
+                        "(that diff is then re-planned against what was "
+                        "written, and refused if it no longer fits). Never "
+                        "overrides the live-run refusal")
     s.set_defaults(func=cmd_suggestions)
 
     s = sub.add_parser("doctor", help="preflight checks")
