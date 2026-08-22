@@ -158,6 +158,15 @@ from env vars set by the test:
                       engine pinned nothing, to a stub default -- which is the
                       shape behind task 012 (#14): pi picks its own model and
                       only its message stream knows which.
+  STUB_SIGNAL_ENGINE  if set, every worker iteration attacks its own supervisor
+                      before doing any work: `pkill -f ralphd-engine`, then a
+                      direct SIGTERM and SIGKILL to every pid whose
+                      /proc/<pid>/cmdline mentions `ralphd-engine`. What each
+                      attempt got (and the uid it was made from) is recorded in
+                      `<run>/.stub-signal-engine.json` for the docker-tier test
+                      of requirement I (#48) to read back: under the uid
+                      boundary every attempt must be EPERM and the run must
+                      finish normally.
   STUB_MODEL_PROVIDER the provider half of that pair, independently of
                       STUB_MODEL (which only sets the model half, so a ref
                       like `stubby/stub-model-1` stays one string). Together
@@ -324,6 +333,50 @@ with open(marker("skills"), "w") as _f:
 # restart. Overwritten every invocation, never gated by a knob.
 with open(marker("env.json"), "w") as _f:
     json.dump(dict(os.environ), _f)
+
+
+# STUB_SIGNAL_ENGINE (task 020, #48): the hazard requirement I closes, driven
+# from exactly where it happened for real -- inside a worker iteration. Tries
+# the pattern kill the PRD cites (`pkill -f ralphd-engine`) and then, so the
+# test does not depend on procps being present or on pkill's own matching,
+# SIGTERM/SIGKILL by pid to everything whose cmdline mentions the engine.
+# Records the uid it ran as and every attempt's outcome, then carries on with
+# a completely normal iteration: the point of the test is that the run
+# *finishes* while the transcript shows the attempts were refused.
+if os.environ.get("STUB_SIGNAL_ENGINE") and "Role: Worker" in prompt:
+    import signal as _signal
+    import subprocess as _subprocess
+
+    _attempts = []
+    try:
+        _pk = _subprocess.run(["pkill", "-f", "ralphd-engine"],
+                              capture_output=True, text=True)
+        _attempts.append({"how": "pkill -f ralphd-engine", "rc": _pk.returncode,
+                          "stderr": _pk.stderr.strip()[:200]})
+    except OSError as _exc:
+        _attempts.append({"how": "pkill -f ralphd-engine", "error": repr(_exc)})
+    for _pid in sorted(int(_e) for _e in os.listdir("/proc") if _e.isdigit()):
+        try:
+            _cmdline = open(f"/proc/{_pid}/cmdline", "rb").read().decode(
+                errors="replace")
+        except OSError:
+            continue
+        if "ralphd-engine" not in _cmdline or _pid == os.getpid():
+            continue
+        for _signame, _sig in (("SIGTERM", _signal.SIGTERM),
+                               ("SIGKILL", _signal.SIGKILL)):
+            _rec = {"how": f"kill {_signame} {_pid}", "pid": _pid,
+                    "cmdline": _cmdline.replace("\0", " ").strip()[:120]}
+            try:
+                os.kill(_pid, _sig)
+                _rec["errno"] = None  # the signal was DELIVERED -- no boundary
+            except OSError as _exc:
+                _rec["errno"] = _exc.errno
+                _rec["error"] = _exc.strerror
+            _attempts.append(_rec)
+    with open(marker("signal-engine.json"), "w") as _f:
+        json.dump({"uid": os.getuid(), "euid": os.geteuid(),
+                   "gid": os.getgid(), "attempts": _attempts}, _f, indent=1)
 
 
 # STUB_INBAND_ERROR_COUNT simulates a transient provider/gateway fault that

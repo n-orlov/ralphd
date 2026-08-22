@@ -17,11 +17,23 @@ from .api import create_app
 from .config import CONFIG_DIR, RUN_DIR, WORKSPACE_DIR, JobConfig
 from .creds import place_creds
 from .loop import LoopSupervisor
+from .privsep import agent_child_kwargs, separate_engine_identity
 from .redact import refresh_redaction_map
 from .skills import place_skills
 from .state import CURRENT_SCHEMA_VERSION, RunDir, RunDirLocked, SchemaVersionTooNew, utcnow
 
 log = logging.getLogger("ralphd")
+
+# One log configuration for the whole process, called both from main() -- so
+# the uid-boundary line privsep logs before anything else happens is formatted
+# and levelled like every other engine line -- and from amain(), which is
+# still where an in-process caller (tests, an embedder) enters. basicConfig is
+# a no-op once handlers exist, so the second call changes nothing.
+LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
 # Distinct, documented exit code for "another live engine already holds this
 # run dir's lock" (PRD req 29b). Kept apart from the job-outcome codes used
@@ -87,7 +99,12 @@ async def _run_on_complete_cmd(cfg: JobConfig, run: RunDir, final_state: str) ->
     try:
         proc = await asyncio.create_subprocess_shell(
             cfg.on_complete_cmd, env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            # Task 020 (#48): the hook is agent-supplied shell, so it runs
+            # under the same uid boundary as an iteration -- inheriting the
+            # engine's root real uid would hand it back the ability to
+            # signal the engine (and to become root).
+            **agent_child_kwargs())
         stdout, stderr = await proc.communicate()
         if proc.returncode == 0:
             log.info("on_complete_cmd finished (rc=0)")
@@ -104,8 +121,7 @@ async def _run_on_complete_cmd(cfg: JobConfig, run: RunDir, final_state: str) ->
 
 
 async def amain() -> int:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    _configure_logging()
     cfg = JobConfig.load()
     run = RunDir(Path(os.environ.get("RALPHD_RUN_DIR", str(RUN_DIR))))
     try:
@@ -201,6 +217,14 @@ def main() -> None:
     # parse_args() calls sys.exit(0) itself for -h/--help/--version, before
     # amain() (and thus any dir creation / server / lock / config load) runs.
     build_arg_parser().parse_args()
+    _configure_logging()
+    # Task 020 (#48): establish the uid boundary before anything else runs --
+    # before the first file is created, so no run-dir file is ever owned by
+    # root, and before the API is listening, so there is no instant in which
+    # the engine is signalable by the uid its iterations use. A no-op with one
+    # warning when the engine was not started as root (the test suite, or
+    # `docker run --user 1000`): see engine/privsep.py.
+    separate_engine_identity()
     sys.exit(asyncio.run(amain()))
 
 

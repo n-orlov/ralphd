@@ -753,6 +753,49 @@ pointed at the same `RALPHD_RUN_DIR`, must never double-write `events.jsonl` /
   including `SIGKILL` — so a killed engine never leaves a stale false-positive
   lock behind; a fresh engine started immediately after can acquire it.
 
+### The uid boundary: an iteration cannot signal its own supervisor (task 020, #48)
+
+The engine is the container's PID 1 with the argv `ralphd-engine`, and until
+v0.7 `container/Dockerfile` ended in `USER agent` — the same uid iterations run
+as. `pkill -f ralphd-engine` typed inside a task iteration was therefore both a
+match and *permitted*, and it ended a 9h36m run. This is the containment model's
+floor, so it is enforced by the kernel rather than by a prompt rule:
+
+- **The image no longer sets `USER`.** The entrypoint and the engine start as
+  root; `engine/privsep.py:separate_engine_identity()` then runs
+  `setresgid(0, agent_gid, 0)` and `setresuid(0, agent_uid, 0)` before anything
+  else in the process — before the first file is written and before the API
+  listens.
+- **Signals are decided by the *real or saved* uid of the target.** Both stay
+  `0`, so nothing running as `agent` can signal the engine: not by pid, not by
+  process group, not by any `pkill`/`killall` pattern (`ptrace` follows the same
+  rule). The attempt returns `EPERM` and the iteration goes on being an ordinary
+  failed-or-successful iteration.
+- **File ownership is decided by the *effective* uid**, which stays the agent's.
+  Every file the engine writes into the bind-mounted run dir, the workspace and
+  `$HOME` is owned by uid 1000 exactly as in v0.6 — which is what makes this
+  route cheap: the `$HOME` config overlay, the `~/.creds` files pi must read,
+  the git identity used for commits and the host user's ability to read and
+  remove its own run dir are all untouched.
+- **Each iteration is dropped all the way down.** `runner.py` passes
+  `user=`/`group=` (from `privsep.agent_child_kwargs()`) to
+  `create_subprocess_exec`, which `setreuid(uid, uid)`s the forked child, so the
+  iteration's *saved* uid moves too and it cannot climb back to the engine's
+  real uid. `on_complete_cmd` — operator-supplied shell — runs under the same
+  drop. The engine can still signal the iteration (`interrupt()`'s `killpg`):
+  permission flows downward, its effective uid being the child's real uid.
+- **No boundary is claimed when there is none.** The engine is also run
+  unprivileged (the whole test suite, `docker run --user 1000`, a derived image
+  that ends in `USER 1000`); every function in `privsep.py` is then a no-op that
+  logs one warning, and `separated()` reads the live process credentials rather
+  than a startup flag, so no surface can report a boundary the kernel is not
+  enforcing.
+
+PID-namespace isolation per iteration (the other route, still deferred) remains
+the general fix: it would additionally let the engine distinguish "stop this one
+iteration" from "the container is being torn down", which the uid boundary does
+not address. It is not needed to stop the signal.
+
 ### Run-dir schema version (PRD req 18)
 
 `status.json` carries a `schemaVersion` integer, stamped by the engine on every
@@ -1053,9 +1096,11 @@ which renders the same fixture run dir through the host-side on-disk merge
 and the hub's fallback and requires no unscrubbed secret literal in either.
 
 **Non-goals** (recorded as roadmap notes, not implemented here — see
-[roadmap.md](roadmap.md)): PID-namespace isolation of agent iterations from
-in-container kill signals, and a `ralphctl repair` command for hand-fixing
-corrupted run state.
+[roadmap.md](roadmap.md)): PID-namespace isolation of agent iterations (v0.7
+closed the in-container *signal* hazard with the uid boundary above instead —
+see §4's "The uid boundary"; what a namespace would still add is telling "stop
+this iteration" from "the container is being torn down"), and a `ralphctl
+repair` command for hand-fixing corrupted run state.
 
 ## 6. API security
 

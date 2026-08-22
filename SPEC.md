@@ -153,8 +153,11 @@ served by the CLI) · a separate hub server process to manage · a cloud service
 hosted control plane, or any multi-tenant story · CI, published images, or PyPI
 releases (nothing in this repo builds or publishes anything) · a `"degraded"` value
 in `state` (that case is `health` + `infraWait`, so terminal-state consumers keep
-working) · PID-namespace isolation of an iteration from in-container signals ·
-inbound remote control beyond the documented API · web-scale anything.
+working) · PID-namespace isolation of an *iteration* (v0.7 made the engine
+unsignalable from inside the container by uid instead, §13.4; what a namespace
+would add beyond that is telling "stop this iteration" from "the container is
+being torn down") · inbound remote control beyond the documented API · web-scale
+anything.
 
 The boundary is **one job, one container, one PRD, one verdict**. Anything that would
 make ralphd reason about *several jobs at once* — priorities, queues, fair-share of an
@@ -192,7 +195,9 @@ rather than rejected, but no part of the current design may assume it arrives.
   exceed asyncio's 64 KiB default, so the reader is opened with
   `STREAM_LIMIT = 16 MiB`.
 - **Image base:** `python:3.12-slim-bookworm`, plus `git`, `curl`, `ca-certificates`,
-  `jq`, `ripgrep`, `procps`; a non-root `agent` user at uid 1000; the static docker
+  `jq`, `ripgrep`, `procps`; a non-root `agent` user at uid 1000 that *iterations*
+  run as (the image deliberately sets no `USER`: the engine starts as root and
+  drops its effective uid to `agent` so an iteration cannot signal it, §13.4); the static docker
   **client** (`DOCKER_VERSION=29.7.2`, inert without a socket); and
   `@playwright/cli` (`PLAYWRIGHT_CLI_VERSION=0.1.14`) with headless Google Chrome —
   the `chrome` channel specifically, because that is playwright-cli's default and
@@ -529,6 +534,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
 | `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, grace review, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
 | `src/ralphd/engine/runner.py` | `PiRunner.run()` + `IterationResult`: spawn one `pi` process, pump and scrub its NDJSON into `output.jsonl`, parse events and usage, scan for the exact sentinels, enforce the iteration timeout and the startup-window watchdog, and kill the process group on every exit path. |
+| `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. |
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
 | `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, or `None`, with `_INFRA_TEXT_PATTERNS` as the single reviewable signature table (one commented line per family) and the `aborted`/operator carve-out. No engine state. |
 | `src/ralphd/engine/pricing.py` | `PricingMap`: the optional host-side per-million-token rate table with gateway alias globs and declared-free patterns, used *only* when the provider quoted no usable price, producing a cost marked derived and never merged into `costUSD`. `PricingChain` layers the operator map over a built-in table so exactly one of them prices any message, and `resolve_pricing()` builds whichever of the two `price_strategy` asks for (§8.6). |
@@ -3942,7 +3948,8 @@ oversight: a loop that has to ask permission cannot run for twenty hours
 unattended, and the container plus a scoped credential is the boundary that makes
 broad latitude affordable. The agent runs as non-root `agent`, owns `/workspace`
 completely, has normal outbound network, and — with `--allow-docker` — the socket
-of §13.2.
+of §13.2. **The one thing it may not do is end its own run** (v0.7, §13.4's uid
+boundary below).
 
 **Prohibitions belong in the PRD.** The review phase reads the PRD as the contract
 and verifies it requirement by requirement, so a constraint written there is
@@ -3969,9 +3976,46 @@ at all (§13.2). Where an invariant matters, the engine defends it in code:
   engine never leaves a stale lock that blocks recovery.
 
 What the engine deliberately does *not* protect against is an agent signalling
-processes inside its own container: a `SIGKILL`/`SIGTERM` reaches the running `pi`
-subprocess directly, because they share one PID namespace. Isolating iterations is
-the intended fix and is not built (§15).
+other processes inside its own container: a `SIGKILL`/`SIGTERM` reaches the
+running `pi` subprocess (its own iteration) directly, because they share one PID
+namespace. What it *does* protect — since v0.7 — is itself.
+
+**The uid boundary: an iteration cannot signal its supervisor (#48).** The engine
+is PID 1 with the argv `ralphd-engine`, and the image used to end in `USER agent`,
+the same uid iterations run as, so `pkill -f ralphd-engine` from inside a task was
+both a match and permitted — it ended a 9h36m run. `container/Dockerfile` now sets
+**no `USER`**: the entrypoint and the engine start as root, and
+`engine/privsep.py:separate_engine_identity()` runs `setresgid(0, agent_gid, 0)`
+and `setresuid(0, agent_uid, 0)` before anything else in the process — before the
+first file is written, before the API listens.
+
+- **Real and saved uid stay `0`**, and `kill(2)` permission is decided by exactly
+  those two, so no process running as `agent` can signal the engine: not by pid,
+  not by process group, not by any `pkill`/`killall` pattern (`ptrace` follows the
+  same rule). The attempt is `EPERM`; the iteration carries on as an ordinary
+  iteration and the run keeps going.
+- **The effective uid stays the agent's**, and file ownership is decided by that,
+  so every file the engine writes into the bind-mounted run dir, the workspace and
+  `$HOME` is owned by uid 1000 exactly as before. This is why the cheap route was
+  the right one: the `$HOME` config overlay (§5), the `~/.creds` files pi reads
+  (§13.1), the git identity commits are made under, and the host user's ability to
+  read and delete its own run dir are all unchanged. An engine holding a *third*
+  uid would have had to give one of those up.
+- **Each iteration is dropped all the way down**, `user=`/`group=` on the spawn
+  (`privsep.agent_child_kwargs()`), which moves the child's saved uid too — no
+  half-dropped iteration that could climb back. `on_complete_cmd`, being
+  operator-supplied shell, runs under the same drop. Signals still flow *downward*:
+  the engine's `interrupt()` can `killpg` its own iteration.
+- **No boundary is claimed where there is none.** The engine also runs unprivileged
+  — the whole test suite does, `docker run --user 1000` does, and a *derived* image
+  (`--base`, §8) still ends in `USER 1000` — and then every privsep function is a
+  no-op that logs one warning, leaving the pre-v0.7 arrangement rather than
+  refusing to start. `privsep.separated()` reads the live process credentials, not a
+  startup flag, so nothing can report a boundary the kernel is not enforcing.
+
+What is left: the derived-image path above, and PID-namespace isolation per
+iteration (§15), which would additionally let the engine tell "stop this one
+iteration" from "the container is being torn down".
 
 ---
 
@@ -4108,13 +4152,18 @@ nobody noticed.
   literal (`AUTO_RESUME_DEFAULT`) and every reader and test goes through it
   precisely so the flip is one line and the suite does not have to be rewritten
   to accept it (§14.3).
-- **PID-namespace isolation of agent iterations.** A `SIGKILL`/`SIGTERM` from
-  inside the container reaches the running `pi` subprocess directly, because the
-  iteration shares the container's PID namespace. Giving each iteration its own
-  namespace would let the engine distinguish "stop this one iteration" from "the
-  whole container is being torn down" — and it belongs here rather than in the
-  "an instruction is enough" pile because an instruction demonstrably does not
-  stop an agent from signalling processes it should not.
+- **PID-namespace isolation of agent iterations.** v0.7 closed the hazard that
+  made this urgent — an iteration signalling the *engine* — with the uid boundary
+  of §13.4, which is kernel-enforced, costs the agent nothing it legitimately
+  needs, and is a Dockerfile plus a `setresuid` pair. What a namespace would still
+  add is a different capability, not more protection: an iteration in its own PID
+  namespace lets the engine distinguish "stop this one iteration" from "the whole
+  container is being torn down", and it also contains the
+  `docker`-commands-filtered-on-a-label variant of the same hazard, which no uid
+  can. Still deferred, and no longer load-bearing for containment. A `SIGKILL` from
+  inside the container does still reach the running `pi` subprocess — that is the
+  agent's own iteration, and requirement A1's prompt rule is the answer to it,
+  because an iteration ending itself costs one iteration and not the run.
 - **Remote/daemon mode.** `--api-bind` plus `--api-token` already make running
   ralphd on a server and driving it over the network *possible*. Making it
   *nice* — TLS, discovery, a multi-run daemon — is deferred, because the missing
