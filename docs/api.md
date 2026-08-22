@@ -397,7 +397,14 @@ never disagree about which text is "the PRD".
 
 ### `GET /iterations`
 Array of every iteration's `meta.json` (number, phase, approach, model, timestamps,
-exit code, sentinel seen, token usage, steering consumed).
+exit code, sentinel seen, token usage, steering delivered/consumed).
+
+`steeringDelivered` names the steering files this iteration's prompt carried;
+`steeringConsumed` names the ones its outcome actually marked applied. They are
+equal for a clean iteration and `steeringConsumed` is empty for one that failed,
+was interrupted or timed out — those notes stay pending for the next actionable
+iteration (issue #34: consumption is earned by a finished iteration, not by
+delivery, so a note is never recorded as applied when nothing acted on it).
 
 Each entry carries three model fields, which answer different questions:
 `model` is the ref the engine *requested* (`null` when nothing was pinned and pi
@@ -497,7 +504,7 @@ then follows. Event types:
 | `phase` | phase entered (planning/worker/verify/review), approach number |
 | `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
 | `task` | task id + old/new status — emitted live while a worker iteration is still running (polled every ~0.25s against `tasks.json`), not only after the iteration ends, so `pending -> in-progress` is observable in real time |
-| `steering.received` / `steering.consumed` | steering file name |
+| `steering.received` / `steering.consumed` | steering file name; `steering.consumed` also carries the `iteration` and is emitted only after that iteration finished cleanly (never twice for the same file) |
 | `signal` | COMPLETE / VERIFIED / task-verified detected |
 | `log` | engine-level notices (timeouts, retries, failures) |
 | `infra_retry` | an infra-classified attempt is being retried: phase, attempt, error, `backoffS` (`null` when giving up), `waitedS`, `budgetS` |
@@ -525,7 +532,9 @@ List (recursive, with sizes) and download files from the artifacts dir.
 
 ### `POST /steering`
 Body: `{"message": "<markdown>", "name": "optional-slug"}`. Writes the next
-`NNN-<slug>.md` into the steering inbox. Consumed at the next iteration start.
+`NNN-<slug>.md` into the steering inbox. Delivered to the next `planning`/`worker`
+iteration and marked consumed once that iteration finishes cleanly — an iteration
+that dies leaves it pending for the next one (`GET /steering`).
 `202 {"file": "003-optional-slug.md"}`.
 
 ### `GET /steering`
@@ -549,6 +558,14 @@ reader `ralphd.engine.state.steering_entries`, which the hub also uses to read
 /api/runs/<id>/steering`, docs/cli.md), so a live answer and a
 container-gone answer describe the same run identically. Which *iteration*
 consumed an entry is in the `steering.consumed` event (`GET /logs`), not here.
+
+An entry stays `pending` until an actionable iteration that carried it in its
+prompt has *finished cleanly*: a failed, interrupted or timed-out iteration
+leaves it `pending`, and the next `planning`/`worker` iteration is handed it
+again. Delivery is at-least-once, application at-most-once — the marker append is
+idempotent, so re-delivery can never make one note `applied` twice. What each
+attempt was handed vs. what it consumed is in that iteration's `meta.json`
+(`steeringDelivered`/`steeringConsumed`, `GET /iterations`).
 
 ### `POST /interrupt`
 SIGINTs the current agent process (the iteration ends as `interrupted`; the loop

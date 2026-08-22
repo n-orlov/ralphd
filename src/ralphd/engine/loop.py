@@ -47,6 +47,10 @@ log = logging.getLogger("ralphd.loop")
 # those iterations must NOT be marked consumed there -- it would otherwise
 # be silently discarded (recorded as "consumed" but never actioned). It
 # stays pending until the next planning/worker iteration picks it up.
+#
+# Task 018 (#34): being handed to an actionable phase is necessary but not
+# sufficient -- the note is marked consumed only once that iteration has
+# finished cleanly (see the at-least-once comment in _run_iteration_once).
 STEERING_ACTIONABLE_PHASES = {"planning", "worker"}
 
 
@@ -917,7 +921,14 @@ class LoopSupervisor:
         meta = {"number": n, "phase": phase, "model": model,
                 "approach": self.run.read_status().get("approach"),
                 "startedAt": utcnow(),
-                "steeringConsumed": [p.name for p in pending]}
+                # Task 018 (#34): what this attempt was HANDED (the prompt
+                # above carries these note bodies) vs. what it managed to
+                # consume -- filled in at the end, and deliberately still `[]`
+                # here so an engine that dies mid-iteration leaves a record
+                # agreeing with `steering/.consumed.json`: delivered, not
+                # applied.
+                "steeringDelivered": [p.name for p in pending],
+                "steeringConsumed": []}
         atomic_write_json(itdir / "meta.json", meta)
         self.run.emit("iteration.start", number=n, phase=phase, model=model)
         log.info("iteration %d start: phase=%s model=%s", n, phase, model)
@@ -932,8 +943,6 @@ class LoopSupervisor:
                                currentIteration={"number": n, "phase": phase,
                                                  "model": model,
                                                  "startedAt": meta["startedAt"]})
-        if pending:
-            self.run.consume_steering(pending, n)
 
         timeout = min(self.cfg.iteration_timeout_s,
                       max(60, int(self.deadline - time.monotonic())))
@@ -1013,6 +1022,38 @@ class LoopSupervisor:
         # refunded without re-deriving the classification from exit codes,
         # error text and token usage by hand.
         fault_class = self._classify_result(result)
+        # Task 018 (#34): a steering note is consumed on iteration SUCCESS,
+        # not on delivery.
+        #
+        # The choice is AT-LEAST-ONCE delivery, at-most-once application:
+        # `fault_class is None` is exactly "this iteration was not a failure
+        # at all" (faults.explain_fault's first rung: no error text, no
+        # interrupt, no timeout, a clean exit), so an attempt that failed, was
+        # interrupted, timed out or died with the engine leaves its notes
+        # PENDING and the next actionable iteration is handed them again. The
+        # opposite choice (at-most-once delivery, which is what marking them
+        # at iteration start implemented) silently discards an operator's
+        # instruction whenever the iteration carrying it dies -- the run then
+        # reports it as `applied` and nothing ever acted on it.
+        #
+        # The ordering IS the guarantee, and it is this: build the prompt from
+        # the pending notes -> run the agent -> record the outcome -> only then
+        # append to `steering/.consumed.json`. Every step before the last is
+        # crash-safe in the operator's favour (the marker is what both
+        # `GET /steering` and the on-disk hub fallback read), and the marker
+        # write itself is idempotent (`RunDir.consume_steering` skips names
+        # already there), so no note can be applied twice even if this ran
+        # twice for the same file.
+        consumed_now: list[str] = []
+        if pending and fault_class is None:
+            self.run.consume_steering(pending, n)
+            consumed_now = [p.name for p in pending]
+        elif pending:
+            names = ", ".join(p.name for p in pending)
+            self.run.emit("log", level="warning",
+                          message=(f"iteration {n} ended {fault_class}: steering "
+                                   f"({names}) stays pending for the next "
+                                   "actionable iteration"))
         # Task 018 (#5): remember the last iteration's verdict so a following
         # reflect iteration can tell "the job ended because the endpoint was
         # broken seconds ago" from "the job ended for its own reasons".
@@ -1029,6 +1070,7 @@ class LoopSupervisor:
                     # the operator pinned nothing and pi picked its default).
                     modelResolved=result.model,
                     modelRaw=result.model_raw,
+                    steeringConsumed=consumed_now,
                     usage=result.usage)
         atomic_write_json(itdir / "meta.json", meta)
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"))
