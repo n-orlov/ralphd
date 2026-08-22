@@ -53,7 +53,8 @@ The one-call summary. Response:
   "createdAt": "2026-08-08T13:08:09Z",
   "startedAt": "2026-08-08T13:08:11Z",
   "updatedAt": "2026-08-08T14:02:33Z",
-  "endedAt": null,                 // written once, on the terminal write
+  "endedAt": null,                 // this episode's terminal write; reset when an episode starts
+  "previousEndings": [],           // earlier episodes' {endedAt, reason, verdict}, oldest first
   "deadlineAt": "2026-08-08T21:08:11Z",
   "infraWaitTotalS": 62.5,
   "health": "ok",                  // "ok" | "degraded"
@@ -94,8 +95,9 @@ keys with no section of their own below:
 | `schemaVersion` | the run-dir schema this state was written under; a run dir whose recorded version is newer than the engine build refuses to start (see `docs/architecture.md`) |
 | `createdAt` / `startedAt` | first status write (state `starting`) / when the loop entered `running` |
 | `updatedAt` | last write of any field — every `update_status` stamps it |
-| `endedAt` | the terminal write; `null` while the run is still going |
-| `reason` | why a non-succeeded run ended, or the note an off-budget grace review left |
+| `endedAt` | this **episode**'s terminal write; `null` while the run is still going, and reset when a resumed episode starts (so it can never predate `startedAt`) |
+| `reason` | why a non-succeeded run ended, or the note an off-budget grace review left; also episode-scoped, so a resumed run never reports the previous engine's reason |
+| `previousEndings` | earlier episodes' endings, oldest first — `{endedAt, reason, verdict}` per superseded ending, `[]` for a run still in its first episode, capped at the 50 most recent. Kept because the terminal `state` event in `events.jsonl` records the state but not the reason or verdict |
 | `termination` | present once the run was told to stop — see below |
 | `graceReview` | present and `true` when an off-budget grace review verified the run |
 | `unconsumedSteering` | steering files still pending at the terminal write |

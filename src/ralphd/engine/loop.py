@@ -53,6 +53,13 @@ log = logging.getLogger("ralphd.loop")
 # finished cleanly (see the at-least-once comment in _run_iteration_once).
 STEERING_ACTIONABLE_PHASES = {"planning", "worker"}
 
+# Task 022 (#30): how many earlier episode endings `status.json` keeps in
+# `previousEndings`. Bounded because status.json is rewritten in full on every
+# status update, so an auto-resume loop must not be able to grow it without
+# limit; 50 episodes of one run is already pathological, and events.jsonl
+# keeps the complete append-only transition history either way.
+PREVIOUS_ENDINGS_MAX = 50
+
 
 class LoopSupervisor:
     def __init__(self, cfg: JobConfig, run: RunDir, workspace: Path):
@@ -1622,15 +1629,71 @@ class LoopSupervisor:
         self._account_infra_wait(elapsed, "reflect", 0)
         self._end_infra_wait()
 
+    def _previous_endings(self) -> list[dict]:
+        """The endings of this run's EARLIER episodes (task 022, #30), read
+        off status.json just before this episode's `running` write re-bases
+        the ending fields.
+
+        An "episode" is one engine process over one run dir -- a fresh start
+        or a resume. `endedAt` and `reason` describe how an episode *ended*,
+        so they must never be readable as this episode's own: on
+        `selfdev-v06-release` they were not reset, and the run finished
+        `succeeded / verified` while `ralphctl status` still printed
+        `reason: signal 15` from a `pkill` two episodes earlier -- a corrupted
+        permanent record, not a cosmetic glitch. Mid-run the same bug showed
+        an `ended` timestamp *before* `started` (`startedAt` is rewritten
+        every episode; `endedAt` was not). The reset therefore belongs in the
+        one write that opens the episode, beside the other fields it already
+        re-bases (`verdict`, `health`, `infraWait`) -- and because that write
+        happens once per episode, a terminal run's `endedAt`/`reason` are
+        still exactly what its FINAL episode wrote.
+
+        Decision -- previous endings are KEPT as history, not discarded,
+        because the value being superseded is evidence and nothing else in the
+        run dir holds it: the terminal `state` event names the state but
+        carries no `reason` and no verdict, so plain deletion would make "this
+        run was killed two episodes ago, here is why" unrecoverable. The list
+        is bounded (PREVIOUS_ENDINGS_MAX) and each entry is small.
+
+        The entry deliberately does not include the previous `state`: by the
+        time the loop opens an episode, `engine/main.py`'s first write has
+        already moved `state` to `starting`, so this reader cannot see it, and
+        the terminal `state` *event* in events.jsonl is its authoritative
+        record anyway. What the event does not carry -- reason and verdict --
+        is exactly what is kept here.
+
+        `termination` is deliberately NOT reset: it records *who* stopped the
+        run and is what doctor/auto-resume reason about (§8.4), a later abort
+        overwrites it wholesale, and clearing it here would erase the only
+        status-side trace of an operator's intent.
+        """
+        status = self.run.read_status()
+        endings = [e for e in (status.get("previousEndings") or [])
+                   if isinstance(e, dict)]
+        # A crashed episode left no ending at all (this same write cleared the
+        # fields when it started), so nothing is appended and no ending can be
+        # recorded twice.
+        if status.get("endedAt") or status.get("reason"):
+            endings.append({"endedAt": status.get("endedAt"),
+                            "reason": status.get("reason"),
+                            "verdict": status.get("verdict")})
+        return endings[-PREVIOUS_ENDINGS_MAX:]
+
     async def _run_job_core(self) -> str:
         """Returns final state: succeeded | failed | aborted."""
+        # Task 022 (#30): read the ending fields before overwriting them.
+        previous_endings = self._previous_endings()
         self.run.update_status(state="running", startedAt=utcnow(),
                                deadlineAt=utc_from_epoch(self._deadline_epoch),
                                infraWaitTotalS=round(self._infra_wait_total_s, 3),
                                health="ok", infraWait=None,
                                iterationsBudget=self.cfg.iterations,
                                maxApproaches=self.cfg.max_approaches,
-                               onComplete=self.cfg.on_complete, verdict=None)
+                               onComplete=self.cfg.on_complete, verdict=None,
+                               # Task 022 (#30): the ending fields are
+                               # episode-scoped -- see _previous_endings.
+                               endedAt=None, reason=None,
+                               previousEndings=previous_endings)
         # Task 032 (#13): the move to `running` is a *state* event, not just a
         # status.json field. events.jsonl is append-only across resumes and
         # followers replay it from id 0, so without this a resumed run's log
