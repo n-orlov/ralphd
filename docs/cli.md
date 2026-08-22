@@ -601,6 +601,22 @@ Human output also renders (task 003):
   (its `artifacts/reflection/report.md` is the signal) and a run that never
   ran one print nothing, keeping their output byte-identical to before.
   The hub run-detail card carries the same line (`.reflect-failed`).
+
+  Two more wordings (task 016, issue #47) cover a reflection that produced
+  **no verdict** because a signal was already taking the engine down
+  (`reflect.ok` is `null` with a `skipped` reason):
+
+  ```
+  reflection: not attempted (signal 15 ended the engine before the reflect
+              phase could start, so no reflect iteration was attempted)
+  reflection: not completed (signal 15 ended the engine during the reflect
+              phase, ...)
+  ```
+
+  Neither is a failure and neither leaves an `artifacts/reflection/FAILED.md`
+  behind: `ralphctl stop` must not make a cleanly stopped run look like one
+  whose post-mortem broke. `reflect: null`, and `ok: null` with no reason
+  recorded (a pre-v0.7 run dir), still print nothing.
 - `container:` (task 022, issue #8) -- shown only for an **unreachable** run
   whose status.json still records a non-terminal state (`starting`/`running`)
   while no container by that name exists at all: the zombie condition

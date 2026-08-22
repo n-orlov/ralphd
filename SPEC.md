@@ -123,7 +123,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R1** | **The environment must not be able to destroy a job.** A fault in the LLM endpoint, the network, or the gateway costs a job wall-clock time and nothing else: it is classified (`faults.classify_fault`), retried in place with escalating backoff against a wall-clock **outage budget**, refunded so it never counts against `iterations`, and it never advances an approach, the no-progress stagnation guard, or a task's `validationAttempts`. | Otherwise a four-minute DNS wobble spends ~40 iterations and 4 of 8 approaches, and the job dies with a timeout message that names nothing. Every phase must be covered (`INFRA_RETRY_PHASES` is all five), because an outage does not care which prompt is running. |
 | **R2** | **Operator-initiated termination is never undone.** An `abort`/`stop` is recorded durably (`operator-termination.json` in the run dir) and is authoritative over every automatic mechanism: `classify_fault(operator_abort=...)` can never call it `"infra"`, the backoff wrapper never re-runs the iteration the operator just stopped, and `doctor --fix` never auto-resumes such a run. | Otherwise a `SIGINT` — which `pi` reports as the bare in-band error `aborted`, textually identical to a provider aborting a stream — reads as a transient fault, and the run the operator deliberately killed sits in backoff or comes back as a fresh container. |
 | **R3** | **The run directory on the host is the source of truth and outlives the container.** `~/.ralphd/runs/<run-id>/` is *always* a bind-mount (at `/run/ralphd`); `status.json`/`tasks.json` are written temp-then-rename; every host-side surface — `status`, `logs`, `runs`, the hub, `repair` — falls back to reading that directory when the API is unreachable, and says so (`"live": false`) rather than erroring. | Otherwise the container's death takes the run's observability with it: 29,720 lines of on-disk transcript with an empty log tail in the UI, `tasks: (none)` next to a 25 KB `tasks.json`, and every post-mortem done by hand in `output.jsonl`. |
-| **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
+| **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down instead records `reflect: {ok: null, attempted, skipped}` — no attempt, no tombstone (§8.4). | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
 | **R5** | **"Done" is a claim; only verification is a verdict.** The worker's `<promise>COMPLETE</promise>` gates entry to review and nothing else; the job succeeds only on the reviewer's `<promise>VERIFIED</promise>`, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach. | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
 | **R6** | **Secrets never reach disk or a transcript.** Credentials arrive as `<name>.env` files, are placed at `~/.creds/*.env` (mode `0600`) by the engine itself, and are never auto-exported into the agent's environment; only file *names* ever reach the run dir, the persisted job config, or a log line. On top of the prompt rule, redaction is **mechanical**: known secret values are scrubbed from `output.jsonl` at write time, from `events.jsonl` at emit time, and again as `GET /logs` serves. The redaction set is memory-only and no route returns it. | Otherwise one `cat` of a cred file, or one `docker inspect` of the engine container, writes a live token into host-visible history permanently — which prompt guidance alone demonstrably does not prevent. Persisting the redaction map to enable a second pass would put every secret on disk next to the transcript it protects, so that is forbidden too. |
 | **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, `--model-strategy cost-optimized` optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
@@ -920,7 +920,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `reason` | string | why a non-succeeded run ended, or the grace-review note |
 | `termination` | object \| null | present once the run was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null` |
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
-| `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md` |
+| `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
 | `onComplete` | string | `exit` \| `idle` |
 | `usage` | object | token and cost totals, plus `byPhase` and `byApproach` buckets |
@@ -1112,6 +1112,7 @@ reconstruct the whole run, including its restarts.
 | `deadline_extended` | `phase`, `attempt`, `waitedS`, `infraWaitTotalS`, `deadlineAt`, `reason` | a finished wait pushed the deadline out |
 | `reflect_infra_delay` | `phase`, `delayS`, `error`, `budgetS` | reflect waits before its first attempt because the job just died on an infra fault |
 | `reflect_done` | `ok`, `error` | the reflect phase's verdict |
+| `reflect_skipped` | `attempted`, `signal`, `reason` | a signal was taking the engine down, so the reflect phase rendered no verdict (§8.4) |
 | `budget_changed` | `field`, `previous`, `iterations`, `delta`, `iterationsUsed`, `source` | the iteration budget was changed in flight |
 | `log` | `level`, `message` | anything the loop wants an operator to see: stagnation, batching violations, instant-failure streaks, abort diagnostics |
 | `repair` | `action`, plus the names/ids involved | appended host-side by `ralphctl repair`, which records only names, never values |
@@ -2159,6 +2160,22 @@ produced no report" counts as failure: a missing
 `artifacts/reflection/report.md` is a reflect failure even on a clean exit,
 since the report on disk is the deliverable. Reflect can never rewrite the
 job's terminal state, verdict or reason.
+
+One path renders **no verdict**, and says so rather than inventing one: a
+`SIGTERM`/`SIGINT` reaching the engine (`ralphctl stop`, a raw `docker stop`, a
+host shutdown) runs `abort_on_signal()`, which fires the child killer and hands
+the job a terminal state — with `SIGKILL` already counting down. Attempting
+reflect there manufactures a failure out of the engine's own teardown, so
+instead `_record_reflect_not_attempted()` writes `reflect: {ok: null,
+attempted, skipped}`, emits `reflect_skipped`, spawns no iteration and
+deliberately writes **no** `FAILED.md`: the tombstone asserts the reflection was
+tried and failed, and a stopped run must not look like one whose post-mortem
+broke. `attempted: false` is the signal-before-the-phase case, `attempted: true`
+the signal-mid-attempt one; `ok: null` is what keeps `ralphctl status` and the
+hub, which both gate on `ok === false`, from reporting a failure that did not
+happen (they print `reflection: not attempted (…)` instead). An *API* abort is
+not a signal: the engine is still alive and still owes a post-mortem, so it
+keeps its one attempt.
 
 ### 8.5 Skipping the wait
 
