@@ -466,6 +466,16 @@ rollups so a reader cannot mistake it for the anomaly).
 ### `GET /iterations/{n}`
 One iteration's `meta.json`.
 
+A slot can have been attempted twice: an engine killed mid-iteration leaves its
+directory with no `endedAt`, and the resumed engine reuses that number. The dead
+attempt is not overwritten — its `prompt.md`, transcript and partial `meta.json`
+are moved to `iterations/{n}/attempts/NN/` first (one `iteration.attempt_archived`
+event, oldest attempt `01`), so this route always returns the *newest* attempt
+while the crashed one stays readable on disk. The iteration-detail payload behind
+`ralphctl iteration --json` and the hub dialog counts them as `archivedAttempts`
+(`0` for the normal single-attempt slot); nothing counts an archived attempt as an
+iteration of its own, so `iterationsUsed` and the transcript merge are unaffected.
+
 ### `GET /iterations/{n}/output`
 `application/x-ndjson` — the full agent transcript for iteration *n*. Supports
 `?tail=<lines>`. For the in-flight iteration, `?follow=true` streams new lines until
@@ -503,6 +513,7 @@ then follows. Event types:
 | `state` | lifecycle transition: `state` is `running` (emitted by every engine process as it starts the job loop, resume included) or the terminal `succeeded`/`failed`/`aborted`; the startup event also carries `resumed` (`true` when this process picked up a run dir that already held recorded work) |
 | `phase` | phase entered (planning/worker/verify/review), approach number |
 | `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
+| `iteration.attempt_archived` | a reused iteration number's earlier, crashed attempt was archived before the new one wrote: `number`, `attempt` (`1` for the oldest), `path` (`iterations/NNNN/attempts/NN`), `files` |
 | `task` | task id + old/new status — emitted live while a worker iteration is still running (polled every ~0.25s against `tasks.json`), not only after the iteration ends, so `pending -> in-progress` is observable in real time |
 | `steering.received` / `steering.consumed` | steering file name; `steering.consumed` also carries the `iteration` and is emitted only after that iteration finished cleanly (never twice for the same file) |
 | `signal` | COMPLETE / VERIFIED / task-verified detected |

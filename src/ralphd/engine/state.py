@@ -5,17 +5,27 @@ from __future__ import annotations
 import calendar
 import fcntl
 import json
+import logging
 import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
-from ..log_merge import iteration_dir, iteration_numbers, iteration_output_path
+from ..log_merge import (
+    ITERATION_ATTEMPTS_DIR,
+    iteration_attempt_dirs,
+    iteration_dir,
+    iteration_numbers,
+    iteration_output_path,
+)
 from .faults import explain_fault, matched_signature
 from .redact import redact_job_yaml, scrub_text
+
+log = logging.getLogger("ralphd.state")
 
 
 class RunDirLocked(Exception):
@@ -1013,6 +1023,16 @@ def iteration_summary_lines(detail: dict) -> list[str]:
     if detail.get("verifiedTask"):
         lines.append(f"verified:  task {detail['verifiedTask']} "
                      f"-> {detail.get('verifyOutcome')}")
+    # Task 019 (#44): this slot was attempted more than once -- an engine died
+    # in it and the resumed engine reused the number. Rendered only for that
+    # difference, and it names where the earlier attempt's files went so the
+    # operator can read the crash rather than wonder whether it was eaten.
+    archived = detail.get("archivedAttempts") or 0
+    if archived:
+        lines.append(f"attempts:  {archived} earlier "
+                     f"{'attempt' if archived == 1 else 'attempts'} archived "
+                     f"under {ITERATION_ATTEMPTS_DIR}/ (killed mid-iteration; "
+                     f"prompt, transcript and meta.json kept)")
     return lines
 
 
@@ -1047,7 +1067,11 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
                          iteration_output_path`, which owns the file name; the
                          log itself is rendered by the caller through
                          `log_merge`/`cli.log_render`, where transcript
-                         rendering lives).
+                         rendering lives),
+      `archivedAttempts` how many EARLIER attempts at this same slot are
+                         archived under `attempts/NN/` (task 019, #44) -- `0`
+                         for the overwhelmingly common single-attempt
+                         iteration.
 
     The log lines are NOT part of this dict on purpose: rendering them is the
     job of `log_merge.iteration_lines` plus the shared renderer, and a caller
@@ -1090,6 +1114,7 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
         size = 0
     detail["transcriptBytes"] = size
     detail["hasTranscript"] = size > 0
+    detail["archivedAttempts"] = len(iteration_attempt_dirs(run_root, number))
     return detail
 
 
@@ -2718,6 +2743,66 @@ class RunDir:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def begin_iteration_dir(self, n: int) -> Path:
+        """The directory a NEW attempt at iteration `n` writes into, with
+        anything an EARLIER attempt at the same number left behind archived
+        into `iterations/NNNN/attempts/NN/` first (task 019, #44).
+
+        Slot numbers are reused: `max_iteration_number()` counts only finished
+        iterations, so an engine killed mid-iteration leaves a half-written
+        directory whose number the resumed engine hands to its next attempt.
+        Before this, that attempt simply wrote over the dead one -- and the
+        prompt, transcript and partial meta.json of the very iteration an
+        operator most wants to read (the one that crashed) were gone by the
+        time they looked. Archiving keeps the numbering rule (monotonic, no
+        renumbering, no gaps) and the evidence, in the same `NN/` shape
+        `_archive_approach` uses for a superseded approach.
+
+        Best effort: a filesystem that refuses the move (read-only run dir,
+        permissions) gets a warning and the fresh attempt proceeds -- losing a
+        crashed transcript is bad, refusing to run the next iteration over it
+        is worse.
+        """
+        d = self.iteration_dir(n)
+        try:
+            archived = self._archive_previous_attempt(d)
+        except OSError as exc:
+            log.warning("could not archive iteration %d's earlier attempt: %s",
+                        n, exc)
+            return d
+        if archived is not None:
+            files = sorted(p.name for p in archived.iterdir())
+            self.emit("iteration.attempt_archived", number=n,
+                      attempt=int(archived.name),
+                      path=str(archived.relative_to(self.root)), files=files)
+            log.info("iteration %d: earlier attempt archived to %s (%s)",
+                     n, archived.relative_to(self.root), ", ".join(files))
+        return d
+
+    def _archive_previous_attempt(self, itdir: Path) -> Path | None:
+        """Move everything an earlier attempt wrote in `itdir` into the next
+        free `attempts/NN/`, or return None when the slot is untouched.
+
+        Deliberately generic: it moves whatever files are there rather than a
+        list of names, so an attempt record that grows a fourth file is
+        archived too, and `attempts/` itself (holding older attempts) is the
+        only thing left in place. Not conditional on a missing `endedAt`
+        either -- if anything at all is in a slot the engine is about to write,
+        it belongs to a previous attempt and is worth more than nothing.
+        """
+        leftovers = [p for p in itdir.iterdir() if p.name != ITERATION_ATTEMPTS_DIR]
+        if not leftovers:
+            return None
+        attempts = itdir / ITERATION_ATTEMPTS_DIR
+        attempts.mkdir(exist_ok=True)
+        used = [int(p.name) for p in attempts.iterdir()
+                if p.is_dir() and p.name.isdigit()]
+        dest = attempts / f"{(max(used) + 1) if used else 1:02d}"
+        dest.mkdir()
+        for p in leftovers:
+            shutil.move(str(p), str(dest / p.name))
+        return dest
+
     # -- status ----------------------------------------------------------
     def read_status(self) -> dict:
         return read_json(self.status_file, {})
@@ -2800,8 +2885,11 @@ class RunDir:
         from N+1 instead of restarting at 1. An iteration dir that exists
         but never finished (no "endedAt" -- e.g. the previous engine
         process was killed mid-iteration) is deliberately not counted;
-        that slot's number is reused and its files overwritten by the
-        next attempt.
+        that slot's number is reused by the next attempt, which since task
+        019 (#44) archives the crashed attempt's files into
+        `iterations/NNNN/attempts/NN/` (RunDir.begin_iteration_dir) instead
+        of overwriting them. The rule itself is unchanged: what is reused is
+        the NUMBER, not the record.
         """
         best = 0
         itdir = self.root / "iterations"
