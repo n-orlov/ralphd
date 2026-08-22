@@ -1533,6 +1533,39 @@ remains `unknowable` because there is genuinely nothing to hash.
   the loop continues from `tasks.json` (v0.2).
 - Host reboot ⇒ same as engine crash; nothing lives only in container memory.
 
+### The iteration containment boundary (tasks 010/011, #28)
+
+The bullets above are the *coarse* containment; this is the one inside the
+engine. What one iteration can do to its run is bounded at a single place:
+the `await self.runner.run(...)` in `LoopSupervisor._run_iteration_once` is
+wrapped in an `except BaseException` guard, which replaces whatever came out
+with a failed `IterationResult` (`error_message` starts
+`engine iteration failure: ` and carries the exception's `repr`) and lets the
+rest of the iteration's bookkeeping run normally --
+`meta.json`'s `endedAt`/`faultClass`, the `iteration.end` event, usage
+accounting, the infra refund. So a timed-out iteration, an OS error in the
+event pump or a stray cancellation each cost **one iteration, never the run**.
+
+The boundary is deliberately at that `await` rather than around the whole run:
+the code that makes a failed attempt legible is *below* it, and a guard placed
+further out (`_run_job_core`'s, which stays `except Exception` on purpose) can
+only end the job with an "engine error" -- exactly the v0.6 failure this closed,
+where a worker iteration that blew `iteration_timeout_s` took the engine down.
+That leak was an `asyncio.CancelledError`: `asyncio.wait_for` cancels the future
+it timed out on, so the runner's old `await asyncio.wait_for(pump_task, ...)`
+re-awaited an already-cancelled task and re-raised, and `CancelledError` is a
+`BaseException` no `except Exception` in between could see. The runner's timeout
+path now uses `asyncio.wait({pump_task}, timeout=...)` (the task is left alone,
+so `pi` can be `SIGINT`ed and its last output drained inside
+`runner.SHUTDOWN_GRACE_S`); catching `BaseException` here is the structural half
+of the fix, so nothing has to trust that no cancellation ever leaks again.
+
+Two escapes are *not* contained, because each one means "stop, do not start
+another iteration": `KeyboardInterrupt`/`SystemExit`, and a cancellation
+genuinely requested on this task from outside -- distinguished by
+`asyncio.Task.cancelling() > 0`, which is `0` for a `CancelledError` that merely
+leaked out of inner plumbing.
+
 ### CLI-side resume: reproducing `--llm` wiring (task 058)
 
 Everything above is engine/run-dir-side: the run dir and config dir survive

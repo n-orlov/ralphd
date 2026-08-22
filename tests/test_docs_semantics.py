@@ -515,9 +515,15 @@ def _reimplementation_claims(text: str) -> list[str]:
     return hits
 
 
-def test_no_doc_claims_the_browser_reimplements_the_log_rendering():
+def test_no_doc_claims_the_hub_client_reimplements_the_log_rendering():
     """Task 014 moved the rendering server-side; the code, not the prose, is
-    the reason no doc may claim otherwise."""
+    the reason no doc may claim otherwise.
+
+    Named "hub client", not "browser": the fast lane is selected with
+    `-k 'not browser'`, which filters by NODE NAME, so a non-browser-tier test
+    whose name contains "browser" is silently deselected from every fast-lane
+    run (task 032). Only a test in the `-k browser` tier may carry the word.
+    """
     hub = (REPO_ROOT / "src" / "ralphd" / "cli" / "ui_server.py").read_text()
     assert "log_render" in hub, "the hub no longer renders through log_render"
     app_js = (REPO_ROOT / "src" / "ralphd" / "cli" / "web" / "app.js").read_text()

@@ -1016,6 +1016,15 @@ steering:  001-focus.md
   while still printing the transcript that *is* there. A cost the provider
   never priced (including a quote of `$0` next to billable tokens, see
   `status`' cost rules) renders `unavailable`, never `$0.0000`.
+- **`exit: error: engine iteration failure: ...`** is an iteration the *engine*
+  could not carry out (a stream/OS error in the event pump, a stray
+  cancellation): the loop's containment boundary records it as one ordinary
+  failed iteration — an `endedAt`, no exit code, and its fault verdict appended
+  as `[<class> fault]` — and the loop carries on, so this line is how an
+  engine-side explosion is read back and the run itself did not end because of
+  it (issue #28, `docs/architecture.md` §9). `exit: iteration timeout` is the
+  same guarantee for an iteration that ran past `iteration_timeout_s`: it costs
+  one iteration, never the run.
 - **`cost:`/`tokens:`** are that iteration alone, through the shared
   `format_cost` (4 decimals — one iteration is small money) and token
   formatter; only counters the provider actually reported are named.

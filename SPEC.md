@@ -2043,6 +2043,35 @@ transient name-resolution failure that the agent blocks on internally consumes
 the entire iteration timeout — up to forty-five minutes of wall clock — before
 producing an error anyone can classify.
 
+**A failed iteration costs one iteration, never the run** (tasks 010 and 011,
+#28). Every one of those five signals — the timeout included — is a *recorded*
+outcome, and so is anything the agent subprocess or its plumbing throws on the
+way: the single `await self.runner.run(...)` in `_run_iteration_once` is wrapped
+in the loop's iteration containment boundary, which catches `BaseException` and
+turns whatever it caught into an ordinary failed `IterationResult` whose
+`error_message` reads `engine iteration failure: <repr>`. Everything below that
+boundary — `meta.json`'s `endedAt` and `faultClass`, the `iteration.end` event,
+usage accounting, the infra refund of §8.4 — therefore still runs, which is why
+the boundary sits at that one `await` and not around the run: a guard further
+out can only end the job with an "engine error", losing the record of the
+attempt that caused it. `BaseException` rather than `Exception` is deliberate.
+The defect this closed was an `asyncio.CancelledError` escaping the runner's own
+timeout plumbing — `wait_for` cancels the future it timed out on, so re-awaiting
+that task re-raises, and `CancelledError` is a `BaseException` that no
+`except Exception` in between could see — so a worker iteration blowing its
+`iteration_timeout_s` killed the engine instead of failing one iteration. The
+runner's timeout path now uses `asyncio.wait({pump_task}, timeout=...)`, which
+leaves the task alone so `pi` can be `SIGINT`ed and its final output drained
+within `runner.SHUTDOWN_GRACE_S`; the boundary is the structural half of the
+same fix, so the next stray cancellation is contained too.
+
+Two things are deliberately *not* contained, because both mean "stop, do not
+start another iteration": `KeyboardInterrupt`/`SystemExit`, and a cancellation
+genuinely requested on the iteration's own task from outside
+(`asyncio.Task.cancelling() > 0`, which is `0` for a `CancelledError` that
+merely leaked out of inner plumbing). `_run_job_core`'s outer guard stays
+`except Exception` for the same reason.
+
 ### 8.2 Infra versus work
 
 `classify_fault()` takes `error_text`, `exit_code`, `interrupted`,

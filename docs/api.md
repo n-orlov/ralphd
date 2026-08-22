@@ -454,6 +454,15 @@ The field is absent only while an iteration is still in flight (before its
 `aborted`/operator-abort carve-out, are documented in
 `docs/architecture.md` §10.1.
 
+An iteration that the *engine* could not carry out is still one of these
+records, not a missing one: whatever the agent subprocess or its event pump
+throws is caught at the loop's iteration containment boundary and written out as
+an ordinary failed iteration whose `error` starts `engine iteration failure:`
+(with `exitCode: null`), so it has an `endedAt`, a `faultClass` and its usage
+like any other. A timed-out iteration is the same story with `timedOut: true`:
+it costs one iteration and never the run (issue #28, `docs/architecture.md`
+§9).
+
 An iteration's `usage` records cost only when the provider actually quoted a
 price. `usage.costPriced` is the marker:
 
