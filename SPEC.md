@@ -546,6 +546,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/cli/main.py` | `ralphctl`: every subcommand, the `docker run` assembly for `start`/`resume`, the registry and its defaults, templates, run-id generation, the API client, `--json` output and exit codes, `logs`/`watch` streaming and `tail`-style argv preprocessing, `doctor`/`doctor --fix`/`repair`, the auto-resume opt-in and its crash-loop guard, and `AUTO_RESUME_DEFAULT` as the single default literal. |
 | `src/ralphd/cli/log_render.py` | The shared NDJSON→lines pretty renderer: iteration/phase headers, streamed assistant text, tool calls as one-liners, thinking collapsed to a single marker per block, per-iteration usage/cost footers, errors highlighted. `tty=False` yields plain text with no ANSI and no `\r`. Lives here, not in `main.py`, because the hub must import it without a cycle. |
 | `src/ralphd/cli/image.py` | The job image, declaratively and docker-free: which files are inputs (`IMAGE_INPUTS`), how they hash to a tag, the packaged-inputs fallback for an install with no checkout (`PACKAGED_FILES`), and the text of the generated derived recipe (§3.2). Runs no builds — `cli/main.py` does that. |
+| `src/ralphd/cli/patch.py` | Reading a reflect phase's `suggestions.diff` (§16): parse a unified diff, plan it against a target tree (which paths it would touch, the new content, one structured rejection per hunk that does not fit — naming the file and the `@@` header), and write only under a separate `apply_plan()` call, all-or-nothing. No `git`/`patch` subprocess, no fuzzy matching, no renames: a diff this cannot apply is refused, never guessed at. Prints nothing and reads no run directory — `cli/main.py` owns the verb. |
 | `src/ralphd/cli/ui_server.py` | The hub server: `/api/runs` and `/api/runs/<id>[/logs,/prd,/steering,/documents,/artifacts,/fault,/cost,/iterations/<n>,/steer,/retry]` over the registry (`DELETE /api/runs/<id>` for a terminal run), proxying a run's live API with a short timeout and falling back to the run dir (`"live": false`) rather than 500-ing on the four views that have a live answer at all; renders log tails, cost breakdowns, fault explanations and iteration detail through the same modules `ralphctl` prints, server-side, so the browser only displays strings; serves the static bundle with `index.html` fallback. |
 | `src/ralphd/cli/llm_profiles.py` | Named-profile loading and host-side resolution: `${env:}`/`${file:}`/`${cmd:}` references evaluated exactly once, before the container starts, into `env`/`mounts`/`pi`. The `host` and `none` built-ins never reach this module. `MASK` is what `llm show` prints instead of a value. |
 | `src/ralphd/cli/web/index.html` | The hub shell — one page, no framework, no build step. |
@@ -2848,7 +2849,8 @@ iteration's failure from infra retry.
 containers, follows them, steers them, and reads their run dirs. It lives in
 `src/ralphd/cli/` — `main.py` (the parser and every command), plus
 `log_render.py` for the transcript, `ui_server.py` for the hub (§11),
-`image.py` for the job-image hash and `llm_profiles.py` for the profiles — on
+`image.py` for the job-image hash, `patch.py` for reading a reflect phase's
+proposed diff, and `llm_profiles.py` for the profiles — on
 the standard library alone
 (`argparse`, `urllib.request`, `json`, `subprocess`, plus `yaml` for the
 registry config) — no HTTP client library, no curses dependency, no framework.
