@@ -2544,25 +2544,39 @@ one the engine wrote. `--env KEY=VAL` updates the persisted env wiring
 (`env-wiring.json`) in place for the next resume; only the key *names* are
 recorded in the audit trail, never the values.
 
-### 8.8 Opt-in self-recovery
+### 8.8 Self-recovery, on by default
 
-Automatic resurrection of a job is a policy decision, not a default. A host
-that reboots nightly wants dangling runs picked back up; a host where a
-container died because the job was making things worse does not.
+Automatic resurrection of a job is a policy decision. A host that reboots
+nightly wants dangling runs picked back up; a host where a container died
+because the job was making things worse does not.
 
-**Self-recovery is off by default**, and the default literal is written in
-exactly one place: `AUTO_RESUME_DEFAULT = False` in
+**Self-recovery is on by default since v0.7** (requirement O), and the default
+literal is written in exactly one place: `AUTO_RESUME_DEFAULT = True` in
 `src/ralphd/cli/main.py`. A default that appears in two places is a default
 that will eventually disagree with itself — one copy in a flag definition, one
 in a config loader, and no way to tell which one a given run obeyed. Every
-consumer reads the single constant.
+consumer reads the single constant, which is why the flip itself was one line.
 
-Opting in is per run or per registry: `start --auto-resume` writes an
-`auto-resume.json` marker in the run's config dir, and a registry-level
-default supplies the same for runs that do not say otherwise. The marker in
-the *config* dir is the immutable opt-in; a separate `auto-resume.json` in the
-*run* dir holds mutable guard state, so the operator's intent and the
-machine's bookkeeping cannot overwrite each other.
+It shipped OFF in v0.5 on purpose: the two rules that make it safe had to be
+validated against real runs before they became load-bearing for everybody —
+the crash-loop guard (below) and "never resurrect a run the operator killed"
+(also below, narrowed in v0.7 so an *accidental* self-inflicted signal, §4.6,
+is still resumable). Both now are. The default flipped because the failure it
+prevents is the common one for an unattended run: a host reboot or an
+OOM-killed container leaves the job dangling until a human notices, spending
+the rest of its wall-clock budget doing nothing, while the failure an ON
+default risks is bounded by the guard to a handful of containers.
+
+Opting out is per run or per registry, and is what an operator who disagrees
+reaches for: `start --no-auto-resume`, or `ralphctl config set auto_resume
+false` for every run in the registry. Opting *in* explicitly is still
+`start --auto-resume`. Either way `start` writes an `auto-resume.json` marker
+in the run's config dir recording the value it resolved, so a run's opt-in
+never depends on what the default happened to be on the day it was resumed;
+a run started before the marker existed reads as the current default. The
+marker in the *config* dir is the immutable opt-in; a separate
+`auto-resume.json` in the *run* dir holds mutable guard state, so the
+operator's intent and the machine's bookkeeping cannot overwrite each other.
 
 Execution is `doctor --fix`, driven from `cron` or a systemd timer. **There is
 no new daemon.** A sweep that runs on a schedule the operator already
@@ -2957,7 +2971,7 @@ returns immediately.
 | `--timeout MINUTES` | `480` | whole-job wall-clock budget |
 | `--iteration-timeout MINUTES` | `45` | per-iteration wall-clock budget |
 | `--infra-outage-budget SECONDS` | engine default `14400` (4h) | how long one LLM-endpoint outage may be ridden out |
-| `--auto-resume` / `--no-auto-resume` | off | opt this run in or out of `doctor --fix` self-recovery |
+| `--auto-resume` / `--no-auto-resume` | on (§8.8) | opt this run in to or out of `doctor --fix` self-recovery |
 | `--port N` | free ephemeral port | host port for the run's API |
 | `--api-bind ADDR` | `127.0.0.1` | address the API is published on |
 | `--network NET` | none (default bridge) | docker network; `host` shares the host netns |
@@ -4245,7 +4259,7 @@ expensive to rediscover.
 
 | invariant | guarded by |
 | --- | --- |
-| The auto-resume default lives in exactly one literal: `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py`. Every reader — the flag layering, the registry-config default, the pre-existing-run fallback, `doctor --fix` — goes through it, and the tests are parameterised over its value rather than spelling `False` out, so flipping it is a one-line change that does not rewrite the suite. | `tests/test_cli_auto_resume.py` (imports the constant, greps the source line, and asserts the roadmap note names it) |
+| The auto-resume default lives in exactly one literal: `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py`. Every reader — the flag layering, the registry-config default, the pre-existing-run fallback, `doctor --fix` — goes through it, and the tests are parameterised over its value rather than spelling the boolean out, so flipping it is a one-line change that does not rewrite the suite. v0.7 flipped it (§8.8) and that is exactly what it cost: the one literal, the two tests that are *about* the default, and the fixtures that meant "an opted-out run" and now say `--no-auto-resume`. | `tests/test_cli_auto_resume.py` (imports the constant, greps the source line, and asserts the roadmap records the flip as shipped) |
 | There is exactly one log-merge implementation. Only `src/ralphd/log_merge.py` may synthesise a `ralphd.iteration` boundary out of a `meta.json`, and only a named allowlist of modules may read `output.jsonl` at all (`log_merge.py`, `engine/api.py`'s single-iteration raw route, `engine/loop.py` which writes it, `engine/redact.py`). | `tests/test_log_merge.py::test_no_duplicate_merge_implementation`, plus `::test_api_and_on_disk_merge_are_identical` asserting the live and on-disk paths agree byte-for-byte |
 | The documented sibling-cleanup command leaves the job container alive. The two-filter form is run for real against a real daemon and the job container must survive; the forbidden one-filter form is *also* run, and must really delete it, so the test fails if the danger it guards ever stops being real. | `tests/test_sibling_cleanup_job_safe.py` (`-m docker`): `::test_documented_cleanup_removes_siblings_and_spares_the_job`, `::test_the_forbidden_form_really_does_delete_the_job_container`, `::test_ralphctl_stop_and_rm_still_reap_everything` |
 | No copy of the docs, prompts or example skills teaches the run-label-only form, and every rendered prompt carries the safe one. | `tests/test_docs_consistency.py::test_docs_and_examples_teach_the_sibling_only_cleanup_filter`, `::test_no_run_label_only_cleanup_command_in_docs_or_examples`, `::test_rendered_prompt_has_no_run_label_only_cleanup_command`, `::test_example_skill_run_sh_labels_siblings_with_the_role_label`; `tests/test_sibling_cleanup_guidance.py` for the per-prompt and self-id cases |
@@ -4293,13 +4307,6 @@ and inside the loop itself on a self-hosted job.
 Deliberately not built. Each of these is a decision with a reason, not a gap
 nobody noticed.
 
-- **`auto_resume` defaulting to ON.** Self-recovery ships opt-in, so the two
-  rules that make it safe — the crash-loop guard, and "never resurrect a run the
-  operator killed" — get validated against real runs before they are load-
-  bearing for everybody. The intent is to flip it. The default is a single
-  literal (`AUTO_RESUME_DEFAULT`) and every reader and test goes through it
-  precisely so the flip is one line and the suite does not have to be rewritten
-  to accept it (§14.3).
 - **PID-namespace isolation of agent iterations.** v0.7 closed the hazard that
   made this urgent — an iteration signalling the *engine* — with the uid boundary
   of §13.4, which is kernel-enforced, costs the agent nothing it legitimately

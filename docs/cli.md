@@ -92,7 +92,7 @@ ralphctl start --prd <file|-> [options]
 | `--timeout <dur>` | 8h | job wall-clock limit (`45m`, `8h`, `2d`) |
 | `--iteration-timeout <dur>` | 45m | per-iteration limit |
 | `--infra-outage-budget <seconds>` | 14400 (4h) | wall-clock budget for riding out one LLM-endpoint outage: infra-classified faults (connection errors, 429/529, overloaded, throttling — see [architecture.md](architecture.md)) keep being retried while one episode's accumulated backoff wait stays under this budget. Waiting costs no iterations and no approaches. Written to the run's `job.yaml` as `infra_outage_budget_s` and visible in `GET /config` (`budgets.infraOutageBudgetS`) |
-| `--auto-resume` / `--no-auto-resume` | off | opt this run in to (or explicitly out of) self-recovery: `ralphctl doctor --fix` resumes a run recorded non-terminal whose container has vanished (the dangling-container condition `doctor`/`repair`/`status` report). Host-side setting — recorded with the run's other start-time wiring in `<registry>/configs/<run-id>/auto-resume.json`, never passed into the container, so it survives every later `resume` (the container is replaced, the config dir is not). Falls back to the registry's `auto_resume` (`ralphctl config`) if set; `--no-auto-resume` overrides a template/registry opt-in. The default is deliberately **off** in v0.5 and lives in exactly one place in the source (see [roadmap.md](roadmap.md) for the planned flip) |
+| `--auto-resume` / `--no-auto-resume` | on | opt this run in to (or explicitly out of) self-recovery: `ralphctl doctor --fix` resumes a run recorded non-terminal whose container has vanished (the dangling-container condition `doctor`/`repair`/`status` report). Host-side setting — recorded with the run's other start-time wiring in `<registry>/configs/<run-id>/auto-resume.json`, never passed into the container, so it survives every later `resume` (the container is replaced, the config dir is not). Falls back to the registry's `auto_resume` (`ralphctl config`) if set; `--no-auto-resume` overrides a template/registry opt-in. The default is **on** since v0.7 — a dangling unattended run is worth more resumed than left until someone notices, and the crash-loop guard bounds the cost of a run that cannot start (see `doctor --fix` below). To keep a run out of the sweep, start it with `--no-auto-resume`; to opt the whole registry out, `ralphctl config set auto_resume false`. The default lives in exactly one place in the source (`AUTO_RESUME_DEFAULT`, see [roadmap.md](roadmap.md)) |
 | `--port <n>` | auto | host port for the API |
 | `--api-bind <addr>` | 127.0.0.1 | host interface to publish on |
 | `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. Falls back to the registry's `network` (`ralphctl config`) if set. |
@@ -2152,8 +2152,9 @@ each run restarts on the image it recorded at start time, see `resume`).
 
 `--fix` turns the `danglingRegistryEntries` report into an action: every run
 recorded non-terminal whose container has vanished **and** which is opted in
-to `auto_resume` (`start --auto-resume`, a template's `auto_resume: true`, or
-`ralphctl config set auto_resume true`; default **off**) is resumed through
+to `auto_resume` (the **default since v0.7**, or explicitly via `start
+--auto-resume`, a template's `auto_resume: true`, or `ralphctl config set
+auto_resume true`) is resumed through
 exactly the same code path as an operator-typed `ralphctl resume <id>` — so
 the fresh container reproduces the run's original wiring (run-dir/config-dir/
 workspace mounts, the `--llm`/`--env` wiring recorded at start time, the

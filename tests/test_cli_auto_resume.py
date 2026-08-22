@@ -9,8 +9,11 @@ is long gone.
 
 Every assertion about the *default* goes through the single constant
 `ralphd.cli.main.AUTO_RESUME_DEFAULT` (imported, never spelled out here),
-so flipping the default to ON in a later version stays a one-line change in
-main.py with no test edits.
+which is why flipping the default to ON in v0.7 (task 027, requirement O)
+was a one-line change in main.py: the only test edits it needed were the
+two tests that are *about* the default (below) and the fixtures that meant
+"an opted-out run" and had been relying on the default to get one -- those
+now say `--no-auto-resume`.
 """
 
 from __future__ import annotations
@@ -48,10 +51,19 @@ def _start(ctl: Ctl, run_id: str, *extra: str, env: dict | None = None):
 
 
 # ------------------------------------------------------------------ default
-def test_default_is_off_and_lives_in_one_place(ctl):
-    """A plain `start` records the single-source default (currently OFF)."""
+def test_default_is_on_and_lives_in_one_place(ctl):
+    """A plain `start` records the single-source default, which v0.7
+    (requirement O) flipped to ON: a run whose container dies unattended is
+    picked back up by `doctor --fix` without anyone having had to opt in.
+
+    Both halves are asserted -- that the recorded setting is the constant
+    (so no second literal can creep into `start`'s flag layering) and that
+    the constant is now True (so the flip cannot be silently reverted).
+    """
     _start(ctl, "tst-ar-default")
     assert _setting(ctl, "tst-ar-default") is AUTO_RESUME_DEFAULT
+    assert AUTO_RESUME_DEFAULT is True
+    assert _setting(ctl, "tst-ar-default") is True
 
 
 def test_default_literal_appears_exactly_once_in_the_source(ctl):
@@ -66,23 +78,69 @@ def test_default_literal_appears_exactly_once_in_the_source(ctl):
     assert len(hits) == 1, f"auto_resume default defined more than once: {hits}"
 
 
-def test_roadmap_records_the_planned_default_flip_and_names_the_single_place():
-    """Task 030: the deferred list must say the default is planned to flip to
-    ON later and point at the one literal a future maintainer has to edit."""
+def test_roadmap_records_the_shipped_default_flip_and_names_the_single_place():
+    """Task 027 (requirement O): the flip has happened, so the roadmap must
+    record it as shipped and its deferred list must stop promising it -- a
+    deferred entry for work that already landed is how the roadmap rots.
+    The shipped note still has to point at the one literal a maintainer
+    reverting or re-flipping the default would edit."""
     from pathlib import Path
 
     text = (Path(__file__).parent.parent / "docs" / "roadmap.md").read_text()
     deferred = text.split("## Later / explicitly deferred", 1)
     assert len(deferred) == 2, "docs/roadmap.md lost its deferred section"
     note = deferred[1]
-    assert "auto_resume" in note
-    assert "ON" in note, "the deferred note must say the default flips to ON"
-    assert "AUTO_RESUME_DEFAULT" in note
-    assert "src/ralphd/cli/main.py" in note
-    # ...and the v0.5 block must describe what actually shipped: opt-in.
+    assert "auto_resume" not in note, (
+        "the deferred list still promises the auto_resume default flip, which "
+        "v0.7 shipped")
+    # The flip is recorded as shipped where self-recovery is described, and
+    # still names the single place the default lives.
     v05 = text.split("## v0.5", 1)[1].split("## Later", 1)[0]
     assert "--auto-resume" in v05
+    assert "--no-auto-resume" in v05, "the shipped note must name the opt-out"
+    assert "AUTO_RESUME_DEFAULT" in v05
+    assert "src/ralphd/cli/main.py" in v05
+    assert "v0.7" in v05 and "ON" in v05, (
+        "the roadmap must say the default flipped to ON in v0.7")
+    # ...and the historical claim stays honest: v0.5 itself shipped opt-in.
     assert "off by default" in v05.lower()
+
+
+def test_docs_document_the_on_default_and_both_ways_to_opt_out():
+    """Task 027 (requirement O): with the default ON, the documentation an
+    operator reads has to say so and has to name both opt-out routes -- the
+    per-run flag and the registry-wide config key -- or the flip is a change
+    of behaviour nobody was told about."""
+    from pathlib import Path
+
+    cli = (Path(__file__).parent.parent / "docs" / "cli.md").read_text()
+    # the `start` flag table row for this setting
+    row = [ln for ln in cli.splitlines()
+           if ln.startswith("| `--auto-resume`")]
+    assert len(row) == 1, row
+    assert "| on |" in row[0], (
+        "docs/cli.md's flag table still shows the old default")
+    assert "**on** since v0.7" in row[0]
+    assert "start it with `--no-auto-resume`" in row[0], (
+        "the row must tell an operator how to keep ONE run out of the sweep")
+    assert "config set auto_resume false" in row[0]
+    # ...and the sweep's own section must not still call the default off
+    sweep = cli.split("#### `ralphctl doctor --fix`", 1)[1]
+    assert "**default since v0.7**" in sweep
+    assert "default **off**" not in sweep
+
+
+def test_spec_states_the_same_default_as_the_code():
+    """SPEC §8.8 spells the default literal out (`AUTO_RESUME_DEFAULT = ...`),
+    which is exactly the kind of prose that rots when the one line it quotes
+    changes -- so it is read off the code here rather than trusted."""
+    import re
+    from pathlib import Path
+
+    spec = (Path(__file__).parent.parent / "SPEC.md").read_text()
+    quoted = re.findall(r"`AUTO_RESUME_DEFAULT = (\w+)`", spec)
+    assert quoted, "SPEC.md no longer states the auto-resume default literal"
+    assert set(quoted) == {str(AUTO_RESUME_DEFAULT)}, quoted
 
 
 # ------------------------------------------------------------------- --flag
@@ -193,11 +251,14 @@ def test_reader_falls_back_to_the_default_for_a_pre_task_026_run(ctl, monkeypatc
 
 
 def test_opted_out_run_stays_opted_out_across_resume(ctl):
-    _start(ctl, "tst-ar-resume-off")
+    """`resume` replaces the container, never the config dir: an explicit
+    opt-out is still an opt-out afterwards (under the ON default this is the
+    interesting direction -- a resume must not silently re-enrol the run)."""
+    _start(ctl, "tst-ar-resume-off", "--no-auto-resume")
     _stop_container(ctl)
     res = ctl.run("resume", "tst-ar-resume-off", env={
         "STUB_DOCKER_CONTAINERS": "ralphd-tst-ar-resume-off",
         "STUB_DOCKER_RUNNING": "",
     })
     assert res.returncode == 0, res.stderr
-    assert _setting(ctl, "tst-ar-resume-off") is AUTO_RESUME_DEFAULT
+    assert _setting(ctl, "tst-ar-resume-off") is False

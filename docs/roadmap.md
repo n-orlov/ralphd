@@ -125,8 +125,12 @@ Phase 1 — the environment must not be able to destroy a job:
   `stop`) are never resurrected; a crash-loop guard (`autoResume: {attempts,
   lastAt, maxAttempts}` in the run dir) spaces attempts with escalating
   backoff and gives up with a readable reason. The default is a single literal,
-  `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py` — see the deferred note
-  below for the planned flip
+  `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py`; **v0.7 (requirement O)
+  flipped that literal to ON** now that the guard and the never-resurrect rule
+  have been validated on real runs — a dangling unattended run is worth more
+  resumed than left sitting until a human notices — so opting a run out is
+  `start --no-auto-resume` (or `ralphctl config set auto_resume false`
+  registry-wide). What v0.5 itself shipped is the opt-in version above
 - ✅ `ralphctl watch` (and `ralphctl logs -f`) stop closing at a *historical*
   terminal-state marker: the stream ends on a terminal event only when it is
   the log's last event *and* the engine is not live, and resume now appends an
@@ -261,14 +265,6 @@ Phase 4 — close the loop:
 
 ## Later / explicitly deferred
 
-- `auto_resume` defaulting to **ON** in a later version. v0.5 ships opt-in
-  self-recovery with the default OFF so the crash-loop guard and the "never
-  resurrect an operator-killed run" rule can be validated on real runs first;
-  the intent is to flip the default once they have been. So that the flip is a
-  one-line change, the default lives in exactly one place — the
-  `AUTO_RESUME_DEFAULT` literal in `src/ralphd/cli/main.py` (every other
-  surface, including the registry-config default and the tests, reads it from
-  there; `tests/test_cli_auto_resume.py` is parameterised over its value).
 - PID-namespace isolation of agent iterations from in-container kill signals
   (a supervisor-level SIGKILL/SIGTERM currently reaches the running `pi`
   subprocess directly since it shares the container's PID namespace; giving
