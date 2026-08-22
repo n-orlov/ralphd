@@ -101,6 +101,13 @@ class LoopSupervisor:
         # operator who asked the run to stop. See
         # _begin_reflect_retry_window().
         self._operator_abort_recorded = False
+        # Task 016 (#47): the signal that is taking this engine down, as text
+        # ("15"), or None while nothing has signalled it. Set by
+        # abort_on_signal() -- i.e. only by engine/main.py's SIGTERM/SIGINT
+        # handler, never by an API abort -- and read by _run_reflection(),
+        # which must not manufacture a reflection failure out of the engine's
+        # own teardown. See _reflect_skipped_reason().
+        self._signal_unwind: str | None = None
         # Task 018 (#5): the fault verdict (and error text) of the most
         # recently finished iteration, recorded by _run_iteration_once() --
         # the one signal that says whether the job just ended *on an
@@ -246,6 +253,14 @@ class LoopSupervisor:
         "and then a signal arrived" is true either way.
         """
         claimed = self._operator_abort_recorded
+        # Task 016 (#47): remember that the *process* is going down, not just
+        # this job. _record_abort() below fires the child killer
+        # (runner.interrupt()) and main.py's handler sets its stop event; the
+        # container runtime's SIGKILL follows the grace period. Anything the
+        # engine starts after this point cannot finish, so the post-terminal
+        # reflect phase must not be attempted (and must not leave a tombstone
+        # blaming the reflection for the teardown).
+        self._signal_unwind = str(sig)
         evidence = last_tool_call(self.run.root)
         detail = format_last_tool_call(evidence)
         if claimed:
@@ -1284,7 +1299,18 @@ class LoopSupervisor:
         (status.json `reflect`, plus artifacts/reflection/FAILED.md when it
         failed), because a silently swallowed reflect failure looks exactly
         like `reflect: false` from the outside.
+
+        Task 016 (#47): none of it happens when a signal is already taking the
+        engine down. Spawning a fresh agent while the child killer has fired
+        and SIGKILL is on its way produces a reflect "failure" the engine
+        manufactured itself, complete with an artifacts/reflection/FAILED.md
+        tombstone blaming the reflection for the operator's `docker stop`. On
+        that path the phase is recorded as *not attempted* instead
+        (_record_reflect_not_attempted()).
         """
+        if self._signal_unwind is not None:
+            self._record_reflect_not_attempted(attempted=False)
+            return
         self.run.emit("phase", phase="reflect")
         window = self._begin_reflect_retry_window()
         result: IterationResult | None = None
@@ -1294,7 +1320,45 @@ class LoopSupervisor:
         finally:
             self._end_reflect_retry_window(window)
             self.run.update_status(phase=None)
-            self._record_reflect_outcome(result)
+            if self._signal_unwind is not None:
+                # The signal arrived mid-attempt: whatever the iteration
+                # returned describes the teardown, not the reflection.
+                self._record_reflect_not_attempted(attempted=True)
+            else:
+                self._record_reflect_outcome(result)
+
+    def _reflect_skipped_reason(self, attempted: bool) -> str:
+        """Why no reflection verdict exists, for a run whose engine was
+        signalled (task 016, #47). Names the signal, because "reflect did not
+        run" with no cause reads like the phase was never enabled."""
+        sig = self._signal_unwind
+        if attempted:
+            return (f"signal {sig} ended the engine during the reflect phase, "
+                    "so the iteration was cut short by this engine's own "
+                    "shutdown rather than by anything about the reflection")
+        return (f"signal {sig} ended the engine before the reflect phase could "
+                "start, so no reflect iteration was attempted")
+
+    def _record_reflect_not_attempted(self, attempted: bool) -> None:
+        """Records "there is no reflection verdict, and that is the engine's
+        own doing" (task 016, #47): `reflect: {ok: null, attempted, skipped}`
+        in status.json plus a `reflect_skipped` event, and deliberately NO
+        artifacts/reflection/FAILED.md -- the tombstone means "the reflection
+        was tried and failed", which on this path is false.
+
+        `ok: null` keeps every existing consumer's gating intact: `ralphctl
+        status` and the hub both act on `ok is False`, so neither reports a
+        failure that did not happen (they gain a distinct "not attempted"
+        line instead, main.py's _format_reflect_lines).
+        """
+        reason = self._reflect_skipped_reason(attempted)
+        self.run.update_status(reflect={"ok": None, "attempted": attempted,
+                                        "error": None, "skipped": reason,
+                                        "endedAt": utcnow()},
+                              phase=None)
+        log.warning("reflect phase not attempted: %s", reason)
+        self.run.emit("reflect_skipped", attempted=attempted,
+                      signal=self._signal_unwind, reason=reason)
 
     # Task 019 (#5): the post-mortem the reflect phase is supposed to leave
     # behind. "reflect ran but produced no report" is a failure too -- that

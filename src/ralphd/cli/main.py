@@ -2290,11 +2290,34 @@ def _format_reflect_lines(reflect) -> list[str]:
     is over by the time reflect runs), which is precisely why it needs its own
     line: otherwise the only trace is artifacts/reflection/FAILED.md, and from
     the outside the run dir looks like reflect had never been enabled.
+
+    Task 016 (#47) adds the third shape: `ok: null` with a `skipped` reason --
+    the engine was signalled, so the phase was never attempted (or was cut
+    short by the teardown) and no failure was manufactured for it. That prints
+    `reflection: not attempted (<why>)` / `not completed (<why>)`; `ok: false`
+    still prints `failed (...)`, and `ok: true` / null-without-a-reason still
+    print nothing at all.
     """
-    if not isinstance(reflect, dict) or reflect.get("ok") is not False:
+    if not isinstance(reflect, dict):
+        return []
+    # Task 016 (#47): the engine was signalled, so there is no verdict and the
+    # reflection is not to blame -- `ok: null` with a `skipped` reason. Without
+    # a line of its own this run looks exactly like `reflect: false` (the
+    # failure mode the failed-reflection line above exists to fix), because
+    # every other trace of the phase is a FAILED.md the engine correctly did
+    # not write.
+    if reflect.get("ok") is None and str(reflect.get("skipped") or "").strip():
+        head = "not completed" if reflect.get("attempted") else "not attempted"
+        return _reflect_wrapped(f"{head} ({str(reflect['skipped']).strip()})")
+    if reflect.get("ok") is not False:
         return []
     error = str(reflect.get("error") or "").strip() or "reason not recorded"
-    wrapped = textwrap.wrap(f"failed ({error})", width=76) or [error]
+    return _reflect_wrapped(f"failed ({error})")
+
+
+def _reflect_wrapped(text: str) -> list[str]:
+    """`reflection: <text>`, wrapped and hanging-indented (task 020, #5)."""
+    wrapped = textwrap.wrap(text, width=76) or [text]
     lines = [f"reflection: {wrapped[0]}"]
     lines.extend(f"            {extra}" for extra in wrapped[1:])
     return lines

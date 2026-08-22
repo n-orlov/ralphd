@@ -289,6 +289,26 @@ A failed reflection **never** changes the run's `state`, `verdict` or
 `ralphctl status` and the hub run-detail card, and emitted as a
 `reflect_done` event.
 
+A third shape says the phase produced **no verdict at all**, and that this was
+the engine's own doing: a `SIGTERM`/`SIGINT` reached the engine (`ralphctl
+stop`, a raw `docker stop`, the container runtime taking the host down), so the
+child killer has already fired and `SIGKILL` is on its way.
+
+```json
+"reflect": {"ok": null, "attempted": false, "error": null,
+            "skipped": "signal 15 ended the engine before the reflect phase could start, so no reflect iteration was attempted",
+            "endedAt": "2026-08-22T09:31:20Z"}
+```
+
+No iteration is spawned and **no `artifacts/reflection/FAILED.md` is written** —
+the tombstone means "the reflection was tried and failed", which here is false.
+`attempted: true` with the same `ok: null` is the narrower case where the signal
+arrived *during* the attempt, so what the iteration returned describes the
+teardown rather than the reflection. `ok: null` keeps every consumer that gates
+on `ok === false` (this CLI, the hub) from reporting a failure that did not
+happen; both cases emit a `reflect_skipped` event and print their own
+`reflection: not attempted (…)` / `not completed (…)` line in `ralphctl status`.
+
 #### `termination`
 
 Absent from `status.json` (and `null` in `GET /status`) unless something told
@@ -480,6 +500,7 @@ then follows. Event types:
 | `infra_retry_now` | an operator woke a backoff wait via `POST /retry`: phase, attempt, error, `source: "operator"` |
 | `reflect_infra_delay` | the job ended on an infra-shaped failure, so the post-terminal `reflect` iteration waits before its first attempt instead of firing into the same dead endpoint: `delayS`, `error`, `budgetS` (reflect's own, capped, outage budget). Followed by an ordinary `infra_wait` with `attempt: 0` |
 | `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error` when it failed (same verdict as status.json's `reflect`) |
+| `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
 | `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"`, `previous`, `iterations` (new value), `delta`, `iterationsUsed`, `source: "api"` |
 
