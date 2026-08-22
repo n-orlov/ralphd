@@ -705,7 +705,10 @@ def prd_path(run_root: Path, original: bool = False) -> Path | None:
 #
 # `<run>/steering/NNN-<name>.md` holds the operator messages; the engine marks
 # a file *applied* by appending its name to `steering/.consumed.json` when an
-# iteration consumes it (`RunDir.consume_steering`). Both the engine's
+# iteration has FINISHED cleanly with it in its prompt (`RunDir.consume_steering`,
+# called from `LoopSupervisor._run_iteration_once` after the outcome is known --
+# task 018, #34: an iteration that failed, was interrupted or timed out leaves
+# its notes pending for the next one). Both the engine's
 # `GET /steering` and the host-side hub fallback (`ui_server.steering_list`,
 # for a run whose container is gone) read the pair through `steering_entries`
 # below, so a live answer and an on-disk answer cannot disagree about which
@@ -998,6 +1001,15 @@ def iteration_summary_lines(detail: dict) -> list[str]:
     steering = detail.get("steeringConsumed") or []
     if steering:
         lines.append(f"steering:  {', '.join(str(s) for s in steering)}")
+    # Task 018 (#34): notes this iteration was handed but did not consume --
+    # it failed/was interrupted, so they are still pending for a later
+    # iteration. Rendered only for that difference: a clean iteration's line
+    # is unchanged (delivered == consumed says nothing extra).
+    stranded = [s for s in (detail.get("steeringDelivered") or [])
+                if s not in steering]
+    if stranded:
+        lines.append(f"steering:  {', '.join(str(s) for s in stranded)}  "
+                     f"(delivered, not consumed -- still pending)")
     if detail.get("verifiedTask"):
         lines.append(f"verified:  task {detail['verifiedTask']} "
                      f"-> {detail.get('verifyOutcome')}")
@@ -1009,7 +1021,7 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
     holds no such iteration (task 019, #18.1).
 
     `iterations/NNNN/meta.json` verbatim (so nothing the engine records is
-    dropped -- `steeringConsumed`, `verifiedTask`/`verifyOutcome`,
+    dropped -- `steeringDelivered`/`steeringConsumed`, `verifiedTask`/`verifyOutcome`,
     `modelResolved`/`modelRaw`, the raw failure signals) PLUS the derived
     display fields both detail surfaces need:
 
@@ -2866,8 +2878,25 @@ class RunDir:
         return steering_entries(self.root, bodies=bodies)
 
     def consume_steering(self, files: list[Path], iteration: int) -> None:
-        consumed = read_json(self.consumed_marker(), [])
-        consumed.extend(p.name for p in files)
+        """Mark `files` applied by iteration `iteration` (task 018, #34).
+
+        Called by `LoopSupervisor._run_iteration_once` only AFTER the
+        iteration that carried the notes finished cleanly -- see the
+        delivery-vs-consumption comment there for the at-least-once choice
+        and the ordering that implements it.
+
+        Idempotent by construction: a name already in `.consumed.json` is
+        neither appended again nor re-announced, so "applied" is a set and no
+        entry can be counted (or evented) twice however often this is
+        called.
+        """
+        raw = read_json(self.consumed_marker(), [])
+        consumed = [n for n in raw if isinstance(n, str)] if isinstance(raw, list) else []
+        already = set(consumed)
+        fresh = [p for p in files if p.name not in already]
+        if not fresh:
+            return
+        consumed.extend(p.name for p in fresh)
         atomic_write_json(self.consumed_marker(), consumed)
-        for p in files:
+        for p in fresh:
             self.emit("steering.consumed", file=p.name, iteration=iteration)

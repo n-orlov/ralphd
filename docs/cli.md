@@ -978,12 +978,17 @@ steering:  001-focus.md
 - **`cost:`/`tokens:`** are that iteration alone, through the shared
   `format_cost` (4 decimals — one iteration is small money) and token
   formatter; only counters the provider actually reported are named.
+- **`steering:`** names the steering files this iteration *applied*. A note the
+  iteration was handed but did not earn (it failed, was interrupted or timed out,
+  so the note stays pending for the next actionable iteration — docs/api.md
+  `GET /steering`) gets its own line, `<file>  (delivered, not consumed -- still
+  pending)`; a clean iteration's line is the plain one above.
 - The transcript is rendered by the same merge and renderer
   `logs --iteration n` uses, so the two commands cannot show the same events
   differently; an iteration that wrote none prints `(no transcript yet)`.
 - `--json` prints the whole `meta.json` verbatim (`exitCode`, `interrupted`,
   `timedOut`, `noTrafficTimeout`, `error`, `faultClass`, `usage`,
-  `steeringConsumed`, `modelResolved`/`modelRaw`, `verifiedTask`/`verifyOutcome`)
+  `steeringDelivered`/`steeringConsumed`, `modelResolved`/`modelRaw`, `verifiedTask`/`verifyOutcome`)
   plus the derived fields the human view shows: `exitReason`, `durationS`,
   `durationDisplay`, `durationLabel`, `startedAtLocal`/`endedAtLocal`,
   `tokensDisplay`, `costDisplay`, `costStatus`, `hasMeta`, `hasTranscript`,
@@ -1330,7 +1335,8 @@ SEQ  STATE    ARRIVED                    NAME                MESSAGE
 
 * **Live-first, with an on-disk fallback.** A running job's own
   `GET /steering` answers (it is the process that decides when an entry
-  becomes `applied`); when the container is gone the run dir's `steering/`
+  becomes `applied` — once an actionable iteration that carried the note has
+  finished cleanly, never merely because it was delivered, see docs/api.md); when the container is gone the run dir's `steering/`
   directory is read directly through the one shared reader
   (`engine.state.steering_entries`), and stderr carries
   `on-disk snapshot: the run's API is not reachable, showing the steering

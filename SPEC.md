@@ -784,8 +784,17 @@ Steering is a file, not a message queue. Each message lands in
 is pending.
 
 - Pending steering is injected into the next `planning` or `worker` prompt under
-  `## Operator steering (MUST take priority)` and marked consumed at that
-  iteration's start (`steering.consumed` names the file and the iteration).
+  `## Operator steering (MUST take priority)` and marked consumed once **that
+  iteration has finished cleanly** (`steering.consumed` names the file and the
+  iteration). Delivery is therefore at-least-once and application at-most-once:
+  an iteration that fails, is interrupted, times out or dies with the engine
+  leaves its notes pending, and the next actionable iteration is handed them
+  again (issue #34 — marking them at iteration *start* recorded a note as
+  applied that nothing ever acted on). The ordering is the guarantee: build the
+  prompt → run the agent → record the outcome → append to `.consumed.json`; the
+  marker write is idempotent, so no name can be recorded or evented twice.
+  `iterations/NNNN/meta.json` records both halves — `steeringDelivered` (what
+  was in the prompt) and `steeringConsumed` (what the outcome earned).
 - `review` and `verify` are pure verification roles whose prompts carry no
   steering instructions, so they must not consume it
   (`STEERING_ACTIONABLE_PHASES`): they get a read-only note that steering is
@@ -1104,7 +1113,7 @@ reconstruct the whole run, including its restarts.
 | `task` | `taskId`, `oldStatus`, `newStatus` | a task's status changed in `tasks.json` (polled while the agent runs, so it lands mid-iteration) |
 | `signal` | `signal` (`COMPLETE` \| `VERIFIED` \| `taskVerified`), `taskId` | a sentinel was accepted |
 | `steering.received` | `file` | a steering message was stored |
-| `steering.consumed` | `file`, `iteration` | an actionable phase took it |
+| `steering.consumed` | `file`, `iteration` | an actionable phase finished cleanly with it (§4.6) |
 | `infra_wait` | the whole `infraWait` payload plus `backoffS` | a backoff wait starts |
 | `infra_retry` | `phase`, `attempt`, `maxAttempts`, `error`, `noTrafficTimeout`, `instantFailure`, `backoffS`, `waitedS`, `budgetS` | an attempt classified as an infra fault |
 | `infra_retry_now` | `phase`, `attempt`, `error`, `source`, `message` | the operator woke a backoff wait |
@@ -1138,7 +1147,8 @@ killed iteration still says what it was doing) and once when it ends.
 | `modelRaw` | string \| null | the provider's own id, when it differs from the resolved reference |
 | `approach` | int \| null | the approach this iteration belongs to |
 | `startedAt` / `endedAt` | string | UTC ISO-8601; a missing `endedAt` means the iteration never finished |
-| `steeringConsumed` | array | steering file names this iteration took |
+| `steeringDelivered` | array | steering file names this iteration's prompt carried |
+| `steeringConsumed` | array | of those, the names its clean outcome marked applied (§4.6); empty for a failed/interrupted attempt, whose notes stay pending |
 | `exitCode` | int \| null | agent process exit code; negative for a signal, `null` if it never spawned |
 | `interrupted` | bool | ended by `SIGINT` (operator, timeout or watchdog) |
 | `timedOut` | bool | the full per-iteration timeout fired |
@@ -1159,7 +1169,7 @@ classification from exit codes and token counts.
   "number": 1, "phase": "planning", "approach": 1,
   "model": "amazon-bedrock/eu.anthropic.claude-sonnet-5",
   "startedAt": "2026-08-19T16:43:46Z", "endedAt": "2026-08-19T16:44:08Z",
-  "steeringConsumed": [], "exitCode": 0, "interrupted": false,
+  "steeringDelivered": [], "steeringConsumed": [], "exitCode": 0, "interrupted": false,
   "timedOut": false, "noTrafficTimeout": false,
   "sawComplete": false, "sawVerified": false,
   "error": null, "faultClass": null,

@@ -670,8 +670,9 @@ Steering files are markdown notes dropped into `steering/` (via API or by writin
 the mounted dir directly). At each iteration start the engine checks for
 *unconsumed* steering files, but only **actionable** phases -- `planning` and
 `worker`, whose prompts explicitly instruct the agent to act on operator
-guidance -- include the full steering text and mark it consumed (recorded in
-`meta.json`'s `steeringConsumed` and in `steering/.consumed.json`). The
+guidance -- include the full steering text and can mark it consumed (recorded in
+`meta.json`'s `steeringDelivered`/`steeringConsumed` and in
+`steering/.consumed.json`). The
 `review` and `verify` phases are pure verification roles ("Do NOT fix
 anything yourself"; nothing in their prompts tells the agent to act on
 steering), so if a steering file arrives while a worker iteration is in
@@ -681,6 +682,20 @@ not marked consumed) and leaves it pending -- it is picked up and consumed by
 the next planning/worker iteration instead. This prevents steering from being
 silently discarded (recorded as "consumed" yet never actually acted on) when
 it happens to land just before a non-worker-bound phase.
+
+**Delivery is at-least-once; application is at-most-once (issue #34).** Being
+handed to an actionable phase is not enough either: the marker append happens
+only after that iteration has *finished cleanly* (`faultClass is None`), so the
+ordering is build the prompt -> run the agent -> record the outcome -> append to
+`.consumed.json`. An iteration that fails, is interrupted, times out or dies with
+the engine therefore leaves its notes pending and the next actionable iteration
+is handed them again -- the alternative (marking them at iteration start, which
+is what v0.6 did) turns any dead iteration into a silently discarded operator
+instruction that the run nevertheless reports as `applied`. Re-delivery cannot
+apply a note twice: `RunDir.consume_steering` skips names already in the marker,
+so neither the `applied` state nor the `steering.consumed` event can be doubled.
+The per-iteration record keeps the two apart, so an operator can see a note was
+handed to iteration 12 and only earned by iteration 13.
 
 **A `VERIFIED` verdict is refused while steering sits unconsumed.** Passive
 notice at review time is not enough on its own: if a steering file arrives
