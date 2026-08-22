@@ -221,7 +221,8 @@ def test_progress_since_the_last_attempt_resets_the_counter(ctl):
 
 
 def test_opted_out_run_is_never_recorded_by_the_guard(ctl):
-    _start(ctl, "tst-guard-off")           # auto_resume default is off
+    # explicit opt-out: the default has been ON since v0.7 (task 027)
+    _start(ctl, "tst-guard-off", "--no-auto-resume")
     _kill_container(ctl, "tst-guard-off")
     doc = _doctor_fix(ctl, "--fix")
     assert doc["autoResume"]["skipped"] == ["tst-guard-off"]

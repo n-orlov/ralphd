@@ -380,10 +380,22 @@ def _extra_env_wiring_path(cdir: Path) -> Path:
 # PRD req F) -- the *only* place this default value is written down. Every
 # other reader (`start`'s flag layering via `_TEMPLATE_SCALAR_FIELDS`, the
 # `_read_auto_resume_setting()` fallback for runs started before this
-# existed, `doctor --fix`) goes through this constant, and the tests are
-# parameterised over it, so flipping the default to ON in a later version
-# (docs/roadmap.md's deferred list) is this one line.
-AUTO_RESUME_DEFAULT = False
+# existed, `doctor --fix`) goes through this constant, which is why flipping
+# the default was this one line.
+#
+# v0.7 (requirement O) flipped it from False to True: the two rules that
+# make self-recovery safe have now been validated on real runs -- the
+# crash-loop guard (AUTO_RESUME_MAX_ATTEMPTS below, progress-keyed on
+# iterationsUsed) and "never resurrect a run the operator killed"
+# (`is_operator_termination()`, which v0.7 narrowed so an accidental
+# SELF-inflicted signal is still resumable). An unattended run whose host
+# rebooted or whose container was OOM-killed is worth more resumed than
+# sitting dangling until someone notices; an operator who disagrees opts a
+# run out with `--no-auto-resume`, or the whole registry with
+# `ralphctl config set auto_resume false`. Nothing else about the sweep
+# changed: it still only ever acts on the dangling condition, and only
+# under `doctor --fix`.
+AUTO_RESUME_DEFAULT = True
 
 
 def _auto_resume_path(cdir: Path) -> Path:

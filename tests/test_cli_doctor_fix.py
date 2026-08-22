@@ -120,7 +120,9 @@ def test_fix_reports_the_resumed_run_in_the_human_report(ctl):
 
 # ------------------------------------------------------------ opted out
 def test_fix_leaves_an_opted_out_run_untouched_but_reported(ctl):
-    _start(ctl, "tst-fix-off")          # default is off
+    # explicit opt-out: since v0.7 (task 027) the default is ON, so a run
+    # that is meant to be left alone has to say so
+    _start(ctl, "tst-fix-off", "--no-auto-resume")
     _kill_container(ctl, "tst-fix-off")
 
     doc = _doctor_fix(ctl, "--fix")
@@ -138,7 +140,7 @@ def test_fix_sweeps_a_mixed_registry(ctl):
     """One opted-in and one opted-out dangling run in the same sweep:
     exactly one `docker run`, both reported."""
     _start(ctl, "tst-mixed-on", "--auto-resume")
-    _start(ctl, "tst-mixed-off")
+    _start(ctl, "tst-mixed-off", "--no-auto-resume")
     _kill_container(ctl, "tst-mixed-on")
     _kill_container(ctl, "tst-mixed-off")
 
@@ -151,6 +153,25 @@ def test_fix_sweeps_a_mixed_registry(ctl):
     assert not any("ralphd-tst-mixed-off" in a for a in runs[2])
     assert {d["runId"] for d in doc["danglingRegistryEntries"]} == {
         "tst-mixed-on", "tst-mixed-off"}
+
+
+def test_fix_resumes_a_plainly_started_run_under_the_on_default(ctl):
+    """Task 027 (requirement O): the flip is visible on the *sweep*, not only
+    in the recorded marker -- a run started with no auto-resume flag at all is
+    resumed, which is the whole point of an ON default for unattended runs.
+    The default is read from the constant so this test cannot outlive it."""
+    from ralphd.cli.main import AUTO_RESUME_DEFAULT
+
+    assert AUTO_RESUME_DEFAULT is True, "the ON default this test is about"
+    _start(ctl, "tst-fix-plain")            # no --auto-resume / --no-auto-resume
+    _kill_container(ctl, "tst-fix-plain")
+
+    doc = _doctor_fix(ctl, "--fix")
+    assert doc["autoResume"]["resumed"] == ["tst-fix-plain"], doc
+    assert doc["autoResume"]["skipped"] == []
+    runs = _docker_runs(ctl)
+    assert len(runs) == 2, runs             # the start + the auto-resume
+    assert "ralphd-tst-fix-plain" in runs[1]
 
 
 # --------------------------------------------------------- not dangling
