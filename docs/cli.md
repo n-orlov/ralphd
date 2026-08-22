@@ -1541,6 +1541,12 @@ ralphctl artifacts <run-id> pull ./out/    # copy the tree out (default: ./artif
 | `suggestions` | `reflection/suggestions.diff` | the prompt/skill diff the reflect phase proposes (never applied) |
 | `reflect-failed` | `reflection/FAILED.md` | why the reflect phase left no report |
 
+`reflect-failed` is listed only while the file is on disk, and the engine
+removes it the moment a reflect attempt succeeds (task 017, issue #43): a run
+whose reflection failed, was resumed and reflected successfully the second time
+lists `report` alone, and `show reflect-failed` exits non-zero — no stale
+tombstone advertised beside a report that exists.
+
 ```
 $ ralphctl artifacts brisk-otter-1408 ls
 run:       brisk-otter-1408
