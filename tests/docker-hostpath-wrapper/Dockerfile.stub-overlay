@@ -15,4 +15,8 @@ USER root
 COPY stub-pi/pi /usr/bin/pi
 RUN chmod 755 /usr/bin/pi
 ENV STUB_RUN_DIR=/run/ralphd
-USER agent
+# No trailing `USER agent`: since requirement I (#48) the base image
+# deliberately ends as root so the engine can establish its uid boundary
+# (it drops its own effective uid to the agent, and spawns each iteration
+# all the way down to it). Re-adding `USER agent` here would silently
+# disable the very property the docker tier proves.

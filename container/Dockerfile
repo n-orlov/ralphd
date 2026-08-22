@@ -41,9 +41,21 @@ RUN useradd -m -u 1000 -s /bin/bash agent \
 COPY --chown=agent:agent . /opt/ralphd
 RUN pip install --no-cache-dir /opt/ralphd
 
-USER agent
+# Requirement I (#48): NO `USER agent` here, on purpose. The engine starts as
+# root and immediately drops its *effective* uid to `agent` while keeping root
+# as its real and saved uid (src/ralphd/engine/privsep.py), so:
+#   * every file it writes -- run dir, workspace, $HOME -- is owned by uid 1000
+#     exactly as before, and
+#   * no process running as `agent` can signal it, because kill(2) permission
+#     is decided by the target's real/saved uid. `pkill -f ralphd-engine` from
+#     inside a task iteration is EPERM instead of the end of the run.
+# Iterations themselves are spawned back down to uid 1000 (`user=`/`group=`),
+# so the agent's own latitude is unchanged. HOME is the agent's home for both:
+# the engine's $HOME config overlay, its ~/.creds placement and pi's own
+# settings must all resolve to the one home pi reads.
 WORKDIR /workspace
-ENV RALPHD_RUN_DIR=/run/ralphd \
+ENV HOME=/home/agent \
+    RALPHD_RUN_DIR=/run/ralphd \
     RALPHD_CONFIG_DIR=/config \
     RALPHD_WORKSPACE_DIR=/workspace \
     PI_OFFLINE=1

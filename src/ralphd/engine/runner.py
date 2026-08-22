@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import state
 from .pricing import PricingSource
+from .privsep import agent_child_kwargs
 from .redact import scrub_text
 
 COMPLETE = "<promise>COMPLETE</promise>"
@@ -124,6 +125,16 @@ class PiRunner:
             env=env,
             limit=STREAM_LIMIT,
             start_new_session=True,  # own pgid so SIGINT hits pi, not the engine
+            # Task 020 (#48): under the uid boundary the iteration runs as the
+            # `agent` uid while the engine keeps a real uid of 0, so nothing
+            # this subprocess (or any tool it spawns) can signal the
+            # supervisor -- not by pid, not by pgid, not by any `pkill`
+            # pattern. Empty kwargs when the engine was not started as root,
+            # so a test-suite or `--user 1000` engine spawns pi exactly as
+            # before. The engine can still signal *it*: `interrupt()`'s
+            # killpg is permitted downward (the engine's effective uid is the
+            # child's real uid).
+            **agent_child_kwargs(),
         )
         try:
             try:
