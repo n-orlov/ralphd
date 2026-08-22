@@ -1669,7 +1669,7 @@ size:      844 bytes
   same size cells — an artifact cannot be described as missing in one surface
   and empty in the other.
 
-### `ralphctl suggestions <run-id> [show|apply] [--target DIR] [--yes] [--ignore-conflicts]`
+### `ralphctl suggestions <run-id> [show|apply] [--target DIR] [--only PATH] [--yes] [--ignore-conflicts]`
 
 A finished run's reflect phase may leave `artifacts/reflection/suggestions.diff`:
 a unified diff proposing edits to the loop's own material (`src/ralphd/prompts/`,
@@ -1685,6 +1685,7 @@ ralphctl suggestions <run-id> show               # the diff + what it would touc
 ralphctl suggestions <run-id> apply              # the same, then stops: nothing written (exit 2)
 ralphctl suggestions <run-id> apply --yes        # the same, then writes, all-or-nothing
 ralphctl suggestions <run-id> apply --yes --target ~/src/ralphd
+ralphctl suggestions <run-id> apply --yes --only src/ralphd/prompts/worker.md   # take one file out of the diff
 ralphctl suggestions <run-id> apply --yes --ignore-conflicts  # another run's diff also fits these files: this one wins
 ```
 
@@ -1753,6 +1754,45 @@ image:     5adb7924fa1b -> 63644df115a2  (the next `start` builds and runs it)
   other diff is then re-planned against what was written and refused by the
   matcher rather than landing quietly on top. A sibling diff that no longer
   applies is not a conflict — it can never be written.
+- **A subset is selected by file, up front** (requirement P part 3). A reflect
+  diff is a batch of independent suggestions — v0.6's became eight issues, two of
+  them wrong — so `--only PATH` (repeatable) takes just the files you name:
+
+  ```
+  $ ralphctl suggestions brisk-otter-1408 apply --yes --only src/ralphd/prompts/worker.md
+  ...
+  selected:  1 of 2 files (--only)
+  --- what it would touch ---
+  modify  src/ralphd/prompts/worker.md  (3 hunks)
+  --- left out by --only ---
+    skip  src/ralphd/prompts/planning.md  (3 hunks)
+  ```
+
+  The selection is made on the parsed diff **before the plan is built**, so
+  everything downstream sees only what was selected: the plan that is printed is
+  the plan that is written, still all-or-nothing, and the whole diff is still
+  printed above it so nothing is hidden. What is left out is listed under `---
+  left out by --only ---`, because a partial apply has to announce itself as one
+  — including in `--json`, which grows `only` and `skipped` (and `paths` is then
+  the selected subset). This is the opposite of writing the hunks that happened
+  to apply: the tree that lands is one an operator named and was shown.
+- **Hunks are not separately selectable**, and a `--only` path the diff does not
+  touch is a usage error (`2`) listing the paths it does touch. A `@@` header is
+  not a name you can select by — the same file's hunks renumber the moment one of
+  them applies — while a path is exactly what the plan prints. To take part of
+  one file: take the whole file and edit the rest back out, or apply to a scratch
+  copy (`--target DIR`) and carry across what you wanted.
+- Selection narrows the conflict check but never the live-run refusal: another
+  run's diff that only touches a file you left out is no longer a conflict for
+  *this* apply (nothing shared can be overwritten), while a run executing the
+  target tree still refuses the write however few files you selected — the
+  refusal is about the tree, not about which of its files move.
+- **The hub does not surface this verb at all**, and that is deliberate CLI
+  parity: the browser can read a run's `suggestions.diff` as an artifact
+  (`GET /api/runs/<id>/artifacts/<path>`, read-only) and
+  nothing more — there is no endpoint that plans, applies or selects, so the hub
+  can only ever expose *less* than the CLI here. Writing the material the loop
+  runs on stays an act at a terminal, with `--yes` typed by a person.
 - **Almost purely on-disk**, like `ralphctl docs`/`artifacts`: the diff is a file
   in the run dir and the target is a directory on this host, so this verb never
   talks to a run's API and works identically for a run whose container is long
@@ -1760,17 +1800,19 @@ image:     5adb7924fa1b -> 63644df115a2  (the next `start` builds and runs it)
   per run that is both recorded non-terminal and tied to this tree, and none at
   all otherwise.
 - `--json` prints `{runId, diff, target, paths, applies, failures, imageHash,
-  written, applied, liveRuns, conflicts}` (plus `imageHashBefore` after a write,
-  and `reason` for the `apply`-without-`--yes` stop), so the plan — including
-  both refusal conditions — can be inspected programmatically before an operator
-  decides.
+  written, applied, only, skipped, liveRuns, conflicts}` (plus `imageHashBefore`
+  after a write, and `reason` for the `apply`-without-`--yes` stop), so the plan
+  — including both refusal conditions and any `--only` selection — can be
+  inspected programmatically before an operator decides.
 - Exit codes: `0` shown or applied · `1` no `suggestions.diff` in that run, an
   unreadable diff (the message names the offending line), a diff that does not
   apply, a live run tied to the target tree, or an unresolved conflict with
   another run's diff · `2` `apply` without `--yes`, a `--target` that is not a
-  directory, or no checkout to default to · `3` run not found. Pinned by
-  `tests/test_cli_suggestions_verb.py` and
-  `tests/test_cli_suggestions_guards.py`.
+  directory, a `--only` path the diff does not touch, or no checkout to default
+  to · `3` run not found. Pinned by
+  `tests/test_cli_suggestions_verb.py`,
+  `tests/test_cli_suggestions_guards.py` and
+  `tests/test_cli_suggestions_subset.py`.
 
 ### `ralphctl skills <run-id> [ls|get <name> <dest>|add <dir>|rm <name>]`
 

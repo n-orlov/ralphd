@@ -35,15 +35,23 @@ here, ~200 lines of it, and the failure objects are structured from the start.
 The trade is deliberate: no fuzz, no rename detection, no binary hunks. A diff
 this cannot apply is refused, never guessed at.
 
-All-or-nothing, and why partial application is not a flag here
---------------------------------------------------------------
+All-or-nothing, and how a subset is taken instead
+------------------------------------------------
 A plan with any failing hunk writes nothing at all. A prompts diff is a set of
 edits an agent reasoned about together; applying the four hunks that landed and
 leaving the fifth rejected produces a tree neither the agent nor the operator
 ever proposed -- and (fact 2) the very next `start` bakes that tree into the job
-image by content hash. *Selecting* a subset up front is a different, legitimate
-operation (requirement P's partial-application question, task 030): it is a
-choice made before the plan is built, not a half-finished write.
+image by content hash.
+
+*Selecting* a subset is a different, legitimate operation (requirement P part 3,
+task 030), and `select_patches(patches, wanted)` is where it happens: **before**
+a plan exists, by whole file, filtering the parsed `FilePatch`es down to the
+paths an operator named. What follows is the ordinary path -- the plan is built
+from the selection, shown, and written all-or-nothing -- so the tree that lands
+is one an operator chose and was shown, never the residue of a write that got
+halfway. Sub-file granularity is deliberately absent: a `@@` header is not
+vocabulary an operator can select by (the same file's hunks renumber as soon as
+one of them applies), whereas a path is exactly what `format_plan` prints.
 """
 
 from __future__ import annotations
@@ -225,6 +233,38 @@ def strip_path_prefix(path: str) -> str:
         if text.startswith(prefix):
             return text[len(prefix):]
     return text
+
+
+def select_patches(patches: tuple[FilePatch, ...],
+                   wanted) -> tuple[tuple[FilePatch, ...], tuple[str, ...]]:
+    """Keep only the file patches an operator named: (selected, unknown names).
+
+    Selection is by path and happens before any plan is built (see the module
+    docstring). `wanted` empty means the whole diff -- absence of a selection is
+    not an empty selection.
+
+    Names are normalised through `strip_path_prefix`, so the `a/src/...` an
+    operator pastes straight out of the diff selects the file the plan calls
+    `src/...`. A name matching nothing is returned rather than ignored: silently
+    applying the rest of the diff (or nothing at all) because of a typo is
+    exactly the surprise this verb exists to prevent, so the caller refuses.
+
+    Order is the diff's, never the operator's: the plan then reads in the same
+    order as the diff it was cut from.
+    """
+    names = [strip_path_prefix(w) for w in (wanted or ())]
+    if not names:
+        return tuple(patches), ()
+    known = {p.path for p in patches}
+    unknown = tuple(dict.fromkeys(n for n in names if n not in known))
+    chosen = set(names)
+    return tuple(p for p in patches if p.path in chosen), unknown
+
+
+def hunk_count_label(count: int) -> str:
+    """`1 hunk` / `3 hunks`. One speller, because a surface listing what it will
+    *not* touch must count hunks the same way as the plan beside it."""
+    return f"{count} hunk" + ("s" if count != 1 else "")
 
 
 def _int(value: str | None, default: int) -> int:
@@ -525,7 +565,7 @@ def format_plan(plan: PatchPlan) -> list[str]:
         verb = {CHANGE_CREATE: "create", CHANGE_DELETE: "delete",
                 CHANGE_MODIFY: "modify"}[patch.change]
         note = "" if change is not None else "  <- does not apply"
-        hunks = f"{len(patch.hunks)} hunk" + ("s" if len(patch.hunks) != 1 else "")
+        hunks = hunk_count_label(len(patch.hunks))
         relocated = ("  (relocated)" if change is not None and change.relocated
                      else "")
         lines.append(f"{verb:>6}  {patch.path}  ({hunks}){relocated}{note}")

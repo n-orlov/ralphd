@@ -4457,6 +4457,23 @@ SUGGESTIONS_CONFLICT_WORKFLOW = (
     "instead")
 SUGGESTIONS_CONFLICT_HEADER = "--- other runs proposing edits to the same files ---"
 
+# Requirement P part 3 (task 030): taking SOME of a diff's suggestions. Six of
+# eight is a real operator need -- v0.6's diff became eight issues and two of
+# them were wrong -- and the answer is a selection made before the plan exists
+# (`patch.select_patches`), by whole file, not a half-finished write: what is
+# selected is planned, shown and written all-or-nothing like any other plan, and
+# what is left out is printed beside it so the record of a partial apply says it
+# was partial. Hunk-level selection is refused, and the reason is that a `@@`
+# header is not a stable name to select by -- the same file's hunks renumber the
+# moment one of them applies -- while a path is exactly what the plan prints.
+SUGGESTIONS_ONLY_HEADER = "--- left out by --only ---"
+SUGGESTIONS_ONLY_UNKNOWN = "--only names a path this diff does not touch"
+SUGGESTIONS_ONLY_WORKFLOW = (
+    "select whole files, by the paths the plan lists; hunks are not separately "
+    "selectable -- to take part of one file, take the whole file and edit the "
+    "rest back out, or apply to a scratch copy (`--target DIR`) and carry "
+    "across what you wanted")
+
 
 def _suggestions_tree_ties(rdir: Path, root: Path, source_hash: str) -> list[str]:
     """Why one run dir is tied to the target tree, in the wording shown -- an
@@ -4600,6 +4617,13 @@ def cmd_suggestions(args):
     the same file are refused with both named rather than merged into a version
     neither proposed (`SUGGESTIONS_CONFLICT_REFUSED`, overridable by an explicit
     `--ignore-conflicts`).
+
+    `--only PATH` (repeatable, requirement P part 3, task 030) takes a subset:
+    the named files are selected out of the parsed diff *before* the plan is
+    built, so everything downstream -- the plan, both guards, the writer's
+    all-or-nothing rule -- sees only what was selected, and the files left out
+    are listed under `SUGGESTIONS_ONLY_HEADER`. A name that matches no path in
+    the diff is a usage error (exit 2), never a quiet apply of the rest.
     """
     _require_run(args.run_id)
     entry = _suggestions_diff(args.run_id)
@@ -4607,9 +4631,22 @@ def cmd_suggestions(args):
     text = (run_root(args.run_id) / "artifacts"
             / artifact_relpath("suggestions")).read_text()
     try:
-        plan = patch.plan_text(root, text)
+        patches = patch.parse_patch(text)
     except patch.PatchError as e:
         die(1, f"unreadable diff: {e}")
+    only = list(getattr(args, "only", None) or [])
+    selected, unknown = patch.select_patches(patches, only)
+    if unknown:
+        # Usage error, before anything is shown or planned: the operator asked
+        # for something this diff does not contain, and the answer is the list
+        # of what it does contain -- not a plan of whatever else was named.
+        die(2, f"{SUGGESTIONS_ONLY_UNKNOWN}: {', '.join(unknown)} "
+               f"(this diff touches: "
+               f"{', '.join(p.path for p in patches)}) "
+               f"-- {SUGGESTIONS_ONLY_WORKFLOW}")
+    chosen = {p.path for p in selected}
+    left_out = [p for p in patches if p.path not in chosen]
+    plan = patch.plan_patch(root, selected)
     before = image.hash_image_inputs(root)
     apply_it = args.action == "apply" and args.yes
     asking_to_write = args.action == "apply"
@@ -4620,11 +4657,21 @@ def cmd_suggestions(args):
              f"diff:      artifacts/{entry['path']} "
              f"({entry['bytes']} bytes)",
              f"target:    {root}",
-             f"image:     {before.hash}",
-             SUGGESTIONS_DIFF_HEADER,
-             text if text.endswith("\n") else text + "\n",
-             SUGGESTIONS_PLAN_HEADER,
-             *patch.format_plan(plan)]
+             f"image:     {before.hash}"]
+    if only:
+        # Printed in the header block, not buried below the plan: a partial
+        # apply has to announce itself as one wherever its output is read.
+        lines.append(f"selected:  {len(selected)} of {len(patches)} files "
+                     f"(--only)")
+    lines += [SUGGESTIONS_DIFF_HEADER,
+              text if text.endswith("\n") else text + "\n",
+              SUGGESTIONS_PLAN_HEADER,
+              *patch.format_plan(plan)]
+    if left_out:
+        lines += [SUGGESTIONS_ONLY_HEADER,
+                  *(f"  skip  {p.path}  "
+                    f"({patch.hunk_count_label(len(p.hunks))})"
+                    for p in left_out)]
     # Both conditions are *shown* beside the plan whatever the action is: an
     # operator running `show` on a host that also hosts runs needs to know the
     # apply would be refused before typing it, and the refusal message below is
@@ -4643,6 +4690,7 @@ def cmd_suggestions(args):
                "applies": plan.ok,
                "failures": [str(f) for f in plan.failures],
                "imageHash": before.hash, "written": [], "applied": False,
+               "only": only, "skipped": [p.path for p in left_out],
                "liveRuns": midflight, "conflicts": conflicts}
 
     if not plan.ok:
@@ -5624,6 +5672,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with `apply`: the explicit act that writes; without "
                         "it `apply` shows the plan and exits 2 having written "
                         "nothing")
+    s.add_argument("--only", action="append", default=None, metavar="PATH",
+                   help="take just this file out of the diff (repeatable; "
+                        "selected before the plan is built, so what is "
+                        "selected is planned, shown and written "
+                        "all-or-nothing). A path the diff does not touch is a "
+                        "usage error, and hunks are not separately selectable")
     s.add_argument("--ignore-conflicts", action="store_true",
                    help="with `apply --yes`: write even though another run's "
                         "suggestions.diff also applies to one of these files "

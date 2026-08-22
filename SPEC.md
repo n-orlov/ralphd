@@ -546,7 +546,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/cli/main.py` | `ralphctl`: every subcommand, the `docker run` assembly for `start`/`resume`, the registry and its defaults, templates, run-id generation, the API client, `--json` output and exit codes, `logs`/`watch` streaming and `tail`-style argv preprocessing, `doctor`/`doctor --fix`/`repair`, the auto-resume opt-in and its crash-loop guard, and `AUTO_RESUME_DEFAULT` as the single default literal. |
 | `src/ralphd/cli/log_render.py` | The shared NDJSON→lines pretty renderer: iteration/phase headers, streamed assistant text, tool calls as one-liners, thinking collapsed to a single marker per block, per-iteration usage/cost footers, errors highlighted. `tty=False` yields plain text with no ANSI and no `\r`. Lives here, not in `main.py`, because the hub must import it without a cycle. |
 | `src/ralphd/cli/image.py` | The job image, declaratively and docker-free: which files are inputs (`IMAGE_INPUTS`), how they hash to a tag, the packaged-inputs fallback for an install with no checkout (`PACKAGED_FILES`), and the text of the generated derived recipe (§3.2). Runs no builds — `cli/main.py` does that. |
-| `src/ralphd/cli/patch.py` | Reading a reflect phase's `suggestions.diff` (§16): parse a unified diff, plan it against a target tree (which paths it would touch, the new content, one structured rejection per hunk that does not fit — naming the file and the `@@` header), and write only under a separate `apply_plan()` call, all-or-nothing. No `git`/`patch` subprocess, no fuzzy matching, no renames: a diff this cannot apply is refused, never guessed at. Prints nothing and reads no run directory — `cli/main.py` owns the verb. |
+| `src/ralphd/cli/patch.py` | Reading a reflect phase's `suggestions.diff` (§16): parse a unified diff, select a subset of its files up front (`select_patches`, §17 entry 2), plan it against a target tree (which paths it would touch, the new content, one structured rejection per hunk that does not fit — naming the file and the `@@` header), and write only under a separate `apply_plan()` call, all-or-nothing. No `git`/`patch` subprocess, no fuzzy matching, no renames: a diff this cannot apply is refused, never guessed at. Prints nothing and reads no run directory — `cli/main.py` owns the verb. |
 | `src/ralphd/cli/ui_server.py` | The hub server: `/api/runs` and `/api/runs/<id>[/logs,/prd,/steering,/documents,/artifacts,/fault,/cost,/iterations/<n>,/steer,/retry]` over the registry (`DELETE /api/runs/<id>` for a terminal run), proxying a run's live API with a short timeout and falling back to the run dir (`"live": false`) rather than 500-ing on the four views that have a live answer at all; renders log tails, cost breakdowns, fault explanations and iteration detail through the same modules `ralphctl` prints, server-side, so the browser only displays strings; serves the static bundle with `index.html` fallback. |
 | `src/ralphd/cli/llm_profiles.py` | Named-profile loading and host-side resolution: `${env:}`/`${file:}`/`${cmd:}` references evaluated exactly once, before the container starts, into `env`/`mounts`/`pi`. The `host` and `none` built-ins never reach this module. `MASK` is what `llm show` prints instead of a value. |
 | `src/ralphd/cli/web/index.html` | The hub shell — one page, no framework, no build step. |
@@ -2904,7 +2904,7 @@ subcommand is mandatory.
 | `rm <id>` | delete a run's registry dir (`--force` stops a leftover container first) |
 | `repair <id>` | diagnose (or, guarded, patch) an inconsistent run dir |
 | `artifacts <id> …` | `ls`/`pull` the run's artifacts straight off disk |
-| `suggestions <id> …` | `show` a finished run's reflection diff and exactly what it would touch, and `apply` it to a checkout on an explicit `--yes`; refused while a live run is executing that tree, and while another run's diff also fits the same file (`--ignore-conflicts` picks this one) |
+| `suggestions <id> …` | `show` a finished run's reflection diff and exactly what it would touch, and `apply` it to a checkout on an explicit `--yes`; a subset by file with `--only PATH`; refused while a live run is executing that tree, and while another run's diff also fits the same file (`--ignore-conflicts` picks this one) |
 | `doctor` | preflight the host, report strays and zombies, optionally recover |
 | `config get\|set` | registry-wide defaults in `<registry>/config.yaml` |
 | `ui` | serve the local web hub in the foreground (§11) |
@@ -4471,6 +4471,18 @@ entry moved out of it; each entry below names the number it used to carry.
    rather than quietly landing on top. A sibling diff that no longer applies is
    not a conflict at all: it can never be written, so it can take nothing.
 
-   What this entry does not settle: taking six of eight suggestions. Partial
-   application is requirement P part 3; whatever it lands — selection or a
-   documented refusal — is stated in docs/cli.md's section for the verb.
+   **Taking six of eight suggestions** is `--only PATH` (repeatable, task 030,
+   requirement P part 3): a selection by whole file, made on the parsed diff
+   *before* a plan exists (`patch.select_patches`), after which everything
+   downstream — the plan that is printed, both refusals above, the
+   all-or-nothing writer — sees only what was selected. That is the opposite of
+   writing the hunks that happened to apply: the tree that lands is one the
+   operator named and was shown, and the files left out are printed beside the
+   plan (and in `--json`'s `skipped`) so a partial apply announces itself.
+   Hunk-level selection is refused, with the reason: a `@@` header is not a
+   stable name to select by, since the same file's hunks renumber the moment one
+   of them applies, while a path is exactly what the plan prints. A `--only`
+   path the diff does not touch is a usage error listing the paths it does
+   touch, never a quiet apply of the rest. The hub surfaces none of this: it can
+   read `suggestions.diff` as an artifact and nothing else, so applying the
+   loop's own material stays an act typed at a terminal.
