@@ -119,7 +119,8 @@ def test_fix_never_resumes_an_operator_terminated_run(ctl, action):
     doc = _doctor_fix(ctl, "--fix")
     # still reported (the operator can see the leftover entry) ...
     assert doc["danglingRegistryEntries"] == [
-        {"runId": "tst-opterm", "container": "ralphd-tst-opterm"}]
+        {"runId": "tst-opterm", "container": "ralphd-tst-opterm",
+         "liveness": "absent"}]  # task 021 (#31): the dangling shape
     # ... but classified as operator-terminated, not resumed or "opted out"
     assert doc["autoResume"]["resumed"] == []
     assert doc["autoResume"]["skipped"] == []

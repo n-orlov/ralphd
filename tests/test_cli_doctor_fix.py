@@ -85,7 +85,8 @@ def test_fix_resumes_an_opted_in_dangling_run(ctl, tmp_path):
                                 "failed": [], "waiting": [], "gaveUp": [],
                                 "operatorTerminated": [], "recovered": []}
     assert doc["danglingRegistryEntries"] == [
-        {"runId": "tst-fix-on", "container": "ralphd-tst-fix-on"}]
+        {"runId": "tst-fix-on", "container": "ralphd-tst-fix-on",
+         "liveness": "absent"}]  # task 021 (#31): the dangling shape
 
     runs = _docker_runs(ctl)
     assert len(runs) == 2, runs          # start + the auto-resume
@@ -128,7 +129,8 @@ def test_fix_leaves_an_opted_out_run_untouched_but_reported(ctl):
                                 "operatorTerminated": [], "recovered": []}
     # still reported as dangling, with the manual remedy
     assert doc["danglingRegistryEntries"] == [
-        {"runId": "tst-fix-off", "container": "ralphd-tst-fix-off"}]
+        {"runId": "tst-fix-off", "container": "ralphd-tst-fix-off",
+         "liveness": "absent"}]
     assert len(_docker_runs(ctl)) == 1, "opted-out run must not be resumed"
 
 
@@ -175,7 +177,8 @@ def test_plain_doctor_never_resumes_anything(ctl):
     doc = _doctor_fix(ctl)
     assert doc["autoResume"] is None
     assert doc["danglingRegistryEntries"] == [
-        {"runId": "tst-nofix", "container": "ralphd-tst-nofix"}]
+        {"runId": "tst-nofix", "container": "ralphd-tst-nofix",
+         "liveness": "absent"}]
     assert len(_docker_runs(ctl)) == 1
 
 

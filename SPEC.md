@@ -2364,17 +2364,32 @@ whether a figure is partial or derived.
 ### 8.7 Vanished containers, repair and doctor
 
 A run whose recorded state is non-terminal (`NONTERMINAL_STATES` is
-`("starting", "running")`) but whose container no longer exists is a dangling
-run. It is the shape a host reboot, an OOM kill or a `docker rm` leaves
-behind, and the run dir alone cannot distinguish it from a run that is working
-normally.
+`("starting", "running")`) while **no container is running for it** is a
+dangling run. It is the shape a host reboot, an OOM kill or a `docker rm`
+leaves behind, and the run dir alone cannot distinguish it from a run that is
+working normally.
+
+Liveness therefore has **three** states, not two (issue #31): no container by
+that name exists (`absent`), one exists and is running (`running`), one exists
+and has exited (`exited`). Only `running` means a live engine owns the run dir;
+the other two are both dangling. The distinction lives in the one shared
+helper the four surfaces (`status`, `doctor`, `repair`, auto-resume) call, not
+in the surfaces, because the original defect was not a missing check anywhere
+— it was one caller reading "a container record exists" as "something is
+alive", which silently blinded all four. The two dangling shapes share a
+remedy but not a diagnosis: an exited container is still there to be inspected
+(`docker logs`), so each surface words them apart from one shared table.
 
 `status` detects it by pairing the recorded state with a container lookup by
 name and surfaces it explicitly:
 
-- a warning line stating that the container is gone, backed by a
-  `containerGone` field, so the condition is machine-readable and not only a
-  rendering flourish;
+- a warning line stating what happened to the container (gone, or present but
+  exited), backed by a `dangling` field (either shape) and a
+  `containerLiveness` field naming which one, so the condition is
+  machine-readable and not only a rendering flourish. The older
+  `containerGone` field keeps its narrower pre-#31 meaning — `true` only for
+  the vanished case — rather than widening under a name that would then be
+  wrong for half the runs it covers;
 - task counts read from the run dir rather than from the engine, since there
   is no engine left to ask;
 - **staleness instead of a growing live elapsed time.** A dangling run's
@@ -2384,16 +2399,21 @@ name and surfaces it explicitly:
 
 `doctor` sweeps the whole registry rather than one run and reports two
 findings without changing anything: `danglingRegistryEntries` (recorded
-non-terminal, no container) and `strayContainers` (a container with no
+non-terminal, no *running* container, each entry naming its `liveness`) and
+`strayContainers` (a container with no
 registry entry). Report-only is the default because both findings have benign
 explanations, and each carries a suggested remedy — resume first for a
-dangling run, or record the truth if resuming is not wanted.
+dangling run, or record the truth if resuming is not wanted. `doctor --fix`
+auto-resumes exactly what that sweep matches, so both dangling shapes are
+auto-resume-eligible; `resume` itself already removes an exited container
+occupying the name before starting a fresh one.
 
 `repair` is the guarded editor for the run dir. It refuses to touch a run
 whose container is actually running, exiting `5`, because editing state under
 a live engine produces a run dir that contradicts itself. `--set-state`
 validates the target state, writes a `reason` recording that this was an
-operator repair of a run whose container vanished, and appends a `repair`
+operator repair and what had happened to the container (vanished, or exited
+without the engine recording a terminal state), and appends a `repair`
 audit event, so a hand-edited terminal state is never indistinguishable from
 one the engine wrote. `--env KEY=VAL` updates the persisted env wiring
 (`env-wiring.json`) in place for the next resume; only the key *names* are
@@ -3113,7 +3133,8 @@ every issue it finds — malformed JSON, missing fields, unrecognized `state` or
 task `status` values, a `schemaVersion` newer than this build knows, duplicate
 task ids, and the dangling-container condition — without guessing at a fix. Two
 guarded flags do write: `--set-state <state>` overwrites `status.json`'s
-`state`, adding a `reason` naming the vanished container when the run really
+`state`, adding a `reason` naming the container and its fate (vanished, or
+present but exited) when the run really
 was a zombie; `--env KEY=VAL` (repeatable) updates `env-wiring.json` in place,
 preserving key order and mode `0600` and recording only the key name — never
 the value, in stdout, stderr, or the `type: repair` audit line every invocation
@@ -3173,7 +3194,8 @@ healthy run's output short:
   retry attempt itself is running, `infraWait` back to `null`) says so
   explicitly. A run that merely looks stuck at `state: running` is the failure
   mode this line exists to eliminate.
-- `container:` — in bold red, the zombie warning: the container appears gone
+- `container:` — in bold red, the zombie warning: no container is running for
+  this run — it either appears gone or is present but exited (issue #31) —
   while `status.json` still records a non-terminal state, so this run stopped
   without recording a terminal state; diagnose with `ralphctl repair <id>`.
   Said once, explicitly, rather than leaving the operator to join
@@ -3252,7 +3274,8 @@ verbatim — `budget` emits
 `{"iterations": 40, "previous": 25, "iterationsUsed": 17}`, `retry` emits
 `{"retrying": true}` — so the CLI never becomes a second schema to keep in
 sync. Commands that compute something add fields rather than replacing them:
-`status --json` carries `live`, `containerGone`, `autoResume`,
+`status --json` carries `live`, `containerGone`, `dangling`,
+`containerLiveness`, `autoResume`,
 `durationSeconds`, `sinceLastUpdateSeconds` and
 `currentIteration.elapsedSeconds` beside the engine's own fields, and every
 absolute-time field keeps its raw ISO value while human renderings live in

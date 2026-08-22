@@ -1906,13 +1906,78 @@ def _resume_image(pinned: str | None, job: dict, prev_meta: dict) -> dict:
     return _resume_job_image(job)
 
 
-def _container_running(name: str) -> bool | None:
-    """True/False if the container exists (running or not); None if no
-    container by that name exists at all."""
+# Task 021 (#31): liveness has THREE states, not two. `docker inspect` can
+# answer "no such container", "exists and is running" and "exists and has
+# exited", and the third one is the shape every engine death leaves behind
+# (`docker run` without `--rm`, a killed engine, an OOM). The old two-valued
+# reading (`_container_running` -> bool | None) carried all three, but the
+# name invited `is not None` to mean "something is alive there", and
+# `_dangling_run_entry` read it exactly that way -- so an exited-but-present
+# container was invisible to status, doctor, repair AND auto-resume through
+# one line. The vocabulary is named here, once, so the distinction cannot be
+# lost again at a call site.
+CONTAINER_ABSENT = "absent"     # no container by that name exists
+CONTAINER_RUNNING = "running"  # exists, and something is running in it
+CONTAINER_EXITED = "exited"    # exists, but nothing is running in it
+CONTAINER_LIVENESS_STATES = (CONTAINER_ABSENT, CONTAINER_RUNNING,
+                             CONTAINER_EXITED)
+
+
+def _container_liveness(name: str) -> str:
+    """THE liveness question, in its three-valued form (task 021, #31): one
+    of `CONTAINER_ABSENT` / `CONTAINER_RUNNING` / `CONTAINER_EXITED`.
+
+    One docker call, same as before -- what changed is that the third state
+    has a name, so a caller that means "a live engine holds this run dir"
+    cannot accidentally spell it "a container record exists"."""
     res = sh([DOCKER, "inspect", "--format", "{{.State.Running}}", name])
     if res.returncode != 0:
+        return CONTAINER_ABSENT
+    return (CONTAINER_RUNNING if res.stdout.strip() == "true"
+            else CONTAINER_EXITED)
+
+
+def _container_running(name: str) -> bool | None:
+    """True/False if the container exists (running or not); None if no
+    container by that name exists at all.
+
+    Kept as the boolean *view* of `_container_liveness` for the callers that
+    only ever ask "is a live engine holding this run dir?" (`resume`,
+    `repair`) -- and because the docker-tier tests import it. Derived, never
+    a second docker call or a second reading of the format string."""
+    live = _container_liveness(name)
+    if live == CONTAINER_ABSENT:
         return None
-    return res.stdout.strip() == "true"
+    return live == CONTAINER_RUNNING
+
+
+# Task 021 (#31): the two dangling shapes read differently to an operator --
+# "your container is gone" vs "your container is still sitting there, dead" --
+# and the second one is also where `docker logs` still works. Both stories are
+# worded ONCE here, keyed by liveness, and every surface that reports the
+# condition (status's warning, repair's diagnosis and `--set-state` reason,
+# doctor's sweep) renders from this table instead of inventing its own text.
+_DANGLING_PHRASE = {
+    CONTAINER_ABSENT: {
+        "status": "appears gone (no such container)",
+        "state": "no longer exists",
+        "why": "the container died or was removed outside ralphctl",
+    },
+    CONTAINER_EXITED: {
+        "status": "still exists but has exited (nothing is running in it)",
+        "state": "exists but has exited",
+        "why": "the container exited without the engine recording a "
+               "terminal state",
+    },
+}
+
+
+def _dangling_phrase(entry: dict, key: str) -> str:
+    """One wording for a `_dangling_run_entry` shape (task 021). Unknown
+    liveness degrades to the absent wording -- the pre-#31 text -- rather
+    than raising in a diagnostic path."""
+    return _DANGLING_PHRASE.get(entry.get("liveness"),
+                                _DANGLING_PHRASE[CONTAINER_ABSENT])[key]
 
 
 def cmd_resume(args):
@@ -2397,7 +2462,7 @@ def _format_degraded_lines(status: dict) -> list[str]:
 def _format_container_gone_lines(run_id: str, status: dict, entry: dict,
                                  tty: bool) -> list[str]:
     """Task 022 (#8): the dedicated warning for a run whose recorded state is
-    non-terminal but whose container is gone -- the zombie condition
+    non-terminal but which has no running container -- the zombie condition
     `_dangling_run_entry` owns (the same one doctor and repair report).
 
     Before this line existed the operator had to join two facts printed lines
@@ -2407,11 +2472,16 @@ def _format_container_gone_lines(run_id: str, status: dict, entry: dict,
     once, explicitly, naming the container and the command that diagnoses it
     (`repair` names both the `--set-state` and the `resume` remedy, so status
     does not fork that story).
+
+    Task 021 (#31): the first line words the two dangling shapes apart (gone
+    vs exited-but-present, via `_dangling_phrase`) -- an exited container is
+    one `docker logs` away from the reason it died, so calling it "gone" would
+    send the operator looking for something that is still right there.
     """
     state = status.get("state")
     return [_ansi(tty, "1;31",
-                  f"container: {entry['container']} appears gone (no such "
-                  f"container) -- status.json still"),
+                  f"container: {entry['container']} "
+                  f"{_dangling_phrase(entry, 'status')} -- status.json still"),
             _ansi(tty, "1;31",
                   f"           records state {state!r}, so this run stopped "
                   f"without recording a terminal"),
@@ -2538,8 +2608,20 @@ def cmd_status(args):
     # is almost certainly a zombie -- container died/removed outside
     # ralphctl. Only asked once the API is already known to be unreachable,
     # so a live run's output (and its `docker inspect` cost) is unchanged.
+    #
+    # Task 021 (#31): the condition now also matches an exited-but-present
+    # container, so `containerGone` -- documented as the *vanished*-container
+    # case -- can no longer carry it alone. `dangling` is the condition
+    # (either shape: what repair/doctor/auto-resume act on),
+    # `containerLiveness` says which shape it is, and `containerGone` keeps
+    # its exact pre-v0.7 meaning rather than quietly widening under a name
+    # that would then be a lie for half the runs it covers.
     container_gone = None if live else _dangling_run_entry(args.run_id)
-    status["containerGone"] = container_gone is not None
+    status["dangling"] = container_gone is not None
+    status["containerLiveness"] = (container_gone or {}).get("liveness")
+    status["containerGone"] = (
+        container_gone is not None
+        and container_gone["liveness"] == CONTAINER_ABSENT)
 
     # Duration fields (PRD steering 051): a single `durationSeconds` covers
     # both "elapsed so far" (state still running, no endedAt yet) and "total
@@ -3968,18 +4050,23 @@ def _dangling_remedy(run_id: str) -> str:
 
 def _diagnose_dangling_container(run_id: str) -> list[str]:
     """The dangling-container condition as a diagnosis line (task 021,
-    requirement E): a run recorded non-terminal whose container is gone.
+    requirement E): a run recorded non-terminal with no running container.
     Reuses `_dangling_run_entry` -- doctor's check -- rather than a second
     implementation, and names the fix (via `_dangling_remedy`, the same
     text doctor prints -- task 025) so `repair` stops reporting a zombie
-    run as 'no issues found'."""
+    run as 'no issues found'.
+
+    Task 021 (#31) widened the condition to the exited-but-present container;
+    the issue text says which of the two shapes it is (`_dangling_phrase`),
+    since the remedy is the same but where to look for the cause is not."""
     entry = _dangling_run_entry(run_id)
     if entry is None:
         return []
     state = _read_json(run_root(run_id) / "status.json", {}).get("state")
-    issue = (f"container: {entry['container']} no longer exists, but "
-             f"status.json still records state {state!r} -- the container "
-             f"died or was removed outside ralphctl; "
+    issue = (f"container: {entry['container']} "
+             f"{_dangling_phrase(entry, 'state')}, but "
+             f"status.json still records state {state!r} -- "
+             f"{_dangling_phrase(entry, 'why')}; "
              f"{_dangling_remedy(run_id)}")
     return [issue]
 
@@ -4037,13 +4124,17 @@ def cmd_repair(args):
             die(1, "status.json: expected a JSON object")
         old_state = doc.get("state")
         doc["state"] = set_state
-        # task 021: a zombie run (recorded non-terminal, container gone)
-        # gets a reason explaining the vanished container -- the same
-        # field the engine writes on its own terminal transitions.
+        # task 021: a zombie run (recorded non-terminal, no running
+        # container) gets a reason explaining what happened to the
+        # container -- the same field the engine writes on its own terminal
+        # transitions. #31: worded per liveness, so an operator reading
+        # status.json months later is not told a container vanished when it
+        # is still there, exited.
         reason = None
         if dangling is not None:
-            reason = (f"container {dangling['container']} no longer exists "
-                      f"(died or was removed outside ralphctl); state "
+            reason = (f"container {dangling['container']} "
+                      f"{_dangling_phrase(dangling, 'state')} "
+                      f"({_dangling_phrase(dangling, 'why')}); state "
                       f"{old_state!r} -> {set_state!r} by `ralphctl repair "
                       f"--set-state`")
             doc["reason"] = reason
@@ -4331,6 +4422,13 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
     forever. It is not a separate bucket: from here on it IS an ordinary
     zombie, and the crash-loop guard below is what stops it looping.
 
+    Task 021 (#31) does not change a line here, and that is the point: this
+    sweep acts on whatever `_dangling_run_entry` matches, so widening that
+    condition to the exited-but-present container made an engine that died
+    inside its container auto-resume-eligible for free. `cmd_resume` already
+    removes an exited container occupying the name before it starts a fresh
+    one, so the resume path needed nothing either.
+
     Returns `{resumed: [...], skipped: [...], failed: [{runId, error}],
     waiting: [{runId, attempts, nextAttemptAt}],
     gaveUp: [{runId, attempts, reason}],
@@ -4372,9 +4470,10 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
                             "nextAttemptAt": _auto_resume_next_attempt_at(state)})
             continue
         if _dangling_run_entry(run_id) is None:
-            # no longer a zombie: it finished on its own, or its container is
-            # back (a slow `resume`, an operator who got there first). THE
-            # condition, re-asked -- never a second implementation of it.
+            # no longer a zombie: it finished on its own, or a container is
+            # running for it again (a slow `resume`, an operator who got there
+            # first). THE condition, re-asked -- never a second
+            # implementation of it.
             recovered.append(run_id)
             continue
         status = _read_json(run_root(run_id) / "status.json", {}) or {}
@@ -4607,14 +4706,15 @@ def cmd_doctor(args):
             report += f"\n    {s['id'][:12]}  ralphd.run={s['runId']}"
         report += "\n  clean up with: docker rm -f <id>"
     if dangling:
-        report += "\n! registry entries recorded running with no matching container:"
+        report += "\n! registry entries recorded running with no live container:"
         for d in dangling:
-            report += f"\n    {d['runId']}  container={d['container']}"
+            report += (f"\n    {d['runId']}  container={d['container']} "
+                       f"({d.get('liveness')})")
             if auto_resume is not None and d["runId"] in auto_resume["resumed"]:
                 # already restarted by this very sweep -- printing the manual
                 # remedy here would be stale advice
-                report += ("\n      the container died or was removed outside "
-                           "ralphctl; auto-resumed (auto_resume enabled)")
+                report += (f"\n      {_dangling_phrase(d, 'why')}; "
+                           f"auto-resumed (auto_resume enabled)")
             else:
                 if auto_resume is not None:
                     if d["runId"] in auto_resume["skipped"]:
@@ -4631,7 +4731,7 @@ def cmd_doctor(args):
                     if d["runId"] in auto_resume["recovered"]:
                         report += ("\n      not auto-resumed: no longer "
                                    "dangling as of this sweep (finished, or "
-                                   "its container is back)")
+                                   "a container is running for it again)")
                     # Task 028: the crash-loop guard's two refusals, said out
                     # loud -- "nothing happened" must never be silent.
                     wait = next((w for w in auto_resume["waiting"]
@@ -4651,8 +4751,11 @@ def cmd_doctor(args):
                         report += f"\n      auto-resume FAILED: {err}"
                 # same remedy text `repair` prints for this run (task 025):
                 # one story, never two commands pointing different ways.
-                report += (f"\n      the container died or was removed outside "
-                           f"ralphctl; {_dangling_remedy(d['runId'])}")
+                # #31: and the same per-liveness explanation of what happened
+                # to the container, so doctor and repair cannot tell an
+                # operator two different things about one run.
+                report += (f"\n      {_dangling_phrase(d, 'why')}; "
+                           f"{_dangling_remedy(d['runId'])}")
     if auto_resume is not None:
         report += (f"\n! --fix: auto-resumed {len(auto_resume['resumed'])}, "
                    f"left {len(auto_resume['skipped'])} opted out, "
@@ -4734,24 +4837,33 @@ def _stray_sibling_containers() -> list[dict]:
 
 def _dangling_run_entry(run_id: str) -> dict | None:
     """THE dangling-container condition, in its single-run form: a run dir
-    whose status.json records a non-terminal state but whose container no
-    longer exists at all (crashed/removed outside ralphctl, e.g. `docker
-    rm -f` by hand). The reverse of `_stray_sibling_containers`.
+    whose status.json records a non-terminal state while **no container is
+    running** for it -- either none exists at all (crashed/removed outside
+    ralphctl, e.g. `docker rm -f` by hand) or one exists that has exited.
+    The reverse of `_stray_sibling_containers`.
 
-    One implementation, shared by `doctor`'s global report-only sweep
-    (`_dangling_registry_entries`) and `repair`'s per-run diagnosis (task
-    021) -- the two must never be able to disagree about whether a given
-    run is a zombie. Returns `{runId, container}` or None (not dangling:
-    either the recorded state is terminal, or a container by that name
-    still exists, running or exited)."""
+    Task 021 (#31) added the second half. Before it, the condition read `if
+    _container_running(name) is not None: return None`, i.e. "a container
+    record exists, so this run is fine" -- which is precisely what an engine
+    death leaves behind, so an exited-but-present container was reported as
+    healthy by all four callers (`cmd_status`, `_diagnose_dangling_container`,
+    `cmd_repair` and `_auto_resume_dangling`). Liveness comes from docker's
+    three states (`_container_liveness`), never from a field the dead engine
+    wrote; and the fix lives HERE rather than in the four callers, so they
+    cannot drift apart about what a zombie is.
+
+    Returns `{runId, container, liveness}` -- `liveness` is
+    `CONTAINER_ABSENT` or `CONTAINER_EXITED`, which is what lets each surface
+    word the two shapes differently without re-asking docker -- or None (not
+    dangling: the recorded state is terminal, or a container is running)."""
     status = _read_json(run_root(run_id) / "status.json", {})
     if status.get("state") not in _NONTERMINAL_STATUS_STATES:
         return None
     name = job_container_name(run_id)
-    if _container_running(name) is not None:
+    liveness = _container_liveness(name)
+    if liveness == CONTAINER_RUNNING:
         return None
-    return {"runId": run_id, "container": name}
-
+    return {"runId": run_id, "container": name, "liveness": liveness}
 
 def _dangling_registry_entries() -> list[dict]:
     """Every run in the registry matching `_dangling_run_entry`."""

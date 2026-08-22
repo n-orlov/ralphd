@@ -214,9 +214,13 @@ def test_status_of_a_terminal_unreachable_run_is_unchanged(ctl: Ctl):
     assert "sinceLastUpdateSeconds" not in doc
 
 
-def test_status_of_a_run_whose_container_exists_but_exited_is_unchanged(ctl: Ctl):
-    """The container still exists (exited): not the vanished-container
-    condition doctor/repair report, so status must not claim it is gone."""
+def test_status_of_a_run_whose_container_exists_but_exited_is_dangling(ctl: Ctl):
+    """Task 021 (#31) retargeted this test: an exited-but-present container is
+    a dangling run too (nothing is running for it), so status warns and stops
+    showing a growing `elapsed`. The wording is the exited one -- the
+    container is still there for `docker logs` -- and `containerGone` keeps
+    its narrower vanished-only meaning. Per-surface coverage lives in
+    tests/test_cli_exited_container_dangling.py."""
     _seed_status(ctl, "tst-exited", updatedAt=utc_from_epoch(time.time() - 60))
     res = ctl.run("status", "tst-exited", env={
         "STUB_DOCKER_CONTAINERS": "ralphd-tst-exited",
@@ -224,7 +228,16 @@ def test_status_of_a_run_whose_container_exists_but_exited_is_unchanged(ctl: Ctl
     })
     assert res.returncode == 0, res.stderr
     assert "appears gone" not in res.stdout
-    assert "(elapsed)" in res.stdout
+    assert "still exists but has exited" in res.stdout
+    assert "(since last update)" in res.stdout
+    assert "(elapsed)" not in res.stdout
+    doc = json.loads(ctl.run("--json", "status", "tst-exited", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-exited",
+        "STUB_DOCKER_RUNNING": "",
+    }).stdout)
+    assert doc["dangling"] is True
+    assert doc["containerGone"] is False
+    assert doc["containerLiveness"] == "exited"
 
 
 # --------------------------------------------------------------------------
