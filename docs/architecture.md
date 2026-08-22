@@ -133,6 +133,18 @@ the job can reach a terminal verdict. The record is purely a derived cache, neve
 edited by the agent (unlike `tasks.json`) and rebuildable in principle by rescanning
 iteration `meta.json` files for `verifyOutcome: "pass"`.
 
+**The quiet gate is a warning (task 026, #29's carried-forward suggestion).** The
+same record is also the single point of failure: if it claims a completed task is
+already verified, `pending_verify` computes empty and the engine keeps running
+worker iterations, which from outside is indistinguishable from a run with
+nothing left to verify (#29 was silent for 17 iterations of a real run). The
+first worker iteration that finds the gate empty while some currently-`completed`
+task was never verified by this process therefore emits one `log` event at level
+`warning` (`LoopSupervisor._warn_if_verify_gate_empty()`), naming the task ids
+and the approach, once per engine process rather than per iteration. A legitimate
+resume looks the same, so the message names both explanations rather than
+claiming a bug.
+
 A verify iteration that errors out mid-stream (agent/provider failure -- e.g. a
 Bedrock 502 -- surfaced as an assistant `message_end` with `stopReason: "error"`)
 before ever emitting the `<task-verified>{id}</task-verified>` sentinel is an
