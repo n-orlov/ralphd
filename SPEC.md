@@ -748,7 +748,8 @@ directory — but two kinds are refunded and never charged: an attempt retried
 after a fault `classify_fault()` scored as `infra`, and an off-budget grace
 review (`_maybe_grace_review()`). `status.json`'s `iterationsUsed` publishes raw
 attempts minus infra refunds, so a refund an operator was shown is never quietly
-re-charged.
+re-charged. Both counters are persisted as `iterationsRefunded` and seeded back
+on the next engine process (§8.4), so neither is a resume, either.
 
 The per-iteration timeout is clamped by what is left of the deadline:
 
@@ -930,6 +931,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `phase` | string \| null | the phase running now; `null` between phases and once terminal |
 | `iteration` | int | the current (raw) iteration number |
 | `iterationsUsed` | int | charged iterations: raw attempts minus infra refunds |
+| `iterationsRefunded` | object | the run's earned refunds, `{infra, grace}` — the counters `budget_left()` subtracts, persisted here so they survive a resume (§8.4); absent (read as zeroes) until the run earns its first refund |
 | `iterationsBudget` | int | the current iteration budget, including in-flight top-ups |
 | `currentIteration` | object \| null | `{number, phase, model, startedAt}` while an iteration runs, or `{phase, note}` while retrying after an infra fault; `null` otherwise |
 | `approach` | int | the approach running now |
@@ -2091,6 +2093,25 @@ costs the job an iteration — while `iterations_used` itself keeps rising, so
 every attempt still gets its own iteration directory, number and transcript on
 disk. `status.json`'s `iterationsUsed` publishes the charged figure
 (`iterations_used - _infra_refunded`).
+
+**Refunds survive a resume** (task 023, #32). `_refund_iteration()` is the one
+place that bumps either counter, and it writes both to `status.json` as
+`iterationsRefunded: {infra, grace}` in the same breath — an outage retry is
+precisely when a run is most likely to be killed and resumed. A new engine
+process seeds the counters back from that field (`_seed_refunds()`), clamped
+into `[0, iterations_used]`. The alternative the PRD allowed — seeding
+`iterations_used` from a charged count instead — is deliberately **not** taken:
+that counter is also the number of the next iteration directory, so a resumed
+engine would reuse a number a *finished* iteration already holds and
+`begin_iteration_dir()` (§4.2) would archive a completed record as a crashed
+attempt. What is discounted is the budget comparison, never the numbering.
+Refunds also cannot be re-derived from the iteration dirs afterwards: a grace
+review is refunded and carries no `infra` faultClass at all.
+
+*Residual limitation, deliberately unchanged:* `_grace_review_granted` (the
+"one grace review per approach" guard, §4.5) is still per-process, so a resumed
+engine may grant one more — the refund is a budget fact that has to survive, the
+guard is a policy whose resume behaviour predates #32 and is not part of it.
 
 The backoff is `infra_retry_backoff_s`, defaulting to
 `DEFAULT_INFRA_RETRY_BACKOFF_S` in `src/ralphd/engine/config.py`:

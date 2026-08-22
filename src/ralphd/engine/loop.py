@@ -141,7 +141,10 @@ class LoopSupervisor:
         # so a hung/broken-endpoint retry never costs the job an iteration,
         # while self.iterations_used itself keeps monotonically increasing
         # (so every attempt still gets its own iteration directory/number).
-        self._infra_refunded = 0
+        # Task 023 (#32): seeded from status.json, not from 0 -- see
+        # _seed_refunds() for why the counters are persisted rather than
+        # folded into the iterations_used seed above.
+        self._infra_refunded, self._grace_refunded = self._seed_refunds()
         # Task 008 (#5): the *episode clock* driving infra retries. One
         # "episode" is one continuous outage: consecutive infra-classified
         # attempts with no iteration reaching the model in between. Retries
@@ -154,11 +157,12 @@ class LoopSupervisor:
         self._infra_episode_waited_s = 0.0
         self._infra_episode_started_at: float | None = None
         # Task 002: at most one grace review per approach (set of approach
-        # numbers that have already had one), and a matching refund counter
-        # (same mechanism as _infra_refunded) so a grace review never counts
-        # against the job's iteration budget.
+        # numbers that have already had one); its refund counter uses the same
+        # mechanism as _infra_refunded (and, since task 023/#32, the same
+        # persistence) so a grace review never counts against the job's
+        # iteration budget. The *granted* set itself is deliberately still
+        # per-process: see _seed_refunds().
         self._grace_review_granted: set[int] = set()
-        self._grace_refunded = 0
         # Descriptive note for the terminal `reason` when a grace review ran
         # but did NOT result in a VERIFIED verdict -- kept separate from
         # self._abort_reason so the terminal `state` (aborted vs failed)
@@ -187,6 +191,80 @@ class LoopSupervisor:
         # written) exactly once, on the iteration that proves the endpoint is
         # back, instead of on every non-infra result of a healthy run.
         self._infra_degraded = False
+
+    # -- refund bookkeeping (task 023, #32) --------------------------------
+    REFUND_KINDS = ("infra", "grace")
+
+    def _seed_refunds(self) -> tuple[int, int]:
+        """The refunds this run has ALREADY earned, read back from
+        status.json's `iterationsRefunded` as `(infra, grace)` -- `(0, 0)` for
+        a fresh run dir or any run dir written before this field existed.
+
+        Task 023 (#32). Both counters used to start at 0 on every engine
+        process while `iterations_used` was seeded from the *raw*
+        `max_iteration_number()`, so every `ralphctl resume` (and every
+        auto-resume after a crash) silently re-charged the refunds earned
+        before it: `selfdev-v06-release` earned 27 infra refunds and kept 10.
+        A guarantee that expires at the next resume is not a guarantee.
+
+        DECISION -- persist the counters; do NOT seed `iterations_used` from a
+        charged count (the PRD allows either). `iterations_used` has two jobs:
+        it is the budget tally *and* the number of the next iteration
+        directory, and only the first may be discounted. Seeding it from the
+        charged count would hand a resumed engine a number a FINISHED
+        iteration already occupies -- `begin_iteration_dir()` (task 019, #44)
+        would then archive a completed record as though it were a crashed
+        attempt, and two different iterations would share one number in the
+        merged transcript and every `iterations/NNNN` URL. Refunds are also
+        decisions this engine made per attempt and cannot be re-derived from
+        the iteration dirs: a grace review is refunded and carries no `infra`
+        faultClass at all, and `iterationsUsed` alone cannot say which of the
+        two counters a discount came from (grace refunds are deliberately not
+        subtracted from it, see _run_iteration_once).
+
+        Deliberately NOT persisted: `_grace_review_granted`. The refund is a
+        budget fact that must survive; "this approach already had its one
+        grace review" is a per-process guard whose resume behaviour predates
+        this task and is unchanged by it (a resumed engine may still grant
+        one more) -- SPEC 8.4 records it as a residual limitation rather than
+        having this task quietly change two contracts at once.
+
+        Values are clamped into `[0, iterations_used]` (and their sum to
+        iterations_used) so a hand-edited or truncated status file can never
+        make `budget_left()`'s charged count negative and hand a run an
+        unbounded budget.
+        """
+        recorded = self.run.read_status().get("iterationsRefunded")
+        if not isinstance(recorded, dict):
+            return 0, 0
+        counts = []
+        for kind in self.REFUND_KINDS:
+            try:
+                value = int(recorded.get(kind) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            counts.append(max(0, min(value, self.iterations_used)))
+        infra, grace = counts
+        if infra + grace > self.iterations_used:
+            grace = max(0, self.iterations_used - infra)
+        return infra, grace
+
+    def _refund_iteration(self, kind: str) -> None:
+        """Refund the attempt that just finished: bump the counter
+        `budget_left()` subtracts and write both counters to status.json in
+        the same breath (task 023, #32), so the credit is on disk before the
+        engine does anything that could kill it -- an outage retry is exactly
+        the moment a run is most likely to be killed and resumed.
+        """
+        if kind == "infra":
+            self._infra_refunded += 1
+        elif kind == "grace":
+            self._grace_refunded += 1
+        else:  # pragma: no cover - programming error
+            raise ValueError(f"unknown refund kind: {kind}")
+        self.run.update_status(
+            iterationsRefunded={"infra": self._infra_refunded,
+                                "grace": self._grace_refunded})
 
     # -- control surface (called from API) --------------------------------
     @property
@@ -673,7 +751,7 @@ class LoopSupervisor:
             # that diagnosis.
             broken_env = self._check_instant_failure(result, self.iterations_used)
 
-            self._infra_refunded += 1
+            self._refund_iteration("infra")
             if self._infra_episode_started_at is None:
                 self._infra_episode_started_at = time.monotonic()
             self._infra_episode_attempts += 1
@@ -1959,8 +2037,9 @@ class LoopSupervisor:
         review = await self.run_iteration(
             "review", extra=self._flagged_criteria_review_context())
         # Off-budget: this attempt must never count against the job's
-        # iteration budget (same mechanism as the infra-retry refund).
-        self._grace_refunded += 1
+        # iteration budget (same mechanism, and since task 023/#32 the same
+        # persistence, as the infra-retry refund).
+        self._refund_iteration("grace")
         if review.saw_verified and not self.run.pending_steering():
             self.run.emit("signal", signal="VERIFIED")
             self.run.update_status(

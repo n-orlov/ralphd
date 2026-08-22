@@ -44,6 +44,14 @@ Notes worth keeping with the documents:
   300 budget, not the 155 raw iteration slots the log holds: the 10-slot
   difference is attempts classified as infrastructure faults, which are retried
   and refunded rather than charged to the budget (`iterationsUsed`, task 001a).
+  **That 145 is itself inflated**, by the defect issue #32 names: the refund
+  counters lived only in the engine process, so each of that run's resumes
+  restarted them at zero and re-charged what had already been credited. 27 of
+  its iterations faulted on infrastructure and only 10 refunds survived, so the
+  guarantee implies 128 charged, not 145. v0.7 fixes the mechanism (the counters
+  are persisted as `status.json`'s `iterationsRefunded` and seeded back on
+  resume) but not this row: the cell faithfully reports what the engine wrote,
+  and rewriting it would hide the defect instead of recording it.
   The outcome, honestly: every issue in the brief (#14–#22) is closed on GitHub
   with a closing comment (`artifacts/reports/issue-closure.md`),
   54 of the 55 planned tasks are `completed`, and one — `043d`, a whole-SPEC

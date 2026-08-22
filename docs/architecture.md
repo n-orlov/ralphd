@@ -314,7 +314,9 @@ increments `LoopSupervisor._infra_refunded`, which `budget_left()` subtracts
 from `iterations_used` — an infra retry never counts against the job's
 iteration budget (the attempt still gets its own iteration directory/number,
 since `iterations_used` itself keeps incrementing monotonically; only the
-*budget comparison* is adjusted). It also never touches
+*budget comparison* is adjusted), and since task 023 (#32) the counter is
+persisted in `status.json` (`iterationsRefunded`) and seeded back on resume
+instead of restarting at zero. It also never touches
 `_instant_failure_streak` or the worker loop's stagnation counter.
 
 **4. Surfacing.** Each attempt emits a `type: infra_retry` event
@@ -377,7 +379,10 @@ iteration itself increments `iterations_used` (gets its own iteration
 directory/number) exactly like any other iteration, but also increments
 `_grace_refunded`, which `budget_left()` subtracts alongside
 `_infra_refunded` — the same refund mechanism task 001a uses for
-infra-retry attempts — so it never counts against `cfg.iterations`. If the
+infra-retry attempts, persisted the same way (`iterationsRefunded`, #32) — so
+it never counts against `cfg.iterations`. The `_grace_review_granted` set
+itself stays per-process: a resumed engine may grant one more, which is why
+the *refund* is persisted and the *grant* is not. If the
 grace review comes back `VERIFIED` (and no operator steering is left
 pending unconsumed), the job goes terminal `succeeded`/`verified` with
 `status.json`'s `graceReview: true` and a `reason` stating the grace
@@ -1676,7 +1681,9 @@ false and those loops exit instead of re-charging the same outage.
   `budget_left()` subtracts from `iterations_used`: the attempt still gets
   its own iteration directory (numbering stays monotonic), but the *budget
   comparison* is adjusted. Approaches, the stagnation guard and
-  `validationAttempts` are untouched.
+  `validationAttempts` are untouched. Both refund counters are written to
+  `status.json` as `iterationsRefunded` as they are earned and seeded back by
+  the next engine process, so a resume cannot re-charge them (issue #32).
 - **Deadline extension** (task 011, #5). Waiting is not working time: every
   backoff wait adds its real seconds to `status.json`'s `infraWaitTotalS`
   and pushes both `self.deadline` and its published twin `deadlineAt` out by
