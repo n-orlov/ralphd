@@ -1112,6 +1112,7 @@ reconstruct the whole run, including its restarts.
 | `deadline_extended` | `phase`, `attempt`, `waitedS`, `infraWaitTotalS`, `deadlineAt`, `reason` | a finished wait pushed the deadline out |
 | `reflect_infra_delay` | `phase`, `delayS`, `error`, `budgetS` | reflect waits before its first attempt because the job just died on an infra fault |
 | `reflect_done` | `ok`, `error` | the reflect phase's verdict |
+| `reflect_tombstone_cleared` | `path` | a successful reflect attempt removed a stale `reflection/FAILED.md` left by an earlier one (§12.2) |
 | `reflect_skipped` | `attempted`, `signal`, `reason` | a signal was taking the engine down, so the reflect phase rendered no verdict (§8.4) |
 | `budget_changed` | `field`, `previous`, `iterations`, `delta`, `iterationsUsed`, `source` | the iteration budget was changed in flight |
 | `log` | `level`, `message` | anything the loop wants an operator to see: stagnation, batching violations, instant-failure streaks, abort diagnostics |
@@ -2155,7 +2156,12 @@ The outcome is recorded either way. `_record_reflect_outcome()` writes
 `reflect: {ok, error, endedAt}` into `status.json` and emits `reflect_done`; on
 failure it also writes `artifacts/reflection/FAILED.md` naming the error, the
 time, the run id and the terminal state, because a silently swallowed reflect
-failure is indistinguishable from `reflect` never having been enabled. "Ran but
+failure is indistinguishable from `reflect` never having been enabled. On
+**success** it removes that tombstone again (`_clear_reflect_tombstone()`,
+emitting `reflect_tombstone_cleared`): the file is written per attempt but the
+run dir outlives the attempt, so a failed episode's tombstone otherwise sits
+beside the next episode's report claiming the run left no post-mortem (§12.2).
+"Ran but
 produced no report" counts as failure: a missing
 `artifacts/reflection/report.md` is a reflect failure even on a clean exit,
 since the report on disk is the deliverable. Reflect can never rewrite the
@@ -2170,7 +2176,9 @@ instead `_record_reflect_not_attempted()` writes `reflect: {ok: null,
 attempted, skipped}`, emits `reflect_skipped`, spawns no iteration and
 deliberately writes **no** `FAILED.md`: the tombstone asserts the reflection was
 tried and failed, and a stopped run must not look like one whose post-mortem
-broke. `attempted: false` is the signal-before-the-phase case, `attempted: true`
+broke. It equally does not *remove* a tombstone an earlier attempt left: a
+signal that stopped this engine does not make that earlier failure untrue, and
+only a report on disk contradicts it. `attempted: false` is the signal-before-the-phase case, `attempted: true`
 the signal-mid-attempt one; `ok: null` is what keeps `ralphctl status` and the
 hub, which both gate on `ok === false`, from reporting a failure that did not
 happen (they print `reflection: not attempted (…)` instead). An *API* abort is
@@ -3545,7 +3553,7 @@ logs) in the artifacts directory". The only engine-written file under
 | --- | --- | --- |
 | `artifacts/reflection/report.md` | reflect iteration | the post-mortem; its existence is the reflect phase's success condition |
 | `artifacts/reflection/suggestions.diff` | reflect iteration | a unified diff of proposed prompt/skill edits, never applied |
-| `artifacts/reflection/FAILED.md` | engine | written only when the reflect phase produced no report |
+| `artifacts/reflection/FAILED.md` | engine | written only when the reflect phase produced no report, and removed again as soon as an attempt produces one (§12.2) |
 | `artifacts/reports/*.md` | agent | evidence the PRD asked for, ideally machine-checked (§12.3) |
 | `artifacts/screenshots/**` | agent | browser-driven verification of a UI change |
 | anything else | agent | logs, samples, gate records — free-form by design |
@@ -3633,6 +3641,21 @@ That is exactly why it needs its own surface, and it has one: `ralphctl status`
 prints a wrapped `reflection: failed (<error>)` line — and nothing at all for a
 successful or absent reflection — and the hub's run-detail card renders the same
 wording as a warning, not an error.
+
+**The tombstone is an assertion, so it only exists while it is true.** A run dir
+outlives the attempt that wrote `FAILED.md`: a run whose reflection failed, was
+resumed and reflected successfully the second time would otherwise end
+`succeeded / verified` with a file beside its report claiming the post-mortem
+never happened — and `terminal state: aborted (verdict unverified)` frozen from
+the earlier episode. So a *successful* attempt deletes it
+(`_clear_reflect_tombstone()`, one `reflect_tombstone_cleared` event, best
+effort — a read-only artifacts dir must not turn a good post-mortem into a
+crash). Deleting the file is also what retires the `reflect-failed` alias:
+`ralphctl artifacts <run> ls` derives its rows from the files on disk
+(`ARTIFACT_ALIASES`, §12.1), so there is no second piece of alias state to keep
+in sync, and `artifacts show reflect-failed` goes back to exiting non-zero.
+Only success falsifies a tombstone: the no-verdict path (§8.4, a signal taking
+the engine down) neither writes nor removes one.
 
 ### 12.3 Reports
 

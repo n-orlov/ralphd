@@ -284,6 +284,10 @@ finished. Then:
 carries the agent's error text (or `the reflect iteration wrote no
 artifacts/reflection/report.md` when it exited cleanly having written
 nothing) and `artifacts/reflection/FAILED.md` names the same error on disk.
+A successful attempt **removes** any `FAILED.md` an earlier attempt (of an
+earlier episode) left behind, emitting `reflect_tombstone_cleared`, so a
+fail → resume → succeed run never advertises a reflection failure it does not
+have — and `artifacts ls` stops offering the `reflect-failed` alias with it.
 A failed reflection **never** changes the run's `state`, `verdict` or
 `reason` — the job is already over when reflect runs. Surfaced by
 `ralphctl status` and the hub run-detail card, and emitted as a
@@ -302,6 +306,8 @@ child killer has already fired and `SIGKILL` is on its way.
 
 No iteration is spawned and **no `artifacts/reflection/FAILED.md` is written** —
 the tombstone means "the reflection was tried and failed", which here is false.
+An earlier attempt's tombstone is equally left alone on this path: the signal
+does not make that failure untrue, and only a report contradicts it.
 `attempted: true` with the same `ok: null` is the narrower case where the signal
 arrived *during* the attempt, so what the iteration returned describes the
 teardown rather than the reflection. `ok: null` keeps every consumer that gates
@@ -501,6 +507,7 @@ then follows. Event types:
 | `reflect_infra_delay` | the job ended on an infra-shaped failure, so the post-terminal `reflect` iteration waits before its first attempt instead of firing into the same dead endpoint: `delayS`, `error`, `budgetS` (reflect's own, capped, outage budget). Followed by an ordinary `infra_wait` with `attempt: 0` |
 | `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error` when it failed (same verdict as status.json's `reflect`) |
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
+| `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
 | `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"`, `previous`, `iterations` (new value), `delta`, `iterationsUsed`, `source: "api"` |
 

@@ -1366,6 +1366,12 @@ class LoopSupervisor:
     # endpoint and the run dir looked like reflect had never been enabled).
     REFLECT_REPORT = "report.md"
 
+    # The tombstone _record_reflect_outcome() leaves when the phase produced no
+    # report -- and, since task 017 (#43), removes again the moment an attempt
+    # finally does. It is an assertion ("the reflection was tried and left you
+    # nothing"), not a log line, so it may only exist while it is true.
+    REFLECT_TOMBSTONE = "FAILED.md"
+
     def _reflect_failure(self, result: IterationResult | None) -> str | None:
         """The reflect iteration's failure text, or None if it succeeded.
 
@@ -1404,6 +1410,14 @@ class LoopSupervisor:
 
         Never touches the terminal state, verdict or reason: reflect runs
         after the job is over and must not be able to rewrite how it ended.
+
+        Task 017 (#43): a *successful* attempt also removes any tombstone an
+        earlier one left behind (_clear_reflect_tombstone). Recording success
+        in status.json while leaving FAILED.md on disk is how
+        selfdev-v06-release ended up `succeeded / verified` with a file
+        claiming `terminal state: aborted (verdict unverified)` beside a
+        perfectly good report -- and with `reflect-failed` offered as an
+        artifact alias next to it.
         """
         error = self._reflect_failure(result)
         self.run.update_status(reflect={"ok": error is None, "error": error,
@@ -1411,13 +1425,14 @@ class LoopSupervisor:
         if error is None:
             log.info("reflect iteration wrote artifacts/reflection/%s",
                      self.REFLECT_REPORT)
+            self._clear_reflect_tombstone()
             self.run.emit("reflect_done", ok=True)
             return
         log.warning("reflect iteration failed: %s", error)
         outdir = self.run.artifacts_dir / "reflection"
         outdir.mkdir(parents=True, exist_ok=True)
         status = self.run.read_status()
-        (outdir / "FAILED.md").write_text(
+        (outdir / self.REFLECT_TOMBSTONE).write_text(
             "# Reflection failed\n\n"
             f"The post-terminal `reflect` iteration did not produce a report.\n\n"
             f"- error: {error}\n"
@@ -1430,6 +1445,44 @@ class LoopSupervisor:
             "transcript, and `infra_wait`/`infra_retry` events for the retries\n"
             "that were already spent on it.\n")
         self.run.emit("reflect_done", ok=False, error=error)
+
+    def _clear_reflect_tombstone(self) -> bool:
+        """Removes a stale artifacts/reflection/FAILED.md, returning whether
+        there was one (task 017, #43).
+
+        Called on the ONE path where the tombstone's claim has just become
+        false: an attempt that ran to completion and left a report. The
+        tombstone is written per attempt but the run dir outlives the attempt,
+        so a failed episode's file otherwise sits beside the next episode's
+        report forever -- and `artifacts ls` derives its rows from the files on
+        disk, so removing it is also what retires the `reflect-failed` alias
+        (ARTIFACT_ALIASES, engine/state.py). No new alias state to keep in
+        sync: the file IS the claim.
+
+        Deliberately NOT done on the no-verdict path
+        (_record_reflect_not_attempted, task 016): a signal that stopped this
+        engine before it could reflect does not make an earlier attempt's
+        failure untrue, and there is no report to contradict it. Only a
+        success falsifies a tombstone.
+
+        Best effort: reflect runs while the job is already terminal, so a
+        read-only or vanished artifacts dir must not turn a successful
+        post-mortem into a crash.
+        """
+        stale = self.run.artifacts_dir / "reflection" / self.REFLECT_TOMBSTONE
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            log.warning("could not remove stale artifacts/reflection/%s: %s",
+                        self.REFLECT_TOMBSTONE, exc)
+            return False
+        log.info("removed the stale artifacts/reflection/%s tombstone left by "
+                 "an earlier reflect attempt", self.REFLECT_TOMBSTONE)
+        self.run.emit("reflect_tombstone_cleared",
+                      path=f"reflection/{self.REFLECT_TOMBSTONE}")
+        return True
 
     def _begin_reflect_retry_window(self) -> tuple[str | None, bool]:
         """Gives the post-terminal reflect iteration a real retry window
