@@ -50,6 +50,7 @@ from ..engine.state import (
     artifact,
     artifact_entries,
     artifact_names,
+    artifact_relpath,
     artifact_text,
     cost_breakdown,
     cost_breakdown_text,
@@ -88,7 +89,7 @@ from ..engine.state import (
 from ..log_merge import NO_TRANSCRIPT, iteration_numbers
 from ..log_merge import iteration_lines as _iteration_lines
 from ..log_merge import merged_lines as _merged_lines
-from . import image, llm_profiles, ui_server
+from . import image, llm_profiles, patch, ui_server
 from .log_render import FULL_BACKLOG_TAIL as _FULL_BACKLOG_TAIL
 from .log_render import _ansi
 from .log_render import new_render_state as _new_render_state
@@ -4374,6 +4375,150 @@ def cmd_artifacts(args):
                      else [NO_ARTIFACTS])]))
 
 
+# ------------------------------------------- the review-and-apply verb (041)
+# `artifacts/reflection/suggestions.diff` is what a finished run proposes about
+# the loop's own material, and until now nothing could apply it: the reflect
+# prompt forbids the agent from doing so (SPEC §16), and no host-side surface
+# could either, so v0.6's diff became eight hand-typed issues. This verb is the
+# operator's half of that loop -- and its whole safety property is that
+# **nothing is written unseen**: every invocation prints the diff and the plan
+# first, and only `apply --yes` goes on to write. The matcher, the plan and the
+# single writer live in `cli/patch.py`; what is here is the run dir, the target
+# tree, the ordering and the exit codes.
+
+# The section headers of the verb's output. Spelled once, because the tests
+# assert the ORDER of these markers -- "was the diff shown before anything was
+# written" is exactly the property that cannot be checked against retyped
+# copies of the words.
+SUGGESTIONS_DIFF_HEADER = "--- the diff as proposed ---"
+SUGGESTIONS_PLAN_HEADER = "--- what it would touch ---"
+SUGGESTIONS_WROTE_HEADER = "--- what was written ---"
+
+# `apply` with no explicit act. Shown *after* the plan, so the run that stops
+# here is also the run that showed the operator what would happen.
+SUGGESTIONS_NEEDS_YES = (
+    "nothing written -- re-run the same command with `--yes` to apply this "
+    "plan")
+
+# A well-formed diff that does not fit the target tree. The per-hunk detail
+# (path, `@@` header, reason) comes from `patch.HunkFailure`, never from here.
+SUGGESTIONS_REFUSED = "refusing to apply a diff that does not fit the target"
+
+
+def _suggestions_target(args) -> Path:
+    """The tree a reflection diff is applied to.
+
+    Default: the ralphd checkout this `ralphctl` runs out of -- the tree whose
+    `src/ralphd/prompts/` the diff was written against and whose content hash
+    decides which image the *next* `start` builds and runs. A wheel/pipx
+    install has no such checkout (`image.source_root()` is None, and absence is
+    an answer there too), so it is a usage error rather than a guess.
+    """
+    if getattr(args, "target", None):
+        root = Path(args.target).expanduser()
+        if not root.is_dir():
+            die(2, f"--target is not a directory: {root}")
+        return root.resolve()
+    root = image.source_root()
+    if root is None:
+        die(2, "this ralphd install has no source checkout to apply a diff to "
+               "(no container/Dockerfile beside it -- the wheel/pipx case); "
+               "name the tree with --target")
+    return root
+
+
+def _suggestions_diff(run_id: str) -> dict:
+    """The run's `suggestions.diff` artifact entry, or exit 1 saying so."""
+    entry = artifact(run_root(run_id), "suggestions")
+    if entry is None or not entry["exists"]:
+        present = [e["path"] for e in artifact_entries(run_root(run_id))]
+        die(1, f"run {run_id} has no artifacts/{artifact_relpath('suggestions')}"
+               f" ({RUN_DOCUMENT_ABSENT}; on disk: "
+               f"{', '.join(present) if present else 'nothing'})")
+    return entry
+
+
+def cmd_suggestions(args):
+    """Show -- and, on an explicit act, apply -- a run's reflection diff
+    (task 041, requirement P).
+
+    `show` (the default) prints the diff and the exact list of files it would
+    touch, and writes nothing at all. `apply --yes` prints the same two things
+    *first* and then writes, all-or-nothing. A diff that does not fit the target
+    tree is refused with the file and the `@@` header of every hunk that failed,
+    exit 1 -- from `show` too, so the check is scriptable without a write path.
+
+    Applying edits the target *tree*, never a live run: a job runs the prompts
+    baked into its image, so the diff is picked up by the next `start`, which
+    builds a new image because the content hash moved. That is also why nothing
+    here talks to a container.
+    """
+    _require_run(args.run_id)
+    entry = _suggestions_diff(args.run_id)
+    root = _suggestions_target(args)
+    text = (run_root(args.run_id) / "artifacts"
+            / artifact_relpath("suggestions")).read_text()
+    try:
+        plan = patch.plan_text(root, text)
+    except patch.PatchError as e:
+        die(1, f"unreadable diff: {e}")
+    before = image.hash_image_inputs(root)
+    apply_it = args.action == "apply" and args.yes
+
+    lines = [f"run:       {args.run_id}",
+             f"diff:      artifacts/{entry['path']} "
+             f"({entry['bytes']} bytes)",
+             f"target:    {root}",
+             f"image:     {before.hash}",
+             SUGGESTIONS_DIFF_HEADER,
+             text if text.endswith("\n") else text + "\n",
+             SUGGESTIONS_PLAN_HEADER,
+             *patch.format_plan(plan)]
+    body = "\n".join(lines)
+    payload = {"runId": args.run_id, "diff": f"artifacts/{entry['path']}",
+               "target": str(root), "paths": list(plan.paths),
+               "applies": plan.ok,
+               "failures": [str(f) for f in plan.failures],
+               "imageHash": before.hash, "written": [], "applied": False}
+
+    if not plan.ok:
+        # Shown in full first (the operator needs the diff to understand the
+        # rejection), then refused on stderr with every failing hunk named.
+        out(args, payload, body)
+        die(1, SUGGESTIONS_REFUSED + ": "
+               + "; ".join(str(f) for f in plan.failures))
+    if not apply_it:
+        asked = args.action == "apply"
+        if asked:
+            payload["reason"] = SUGGESTIONS_NEEDS_YES
+        out(args, payload,
+            body + (f"\n{SUGGESTIONS_NEEDS_YES}" if asked else ""))
+        if asked:
+            # An `apply` that wrote nothing is not a success: the operator
+            # asked for a write and did not get one. Exit 2 (usage), after
+            # having shown exactly what the `--yes` would have done.
+            sys.exit(2)
+        return
+    # Shown first, written second: this ORDER is the verb's safety property,
+    # not a layout choice, so the diff and the plan go out (and are flushed)
+    # before the writer is called. `--json` is a single document by
+    # construction, so its plan necessarily lands after the write -- the way to
+    # inspect a plan beforehand there is `show` / `apply` without `--yes`.
+    if not args.json:
+        print(body, flush=True)
+    written = patch.apply_plan(plan)
+    after = image.hash_image_inputs(root)
+    payload.update(written=list(written), applied=True,
+                   imageHash=after.hash, imageHashBefore=before.hash)
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return
+    print("\n".join([SUGGESTIONS_WROTE_HEADER,
+                     *(f"wrote   {p}" for p in written),
+                     f"image:     {before.hash} -> {after.hash}  "
+                     "(the next `start` builds and runs it)"]))
+
+
 def cmd_ui(args):
     """Local hub HTTP server (PRD reqs 21-22): JSON endpoints reading the
     registry's run dirs and proxying live container APIs, plus (once task
@@ -5285,6 +5430,22 @@ def build_parser() -> argparse.ArgumentParser:
                         "path under artifacts/; with `pull`: the destination "
                         f"directory (default: {_DEFAULT_ARTIFACTS_DEST})")
     s.set_defaults(func=cmd_artifacts)
+
+    s = sub.add_parser("suggestions", help="show a run's reflection diff and "
+                       "what it would touch, and apply it to a checkout on "
+                       "an explicit --yes")
+    s.add_argument("run_id")
+    s.add_argument("action", choices=["show", "apply"], nargs="?",
+                   default="show")
+    s.add_argument("--target", default=None, metavar="DIR",
+                   help="the tree to plan/apply against (default: the ralphd "
+                        "checkout this ralphctl runs out of, whose content "
+                        "hash the next `start` builds from)")
+    s.add_argument("--yes", action="store_true",
+                   help="with `apply`: the explicit act that writes; without "
+                        "it `apply` shows the plan and exits 2 having written "
+                        "nothing")
+    s.set_defaults(func=cmd_suggestions)
 
     s = sub.add_parser("doctor", help="preflight checks")
     s.add_argument("--image", default=None, metavar="REF",

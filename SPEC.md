@@ -2904,6 +2904,7 @@ subcommand is mandatory.
 | `rm <id>` | delete a run's registry dir (`--force` stops a leftover container first) |
 | `repair <id>` | diagnose (or, guarded, patch) an inconsistent run dir |
 | `artifacts <id> …` | `ls`/`pull` the run's artifacts straight off disk |
+| `suggestions <id> …` | `show` a finished run's reflection diff and exactly what it would touch, and `apply` it to a checkout on an explicit `--yes` |
 | `doctor` | preflight the host, report strays and zombies, optionally recover |
 | `config get\|set` | registry-wide defaults in `<registry>/config.yaml` |
 | `ui` | serve the local web hub in the foreground (§11) |
@@ -3749,7 +3750,7 @@ logs) in the artifacts directory". The only engine-written file under
 | path | writer | content |
 | --- | --- | --- |
 | `artifacts/reflection/report.md` | reflect iteration | the post-mortem; its existence is the reflect phase's success condition |
-| `artifacts/reflection/suggestions.diff` | reflect iteration | a unified diff of proposed prompt/skill edits, never applied |
+| `artifacts/reflection/suggestions.diff` | reflect iteration | a unified diff of proposed prompt/skill edits, never applied by the loop — only ever by an operator's explicit `ralphctl suggestions <id> apply --yes` (§10.1) |
 | `artifacts/reflection/FAILED.md` | engine | written only when the reflect phase produced no report, and removed again as soon as an attempt produces one (§12.2) |
 | `artifacts/reports/*.md` | agent | evidence the PRD asked for, ideally machine-checked (§12.3) |
 | `artifacts/screenshots/**` | agent | browser-driven verification of a UI change |
@@ -3789,9 +3790,12 @@ the loop has reached a terminal state.
   didn't, and concrete suggestions for the loop's own material — plus, when it
   has a specific textual change to propose, a `suggestions.diff` beside it: a
   unified diff against the prompt or skill files. **The diff is a proposal,
-  never applied.** The prompt says so, and the value of the phase depends on it:
-  a loop that edits its own prompts mid-flight makes every later iteration
-  unreproducible.
+  never applied by the loop.** The prompt says so, and the value of the phase
+  depends on it: a loop that edits its own prompts mid-flight makes every later
+  iteration unreproducible. Applying it is an operator's act on a host checkout,
+  through `ralphctl suggestions <id> apply --yes` (§10.1), and it is the *next*
+  `start` that runs the result — the content hash moved, so a new image is
+  built.
 - **What it may touch.** The prompt's hard constraint is `artifacts/reflection/`
   and nothing else: not the workspace, not `tasks.json`, `status.json`,
   `notes.md`, `review-findings.md`, steering files, nor anything under
@@ -4389,13 +4393,18 @@ Genuinely unresolved, with the trade-off as it currently stands.
    secret manager) that the map could then safely use — a larger decision than
    this one.
 5. **Should the reflection diff ever be applied automatically?**
-   `suggestions.diff` is a proposal by construction: nothing applies it, and the
-   prompt forbids the agent from doing so. That keeps every run reproducible
-   against known prompt material, and it also makes the loop's self-improvement
-   depend entirely on an operator reading a diff. A review-and-apply verb would
-   close the gap without giving the loop write access to its own prompts
-   mid-flight, and would have to answer what happens when two runs propose
-   conflicting edits.
+   `suggestions.diff` is a proposal by construction: nothing in the loop applies
+   it, and the prompt forbids the agent from doing so. That keeps every run
+   reproducible against known prompt material. What it also did, until v0.7, was
+   make the loop's self-improvement depend entirely on an operator reading a diff
+   and retyping it. The **host-side review-and-apply verb** now closes that gap
+   without giving the loop write access to its own prompts mid-flight:
+   `ralphctl suggestions <id> [show|apply --yes]` (§10.1) plans a diff against a
+   checkout, shows it before writing anything, refuses what does not fit, and
+   leaves the *next* `start` to build the changed tree. Still open, and the
+   reason this entry stays here: automatic application (no), what happens when
+   two runs propose conflicting edits to the same prompt, and whether an
+   operator can take six of eight suggestions.
 
 ---
 

@@ -1607,7 +1607,7 @@ ralphctl artifacts <run-id> pull ./out/    # copy the tree out (default: ./artif
 | Name | Path | What it is |
 |------|------|------------|
 | `report` | `reflection/report.md` | the reflect phase's post-mortem report |
-| `suggestions` | `reflection/suggestions.diff` | the prompt/skill diff the reflect phase proposes (never applied) |
+| `suggestions` | `reflection/suggestions.diff` | the prompt/skill diff the reflect phase proposes (applied only by `ralphctl suggestions <run> apply --yes`) |
 | `reflect-failed` | `reflection/FAILED.md` | why the reflect phase left no report |
 
 `reflect-failed` is listed only while the file is on disk, and the engine
@@ -1628,7 +1628,7 @@ run:       brisk-otter-1408
 $ ralphctl artifacts brisk-otter-1408 show suggestions
 run:       brisk-otter-1408
 artifact:  reflection/suggestions.diff  (suggestions)
-purpose:   the prompt/skill diff the reflect phase proposes (never applied)
+purpose:   the prompt/skill diff the reflect phase proposes (applied only by `ralphctl suggestions <run> apply --yes`)
 size:      844 bytes
 --- reflection/suggestions.diff ---
 --- a/prompts/worker.md
@@ -1668,6 +1668,81 @@ size:      844 bytes
   `GET /api/runs/<id>/artifacts[/<path>]`) show the very same lines and the very
   same size cells — an artifact cannot be described as missing in one surface
   and empty in the other.
+
+### `ralphctl suggestions <run-id> [show|apply] [--target DIR] [--yes]`
+
+A finished run's reflect phase may leave `artifacts/reflection/suggestions.diff`:
+a unified diff proposing edits to the loop's own material (`src/ralphd/prompts/`,
+skills). Until v0.7 nothing could apply it — the reflect prompt forbids the
+agent from doing so, and no host-side surface could either — so a wave's
+self-improvement was an operator reading the diff and retyping it by hand. This
+verb closes that loop **without ever writing something unseen** (task 041,
+requirement P):
+
+```
+ralphctl suggestions <run-id>                    # same as `show`
+ralphctl suggestions <run-id> show               # the diff + what it would touch; writes nothing
+ralphctl suggestions <run-id> apply              # the same, then stops: nothing written (exit 2)
+ralphctl suggestions <run-id> apply --yes        # the same, then writes, all-or-nothing
+ralphctl suggestions <run-id> apply --yes --target ~/src/ralphd
+```
+
+```
+$ ralphctl suggestions brisk-otter-1408 apply --yes
+run:       brisk-otter-1408
+diff:      artifacts/reflection/suggestions.diff (13945 bytes)
+target:    /home/you/src/ralphd
+image:     5adb7924fa1b
+--- the diff as proposed ---
+--- a/src/ralphd/prompts/worker.md
++++ b/src/ralphd/prompts/worker.md
+@@ -50,7 +50,13 @@
+...
+--- what it would touch ---
+modify  src/ralphd/prompts/planning.md  (3 hunks)
+modify  src/ralphd/prompts/worker.md  (3 hunks)
+--- what was written ---
+wrote   src/ralphd/prompts/planning.md
+wrote   src/ralphd/prompts/worker.md
+image:     5adb7924fa1b -> 63644df115a2  (the next `start` builds and runs it)
+```
+
+- **Nothing is written unseen.** Every invocation prints the diff and the exact
+  list of files it would touch *before* anything is written — the write is the
+  last thing that happens, after the plan the operator is looking at. `apply`
+  with no `--yes` is therefore a dry run that ends in
+  `nothing written -- re-run the same command with --yes to apply this plan`
+  and exit `2`: an `apply` that wrote nothing is not reported as a success.
+- **The target is a checkout, never a live run.** A job runs the prompts baked
+  into its image, so applying a diff to the tree changes what the **next**
+  `start` builds: the content hash of `container/`, `pyproject.toml` and
+  `src/ralphd/` moves, and the human output shows it moving. The default target
+  is the ralphd checkout this `ralphctl` runs out of; a wheel/`pipx` install has
+  no checkout beside it, which is a usage error (`2`) naming `--target`, not a
+  guess.
+- **All-or-nothing, and a rejection names the hunk.** The matcher is
+  `ralphd.cli.patch` (no `git`/`patch` subprocess, no fuzz, no renames): a diff
+  whose context no longer matches is refused with one line per failing hunk —
+  the file, its `@@` header and why (`no such context anywhere in the file`, `the
+  change is already present in the file`, `the context appears N times, so its
+  position is ambiguous`, a missing file) — exit `1`, and **not one byte** of
+  even the hunks that did apply is written. `show` refuses the same way, so the
+  check is scriptable with no write path involved.
+- Re-running `apply --yes` on a diff that already landed is refused as `the
+  change is already present in the file` rather than applied twice.
+- **Purely on-disk**, like `ralphctl docs`/`artifacts`: the diff is a file in the
+  run dir and the target is a directory on this host, so this verb never talks
+  to a container or an API and works identically for a run whose container is
+  long gone.
+- `--json` prints `{runId, diff, target, paths, applies, failures, imageHash,
+  written, applied}` (plus `imageHashBefore` after a write, and `reason` for the
+  `apply`-without-`--yes` stop), so the plan can be inspected programmatically
+  before an operator decides.
+- Exit codes: `0` shown or applied · `1` no `suggestions.diff` in that run, an
+  unreadable diff (the message names the offending line), or a diff that does
+  not apply · `2` `apply` without `--yes`, a `--target` that is not a directory,
+  or no checkout to default to · `3` run not found. Pinned by
+  `tests/test_cli_suggestions_verb.py`.
 
 ### `ralphctl skills <run-id> [ls|get <name> <dest>|add <dir>|rm <name>]`
 

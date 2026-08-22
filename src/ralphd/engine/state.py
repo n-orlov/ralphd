@@ -1939,7 +1939,8 @@ ARTIFACT_ALIASES: tuple[tuple[str, str, str], ...] = (
     ("report", "reflection/report.md",
      "the reflect phase's post-mortem report"),
     ("suggestions", "reflection/suggestions.diff",
-     "the prompt/skill diff the reflect phase proposes (never applied)"),
+     "the prompt/skill diff the reflect phase proposes (applied only by "
+     "`ralphctl suggestions <run> apply --yes`)"),
     ("reflect-failed", "reflection/FAILED.md",
      "why the reflect phase left no report"),
 )
