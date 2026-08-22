@@ -47,7 +47,10 @@ budget exhausted or max_approaches reached ⇒ job fails (state preserved)
 Design invariants:
 
 - **The worker's word is never trusted.** `COMPLETE` only gates entry to review.
-  Only the reviewer's `VERIFIED` ends the job successfully.
+  Only the reviewer's `VERIFIED` ends the job successfully. Entry to review is the
+  *engine's* decision, not the worker's: it also happens on the off-budget grace
+  review and when a plan has nothing actionable left but a `failed` task in it
+  (below).
 - **Fresh context per iteration.** Each iteration is a new `pi` process; continuity
   flows exclusively through state files (below). This bounds context growth and makes
   every iteration resumable and interruptible.
@@ -192,6 +195,31 @@ MUST independently re-verify each listed task id against its current
 criteria text and state an explicit pass/fail conclusion per id before
 emitting `VERIFIED` -- a task's own exhausted `validationAttempts` (the
 `_verify_task` `>= 3` skip) never substitutes for this manual check.
+
+### The two meanings of `failed`, and why a `failed` task no longer strands a run (task 024, #33)
+
+`failed` on a task used to mean both "a verifier judged this requirement unmet"
+and "the engine consumed the last of this task's validation rounds". The engine
+now labels its own verdict: when `_verify_task()` sees `validationAttempts` reach
+`VALIDATION_ATTEMPT_LIMIT` it writes `failureKind: "validation-exhausted"` beside
+the status, and an agent's own `failed` reads as `requirement-unmet`.
+`state.task_failure_kind()` is the single reader and *derives* the kind for a
+`tasks.json` written before the label existed (at or past the limit ⇒
+exhausted), so an old plan still reads correctly.
+
+The vocabulary matters because of what a `failed` task used to do to a run:
+`worker.md`'s completion signal recognises only `completed` and `skipped`, so no
+`<promise>COMPLETE</promise>` was ever legitimate again, the run never reached
+review, and the stagnation guard eventually replanned the wave against a
+finished repo -- escapable only by an operator hand-editing `tasks.json`. The
+worker gets exactly one iteration to apply one of its two honest resolutions
+(carve the residual gap into a new task, or relabel `skipped` without claiming
+the criteria were met -- both change `tasks.json`, so both reset the stagnation
+counter); a worker that changes nothing hands the run to review instead:
+`LoopSupervisor._unresolved_failures()` reports the `failed` tasks of a plan with
+no actionable task left (`state.TASK_ACTIONABLE_STATUSES`), the loop emits a
+warning `log` event naming them and their kinds, and enters `review`. Entry only
+-- the reviewer still decides whether the run succeeded.
 
 ### No-progress escalation guard vs. instant startup/infra failures (task 059)
 
@@ -494,6 +522,7 @@ container and lets the CLI read state even when the container is dead.
       "successCriteria": "natural-language, independently checkable",
       "validationNotes": "present when validation-failed",
       "validationAttempts": 0,
+      "failureKind": "validation-exhausted|requirement-unmet, engine-written when failed",
       "dependsOn": ["000"],
       "priority": 0
     }

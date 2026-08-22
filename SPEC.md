@@ -124,7 +124,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R2** | **Operator-initiated termination is never undone.** An `abort`/`stop` is recorded durably (`operator-termination.json` in the run dir) and is authoritative over every automatic mechanism: `classify_fault(operator_abort=...)` can never call it `"infra"`, the backoff wrapper never re-runs the iteration the operator just stopped, and `doctor --fix` never auto-resumes such a run. | Otherwise a `SIGINT` — which `pi` reports as the bare in-band error `aborted`, textually identical to a provider aborting a stream — reads as a transient fault, and the run the operator deliberately killed sits in backoff or comes back as a fresh container. |
 | **R3** | **The run directory on the host is the source of truth and outlives the container.** `~/.ralphd/runs/<run-id>/` is *always* a bind-mount (at `/run/ralphd`); `status.json`/`tasks.json` are written temp-then-rename; every host-side surface — `status`, `logs`, `runs`, the hub, `repair` — falls back to reading that directory when the API is unreachable, and says so (`"live": false`) rather than erroring. | Otherwise the container's death takes the run's observability with it: 29,720 lines of on-disk transcript with an empty log tail in the UI, `tasks: (none)` next to a 25 KB `tasks.json`, and every post-mortem done by hand in `output.jsonl`. |
 | **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down instead records `reflect: {ok: null, attempted, skipped}` — no attempt, no tombstone (§8.4). | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
-| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's `<promise>COMPLETE</promise>` gates entry to review and nothing else; the job succeeds only on the reviewer's `<promise>VERIFIED</promise>`, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach. | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
+| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's `<promise>COMPLETE</promise>` gates entry to review and nothing else; the job succeeds only on the reviewer's `<promise>VERIFIED</promise>`, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach, and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
 | **R6** | **Secrets never reach disk or a transcript.** Credentials arrive as `<name>.env` files, are placed at `~/.creds/*.env` (mode `0600`) by the engine itself, and are never auto-exported into the agent's environment; only file *names* ever reach the run dir, the persisted job config, or a log line. On top of the prompt rule, redaction is **mechanical**: known secret values are scrubbed from `output.jsonl` at write time, from `events.jsonl` at emit time, and again as `GET /logs` serves. The redaction set is memory-only and no route returns it. | Otherwise one `cat` of a cred file, or one `docker inspect` of the engine container, writes a live token into host-visible history permanently — which prompt guidance alone demonstrably does not prevent. Persisting the redaction map to enable a second pass would put every secret on disk next to the transcript it protects, so that is forbidden too. |
 | **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, `--model-strategy cost-optimized` optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
 | **R8** | **The engine cannot be killed by the agent it supervises.** The job container carries `ralphd.role=job` alongside `ralphd.run=<run-id>`, siblings carry `ralphd.role=sibling`, and the container is told its own name via `RALPHD_SELF_CONTAINER_ID`. Every documented cleanup command — prompt, skill example, docs — is the two-filter, sibling-only form. | Otherwise the idiom ralphd itself teaches deletes the job container mid-iteration: that iteration's work and transcript are lost and the run dir is left non-terminal, which is exactly how a run becomes a zombie that `status` reports as healthy and still-running. |
@@ -586,7 +586,8 @@ narration: `_resume_point()` skips `planning` when the run dir already holds a
 `tasks.json` with tasks and at least one completed iteration, continuing the
 existing approach's worker loop; `planning` that produces no tasks abandons the
 approach; the `worker` loop runs while budget remains, ending on
-`<promise>COMPLETE</promise>`, on three consecutive iterations that changed
+`<promise>COMPLETE</promise>`, on a plan with nothing actionable left and at
+least one `failed` task (§5.3), on three consecutive iterations that changed
 nothing, or on exhaustion; `review` then decides the run.
 
 Prompt text resolves in one order: runtime overlay (written through the config
@@ -696,8 +697,8 @@ Task-failure bookkeeping, all in `_verify_task()`:
 |---|---|
 | sentinel emitted | task id added to `vigilant-verified.json`; `signal` event `taskVerified` |
 | verdict miss (a verifier ran to completion, no sentinel, no error) | `validationAttempts` incremented; `status` forced to `validation-failed` and a default `validationNotes` added if the verifier wrote none |
-| `validationAttempts` reaches 3 | `status` forced to `failed` |
-| task already at `validationAttempts >= 3` | verification skipped |
+| `validationAttempts` reaches `VALIDATION_ATTEMPT_LIMIT` (3) | `status` forced to `failed` **and** `failureKind` written as `validation-exhausted` (§5.3) |
+| task already at `validationAttempts >= VALIDATION_ATTEMPT_LIMIT` | verification skipped |
 | the verify iteration reached **no verdict at all** — an in-band agent/provider error, the full `iteration_timeout_s`, the startup-window watchdog, or a signal (`error_message` / `timed_out` / `no_traffic_timeout` / `interrupted`) | retried up to `MAX_VERIFY_ERROR_RETRIES` (3) **without** consuming a validation attempt; if no attempt ever reaches a verdict, `status`, `validationAttempts` and `validationNotes` are left byte-for-byte as they were |
 | no verify iteration ran at all (budget gone) | same: nothing observed, nothing recorded against the task |
 
@@ -1065,15 +1066,56 @@ its own bookkeeping fields to it.
 | `tasks[].successCriteria` | string | independently checkable, in natural language |
 | `tasks[].priority` | int | optional scheduler hint, missing means `0` |
 | `tasks[].dependsOn` | array | optional task ids that must be `completed` first |
-| `tasks[].validationAttempts` | int | failed verification verdicts so far; `3` forces `failed` |
+| `tasks[].validationAttempts` | int | failed verification verdicts so far; `VALIDATION_ATTEMPT_LIMIT` (3) forces `failed` |
 | `tasks[].validationNotes` | string | what the verifier observed |
+| `tasks[].failureKind` | string | engine-written on a `failed` task: `validation-exhausted` \| `requirement-unmet` (below) |
 | `tasks[].criteriaFingerprint` | string | engine-written sha256 of `successCriteria` |
 | `tasks[].criteriaEditedAfterValidationFailure` | bool | engine-written, sticky (§4.4) |
 
 The worker picks the first `validation-failed` task, else the first
 `in-progress` one, else the first `pending` task whose `dependsOn` are all
 `completed`, breaking ties by highest `priority` then list order. A plain
-linear plan omits both optional fields entirely.
+linear plan omits both optional fields entirely. Those three statuses —
+`TASK_ACTIONABLE_STATUSES` — are what "a worker iteration could still act on
+this" means, in one place; `completed`, `skipped` and `failed` are resolved as
+far as the worker loop is concerned, whether or not the requirement behind them
+was met.
+
+**The two meanings of `failed` (task 024, #33).** `failed` used to mean both
+"a verifier judged this requirement unmet" and "the engine consumed the last of
+this task's validation rounds", so a task record could not be read without a
+human explaining it. The distinction is *not* a sixth status — `skipped` already
+exists and every surface that counts statuses would have to learn one — but a
+single engine-written label beside it, `failureKind`, with two values:
+
+| `failureKind` | written when | means |
+|---|---|---|
+| `validation-exhausted` | `_verify_task()` sees `validationAttempts` reach `VALIDATION_ATTEMPT_LIMIT` (§4.4) | the validation rounds are used up; whether the requirement is met is *unknown* |
+| `requirement-unmet` | an agent marks a task `failed` itself | a judgement that the requirement was not met |
+
+`state.task_failure_kind()` is the one reader, and it is a function rather than a
+field read because of migration: a `tasks.json` written before this label existed
+has no such key, so the kind is **derived** from the evidence already on the
+record — at or past `VALIDATION_ATTEMPT_LIMIT` recorded rounds reads as
+`validation-exhausted` (the only way the engine itself ever wrote `failed`),
+anything else as `requirement-unmet`. An unrecognised value is read the same way,
+so a garbled label can neither crash a reader nor invent a third meaning.
+
+**Why the vocabulary is load-bearing: a `failed` task used to be able to strand a
+whole run.** `worker.md`'s completion signal recognises only `completed` and
+`skipped`, so with a `failed` task in the plan no `<promise>COMPLETE</promise>` is
+ever legitimate, the run never reaches `review`, and the stagnation guard
+eventually replans the wave against an already-finished repo — the `043d`
+incident, four iterations and two steering notes, resolved only by an operator
+hand-editing the record. The worker's two honest resolutions (carve the residual
+gap into a new task, or relabel `skipped` with a justification that does not
+claim the criteria were met) are in `worker.md`, and both change `tasks.json`. So
+the engine gives the worker exactly one iteration to apply one of them and then
+acts itself: `LoopSupervisor._unresolved_failures()` reports the `failed` tasks of
+a plan with nothing actionable left in it, and the worker loop routes to `review`
+— entry to review only, the reviewer still decides the verdict — instead of
+stagnating. Both kinds of `failed` route, because both block the worker's
+signal identically and the reviewer is the right judge of either.
 
 ```json
 {

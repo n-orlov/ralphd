@@ -25,14 +25,18 @@ from .llm import current_env
 from .pricing import resolve_pricing
 from .runner import IterationResult, PiRunner
 from .state import (
+    TASK_FAILURE_VALIDATION_EXHAUSTED,
     TERMINATION_CLASS_OPERATOR,
     TERMINATION_CLASS_SELF,
+    VALIDATION_ATTEMPT_LIMIT,
     RunDir,
     atomic_write_json,
     format_last_tool_call,
     last_tool_call,
     prd_path,
     record_operator_termination,
+    task_failure_kind,
+    task_is_actionable,
     utc_from_epoch,
     utcnow,
 )
@@ -1889,6 +1893,43 @@ class LoopSupervisor:
                     after = json.dumps(tasks_after, sort_keys=True)
                     stagnant = stagnant + 1 if (before == after and not result.saw_complete
                                                 and not result.interrupted) else 0
+                    blocked = self._unresolved_failures(tasks_after)
+                    if stagnant and blocked:
+                        # Task 024 (#33): the plan holds no task a worker
+                        # iteration could still pick up, and at least one is
+                        # `failed` -- so the worker CANNOT signal COMPLETE
+                        # (worker.md recognises only completed/skipped) and it
+                        # just spent a whole iteration without changing
+                        # tasks.json. Before this, the run sat here until the
+                        # stagnation guard failed the approach and the next one
+                        # replanned the whole wave against an already-finished
+                        # repo; the only escape was an operator editing the
+                        # record by hand (the `043d` incident). Route to review
+                        # instead: entry to review is the engine's decision, and
+                        # a verdict on work-with-a-hole is worth strictly more
+                        # than a replan. It is still only entry -- the reviewer
+                        # decides whether the run succeeded.
+                        #
+                        # Why gated on `stagnant` rather than firing the moment
+                        # a task fails: the worker's two legitimate resolutions
+                        # (carve the residual gap into a NEW task, or relabel
+                        # `skipped` with an honest justification -- worker.md's
+                        # completion-signal section) both need one iteration to
+                        # apply, and either one makes tasks.json change. So the
+                        # worker always gets that iteration; only a worker that
+                        # demonstrably did nothing with it hands the run to
+                        # review.
+                        names = ", ".join(
+                            f"{t['id']} ({task_failure_kind(t)})" for t in blocked)
+                        self.run.emit(
+                            "log", level="warning",
+                            message=(
+                                f"no task left for a worker iteration to act on "
+                                f"and {len(blocked)} failed: {names}; routing to "
+                                "review for a verdict rather than stagnating "
+                                "(task 024, #33)"))
+                        verdict_ready = True
+                        break
                     if stagnant >= 3:
                         self.run.emit("log", level="error",
                                       message="3 iterations with no task progress; "
@@ -1986,6 +2027,24 @@ class LoopSupervisor:
         status.json alone -- not just from combing steering/.consumed.json
         by hand. Empty list when nothing is stranded (the common case)."""
         return {"unconsumedSteering": [p.name for p in self.run.pending_steering()]}
+
+    def _unresolved_failures(self, tasks_doc: dict) -> list[dict]:
+        """The `failed` tasks of a plan that has nothing actionable left in it.
+
+        Empty (the normal case) whenever any task is still pending,
+        in-progress or validation-failed -- a worker iteration can act on those,
+        so the run is not blocked -- and empty for a plan that ended with no
+        `failed` task at all, where the worker's own COMPLETE signal is what
+        gates review (SPEC R5). Both kinds of `failed` count: a task the engine
+        marked `validation-exhausted` and one an agent marked
+        `requirement-unmet` block the worker's COMPLETE identically, and the
+        reviewer is the right judge of either. An empty/unreadable plan is never
+        blocked (`task_is_actionable` reads a status-less task as actionable).
+        """
+        tasks = tasks_doc.get("tasks") or []
+        if not tasks or any(task_is_actionable(t) for t in tasks):
+            return []
+        return [t for t in tasks if isinstance(t, dict) and task_failure_kind(t)]
 
     def _all_tasks_completed(self) -> bool:
         """True iff tasks.json exists, is non-empty, and every task's
@@ -2327,7 +2386,7 @@ class LoopSupervisor:
         """
         tid = task["id"]
         # Skip tasks that have already exhausted their verification budget
-        if task.get("validationAttempts", 0) >= 3:
+        if task.get("validationAttempts", 0) >= VALIDATION_ATTEMPT_LIMIT:
             log.warning("task %s already exhausted verification attempts; skipping", tid)
             return False
         title = task.get("title", "")
@@ -2444,10 +2503,22 @@ class LoopSupervisor:
                             "verdict: it did not emit the task-verified "
                             "sentinel."
                         )
-                if attempts >= 3:
+                if attempts >= VALIDATION_ATTEMPT_LIMIT:
+                    # Task 024 (#33): the engine forcing `failed` here means
+                    # ONE thing -- the validation rounds are used up -- and it
+                    # says so on the record, because the same status is also
+                    # what an agent writes when it judges a requirement
+                    # unmeetable. Without the label the two are indistinguish-
+                    # able to every later reader (operator, review prompt,
+                    # `ralphctl tasks`), and the run's routing (see
+                    # `_unresolved_failures`) would have to guess.
                     t["status"] = "failed"
-                    log.warning("task %s failed after %d verification attempts",
-                                tid, attempts)
+                    t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
+                    log.warning(
+                        "task %s consumed all %d validation attempts "
+                        "(failureKind=%s); this records the rounds spent, not "
+                        "a judgement that the requirement is unmeetable",
+                        tid, attempts, TASK_FAILURE_VALIDATION_EXHAUSTED)
                 break
         atomic_write_json(self.run.tasks_file, tasks_data)
         self._emit_task_changes()
