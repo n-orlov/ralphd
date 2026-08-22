@@ -305,7 +305,10 @@ def test_repair_reports_dangling_container_for_running_run(ctl: Ctl):
     doc = json.loads(res.stdout)
     assert doc["ok"] is False
     assert doc["dangling"] == {"runId": "tst-zombie",
-                              "container": "ralphd-tst-zombie"}
+                              "container": "ralphd-tst-zombie",
+                              # task 021 (#31): which of the two dangling
+                              # shapes this is -- nothing exists here
+                              "liveness": "absent"}
     joined = "\n".join(doc["issues"])
     assert "ralphd-tst-zombie no longer exists" in joined
     assert "'running'" in joined
@@ -342,19 +345,27 @@ def test_repair_terminal_run_without_container_is_not_dangling(ctl: Ctl):
     assert doc["issues"] == []
 
 
-def test_repair_running_run_with_exited_container_is_not_dangling(ctl: Ctl):
-    """The container still exists (exited), so it is not the vanished-
-    container condition doctor reports -- one story, one check."""
+def test_repair_running_run_with_exited_container_is_dangling(ctl: Ctl):
+    """Task 021 (#31) retargeted this test: an exited-but-present container
+    with a run dir recorded `running` IS the dangling condition (nothing is
+    running for that run), and repair must diagnose it instead of reporting
+    'no issues found'. The wording says it exited rather than claiming it
+    vanished; the exhaustive per-surface coverage lives in
+    tests/test_cli_exited_container_dangling.py."""
     rdir, _cdir = _seed_run(ctl, "tst-exited")
     (rdir / "status.json").write_text(json.dumps({"state": "running"}))
     res = ctl.run("--json", "repair", "tst-exited", env={
         "STUB_DOCKER_CONTAINERS": "ralphd-tst-exited",
         "STUB_DOCKER_RUNNING": "",
     })
-    assert res.returncode == 0, res.stderr
+    assert res.returncode == 1, res.stderr
     doc = json.loads(res.stdout)
-    assert doc["dangling"] is None
-    assert doc["issues"] == []
+    assert doc["dangling"] == {"runId": "tst-exited",
+                               "container": "ralphd-tst-exited",
+                               "liveness": "exited"}
+    joined = "\n".join(doc["issues"])
+    assert "ralphd-tst-exited exists but has exited" in joined
+    assert "no longer exists" not in joined
 
 
 def test_repair_still_refuses_dangling_check_on_live_container(ctl: Ctl):
@@ -446,7 +457,9 @@ def test_doctor_and_repair_recommend_the_same_next_command(ctl: Ctl):
     repair_cmds = _ralphctl_commands(repair.stdout)
     doctor_cmds = _ralphctl_commands(
         # only the dangling block, so unrelated doctor advice can't leak in
-        doctor.stdout.split("no matching container:")[1])
+        # (task 021/#31 reworded the header: the condition is "no *live*
+        # container", which now also covers an exited one)
+        doctor.stdout.split("no live container:")[1])
     assert repair_cmds, repair.stdout
     assert doctor_cmds, doctor.stdout
     # same first recommendation, naming this run (never a `<run-id>` stub)

@@ -502,11 +502,17 @@ fields (nothing existing is removed or renamed): a top-level `durationSeconds`
 (elapsed-so-far or total, numeric seconds, same rule as the human line above),
 and, when `currentIteration` is present, an `elapsedSeconds` field nested
 inside it for that iteration's own elapsed time. Task 022 adds
-`containerGone` (always present: `true` only for the vanished-container case
-described under `container:` below) and, for such a run, a
-`sinceLastUpdateSeconds` field; `durationSeconds` and
-`currentIteration.elapsedSeconds` are then measured to the last `status.json`
-write instead of to *now*, so they stop growing for a run that stopped.
+`containerGone` and, for such a run, a `sinceLastUpdateSeconds` field;
+`durationSeconds` and `currentIteration.elapsedSeconds` are then measured to
+the last `status.json` write instead of to *now*, so they stop growing for a
+run that stopped. Task 021 (issue #31) adds the two fields the widened
+dangling condition needs: `dangling` (always present — `true` for **either**
+dangling shape: no container at all, or one that exists and has exited) and
+`containerLiveness` (`"absent"`, `"exited"`, or `null` when the run is live or
+not dangling). `containerGone` keeps its original narrower meaning — `true`
+only for the vanished-container case — so a machine consumer written against
+v0.6 reads the same value it always did; `dangling` is the field to ask about
+the condition `doctor`/`repair`/auto-resume act on.
 
 A terminal run (`succeeded`/`failed`/`aborted`) also carries an
 `unconsumedSteering` field: a list of steering filenames that were still
@@ -619,7 +625,7 @@ Human output also renders (task 003):
   recorded (a pre-v0.7 run dir), still print nothing.
 - `container:` (task 022, issue #8) -- shown only for an **unreachable** run
   whose status.json still records a non-terminal state (`starting`/`running`)
-  while no container by that name exists at all: the zombie condition
+  while **no container is running** for it: the zombie condition
   `ralphctl doctor`/`repair` report. Printed right under the `state:` line
   (bold red on a TTY) so the operator does not have to join `state: running`
   with `(live api: False)` themselves:
@@ -630,13 +636,22 @@ Human output also renders (task 003):
              state; diagnose with `ralphctl repair myrun`
   ```
 
+  Task 021 (issue #31) words the second dangling shape apart, because an
+  exited container is still there to be inspected (`docker logs`) while a
+  vanished one is not:
+
+  ```
+  container: ralphd-myrun still exists but has exited (nothing is running in it) -- status.json still
+             records state 'running', so this run stopped without recording a terminal
+             state; diagnose with `ralphctl repair myrun`
+  ```
+
   For such a run the `duration:` line stops showing an ever-growing
   `(elapsed)` value -- nothing is elapsing -- and instead shows the
   **staleness**: the time since the last `status.json` write, labelled
   `(since last update)`. Any `iteration elapsed:` line is frozen at that same
-  last write (`, at last update`). A run whose container still *exists*
-  (merely exited) and every live or terminal run print none of this, keeping
-  their output unchanged.
+  last write (`, at last update`). Every live or terminal run prints none of
+  this, keeping its output unchanged.
 - `auto-resume:` (task 028, issue #8) -- shown only when the auto-resume
   crash-loop guard has **given up** on this run (the run dir's
   `auto-resume.json` records `gaveUp: true`, see `doctor --fix` below):
@@ -1468,8 +1483,10 @@ own; that's what the (separate, guarded) `--set-state`/`--env` flags are
 for.
 
 It also checks the **dangling-container condition** (task 021): a run whose
-`status.json` records a non-terminal state (`starting`/`running`) but whose
-container no longer exists at all. This is the same check `doctor` reports
+`status.json` records a non-terminal state (`starting`/`running`) while no
+container is running for it -- either none exists at all, or one exists and
+has **exited** (issue #31: liveness has three states, and the exited one is
+what an engine death leaves behind). This is the same check `doctor` reports
 globally as `danglingRegistryEntries` (one implementation, shared), so the
 two can never disagree; the *remedy* is shared too (task 025, one string in
 one place), so both commands tell **one story** for the same run:
@@ -1483,8 +1500,10 @@ one place), so both commands tell **one story** for the same run:
    recording a `reason` naming the vanished container.
 
 `repair` prints that remedy as part of the issue text, plus a `dangling`
-field (`{runId, container}` or `null`) in `--json`. A run whose container
-merely *exited* (it still exists) is not this condition.
+field (`{runId, container, liveness}` or `null`) in `--json`, where
+`liveness` is `"absent"` (no such container) or `"exited"` (it is still
+there, stopped) -- the issue text is worded per shape, since where to look
+for the cause differs even though the remedy does not.
 
 - Refuses to touch a run whose container is currently running (a live
   engine already owns that run dir's on-disk state) -- exit `5`, nothing
@@ -1509,9 +1528,11 @@ recognized-state list diagnosis checks (`starting`, `running`, `succeeded`,
 `failed`, `aborted`) and after the same refuse-while-running check. Every
 other field in `status.json` is left untouched -- except that when the run
 was in fact a zombie (the dangling-container condition above), a `reason`
-is written alongside the new state saying the container no longer exists
-(died or was removed outside `ralphctl`), so the terminal state on disk
-explains itself; for an already-terminal run no such reason is invented.
+is written alongside the new state naming the container and what happened to
+it -- it no longer exists (died or was removed outside `ralphctl`), or it
+exists and has exited without the engine recording a terminal state -- so the
+terminal state on disk explains itself; for an already-terminal run no such
+reason is invented.
 `--json` prints `{"runId", "action": "set-state", "old", "new", "reason"}`
 (`reason` is `null` when nothing vanished); the audit event
 (`type: repair`, `action: "set-state"`) records the `old`/`new` state
@@ -2005,9 +2026,11 @@ Two dangling-container checks, in both directions — always **non-fatal**
   run dir at all (leftovers from `--allow-docker` jobs that were never
   reaped, or a manually deleted run dir).
 - `danglingRegistryEntries` — the reverse: a run dir whose `status.json`
-  records a non-terminal state (`starting`/`running`) but whose container no
-  longer exists at all (killed or `docker rm`'d outside `ralphctl`).
-  Reported as `{runId, container}`; the human report prints the **shared
+  records a non-terminal state (`starting`/`running`) while no container is
+  running for it — either none exists at all (killed or `docker rm`'d outside
+  `ralphctl`) or one exists that has **exited** (issue #31).
+  Reported as `{runId, container, liveness}` (`liveness`: `"absent"` or
+  `"exited"`); the human report prints the **shared
   remedy line** described under `repair` below (task 025) — resume first,
   `repair --set-state aborted` as the alternative — naming the actual run
   id, so `doctor` and `repair` can never recommend different next commands
@@ -2015,8 +2038,8 @@ Two dangling-container checks, in both directions — always **non-fatal**
   per-run dangling-container diagnosis.
 
   ```
-  ! registry entries recorded running with no matching container:
-      myrun  container=ralphd-myrun
+  ! registry entries recorded running with no live container:
+      myrun  container=ralphd-myrun (absent)
         the container died or was removed outside ralphctl; continue it with `ralphctl resume myrun`, or record it as over with `ralphctl repair myrun --set-state aborted` (writes a reason naming the vanished container)
   ```
 

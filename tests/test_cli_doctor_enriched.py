@@ -146,7 +146,9 @@ def test_doctor_dangling_registry_entry_reported_non_fatal(ctl):
     env = {**_base_env(), "STUB_DOCKER_CONTAINERS": "some-other-container"}
     doc = ctl.doctor(env=env)
     assert doc["danglingRegistryEntries"] == [
-        {"runId": "orphaned-run", "container": "ralphd-orphaned-run"}]
+        {"runId": "orphaned-run", "container": "ralphd-orphaned-run",
+         # task 021 (#31): each entry names which dangling shape it is
+         "liveness": "absent"}]
     assert doc["ok"] == all(doc["checks"].values())
 
 
