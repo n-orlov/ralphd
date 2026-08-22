@@ -465,7 +465,8 @@ container and lets the CLI read state even when the container is dead.
 │   └── 0007/
 │       ├── meta.json   # phase, model, start/end, exit code, signal seen, usage
 │       ├── prompt.md   # the exact prompt this iteration was given
-│       └── output.jsonl# full agent transcript (pi session log)
+│       ├── output.jsonl# full agent transcript (pi session log)
+│       └── attempts/01/# an earlier, crashed attempt at this same number (#44)
 ├── approaches/         # archived tasks.json/notes.md per finished approach
 ├── artifacts/          # anything the agent is told to persist (reports, screenshots)
 └── events.jsonl        # append-only event log (also fed to the SSE stream)
@@ -795,6 +796,16 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   with `N` completed iterations already on disk, the very next iteration is
   numbered `N+1`. This one seed is what makes numbering monotonic across
   restarts with no other change needed.
+- **The crashed attempt survives the reuse (#44).** Reusing the *number* must
+  not mean overwriting the *record*: `RunDir.begin_iteration_dir()` moves
+  everything the dead attempt left in that slot into
+  `iterations/<NNNN>/attempts/<NN>/` (oldest first, mirroring
+  `approaches/<NN>/`) before the resumed attempt writes, emits one
+  `iteration.attempt_archived` event, and surfaces the count as
+  `archivedAttempts` on the iteration-detail views. The archive is never read
+  as an iteration of its own -- not by the numbering seed, not by the budget,
+  not by the transcript merge -- so a resume that preserves evidence cannot
+  inflate what the run is charged for.
 - **Skipping planning.** `LoopSupervisor._resume_point()` decides where
   `run_job()` starts: if `tasks.json` already has tasks *and* at least one
   completed iteration is on disk, it resumes the approach recorded in

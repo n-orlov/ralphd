@@ -911,7 +911,18 @@ class LoopSupervisor:
         # ends the whole run, stays recorded in _abort_reason).
         self._operator_interrupted = False
         self.iterations_used = n
-        itdir = self.run.iteration_dir(n)
+        # Task 019 (#44): NOT `iteration_dir(n)` -- a resumed engine reuses the
+        # number of a slot whose engine was killed mid-iteration, so anything
+        # that attempt left there is archived to `attempts/NN/` before this one
+        # writes. Interaction with task 023 (#32, seeding iterations_used from a
+        # CHARGED count rather than the raw max_iteration_number()): that task
+        # changes which NUMBER comes next, not what a slot holds, and the two
+        # compose either way -- if the crashed attempt stops being re-charged,
+        # its number is reused and its files land in `attempts/`; if it stays
+        # charged, the next attempt takes a fresh number and archives nothing.
+        # Neither seed may read `attempts/` as an iteration: they are records of
+        # one, not extra ones.
+        itdir = self.run.begin_iteration_dir(n)
         model = self.cfg.model_for(phase)
         pending = (self.run.pending_steering()
                    if phase in STEERING_ACTIONABLE_PHASES else [])

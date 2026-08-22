@@ -46,6 +46,25 @@ NO_TRANSCRIPT = "(no transcript yet)"
 # through the two helpers below rather than re-spelling the zero padding.
 ITERATIONS_DIR = "iterations"
 
+# A slot can be attempted twice: an engine killed mid-iteration leaves a
+# half-written `iterations/NNNN/` behind, and the resumed engine reuses that
+# number (`RunDir.max_iteration_number()` counts only finished iterations). The
+# crashed attempt's files are moved into `iterations/NNNN/attempts/NN/` first --
+# same 2-digit, oldest-first shape as `approaches/NN/` -- so nothing the dead
+# process recorded is overwritten (task 019, #44). Spelled here with the rest of
+# the layout; `engine.state` archives and counts through the helper below.
+ITERATION_ATTEMPTS_DIR = "attempts"
+
+
+def iteration_attempt_dirs(run_root: Path, number: int) -> list[Path]:
+    """Archived earlier attempts at iteration `number`, oldest first (`[]` when
+    the slot was only ever attempted once). A name that is not a number is
+    ignored, like `iteration_numbers`: a stray file cannot break a reader."""
+    root = iteration_dir(run_root, number) / ITERATION_ATTEMPTS_DIR
+    if not root.is_dir():
+        return []
+    return sorted(d for d in root.iterdir() if d.is_dir() and d.name.isdigit())
+
 
 def iteration_dirs(run_root: Path) -> list[Path]:
     """Iteration directories in execution order (`0001`, `0002`, ...)."""

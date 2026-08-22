@@ -620,7 +620,11 @@ An iteration is one agent subprocess and one directory, `iterations/NNNN/`
 (4-digit, zero-padded, monotonically increasing). A restarted engine seeds its
 counter from `RunDir.max_iteration_number()`, which counts only iteration
 directories whose `meta.json` has an `endedAt`, so a slot left half-written by
-a killed process is reused and a finished one is never renumbered.
+a killed process is reused and a finished one is never renumbered. What is
+reused is the *number*: `RunDir.begin_iteration_dir()` first moves the crashed
+attempt's `prompt.md`, transcript and partial `meta.json` into
+`iterations/NNNN/attempts/NN/` (§5.5), so the resumed attempt cannot overwrite
+the record of the iteration that died — the one an operator most wants to read.
 
 An *approach* is one full attempt at the PRD: plan, work, review. Approaches
 run sequentially from 1 to `max_approaches` (`--max-approaches`, default `3`)
@@ -886,7 +890,8 @@ strictly append-only.
 │   └── NNNN/                # one iteration (§5.5)
 │       ├── meta.json        # what ran, how it ended, what it cost
 │       ├── prompt.md        # the exact prompt the agent was given
-│       └── output.jsonl     # the agent's raw NDJSON transcript
+│       ├── output.jsonl     # the agent's raw NDJSON transcript
+│       └── attempts/NN/     # earlier attempt(s) at this same number, archived on resume (§5.5)
 ├── approaches/
 │   └── NN/                  # archived tasks.json/notes.md/review-findings.md
 └── artifacts/               # agent-produced deliverables; reflection/ for §4.1
@@ -1109,6 +1114,7 @@ reconstruct the whole run, including its restarts.
 | `state` | `state`, `resumed` | the loop enters `running` (with `resumed`), and once with the terminal state |
 | `phase` | `phase`, `approach` | a `planning`/`worker`/`review` phase starts; `reflect` carries no approach |
 | `iteration.start` | `number`, `phase`, `model` | an iteration's agent process is about to start |
+| `iteration.attempt_archived` | `number`, `attempt`, `path`, `files` | a reused slot's earlier (crashed) attempt was moved to `iterations/NNNN/attempts/NN/` before the new one wrote (§5.5) |
 | `iteration.end` | `number`, `phase`, `exitCode`, `interrupted`, `sawComplete`, `sawVerified`, `error`, `faultClass` | that iteration finished |
 | `task` | `taskId`, `oldStatus`, `newStatus` | a task's status changed in `tasks.json` (polled while the agent runs, so it lands mid-iteration) |
 | `signal` | `signal` (`COMPLETE` \| `VERIFIED` \| `taskVerified`), `taskId` | a sentinel was accepted |
@@ -1137,6 +1143,17 @@ reconstruct the whole run, including its restarts.
 
 `iterations/NNNN/meta.json` is written twice: once before the agent starts (so a
 killed iteration still says what it was doing) and once when it ends.
+
+A slot can hold more than one attempt. An engine killed mid-iteration leaves its
+directory without an `endedAt`, so the resumed engine reuses that number
+(§4.2) — and `RunDir.begin_iteration_dir()` moves whatever the dead attempt
+wrote into `iterations/NNNN/attempts/NN/` (2-digit, oldest first, the same shape
+as `approaches/NN/`) before the new attempt writes a byte. The archive is a
+record *of* an iteration, never an extra one: no counter, budget or numbering
+seed reads it, and `ralphctl iteration`/`GET /iterations/{n}`-backed detail
+report it as `archivedAttempts` (`0` for a slot attempted once). Archiving is
+best effort — a run dir that refuses the move logs a warning and the iteration
+still runs.
 
 | field | type | meaning |
 |---|---|---|

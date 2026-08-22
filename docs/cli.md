@@ -983,6 +983,13 @@ steering:  001-focus.md
   so the note stays pending for the next actionable iteration — docs/api.md
   `GET /steering`) gets its own line, `<file>  (delivered, not consumed -- still
   pending)`; a clean iteration's line is the plain one above.
+- **`attempts:`** appears only for a slot that was attempted more than once —
+  an engine was killed mid-iteration and the resumed engine reused the number.
+  The dead attempt's `prompt.md`, transcript and partial `meta.json` are kept
+  under `iterations/NNNN/attempts/NN/` (oldest first) instead of being
+  overwritten, and the line says how many are there so the crash is readable
+  after the resume. `--json`'s `archivedAttempts` is the same count (`0`
+  normally).
 - The transcript is rendered by the same merge and renderer
   `logs --iteration n` uses, so the two commands cannot show the same events
   differently; an iteration that wrote none prints `(no transcript yet)`.
@@ -992,7 +999,7 @@ steering:  001-focus.md
   plus the derived fields the human view shows: `exitReason`, `durationS`,
   `durationDisplay`, `durationLabel`, `startedAtLocal`/`endedAtLocal`,
   `tokensDisplay`, `costDisplay`, `costStatus`, `hasMeta`, `hasTranscript`,
-  `transcriptBytes`, and `log` (the rendered lines, never ANSI). With
+  `transcriptBytes`, `archivedAttempts`, and `log` (the rendered lines, never ANSI). With
   `--no-log` the `log` key is **absent** rather than empty — an empty list
   would claim the iteration produced no transcript.
 - Exit codes: `0` · `3` run not found · `1` no such iteration in that run,
