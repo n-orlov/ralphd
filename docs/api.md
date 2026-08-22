@@ -47,6 +47,7 @@ The one-call summary. Response:
   "iteration": 7,
   "iterationsBudget": 50,
   "iterationsUsed": 7,
+  "iterationsRefunded": {"infra": 2, "grace": 0},  // earned refunds; survives a resume
   "verdict": null,                 // "verified" | "unverified" | null while running
   "reason": null,                  // why a non-succeeded run ended (also the grace-review note)
   "onComplete": "idle",
@@ -100,6 +101,8 @@ keys with no section of their own below:
 | `previousEndings` | earlier episodes' endings, oldest first — `{endedAt, reason, verdict}` per superseded ending, `[]` for a run still in its first episode, capped at the 50 most recent. Kept because the terminal `state` event in `events.jsonl` records the state but not the reason or verdict |
 | `termination` | present once the run was told to stop — see below |
 | `graceReview` | present and `true` when an off-budget grace review verified the run |
+| `iterationsUsed` | the **charged** iteration count: raw attempts minus infra refunds. `iteration` (the raw number of the attempt running now) is the higher figure whenever anything was refunded, and `iterationsUsed` is what every budget surface prints and what `PATCH /config/budget` validates against |
+| `iterationsRefunded` | `{infra, grace}` — the refunds this run has earned, written as they are earned and read back by the next engine process, so a `resume` (or an auto-resume after a crash) no longer re-charges refunds granted before it (issue #32). Absent, and read as zeroes, until the run earns its first refund; a pre-v0.7 run dir therefore keeps its recorded `iterationsUsed`. Infra refunds are subtracted from `iterationsUsed`; a grace review's refund is deliberately not (it stays visible as a used iteration) but is still subtracted from the budget comparison |
 | `unconsumedSteering` | steering files still pending at the terminal write |
 | `steering` | live counts — `{pending, consumed}` over `steering/NNN-*.md`, added by the API rather than stored |
 
