@@ -809,24 +809,37 @@ def test_vigilant_verify_error_exhausts_retries_without_failing_task(engine_fact
     assert "not a validation failure" in error_logs[0]["message"]
 
 
-def test_vigilant_three_strikes(engine_factory):
+def test_vigilant_three_strikes_are_labelled_and_routed_to_review(engine_factory):
     """Vigilant 3-strikes: a task that persistently fails verification is set to
-    `failed` after exactly 3 attempts; the job does not end succeeded."""
+    `failed` after exactly 3 attempts.
+
+    RETARGETED by task 024 (#33), a documented contract change. This test used
+    to assert `e.proc.wait() != 0` and `state != "succeeded"`: with every task
+    `failed` no `<promise>COMPLETE</promise>` was ever legitimate again, so the
+    run could not reach `review` at all and died unverified with nobody having
+    looked at it (the `043d` incident, escapable only by an operator editing
+    `tasks.json`). Now the engine labels its own verdict
+    (`failureKind: "validation-exhausted"`, which tells "the rounds are used up"
+    apart from "a requirement was judged unmet") and, once no task is actionable,
+    routes to `review` -- which decides. The three-strikes bookkeeping itself is
+    unchanged and still asserted here."""
     e = engine_factory(
         job={"on_complete": "exit", "vigilant": True,
              "iterations": 20, "max_approaches": 1},
         stub_env={"STUB_VERIFY_FAILS": "999"},
     )
-    assert e.proc.wait(timeout=120) != 0
+    assert e.proc.wait(timeout=120) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] != "succeeded"
+    assert status["state"] == "succeeded" and status["verdict"] == "verified"
 
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
     failed_tasks = [t for t in tasks if t["status"] == "failed"]
     assert len(failed_tasks) >= 1
     for ft in failed_tasks:
         assert ft.get("validationAttempts") == 3
+        # the verdict was not bought by relabelling the record
+        assert ft.get("failureKind") == "validation-exhausted"
 
     # The first-worked task had exactly 3 verify iterations, all failing
     first_failed = failed_tasks[0]
@@ -846,6 +859,16 @@ def test_vigilant_three_strikes(engine_factory):
     tv_events = [ev for ev in events
                  if ev.get("type") == "signal" and ev.get("signal") == "taskVerified"]
     assert len(tv_events) == 0
+
+    # The route into review is the engine's, taken deliberately and loudly --
+    # not the worker claiming COMPLETE, and not the stagnation guard.
+    logs = "\n".join(ev.get("message") or "" for ev in events
+                     if ev.get("type") == "log")
+    assert "routing to review" in logs, logs
+    assert "(validation-exhausted)" in logs, logs
+    assert "no task progress" not in logs, logs
+    assert not [ev for ev in events
+                if ev.get("type") == "signal" and ev.get("signal") == "COMPLETE"]
 
 
 def test_non_vigilant_no_verify_iterations(engine_factory):

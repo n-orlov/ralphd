@@ -1362,6 +1362,71 @@ def read_tasks_doc(
     return TasksRead(doc=good, source="last-good", stale=True, error=last_error)
 
 
+# Task 024 (#33): the two meanings of a `failed` task, told apart in ONE place.
+#
+# `failed` used to mean both "a verifier judged this requirement unmet" and
+# "the engine consumed the last of this task's validation rounds", so a task
+# record could not be read without a human explaining it -- and, worse, either
+# meaning blocked a run from reaching a verdict at all (the worker's
+# `<promise>COMPLETE</promise>` recognises only `completed`/`skipped`), which is
+# exactly what happened to `043d`: four iterations and two steering notes spent,
+# resolved only by an operator hand-editing the record.
+#
+# The vocabulary is deliberately NOT a new status (`skipped` already exists and
+# every surface that counts statuses would have to learn a sixth one). It is one
+# engine-written label on the task record, `failureKind`, with the two values
+# below; `status` stays `failed` for both, so every existing reader keeps
+# working and the distinction is additive.
+VALIDATION_ATTEMPT_LIMIT = 3
+TASK_FAILURE_VALIDATION_EXHAUSTED = "validation-exhausted"
+TASK_FAILURE_REQUIREMENT_UNMET = "requirement-unmet"
+TASK_FAILURE_KINDS = (TASK_FAILURE_VALIDATION_EXHAUSTED,
+                      TASK_FAILURE_REQUIREMENT_UNMET)
+
+# The statuses a worker iteration can still ACT on -- the scheduler in
+# `worker.md` picks a task in exactly this set (validation-failed first, then
+# in-progress, then an unblocked pending one). Everything else -- `completed`,
+# `skipped`, `failed` under either meaning -- is resolved as far as the worker
+# loop is concerned, whether or not the requirement behind it was met.
+TASK_ACTIONABLE_STATUSES = ("pending", "in-progress", "validation-failed")
+
+
+def task_failure_kind(task: dict) -> str | None:
+    """Which kind of `failed` a task record is, or None when it is not failed.
+
+    Reading rule, and the reason this is a function rather than a plain field
+    read: `failureKind` is written by the engine from task 024 (#33) on, so
+    every tasks.json written BEFORE it -- and every one an agent writes by hand
+    without the label -- has no such key. Those are read by DERIVING the kind
+    from the evidence already on the record: a task at or past
+    `VALIDATION_ATTEMPT_LIMIT` recorded validation rounds is
+    `validation-exhausted` (that is the only way the engine itself ever wrote
+    `failed`), and anything else is an agent's own judgement that the
+    requirement was not met. An unrecognised label is treated the same way, so a
+    garbled value can never make a reader crash or invent a third meaning.
+    """
+    if not isinstance(task, dict) or task.get("status") != "failed":
+        return None
+    kind = task.get("failureKind")
+    if kind in TASK_FAILURE_KINDS:
+        return kind
+    attempts = task.get("validationAttempts")
+    if isinstance(attempts, int) and attempts >= VALIDATION_ATTEMPT_LIMIT:
+        return TASK_FAILURE_VALIDATION_EXHAUSTED
+    return TASK_FAILURE_REQUIREMENT_UNMET
+
+
+def task_is_actionable(task: dict) -> bool:
+    """True iff a worker iteration could still pick this task up.
+
+    A task with no status at all counts as actionable: an unreadable plan must
+    never look finished (same rule as `_all_tasks_completed`'s empty-plan
+    guard)."""
+    if not isinstance(task, dict):
+        return True
+    return task.get("status", "pending") in TASK_ACTIONABLE_STATUSES
+
+
 def task_counts(tasks: list) -> dict:
     """Count a tasks.json task list into the /status `tasks` shape:
     {"total": N, "completed": N, "inProgress": N, "pending": N,
