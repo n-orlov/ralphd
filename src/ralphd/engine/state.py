@@ -3058,14 +3058,18 @@ class RunDir:
     def vigilant_verified_file(self) -> Path:
         return self.root / "vigilant-verified.json"
 
-    def _current_approach(self) -> int:
+    def current_approach(self) -> int:
+        """The approach number this run is on -- engine-owned status, so it is
+        stable across crash/resume. THE namespace both `read_verified_tasks()`
+        and `mark_task_verified()` key entries by; public since task 026, whose
+        in-process mirror of the record has to build the very same key."""
         return self.read_status().get("approach") or 1
 
     def read_verified_tasks(self) -> set[str]:
         """Bare ids already verified **in the current approach**. Unprefixed
         entries are read as approach 1's, so a run whose file predates the
         namespacing does not re-verify approach 1's work on resume."""
-        approach = self._current_approach()
+        approach = self.current_approach()
         verified: set[str] = set()
         for entry in read_json(self.vigilant_verified_file, []):
             prefix, sep, task_id = str(entry).partition(":")
@@ -3079,7 +3083,7 @@ class RunDir:
 
     def mark_task_verified(self, task_id: str) -> None:
         verified = {str(e) for e in read_json(self.vigilant_verified_file, [])}
-        verified.add(f"{self._current_approach()}:{task_id}")
+        verified.add(f"{self.current_approach()}:{task_id}")
         atomic_write_json(self.vigilant_verified_file, sorted(verified))
 
     # -- resume (PRD req 16) ---------------------------------------------

@@ -83,6 +83,20 @@ class LoopSupervisor:
         # fresh run dir) so a restarted engine numbers its next iteration
         # N+1 instead of reusing/duplicating past numbers (PRD req 16).
         self.iterations_used = run.max_iteration_number()
+        # Task 026 (requirement N, carried from the closed #29): whether THIS
+        # process is continuing somebody else's run dir -- captured here,
+        # while iterations_used still holds only what was already on disk,
+        # because _resuming_existing_run_dir() answers about the run dir as it
+        # is *now* and starts returning True for every process as soon as it
+        # records its own first iteration. Read only by
+        # _warn_if_verify_gate_empty(), to say whether an unverified-by-this-
+        # process task has a benign explanation.
+        self._resumed_at_start = self._resuming_existing_run_dir()
+        # Task 026: the approach-namespaced ids (`"2:001"`, the key
+        # vigilant-verified.json uses) that THIS process saw a passing verify
+        # iteration for, plus the once-per-process latch for the warning.
+        self._verified_this_process: set[str] = set()
+        self._verify_gate_warned = False
         self._pause = asyncio.Event()
         self._pause.set()  # set = not paused
         # Task 015 (#5): the operator's "retry now" doorbell, shaped exactly
@@ -1867,6 +1881,8 @@ class LoopSupervisor:
                             if t.get("status") == "completed"
                             and t["id"] not in verified_ids
                         ]
+                        if not pending_verify:
+                            self._warn_if_verify_gate_empty(tasks_after)
                         for task in pending_verify:
                             if self.budget_left():
                                 await self._gate()
@@ -2435,6 +2451,13 @@ class LoopSupervisor:
 
             if verified:
                 self.run.mark_task_verified(tid)
+                # Task 026: remember it in-process too, under the same
+                # approach-namespaced key the record uses, so
+                # _warn_if_verify_gate_empty() can tell "the gate is quiet
+                # because I verified this task" from "the gate is quiet
+                # because the record says somebody did".
+                self._verified_this_process.add(
+                    f"{self.run.current_approach()}:{tid}")
                 self.run.emit("signal", signal="taskVerified", taskId=tid)
                 log.info("task %s verified", tid)
                 return True
@@ -2537,6 +2560,52 @@ class LoopSupervisor:
                    f"({', '.join(newly)}); design is one task per iteration")
             log.warning(msg)
             self.run.emit("log", level="warning", message=msg)
+
+    def _warn_if_verify_gate_empty(self, tasks: dict) -> None:
+        """Requirement N (task 026, carried from the closed #29): a broken
+        vigilant gate is INVISIBLE from outside.
+
+        When `vigilant-verified.json` says a completed task is already
+        verified, `pending_verify` computes empty and the engine simply runs
+        worker iteration after worker iteration -- which from the outside
+        (`ralphctl status`, the event stream) is indistinguishable from a run
+        with nothing left to verify, or from a config change, or from a stall.
+        #29's colliding keys made every approach after the first read as fully
+        verified, and that was silent for 17 consecutive iterations of a real
+        run before anyone noticed. The fix landed; this is the tripwire for the
+        next variant of the same class.
+
+        Fires only on the suspicious shape -- the gate computed empty *and*
+        some currently-completed task was never verified by this process -- and
+        exactly ONCE per process rather than per iteration: the condition holds
+        for every remaining worker iteration of the run, so warning per
+        iteration would bury the run's real events under a repeat of one fact.
+        A legitimate resume produces the same shape (an earlier process did the
+        verifying), so the message names both explanations and says which one
+        this process's own history supports instead of asserting a bug.
+        """
+        if self._verify_gate_warned:
+            return
+        approach = self.run.current_approach()
+        unseen = [t["id"] for t in tasks.get("tasks", [])
+                  if t.get("status") == "completed"
+                  and f"{approach}:{t['id']}" not in self._verified_this_process]
+        if not unseen:
+            return
+        self._verify_gate_warned = True
+        cause = ("this process resumed an existing run dir, so an earlier "
+                 "process may legitimately have verified them"
+                 if self._resumed_at_start else
+                 "this process started the run, so nothing can legitimately "
+                 "have verified them")
+        msg = (f"vigilant verification gate computed empty while "
+               f"{len(unseen)} completed task(s) this process never verified "
+               f"are on record as verified: {', '.join(unseen)} "
+               f"(approach {approach}); {cause}; check "
+               f"vigilant-verified.json against this run dir's verify "
+               f"iterations (issue #29). Warned once per engine process.")
+        log.warning(msg)
+        self.run.emit("log", level="warning", message=msg)
 
     def _archive_approach(self, approach: int) -> None:
         dest = self.run.root / "approaches" / f"{approach:02d}"

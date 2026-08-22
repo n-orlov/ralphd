@@ -691,6 +691,21 @@ process was killed between the worker iteration and its verify iteration"; the
 disk record survives crash and resume, so a missed verification is never skipped
 forever.
 
+**The gate warns when it goes quiet (task 026, requirement N carried from the
+closed #29).** A verified-task record that wrongly claims a completed task is
+verified makes `pending_verify` compute empty, and an engine that just keeps
+running worker iterations looks — from `ralphctl status` and the event stream —
+exactly like a run with nothing left to verify. #29's colliding keys were silent
+for 17 consecutive iterations of a real run. So the first time a worker
+iteration finds the gate empty while some currently-`completed` task was never
+verified *by this process*, the supervisor emits one `log` event at level
+`warning` (`_warn_if_verify_gate_empty()`) naming those task ids and the
+approach. Exactly once per engine process, not per iteration: the condition
+holds for every remaining worker iteration, so repeating it would bury the run's
+real events. A legitimate resume has the same shape (an earlier process did the
+verifying), so the message states both explanations and which one this process's
+own history supports — it is a tripwire, not a verdict.
+
 Task-failure bookkeeping, all in `_verify_task()`:
 
 | condition | effect |
