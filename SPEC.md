@@ -937,7 +937,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `model` | string \| null | the model reference the run's iterations actually reported, `provider/model`; `null` until an iteration observes one |
 | `modelRaw` | string \| null | the provider's own id when it differs from the resolved reference (a gateway-local spelling); `null` when it does not |
 | `verdict` | string \| null | `verified` \| `unverified`; `null` until terminal |
-| `reason` | string | why a non-succeeded run ended, or the grace-review note |
+| `reason` | string | why a non-succeeded run ended, or the grace-review note; **episode-scoped** like `endedAt` |
 | `termination` | object \| null | present once the run was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null` |
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
 | `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
@@ -946,7 +946,8 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `usage` | object | token and cost totals, plus `byPhase` and `byApproach` buckets |
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` |
-| `endedAt` | string | terminal write |
+| `endedAt` | string | this **episode**'s terminal write, reset when the next episode enters `running` (see "Ending fields are episode-scoped" below), so it can never predate `startedAt` and a terminal run's value is exactly what its final episode wrote |
+| `previousEndings` | array | earlier episodes' endings, oldest first: `{endedAt, reason, verdict}` per superseded ending, capped at the 50 most recent, `[]` in a first episode |
 | `updatedAt` | string | last write of any field |
 | `deadlineAt` | string | wall-clock deadline, extended by every infra wait |
 
@@ -1020,6 +1021,27 @@ and carries the condition in the two dedicated fields instead:
                        "note": "retrying after infra fault (attempt 3, next in 15s): ..."}
 }
 ```
+
+**Ending fields are episode-scoped.** An *episode* is one engine process over one
+run dir — a fresh start or a resume. `endedAt`, `reason` and `verdict` say how an
+episode *ended*, so the write that enters `running` re-bases all three (as it
+already does `health` and `infraWait`) instead of leaving the previous engine's
+values to be read as this one's. Without it (#30) `selfdev-v06-release` finished
+`succeeded / verified` while `ralphctl status` still printed `reason: signal 15`
+from a `pkill` two episodes earlier, and a *running* resumed run showed an
+`ended` timestamp **before** its `started` one, because `startedAt` is rewritten
+every episode and `endedAt` was not. Because the reset happens once per episode,
+a terminal run's `endedAt`/`reason` remain exactly what its final episode wrote.
+
+The superseded ending is kept, not dropped: `previousEndings` appends
+`{endedAt, reason, verdict}` (oldest first, capped at the 50 most recent — the
+document is rewritten in full on every status update). The terminal `state` event
+in `events.jsonl` records *which* state an earlier episode reached but neither
+its reason nor its verdict, so discarding the field would lose the only record of
+why a run was killed two episodes ago. A crashed episode appends nothing (it left
+no ending), so no ending can be recorded twice. `termination` is deliberately
+*not* reset: it records who stopped the run, is what `doctor` and auto-resume
+reason about (§8.4), and a later abort overwrites it wholesale.
 
 ### 5.3 tasks.json
 
