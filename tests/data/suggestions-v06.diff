@@ -1,0 +1,243 @@
+--- a/src/ralphd/prompts/planning.md
++++ b/src/ralphd/prompts/planning.md
+@@ -9,6 +9,23 @@
+ 2. Explore the workspace directory to understand what exists (languages, layout,
+    test setup). If the PRD lists repositories and the workspace is empty, clone them
+    into the workspace.
++2b. **Check the PRD's factual claims about the code before you turn them into
++   tasks.** A PRD that cites file:line, says a field is missing, or says
++   "nothing does X yet" was written at some earlier commit and may already be
++   wrong. Spot-check each such claim in the workspace. The CODE is the
++   authority. Where a requirement is already satisfied, keep a task for it but
++   scope it to what is genuinely missing (usually: prove it, and add the test
++   that would catch its removal) and say so in the task's notes. Where a claim
++   is wrong in a way that changes the design, record the correction in the
++   handoff notes so no later iteration re-derives it.
++2c. **Measure the test surface once, now, and write the numbers down**: the
++   command that runs the suite, its wall-clock runtime, which tiers/markers
++   exist and what each costs, and the fastest targeted invocation for each area
++   the plan touches. Compare that runtime against the iteration wall-clock cap:
++   if a full run is a large fraction of one iteration, say so explicitly in the
++   notes and plan for targeted runs per task plus ONE dedicated full-sweep task
++   near the end. Rediscovering this per iteration is the single most common way
++   these runs waste budget.
+ 3. Write the task state file (`tasks.json`, path below) with this exact schema:
+ 
+ ```json
+@@ -48,7 +65,12 @@
+ list order is the default and requires no annotation.
+ 
+ 4. Write brief handoff notes to the notes file (max 50 lines): key facts about the
+-   workspace a fresh worker needs (test command, entry points, gotchas).
++   workspace a fresh worker needs (test command, entry points, gotchas). Open
++   them with a `## Standing rules` block — the conventions every iteration must
++   follow but only you have read the PRD to find: commit title format, branch
++   and push target, commit identity, credential file paths, the measured test
++   commands from step 2c, and anything the PRD forbids. Workers rewrite the rest
++   of the notes every iteration; this block is what must survive that.
+ 
+ ## Rules
+ 
+@@ -56,6 +78,14 @@
+   Never bundle ("do X and Y and Z" is three tasks).
+ - Every task needs successCriteria that can be verified without trusting the
+   worker's word — commands to run, files that must exist, behavior to observe.
++  Size each task so that doing it AND checking it both fit inside one
++  iteration's wall-clock cap; a task whose verification needs a long suite run
++  plus fresh work is already too big.
+ - Order tasks by dependency.
++- If the PRD asks for evidence artifacts (reports, traceability, closure
++  records, a final green sweep), give each its own late task, and put the sweep
++  before the reports that cite it. Every number such a report states must be
++  derivable from run state or the repo at the moment it is written — prefer a
++  task that generates or checks the number over one that types it in.
+ - Do not start implementing. Do not mark anything completed.
+ - If operator steering is present, it overrides the PRD where they conflict.
+--- a/src/ralphd/prompts/worker.md
++++ b/src/ralphd/prompts/worker.md
+@@ -50,7 +50,13 @@
+    criteria genuinely hold; otherwise leave it `in-progress` with a note of where
+    you got stuck added to the notes file.
+ 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
+-   endlessly): current state, next step, any discovered gotchas.
++   endlessly): current state, next step, any discovered gotchas. Preserve any
++   `Standing rules` block verbatim across rewrites — it is the only place the
++   job's conventions (commit format, test commands, credential paths) survive
++   between iterations. Never write a *count* into the notes that you did not
++   just derive from `tasks.json` in this iteration ("52/55 done"): a stale
++   tally is copied forward by every later iteration and eventually typed into
++   a deliverable as fact. Say "see tasks.json" instead.
+ 
+ ## Rules
+ 
+@@ -59,12 +65,57 @@
+ - Edit tasks.json carefully: read it, modify the specific task, write valid JSON
+   back. Never remove tasks; add discovered work as new tasks.
+ - If operator steering is present in your prompt, it takes priority over
+-  everything else — including the PRD and the current task order.
++  everything else — including the PRD and the current task order. **A steering
++  note is delivered to exactly one iteration and is marked consumed on
++  delivery, not on success**: if this iteration dies (infra fault, timeout,
++  abort) its instructions are gone forever. So before you act on a steering
++  note, copy the parts that must outlive this iteration into the notes file
++  under a heading naming the note, in enough detail that an iteration that
++  never saw the note can carry them out. Do that first, even if you also
++  finish the instruction in this same iteration.
++- Follow the job's stated conventions from your FIRST commit, not from the
++  iteration where someone notices. If the PRD or notes specify a commit title
++  format, branch, identity or push target, re-read it before committing and
++  copy it into the notes' `Standing rules` block. A convention breach that is
++  already pushed is usually not worth rewriting history to fix — record the
++  deviation in the run's evidence report instead.
++- **Budget your test runs against the iteration clock.** Iterations have a
++  hard wall-clock cap and there is no grace period: an iteration killed at the
++  cap loses its uncommitted work. While you work, run only the test modules
++  that cover what you touched (seconds, not minutes). Run the whole suite at
++  most ONCE per iteration and only when you have a reason to — the verify
++  phase and any dedicated sweep task already do it. Never chain two whole-suite
++  runs in one iteration. If a suite run is long, start it in the background
++  (`nohup ... > /tmp/x.log 2>&1 &`) and keep working while polling it. Record
++  the suite's measured runtime and the targeted-lane commands in the notes so
++  later iterations do not have to rediscover them.
+ - Do not touch the run state directory except tasks.json, the notes file, and the
+   artifacts directory.
+ - Put anything the operator should see (reports, screenshots, logs) in the
+   artifacts directory.
+ 
++## Sandbox safety: you are running inside the thing you are testing
++
++Your shell runs inside the job's own container, as the same user, next to the
++supervisor process that owns this iteration. Commands that select their target
++by *pattern* instead of by *identity* can therefore match the loop itself and
++kill the run mid-iteration — losing the transcript and leaving the run
++non-terminal.
++
++- **Never signal a process by pattern.** No `pkill`/`killall`, no
++  `pgrep | xargs kill`, no `kill $(pidof ...)`. You cannot see the match list
++  before you fire, and the pattern for "the server I just started" is usually
++  also the pattern for PID 1. Kill only a PID you captured at spawn time.
++- **Never operate on containers, images or volumes you did not create**, and
++  never select them by a label that this job's own container also carries. Add
++  a filter that can only match your own artifacts.
++- To make a service "go away" for a test, prefer a scope you own: a
++  clean-shutdown endpoint, closing the socket, an unroutable port/URL, or an
++  env override — before you reach for killing anything.
++- Do experiments in scratch space (`/tmp/...`, a throwaway `git worktree`),
++  never by mutating the workspace tree. If you did mutate it, restore it and
++  show it clean before you finish.
++
+ ## Credential handling
+ 
+ If this job has credentials configured, a Credentials section above lists
+@@ -90,10 +141,32 @@
+ 
+ ## Completion signal
+ 
+-When and ONLY when EVERY task in tasks.json has status `completed` (or `skipped`
+-with justification in the notes), end your reply with this exact line:
++When and ONLY when EVERY task in tasks.json has reached a terminal status —
++`completed`, or `skipped` with justification in the notes — end your reply with
++this exact line:
+ 
+ <promise>COMPLETE</promise>
+ 
+ Never emit that line otherwise. It triggers an independent review; false claims
+ waste the budget.
++
++**A task left `failed` blocks this signal forever, and "blocked forever" is not
++a safe resting state.** The loop's escape hatch from a no-progress worker is to
++fail the approach and replan the whole job from scratch — against a workspace
++where the work is already done, and with no review pass at the end. That is a
++worse outcome than an imprecise label. So if a task is `failed` (the verifier
++exhausted its validation attempts) and it is the only thing standing between
++this plan and completion, resolve it deliberately in one iteration rather than
++grinding:
++
++- if the residual gap is real and small, carve it into a NEW task, do that
++  task, and let the original stand as history; otherwise
++- set the failed task to `skipped` and write the justification in BOTH the
++  task's `notes` and the notes file: what its criteria required, what was and
++  was not delivered, which commits delivered the parts that landed, and that
++  the consumed `validationAttempts` (leave the counter alone) are the record.
++  `skipped` is not a claim that the criteria were met, and the justification
++  must not read as one.
++
++Never edit a task's `successCriteria` to make it pass, and never touch another
++task's status while doing this.
+--- a/src/ralphd/prompts/task-verify.md
++++ b/src/ralphd/prompts/task-verify.md
+@@ -16,6 +16,13 @@
+    `validation-failed` and add a `validationNotes` field with a concrete
+    description of what failed and what evidence you observed. Do NOT emit the
+    sentinel line.
++5. If this is the task's LAST available validation attempt (its
++   `validationAttempts` is about to reach the limit) and it still fails, make
++   `validationNotes` actionable rather than final: name the residual gap in one
++   sentence, list which criteria DID verify and with what evidence, and propose
++   a concrete follow-up task (title + successCriteria) that would close just the
++   gap. A precise handoff here is what lets the next worker split the task
++   instead of the loop stalling on it.
+ 
+ ## Rules
+ 
+@@ -23,11 +30,39 @@
+   do not complete other tasks, do not modify any files other than tasks.json.
+ - Be strict: "probably fine" is not verified. If you cannot check something,
+   that is a failure, not a pass.
++- Verify the criteria in front of you, cheaply. Run the test modules and
++  commands that actually cover this task, not the entire suite: a whole-suite
++  run can consume most of an iteration's wall-clock cap, and an iteration
++  killed at that cap is recorded as a validation failure even though nothing
++  was wrong with the work. If a criterion genuinely names the full suite, run
++  it once, in the background, and poll it.
++- Reproduce, don't rearrange: experiment in scratch space (`/tmp/...`, a
++  throwaway `git worktree`) rather than mutating the workspace tree. If a check
++  required a workspace change, revert it and show the tree clean before you
++  finish.
+ - Write tasks.json atomically (read → modify → write valid JSON back). Never
+   remove tasks or fields; only update `status` and add `validationNotes` on
+   the task under review.
+ - The sentinel must be the very last line if you emit it. Nothing after it.
+ 
++## Sandbox safety: you are running inside the thing you are testing
++
++Your shell runs inside the job's own container, as the same user, next to the
++supervisor process that owns this iteration. "Make the server unreachable" and
++"clean up my test containers" are the two checks most likely to take the run
++down with them, because both tempt you into selecting a target by *pattern*
++instead of by *identity*.
++
++- **Never signal a process by pattern.** No `pkill`/`killall`, no
++  `pgrep | xargs kill`, no `kill $(pidof ...)`. The pattern that matches the
++  server you started under test usually also matches this container's PID 1,
++  which runs as your user; you cannot see the match list before you fire. Kill
++  only a PID you captured at spawn time.
++- **Never operate on containers, images or volumes you did not create**, and
++  never select them by a label that this job's own container also carries.
++- Prefer a scope you own when you need "unreachable": a clean-shutdown
++  endpoint, closing the socket, an unroutable port/URL, or an env override.
++
+ ## Verification signal
+ 
+ If and ONLY if every success criterion is verifiably met, end your reply with:
+--- a/src/ralphd/prompts/review.md
++++ b/src/ralphd/prompts/review.md
+@@ -21,6 +21,18 @@
+    counter (even if exhausted) never substitutes for this check -- it exists
+    specifically because that automated skip could otherwise let rewritten
+    criteria dodge every independent check.
++6. Account explicitly for every task whose final status is not `completed`
++   (`skipped`, `failed`, still `pending`): state, per task id, whether its scope
++   was delivered elsewhere (name the commits) or is genuinely missing. A run is
++   allowed to ship with a skipped task; it is not allowed to ship with a skipped
++   task nobody looked at. Requirement coverage, not task status, decides the
++   verdict.
++7. Cross-check any evidence artifact the PRD asked for (traceability reports,
++   closure records, index rows, release notes) against the run state it
++   describes: counts against `tasks.json`, shas against `git log`, cost/tokens
++   against `status.json`, paths and test ids against the tree. A prose number
++   nobody re-derived is the most common untrue claim these runs ship, and it is
++   cheap for you to catch.
+ 
+ ## Verdict
+ 
