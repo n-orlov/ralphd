@@ -388,11 +388,13 @@ fresh-start              starting   None       None                            0
 - **blank**, never `0/0`, for a run whose agent has not written a plan yet —
   and equally for a `tasks.json` that will not parse with no last-good payload
   behind it (that is ignorance, not a plan of zero tasks).
-- `⚠` marks a plan with a **validation-failed** or **in-progress** task (the
-  same two states the hub flags; pending work is not trouble). The flag
+- `⚠` marks a plan with a **failed** (under either meaning — see below),
+  **validation-failed** or **in-progress** task (the same states the hub flags;
+  pending work is not trouble). The flag
   *sentences* do not fit a column, so they are not abbreviated into a private
   wording here: `--json` carries them verbatim in `tasksTrouble`
-  (`["1 validation-failed", "1 in-progress"]`) and `ralphctl status <run>`
+  (`["1 failed (requirement-unmet)", "1 validation-failed", "1 in-progress"]`)
+  and `ralphctl status <run>`
   prints the full summary.
 - `stale` after the fraction means the number came from the last-good payload
   (`tasksSource: "last-good"`), the same label the hub shows as a pill.
@@ -410,10 +412,33 @@ human table, with the raw ISO `startedAt` and the numeric `iterationsUsed`/
 both raw `approach` and `maxApproaches` numbers (either may be `null`)
 alongside the rendered `approachDisplay` string. Task progress travels the
 same way: raw `tasksTotal`/`tasksCompleted`/`tasksInProgress`/
-`tasksValidationFailed` beside the rendered `tasksDisplay` (`5/7`),
+`tasksValidationFailed`/`tasksFailed`/`tasksFailedValidationExhausted`/
+`tasksFailedRequirementUnmet` beside the rendered `tasksDisplay` (`5/7`),
 `tasksColumn` (the terminal cell), `tasksSummary`, `tasksTrouble` and issue
 #15's `tasksStale`/`tasksSource` — the same field set the hub's run-list rows
 carry.
+
+#### Both meanings of a `failed` task (task 025, issue #33)
+
+`failed` says two different things — *a verifier judged this requirement
+unmet* and *the engine spent this task's validation rounds* — told apart by
+the `failureKind` label the engine writes (`requirement-unmet` /
+`validation-exhausted`, SPEC §5.3). Every counting surface reports which:
+
+- the counts a summary is rendered from keep counting both under `failed`
+  (so the status counts still sum to `total`, exactly as before) and carry
+  the breakdown as the **sub-counts** `failedValidationExhausted` /
+  `failedRequirementUnmet`, which sum to `failed`;
+- the wording is one vocabulary — `1 failed (validation-exhausted)` — in
+  `ralphctl status`' `tasks:` line, `ralphctl runs --json`'s `tasksTrouble`,
+  the hub's TASKS cell tooltip and `ralphctl tasks`' status column;
+- the plain `2 failed` phrasing is what a summary falls back to when the
+  counts carry no sub-counts at all (a run whose engine predates v0.7): one
+  failed task is never both counted and flagged twice;
+- for a `tasks.json` written before v0.7 (no `failureKind` key anywhere) the
+  kind is **derived** from the record — at/past three recorded validation
+  attempts it is `validation-exhausted`, otherwise `requirement-unmet` — so
+  an old plan reads the same as a labelled one instead of showing nothing.
 
 **Sorting** (task 055, issue #9) is the CLI half of the hub run list's
 click-to-sort (see “Sorting” under `ralphctl ui` below) and uses the *same*
@@ -672,7 +697,8 @@ them -- `GET /status` synthesises them from the plan -- so without this the
 fallback printed `tasks: (none)` for a dead run with a perfectly readable
 plan, exactly when an operator most wants to know how far it got. The same
 key mapping the engine uses is applied (`total`/`completed`/`inProgress`/
-`pending`/`validationFailed`, shared code in `engine/state.py:task_counts`),
+`pending`/`validationFailed`, plus task 025's `failed` sub-counts, shared code
+in `engine/state.py:task_counts`),
 and `--json` carries the identical numbers under `tasks`. A run dir with no
 `tasks.json`, or an empty plan, still prints `tasks: (none)`. Task 004 (#15):
 that read goes through the hardened reader too, so a plan caught mid-rewrite
@@ -1320,6 +1346,15 @@ The read goes through the engine's hardened reader
 alongside `live: true|false`. A run id with no run dir is still exit `3`.
 A reachable run with a healthy plan prints exactly what it always did, with
 nothing on stderr. Pinned by `tests/test_tasks_stale_cli.py`.
+
+**A failed task says which kind of failed it is (task 025, issue #33).** The
+status column prints `failed (validation-exhausted)` or `failed
+(requirement-unmet)` — the same words the counting surfaces use, derived for a
+plan written before the label existed — and the column is as wide as its widest
+entry, so a plan with no failed task prints byte-identically to before.
+`--json` carries the same answer per task id in `taskFailureKinds`
+(`{"014": "validation-exhausted"}`, omitted entirely when nothing failed),
+exactly as `GET /tasks` serves it.
 
 ### `ralphctl steer <run-id> [message]`
 
@@ -2224,8 +2259,9 @@ JSON endpoints served under `/api/`:
 - `GET /api/runs` — run list (PRD req 21): `{"runs": [{runId, state,
   verdict, phase, approach, maxApproaches, approachDisplay, iterationsUsed,
   iterationsBudget, startedAt, containerGone, tasksTotal, tasksCompleted,
-  tasksInProgress, tasksValidationFailed, tasksDisplay, tasksSummary,
-  tasksTrouble, tasksColumn, tasksStale, tasksSource, deletable,
+  tasksInProgress, tasksValidationFailed, tasksFailed,
+  tasksFailedValidationExhausted, tasksFailedRequirementUnmet, tasksDisplay,
+  tasksSummary, tasksTrouble, tasksColumn, tasksStale, tasksSource, deletable,
   deleteRefusal}, ...]}`, read straight from every
   `runs/*/status.json` (no
   live proxy calls, so listing stays cheap regardless of how many runs are
@@ -2247,11 +2283,15 @@ JSON endpoints served under `/api/`:
   (`read_tasks_doc(..., persist=False)`) and `task_counts` — still no live
   proxy call, so a finished run whose container is gone reports its progress
   exactly like a live one. `tasksTotal`/`tasksCompleted`/`tasksInProgress`/
-  `tasksValidationFailed` are the raw counts (what the hub sorts on);
+  `tasksValidationFailed` are the raw counts (what the hub sorts on), joined by
+  task 025's `tasksFailed`/`tasksFailedValidationExhausted`/
+  `tasksFailedRequirementUnmet` (issue #33: the two meanings of `failed`, raw,
+  with the kind counts summing to `tasksFailed`);
   `tasksDisplay` is the rendered `5/7`, `tasksSummary` is the same sentence
   `ralphctl status` prints (`5/7 completed (1 in-progress, 1
   validation-failed)`) and `tasksTrouble` is the list of trouble flags
-  (`["1 validation-failed", "1 in-progress"]`) worded by that same renderer
+  (`["1 failed (requirement-unmet)", "1 validation-failed", "1 in-progress"]`)
+  worded by that same renderer
   (`ralphd.engine.state.format_task_counts`/`format_task_fraction`/
   `format_task_trouble`) — one vocabulary for CLI and hub. A run with no plan
   (none written yet, an empty plan, or a `tasks.json` that will not parse and
@@ -2306,7 +2346,13 @@ JSON endpoints served under `/api/`:
   like `usage.costDisplay` and `startedAtLocal` — `app.js` never re-spells
   engine vocabulary. Both keys are present only when the read really was
   stale (and are stripped if the plan file forged them), so their absence
-  means "nothing to warn about", never "an old hub". Task 008 (#16) adds
+  means "nothing to warn about", never "an old hub". Task 025 (#33) adds
+  `tasks.taskFailureKinds` — `{task id: kind}` for the failed tasks of that
+  plan — re-derived here from the payload's own task list by the engine's
+  `task_failure_kinds`, whichever side served it, so a live pre-v0.7 engine's
+  answer and a forged key in `tasks.json` are both replaced by the derived
+  truth (and the key is absent when nothing failed, exactly as `GET /tasks`
+  omits it). Task 008 (#16) adds
   `status.approachDisplay` the same way (see `GET /api/runs` above); it is
   always recomputed from the payload's own `approach`/`maxApproaches`, so a
   status doc carrying a forged `approachDisplay` cannot claim a ladder
@@ -2569,8 +2615,10 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   string `"10/12"`.
   The **TASKS** cell (task 014, issue #21) shows the server-rendered
   `tasksDisplay` (`5/7`) plus the trouble flags from `tasksTrouble`
-  (`⚠ 1 validation-failed`, `⚠ 1 in-progress` — the same wording
-  `ralphctl status` uses), with the full sentence (`tasksSummary`) as the
+  (`⚠ 1 failed (requirement-unmet)`, `⚠ 1 validation-failed`,
+  `⚠ 1 in-progress` — the same wording
+  `ralphctl status` uses, including task 025's two meanings of `failed`), with
+  the full sentence (`tasksSummary`) as the
   cell's hover title. A run with no plan on disk gets a **blank** cell, never
   `0/0`. The column sorts on the completion **ratio** `tasksCompleted /
   tasksTotal` — so `5/7` outranks `100/250`, which neither the rendered text
@@ -2643,6 +2691,13 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   run-detail payload (`tasks`), so no extra request is made, and the same
   text-nodes-only discipline applies: criteria are agent-authored prose full
   of backticks, `<` and fenced snippets.
+  A **failed** row carries a second pill naming which kind of failed it is
+  (task 025, issue #33: `requirement-unmet` or `validation-exhausted`, also on
+  the row as `data-failure-kind`), and its dialog's `status:` line reads
+  `failed (validation-exhausted)` — the words
+  `ralphctl tasks` prints for the same task. The kind comes from the payload's
+  server-derived `taskFailureKinds` map, so the browser never re-implements the
+  rule that reads a plan written before the label existed.
   When the task read was served from the last-good cache (task 005, #15) the
   table is preceded by a `#tasks-stale` line — a `stale` pill plus the
   `tasksNotice` sentence, `data-tasks-source` carrying `last-good` or

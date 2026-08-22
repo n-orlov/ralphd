@@ -414,9 +414,40 @@ async function openPrdDialog(runId) {
 // no new endpoint is needed; it is rendered through `openTextDialog`, i.e.
 // as text nodes only, because criteria are agent/operator-authored prose
 // that routinely contains `<`, backticks and fenced snippets.
-function taskDialogText(t) {
+// Task 025 (#33): which KIND of `failed` a task record is -- `failed` means
+// both "a verifier judged the requirement unmet" and "the engine spent this
+// task's validation rounds", and the two call for different operator action.
+//
+// The answer is DERIVED SERVER-SIDE (`engine.state.task_failure_kinds`, via
+// `ui_server._with_task_failure_kinds`) and arrives as the payload's
+// `taskFailureKinds` map, because deriving it here would mean a second copy of
+// the migration rule for records written before the `failureKind` label
+// existed. The record's own label is the fallback for a payload served by an
+// older hub, and only ever for a task that IS failed.
+function taskFailureKind(doc, t) {
+  const status = t && t.status == null ? "" : String((t && t.status) || "");
+  if (status !== "failed") return null;
+  const map = doc && typeof doc.taskFailureKinds === "object" && doc.taskFailureKinds
+    ? doc.taskFailureKinds : null;
+  const id = t && t.id == null ? "" : String(t.id);
+  const derived = map ? map[id] : null;
+  if (typeof derived === "string" && derived) return derived;
+  const own = t && t.failureKind;
+  return typeof own === "string" && own ? own : null;
+}
+
+// The status as `engine.state.format_task_status` words it -- `failed
+// (validation-exhausted)` -- so the pill, the task dialog and `ralphctl tasks`
+// say the same words about the same task.
+function taskStatusText(doc, t) {
+  const status = t && t.status ? String(t.status) : "unknown";
+  const kind = taskFailureKind(doc, t);
+  return kind ? status + " (" + kind + ")" : status;
+}
+
+function taskDialogText(t, doc) {
   const lines = [];
-  lines.push("status: " + String(t.status == null ? "unknown" : t.status));
+  lines.push("status: " + taskStatusText(doc, t));
   if (t.priority != null) lines.push("priority: " + String(t.priority));
   if (Array.isArray(t.dependsOn) && t.dependsOn.length > 0) {
     lines.push("dependsOn: " + t.dependsOn.map(String).join(", "));
@@ -435,10 +466,10 @@ function taskDialogText(t) {
   return lines.join("\n");
 }
 
-function openTaskDialog(t) {
+function openTaskDialog(t, doc) {
   const id = t.id == null ? "?" : String(t.id);
   const title = "Task " + id + (t.title ? " — " + String(t.title) : "");
-  return openTextDialog(title, taskDialogText(t), null);
+  return openTextDialog(title, taskDialogText(t, doc), null);
 }
 
 // ------------------------------------------------- iteration detail (#18.1)
@@ -1404,10 +1435,12 @@ function renderTasks(el, tasks) {
     // Task 057 (#2): the whole row is the affordance -- clickable, and
     // reachable from the keyboard (Enter/Space), since a <tr> is not
     // natively focusable.
-    const open = () => { openTaskDialog(t); };
+    const open = () => { openTaskDialog(t, doc); };
+    const kind = taskFailureKind(doc, t);
     tbody.appendChild(h("tr", {
       class: "task-row",
       "data-task-id": String(t.id == null ? "" : t.id),
+      "data-failure-kind": String(kind || ""),
       role: "button",
       tabindex: "0",
       title: "show this task's success criteria",
@@ -1417,7 +1450,11 @@ function renderTasks(el, tasks) {
       },
     }, [
       h("td", {}, [String(t.id || "")]),
-      h("td", {}, [pill(t.status)]),
+      // Task 025 (#33): a failed task's row says WHICH failure it is, in the
+      // server's wording -- otherwise the hub shows the one word `failed` for
+      // both meanings and the operator has to open tasks.json to tell a
+      // requirement nobody met from a task the engine stopped validating.
+      h("td", {}, kind ? [pill(t.status), " ", pill(kind)] : [pill(t.status)]),
       h("td", {}, [String(t.title || "")]),
     ]));
   }

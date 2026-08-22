@@ -43,6 +43,7 @@ from ..engine.state import (
     NO_ARTIFACTS,
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
+    TASK_FAILURE_KINDS,
     TASK_STATUS_LABELS,
     TERMINAL_STATES,
     TERMINATION_CLASS_SELF,
@@ -66,6 +67,7 @@ from ..engine.state import (
     format_local_time,
     format_run_document_listing,
     format_task_counts,
+    format_task_status,
     image_record,
     image_record_from,
     is_operator_termination,
@@ -2802,7 +2804,30 @@ def _tasks_doc(run_id: str) -> tuple[bool, dict]:
             sys.stderr.write(err.getvalue())
             raise
     res = read_tasks_doc(run_root(run_id), persist=False)
-    return False, {**res.doc, **res.contract}
+    # Task 025 (#33): `TasksRead.payload`, the same shaping `GET /tasks` serves
+    # -- so the on-disk answer carries the derived `taskFailureKinds` too and
+    # `--json` reads the same either way.
+    return False, res.payload
+
+
+# Task 025 (#33): a `ralphctl tasks` status cell is as wide as its widest
+# entry, never narrower than this. `failed (validation-exhausted)` does not fit
+# the historical 17 columns, and a plan with no failed task must still print
+# byte-identically to before -- so the width is measured per plan rather than
+# frozen at either number.
+_TASK_STATUS_MIN_WIDTH = 17
+
+
+def _task_status_width(tasks: list) -> int:
+    widths = [len(format_task_status(t)) for t in tasks if isinstance(t, dict)]
+    return max([_TASK_STATUS_MIN_WIDTH, *widths])
+
+
+def _task_status_cell(task: dict, width: int) -> str:
+    """The status column of one `ralphctl tasks` line: the shared
+    `format_task_status` wording (so a failed task says WHICH kind of failed it
+    is, derived for a plan written before task 024), padded to `width`."""
+    return f"{format_task_status(task):<{width}}"
 
 
 def cmd_tasks(args):
@@ -2818,8 +2843,9 @@ def cmd_tasks(args):
     if args.json:
         print(json.dumps({**tasks, "live": live}, indent=2))
         return
+    width = _task_status_width(tasks.get("tasks", []))
     for t in tasks.get("tasks", []):
-        print(f"[{t.get('status'):<17}] {t.get('id')} {t.get('title')}")
+        print(f"[{_task_status_cell(t, width)}] {t.get('id')} {t.get('title')}")
 
 
 # Task 040 (#6): what `ralphctl logs` says on stderr when it served the
@@ -3932,6 +3958,11 @@ def _append_run_event(rdir: Path, type_: str, **data) -> dict:
 
 _TASK_STATUSES = ("pending", "in-progress", "completed", "validation-failed",
                   "failed", "skipped")
+# Task 025 (#33): still FIVE statuses plus `pending` -- the two meanings of
+# `failed` are told apart by the `failureKind` label (engine/state.py's
+# `TASK_FAILURE_KINDS`), never by a sixth status, which is what keeps every
+# surface that counts statuses adding up. `_diagnose_tasks_json` below
+# validates both halves together.
 _STATUS_STATES = ("starting", "running", "succeeded", "failed", "aborted")
 # Recorded states that mean "a live engine still owns this run": if no
 # container exists for one of these, the run is a zombie (task 021). Defined
@@ -4006,6 +4037,21 @@ def _diagnose_tasks_json(rdir: Path) -> list[str]:
         if status not in _TASK_STATUSES:
             issues.append(f"tasks.json: task {label} has unrecognized "
                           f"status {status!r}")
+        # Task 025 (#33): `failureKind` is the label that tells the two
+        # meanings of `failed` apart (engine/state.py owns the vocabulary).
+        # Readers never crash on a bad one -- `task_failure_kind()` derives the
+        # kind from `validationAttempts` instead -- so a wrong label is exactly
+        # the kind of silent misreading `repair` exists to name. Reported for
+        # the value AND for the placement: on anything but a `failed` task the
+        # label describes nothing.
+        kind = t.get("failureKind")
+        if kind is not None and kind not in TASK_FAILURE_KINDS:
+            issues.append(f"tasks.json: task {label} has unrecognized "
+                          f"failureKind {kind!r} (expected one of "
+                          f"{', '.join(TASK_FAILURE_KINDS)})")
+        elif kind is not None and status != "failed":
+            issues.append(f"tasks.json: task {label} has failureKind "
+                          f"{kind!r} but status {status!r}, not 'failed'")
     return issues
 
 

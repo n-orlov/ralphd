@@ -169,8 +169,15 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # provenance (`tasksStale`/`tasksSource`, appended last so a plan key
         # of the same name can never claim freshness). A mid-write file yields
         # the last-good plan flagged stale, never an empty task list.
+        #
+        # Task 025 (#33): ... and, when something failed, the derived
+        # `taskFailureKinds` map, so a consumer of the API alone can tell "a
+        # verifier judged this requirement unmet" from "the engine spent this
+        # task's validation rounds" even for a plan whose records predate the
+        # `failureKind` label. Shaped by `TasksRead.payload`, shared with the
+        # CLI's on-disk path and the hub.
         res = run.read_tasks_result()
-        return {**res.doc, **res.contract}
+        return res.payload
 
     @app.get("/prd")
     async def prd(original: bool = False):

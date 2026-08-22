@@ -1231,6 +1231,31 @@ class TasksRead:
         return task_counts(self.tasks)
 
     @property
+    def failure_kinds(self) -> dict:
+        """Task 025 (#33): `{task id: kind}` for the failed tasks of this read
+        -- derived, so a pre-v0.7 plan answers too (`task_failure_kinds`)."""
+        return task_failure_kinds(self.tasks)
+
+    @property
+    def payload(self) -> dict:
+        """Task 025 (#33): the plan as every surface SERVES it -- `GET /tasks`,
+        `ralphctl tasks --json`'s on-disk path and the hub's run-detail payload
+        -- so the three cannot answer differently.
+
+        tasks.json verbatim, then the read's provenance (`contract`), then the
+        derived failure kinds; both are appended LAST, so a plan key of the
+        same name can forge neither. The kinds key is omitted entirely when no
+        task is failed: for a derived map, empty and absent state the same fact
+        ("nothing failed here"), so an older engine's answer needs no
+        translating.
+        """
+        out = {**self.doc, **self.contract}
+        kinds = self.failure_kinds
+        if kinds:
+            out[TASK_FAILURE_KINDS_FIELD] = kinds
+        return out
+
+    @property
     def contract(self) -> dict:
         """Task 003 (#15): the two fields every surface that serves this read
         carries verbatim -- `GET /tasks`, `GET /status`, the hub's run
@@ -1276,6 +1301,15 @@ class TasksRead:
             "tasksCompleted": counts.get("completed", 0),
             "tasksInProgress": counts.get("inProgress", 0),
             "tasksValidationFailed": counts.get("validationFailed", 0),
+            # Task 025 (#33): the terminal-failure counts, and both meanings
+            # of them, travel raw as well -- a row that can only be sorted on
+            # `completed/total` cannot tell a plan that finished from one that
+            # gave up. The rendered strings below already say it in words.
+            "tasksFailed": counts.get("failed", 0),
+            "tasksFailedValidationExhausted": counts.get(
+                "failedValidationExhausted", 0),
+            "tasksFailedRequirementUnmet": counts.get(
+                "failedRequirementUnmet", 0),
             "tasksDisplay": fraction,
             # A plan-less run gets no summary either: `0/0 completed` would be
             # a claim about a plan that does not exist.
@@ -1390,6 +1424,28 @@ TASK_FAILURE_KINDS = (TASK_FAILURE_VALIDATION_EXHAUSTED,
 # loop is concerned, whether or not the requirement behind it was met.
 TASK_ACTIONABLE_STATUSES = ("pending", "in-progress", "validation-failed")
 
+# Task 025 (#33): how the two meanings are COUNTED, and how they are SPELLED.
+#
+# A failure kind is not a sixth status, so it never gets a status key of its
+# own in `task_counts()`: both kinds keep counting under `failed`, which is
+# what keeps every tally adding up (the status keys still sum to `total`,
+# `_TASK_STATUSES` is unchanged, and a row sorting on `tasksCompleted`/`total`
+# is untouched). The breakdown travels as SUB-counts beside the status counts,
+# named here; `TASK_COUNT_SUBKEYS` is the list every consumer that walks a
+# counts dict as "statuses" must exclude, and the sub-counts sum to `failed`.
+TASK_FAILURE_COUNT_KEYS = {
+    TASK_FAILURE_VALIDATION_EXHAUSTED: "failedValidationExhausted",
+    TASK_FAILURE_REQUIREMENT_UNMET: "failedRequirementUnmet",
+}
+TASK_COUNT_SUBKEYS = tuple(TASK_FAILURE_COUNT_KEYS.values())
+
+# The field name under which the DERIVED per-task kinds are published by every
+# surface that serves the plan itself (`GET /tasks`, `ralphctl tasks --json`,
+# the hub's run-detail payload): `{task id: kind}`, for failed tasks only.
+# Derived rather than copied, because `failureKind` is absent from every
+# tasks.json written before task 024 -- see `task_failure_kind()`.
+TASK_FAILURE_KINDS_FIELD = "taskFailureKinds"
+
 
 def task_failure_kind(task: dict) -> str | None:
     """Which kind of `failed` a task record is, or None when it is not failed.
@@ -1432,13 +1488,70 @@ def task_counts(tasks: list) -> dict:
     {"total": N, "completed": N, "inProgress": N, "pending": N,
     "validationFailed": N, ...}. Only statuses actually present get a key
     (plus `total`, always); an unrecognised status is passed through under
-    its own name, and a task with no status at all counts as "unknown"."""
+    its own name, and a task with no status at all counts as "unknown".
+
+    Task 025 (#33): a plan holding `failed` tasks also gets the sub-counts
+    `failedValidationExhausted`/`failedRequirementUnmet` (only the kinds
+    actually present, so a plan with none looks exactly as it did before this
+    change and a pre-v0.7 engine's payload is still a valid counts dict).
+    They are SUB-counts, not statuses: the status keys still sum to `total`,
+    and the sub-counts sum to `failed`. Both invariants hold for a legacy
+    record too, because the kind is derived (`task_failure_kind`).
+    """
     counts = {"total": len(tasks)}
+    subcounts: dict = {}
     for t in tasks:
         raw = t.get("status") if isinstance(t, dict) else None
         key = _TASK_COUNT_KEYS.get(raw, raw or "unknown")
         counts[key] = counts.get(key, 0) + 1
+        kind = task_failure_kind(t) if isinstance(t, dict) else None
+        if kind:
+            sub = TASK_FAILURE_COUNT_KEYS[kind]
+            subcounts[sub] = subcounts.get(sub, 0) + 1
+    counts.update(subcounts)
     return counts
+
+
+def task_failure_kinds(tasks: list) -> dict:
+    """Task 025 (#33): `{task id: kind}` for every failed task in a plan --
+    the per-task half of the same answer `task_counts()`' sub-counts give in
+    aggregate, for the surfaces that serve individual task records.
+
+    Derived through `task_failure_kind()` (never copied out of the record), so
+    a plan written before task 024 -- which carries no `failureKind` key at
+    all -- gets the same answer as a plan the current engine labelled, and no
+    renderer has to re-implement the derivation rule in another language.
+    Tasks with no id are skipped: there is nothing for a consumer to key on.
+    """
+    out: dict = {}
+    for t in tasks:
+        kind = task_failure_kind(t) if isinstance(t, dict) else None
+        if not kind:
+            continue
+        tid = t.get("id")
+        if tid is None or tid == "":
+            continue
+        out[str(tid)] = kind
+    return out
+
+
+def format_task_status(task: dict) -> str:
+    """Task 025 (#33): ONE task record's status as a human reads it --
+    `failed (validation-exhausted)` / `failed (requirement-unmet)` for a failed
+    task, the bare status for everything else.
+
+    The single spelling behind `ralphctl tasks`, the hub's task row and its
+    task dialog, worded exactly as `TASK_STATUS_LABELS` words the same two
+    kinds in a counts summary -- so "1 failed (validation-exhausted)" in a
+    tally and `failed (validation-exhausted)` on the task itself are the same
+    words, not two vocabularies for one fact.
+    """
+    if not isinstance(task, dict):
+        return "unknown"
+    status = task.get("status")
+    status = str(status) if status else "unknown"
+    kind = task_failure_kind(task)
+    return f"{status} ({kind})" if kind else status
 
 
 # Task 013 (#21): how a `task_counts()` key is SPELLED for a human, in ONE
@@ -1447,12 +1560,33 @@ def task_counts(tasks: list) -> dict:
 # lives here beside the counter -- a second copy is how `1 in-progress` in
 # one surface and `1 inProgress` in another get born.
 TASK_STATUS_LABELS = {"inProgress": "in-progress",
-                      "validationFailed": "validation-failed"}
+                      "validationFailed": "validation-failed",
+                      # Task 025 (#33): the two sub-counts read as what they
+                      # are -- a kind OF `failed`, never a status of their own.
+                      "failedValidationExhausted": "failed (validation-exhausted)",
+                      "failedRequirementUnmet": "failed (requirement-unmet)"}
 
 # Which statuses are *trouble* an at-a-glance view should flag, in the order
 # they are shown (worst first). Not a rendering decision the hub gets to make
-# on its own: `ralphctl runs` flags the same two.
-TASK_TROUBLE_KEYS = ("validationFailed", "inProgress")
+# on its own: `ralphctl runs` flags the same ones.
+#
+# Task 025 (#33): a `failed` task is trouble under BOTH meanings -- a
+# requirement nobody met, or a task the engine gave up validating -- and it is
+# worse news than a plan merely mid-flight, so the two kinds lead. Plain
+# `failed` is listed last of the three as the FALLBACK for a counts dict with
+# no sub-counts (a pre-v0.7 engine's `GET /status`); `_failed_kinds_known`
+# suppresses it whenever the kinds are known, so one failed task can never be
+# flagged twice.
+TASK_TROUBLE_KEYS = ("failedRequirementUnmet", "failedValidationExhausted",
+                     "failed", "validationFailed", "inProgress")
+
+
+def _failed_kinds_known(counts: dict) -> bool:
+    """True when a counts dict carries the failure-kind sub-counts, i.e. when
+    rendering plain `failed` as well would count the same tasks twice."""
+    if not isinstance(counts, dict):
+        return False
+    return any(counts.get(key) for key in TASK_COUNT_SUBKEYS)
 
 # Task 015 (#21): the one glyph that says "this plan has trouble in it" in a
 # COLUMN, where the flag sentences themselves do not fit. Spelled here so the
@@ -1479,9 +1613,15 @@ def format_task_counts(counts: dict) -> str:
         return NO_TASKS
     total = counts.get("total", 0)
     completed = counts.get("completed", 0)
+    kinds_known = _failed_kinds_known(counts)
     others = []
     for key, value in counts.items():
         if key in ("total", "completed") or not value:
+            continue
+        # Task 025 (#33): with the kinds known, `failed` is said twice over by
+        # its own sub-counts -- printing both would make the parenthesised
+        # list stop adding up to `total`.
+        if key == "failed" and kinds_known:
             continue
         others.append(f"{value} {TASK_STATUS_LABELS.get(key, key)}")
     summary = f"{completed}/{total} completed"
@@ -1520,9 +1660,12 @@ def format_task_trouble(counts: dict) -> list[str]:
     """
     if not isinstance(counts, dict):
         return []
+    kinds_known = _failed_kinds_known(counts)
     out = []
     for key in TASK_TROUBLE_KEYS:
         value = counts.get(key)
+        if key == "failed" and kinds_known:
+            continue  # already flagged, by kind (task 025)
         if value:
             out.append(f"{value} {TASK_STATUS_LABELS.get(key, key)}")
     return out

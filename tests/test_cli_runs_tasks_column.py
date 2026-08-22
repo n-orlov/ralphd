@@ -163,6 +163,15 @@ def test_the_builder_carries_raw_counts_rendered_strings_and_the_contract(tmp_pa
     assert fields == {
         "tasksTotal": 7, "tasksCompleted": 5, "tasksInProgress": 1,
         "tasksValidationFailed": 1,
+        # Task 025 (#33) RETARGETED this exact-dict assertion: a row now also
+        # carries the terminal-failure counts and both meanings of them, so a
+        # consumer reading the row alone can tell a plan that finished from one
+        # that gave up (and on which of the two grounds). Zeros here, because
+        # MID_PLAN has no failed task -- every rendered string below is
+        # byte-identical to before.
+        "tasksFailed": 0,
+        "tasksFailedValidationExhausted": 0,
+        "tasksFailedRequirementUnmet": 0,
         "tasksDisplay": "5/7",
         "tasksSummary": "5/7 completed (1 in-progress, 1 validation-failed)",
         "tasksTrouble": ["1 validation-failed", "1 in-progress"],
