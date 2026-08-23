@@ -683,6 +683,41 @@ from the task id in `_verify_task()`. Each match emits a `signal` event. A
 The reflect prompt ends on `<promise>REFLECTED</promise>`, which the engine does
 not score: the report on disk is the deliverable (`_reflect_failure()`).
 
+**A promise counts only as the last line, and only when the plan agrees.** Two
+rules, one string-level and one semantic, and the second is the load-bearing one.
+
+1. **Last non-blank line, stripped, equal to the marker** —
+   `runner.last_nonblank_line()`. A marker anywhere else in the message is
+   **absent**, and the engine emits a `log` warning saying it was mentioned but
+   not ended with, so failing closed never looks like an unexplained
+   non-conclusion. This is deliberately not an "on its own line anywhere"
+   (`MULTILINE ^…$`) match: an agent quoting the protocol in a fenced block, or
+   echoing a `notes.md` section documenting it, legitimately puts the marker on a
+   line of its own. Both prompts already ask for exactly this shape ("end your
+   reply with this exact line"), and each names the signal in prose — "the
+   completion marker", "the verification marker" — so an agent explaining why it
+   is withholding the signal never has to reproduce the literal to do it.
+2. **A COMPLETE is cross-checked against `tasks.json` before it is honoured.**
+   `_outstanding_for_completion()` lists every task that is not `completed` or
+   `skipped` (`state.TASK_COMPLETION_STATUSES`, `task_blocks_completion()`) in
+   the plan the worker loop has just re-read; if any exist the signal is refused,
+   a `log` warning names the outstanding count and the first ids, and the loop
+   keeps working. This is strictly stronger than any string assertion because it
+   does not depend on how the marker was formatted, and it is checked against the
+   plan on disk rather than the agent's narration (§4.1's rule). An empty or
+   unreadable plan is not refused — review is the gate there (§5.3).
+
+Both rules exist because of a live near-miss: a worker that obeyed the contract
+perfectly ended its reply with "36 tasks are still pending, so I will not emit
+`<promise>COMPLETE</promise>`", the substring match read that explanation as the
+signal, and the run left the worker loop with 36 tasks pending. Only the reviewer
+rejecting the approach contained it; `saw_verified`, which makes a run terminal,
+had the same defect with nothing behind it. The stagnation counter (§5.3)
+therefore consults the **honoured** completion too: resetting it on the raw
+marker would let an agent that emits COMPLETE every iteration while changing
+nothing hold `stagnant` at zero forever, trading a false conclusion for an
+endless loop.
+
 ### 4.4 Vigilant mode
 
 Vigilant mode (`vigilant: true`) inserts an independent `verify` iteration per
@@ -1125,7 +1160,9 @@ so a garbled label can neither crash a reader nor invent a third meaning.
 **Why the vocabulary is load-bearing: a `failed` task used to be able to strand a
 whole run.** `worker.md`'s completion signal recognises only `completed` and
 `skipped`, so with a `failed` task in the plan no `<promise>COMPLETE</promise>` is
-ever legitimate, the run never reaches `review`, and the stagnation guard
+ever legitimate — and from task 046 (#55) the engine refuses one rather than
+taking the worker's word for it (§4.3) — the run never reaches `review`, and the
+stagnation guard
 eventually replans the wave against an already-finished repo — the `043d`
 incident, four iterations and two steering notes, resolved only by an operator
 hand-editing the record. The worker's two honest resolutions (carve the residual
@@ -1288,7 +1325,7 @@ still runs.
 | `interrupted` | bool | ended by `SIGINT` (operator, timeout or watchdog) |
 | `timedOut` | bool | the full per-iteration timeout fired |
 | `noTrafficTimeout` | bool | the startup watchdog fired: zero observed agent traffic |
-| `sawComplete` / `sawVerified` | bool | sentinel found in the final assistant text |
+| `sawComplete` / `sawVerified` | bool | the marker was the final non-blank line of the final assistant text (§4.3) |
 | `error` | string \| null | the agent's own error text, or the engine's |
 | `faultClass` | string \| null | the engine's verdict: `null` (no failure), `"infra"` or `"work"` |
 | `usage` | object | this iteration's tokens and cost markers |

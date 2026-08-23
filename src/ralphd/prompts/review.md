@@ -45,3 +45,13 @@ trusting nothing the worker wrote about its own work.
 
 Be strict. "Probably fine" is not verified. If you cannot check something, that is
 a finding, not a pass.
+
+**Naming the signal in prose: call it "the verification marker".** The literal
+line above has exactly one legitimate place in your reply — the very end, as the
+final line, with nothing after it. Anywhere else it is a formatting error,
+including inside quotes, a fenced block, a bullet, or a findings excerpt you
+quote back. So when you need to talk *about* the signal — above all when you are
+explaining why you are withholding it — write "the verification marker" and do
+not reproduce the literal line: write "two requirements are unverifiable, so I am
+not emitting the verification marker", never a sentence with the line itself
+inside it.

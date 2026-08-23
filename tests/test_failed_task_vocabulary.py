@@ -205,7 +205,7 @@ def _verify_pass(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    return _ok(f"the PRD holds apart from the known hole {VERIFIED}")
+    return _ok(f"the PRD holds apart from the known hole\n{VERIFIED}")
 
 
 def _review_rejects(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
@@ -525,8 +525,21 @@ def test_a_finished_plan_still_waits_for_the_workers_complete(tmp_path):
 def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
     """The better outcome stays reachable: the iteration after the task fails
     belongs to the worker, so `worker.md`'s first resolution (a NEW task for the
-    residual gap) still happens and the run reaches review the ordinary way,
-    through COMPLETE."""
+    residual gap) still happens and the run reaches review with the gap closed.
+
+    RETARGETED by task 046 (#55), and the retarget is the point of that task.
+    This test used to assert the run entered review through the worker's own
+    COMPLETE, with `routing to review` absent. It cannot any more: `failed` is
+    not one of the two statuses that make a task done for completion purposes
+    (`state.TASK_COMPLETION_STATUSES`), which is exactly what `worker.md`'s
+    completion signal has always said, so the engine now REFUSES a COMPLETE
+    while task 001 stands `failed` -- naming it in a log line -- instead of
+    taking the worker's word for it. Resolution A leaves that task as history,
+    so the plan it leaves behind is precisely the one this module's own
+    route-to-review path (#33) exists for, and that is how the run reaches its
+    verdict now. What the test still pins is unchanged in substance: the worker
+    was not pre-empted (it got its carve iteration), the follow-up task is in
+    the plan, and the run ends succeeded/verified after a real review."""
     def carve_follow_up(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
         doc = sup.run.read_tasks()
         doc["tasks"].append(_task(id="002", status="completed",
@@ -535,7 +548,7 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
         return _ok("carved 002 for the residual gap")
 
     def signal_complete(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-        return _ok(f"every task resolved {COMPLETE}")
+        return _ok(f"every task resolved\n{COMPLETE}")
 
     root = tmp_path / "run"
     sup, state = _run(root, {"planning": _plan,
@@ -546,10 +559,16 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
                                               _verify_miss, _verify_pass),
                              "review": _review_verified})
     assert (state, sup.run.read_status()["verdict"]) == ("succeeded", "verified")
+    ids = [t["id"] for t in sup.run.read_tasks()["tasks"]]
+    assert ids == ["001", "002"], "the worker got its carve iteration"
+    assert "review" in _phases_recorded(root)
     msgs = _log_messages(root)
-    assert "routing to review" not in msgs, msgs
-    assert [ev for ev in _events(root)
-            if ev.get("type") == "signal" and ev.get("signal") == "COMPLETE"]
+    assert ("refusing the signal and continuing the worker loop" in msgs
+            and "001 (failed)" in msgs), msgs
+    assert "routing to review" in msgs, msgs
+    assert not [ev for ev in _events(root)
+                if ev.get("type") == "signal" and ev.get("signal") == "COMPLETE"], \
+        "an unearned COMPLETE is never signalled"
 
 
 # -- the docs ---------------------------------------------------------------

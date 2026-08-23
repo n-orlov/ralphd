@@ -63,8 +63,13 @@ Design invariants:
   assuming it can never catch a half-written file.
 - **Signals are exact sentinels** (`<promise>COMPLETE</promise>`,
   `<promise>VERIFIED</promise>`, `<task-verified>id</task-verified>`) scanned from
-  the agent's final output; prompts instruct the agent to emit them only as its
-  last line.
+  the agent's final output. The two promise markers count **only as the final
+  non-blank line** of that output, so an agent quoting the protocol — or
+  explaining why it is *withholding* the signal — cannot accidentally emit it;
+  mentioning one anywhere else is logged as "mentioned but did not end with it".
+  And a `COMPLETE` is honoured only after the engine has cross-checked the plan it
+  just re-read: any task not `completed`/`skipped` refuses it and the worker loop
+  keeps going (SPEC §4.3). Narration never decides; the record does.
 - **One task per worker iteration.** Checkpointing, steering application, and
   vigilant verification all key off iteration boundaries; a worker that batches
   several tasks into one iteration silently bypasses all three. The worker

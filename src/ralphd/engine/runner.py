@@ -22,6 +22,31 @@ VERIFIED = "<promise>VERIFIED</promise>"
 
 log = logging.getLogger("ralphd.runner")
 
+
+def last_nonblank_line(text: str) -> str:
+    """The final non-blank line of an agent message, stripped ('' if none).
+
+    Task 046 (#55): this is the ONLY place the engine looks for a promise
+    marker, and the reason is a live near-miss. A worker obeying the contract
+    ended its reply with the sentence "36 tasks are still pending, so I will
+    not emit `<promise>COMPLETE</promise>`" -- and the engine, which tested
+    `COMPLETE in final_text`, read the agent's explanation of why it was NOT
+    signalling as the signal, ended the worker loop with 36 tasks pending and
+    went to review. Only the reviewer rejecting the approach contained it;
+    `saw_verified` has the identical shape with nothing behind it.
+
+    Last-line-and-equal is the match, deliberately NOT a `MULTILINE ^...$`
+    "on its own line anywhere" match: an agent quoting the protocol in a
+    fenced block, or echoing a notes.md section that documents it, puts the
+    marker on a line of its own quite legitimately. Only the very end of the
+    message is a place no quotation can reach, and it is exactly what both
+    prompts already ask for ("end your reply with this exact line").
+    """
+    for line in reversed((text or "").splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
 # pi emits full message snapshots per NDJSON event — single lines routinely
 # exceed asyncio's 64 KiB default readline limit
 STREAM_LIMIT = 16 * 1024 * 1024
@@ -63,12 +88,31 @@ class IterationResult:
     model_raw: str | None = None
 
     @property
+    def last_line(self) -> str:
+        """The final non-blank line of the agent's last message, stripped."""
+        return last_nonblank_line(self.final_text)
+
+    @property
     def saw_complete(self) -> bool:
-        return COMPLETE in self.final_text
+        return self.last_line == COMPLETE
 
     @property
     def saw_verified(self) -> bool:
-        return VERIFIED in self.final_text
+        return self.last_line == VERIFIED
+
+    # Task 046 (#55): a marker the agent wrote SOMEWHERE but not as its last
+    # line is absent -- and it is worth saying so out loud. Failing closed is
+    # safe (the worker loop just keeps working, the review verdict just is not
+    # rendered), but silently failing closed turns a formatting slip into an
+    # unexplained non-conclusion; these two feed the operator-facing log line
+    # "mentioned the completion line but did not end with it" (loop.py).
+    @property
+    def mentioned_complete_not_last(self) -> bool:
+        return COMPLETE in (self.final_text or "") and not self.saw_complete
+
+    @property
+    def mentioned_verified_not_last(self) -> bool:
+        return VERIFIED in (self.final_text or "") and not self.saw_verified
 
 
 class PiRunner:

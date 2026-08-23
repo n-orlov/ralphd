@@ -194,7 +194,7 @@ def _finish_task(run: RunDir) -> IterationResult:
     doc = run.read_tasks()
     doc["tasks"][0]["status"] = "completed"
     atomic_write_json(run.tasks_file, doc)
-    return _ok(f"done {COMPLETE}")
+    return _ok(f"done\n{COMPLETE}")
 
 
 @pytest.fixture
@@ -205,7 +205,7 @@ def cancelled_worker_run(tmp_path):
         _plan,          # planning
         _cancel,        # worker attempt 1: the stray cancellation
         _finish_task,   # worker (the engine carried on)
-        lambda run: _ok(f"looks good {VERIFIED}"),   # review
+        lambda run: _ok(f"looks good\n{VERIFIED}"),   # review
     ])
     state = asyncio.run(sup._run_job_core())
     return sup, state

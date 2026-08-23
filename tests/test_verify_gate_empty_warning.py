@@ -258,7 +258,7 @@ def _complete_next(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 def _done(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
     """The worker's last iteration: nothing left in the plan, so it signals."""
-    return _ok(f"every task is completed; notes written {COMPLETE}")
+    return _ok(f"every task is completed; notes written\n{COMPLETE}")
 
 
 def _verify_pass(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
@@ -267,7 +267,7 @@ def _verify_pass(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    return _ok(f"the PRD holds {VERIFIED}")
+    return _ok(f"the PRD holds\n{VERIFIED}")
 
 
 def _run(root: Path, worker=None, **cfg_kw) -> tuple[LoopSupervisor, str]:

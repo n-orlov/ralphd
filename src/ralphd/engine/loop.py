@@ -36,6 +36,7 @@ from .state import (
     prd_path,
     record_operator_termination,
     task_failure_kind,
+    task_blocks_completion,
     task_is_actionable,
     utc_from_epoch,
     utcnow,
@@ -1196,6 +1197,21 @@ class LoopSupervisor:
         log.info("iteration %d end: exit=%s complete=%s verified=%s%s",
                  n, result.exit_code, result.saw_complete, result.saw_verified,
                  f" ERROR: {result.error_message}" if result.error_message else "")
+        # Task 046 (#55): the marker only counts as the final non-blank line
+        # (runner.last_nonblank_line). Failing closed is right, but silently
+        # failing closed would leave an operator staring at a run that did not
+        # conclude and no record of why -- so say what was seen. This is the
+        # only place that distinguishes "never mentioned it" from "mentioned it
+        # somewhere other than the end".
+        for mentioned, what in ((result.mentioned_complete_not_last, "completion"),
+                                (result.mentioned_verified_not_last, "verification")):
+            if mentioned:
+                self.run.emit(
+                    "log", level="warning",
+                    message=(f"iteration {n} mentioned the {what} line but did not "
+                             f"end with it, so it does not count as the {what} "
+                             f"marker; the last non-blank line was "
+                             f"{result.last_line[:200]!r} (task 046, #55)"))
         if result.error_message:
             self.run.emit("log", level="error",
                           message=f"iteration {n} agent error: {result.error_message}")
@@ -1907,7 +1923,34 @@ class LoopSupervisor:
                         continue
 
                     after = json.dumps(tasks_after, sort_keys=True)
-                    stagnant = stagnant + 1 if (before == after and not result.saw_complete
+                    # Task 046 (#55): the COMPLETE the loop acts on is the
+                    # HONOURED one -- the marker cross-checked against the plan
+                    # that was just re-read -- not the raw string the agent
+                    # emitted. A signal is a claim about tasks.json, and
+                    # tasks.json is right here; refusing an unearned one is
+                    # strictly stronger than any assertion about how the marker
+                    # was formatted, because it does not depend on formatting at
+                    # all. Both uses below must read `honoured_complete`, and the
+                    # stagnation one especially: resetting the counter on the RAW
+                    # marker would let an agent that emits COMPLETE every
+                    # iteration while changing nothing hold `stagnant` at 0
+                    # forever -- trading a false conclusion for an endless loop.
+                    outstanding = (self._outstanding_for_completion(tasks_after)
+                                   if result.saw_complete else [])
+                    honoured_complete = result.saw_complete and not outstanding
+                    if outstanding:
+                        names = ", ".join(
+                            f"{t.get('id', '?')} ({t.get('status', 'unknown')})"
+                            for t in outstanding[:10])
+                        self.run.emit(
+                            "log", level="warning",
+                            message=(
+                                f"iteration {self.iterations_used} signalled "
+                                f"COMPLETE with "
+                                f"{len(outstanding)} task(s) not completed or "
+                                f"skipped: {names}; refusing the signal and "
+                                "continuing the worker loop (task 046, #55)"))
+                    stagnant = stagnant + 1 if (before == after and not honoured_complete
                                                 and not result.interrupted) else 0
                     blocked = self._unresolved_failures(tasks_after)
                     if stagnant and blocked:
@@ -1951,7 +1994,7 @@ class LoopSupervisor:
                                       message="3 iterations with no task progress; "
                                               "failing approach")
                         break
-                    if result.saw_complete:
+                    if honoured_complete:
                         verdict_ready = True
                         self.run.emit("signal", signal="COMPLETE")
                         break
@@ -2061,6 +2104,27 @@ class LoopSupervisor:
         if not tasks or any(task_is_actionable(t) for t in tasks):
             return []
         return [t for t in tasks if isinstance(t, dict) and task_failure_kind(t)]
+
+    def _outstanding_for_completion(self, tasks_doc: dict) -> list[dict]:
+        """The tasks that make a COMPLETE signal unearned, in plan order.
+
+        Task 046 (#55). Terminal for completion is `completed` or `skipped`
+        (`state.TASK_COMPLETION_STATUSES`) -- exactly what worker.md's
+        completion signal recognises -- so a `pending`, `in-progress`,
+        `validation-failed` or `failed` task all show up here. A `failed` one
+        deliberately does: the honest resolutions are carving the residual gap
+        into a new task or relabelling it `skipped` (worker.md), and until one
+        of them happens `_unresolved_failures()` routes the run to review for a
+        verdict rather than letting a self-declared completion stand.
+
+        An empty or unreadable plan returns [] -- the signal is honoured and
+        review, which re-derives everything from the PRD, is the gate. Refusing
+        here instead would strand such a run in the stagnation guard with no
+        reviewer ever looking at it, which is the failure shape task 002's
+        grace review and task 024's route-to-review both exist to avoid.
+        """
+        tasks = tasks_doc.get("tasks") or []
+        return [t for t in tasks if task_blocks_completion(t)]
 
     def _all_tasks_completed(self) -> bool:
         """True iff tasks.json exists, is non-empty, and every task's

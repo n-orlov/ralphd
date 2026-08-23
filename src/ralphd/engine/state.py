@@ -1424,6 +1424,27 @@ TASK_FAILURE_KINDS = (TASK_FAILURE_VALIDATION_EXHAUSTED,
 # loop is concerned, whether or not the requirement behind it was met.
 TASK_ACTIONABLE_STATUSES = ("pending", "in-progress", "validation-failed")
 
+# Task 046 (#55): the statuses that make a task DONE as far as the worker's
+# completion marker is concerned -- exactly the two worker.md's completion
+# signal recognises. Deliberately narrower than "not actionable": a `failed`
+# task is unactionable but is NOT completion, which is the whole point of the
+# #33 vocabulary above and of the route-to-review path that resolves it. The
+# engine cross-checks a COMPLETE against this set before honouring it, so a
+# marker that appears for any reason (an agent quoting the protocol, a
+# formatting slip, a model deciding it is close enough) cannot end the worker
+# loop while the plan itself still says otherwise.
+TASK_COMPLETION_STATUSES = ("completed", "skipped")
+
+
+def task_blocks_completion(task: dict) -> bool:
+    """True iff this task record must stop a COMPLETE signal being honoured.
+
+    A task with no status at all blocks, same rule as `task_is_actionable`: an
+    unreadable record must never look finished."""
+    if not isinstance(task, dict):
+        return True
+    return task.get("status", "pending") not in TASK_COMPLETION_STATUSES
+
 # Task 025 (#33): how the two meanings are COUNTED, and how they are SPELLED.
 #
 # A failure kind is not a sixth status, so it never gets a status key of its

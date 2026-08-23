@@ -121,11 +121,11 @@ def _finish_task(sup: LoopSupervisor) -> IterationResult:
     doc = sup.run.read_tasks()
     doc["tasks"][0]["status"] = "completed"
     atomic_write_json(sup.run.tasks_file, doc)
-    return _ok(f"done {COMPLETE}")
+    return _ok(f"done\n{COMPLETE}")
 
 
 def _review_ok(sup: LoopSupervisor) -> IterationResult:
-    return _ok(f"looks good {VERIFIED}")
+    return _ok(f"looks good\n{VERIFIED}")
 
 
 def _supervisor(root: Path, script: list, **cfg_kw) -> LoopSupervisor:

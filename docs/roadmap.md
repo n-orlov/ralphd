@@ -417,6 +417,24 @@ run's steering notes instead:
   Nothing changes for a run with no `fast_model` — the fast tier falls back to
   `model` — and a host that wants the old behaviour states it once with
   `ralphctl config set model_strategy quality-first` (bullet S)
+- ✅ **U. A prose mention of a promise marker no longer ends the approach
+  (#55).** The engine tested `COMPLETE in final_text`, so a worker that obeyed
+  the contract and ended its reply *"36 tasks are still pending, so I will not
+  emit `<promise>COMPLETE</promise>`"* had its explanation read as the signal:
+  the worker loop ended with 36 tasks pending and only the reviewer rejecting
+  the approach stopped that run going terminal `succeeded`/`verified`.
+  `saw_verified`, which makes a run terminal with nothing behind it, had the
+  same defect. Three layers now: a marker counts only as the **last non-blank
+  line** of the final message (not an "own line anywhere" match, which a fenced
+  block or an echoed `notes.md` section defeats), and one seen elsewhere is
+  absent *and logged*; a `COMPLETE` is honoured only after the freshly re-read
+  `tasks.json` is checked for tasks that are not `completed`/`skipped`, which
+  stops the class rather than the sentence; and the stagnation counter consults
+  the honoured completion, so ignoring an unearned marker cannot trade a false
+  conclusion for an endless loop. `worker.md` and `review.md` supply the prose
+  names — "the completion marker", "the verification marker" — because an agent
+  that must name the signal to explain withholding it will otherwise reproduce
+  the literal line
 
 ## Later / explicitly deferred
 

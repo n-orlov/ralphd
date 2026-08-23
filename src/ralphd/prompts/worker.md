@@ -194,3 +194,12 @@ completion, resolve it deliberately in one iteration instead of grinding on it:
 
 Never edit a task's `successCriteria` to make it pass, and never change another
 task's status while resolving this one.
+
+**Naming the signal in prose: call it "the completion marker".** The literal line
+above has exactly one legitimate place in your reply — the very end, as the final
+line, with nothing after it. Anywhere else it is a formatting error, including
+inside quotes, a fenced block, a bullet, or a section of the notes file you echo
+back. So when you need to talk *about* the signal — above all when you are
+explaining why you are withholding it — write "the completion marker" and do not
+reproduce the literal line: write "tasks remain, so I am not emitting the
+completion marker", never a sentence with the line itself inside it.
