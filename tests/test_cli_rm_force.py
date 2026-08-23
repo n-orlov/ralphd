@@ -227,6 +227,70 @@ def test_rm_force_unknown_run_exits_3_without_removing_anything(ctl):
     assert rm_targets(ctl.recorded()) == []
 
 
+# --------------------------------------------------------------------------
+# task 014 (#56): the `finishing` window -- neither active nor terminal
+# --------------------------------------------------------------------------
+def test_plain_rm_refuses_a_finishing_run_naming_the_unwind(ctl):
+    """A run whose reflect unwind has not yet settled a terminal state is
+    neither `TERMINAL_STATES` nor an ordinary `abort`-able live job -- plain
+    `rm` must say so specifically (not the generic container-still-exists or
+    job-still-running wording), and it must say so BEFORE the container
+    check, since the reflecting process is typically still the container."""
+    ctl.seed("tst-finishing", state="finishing")
+    res = ctl.run("rm", "tst-finishing", "--yes", env=HAS_CONTAINER)
+
+    assert res.returncode == 5
+    assert "finishing" in res.stderr
+    assert "reach a terminal state" in res.stderr
+    assert "rm --force" in res.stderr
+    assert "container still exists" not in res.stderr
+    assert "abort" not in res.stderr
+    assert rm_targets(ctl.recorded()) == []
+    assert ctl.run_dir("tst-finishing").exists()
+    assert ctl.config_dir("tst-finishing").exists()
+
+
+def test_plain_rm_refuses_a_finishing_run_with_no_container_left(ctl):
+    """The refusal is not merely a side-effect of the container check: a run
+    dir recording `finishing` with no container record at all (the process
+    already exited mid-unwind) must still refuse, or a crashed unwind would
+    silently become deletable by plain `rm`."""
+    ctl.seed("tst-finish-nocont", state="finishing")
+    res = ctl.run("rm", "tst-finish-nocont", "--yes")
+
+    assert res.returncode == 5
+    assert "finishing" in res.stderr
+    assert rm_targets(ctl.recorded()) == []
+    assert ctl.run_dir("tst-finish-nocont").exists()
+
+
+def test_rm_force_deletes_a_finishing_run_with_a_container(ctl):
+    """`--force`'s terminal-state guard is deliberately widened to accept
+    `finishing` (task 013's `ui_server.deletion_refusal` reasoning applied
+    here): the verdict is settled even though the terminal state is not yet
+    on disk, so this is exactly the case `--force` exists to let through --
+    it must not be left refusing alongside a genuinely live job."""
+    ctl.seed("tst-finish-force", state="finishing")
+    res = ctl.run("rm", "tst-finish-force", "--yes", "--force",
+                  env={**HAS_CONTAINER, "STUB_DOCKER_PS_IDS": "sibF"})
+
+    assert res.returncode == 0, res.stderr
+    rec = ctl.recorded()
+    assert ["rm", "-f", "ralphd-tst-finish-force"] in rec
+    assert ["rm", "-f", "sibF"] in rec
+    assert not ctl.run_dir("tst-finish-force").exists()
+    assert not ctl.config_dir("tst-finish-force").exists()
+
+
+def test_rm_force_deletes_a_finishing_run_with_no_container(ctl):
+    ctl.seed("tst-finish-force2", state="finishing")
+    res = ctl.run("rm", "tst-finish-force2", "--yes", "--force")
+
+    assert res.returncode == 0, res.stderr
+    assert not ctl.run_dir("tst-finish-force2").exists()
+    assert not ctl.config_dir("tst-finish-force2").exists()
+
+
 def test_rm_json_reports_whether_a_container_was_stopped(ctl):
     ctl.seed("tst-json", state="aborted")
     res = ctl.run("--json", "rm", "tst-json", "--yes", "--force",

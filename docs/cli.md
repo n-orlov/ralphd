@@ -1508,11 +1508,28 @@ label discipline is the same one `stop` uses.
 
 `--force` is a shortcut past a **stale** container, not a way to kill live work:
 it deletes only when the run's recorded state is terminal (`succeeded`,
-`failed`, `aborted`). Anything else — `starting`/`running`, an unrecognized
-state, or a `status.json` that is missing or unreadable — exits `5` with
+`failed`, `aborted`) **or `finishing`** (task 014, #56). Anything else —
+`starting`/`running`, an unrecognized state, or a `status.json` that is
+missing or unreadable — exits `5` with
 "job still running (state: …) — `abort` first, then `rm --force`" and touches
 nothing at all: no container is removed and neither directory is deleted.
 Killing a live job stays explicit (`abort`, or `stop --force`).
+
+The reflect unwind's `finishing` state (task 012, #56; a settled verdict not
+yet written as a terminal state, sorted between `running` and `succeeded` in
+the lifecycle order above) is neither of those cases: plain `rm`
+refuses it too, but with its own wording naming the unwind —
+"run is finishing (reflect unwind in progress) — wait for it to reach a
+terminal state, or use `rm --force`" — checked before the generic
+container-still-exists refusal, and regardless of whether a container record
+exists (a crashed-mid-unwind run dir with no container left still gets the
+accurate reason rather than silently becoming plain-`rm`-deletable).
+`--force`'s terminal-state guard is deliberately widened to accept
+`finishing`, matching the hub's `ui_server.deletion_refusal` reasoning for the
+same state (task 013): the verdict is already settled, so this is exactly the
+case `--force` exists to let an operator past — it costs nothing extra beyond
+what `--force` already costs for a terminal run (the container is stopped via
+`stop`'s own teardown sequence before the directories are deleted).
 
 A run with no container record is unaffected by `--force`: it takes the plain
 path (siblings reaped, both directories deleted), so a zombie run dir still

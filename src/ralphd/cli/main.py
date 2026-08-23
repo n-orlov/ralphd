@@ -3966,15 +3966,32 @@ def cmd_rm(args):
     an absent/unreadable status.json counts as not-terminal (we cannot
     establish the job is over, so we do not act). Killing a live job stays
     explicit -- `abort`, or `stop --force`.
+
+    Task 014 (#56): the reflect unwind's `finishing` state (engine/state.py's
+    `NONTERMINAL_STATES`, task 012) is neither of those two things -- the
+    verdict is already settled, nothing is "still running" that `abort`
+    could stop, but the terminal state is not yet on disk either. Plain `rm`
+    refuses it with a reason naming the unwind (checked BEFORE the generic
+    container-exists refusal below, and regardless of whether a container
+    record exists, so a crashed-mid-unwind run dir with no container left
+    still gets the accurate reason rather than falling through to a plain
+    delete). `--force`'s terminal-state guard is widened here to accept
+    `finishing` too -- deliberately, matching `ui_server.deletion_refusal`'s
+    reasoning for the same state (task 013): a settled-but-not-yet-terminal
+    verdict is exactly the case `--force` exists to let an operator past.
     """
     run_id = args.run_id
-    container_exists = container_record_exists(run_id)
-    if container_exists and not args.force:
-        die(5, "container still exists — `stop` first (or `rm --force`)")
     if not run_root(run_id).exists():
         die(3, f"run {run_id} not found")
     state = _read_json(run_root(run_id) / "status.json", {}).get("state")
-    if container_exists and state not in TERMINAL_STATES:
+    if state == "finishing" and not args.force:
+        die(5, "run is finishing (reflect unwind in progress) — wait for it "
+               "to reach a terminal state, or use `rm --force`")
+    container_exists = container_record_exists(run_id)
+    if container_exists and not args.force:
+        die(5, "container still exists — `stop` first (or `rm --force`)")
+    if (container_exists and state not in TERMINAL_STATES
+            and state != "finishing"):
         die(5, f"job still running (state: {state or 'unknown'}) — `abort` "
                "first, then `rm --force`")
     if not args.yes and sys.stdin.isatty():
