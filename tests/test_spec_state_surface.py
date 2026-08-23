@@ -1025,6 +1025,86 @@ def test_the_hub_delete_route_exists_and_is_described():
 
 
 # --------------------------------------------------------------------------
+# 12.1 / 13.3: artifact kinds (magic bytes, the allow-list, the SVG
+# exclusion, the size cap) and the hub's Content-Security-Policy (task 026,
+# issue #54) -- both paired with a code-derived check plus a mutation case.
+# --------------------------------------------------------------------------
+
+def _artifact_kind_problems(section: str) -> list[str]:
+    from ralphd.engine.state import (
+        ARTIFACT_BINARY, ARTIFACT_IMAGE_MIME_TYPES, ARTIFACT_INLINE_MAX_BYTES,
+        ARTIFACT_KIND_BINARY, ARTIFACT_KIND_IMAGE, ARTIFACT_KIND_TEXT,
+    )
+    problems = []
+    for name in ("ARTIFACT_KIND_TEXT", "ARTIFACT_KIND_IMAGE", "ARTIFACT_KIND_BINARY",
+                 "ARTIFACT_IMAGE_MIME_TYPES", "ARTIFACT_INLINE_MAX_BYTES",
+                 "artifact_relpath", "_artifact_kind", "_sniff_image_mime"):
+        if name not in section:
+            problems.append(f"12.1 does not name {name}")
+    for mime in ARTIFACT_IMAGE_MIME_TYPES:
+        if mime not in section:
+            problems.append(f"12.1 does not name the allow-listed {mime}")
+    mib = ARTIFACT_INLINE_MAX_BYTES // (1024 * 1024)
+    if f"{mib} MiB" not in section:
+        problems.append("12.1 does not state the size cap in MiB")
+    if "SVG" not in section:
+        problems.append("12.1 does not name the SVG exclusion")
+    if "XSS" not in section:
+        problems.append("12.1 does not give the reason (XSS) for the SVG exclusion")
+    if "nosniff" not in section:
+        problems.append("12.1 does not mention X-Content-Type-Options: nosniff")
+    if "mimetypes.guess_type" not in section:
+        problems.append("12.1 does not rule out mimetypes.guess_type")
+    if ARTIFACT_BINARY.split(" -- ")[0].strip("(") not in section:
+        problems.append("12.1 does not name the pull wording")
+    return problems
+
+
+def test_the_artifact_kind_section_matches_the_codes_own_vocabulary():
+    problems = _artifact_kind_problems(_spec_section("### 12.1"))
+    assert not problems, f"SPEC.md 12.1: {problems}"
+
+
+def test_the_artifact_kind_check_would_catch_a_dropped_claim():
+    section = _spec_section("### 12.1")
+    for gone in ("ARTIFACT_IMAGE_MIME_TYPES", "SVG", "XSS", "nosniff",
+                 "ARTIFACT_INLINE_MAX_BYTES", "mimetypes.guess_type"):
+        assert _artifact_kind_problems(_without(section, gone)), gone
+
+
+def _csp_problems(section: str) -> list[str]:
+    from ralphd.cli.ui_server import HUB_CSP
+    flat = " ".join(section.splitlines())
+    problems = []
+    if "HUB_CSP" not in section:
+        problems.append("13.3 does not name ui_server.HUB_CSP")
+    for directive in HUB_CSP.split("; "):
+        if directive not in flat:
+            problems.append(f"13.3 does not spell the directive {directive!r}")
+    if "unsafe-inline" not in section:
+        problems.append("13.3 does not rule out 'unsafe-inline'")
+    if "unsafe-eval" not in section:
+        problems.append("13.3 does not rule out 'unsafe-eval'")
+    if "nosniff" not in section:
+        problems.append("13.3 does not connect the CSP to X-Content-Type-Options: nosniff")
+    if "_send_json" not in section or "_send_bytes" not in section:
+        problems.append("13.3 does not name the two shared response helpers")
+    return problems
+
+
+def test_the_csp_section_matches_the_hub_csp_constant():
+    problems = _csp_problems(_spec_section("### 13.3"))
+    assert not problems, f"SPEC.md 13.3: {problems}"
+
+
+def test_the_csp_check_would_catch_a_dropped_directive():
+    section = _spec_section("### 13.3")
+    for gone in ("HUB_CSP", "frame-ancestors", "unsafe-inline", "unsafe-eval",
+                 "_send_bytes"):
+        assert _csp_problems(_without(section, gone)), gone
+
+
+# --------------------------------------------------------------------------
 # 15: the deferred list defers nothing the code now does
 # --------------------------------------------------------------------------
 

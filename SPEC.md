@@ -3698,8 +3698,12 @@ dir themselves and a live proxy would only add a way to disagree.
   secrets redacted**, each opening its body in a dialog. A document that was
   never written is listed as such rather than omitted: absence is an answer.
 - **Artifacts panel** — what the job left behind under `artifacts/`, size and
-  path per entry, with a text artifact (the reflection report first among them)
-  opening in a dialog and a binary one reported as such rather than mangled.
+  path per entry, with each row's dialog branching on the server-decided
+  `kind` (§12.1) and never a filename's extension: a text artifact (the
+  reflection report first among them) opens as text, a previewable image
+  opens holding an `<img>` whose `src` is the raw byte route, and everything
+  else (opaque binary, e.g. a tarball) is reported as such rather than
+  mangled. `app.js` carries no client-side extension list of its own.
 - **Approach history panel** — every previous approach `_archive_approach`
   copied into `approaches/NN/` before the loop started the next one, most
   recent last, each row its own archived task counts (never the live plan's)
@@ -3877,6 +3881,58 @@ copies the tree with `copytree(..., dirs_exist_ok=True)`. **Both work on a dead
 run**: nothing goes through the container's HTTP API, so artifacts survive the
 container exactly as long as the run dir does. `ralphctl rm` deletes the run dir
 and the config dir together, artifacts included — pull first.
+
+#### Artifact kinds (task 022/023, issue #54)
+
+An artifact is an arbitrary file the agent wrote, and the two surfaces that show
+one (`ralphctl artifacts`, the hub's Artifacts panel) need to answer the same
+question before rendering it: can this be printed, previewed, or neither. That
+answer — `state.ARTIFACT_KIND_TEXT`, `state.ARTIFACT_KIND_IMAGE` or
+`state.ARTIFACT_KIND_BINARY` — is decided **once**, server-side, by
+`ralphd.engine.state._artifact_kind`, from the two sniffs `artifact_entry`
+already runs over the file's leading bytes, and travels to both surfaces as
+the entry's own `kind` field. Neither surface, nor the code that builds either
+one, ever branches on a filename's extension: a file named `screenshot.png`
+whose bytes are actually a ZIP (`PK\x03\x04`) is `ARTIFACT_KIND_BINARY`, and a
+file named `payload.bin` whose bytes start with the PNG signature is
+`ARTIFACT_KIND_IMAGE`.
+
+- **The image allow-list is four raster signatures**, checked in
+  `_sniff_image_mime` against the file's leading bytes only:
+  `image/png` (`\x89PNG\r\n\x1a\n`), `image/jpeg` (`\xff\xd8\xff`), `image/gif`
+  (`GIF87a`/`GIF89a`) and `image/webp` (a `RIFF`/`WEBP` container) —
+  `state.ARTIFACT_IMAGE_MIME_TYPES`, the same tuple the raw byte route below
+  draws its `Content-Type` from, so a fifth format cannot be added in one
+  place and forgotten in the other.
+- **SVG is deliberately excluded**, even though it is an image in the everyday
+  sense: it has no raster magic-byte signature (it is XML text), and rendering
+  agent-authored SVG inline — an `<img>` or `<object>` whose `src` is a run's
+  own artifact — can execute an embedded `<script>` or event handler against
+  the hub's own origin: stored XSS wearing a picture's extension, not a
+  preview. A file that sniffs as SVG answers `_TEXT` (it decodes as text) or
+  `_BINARY`, never `_IMAGE`, and stays behind the same `pull`/print path every
+  other non-image file takes.
+- **A previewable image is still capped at `state.ARTIFACT_INLINE_MAX_BYTES`
+  (5 MiB)** before the raw byte route (`GET
+  /api/runs/<id>/artifacts-raw/<path>`, task 023) will stream its bytes — an
+  operator's browser has no business rendering an arbitrarily large file
+  inline, and a job could otherwise make the hub's own response huge just by
+  writing a big enough PNG. Over the cap, the route answers exactly like a
+  non-image kind: `200` with today's `pull` wording (`state.ARTIFACT_BINARY`,
+  "binary file -- copy it out with `ralphctl artifacts <run> pull`") as plain
+  text, not bytes.
+- **The raw byte route resolves a name through `state.artifact_relpath` only**
+  — the one resolver the JSON artifact routes already use, so traversal and an
+  absolute path are refused there and nowhere else needs its own check — and
+  answers a `Content-Type` drawn **only** from `state.ARTIFACT_IMAGE_MIME_TYPES`,
+  never `mimetypes.guess_type` (which would fall back to guessing from the
+  URL's extension, exactly the thing this whole mechanism refuses to do).
+  Every response, including a refused one, carries `X-Content-Type-Options:
+  nosniff`.
+
+`ralphctl artifacts ls`/`show` and the hub read the identical `kind` off the
+same `artifact_entries()`/`artifact_entry()` dicts — one entry-for-entry
+agreement, not two independent renderings that could drift.
 
 ### 12.2 Reflection
 
@@ -4246,6 +4302,29 @@ the hub has **no authentication of its own**. It reads the registry directly and
 proxies live container APIs using each run's stored token, so binding it off
 loopback publishes every run's control surface to whoever can reach that port. It
 is a local tool; keep it local.
+
+#### Content-Security-Policy (task 024, issue #54)
+
+Every hub response — the static bundle, every JSON route under `/api/`, and the
+raw artifact byte route (§12.1) — carries the same `Content-Security-Policy`
+header, `ui_server.HUB_CSP`, sent from the two shared response helpers
+(`_send_json`/`_send_bytes`) so no route can forget it:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self';
+connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+```
+
+No `'unsafe-inline'`/`'unsafe-eval'` anywhere — the static bundle has no inline
+`<script>`, no `onclick="..."` attribute and no inline `style="..."` attribute
+or `<style>` block, so the tight policy costs the hub nothing. The point is the
+same one `X-Content-Type-Options: nosniff` serves on the raw artifact route: a
+file an agent inside the job container wrote — an artifact, a note, a PRD, a
+reflection report — is served back to a browser at the operator's own origin,
+and this is the barrier that stops one of those files turning into script that
+acts against that origin. It applies to the hub only; the engine's own HTTP API
+(§9) is a JSON control surface with no HTML rendering and carries no such
+header.
 
 ### 13.4 What the agent is allowed to do
 
