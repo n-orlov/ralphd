@@ -14,6 +14,17 @@ iteration running `pkill -f ralphd-engine` against a live engine and getting
 `tests/test_engine_uid_docker.py`. What *is* provable here, and matters just as
 much, is the other half of the contract: an unprivileged engine keeps working
 exactly as it did in v0.6 and says out loud that it has no boundary.
+
+Three tests below (identity-by-name, the drop's exact call sequence, and the
+real black-box `ralphd-engine` run) assert facts that are only true given an
+actual `agent` account at uid/gid 1000 -- true in every job container this
+project ships, but not on a bare developer host or a stripped CI sandbox with
+no such account. `_missing_container_precondition()` names exactly what is
+missing and each of the three skips on it rather than failing; task 007's
+docker-tier companion, `tests/test_engine_uid_boundary_docker.py`, proves the
+skip cannot become permanent by running this exact module inside a real job
+container and asserting those three pass there. The rest of this module needs
+no such account and always runs.
 """
 
 from __future__ import annotations
@@ -39,9 +50,58 @@ STUB_OVERLAY = (REPO / "tests" / "docker-hostpath-wrapper"
                 / "Dockerfile.stub-overlay").read_text()
 
 
+# --- who can run this module's job-container-only tests -----------------
+
+def _missing_container_precondition() -> str | None:
+    """`None` if this process is running inside a job container built from
+    `container/Dockerfile` -- which creates an `agent` account at uid/gid
+    1000 (`useradd -m -u 1000 -s /bin/bash agent`) and, since requirement I
+    (#48), always runs the test suite as that account rather than root;
+    otherwise a reason string naming exactly what is missing. A bare
+    developer host or a stripped CI sandbox commonly has neither, and the
+    three tests below need both to mean anything."""
+    try:
+        ent = pwd.getpwnam("agent")
+    except KeyError:
+        return ("no `agent` account on this host -- the job container's "
+                "Dockerfile creates one at uid 1000 "
+                "(`useradd -m -u 1000 -s /bin/bash agent`)")
+    if (ent.pw_uid, ent.pw_gid) != (1000, 1000):
+        return (f"an `agent` account exists but is not uid/gid 1000:1000 "
+                f"(got {ent.pw_uid}:{ent.pw_gid})")
+    if os.getuid() != 1000:
+        return (f"not running as uid 1000 (got {os.getuid()}) -- the job "
+                f"container always runs its test suite as the agent")
+    return None
+
+
+def test_the_container_precondition_check_fires_without_an_agent_account(monkeypatch):
+    monkeypatch.setattr(pwd, "getpwnam",
+                        lambda name: (_ for _ in ()).throw(KeyError(name)))
+    reason = _missing_container_precondition()
+    assert reason is not None
+    assert "agent" in reason and "uid 1000" in reason
+
+
+def test_the_container_precondition_check_fires_on_the_wrong_uid(monkeypatch):
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    reason = _missing_container_precondition()
+    assert reason is not None
+    assert "not running as uid 1000" in reason
+
+
+def test_the_container_precondition_check_passes_inside_this_container():
+    """This suite always runs inside a job container as the agent (see the
+    module docstring), so the real check must find nothing missing here."""
+    assert _missing_container_precondition() is None
+
+
 # --- privsep: who the agent is -------------------------------------------
 
 def test_the_agent_identity_resolves_by_name_first():
+    reason = _missing_container_precondition()
+    if reason:
+        pytest.skip(reason)
     ident = privsep.agent_identity()
     assert ident is not None, "this container has an `agent` account"
     assert (ident.name, ident.uid, ident.gid) == ("agent", 1000, 1000)
@@ -118,6 +178,9 @@ def test_the_drop_keeps_root_real_and_saved_and_sets_groups_first(monkeypatch):
     gid before uid (after the uid drop the gid can no longer be changed),
     and `(0, agent, 0)` both times -- real and saved root is what makes
     kill(2) from the agent uid EPERM."""
+    reason = _missing_container_precondition()
+    if reason:
+        pytest.skip(reason)
     calls: list[tuple] = []
     monkeypatch.setattr(privsep.os, "getuid", lambda: 0)
     monkeypatch.setattr(privsep.os, "initgroups",
@@ -221,6 +284,9 @@ def test_an_unprivileged_engine_runs_and_records_that_it_has_no_boundary(tmp_pat
     """Black box: the real `ralphd-engine` binary, started as uid 1000 (no
     PRD, so it exits 2 immediately) must log the missing boundary and must
     not fail on account of the drop it could not do."""
+    reason = _missing_container_precondition()
+    if reason:
+        pytest.skip(reason)
     run_dir, config_dir = tmp_path / "run", tmp_path / "config"
     run_dir.mkdir()
     config_dir.mkdir()

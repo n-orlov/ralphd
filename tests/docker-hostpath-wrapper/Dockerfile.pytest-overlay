@@ -1,0 +1,16 @@
+# Test-only overlay for task 007's docker-tier proof
+# (tests/test_engine_uid_boundary_docker.py): `container/Dockerfile` is built
+# unmodified first (real `agent` account, no `USER` -- see that file), then
+# this thin layer adds only the dev test dependencies (pytest and friends)
+# so the fast-lane module `tests/test_engine_uid_boundary.py` can actually
+# run inside a genuine job container, proving the three tests it skips
+# outside one are not skipped in one. Never used for anything except that
+# one throwaway image; unrelated to the stub-`pi` overlay other docker-tier
+# files use.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+RUN pip install --no-cache-dir /opt/ralphd[dev]
+# No trailing `USER agent`: the container is run with `docker run --user
+# 1000:1000` explicitly instead, so the image itself keeps requirement I's
+# property (no baked-in USER) exactly as container/Dockerfile leaves it.
