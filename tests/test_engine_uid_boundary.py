@@ -183,8 +183,11 @@ def test_the_drop_keeps_root_real_and_saved_and_sets_groups_first(monkeypatch):
         pytest.skip(reason)
     calls: list[tuple] = []
     monkeypatch.setattr(privsep.os, "getuid", lambda: 0)
+    monkeypatch.setattr(privsep.os, "getgroups", lambda: [0])
     monkeypatch.setattr(privsep.os, "initgroups",
                         lambda name, gid: calls.append(("initgroups", name, gid)))
+    monkeypatch.setattr(privsep.os, "setgroups",
+                        lambda gs: calls.append(("setgroups", list(gs))))
     monkeypatch.setattr(privsep.os, "setresgid",
                         lambda r, e, s: calls.append(("setresgid", r, e, s)))
     monkeypatch.setattr(privsep.os, "setresuid",
@@ -194,6 +197,62 @@ def test_the_drop_keeps_root_real_and_saved_and_sets_groups_first(monkeypatch):
     assert calls == [("initgroups", "agent", 1000),
                      ("setresgid", 0, 1000, 0),
                      ("setresuid", 0, 1000, 0)]
+
+
+def test_the_drop_keeps_an_operator_granted_supplementary_group(monkeypatch):
+    """`--allow-docker` adds the host's docker gid with `docker run
+    --group-add`, and that gid has no /etc/group entry inside the image. So
+    `initgroups()` -- which *replaces* the list with what /etc/group says --
+    discards it, and every iteration then gets "permission denied while trying
+    to connect to the docker API". For a job whose entire toolchain is sibling
+    containers that means it can build and test nothing, silently, for its whole
+    budget: observed on a real run that burned 45 iterations and failed an
+    approach on the stagnation guard with 0 of 72 tasks done.
+
+    An inherited supplementary group is an explicit operator grant made at
+    `docker run` time. Group 0 is the one that must not survive -- it is the
+    privilege this boundary exists to remove."""
+    # Resolved rather than hard-coded: uid 1000 is `agent` in the shipped image
+    # but somebody else on a developer host, and this property is about the
+    # group list, not the account name.
+    ident = privsep.agent_identity()
+    assert ident is not None and ident.uid != 0
+    granted_docker_gid = 968
+    calls: list[tuple] = []
+    # As the container starts: root, plus the operator's --group-add.
+    groups = [0, granted_docker_gid]
+    monkeypatch.setattr(privsep.os, "getuid", lambda: 0)
+    monkeypatch.setattr(privsep.os, "getgroups", lambda: list(groups))
+
+    def fake_initgroups(name, gid):
+        # What the real one does inside the image: /etc/group knows only the
+        # agent's own group, so the granted gid is wiped.
+        nonlocal groups
+        groups = [gid]
+        calls.append(("initgroups", name, gid))
+
+    def fake_setgroups(gs):
+        nonlocal groups
+        groups = list(gs)
+        calls.append(("setgroups", list(gs)))
+
+    monkeypatch.setattr(privsep.os, "initgroups", fake_initgroups)
+    monkeypatch.setattr(privsep.os, "setgroups", fake_setgroups)
+    monkeypatch.setattr(privsep.os, "setresgid", lambda r, e, s: None)
+    monkeypatch.setattr(privsep.os, "setresuid", lambda r, e, s: None)
+
+    assert privsep.separate_engine_identity() == ident
+    assert granted_docker_gid in groups, (
+        "the operator's --group-add gid must survive the drop, or --allow-docker "
+        "silently does nothing for every iteration")
+    assert ident.gid in groups, "the agent's own gid must still be present"
+    assert 0 not in groups, "group 0 must not survive the drop"
+    expected = sorted({ident.gid, granted_docker_gid})
+    assert ("setgroups", expected) in calls
+    # setgroups is only reachable while still root, so it must come before the
+    # uid drop -- same reason initgroups does.
+    assert calls.index(("setgroups", expected)) > \
+        calls.index(("initgroups", ident.name, ident.gid))
 
 
 def test_root_with_no_agent_account_refuses_to_drop_rather_than_to_root(monkeypatch):

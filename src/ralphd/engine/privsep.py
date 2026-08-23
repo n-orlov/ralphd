@@ -142,7 +142,28 @@ def separate_engine_identity() -> AgentIdentity | None:
     # child: the child's own drop runs unprivileged and cannot call
     # setgroups() itself, and leaving root's group set in place would hand
     # each iteration group 0.
+    #
+    # `initgroups()` alone is wrong here, because it *replaces* the list with
+    # what /etc/group says about `agent.name` -- and the groups that matter
+    # most are the ones /etc/group has never heard of. `--allow-docker` mounts
+    # the host's docker socket and adds the host's docker gid to the container
+    # with `--group-add`; that gid has no /etc/group entry inside the image, so
+    # initgroups() discards it and every iteration gets "permission denied
+    # while trying to connect to the docker API", which for a job whose whole
+    # toolchain is sibling containers means it can build and test nothing at
+    # all. An inherited supplementary group is an explicit operator grant made
+    # at `docker run` time, so it is kept; group 0 is the one thing dropped,
+    # because that is the privilege this boundary exists to remove.
+    granted = {g for g in os.getgroups() if g != 0}
     os.initgroups(agent.name, agent.gid)
+    keep = sorted(granted | {g for g in os.getgroups() if g != 0})
+    if keep != sorted(os.getgroups()):
+        os.setgroups(keep)
+    if granted - {agent.gid}:
+        log.info("keeping operator-granted supplementary group(s) %s across "
+                 "the uid drop (e.g. --allow-docker's docker gid, which has no "
+                 "/etc/group entry in the image)",
+                 ",".join(str(g) for g in sorted(granted - {agent.gid})))
     # gid before uid: after the uid drop the gid can no longer be changed.
     os.setresgid(0, agent.gid, 0)
     os.setresuid(0, agent.uid, 0)
