@@ -1,6 +1,6 @@
 """Keeps `artifacts/reports/issue-traceability.md` honest.
 
-The file holds two waves. The v0.5 wave (#1-#11 and #13, task 058 of
+The file holds three waves. The v0.5 wave (#1-#11 and #13, task 058 of
 `selfdev-v05-resilience`) was written under a PRD that *forbade* closing the
 GitHub issues from inside the run; the v0.6 wave (#14-#22, task 046 of
 `selfdev-v06-release`) is written under a PRD whose requirement I is the
@@ -10,13 +10,20 @@ closure in `artifacts/reports/issue-closure.md`. So the old
 this module holds the report's per-issue `**Closure:**` lines against that
 record: a section may claim a closure only when the record shows one.
 
+The v0.7 wave (#28 and #30-#49 excluding the closed #29, plus the mid-run
+amendments #52, #53 and #55; task 037 of `selfdev-v07-unattended`) is the same
+contract again, with two additions this module checks: its `**Closure:**` lines
+start out `pending` because the map is written *before* task 038 closes
+anything, and its requirements N, O and P closed SPEC entries rather than
+issues, so they are traced to SPEC sections instead of to a `## #N` heading.
+
 A report that names a commit that never landed, or a test that no longer
 exists, is worse than no report, so its claims are re-read too. That
 extraction and those three checks live in `tests/report_claims.py` (task 041)
 and `tests/test_report_claims.py` applies them to *every* report in the
 directory; they are re-applied here to this file specifically, because this is
 the report the issue closures are argued from. What is otherwise only ours:
-the per-issue sections of both waves, the density of the evidence, and the
+the per-issue sections of all three waves, the density of the evidence, and the
 closure cross-check.
 """
 
@@ -39,7 +46,15 @@ CLOSURE_REPORT = REPORTS_DIR / "issue-closure.md"
 V05_ISSUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]
 # Wave 2 (v0.6): closed from inside the run by task 047 (requirement I).
 V06_ISSUES = [14, 15, 16, 17, 18, 19, 20, 21, 22]
-ISSUES_IN_SCOPE = V05_ISSUES + V06_ISSUES
+# Wave 3 (v0.7): the 21 issues the PRD owns -- #28 and #30-#49, #29 having been
+# closed before the wave started -- plus the three amendments that arrived
+# mid-run by operator steering. Mapped by task 037, closed by task 038.
+V07_ISSUES = [28] + [n for n in range(30, 50) if n != 29] + [52, 53, 55]
+# v0.7 requirements that close a SPEC entry instead of an issue, so their
+# traceability is recorded against SPEC sections and they carry no `## #N`
+# heading: letter -> the SPEC section its own section must name.
+V07_SPEC_REQUIREMENTS = {"N": "4.4", "O": "15", "P": "16"}
+ISSUES_IN_SCOPE = V05_ISSUES + V06_ISSUES + V07_ISSUES
 
 # What a `**Closure:**` line may claim about one issue.
 CLOSURE_CLAIMED = "closed"
@@ -98,6 +113,49 @@ def test_the_v06_wave_maps_every_issue_to_a_requirement_and_a_task() -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_the_v07_wave_maps_every_issue_to_a_requirement_and_a_task() -> None:
+    """Same chain as v0.6, one wave on: #28, #30-#49 and the three steering
+    amendments each carry issue -> requirement letter -> task number -> commit
+    -> tests. The letters run A-U, because the amendments that arrived mid-run
+    were lettered by the roadmap rather than by the PRD."""
+    sections = _sections(_report_text())
+    problems = []
+    for issue in V07_ISSUES:
+        section = sections.get(issue, "")
+        if not re.search(r"requirement [A-U]\d?\b", section):
+            problems.append(f"#{issue}: no requirement letter")
+        if not re.search(r"^\| 0\d\d\b", section, re.MULTILINE):
+            problems.append(f"#{issue}: no task row in its evidence table")
+        if "tests/" not in section:
+            problems.append(f"#{issue}: names no test")
+    assert not problems, "\n".join(problems)
+
+
+def test_the_v07_requirements_with_no_issue_are_traced_to_spec() -> None:
+    """Requirements N, O and P close SPEC entries rather than GitHub issues, and
+    the PRD asks for their traceability against those sections instead. A
+    section that named only the tasks would leave the claim unanchored."""
+    text = _report_text()
+    problems = []
+    for letter, spec_section in V07_SPEC_REQUIREMENTS.items():
+        head = re.search(rf"^## Requirement {letter} \u2014 .*$", text, re.MULTILINE)
+        if head is None:
+            problems.append(f"requirement {letter}: no `## Requirement {letter}` section")
+            continue
+        nxt = re.search(r"^#{1,2} ", text[head.end():], re.MULTILINE)
+        body = text[head.start():head.end() + (nxt.start() if nxt else 0)]
+        if f"\u00a7{spec_section}" not in body:
+            problems.append(
+                f"requirement {letter}: its section does not name SPEC "
+                f"\u00a7{spec_section}"
+            )
+        if not re.search(r"^\| 0\d\d\b", body, re.MULTILINE):
+            problems.append(f"requirement {letter}: no task row in its evidence table")
+        if "tests/" not in body:
+            problems.append(f"requirement {letter}: names no test")
+    assert not problems, "\n".join(problems)
+
+
 def test_the_report_still_carries_the_evidence_it_promised() -> None:
     """Existence of every claim is checked below (and by
     `tests/test_report_claims.py` for every report); what is specific to this
@@ -106,9 +164,9 @@ def test_the_report_still_carries_the_evidence_it_promised() -> None:
     claims = parse_claims(REPORT)
     shas = {c.value for c in claims.shas}
     paths = {c.value for c in claims.paths}
-    assert len(shas) >= 80, f"suspiciously few commits listed: {sorted(shas)}"
-    assert len(paths) >= 80, f"suspiciously few paths listed: {sorted(paths)}"
-    assert len(claims.nodes) >= 180, (
+    assert len(shas) >= 140, f"suspiciously few commits listed: {sorted(shas)}"
+    assert len(paths) >= 150, f"suspiciously few paths listed: {sorted(paths)}"
+    assert len(claims.nodes) >= 500, (
         f"suspiciously few test node ids listed: {len(claims.nodes)}"
     )
     assert all(c.path for c in claims.nodes), "a node id with no path to attach to"
@@ -134,7 +192,7 @@ def test_every_issue_section_states_its_closure() -> None:
     text = _report_text()
     claims = _closure_claims(text)
     problems = []
-    for issue in V06_ISSUES:
+    for issue in V06_ISSUES + V07_ISSUES:
         state = claims.get(issue)
         if state is None:
             problems.append(f"#{issue}: no **Closure:** line")
