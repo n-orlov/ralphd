@@ -248,7 +248,7 @@ FLAG_RE = re.compile(r"--[A-Za-z][A-Za-z0-9-]*")
 # flags ralphctl itself does not and should not have belong here.
 FOREIGN_FLAGS = {
     "--label", "--rm", "--user", "--filter", "--entrypoint", "--volumes",
-    "--mode", "--no-session", "--privileged", "--check",
+    "--mode", "--no-session", "--privileged", "--check", "--cap-add",
 }
 # Prose that *denies* a flag's existence names it without claiming it ("there
 # is no global `--registry`") -- the same escape hatch the sibling-cleanup

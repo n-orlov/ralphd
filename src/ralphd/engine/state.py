@@ -810,6 +810,105 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
     return out
 
 
+# Task 028 (#26): the shape of an operator ruling ('amendment'), in ONE place.
+#
+# `<config_root>/amendments/NNN-<task-id>.md` holds an operator ruling review
+# MUST honour -- a waiver of a task's successCriteria, or replacement text
+# for it -- written host-side, ONLY by `ralphctl amend` (never through the
+# HTTP API, never through the runtime config overlay). `config_root(run_id)`
+# is the same host directory bind-mounted `:ro` as `/config` into every job
+# container (`cli/main.py config_root`, used identically by `cmd_start` and
+# `cmd_resume`): nothing running inside a job container -- not the worker's
+# shell, not `PUT /config/*`, not the writable overlay under $HOME -- can
+# write there, which is the whole point (see
+# artifacts/reports/task-027-operator-ruling-design.md). The numbering
+# convention mirrors STEERING_GLOB above; the format is a tiny fixed header
+# (`task:`/`mode:`/`ts:`) followed by a blank line and the ruling text
+# verbatim, so a reader never needs a YAML dependency to recover either half.
+#
+# `write_amendment` is the ONLY writer, called from `ralphctl amend` on the
+# HOST -- it must never be called from inside a job container.
+# `amendment_entries` is the ONLY reader, called both by `ralphctl amend
+# --list` (host, always on-disk) and by `engine.loop`'s
+# `_operator_amendment_review_context()` (in-container, reading
+# `engine.config.CONFIG_DIR` directly -- never `overlay_or_config`, since the
+# overlay lives inside the container's own writable filesystem and preferring
+# it here would let the run forge the very thing this channel exists to keep
+# unforgeable).
+AMENDMENT_GLOB = "[0-9][0-9][0-9]-*.md"
+AMENDMENT_DIRNAME = "amendments"
+AMENDMENT_MODE_WAIVE = "waive"
+AMENDMENT_MODE_REPLACE = "replace"
+
+
+def amendments_dir(config_root: Path) -> Path:
+    return Path(config_root) / AMENDMENT_DIRNAME
+
+
+def write_amendment(config_root: Path, task_id: str, text: str, *,
+                    waive: bool = False) -> str:
+    """Record one operator ruling as the next numbered file under
+    `<config_root>/amendments/`. HOST-SIDE ONLY -- `config_root` here is
+    `cli.main.config_root(run_id)`, the directory bind-mounted `:ro` into
+    the job container; calling this from inside a container would be
+    writing into a read-only mount and fail on a real one (and must never
+    be made to succeed by loosening that mount). Returns the file name
+    written (`NNN-<task-id>.md`), the same identifier `amendment_entries`
+    reports back."""
+    adir = amendments_dir(config_root)
+    adir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(adir.glob(AMENDMENT_GLOB))
+    seq = int(existing[-1].name[:3]) + 1 if existing else 1
+    fname = f"{seq:03d}-{task_id}.md"
+    mode = AMENDMENT_MODE_WAIVE if waive else AMENDMENT_MODE_REPLACE
+    header = f"task: {task_id}\nmode: {mode}\nts: {utcnow()}\n\n"
+    atomic_write(adir / fname, header + text.rstrip() + "\n")
+    return fname
+
+
+def amendment_entries(config_root: Path) -> list[dict]:
+    """Every operator ruling recorded for a run, oldest first. Reads
+    `<config_root>/amendments/` directly -- `config_root` is EITHER the host
+    path `cli.main.config_root(run_id)` (used by `ralphctl amend --list`) OR
+    `engine.config.CONFIG_DIR` as seen from inside the job container (used by
+    `engine.loop._operator_amendment_review_context()`) -- the same pair of
+    callers, and the same read-only relationship, as `job.yaml`/`prd.md`.
+    Returns `[]` when there is no `amendments/` dir at all (the common case:
+    an operator who has never amended anything), never an error."""
+    adir = amendments_dir(config_root)
+    try:
+        files = sorted(adir.glob(AMENDMENT_GLOB))
+    except OSError:
+        return []
+    out = []
+    for p in files:
+        try:
+            st = p.stat()
+            raw = p.read_text(errors="replace")
+        except OSError:
+            continue
+        stem = p.name.removesuffix(".md")
+        m = re.match(r"^(\d{3})-(.*)$", stem)
+        seq = int(m.group(1)) if m else None
+        header, _, body = raw.partition("\n\n")
+        fields: dict[str, str] = {}
+        for line in header.splitlines():
+            key, _, val = line.partition(":")
+            fields[key.strip()] = val.strip()
+        task_id = fields.get("task") or (m.group(2) if m else stem)
+        mode = fields.get("mode") or AMENDMENT_MODE_REPLACE
+        ts = fields.get("ts") or utc_from_epoch(st.st_mtime)
+        out.append({
+            "file": p.name,
+            "seq": seq,
+            "taskId": task_id,
+            "waive": mode == AMENDMENT_MODE_WAIVE,
+            "ts": ts,
+            "text": body.strip(),
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Task 019 (#18.1): one iteration's story, shaped ONCE.
 #

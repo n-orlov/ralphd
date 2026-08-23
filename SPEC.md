@@ -2987,6 +2987,7 @@ subcommand is mandatory.
 | `prompts <id> …` | `ls`/`set` phase prompt overrides on a live job |
 | `llm …` | `profiles`/`show`/`test` LLM profiles on the host |
 | `steer <id> [msg]` | queue operator guidance for the next iteration, or `--list` what has been queued |
+| `amend <id> <task> <text>` | record an operator ruling review must honour (waiver/replacement of a task's criteria), or `--list` what's recorded |
 | `retry <id>` | wake a degraded run out of its infra backoff wait immediately |
 | `budget <id> <+N\|N>` | change a running job's iteration budget in flight |
 | `abort <id>` | terminate the job, recording state `aborted` |
@@ -3276,6 +3277,8 @@ piped follow never touches stdin.
 | `steer <id> <msg>` | queue guidance, consumed at the next iteration boundary | redirecting the work |
 | `steer <id> --now` | queue it and SIGINT the current iteration | stopping active harm |
 | `steer <id> --list` | show what has been queued and what the loop has applied | before steering again |
+| `amend <id> <task> <text>` | record an operator ruling review must honour (waiver/replacement of a task's criteria) | a PRD requirement is impossible, or a scope call only you can make |
+| `amend <id> --list` | show what rulings have been recorded | before ruling again |
 | `interrupt <id>` | SIGINT the current iteration, no guidance | the agent is stuck in one long call |
 | `pause <id>` | hold the loop at the next iteration boundary | you need to look before it continues |
 | `unpause <id>` | release the pause | after looking |
@@ -3310,6 +3313,20 @@ reading the run dir's `steering/` directory when the container is gone (one
 notice on stderr, the same wording `logs` and `tasks` use). `--list` is a read:
 it never touches stdin, and combining it with a message, `--file`, `--name` or
 `--now` is a usage error rather than a send.
+
+**`amend` is a different kind of write than everything else in this table.**
+Every other control verb calls the engine's HTTP API; `amend` never does — it
+writes, from the host process, directly into `config_root(run_id)` (the
+directory `start`/`resume` bind-mount `:ro` as `/config`), the exact same path
+`job.yaml`/`prd.md` already occupy. That is deliberate: review re-derives its
+verdict from the PRD every pass and is outside `STEERING_ACTIONABLE_PHASES`
+(§4.6), so a steering message never reaches it — if a criterion turns out to
+be impossible mid-run, or the operator wants to make a scope call, `amend` is
+the one channel that can still change the verdict, and it has to be one the
+run itself cannot forge (§13.4). Storage is `config_root(run_id)/amendments/
+NNN-<task-id>.md`, `NNN` assigned by `ralphctl amend` itself; `--list` has no
+live half at all (there is nothing an engine could say that disagrees with
+the file on disk) and always reads that directory directly.
 
 `retry` targets a **degraded** run — `health: degraded` with a populated
 `infraWait`, sitting out an LLM-endpoint outage on an escalating backoff. It
@@ -4397,6 +4414,31 @@ first file is written, before the API listens.
   no-op that logs one warning, leaving the pre-v0.7 arrangement rather than
   refusing to start. `privsep.separated()` reads the live process credentials, not a
   startup flag, so nothing can report a boundary the kernel is not enforcing.
+
+**An operator ruling review must honour, unforgeable from inside (#26).**
+Review trusts nothing the run itself produced — `tasks.json`, commit
+messages, its own notes are all things a phase running inside the container
+can write — so "let the operator write text review will read" cannot mean
+another file under `/run/ralphd`; a prompt instruction not to touch it would
+be policy, not a property, exactly the distinction this section already
+draws. `ralphctl amend` (§10.4) instead writes, from the HOST process, into
+`config_root(run_id)`, the SAME directory already bind-mounted `:ro` as
+`/config` — the one thing `job.yaml`/`prd.md` already lean on for "the
+operator configured this, the run didn't." The job container carries no
+`--privileged`/`--cap-add` that could remount it writable, so a file placed
+there after the container starts is something every phase (planning, worker,
+review, verify, reflect) can read but provably cannot write. `engine.loop`'s
+`_operator_amendment_review_context()` reads `CONFIG_DIR/amendments/`
+directly at every review-phase prompt build — deliberately never through the
+writable config overlay (§6.4), which lives inside the container's own
+filesystem and is reachable by the worker's shell with no API needed, which
+would reopen exactly the forgeability this channel exists to close — and
+`review.md`'s "Operator rulings" section states the rule the reviewer follows:
+treat every ruling found there as authoritative, because of where it lives,
+never because of how it reads. See
+`artifacts/reports/task-027-operator-ruling-design.md` for the mechanisms
+considered and rejected (a signed amendment, a run-dir marker, a GitHub
+comment authenticated with the same token the agent already holds).
 
 What is left: the derived-image path above, and PID-namespace isolation per
 iteration (§15), which would additionally let the engine tell "stop this one

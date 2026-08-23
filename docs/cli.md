@@ -1452,6 +1452,60 @@ Pinned by `tests/test_cli_steer_list.py` (including a real engine steered from
 the CLI: pending → applied → container gone, agreeing with the hub at every
 step).
 
+### `ralphctl amend <run-id> <task-id> [text]`
+
+Record an **operator ruling** — a waiver or a replacement of one task's
+`successCriteria` — that the review phase must honour (task 028, #26). For
+when a PRD criterion turns out to be impossible mid-run, or a scope call only
+the operator can make, and the run has no other way to change a verdict:
+steering can redirect what the *worker* does next, but review and verify are
+deliberately outside `STEERING_ACTIONABLE_PHASES` — a steering message never
+reaches them — so without this verb a run just burns every remaining approach
+re-failing the same finding.
+
+| Option | Meaning |
+|--------|---------|
+| `--waive` | a full waiver: that task's criteria are satisfied by operator decision, not a text replacement |
+| `--file <f>` | read the ruling text from a file instead of the trailing argument |
+| `--list` | **show** this run's recorded rulings instead of recording one |
+
+Text comes from the trailing positional argument, `--file <f>`, or stdin — the
+same three-way choice as `steer`.
+
+**Why this is unforgeable, and why that's the whole design.** `ralphctl amend`
+runs on the HOST and writes directly into `config_root(run_id)`
+(`~/.ralphd/configs/<run-id>/`) — the exact directory `ralphctl start`/`resume`
+bind-mount **read-only** as `/config` into the job container. Nothing that
+runs inside that container — the worker's own shell, the API's config-CRUD
+routes, the writable config overlay under `$HOME` — can write there; a `:ro`
+bind mount is a kernel-enforced boundary at the mount-table level, and the job
+container gets no elevated docker capabilities that could defeat it. So a
+ruling's *authenticity* is a fact about where the file physically lives, never
+about its wording or about a signature review would have to verify — the same property
+`job.yaml`/`prd.md` already lean on for "the operator configured this, the run
+didn't." See `artifacts/reports/task-027-operator-ruling-design.md` for the
+full design (including the mechanisms considered and rejected) and
+`src/ralphd/prompts/review.md`'s "Operator rulings" section for the rule review
+is told to follow.
+
+On-disk shape: `config_root(run_id)/amendments/NNN-<task-id>.md`, `NNN`
+assigned monotonically by `ralphctl amend` itself (never supplied by the
+caller), each file a small `task:`/`mode:`/`ts:` header followed by a blank
+line and the ruling text verbatim (`engine.state.write_amendment`/
+`amendment_entries`, the ONE reader/writer pair, mirroring the `steering/`
+convention). `engine.loop`'s `_operator_amendment_review_context()` reads this
+directory directly (never the writable overlay) at every point a
+review-phase prompt is built, and appends every ruling found as a mandatory,
+unconditional instruction — review never has to (and must not) ask why the
+operator is entitled to grant one.
+
+`--list` has no live half at all: `ralphctl amend` never talks to the engine,
+so there is nothing for a live container to answer differently than the file
+on disk — it always reads `config_root(run_id)/amendments/` directly, live or
+dead run, with a `(no operator rulings recorded)` notice when there are none.
+Unknown run id is exit `3`; combining `--list` with a task id, text, `--file`
+or `--waive` is exit `2`, mirroring `steer --list`'s own mutual exclusion.
+
 ### `ralphctl interrupt <run-id>`
 
 SIGINT the current iteration without adding steering.

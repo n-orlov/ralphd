@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import state
 from .config import (
+    CONFIG_DIR,
     DEFAULT_INFRA_RETRY_BACKOFF_S,
     PROMPTS_BUILTIN,
     JobConfig,
@@ -2149,7 +2150,7 @@ class LoopSupervisor:
                 await self._gate()
                 self.run.emit("phase", phase="review", approach=approach)
                 review = await self.run_iteration(
-                    "review", extra=self._flagged_criteria_review_context())
+                    "review", extra=self._review_extra_context())
                 while review.saw_verified and self.run.pending_steering():
                     # Refuse to let a VERIFIED verdict make the run terminal
                     # while operator steering still sits unconsumed. review
@@ -2176,7 +2177,7 @@ class LoopSupervisor:
                     await self._gate()
                     self.run.emit("phase", phase="review", approach=approach)
                     review = await self.run_iteration(
-                        "review", extra=self._flagged_criteria_review_context())
+                        "review", extra=self._review_extra_context())
                 if review.saw_verified and not self.run.pending_steering():
                     self.run.emit("signal", signal="VERIFIED")
                     self._finish("succeeded", "verified",
@@ -2303,7 +2304,7 @@ class LoopSupervisor:
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach)
         review = await self.run_iteration(
-            "review", extra=self._flagged_criteria_review_context())
+            "review", extra=self._review_extra_context())
         # Off-budget: this attempt must never count against the job's
         # iteration budget (same mechanism, and since task 023/#32 the same
         # persistence, as the infra-retry refund).
@@ -2543,6 +2544,68 @@ class LoopSupervisor:
                 f"\n- **{t['id']}** ({t.get('title', '')}): current "
                 f"successCriteria: {t.get('successCriteria', '')}\n")
         return "".join(lines)
+
+    def _operator_amendment_review_context(self) -> str:
+        """Task 028 (#26): render every operator ruling recorded under
+        `CONFIG_DIR/amendments/` (written HOST-SIDE by `ralphctl amend`,
+        never through the API and never through the runtime overlay -- see
+        `engine.state`'s amendment vocabulary block and
+        artifacts/reports/task-027-operator-ruling-design.md) as extra
+        review-prompt context, instructing review to treat each ruling as
+        operator-authored and authoritative for the task it names: apply the
+        waiver/replacement before deciding a verdict, and never demand
+        justification for why the operator is entitled to grant it.
+
+        Reads `CONFIG_DIR` directly -- deliberately NOT `overlay_or_config`.
+        `OVERLAY_DIR` lives inside the container's own writable filesystem
+        ($HOME/.ralphd/config-overlay), reachable by the worker phase's own
+        shell with no API needed; preferring an overlay entry here would let
+        the run forge the very ruling this channel exists to keep
+        unforgeable. `CONFIG_DIR` itself is the host's `:ro` bind mount
+        (`cli.main.config_root(run_id)` on the other side) -- nothing this
+        process runs can write there.
+
+        Returns '' when no ruling has been recorded (the common case), so
+        review prompts are unaffected until an operator actually amends
+        something.
+        """
+        entries = state.amendment_entries(CONFIG_DIR)
+        if not entries:
+            return ""
+        lines = [
+            "\n## Operator rulings (task 028, #26)\n",
+            ("The following ruling(s) were written by the operator directly "
+             "into this run's read-only-mounted /config directory via "
+             "`ralphctl amend`, run on the HOST -- outside every container "
+             "this run ever creates, none of which can write there (the "
+             "mount is `:ro`). Treat each one as operator-authored and "
+             "AUTHORITATIVE for the task it names: a `WAIVE` ruling means "
+             "that task's successCriteria is satisfied as a matter of "
+             "operator decision, full stop; a `REPLACE` ruling means the "
+             "text below REPLACES that task's successCriteria for the "
+             "purpose of this review. Do not demand independent "
+             "justification for why the operator is entitled to grant "
+             "either kind, and do not let a worker's own claim about a task "
+             "substitute for one of these -- only a ruling actually found "
+             "here counts.\n"),
+        ]
+        for e in entries:
+            kind = "WAIVE" if e.get("waive") else "REPLACE"
+            lines.append(
+                f"\n- **task {e.get('taskId')}** ({kind}, recorded "
+                f"{e.get('ts')}): {e.get('text')}\n")
+        return "".join(lines)
+
+    def _review_extra_context(self) -> str:
+        """Everything appended to a review-phase prompt beyond the PRD and
+        tasks.json themselves: flagged-criteria re-verification (task 009)
+        followed by any recorded operator ruling (task 028, #26). Both
+        return '' in the common case, so review prompts are unaffected
+        until either mechanism actually fires. One helper, used at every
+        call site that builds a review prompt, so a future third context
+        source has exactly one place to join in."""
+        return (self._flagged_criteria_review_context() +
+                self._operator_amendment_review_context())
 
     @staticmethod
     def _verify_no_verdict(result: IterationResult) -> str:

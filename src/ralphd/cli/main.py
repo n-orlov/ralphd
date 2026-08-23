@@ -48,6 +48,7 @@ from ..engine.state import (
     TASK_STATUS_LABELS,
     TERMINAL_STATES,
     TERMINATION_CLASS_SELF,
+    amendment_entries,
     archived_approach_dir,
     archived_approach_numbers,
     archived_approaches_dir,
@@ -89,6 +90,7 @@ from ..engine.state import (
     tasks_read_notice,
     utc_from_epoch,
     utcnow,
+    write_amendment,
 )
 from ..log_merge import NO_TRANSCRIPT, iteration_numbers
 from ..log_merge import iteration_lines as _iteration_lines
@@ -3906,6 +3908,89 @@ def cmd_steer(args):
     out(args, res, f"steering accepted: {res}")
 
 
+_AMEND_SNAPSHOT_NOTICE = (
+    "on-disk read: `ralphctl amend` writes host-side into this run's "
+    "read-only-mounted /config directory and never touches the API, so "
+    "--list always reads the run dir directly, live container or not")
+
+
+def cmd_amend_list(args) -> None:
+    """`ralphctl amend <run> --list` (task 028, #26): what operator rulings
+    have been recorded for this run.
+
+    Unlike `steer --list`, there is no live/API half to this at all --
+    `ralphctl amend` never goes through the engine, so there is nothing for
+    a running container to answer differently than the file on disk. Always
+    reads `config_root(run_id)/amendments/` directly through the ONE shared
+    reader (`engine.state.amendment_entries`), the same reader
+    `_operator_amendment_review_context()` uses from inside the container --
+    so "what `ralphctl amend --list` shows" and "what review was actually
+    handed" can never disagree about which rulings exist.
+    """
+    _require_run(args.run_id)
+    entries = amendment_entries(config_root(args.run_id))
+    if args.json:
+        print(json.dumps({"entries": entries}, indent=2))
+        return
+    print(_AMEND_SNAPSHOT_NOTICE, file=sys.stderr)
+    if not entries:
+        print("(no operator rulings recorded)")
+        return
+    print(f"{'SEQ':>3}  {'MODE':<7}  {'RECORDED':<25}  {'TASK':<8}  RULING")
+    for e in entries:
+        mode = "waive" if e.get("waive") else "replace"
+        preview = " ".join(str(e.get("text") or "").split())
+        if len(preview) > 60:
+            preview = preview[:59] + "\u2026"
+        seq = e.get("seq")
+        print(f"{(str(seq) if isinstance(seq, int) else '-'):>3}  {mode:<7}  "
+              f"{str(e.get('ts') or '-'):<25}  {str(e.get('taskId') or '-'):<8}  "
+              f"{preview}")
+
+
+def cmd_amend(args):
+    """`ralphctl amend <run> <task-id> [text]` (task 028, #26): record an
+    operator ruling review must honour -- a waiver or a replacement of one
+    task's `successCriteria` -- for a PRD requirement that turned out to be
+    impossible, or a scope call only the operator can make.
+
+    Deliberately HOST-ONLY: this never opens a socket, never calls the
+    engine's HTTP API, and never touches the run dir
+    (`registry()/runs/<id>`) at all -- it writes directly into
+    `config_root(run_id)` (`registry()/configs/<id>`), the SAME directory
+    `ralphctl start`/`resume` bind-mount `:ro` as `/config` into the job
+    container. That is what makes the ruling unforgeable from inside: no
+    process the container ever runs -- worker shell, the API's config-CRUD
+    routes, the writable config overlay -- can write there. See
+    artifacts/reports/task-027-operator-ruling-design.md for the full
+    reasoning and docs/cli.md's `ralphctl amend` section for the surface.
+
+    `--list` shows what has been recorded instead of writing a new one (see
+    `cmd_amend_list`); combining it with a task id / text / `--file` /
+    `--waive` is a usage error, mirroring `steer --list`.
+    """
+    if args.list:
+        if args.task_id or args.text or args.file or args.waive:
+            die(2, "--list only shows this run's recorded operator rulings; "
+                   "drop the task id/text/--file/--waive")
+        cmd_amend_list(args)
+        return
+    _require_run(args.run_id)
+    if not args.task_id:
+        die(2, "a task id is required (or --list to show recorded rulings)")
+    text = args.text or (Path(args.file).read_text() if args.file
+                         else sys.stdin.read())
+    if not text.strip():
+        die(2, "empty ruling text")
+    cdir = config_root(args.run_id)
+    cdir.mkdir(parents=True, exist_ok=True)
+    fname = write_amendment(cdir, args.task_id, text, waive=args.waive)
+    kind = "waiver" if args.waive else "replacement"
+    out(args, {"file": fname, "taskId": args.task_id, "waive": args.waive},
+        f"operator ruling recorded ({kind}): {fname} "
+        f"(applies to task {args.task_id} at review time)")
+
+
 def cmd_interrupt(args):
     out(args, api(args.run_id, "POST", "/interrupt"), "interrupted")
 
@@ -5783,6 +5868,23 @@ def build_parser() -> argparse.ArgumentParser:
                         "applied) instead of sending one; works after the "
                         "container is gone")
     s.set_defaults(func=cmd_steer)
+
+    s = sub.add_parser("amend", help="record an operator ruling review must "
+                       "honour (waiver/replacement of a task's criteria), or "
+                       "--list what's recorded (#26)")
+    s.add_argument("run_id")
+    s.add_argument("task_id", nargs="?", help="the task id the ruling applies to")
+    s.add_argument("text", nargs="?", help="the ruling text; or --file, or stdin")
+    s.add_argument("--file")
+    s.add_argument("--waive", action="store_true",
+                   help="a full waiver (the task's successCriteria is "
+                        "satisfied by operator decision) rather than a "
+                        "replacement of its criteria text")
+    s.add_argument("--list", action="store_true",
+                   help="list this run's recorded operator rulings instead "
+                        "of recording one; always reads the run's /config "
+                        "directory directly, container or no container")
+    s.set_defaults(func=cmd_amend)
 
     s = sub.add_parser("retry", help="wake a degraded run's infra backoff "
                        "wait immediately (resets the outage-budget clock)")
