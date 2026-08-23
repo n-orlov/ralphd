@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_start_nodetach import _live_env, _wait_for_supervisor
+from test_llm_api import wait_for_env_marker
 
 __all__ = ["ctl", "unix_sock"]
 
@@ -222,9 +222,13 @@ def test_resume_reproduces_env_seen_by_real_pi_subprocess(ctl):
     sup1 = _wait_for_supervisor(run_dir)
     assert sup1["killed"] is True  # the original run really did reach terminal
 
+    # Wait for a PARSABLE marker, not for mere existence: the stub re-dumps
+    # this file on every invocation, so an existence check can be satisfied
+    # by a file that has no bytes yet (task 040 / task 018's fast lane).
     env_marker = run_dir / ".stub-env.json"
-    assert env_marker.exists()
-    assert json.loads(env_marker.read_text()).get("ANTHROPIC_API_KEY") == secret
+    started = wait_for_env_marker(env_marker)
+    assert started, "stub never dumped its env for the original run"
+    assert started.get("ANTHROPIC_API_KEY") == secret
 
     # Simulate a resume from a shell/environment where the credential is
     # completely absent -- the ONLY source left for it is the persisted
@@ -239,17 +243,7 @@ def test_resume_reproduces_env_seen_by_real_pi_subprocess(ctl):
 
     _wait_for_supervisor(run_dir)  # resumed engine also reaches a terminal state
 
-    deadline = time.time() + 20
-    seen: dict = {}
-    while time.time() < deadline:
-        if env_marker.exists():
-            try:
-                seen = json.loads(env_marker.read_text())
-            except json.JSONDecodeError:
-                seen = {}
-            if seen.get("ANTHROPIC_API_KEY"):
-                break
-        time.sleep(0.2)
+    seen = wait_for_env_marker(env_marker, lambda d: d.get("ANTHROPIC_API_KEY"))
     assert seen.get("ANTHROPIC_API_KEY") == secret, (
         "resumed engine's real `pi` subprocess never observed the original "
         f"start-time env (saw: {seen.get('ANTHROPIC_API_KEY')!r})")

@@ -331,8 +331,27 @@ with open(marker("skills"), "w") as _f:
 # JSON marker -- black-box proof that runtime LLM env rotation (PUT
 # /config/llm) reaches the very next `pi` subprocess without a container
 # restart. Overwritten every invocation, never gated by a knob.
-with open(marker("env.json"), "w") as _f:
-    json.dump(dict(os.environ), _f)
+#
+# Written ATOMICALLY (task 040): a reader polls this path while iterations
+# keep re-writing it, and `open(path, "w")` truncates/creates BEFORE any
+# byte is written -- on a loaded machine a poller observed a zero-byte file
+# and died of JSONDecodeError (task 018's fast lane, one flake in 2209
+# tests). Temp file in the SAME directory (os.replace needs one filesystem)
+# + os.replace, so every observable state of this path is a whole document;
+# the temp is removed on any failure so a leaked env dump under a different
+# name can never survive to be scanned by the redaction tests.
+_env_final = marker("env.json")
+_env_tmp = f"{_env_final}.tmp.{os.getpid()}"
+try:
+    with open(_env_tmp, "w") as _f:
+        json.dump(dict(os.environ), _f)
+    os.replace(_env_tmp, _env_final)
+except BaseException:
+    try:
+        os.unlink(_env_tmp)
+    except OSError:
+        pass
+    raise
 
 
 # STUB_SIGNAL_ENGINE (task 020, #48): the hazard requirement I closes, driven

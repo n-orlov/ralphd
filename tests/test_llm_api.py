@@ -21,6 +21,39 @@ from test_e2e import EngineProc
 
 SECRET_VALUE = "sekret-llm-key-do-not-leak-abc123"
 
+ENV_MARKER_TIMEOUT = 20
+
+
+def wait_for_env_marker(path, predicate=None, timeout=ENV_MARKER_TIMEOUT):
+    """Poll the stub's `.stub-env.json` until it holds a PARSABLE document
+    satisfying `predicate` (default: any document at all) and return that
+    document -- {} if the deadline passes first, so the caller's own
+    assertion is what reports the failure.
+
+    Waiting for mere existence is what reddened task 018's fast lane: the
+    marker is re-dumped by every `pi` invocation while this poller reads it,
+    and a zero-byte read raised JSONDecodeError inside the test body. The
+    stub now writes it atomically (temp file + os.replace); this reader
+    additionally treats an absent or unparsable document as "not there yet"
+    rather than as an error, which is also the only shape that stays correct
+    if a future stub knob writes the marker some other way. No assertion is
+    relaxed by this: every caller still asserts exactly the same thing about
+    the document returned here.
+    """
+    deadline = time.time() + timeout
+    seen: dict = {}
+    while True:
+        try:
+            seen = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            seen = {}
+        else:
+            if predicate is None or predicate(seen):
+                return seen
+        if time.time() >= deadline:
+            return seen
+        time.sleep(0.2)
+
 
 @pytest.fixture
 def llm_engine(tmp_path):
@@ -58,11 +91,9 @@ def test_llm_env_reaches_next_pi_invocation_no_leak(llm_engine, tmp_path):
 
     # -- no override yet: the stub's env has no trace of our key -----------
     env_marker = e.run_dir / ".stub-env.json"
-    deadline = time.time() + 20
-    while time.time() < deadline and not env_marker.exists():
-        time.sleep(0.2)
-    assert env_marker.exists(), "stub never ran a first iteration"
-    assert "PROBE_LLM_KEY" not in json.loads(env_marker.read_text())
+    first = wait_for_env_marker(env_marker)
+    assert first, "stub never ran a first iteration"
+    assert "PROBE_LLM_KEY" not in first
 
     # -- PUT replaces the env-override set; effective next iteration -------
     body = json.dumps({"env": {"PROBE_LLM_KEY": SECRET_VALUE,
@@ -70,13 +101,8 @@ def test_llm_env_reaches_next_pi_invocation_no_leak(llm_engine, tmp_path):
     st, _ = _put(e.port, "/config/llm", body)
     assert st == 204
 
-    deadline = time.time() + 20
-    seen = {}
-    while time.time() < deadline:
-        seen = json.loads(env_marker.read_text())
-        if seen.get("PROBE_LLM_KEY") == SECRET_VALUE:
-            break
-        time.sleep(0.3)
+    seen = wait_for_env_marker(
+        env_marker, lambda d: d.get("PROBE_LLM_KEY") == SECRET_VALUE)
     assert seen.get("PROBE_LLM_KEY") == SECRET_VALUE, \
         f"PROBE_LLM_KEY never observed by a later iteration; last seen keys: {list(seen)}"
     assert seen.get("PROBE_LLM_ENDPOINT") == "https://gw.example.com"
@@ -85,13 +111,7 @@ def test_llm_env_reaches_next_pi_invocation_no_leak(llm_engine, tmp_path):
     st, _ = _put(e.port, "/config/llm",
                  json.dumps({"env": {"OTHER_KEY": "v2"}}).encode())
     assert st == 204
-    deadline = time.time() + 20
-    seen = {}
-    while time.time() < deadline:
-        seen = json.loads(env_marker.read_text())
-        if seen.get("OTHER_KEY") == "v2":
-            break
-        time.sleep(0.3)
+    seen = wait_for_env_marker(env_marker, lambda d: d.get("OTHER_KEY") == "v2")
     assert seen.get("OTHER_KEY") == "v2"
     assert "PROBE_LLM_KEY" not in seen, "env PUT must replace, not merge"
 
