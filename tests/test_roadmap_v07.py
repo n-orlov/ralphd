@@ -19,7 +19,11 @@ Its code-derived halves, so the block cannot become prose nobody re-reads: the
 verb requirement P advertises exists in `build_parser()`; requirement O's
 literal really is flipped; requirement D's third fault class really exists; and
 requirement I's uid boundary really is in the code, which is what makes the
-old PID-namespace deferred entry wrong to leave standing.
+old PID-namespace deferred entry wrong to leave standing. Requirement Q's
+bullet is checked against the receipt task 038 wrote
+(`artifacts/reports/issue-closure.md`): the issue numbers it claims closed and
+the ones it names as left open are that record's own sets, parsed, never
+retyped here -- so the roadmap cannot claim a closure GitHub does not have.
 
 Every check is paired with a test that mutates the *real* roadmap text into the
 wording it replaced (or a wrong version), so a check that stops discriminating
@@ -34,6 +38,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROADMAP = REPO_ROOT / "docs" / "roadmap.md"
+CLOSURE_REPORT = REPO_ROOT / "artifacts" / "reports" / "issue-closure.md"
+TRACEABILITY_REPORT = REPO_ROOT / "artifacts" / "reports" / "issue-traceability.md"
+CLOSURE_WAVE_HEADING = "# Issue closure record — ralphd v0.7"
 PRD = REPO_ROOT / "docs" / "prds" / "v0.7-trustworthy-unattended.md"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 INIT = REPO_ROOT / "src" / "ralphd" / "__init__.py"
@@ -275,6 +282,138 @@ def test_the_auto_resume_flip_is_shipped_not_deferred():
     assert "auto_resume" not in deferred_section(roadmap_text())
     block = milestone_block(roadmap_text(), declared_series())
     assert "AUTO_RESUME_DEFAULT" in block and "--no-auto-resume" in block
+
+
+# ------------------------------------------- requirement Q matches the receipts
+
+
+def closure_wave_section() -> str:
+    """`artifacts/reports/issue-closure.md`'s v0.7 half (it holds two waves)."""
+    text = CLOSURE_REPORT.read_text()
+    assert CLOSURE_WAVE_HEADING in text, (
+        f"{CLOSURE_REPORT.name} has no {CLOSURE_WAVE_HEADING!r} section")
+    return text.split(CLOSURE_WAVE_HEADING, 1)[1]
+
+
+def closed_issues() -> set[int]:
+    """The issues the closure record says it actually closed, per-section.
+
+    Derived from the report rather than retyped here: the roadmap bullet's
+    claim is only worth anything if it is the same set the receipt records.
+    A section counts as a closure only where it states the state GitHub
+    answered on the re-read (`**closed**`), which is what task 038 wrote.
+    """
+    out = set()
+    for m in re.finditer(r"^## #(\d+)\b([\s\S]*?)(?=^## |\Z)",
+                         closure_wave_section(), re.MULTILINE):
+        if "**closed**" in m.group(2):
+            out.add(int(m.group(1)))
+    return out
+
+
+def left_open_issues() -> set[int]:
+    """The issues the closure record names as deliberately left open."""
+    section = closure_wave_section()
+    assert "Deliberately **not** closed" in section, (
+        f"{CLOSURE_REPORT.name}'s v0.7 section no longer names what it left open")
+    para = section.split("Deliberately **not** closed", 1)[1].split("\n\n", 1)[0]
+    return {int(n) for n in re.findall(r"#(\d+)", para)}
+
+
+def _issue_numbers(text: str) -> set[int]:
+    """`{28, 30, 31, ...}` from prose, expanding `#30–#49` style ranges."""
+    out: set[int] = set()
+    for lo, hi in re.findall(r"#(\d+)\s*[–—-]\s*#(\d+)", text):
+        out.update(range(int(lo), int(hi) + 1))
+    out.update(int(n) for n in re.findall(r"#(\d+)", text))
+    return out
+
+
+def q_bullet(block: str) -> str | None:
+    bullets = [p for p in re.split(r"\n(?=- )", block) if "**Q." in p]
+    return bullets[0] if len(bullets) == 1 else None
+
+
+OPEN_MARKER = "Left open deliberately"
+
+
+def _requirement_q_problems(block: str) -> list[str]:
+    bullet = q_bullet(block)
+    if bullet is None:
+        return ["the v0.7 block has no single requirement Q bullet"]
+    problems = []
+    if not bullet.startswith("- ✅"):
+        problems.append("requirement Q is not marked shipped")
+    if "⏳" in bullet or re.search(r"[Pp]ending as this block is written", bullet):
+        problems.append("the Q bullet still says the closures are pending")
+    for report in (CLOSURE_REPORT, TRACEABILITY_REPORT):
+        cited = f"`artifacts/reports/{report.name}`"
+        if cited not in bullet:
+            problems.append(f"the Q bullet does not cite {cited}")
+    if OPEN_MARKER not in bullet:
+        problems.append(f"the Q bullet does not say what it {OPEN_MARKER.lower()}")
+        return problems
+    claimed, open_part = bullet.split(OPEN_MARKER, 1)
+    closed = closed_issues()
+    if _issue_numbers(claimed) != closed:
+        problems.append(
+            f"the Q bullet claims {sorted(_issue_numbers(claimed))} closed, but "
+            f"{CLOSURE_REPORT.name} records {sorted(closed)}")
+    total = re.search(r"\b(\d+) in all\b", claimed)
+    if not total:
+        problems.append("the Q bullet states no closure total")
+    elif int(total.group(1)) != len(closed):
+        problems.append(f"the Q bullet says {total.group(1)} closures, the "
+                        f"record has {len(closed)}")
+    if _issue_numbers(open_part) != left_open_issues():
+        problems.append(
+            f"the Q bullet names {sorted(_issue_numbers(open_part))} as left "
+            f"open, the record names {sorted(left_open_issues())}")
+    return problems
+
+
+def test_the_closure_record_parses_at_all():
+    """Guards the checks below from passing on an empty parse -- and pins what
+    task 038 actually did: 24 closures, seven issues left open on purpose."""
+    closed, left_open = closed_issues(), left_open_issues()
+    assert closed == {28, *range(30, 50), 52, 53, 55}, sorted(closed)
+    assert len(closed) == 24
+    assert left_open == {24, 25, 26, 27, 50, 51, 54}, sorted(left_open)
+    assert not closed & left_open
+
+
+def test_requirement_q_is_shipped_and_says_what_the_receipts_say():
+    """Task 042: the bullet flips to shipped only once the issues are closed,
+    and its claim is the closure record's own set, not a retyped one."""
+    block = milestone_block(roadmap_text(), declared_series())
+    assert block is not None
+    assert not _requirement_q_problems(block)
+
+
+def test_the_requirement_q_check_catches_a_stale_or_wrong_claim():
+    block = milestone_block(roadmap_text(), SERIES)
+    bullet = q_bullet(block)
+    assert bullet is not None, "fixture assumption: the bullet is there to mutate"
+
+    def mutated(old: str, new: str) -> list[str]:
+        assert old in bullet, f"fixture assumption: {old!r} is in the bullet"
+        return _requirement_q_problems(block.replace(bullet, bullet.replace(old, new, 1)))
+
+    # the pre-042 wording: still pending, so the roadmap would claim work the
+    # GitHub state contradicts
+    assert mutated("- ✅", "- ⏳")
+    assert mutated("no hedged closures.", "Pending as this block is written.")
+    # a dropped receipt citation
+    assert mutated(f"`artifacts/reports/{CLOSURE_REPORT.name}`", "the closure report")
+    # a closure claimed for an issue the record leaves open, and one dropped
+    assert mutated("**#52**, **#53** and **#55**", "**#50**, **#52** and **#53**")
+    assert mutated("**#52**, **#53** and **#55**", "**#52** and **#53**")
+    # an issue left open that the bullet stops naming
+    assert mutated("**#51**, filed by the operator", "one filed by the operator")
+    # a total that no longer matches the receipt
+    assert mutated("24 in all", "21 in all")
+    # ...and the real bullet is not accidentally satisfying all of this by luck
+    assert not _requirement_q_problems(block)
 
 
 def test_the_block_names_the_fault_class_requirement_d_added():

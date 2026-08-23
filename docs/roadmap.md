@@ -371,14 +371,21 @@ Phase 3 — the two deferred decisions, taken:
 
 Phase 4 — close the loop:
 
-- ⏳ **Q. Close the wave's issues from inside the run (#28, #30–#49).** The
-  wave's own last requirement, done after the verification sweeps pass: it
-  extends `artifacts/reports/issue-traceability.md` with a section per issue
-  (requirement → task → commit → tests) and closes each fully-landed issue over
-  the GitHub REST API, recording every closure in
-  `artifacts/reports/issue-closure.md`. Pending as this block is written; read
-  those two reports for what actually closed, and treat an issue named there as
-  not landed as still open
+- ✅ **Q. Close the wave's issues from inside the run (#28, #30–#49).** The
+  wave's own last requirement, done once all three verification sweeps were
+  green at `bfe29d6`: `artifacts/reports/issue-traceability.md` gained a section
+  per issue (requirement → task → commit → tests), each closing comment was
+  generated from that section and posted before the state change, and every
+  issue was re-read with a fresh `GET` afterwards — all of it recorded in
+  `artifacts/reports/issue-closure.md`, which is the receipt those claims rest
+  on. Closed: **#28, #30–#49**, this wave's 21, plus the three amendments that
+  arrived mid-run by operator steering — **#52**, **#53** and **#55** (bullets
+  S, T, U) — 24 in all, no hedged closures. Left open deliberately, and named in
+  both reports so the silence is not mistaken for an oversight: **#50**, whose
+  defect (a top-level `tests` package that shadows the installed one) is real
+  and unfixed, so it got a correction comment and a body edit rather than a
+  closure; **#51**, filed by the operator while this run was going; **#54**, not
+  this wave's; and **#24–#27**, out of scope by the PRD's non-goals
 - ✅ **R. Docs, SPEC and the roadmap.** Docs in the same commit as the
   behaviour, every claim this wave adds paired with a code-derived check and a
   mutation case, answered open questions moved out of SPEC §16 with their
