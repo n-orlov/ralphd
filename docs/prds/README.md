@@ -8,10 +8,17 @@ that executed it.
 Every file here for a wave that has **run** is the verbatim input, byte-identical
 to `~/.ralphd/runs/<run-id>/prd.md` (and to `~/.ralphd/configs/<run-id>/prd.md`,
 which is what a `resume` re-reads). The five `selfdev-*.md` files were recovered
-from that storage after the fact — the earlier waves were never committed. A row
-whose outcome reads `not started` is the other direction: the brief is committed
-first and there is no run dir to be byte-identical to yet, so the run id names
-the launch it is written for, not a run that exists.
+from that storage after the fact — the earlier waves were never committed. A
+brief may also be committed *ahead* of its launch, in which case its outcome
+reads `not started`: there is no run dir to be byte-identical to yet, so the run
+id names the launch it is written for, not a run that exists.
+
+A row whose counts carry a `+` is a **snapshot**, written by an iteration of the
+run it describes: the numbers are a floor, because a run cannot count the
+iterations that go on to document and verify it. A finished run's row is the
+other thing — the marker is gone and every cell is a settled figure read from
+that run's final `status.json`, which is why the marker is what the checks in
+`tests/test_docs_prd_index.py` key on.
 
 | Run | File | Outcome | Iterations | Tokens | Cost |
 |---|---|---|---|---|---|
@@ -22,7 +29,7 @@ the launch it is written for, not a run that exists.
 | `selfdev-roadmap-4` | [selfdev-roadmap-4.md](selfdev-roadmap-4.md) | succeeded / verified | 43 | 27.6M | $17.35 |
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
-| `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | not started | — | — | — |
+| `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | still running / 44+ of 47 tasks completed | 100+ | 239.1M+ | ~$279.16+ derived |
 
 Notes worth keeping with the documents:
 
@@ -68,16 +75,34 @@ Notes worth keeping with the documents:
   (`ralphctl start --price-strategy aws`) derives ≈ $374 — an estimate at that
   table's rates, not money any provider quoted. Full evidence in
   `artifacts/reports/issue-traceability.md`.
-- **`v0.7-trustworthy-unattended.md` has not run yet.** It is committed ahead of
-  its launch so the brief is reviewable — and because `--prd` reads a file, a
-  committed one is the reproducible input. Its `not started` row exists because
-  this index requires every PRD in the directory to have exactly one, so the row
-  is filled in when the run ends rather than invented now. It carries a caveat
-  about the iteration cell above: v0.6's `145` is what the engine recorded, and
-  issue #32 (which that wave's PRD asks to fix) means the true charged figure was
-  lower — 27 iterations faulted on infrastructure and only 10 refunds survived
-  the run's resumes. The row is not being corrected: it faithfully reports what
-  was written, and rewriting it would hide the defect instead of fixing it.
+- **`v0.7-trustworthy-unattended.md`'s row is that run's own snapshot of
+  itself**, read from its `status.json` by the iteration that wrote the row —
+  hence the `+` on every count. At that moment: `state: running`, no verdict
+  yet, on approach 1 of a possible 10 (it never replanned), 44 of its 47 planned
+  tasks `completed`. The three still open are the tail a run cannot do for
+  itself before it has done it: this very row, the roadmap bullet that waits on
+  the issue closures, and the final green sweep of the test suite. All 24 issues
+  in the brief (#28, #30–#49, #52, #53, #55) are already closed on GitHub with a
+  closing comment (`artifacts/reports/issue-closure.md`, traced per issue in
+  `artifacts/reports/issue-traceability.md`).
+  The iteration cell is the 100 the engine charged against a 500 budget, not the
+  107 raw iteration slots the log holds: 12 attempts were classified
+  infrastructure faults, which are retried and refunded rather than charged
+  (`iterationsUsed`). **That 100 is itself inflated**, by the same issue #32 this
+  wave fixes — the run is driven by an engine image built before the fix, so its
+  one resume restarted the refund counters at zero: 12 attempts faulted on
+  infrastructure and only the 7 after the resume survived as credit, so the
+  guarantee implies 95 charged, not 100. The cell reports what the engine wrote,
+  for the same reason v0.6's does. That resume is itself this wave's subject
+  matter: the engine died mid-iteration 38 on issue #28 (an iteration that
+  overran its 45-minute cap took the supervisor down with it), and the crashed
+  attempt's transcript is gone because the resumed attempt reused the slot —
+  issue #44, also fixed here, but not in the image that was running.
+  The cost cell is `derived`, not quoted: the gateway reported `costUSD: 0`
+  beside 239M billed tokens, which the shipped classifier calls unknown (#14,
+  v0.6), and the host-side AWS Bedrock price table derives ≈ $279 from the same
+  recorded counters. It is an estimate at that table's rates, not money any
+  provider quoted, and — like the counts beside it — a floor.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.

@@ -26,6 +26,15 @@ ways it can lie, all checked here rather than by eye:
   prose note are both compared against it, and the two numbers must add up with
   the count of tasks that never got there.
 
+Task 039 of `selfdev-v07-unattended` adds the other direction: that run's own
+row, written from inside the run, so the table now carries one settled record
+(v0.6) and one snapshot (v0.7) and the checks pin the difference between them --
+the snapshot's counts must WEAR the `+` the finished row must not, its outcome
+may no longer read `not started`, its iteration cell must be the count the
+engine charged rather than the raw slots the log holds, and its derived cost cell
+must still be what `engine.state.format_cost` renders for that run's recorded
+usage (plus the floor marker), never money presented as quoted.
+
 Each check is paired with a mutation of the real text into the wording it
 replaced, so a check that stops discriminating fails.
 """
@@ -74,15 +83,23 @@ ROW = re.compile(r"^\|\s*`(?P<run>[^`]+)`\s*\|(?P<rest>.*)\|\s*$")
 LINK = re.compile(r"^\[(?P<label>[^\]]+)\]\((?P<target>[^)]+)\)$")
 
 
-def _rows(text: str) -> dict[str, list[str]]:
-    """Run id -> the row's remaining cells, for every table row in `text`."""
-    rows: dict[str, list[str]] = {}
+def _row_pairs(text: str) -> list[tuple[str, list[str]]]:
+    """(run id, remaining cells) for every table row, in file order --  a list,
+    not a mapping, so a run that has TWO rows is visible rather than collapsed
+    (task 039: an in-flight row is *replaced* when the run's figures land, and a
+    row appended beside the old one is exactly what that mistake looks like)."""
+    pairs: list[tuple[str, list[str]]] = []
     for line in text.splitlines():
         m = ROW.match(line)
         if m:
             cells = [c.strip() for c in m.group("rest").split("|")]
-            rows[m.group("run")] = cells
-    return rows
+            pairs.append((m.group("run"), cells))
+    return pairs
+
+
+def _rows(text: str) -> dict[str, list[str]]:
+    """Run id -> the row's remaining cells, for every table row in `text`."""
+    return dict(_row_pairs(text))
 
 
 def _index_text() -> str:
@@ -101,7 +118,8 @@ def _prd_files() -> set[str]:
 def _link_problems(text: str) -> list[str]:
     problems: list[str] = []
     linked: list[str] = []
-    for run, cells in _rows(text).items():
+    runs = [run for run, _ in _row_pairs(text)]
+    for run, cells in _row_pairs(text):
         m = LINK.match(cells[0])
         if not m:
             problems.append(f"{run}: row cell is not a markdown link: {cells[0]!r}")
@@ -116,6 +134,8 @@ def _link_problems(text: str) -> list[str]:
         problems.append(f"{extra} sits in docs/prds/ with no row in the index")
     for dupe in sorted({t for t in linked if linked.count(t) > 1}):
         problems.append(f"{dupe} has more than one row")
+    for dupe in sorted({r for r in runs if runs.count(r) > 1}):
+        problems.append(f"run {dupe} has more than one row")
     return problems
 
 
@@ -131,6 +151,19 @@ def test_a_row_for_a_missing_prd_is_caught():
         "succeeded / verified | 1 | 1.0M | $1.00 |\n"
     )
     assert any("not in docs/prds/" in p for p in _link_problems(text))
+
+
+def test_a_second_row_for_a_run_whose_figures_landed_is_caught():
+    # Task 039's own failure mode: appending the finished figures beside the
+    # placeholder row instead of replacing it in place.
+    rows = _rows(_index_text())
+    line = f"| `{V07_RUN_ID}` | " + " | ".join(rows[V07_RUN_ID]) + " |"
+    assert line in _index_text(), line
+    text = _index_text().replace(line, line + "\n" + line)
+    assert _link_problems(text) == [
+        "v0.7-trustworthy-unattended.md has more than one row",
+        f"run {V07_RUN_ID} has more than one row",
+    ]
 
 
 def test_a_prd_with_no_row_is_caught():
@@ -313,3 +346,184 @@ def test_the_note_records_what_the_finished_run_actually_did():
     # The token magnitude the note reasons about is the recorded counter's.
     billed = f"{V06_USAGE['totalTokens'] / 1_000_000:.0f}m billed tokens"
     assert billed in lowered, f"the v0.6 note no longer says {billed!r}"
+
+
+# --------------------------------------------------------------------------
+# The other direction (task 039): a row written from inside the run it reports.
+# --------------------------------------------------------------------------
+
+V07_RUN_ID = "selfdev-v07-unattended"
+# Copied verbatim from that run's own `<run-dir>/status.json` `usage` rollup at
+# the iteration that wrote the row: no provider quote at all (`costUSD: 0`
+# beside 239M billed tokens -- the implausible zero `cost_status` calls unknown)
+# and a host-derived figure from the shipped AWS Bedrock table, so the bucket's
+# merged verdict is `derived`.
+V07_USAGE = {
+    "input": 7642,
+    "output": 2002734,
+    "cacheRead": 222320424,
+    "cacheWrite": 14802418,
+    "totalTokens": 239133218,
+    "costDerivedUSD": 279.160118,
+    "costStatus": "derived",
+    "costUSD": 0,
+}
+# The same snapshot's iteration counters: `iterationsUsed` is what the engine
+# CHARGED against the budget, `iteration` the raw slot count the log holds. The
+# row reports the charged one, and the gap is what the note has to explain.
+V07_CHARGED = 100
+V07_RAW = 107
+# And its plan, counted from `<run-dir>/tasks.json`: 47 tasks, 44 `completed`
+# when the row was written, the rest being the documentation/verification tail a
+# run cannot have finished before it has finished it.
+V07_TASKS = {"total": 47, "completed": 44}
+
+V07_TALLY = re.compile(r"(?P<completed>\d+)\+? of (?P<total>\d+) tasks completed")
+
+
+def _v07_cells(text: str) -> list[str]:
+    rows = _rows(text)
+    assert V07_RUN_ID in rows, f"docs/prds/README.md has no row for {V07_RUN_ID}"
+    return rows[V07_RUN_ID]
+
+
+def _snapshot_problems(text: str) -> list[str]:
+    """Every way the in-flight row can misreport the run that wrote it."""
+    outcome, iterations, tokens, cost = _v07_cells(text)[1:5]
+    problems: list[str] = []
+
+    if "not started" in outcome:
+        problems.append(f"outcome cell {outcome!r} still says the run never ran")
+    m = V07_TALLY.search(outcome)
+    if not m:
+        problems.append(f"outcome cell {outcome!r} states no task tally")
+    elif (int(m.group("completed")), int(m.group("total"))) != (
+            V07_TASKS["completed"], V07_TASKS["total"]):
+        problems.append(
+            f"outcome cell says {m.group('completed')} of {m.group('total')} "
+            f"tasks, the plan holds {V07_TASKS['completed']} of "
+            f"{V07_TASKS['total']}")
+
+    if iterations != f"{V07_CHARGED}{SNAPSHOT_MARKER}":
+        problems.append(
+            f"iteration cell {iterations!r} is not the charged "
+            f"{V07_CHARGED}{SNAPSHOT_MARKER}")
+    expected_tokens = f"{V07_USAGE['totalTokens'] / 1_000_000:.1f}M"
+    if tokens != f"{expected_tokens}{SNAPSHOT_MARKER}":
+        problems.append(
+            f"token cell {tokens!r} is not the recorded "
+            f"{expected_tokens}{SNAPSHOT_MARKER}")
+
+    if SNAPSHOT_MARKER not in cost:
+        problems.append(f"cost cell {cost!r} presents a floor as a total")
+    expected_cost = state.format_cost(V07_USAGE)
+    if cost.replace(SNAPSHOT_MARKER, "", 1) != expected_cost:
+        problems.append(
+            f"cost cell {cost!r} is not format_cost's {expected_cost!r} "
+            f"plus the snapshot marker")
+    return problems
+
+
+def test_the_v07_row_reports_that_runs_own_snapshot():
+    # The premise: the recorded payload really is quote-less and host-derived,
+    # so "derived" is earned from the shipped classifier, not asserted here.
+    assert state.cost_status(V07_USAGE) == "derived"
+    assert state.is_zero_quote(V07_USAGE) is True
+    assert _snapshot_problems(_index_text()) == []
+
+
+def test_a_snapshot_row_left_reading_not_started_is_caught():
+    # The wording the row shipped with before its run existed.
+    cells = _v07_cells(_index_text())
+    text = _index_text().replace(
+        f"| {cells[1]} | {cells[2]} | {cells[3]} | {cells[4]} |",
+        "| not started | \u2014 | \u2014 | \u2014 |")
+    problems = _snapshot_problems(text)
+    assert "outcome cell 'not started' still says the run never ran" in problems
+    assert any("is not the charged" in p for p in problems)
+
+
+def test_a_snapshot_row_dropping_the_floor_marker_is_caught():
+    cells = _v07_cells(_index_text())
+    text = _index_text().replace(
+        f"| {cells[2]} | {cells[3]} | {cells[4]} |",
+        "| {} | {} | {} |".format(*(c.replace(SNAPSHOT_MARKER, "", 1)
+                                    for c in cells[2:5])))
+    assert _snapshot_problems(text) == [
+        f"iteration cell {cells[2].rstrip(SNAPSHOT_MARKER)!r} is not the charged "
+        f"{V07_CHARGED}{SNAPSHOT_MARKER}",
+        f"token cell {cells[3].rstrip(SNAPSHOT_MARKER)!r} is not the recorded "
+        f"{V07_USAGE['totalTokens'] / 1_000_000:.1f}M{SNAPSHOT_MARKER}",
+        f"cost cell {cells[4].replace(SNAPSHOT_MARKER, '', 1)!r} presents a "
+        f"floor as a total",
+    ]
+
+
+def test_a_snapshot_row_charging_the_raw_slot_count_is_caught():
+    cells = _v07_cells(_index_text())
+    text = _index_text().replace(
+        f"| {cells[2]} |", f"| {V07_RAW}{SNAPSHOT_MARKER} |")
+    assert _snapshot_problems(text) == [
+        f"iteration cell '{V07_RAW}{SNAPSHOT_MARKER}' is not the charged "
+        f"{V07_CHARGED}{SNAPSHOT_MARKER}"]
+
+
+def test_a_snapshot_row_quoting_a_derived_figure_as_money_is_caught():
+    cells = _v07_cells(_index_text())
+    text = _index_text().replace(f"| {cells[4]} |", "| $279.16+ |")
+    assert _snapshot_problems(text) == [
+        f"cost cell '$279.16+' is not format_cost's "
+        f"{state.format_cost(V07_USAGE)!r} plus the snapshot marker"]
+
+
+def test_the_index_says_what_the_floor_marker_means():
+    """The marker is the whole difference between the two kinds of row, and it
+    is one character: the file has to spell out that a `+` means a snapshot
+    written from inside the run and that a settled row drops it."""
+    intro = " ".join(_index_text().split("| Run | File |")[0].lower().split())
+    for phrase in (f"`{SNAPSHOT_MARKER}`", "snapshot", "floor",
+                   "cannot count the iterations", "status.json"):
+        assert phrase in intro, f"the index no longer explains {phrase!r}"
+
+
+def test_an_index_that_stops_explaining_the_marker_is_caught():
+    text = _index_text().replace(
+        f"A row whose counts carry a `{SNAPSHOT_MARKER}` is a **snapshot**",
+        "A row is a row")
+    intro = " ".join(text.split("| Run | File |")[0].lower().split())
+    assert "snapshot" not in intro
+
+
+def _v07_note(text: str) -> str:
+    para = text[text.index("v0.7-trustworthy-unattended.md`'s row"):]
+    return para[:para.index("\n- ") if "\n- " in para else len(para)]
+
+
+def test_the_v07_note_explains_the_gap_between_charged_and_raw():
+    """The row reports the engine's 100 against 107 raw slots, and that 100 is
+    itself inflated by #32 (the run's engine image predates this wave's fix, so
+    its one resume restarted the refund counters). The note has to say both, or
+    the row is two unexplained numbers."""
+    lowered = " ".join(_v07_note(_index_text()).lower().split())
+    for phrase in (
+        # the snapshot itself, and where its figures came from
+        "snapshot", "status.json", "running", "approach 1",
+        # charged vs raw, and the refund mechanism that separates them
+        str(V07_CHARGED), str(V07_RAW), "refunded",
+        # ...and that the charged figure is still too high, per #32
+        "inflated", "#32", "95",
+        # the two defects the run reproduced on itself while running
+        "mid-iteration 38", "#44",
+        # the cost cell is an estimate, never presented as quoted money
+        "estimate", "derive",
+    ):
+        assert phrase in lowered, f"the v0.7 note does not say {phrase!r}"
+    # A snapshot's cells are a floor; nothing may call them final.
+    assert "final record" not in lowered
+
+
+def test_a_note_hiding_the_refund_loss_is_caught():
+    text = _index_text().replace(
+        "**That 100 is itself inflated**", "That 100 is what was charged")
+    lowered = " ".join(_v07_note(text).lower().split())
+    assert "inflated" not in lowered
