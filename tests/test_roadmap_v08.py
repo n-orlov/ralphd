@@ -14,16 +14,17 @@ established by earlier waves stay true:
   retyped here. This PRD's letters run `A-H` and `M-O` -- it does not use
   `I-L` at all, unlike v0.7's PRD, which used every letter up to `R`.
 
-One requirement is genuinely not shipped yet at the point this block is
-written: **N** (closing this wave's issues from inside the run) is scheduled
-later in this same run (tasks 033/035), after this task. The coverage check
-below only requires the letter and its issues to be *named*, not marked `✅`,
-so it does not force this block to claim a closure that has not happened; a
-dedicated test pins that N is still honestly marked pending. A later task
-(mirroring how task 042 amended `test_roadmap_v07.py` once v0.7's own
-requirement Q's receipts existed) should flip N's marker and extend this
-module with the receipt cross-check once `artifacts/reports/issue-closure.md`
-records this wave's closures.
+Task 032 (this module's own commit) wrote **N** (closing this wave's issues
+from inside the run) honestly pending -- it ran before task 035, which is the
+task that actually closes anything over the API. Task 035 has since run and
+closed all nine of this wave's issues, so this module (mirroring how task 042
+amended `test_roadmap_v07.py` once v0.7's own requirement Q's receipts
+existed) now pins N as shipped and cross-checks its claim against
+`artifacts/reports/issue-closure.md`'s own v0.8 section, the same shape as
+v0.7's requirement Q below -- except v0.8's closure ledger has no issue left
+open within its own wave (#25 and #59 are simply outside its scope, never
+given a comment or a state change, so they cannot appear as a *closure left
+open* the way v0.7's #50 did).
 
 Every check is paired with a test that mutates the *real* roadmap text into
 wording it replaced (or a wrong version), so a check that stops discriminating
@@ -214,7 +215,10 @@ def test_the_v08_block_names_the_verb_the_wave_added():
             f"`ralphctl {verb}`")
 
 
-# ---------------------------------------- requirement N is honestly not done yet
+# ------------------------------------------- requirement N and its closure receipt
+
+CLOSURE_REPORT = REPO_ROOT / "artifacts" / "reports" / "issue-closure.md"
+TRACEABILITY_REPORT = REPO_ROOT / "artifacts" / "reports" / "issue-traceability.md"
 
 
 def n_bullet(block: str) -> str | None:
@@ -222,27 +226,97 @@ def n_bullet(block: str) -> str | None:
     return bullets[0] if len(bullets) == 1 else None
 
 
-def test_requirement_n_is_marked_pending_not_falsely_shipped():
-    """This task (032) runs before the issue-closure task (035) in this run's
-    own plan, so the block must not claim N shipped -- claiming it now would
-    be a false record of exactly the kind requirement D exists to catch on
-    commit messages. Once closure lands, a later task should flip this
-    marker (and this test) the way task 042 flipped v0.7's requirement Q."""
-    block = milestone_block(roadmap_text(), declared_series())
+def closure_wave_v08_section() -> str:
+    text = CLOSURE_REPORT.read_text()
+    heads = list(re.finditer(r"^# Issue closure record", text, re.MULTILINE))
+    for i, m in enumerate(heads):
+        if "v0.8" not in text[m.start(): m.start() + 80]:
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        return text[m.start(): end]
+    raise AssertionError("issue-closure.md has no v0.8 section")
+
+
+def closed_issues_v08() -> set[int]:
+    """The issues the v0.8 closure section's own `## #N` subsections mark
+    `**closed**` in a `Resulting state` line."""
+    out: set[int] = set()
+    for m in re.finditer(r"^## #(\d+)\b([\s\S]*?)(?=^## |\Z)",
+                         closure_wave_v08_section(), re.MULTILINE):
+        if "**closed**" in m.group(2):
+            out.add(int(m.group(1)))
+    return out
+
+
+def _issue_numbers(text: str) -> set[int]:
+    return {int(n) for n in re.findall(r"#(\d+)", text)}
+
+
+def _requirement_n_problems(block: str) -> list[str]:
     bullet = n_bullet(block)
-    assert bullet is not None, "the v0.8 block has no single requirement N bullet"
-    assert not bullet.startswith("- ✅"), (
-        "requirement N is marked shipped, but this wave's issues are not "
-        "closed yet as of this commit -- flip this check once they are")
+    if bullet is None:
+        return ["the v0.8 block has no single requirement N bullet"]
+    problems = []
+    if not bullet.startswith("- ✅"):
+        problems.append("requirement N is not marked shipped")
+    if "⏳" in bullet or "not yet executed" in bullet:
+        problems.append("the N bullet still says the closures are pending")
+    for report in (CLOSURE_REPORT, TRACEABILITY_REPORT):
+        cited = f"`artifacts/reports/{report.name}`"
+        if cited not in bullet:
+            problems.append(f"the N bullet does not cite {cited}")
+    claimed = _issue_numbers(bullet.split("closed over the", 1)[0])
+    closed = closed_issues_v08()
+    if claimed != closed:
+        problems.append(
+            f"the N bullet claims {sorted(claimed)} closed, but "
+            f"{CLOSURE_REPORT.name}'s v0.8 section records {sorted(closed)}")
+    total = re.search(r"\b(\d+) in all\b", bullet)
+    if not total:
+        problems.append("the N bullet states no closure total")
+    elif int(total.group(1)) != len(closed):
+        problems.append(f"the N bullet says {total.group(1)} closures, the "
+                        f"record has {len(closed)}")
+    return problems
 
 
-def test_the_pending_n_check_catches_a_falsely_shipped_claim():
+def test_the_v08_closure_record_parses_at_all():
+    """Guards the checks below from passing on an empty parse -- and pins what
+    task 035 actually did: all nine of this wave's issues closed, none left
+    open."""
+    closed = closed_issues_v08()
+    assert closed == {24, 26, 27, 50, 51, 54, 56, 57, 58}, sorted(closed)
+    assert len(closed) == 9
+
+
+def test_requirement_n_is_shipped_and_says_what_the_receipts_say():
+    """Task 035: the bullet flips to shipped only once the issues are closed,
+    and its claim is the closure record's own set, not a retyped one."""
+    block = milestone_block(roadmap_text(), declared_series())
+    assert block is not None
+    assert not _requirement_n_problems(block)
+
+
+def test_the_requirement_n_check_catches_a_stale_or_wrong_claim():
     block = milestone_block(roadmap_text(), SERIES)
     bullet = n_bullet(block)
     assert bullet is not None, "fixture assumption: the bullet is there to mutate"
-    faked = block.replace(bullet, bullet.replace("- \u23f3", "- \u2705", 1))
-    mutated_bullet = n_bullet(faked)
-    assert mutated_bullet is not None and mutated_bullet.startswith("- ✅")
+
+    def mutated(old: str, new: str) -> list[str]:
+        assert old in bullet, f"fixture assumption: {old!r} is in the bullet"
+        return _requirement_n_problems(block.replace(bullet, bullet.replace(old, new, 1)))
+
+    # the pre-035 wording: still pending
+    assert mutated("- ✅", "- ⏳")
+    # a dropped receipt citation
+    assert mutated(f"`artifacts/reports/{CLOSURE_REPORT.name}`", "the closure report")
+    # a closure claimed for an issue the record does not show closed, and one dropped
+    assert mutated("#56, #57 and #58", "#55, #57 and #58")
+    assert mutated("#56, #57 and #58", "#57 and #58")
+    # a total that no longer matches the receipt
+    assert mutated("9 in all", "8 in all")
+    # ...and the real bullet is not accidentally satisfying all of this by luck
+    assert not _requirement_n_problems(block)
 
 
 # ------------------------------------------- what the wave delivered is not deferred

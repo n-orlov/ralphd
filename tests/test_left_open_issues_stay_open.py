@@ -5,6 +5,18 @@ cannot see an issue someone (or something) else closed after the record was
 written. This module re-reads each of those issues over the live GitHub API
 and fails if any of them is no longer open.
 
+One case is not a violation, and is excluded on purpose: a later wave of
+this *same* project can deliberately close an issue an earlier wave left
+open for it -- exactly what task 035 (v0.8, requirement N) did to six of
+v0.7's seven `left_open_issues()` (#24, #26, #27, #50, #51, #54), all of
+which are v0.8 PRD requirements with their own recorded, receipted closure in
+`issue-closure.md`'s v0.8 section. That is the intended shape of the ledger
+growing wave over wave, not the unexplained/unexpected closure #58 exists to
+catch, so this module subtracts `test_roadmap_v08.closed_issues_v08()` from
+v0.7's set before checking -- an issue only fails this check when it is
+reported not-open *and* no later wave's own receipted closure record claims
+it.
+
 It lives beside the other roadmap/closure consistency checks
 (`tests/test_roadmap_v07.py`), reusing that module's `left_open_issues()`
 rather than retyping the set, and it skips cleanly -- with a reason naming
@@ -25,6 +37,7 @@ import urllib.request
 import pytest
 
 from tests.test_roadmap_v07 import left_open_issues
+from tests.test_roadmap_v08 import closed_issues_v08
 
 REPO = "n-orlov/ralphd"
 ISSUE_URL_TEMPLATE = "https://api.github.com/repos/{repo}/issues/{number}"
@@ -85,14 +98,17 @@ def test_the_skip_condition_fires_without_network(monkeypatch):
 
 def test_every_deliberately_left_open_issue_is_still_open():
     """The real check: re-read each issue `left_open_issues()` names over the
-    live GitHub API and fail if any of them is no longer open. Skips cleanly,
-    with a named reason, when no token/network is available."""
+    live GitHub API and fail if any of them is no longer open -- except an
+    issue a later wave's own receipted closure record shows it deliberately
+    closed, which is not a violation (see the module docstring). Skips
+    cleanly, with a named reason, when no token/network is available."""
     reason = _missing_prerequisites()
     if reason:
         pytest.skip(reason)
     token = os.environ["GITHUB_TOKEN"]
+    superseded = closed_issues_v08()
     unexpectedly_not_open = []
-    for number in sorted(left_open_issues()):
+    for number in sorted(left_open_issues() - superseded):
         state = _fetch_issue_state(number, token)
         if state != "open":
             unexpectedly_not_open.append((number, state))

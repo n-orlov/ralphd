@@ -553,12 +553,15 @@ Phase 4 — close the loop:
   `artifacts/reports/`, stating why the false `validation-failed` demotion
   (an operator abort landing mid-verify on a pre-#45-fix engine) cannot recur
   now that `_verify_no_verdict` covers `interrupted` uniformly
-- ⏳ **N. Close this wave's issues, from inside the run.** Tracked to land
-  later in this same run (`artifacts/reports/issue-traceability.md` and
-  `artifacts/reports/issue-closure.md`) — not yet executed as of this commit,
-  so this block does not claim it; see those two reports once written for
-  which of #24 #26 #27 #50 #51 #54 #56 #57 #58 actually closed and which
-  stayed open
+- ✅ **N. Close this wave's issues, from inside the run.** All nine issues this
+  wave owns — #24, #26, #27, #50, #51, #54, #56, #57 and #58 — closed over the
+  GitHub REST API, 9 in all, no hedged closures: a comment generated from
+  that issue's own `artifacts/reports/issue-traceability.md` section posted
+  before the state change, closed, then re-read with a fresh `GET`; every
+  posted comment, HTTP status and resulting state recorded in
+  `artifacts/reports/issue-closure.md`'s v0.8 section. Untouched by this
+  wave's closure action, deliberately: #25 (a non-goal) and #59 (arrived from
+  outside this run, operator's call)
 - ✅ **O. Docs, SPEC, the roadmap and the PRD index.** This block and the
   `0.8.0` version bump landing together, late; the predecessor's PRD index row
   replaced with its settled record rather than left reading a live snapshot

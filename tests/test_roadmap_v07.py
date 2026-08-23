@@ -261,11 +261,16 @@ def test_the_auto_resume_flip_is_shipped_not_deferred():
 
 
 def closure_wave_section() -> str:
-    """`artifacts/reports/issue-closure.md`'s v0.7 half (it holds two waves)."""
+    """`artifacts/reports/issue-closure.md`'s v0.7 half (it now holds three
+    waves, so this stops at the next `# Issue closure record` heading rather
+    than running to end of file -- otherwise a later wave's own section, e.g.
+    v0.8's, would silently be scanned as if it were v0.7's)."""
     text = CLOSURE_REPORT.read_text()
     assert CLOSURE_WAVE_HEADING in text, (
         f"{CLOSURE_REPORT.name} has no {CLOSURE_WAVE_HEADING!r} section")
-    return text.split(CLOSURE_WAVE_HEADING, 1)[1]
+    rest = text.split(CLOSURE_WAVE_HEADING, 1)[1]
+    nxt = re.search(r"^# Issue closure record", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
 
 
 def closed_issues() -> set[int]:
