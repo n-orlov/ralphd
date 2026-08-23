@@ -253,6 +253,56 @@ def test_run_detail_shows_unconsumed_steering_warning(tmp_path, pw):
         server.stop()
 
 
+def test_run_detail_hides_the_terminal_record_during_the_finishing_window(tmp_path, pw):
+    """Task 015 (#56): task 012's `finishing` state settles `verdict`/`endedAt`
+    into status.json before the post-terminal reflect iteration is actually
+    over -- so a run whose `currentIteration` is still a live dict (the
+    reflect iteration itself, still running) must not have the run-detail
+    card show a colored, terminal-looking verdict pill or an `ended:` row: an
+    operator reading the card must not conclude the run is over while the
+    timeline right below it is still showing that very iteration as
+    'running...'. Neither field is hidden -- the verdict TEXT is still shown,
+    just not styled as the same pill a genuinely terminal run gets -- and both
+    reappear once the window closes (state promotes, currentIteration clears)."""
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(
+        registry, "run-reflecting", state="finishing", verdict="verified",
+        pendingTerminalState="succeeded", phase="reflect",
+        startedAt="2026-01-01T00:00:00Z", endedAt="2026-01-01T00:41:30Z",
+        currentIteration={"number": 4, "phase": "reflect",
+                          "startedAt": "2026-01-01T00:41:31Z"})
+    (run_dir / "iterations" / "0004").mkdir(parents=True)
+    (run_dir / "iterations" / "0004" / "meta.json").write_text(json.dumps(
+        {"number": 4, "phase": "reflect", "model": "stub-model", "approach": 1,
+         "startedAt": "2026-01-01T00:41:31Z", "endedAt": None, "exitCode": None,
+         "error": None, "usage": {}}))
+    _write_dead_run(registry, "run-done", state="succeeded", verdict="verified",
+                    startedAt="2026-01-01T00:00:00Z", endedAt="2026-01-01T00:41:30Z")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-reflecting")
+        body_text = _wait_for(pw, "document.body.innerText", "finishing")
+        assert "ended:" not in body_text, body_text
+        assert "running" in body_text, body_text  # the timeline row below
+        assert "verified" in body_text, body_text  # the verdict text is still there
+        n_verdict_pill = int(pw.eval_js(
+            "document.querySelectorAll('.pill-verified').length"))
+        assert n_verdict_pill == 0, "verdict rendered as a terminal-looking pill"
+        pw.screenshot(SCREENSHOTS_DIR / "finishing-no-terminal-record.png")
+
+        # the counterpart: a genuinely terminal run keeps today's rendering.
+        pw.open(f"{server.base}/#/run/run-done")
+        body_text = _wait_for(pw, "document.body.innerText", "succeeded")
+        assert "ended:" in body_text, body_text
+        n_verdict_pill = int(pw.eval_js(
+            "document.querySelectorAll('.pill-verified').length"))
+        assert n_verdict_pill == 1, body_text
+    finally:
+        server.stop()
+
+
 def test_run_detail_shows_infra_retry_note(tmp_path, pw):
     """Task 001a criterion 4: while an infra-fault retry is backing off,
     `currentIteration.note` must be rendered on the hub run-detail card

@@ -2708,11 +2708,28 @@ def cmd_status(args):
         it_duration_s = elapsed_seconds(cur_it.get("startedAt"), stale_since)
         cur_it["elapsedSeconds"] = it_duration_s
 
+    # Task 015 (#56): the `finishing` window (task 012) settles `endedAt`
+    # before the reflect iteration that still has to run is over -- so an
+    # `endedAt` sitting alongside a `currentIteration` dict is not yet a
+    # real end; it is the record `_finish()` wrote ahead of time. Treat that
+    # combination as "not ended yet" for every HUMAN-readable rendering
+    # below (never for `--json`, which passes `status` through untouched --
+    # `endedAt`/`durationSeconds` there are exactly what `_finish()` wrote,
+    # unaffected by this).
+    iteration_in_progress = isinstance(cur_it, dict)
+    ended_at_for_display = None if iteration_in_progress else status.get("endedAt")
+
     if stale_since:
         shown_s, duration_label = since_update_s, "since last update"
+    elif iteration_in_progress and status.get("endedAt"):
+        # Recomputed against "now" instead of the frozen `endedAt` `_finish()`
+        # already wrote -- otherwise the number would say "elapsed" but sit
+        # perfectly still while the reflect iteration keeps running.
+        shown_s = elapsed_seconds(status.get("startedAt"))
+        duration_label = "elapsed"
     else:
         shown_s = duration_s
-        duration_label = "total" if status.get("endedAt") else "elapsed"
+        duration_label = "total" if ended_at_for_display else "elapsed"
     tty = sys.stdout.isatty()
     lines = [
         f"run:       {status.get('runId')}",
@@ -2732,8 +2749,8 @@ def cmd_status(args):
         # `startedAt`/`endedAt` fields untouched for machine consumers.
         f"started:   {format_local_time(status.get('startedAt'))}",
     ]
-    if status.get("endedAt"):
-        lines.append(f"ended:     {format_local_time(status.get('endedAt'))}")
+    if ended_at_for_display:
+        lines.append(f"ended:     {format_local_time(ended_at_for_display)}")
     elif stale_since:
         lines.append(f"last update: {format_local_time(stale_since)}")
     approach_text = format_approach(status.get("approach"),

@@ -1112,16 +1112,27 @@ function renderSummary(el, detail) {
   const s = detail.status || {};
   el.innerHTML = "";
   el.className = "card" + (s.state === "failed" ? " error" : "");
+  // Task 015 (#56): the `finishing` window (task 012) settles `verdict`/
+  // `endedAt` in status.json before the reflect iteration that still has
+  // to run is over -- `currentIteration` staying a live dict is the tell.
+  // While that is true, a colored verdict pill (green "verified", the same
+  // look a genuinely terminal run gets) and an `ended` timestamp both read
+  // as "this is over" beside a timeline row that is still showing
+  // "running…" for that very iteration. Neither is hidden -- `verdict` is
+  // deliberately readable the moment it settles (task 012) -- only their
+  // TERMINAL-looking rendering is withheld until the window actually closes.
+  const iterationInProgress = s.currentIteration != null &&
+    typeof s.currentIteration === "object";
   const rows = [
     ["state", stateCell(detail, s)],
-    ["verdict", pill(s.verdict)],
+    ["verdict", iterationInProgress ? String(s.verdict ?? "unknown") : pill(s.verdict)],
     ["phase", String(s.phase || "")],
     ["approach", approachText(s)],
     ["iterations", `${s.iterationsUsed ?? 0}/${s.iterationsBudget ?? "?"}`],
     ["live", detail.live ? "yes (proxied from container)" : "no (on-disk snapshot)"],
   ];
   const started = s.startedAt;
-  const ended = s.endedAt;
+  const ended = iterationInProgress ? null : s.endedAt;
   let durText = "";
   if (started && ended) {
     durText = "total " + fmtDuration(durationBetween(started, ended));
@@ -1135,7 +1146,7 @@ function renderSummary(el, detail) {
   // `endedAtLocal` by `ui_server.run_detail`) rather than a second
   // JS implementation, so the hub and `ralphctl status` can never drift.
   if (s.startedAtLocal) rows.push(["started", String(s.startedAtLocal)]);
-  if (s.endedAtLocal) rows.push(["ended", String(s.endedAtLocal)]);
+  if (!iterationInProgress && s.endedAtLocal) rows.push(["ended", String(s.endedAtLocal)]);
   const p = h("p", {}, []);
   for (const [k, v] of rows) {
     const line = h("div", {}, [h("b", {}, [k + ": "]), typeof v === "string" ? v : v]);
