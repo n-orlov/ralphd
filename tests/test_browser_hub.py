@@ -8,9 +8,13 @@ Assertions are made by evaluating small JS snippets in the page
 
 Skips cleanly (whole module) if the `playwright-cli` binary is not on
 PATH. Screenshots of each view are written under
-`artifacts/screenshots/hub/` (the job's artifacts dir, taken from
-`RALPHD_ARTIFACTS_DIR`, defaulting to `/run/ralphd/artifacts` to match
-this job's layout).
+`artifacts/screenshots/hub/` (the job's artifacts dir). The base directory
+is `RALPHD_ARTIFACTS_DIR` when set (this job's layout: `/run/ralphd/artifacts`,
+a path only writable because it is this container's run-dir mount); when
+unset it falls back to a location any ordinary user can create --
+`<tempfile.gettempdir()>/ralphd-artifacts` -- rather than guessing at
+`/run/ralphd`, which is root-owned on a developer host. See
+`_default_artifacts_dir()` below for the exact rule.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -30,7 +35,28 @@ from test_cli_ui import StubEngineApi, UiServer, _write_dead_run, _write_run_wit
 
 PLAYWRIGHT_CLI = shutil.which("playwright-cli")
 
-ARTIFACTS_DIR = Path(os.environ.get("RALPHD_ARTIFACTS_DIR", "/run/ralphd/artifacts"))
+
+def _default_artifacts_dir() -> Path:
+    """Where screenshots go when `RALPHD_ARTIFACTS_DIR` is unset.
+
+    Inside a job container, `/run/ralphd` is the run-dir mount and this
+    default used to hardcode `/run/ralphd/artifacts` -- a path that is only
+    writable there *because* it is a mount, not because `/run` is generally
+    writable. On a developer host `/run` is root-owned, so that default made
+    the whole browser tier fail there (PRD #57 fact 4). The rule now is:
+    honour the env var if it is set (this keeps the in-container behaviour
+    working exactly as before, including setting it explicitly to
+    `/run/ralphd/artifacts`); otherwise fall back to a directory under the
+    system temp dir, which `mkdir(parents=True)` can always create for an
+    ordinary user.
+    """
+    env = os.environ.get("RALPHD_ARTIFACTS_DIR")
+    if env:
+        return Path(env)
+    return Path(tempfile.gettempdir()) / "ralphd-artifacts"
+
+
+ARTIFACTS_DIR = _default_artifacts_dir()
 SCREENSHOTS_DIR = ARTIFACTS_DIR / "screenshots" / "hub"
 
 
