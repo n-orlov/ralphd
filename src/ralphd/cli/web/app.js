@@ -651,8 +651,44 @@ function artifactTitle(runId, a) {
   return String(a.path || a.key || "artifact") + " — " + String(runId);
 }
 
+// Task 025 (#54): which of the two dialog shapes an artifact gets is decided
+// from `kind`, the ONE server-decided field (`state._artifact_kind`, task 022)
+// -- sniffed from magic bytes, never from the name or extension. There is no
+// client-side list of "image extensions" here and there must never be one:
+// app.js only ever asks "does the listing/view say kind === "image"?", the
+// exact question the server already answered when it built the row.
+const ARTIFACT_KIND_IMAGE = "image";
+
+function artifactRawPath(runId, name) {
+  // The raw byte route (task 023): the ONLY place a `<img src>` can point --
+  // the JSON dialog route below never carries bytes, only text.
+  return `/api/runs/${encodeURIComponent(runId)}/artifacts-raw/` +
+    encodeURIComponent(name);
+}
+
+function openImageArtifactDialog(runId, a, name) {
+  const dlg = h("dialog", { id: "text-dialog", class: "text-dialog" }, [
+    h("h3", { class: "dialog-title" }, [artifactTitle(runId, a)]),
+    h("img", { class: "dialog-image", src: artifactRawPath(runId, name),
+              alt: name }),
+    h("form", { method: "dialog", class: "dialog-close" }, [
+      h("button", { type: "submit" }, ["close"]),
+    ]),
+  ]);
+  return showDialog(dlg);
+}
+
 async function openArtifactDialog(runId, a) {
   const name = String(a.path || a.key || "");
+  // The listing row (`a`) already carries the server's `kind` -- no second
+  // fetch is needed to decide the SHAPE of the dialog, only (for a
+  // non-image) to get the body text. A tarball (kind === "binary") and plain
+  // text both still go through the JSON route below and `openTextDialog`,
+  // unchanged: the `pull` wording for a tarball is exactly today's binary
+  // path, not a new one.
+  if (a.kind === ARTIFACT_KIND_IMAGE) {
+    return openImageArtifactDialog(runId, a, name);
+  }
   const path = `/api/runs/${encodeURIComponent(runId)}/artifacts/` +
     encodeURIComponent(name);
   const { ok, body } = await getJSON(path);

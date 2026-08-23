@@ -380,3 +380,47 @@ def test_app_js_renders_artifacts_as_text_from_server_strings():
     region = src[src.index("function renderArtifacts"):
                  src.index("async function loadArtifacts")]
     assert "innerHTML" not in region.replace('box.innerHTML = "";', "")
+
+
+def _artifact_dialog_kind_branch(src: str) -> str:
+    """The slice of `openArtifactDialog` that decides whether the dialog gets
+    an image or the plain text body -- isolated so both the positive check
+    and its mutation case read the exact same region."""
+    start = src.index("async function openArtifactDialog")
+    end = src.index("\n}", start) + 2
+    return src[start:end]
+
+
+def _kind_branch_present(branch: str) -> bool:
+    """Task 025 (#54): the dialog's SHAPE is decided from the server's own
+    `kind` field -- `a.kind === ARTIFACT_KIND_IMAGE`, the constant mirroring
+    `state.ARTIFACT_KIND_IMAGE` -- and routed to a dedicated image dialog
+    function, never to a client-side extension check."""
+    return ("a.kind === ARTIFACT_KIND_IMAGE" in branch
+            and "openImageArtifactDialog" in branch)
+
+
+def test_the_artifact_dialog_branches_on_server_kind_not_extension():
+    src = STATIC_APP_JS.read_text()
+    branch = _artifact_dialog_kind_branch(src)
+    assert _kind_branch_present(branch)
+    # the raw byte route (task 023) is what an <img src> can point at; a
+    # second, ad-hoc extension check (`.endsWith(".png")` and the like) would
+    # be a second resolver of "is this an image" disagreeing with the server
+    import re
+    assert "artifacts-raw" in src
+    assert not re.search(r'\.(png|jpe?g|gif|webp)["\']', src)
+
+
+def test_the_kind_branch_check_would_catch_a_removed_guard():
+    """Mutation case: strip the `kind` check out of `openArtifactDialog` (as
+    if a later edit made every artifact go through the plain text dialog
+    again) and show the same positive check then fails."""
+    src = STATIC_APP_JS.read_text()
+    branch = _artifact_dialog_kind_branch(src)
+    assert _kind_branch_present(branch)
+    mutated = branch.replace(
+        "  if (a.kind === ARTIFACT_KIND_IMAGE) {\n"
+        "    return openImageArtifactDialog(runId, a, name);\n  }\n", "")
+    assert mutated != branch
+    assert not _kind_branch_present(mutated)

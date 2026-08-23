@@ -282,6 +282,16 @@ footer.autorefresh {
 
 .text-dialog .dialog-close { margin-top: 0.6rem; }
 
+/* Task 025 (#54): a previewable image's artifact dialog holds an <img>
+   instead of the <pre> text body -- capped so a large screenshot never
+   forces the dialog past the same max-height/max-width the text body uses. */
+.text-dialog .dialog-image {
+  display: block;
+  max-width: 100%;
+  max-height: 62vh;
+  margin: 0;
+}
+
 /* task 017 (#17): the steering history panel under the steer form. Each row
    opens that message's body in the shared text dialog, so it advertises
    itself like a task row does. */

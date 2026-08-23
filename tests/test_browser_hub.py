@@ -19,6 +19,7 @@ unset it falls back to a location any ordinary user can create --
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -2035,6 +2036,94 @@ def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw)
                                ".textContent : ''", NO_ARTIFACTS)
         assert NO_ARTIFACTS in notice, notice
         assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 0
+    finally:
+        server.stop()
+
+
+# A real 1x1 PNG (not just the eight magic-byte header): a browser can
+# actually decode it, so the test below can assert on `naturalWidth`, not
+# merely on the presence of a src attribute.
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY"
+    "42YAAAAASUVORK5CYII=")
+
+
+def test_run_detail_artifact_dialog_branches_on_server_kind(tmp_path, pw):
+    """Task 025 (#54): the artifact dialog's SHAPE is decided from the
+    server's own `kind` field (task 022's magic-byte sniff), never from a
+    client-side extension list. A previewable image gets an `<img>` pointed
+    at the raw byte route (task 023) and actually renders it (`naturalWidth`
+    > 0, not just a src attribute); a tarball -- opaque binary -- still gets
+    today's `pull` wording in the plain text dialog, unchanged.
+
+    Also proves the file's NAME does not decide the shape: `renamed.bin` is a
+    real PNG under a non-image extension and still gets the image dialog,
+    because `kind` is sniffed from the bytes, never the name.
+    """
+    from ralphd.engine.state import ARTIFACT_BINARY
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-arts-kinds", state="succeeded",
+                              verdict="verified")
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "screenshot.png").write_bytes(_PNG_1X1)
+    (artifacts / "renamed.bin").write_bytes(_PNG_1X1)
+    (artifacts / "archive.tar.gz").write_bytes(
+        b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03" + bytes(range(200)))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-arts-kinds")
+        _wait_for_count_ge(pw, _ARTIFACT_ITEMS, 3)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- a previewable image: <img>, not <pre> -------------------------
+        pw.click('button.artifact-item[data-artifact="screenshot.png"]')
+        _wait_for(pw, "document.querySelectorAll('.text-dialog img').length",
+                 "1")
+        assert int(pw.eval_js(_DIALOGS)) == 1
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog pre').length")) == 0
+        src = pw.eval_js(
+            "document.querySelector('.text-dialog img').getAttribute('src')")
+        assert ("/api/runs/run-arts-kinds/artifacts-raw/screenshot.png"
+                in src), src
+        width = _wait_for(
+            pw, "document.querySelector('.text-dialog img').naturalWidth",
+            "1")
+        assert int(width) > 0, width  # the browser actually decoded real bytes
+        pw.screenshot(SCREENSHOTS_DIR / "25-artifact-image-dialog.png")
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- a real PNG under a non-image extension: still the image dialog
+        pw.click('button.artifact-item[data-artifact="renamed.bin"]')
+        _wait_for(pw, "document.querySelectorAll('.text-dialog img').length",
+                 "1")
+        src2 = pw.eval_js(
+            "document.querySelector('.text-dialog img').getAttribute('src')")
+        assert ("/api/runs/run-arts-kinds/artifacts-raw/renamed.bin"
+                in src2), src2
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+        assert int(pw.eval_js(_DIALOGS)) == 0
+
+        # -- a tarball: today's `pull` wording, plain text, no <img> -------
+        pw.click('button.artifact-item[data-artifact="archive.tar.gz"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "archive.tar.gz")
+        assert ARTIFACT_BINARY in body, body
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog img').length")) == 0
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.text-dialog pre').length")) == 1
     finally:
         server.stop()
 
