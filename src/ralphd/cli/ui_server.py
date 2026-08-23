@@ -131,6 +131,17 @@ API_PROBE_TIMEOUT_S = 0.3
 # sentence, and so app.js never invents a reason of its own.
 DELETE_REFUSED_ACTIVE = ("run is still active (state: {state}) — abort or stop "
                          "it first")
+# Task 013 (#56): the `finishing` window (engine/state.py's
+# NONTERMINAL_STATES) is NOT "still working the plan" -- the verdict is
+# already settled and on disk, only the post-terminal reflect iteration is
+# still unwinding. `DELETE_REFUSED_ACTIVE`'s "abort or stop it first" is the
+# wrong instruction here (there is nothing left to abort), so this state gets
+# its own sentence, checked BEFORE the generic NONTERMINAL_STATES branch in
+# `deletion_refusal` -- one constant, read by both the endpoint's 409 and
+# `deletion_fields`' disabled button, so they can never say two different
+# things about the same refusal.
+DELETE_REFUSED_FINISHING = ("run is finishing (state: finishing) — wait for it "
+                            "to reach a terminal state, then delete it")
 DELETE_REFUSED_UNKNOWN = ("cannot establish that this run has finished (state: "
                           "{state}) — check ralphctl repair, then delete it "
                           "with ralphctl rm --force")
@@ -998,8 +1009,8 @@ def deletion_fields(status: dict) -> dict:
     `approachDisplay`/`costDisplay`: a forged `deletable` in somebody's
     status.json (or in a proxied payload) cannot talk the hub into offering a
     destructive action, and the refusal SENTENCE is the server's own wording
-    (`DELETE_REFUSED_ACTIVE`/`_UNKNOWN`), so app.js never invents a second
-    explanation of why a run may not be deleted.
+    (`DELETE_REFUSED_ACTIVE`/`_FINISHING`/`_UNKNOWN`), so app.js never invents
+    a second explanation of why a run may not be deleted.
     """
     reason = deletion_refusal(status if isinstance(status, dict) else {})
     return {"deletable": reason is None, "deleteRefusal": reason}
@@ -1025,6 +1036,12 @@ def deletion_refusal(status: dict) -> str | None:
     state = status.get("state")
     if state in TERMINAL_STATES:
         return None
+    # Task 013 (#56): checked before the generic NONTERMINAL_STATES branch --
+    # `finishing` gets its own wording (settled verdict, unwinding reflect),
+    # not the "abort or stop it first" instruction that applies to a run
+    # still actively working the plan.
+    if state == "finishing":
+        return DELETE_REFUSED_FINISHING
     if state in NONTERMINAL_STATES:
         return DELETE_REFUSED_ACTIVE.format(state=state)
     return DELETE_REFUSED_UNKNOWN.format(

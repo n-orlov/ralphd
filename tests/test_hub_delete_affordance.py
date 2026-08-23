@@ -52,13 +52,27 @@ def test_a_terminal_run_is_offered_deletion_with_no_reason_to_show(state):
         "deletable": True, "deleteRefusal": None}
 
 
-@pytest.mark.parametrize("state", sorted(NONTERMINAL_STATES))
+@pytest.mark.parametrize("state", sorted(s for s in NONTERMINAL_STATES if s != "finishing"))
 def test_an_active_run_is_not_deletable_and_carries_the_reason(state):
     fields = ui_server.deletion_fields({"state": state})
     assert fields["deletable"] is False
     # the server's OWN sentence, not a second wording for the browser
     assert fields["deleteRefusal"] == ui_server.DELETE_REFUSED_ACTIVE.format(
         state=state)
+
+
+def test_a_finishing_run_carries_the_finishing_sentence_not_the_active_one():
+    """Task 013 (#56): the disabled button explains the reflect unwind in
+    the SAME sentence `deletion_refusal` gives the endpoint's 409 -- one
+    constant, asserted identical, never the generic `DELETE_REFUSED_ACTIVE`
+    wording that talks about aborting a run that has nothing left to abort."""
+    fields = ui_server.deletion_fields({"state": "finishing"})
+    assert fields["deletable"] is False
+    assert fields["deleteRefusal"] == ui_server.DELETE_REFUSED_FINISHING
+    assert fields["deleteRefusal"] == ui_server.deletion_refusal(
+        {"state": "finishing"})
+    assert fields["deleteRefusal"] != ui_server.DELETE_REFUSED_ACTIVE.format(
+        state="finishing")
 
 
 @pytest.mark.parametrize("status", [{}, {"state": None}, {"state": ""},

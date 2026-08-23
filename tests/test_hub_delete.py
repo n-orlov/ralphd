@@ -116,11 +116,24 @@ def test_a_terminal_run_may_be_deleted(state):
     assert ui_server.deletion_refusal({"state": state}) is None
 
 
-@pytest.mark.parametrize("state", NONTERMINAL_STATES)
+@pytest.mark.parametrize("state", [s for s in NONTERMINAL_STATES if s != "finishing"])
 def test_an_active_run_is_refused_with_its_state_named(state):
     reason = ui_server.deletion_refusal({"state": state})
     assert reason == ui_server.DELETE_REFUSED_ACTIVE.format(state=state)
     assert state in reason
+
+
+def test_a_finishing_run_is_refused_with_finishing_wording_not_still_active():
+    """Task 013 (#56): `finishing` is its OWN sentence -- the verdict is
+    already settled and on disk, so "abort or stop it first"
+    (`DELETE_REFUSED_ACTIVE`) would be a lie about a run with nothing left to
+    abort. The refusal names the state as `finishing`, not the generic
+    active wording."""
+    reason = ui_server.deletion_refusal({"state": "finishing"})
+    assert reason == ui_server.DELETE_REFUSED_FINISHING
+    assert reason != ui_server.DELETE_REFUSED_ACTIVE.format(state="finishing")
+    assert "finishing" in reason
+    assert "abort" not in reason
 
 
 @pytest.mark.parametrize("status", [
@@ -224,7 +237,7 @@ def test_delete_uses_the_cli_removal_sequence(ui, tmp_path):
         == cli_argv
 
 
-@pytest.mark.parametrize("state", NONTERMINAL_STATES)
+@pytest.mark.parametrize("state", [s for s in NONTERMINAL_STATES if s != "finishing"])
 def test_delete_refuses_an_active_run_and_touches_nothing(ui, tmp_path, state):
     hub = Hub(ui, tmp_path, **HAS_CONTAINER, STUB_DOCKER_PS_IDS="sib1")
     hub.seed(f"hub-{state}", state=state)
@@ -241,6 +254,47 @@ def test_delete_refuses_an_active_run_and_touches_nothing(ui, tmp_path, state):
     assert (hub.run_dir(f"hub-{state}") / "status.json").exists()
     assert hub.config_dir(f"hub-{state}").exists()
     assert f"hub-{state}" in hub.run_ids()
+
+
+def test_delete_refuses_a_finishing_run_with_finishing_wording(ui, tmp_path):
+    """The endpoint's 409 during the reflect unwind names the run as
+    finishing, matching `deletion_refusal`'s dedicated sentence -- not the
+    generic "still active" wording the other nonterminal states get."""
+    hub = Hub(ui, tmp_path, **HAS_CONTAINER, STUB_DOCKER_PS_IDS="sib1")
+    hub.seed("hub-finishing", state="finishing")
+
+    code, body = hub.delete("hub-finishing")
+
+    assert code == 409
+    assert body["error"] == ui_server.DELETE_REFUSED_FINISHING
+    assert body == {"error": body["error"], "runId": "hub-finishing",
+                    "state": "finishing"}
+    assert hub.recorded() == []
+    assert (hub.run_dir("hub-finishing") / "status.json").exists()
+    assert "hub-finishing" in hub.run_ids()
+
+
+def test_an_idle_finished_run_with_a_live_container_is_still_deletable(ui, tmp_path):
+    """Fact 3 (PRD): `on_complete: idle` keeps a finished run's container up
+    ON PURPOSE. The gate must key on the recorded STATE (the engine no
+    longer has work to do), never on whether the container happens to still
+    be running -- otherwise every `on_complete: idle` run becomes
+    permanently undeletable the moment requirement A's `finishing` state
+    lands. This is the regression the obvious "refuse while a container is
+    up" fix would introduce."""
+    hub = Hub(ui, tmp_path, **HAS_CONTAINER, STUB_DOCKER_PS_IDS="sib-idle")
+    rdir = hub.seed("hub-idle-done", state="succeeded")
+    cdir = hub.config_dir("hub-idle-done")
+    (cdir / "job.yaml").write_text("iterations: 3\non_complete: idle\n")
+
+    assert "hub-idle-done" in hub.run_ids()
+    code, body = hub.delete("hub-idle-done")
+
+    assert code == 200, body
+    assert body == {"removed": "hub-idle-done", "stoppedContainer": True}
+    assert ["rm", "-f", "ralphd-hub-idle-done"] in hub.recorded()
+    assert not rdir.exists()
+    assert not cdir.exists()
 
 
 @pytest.mark.parametrize("kwargs,named", [
