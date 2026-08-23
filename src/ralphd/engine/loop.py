@@ -28,6 +28,7 @@ from .state import (
     TASK_FAILURE_VALIDATION_EXHAUSTED,
     TERMINATION_CLASS_OPERATOR,
     TERMINATION_CLASS_SELF,
+    TERMINAL_STATES,
     VALIDATION_ATTEMPT_LIMIT,
     RunDir,
     atomic_write_json,
@@ -210,6 +211,13 @@ class LoopSupervisor:
         # written) exactly once, on the iteration that proves the endpoint is
         # back, instead of on every non-infra result of a healthy run.
         self._infra_degraded = False
+        # Task 012 (#56): the settled terminal outcome, recorded by _finish()
+        # but not yet promoted onto status.json's `state` field -- set only
+        # while cfg.reflect is true and the job has finished, cleared by
+        # _promote_finishing_state() once the reflect window is over. `None`
+        # for the whole life of a run with `reflect: false` (there, _finish()
+        # writes the real terminal state immediately and this is never set).
+        self._pending_terminal: tuple[str, str, dict] | None = None
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
     REFUND_KINDS = ("infra", "grace")
@@ -1434,10 +1442,123 @@ class LoopSupervisor:
         extra 'reflect' iteration analyzing the run for prompt/skill
         improvements (PRD req 24). Returns final state: succeeded | failed |
         aborted -- unaffected by the reflect iteration, which runs strictly
-        after the state below is already terminal."""
+        after the outcome below is already settled (though, with `reflect:
+        true`, status.json's `state` field itself reads the non-terminal
+        `finishing` until reflect is over -- see `_finish()`).
+
+        Task 012 (#56): a process that starts up over a run dir already
+        recorded `finishing` (this same job, an earlier episode, settled the
+        verdict and then died -- crash, SIGKILL, a host reboot -- before it
+        could promote it) has nothing left to decide. Redoing any part of
+        the job here would let a dead process's stale opinion overrule one
+        that was already settled and written down; the only honest thing to
+        do is finish what the crashed episode could not, and stop. See
+        _promote_recorded_finishing_state().
+        """
+        status = self.run.read_status()
+        if status.get("state") == "finishing":
+            return self._promote_recorded_finishing_state(status)
         state = await self._run_job_core()
         if self.cfg.reflect:
             await self._run_reflection()
+        self._promote_finishing_state()
+        return state
+
+    def _finish(self, state: str, verdict: str, **fields) -> str:
+        """THE terminal-outcome write (task 012, #56) -- every place
+        `_run_job_core` decides the job's fate calls this instead of writing
+        `state`/`verdict` on status.json directly, so the reflect window has
+        exactly one implementation to get right.
+
+        With `reflect: false` the outcome is written as the real terminal
+        state immediately, unchanged from before this task.
+
+        With `reflect: true` the outcome is *settled* (this method decided
+        it, for good -- nothing after this call can change `state` or
+        `verdict` again) but not yet the terminal state on disk: the post-
+        terminal reflect iteration still has to run, and until now that
+        iteration ran while status.json already claimed the job was over --
+        `rm`/the hub's delete button/`ralphctl status`'s `ended:` line all
+        treated a run that was still doing agent work as finished. Instead
+        status.json gets the non-terminal `finishing` state (a member of
+        `NONTERMINAL_STATES`, so every zombie/liveness check still treats an
+        engine that dies in this window as owning the run) plus `verdict`
+        (the settled value -- callers rely on this being readable
+        immediately, e.g. `ralphctl status --json`'s exit code) and
+        `pendingTerminalState` (the value `state` will become the moment the
+        window closes). `_promote_finishing_state()` (this same process,
+        after reflect returns) or `_promote_recorded_finishing_state()` (a
+        resumed process, reading this exact record back) is what writes the
+        real terminal state; both read `self._pending_terminal`/status.json
+        rather than re-deciding anything.
+        """
+        fields.setdefault("endedAt", utcnow())
+        if self.cfg.reflect:
+            self._pending_terminal = (state, verdict, dict(fields))
+            self.run.update_status(state="finishing", phase=None,
+                                   verdict=verdict, pendingTerminalState=state,
+                                   **fields)
+            self.run.emit("state", state="finishing")
+        else:
+            self.run.update_status(state=state, verdict=verdict, phase=None,
+                                   **fields)
+        return state
+
+    def _promote_finishing_state(self) -> None:
+        """After `_run_reflection()` returns (whether it ran, failed, or was
+        skipped outright because a signal was already taking the engine
+        down -- `_run_reflection` covers all three without this caller
+        needing to know which), moves status.json from the non-terminal
+        `finishing` state `_finish()` recorded to the real terminal state
+        the job was always going to reach. A no-op when `reflect` is false
+        (`_finish()` already wrote the terminal state directly, so
+        `_pending_terminal` was never set) -- called unconditionally from
+        `run_job()` so there is exactly one call site, not one per branch.
+        """
+        if self._pending_terminal is None:
+            return
+        state, verdict, fields = self._pending_terminal
+        self._pending_terminal = None
+        self.run.update_status(state=state, verdict=verdict, phase=None,
+                               pendingTerminalState=None, **fields)
+
+    def _promote_recorded_finishing_state(self, status: dict) -> str:
+        """`run_job()`'s resume-time counterpart to `_promote_finishing_state`:
+        the SAME promotion, read back from disk instead of from
+        `self._pending_terminal`, because this is a fresh process that never
+        called `_finish()` at all -- a prior episode did, then died before
+        it could promote its own settled outcome.
+
+        Deliberately does not re-run reflect: reflect already had its one
+        attempt (or was skipped for a documented reason) in the episode that
+        died, and re-spawning an agent to reflect on a job that already has
+        a settled, written-down outcome is exactly the kind of `finishing`-
+        window side effect this task exists to bound, not extend. An
+        operator who wants the reflection redone can inspect
+        `artifacts/reflection/` and re-run it by hand; `ralphctl repair
+        --set-state <state>` reaches the identical terminal outcome without
+        starting an engine at all, since `pendingTerminalState` is sitting
+        right there in status.json for a human or a script to read.
+        """
+        state = status.get("pendingTerminalState")
+        verdict = status.get("verdict")
+        if state not in TERMINAL_STATES:
+            # Should never happen (state.py's own write contract), but a
+            # hand-edited or corrupted status.json must not crash the
+            # engine -- fail loudly and terminally instead of looping.
+            self.run.update_status(
+                state="failed", verdict="unverified", phase=None,
+                endedAt=utcnow(),
+                reason=("resumed a `finishing` run dir with no valid "
+                        f"recorded pendingTerminalState ({state!r})"))
+            return "failed"
+        self.run.emit(
+            "log",
+            message=(f"resuming a run dir recorded `finishing`; promoting "
+                     f"directly to the settled outcome {state!r} without "
+                     "redoing any of the job (task 012, #56)"))
+        self.run.update_status(state=state, verdict=verdict, phase=None,
+                               pendingTerminalState=None)
         return state
 
     # Task 018 (#5): the post-terminal reflect iteration's own outage budget
@@ -1604,13 +1725,18 @@ class LoopSupervisor:
         outdir = self.run.artifacts_dir / "reflection"
         outdir.mkdir(parents=True, exist_ok=True)
         status = self.run.read_status()
+        # Task 012 (#56): while the reflect window is open, status.json's
+        # `state` reads the non-terminal `finishing`, not the job's real
+        # outcome -- `pendingTerminalState` (or, if that is somehow absent,
+        # `state` itself) is the value this tombstone means to report.
+        reported_state = status.get("pendingTerminalState") or status.get("state")
         (outdir / self.REFLECT_TOMBSTONE).write_text(
             "# Reflection failed\n\n"
             f"The post-terminal `reflect` iteration did not produce a report.\n\n"
             f"- error: {error}\n"
             f"- when: {utcnow()}\n"
             f"- run: {self.cfg.run_id}\n"
-            f"- terminal state: {status.get('state')} "
+            f"- terminal state: {reported_state} "
             f"(verdict {status.get('verdict')})\n\n"
             "The job's own terminal state above is unaffected by this failure.\n"
             "See the last `reflect` iteration under `iterations/` for the\n"
@@ -1792,7 +1918,13 @@ class LoopSupervisor:
         return endings[-PREVIOUS_ENDINGS_MAX:]
 
     async def _run_job_core(self) -> str:
-        """Returns final state: succeeded | failed | aborted."""
+        """Returns the settled final state: succeeded | failed | aborted.
+
+        Task 012 (#56): with `reflect: true` this is the value `_finish()`
+        decided, not necessarily what `state` reads on status.json the
+        instant this coroutine returns -- see `_finish()`/run_job() for the
+        `finishing` window that covers the reflect iteration still ahead.
+        """
         # Task 022 (#30): read the ending fields before overwriting them.
         previous_endings = self._previous_endings()
         self.run.update_status(state="running", startedAt=utcnow(),
@@ -2047,19 +2179,17 @@ class LoopSupervisor:
                         "review", extra=self._flagged_criteria_review_context())
                 if review.saw_verified and not self.run.pending_steering():
                     self.run.emit("signal", signal="VERIFIED")
-                    self.run.update_status(state="succeeded", verdict="verified",
-                                           phase=None, endedAt=utcnow(),
-                                           **self._unconsumed_steering_patch())
+                    self._finish("succeeded", "verified",
+                                **self._unconsumed_steering_patch())
                     return "succeeded"
                 self.run.emit("log", message=f"review rejected approach {approach}")
                 self._archive_approach(approach)
                 self._write_composite_prd(approach)
 
             state = "aborted" if self._abort_reason else "failed"
-            self.run.update_status(state=state, verdict="unverified", phase=None,
-                                   endedAt=utcnow(),
-                                   reason=self._abort_reason or self._terminal_reason_note,
-                                   **self._unconsumed_steering_patch())
+            self._finish(state, "unverified",
+                        reason=self._abort_reason or self._terminal_reason_note,
+                        **self._unconsumed_steering_patch())
             return state
         except Exception as exc:  # engine bug — record, don't vanish
             # Deliberately still `Exception`, not BaseException: the
@@ -2070,10 +2200,9 @@ class LoopSupervisor:
             # on this coroutine) and must unwind the engine rather than be
             # rewritten into a terminal "engine error" verdict.
             self.run.emit("log", level="error", message=f"engine error: {exc!r}")
-            self.run.update_status(state="failed", verdict="unverified",
-                                   phase=None, endedAt=utcnow(),
-                                   reason=f"engine error: {exc}",
-                                   **self._unconsumed_steering_patch())
+            self._finish("failed", "unverified",
+                        reason=f"engine error: {exc}",
+                        **self._unconsumed_steering_patch())
             return "failed"
 
     def _unconsumed_steering_patch(self) -> dict:
@@ -2181,12 +2310,10 @@ class LoopSupervisor:
         self._refund_iteration("grace")
         if review.saw_verified and not self.run.pending_steering():
             self.run.emit("signal", signal="VERIFIED")
-            self.run.update_status(
-                state="succeeded", verdict="verified", phase=None,
-                endedAt=utcnow(), graceReview=True,
-                reason=("budget exhausted with all tasks completed; the "
-                        "grace review ran and VERIFIED"),
-                **self._unconsumed_steering_patch())
+            self._finish("succeeded", "verified", graceReview=True,
+                        reason=("budget exhausted with all tasks completed; "
+                                "the grace review ran and VERIFIED"),
+                        **self._unconsumed_steering_patch())
             return True
         if review.saw_verified:
             self._terminal_reason_note = (

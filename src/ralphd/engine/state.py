@@ -367,7 +367,20 @@ def read_json(path: Path, default: Any = None) -> Any:
 # the hub server (a run recorded in one of these states whose API does not
 # answer is a dead run, not a healthy one). A second copy is how those
 # surfaces start disagreeing about which runs are zombies.
-NONTERMINAL_STATES = ("starting", "running")
+#
+# Task 012 (#56) adds "finishing": once the job's verdict is settled but
+# `reflect: true` still has its post-terminal iteration to run, the run is
+# neither actively working the plan (the ordinary meaning "running" carries
+# everywhere -- deletion, `rm`, the hub's live pill) nor safely inert (a
+# terminal state is the ONE gate every destructive action opens on). It IS
+# still "a live engine owns this run" for liveness/zombie purposes -- an
+# engine killed mid-reflect leaves a dangling run exactly like one killed
+# mid-worker, and belongs in this tuple for that reason alone. See
+# LoopSupervisor._finish()/_promote_finishing_state() (engine/loop.py) for
+# how status.json carries the settled verdict and the pending terminal state
+# across the window, and how a resumed process promotes it without redoing
+# any of the job.
+NONTERMINAL_STATES = ("starting", "running", "finishing")
 
 # Task 030 (#19): its complement -- the recorded `state` values that mean "no
 # engine owns this run any more", i.e. the ONE gate a destructive action may

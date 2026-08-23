@@ -95,7 +95,7 @@ let runSort = { key: "startedAt", dir: -1 };
 // live and finished runs (aborted, failed, running, starting, succeeded).
 // Mirrors `main.py`'s `_STATUS_STATES` / the verdict progression in
 // docs/api.md (no verdict yet -> unverified -> verified).
-const RUN_STATE_ORDER = ["starting", "running", "succeeded", "failed", "aborted"];
+const RUN_STATE_ORDER = ["starting", "running", "finishing", "succeeded", "failed", "aborted"];
 const RUN_VERDICT_ORDER = ["", "unverified", "verified"];
 
 function lifecycleRank(order, value) {

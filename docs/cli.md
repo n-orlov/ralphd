@@ -350,7 +350,7 @@ a missing/invalid docker socket with `--allow-docker`).
 List all runs (live and historical) from the registry, **newest first**.
 
 ```
-ralphctl runs [--state starting|running|succeeded|failed|aborted]
+ralphctl runs [--state starting|running|finishing|succeeded|failed|aborted]
               [--sort runId|state|verdict|phase|approach|tasks|iterationsUsed|startedAt]
               [--reverse]
 ```
@@ -448,7 +448,8 @@ keys, the same lifecycle orders and the same raw payload values:
   alphabetical order the registry directory listing yields;
 - `startedAt`, `iterationsUsed` and `approach` sort biggest/newest first;
   the text keys (`runId`, `phase`) sort A→Z; `state`/`verdict` sort in
-  lifecycle order (`starting → running → succeeded → failed → aborted`, and
+  lifecycle order (`starting → running → finishing → succeeded → failed →
+  aborted`, and
   no-verdict → `unverified` → `verified`); `tasks` sorts on the completion
   **ratio** `tasksCompleted / tasksTotal` (so `5/7` outranks `100/250`) and
   starts **ascending**, least-complete first — the runs that still owe work;

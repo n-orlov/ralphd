@@ -223,7 +223,12 @@ def test_reflect_survives_the_outage_that_killed_the_job(tmp_path):
          "RALPHD_INFRA_RETRY_BACKOFF_MAX_S": "1.0",
          "RALPHD_INFRA_OUTAGE_BUDGET_S": "2.5"})
     try:
-        terminal = e.wait_state(("succeeded", "failed", "aborted"), timeout=120)
+        # Task 012 (#56): the job's outcome is settled and observable in
+        # the non-terminal `finishing` state strictly before `state` itself
+        # goes terminal -- that ordering is the whole point of the task, so
+        # the pre-reflect snapshot has to be taken there, not by waiting for
+        # a terminal state that now only appears once reflect is done.
+        terminal = e.wait_state(("finishing",), timeout=120)
         assert e.proc.wait(timeout=120) == 1  # aborted == nonzero exit
     finally:
         e.stop()
@@ -260,7 +265,8 @@ def test_reflect_survives_the_outage_that_killed_the_job(tmp_path):
 
     # -- the terminal state is exactly what the job decided ----------------
     final = json.loads((e.run_dir / "status.json").read_text())
-    assert final["state"] == terminal["state"] == "aborted"
+    assert terminal["state"] == "finishing"
+    assert terminal["pendingTerminalState"] == final["state"] == "aborted"
     assert final["verdict"] == terminal["verdict"] == "unverified"
     assert final["reason"] == terminal["reason"]
     assert "infra fault" in final["reason"]

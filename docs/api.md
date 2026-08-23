@@ -32,7 +32,7 @@ The one-call summary. Response:
 {
   "runId": "brisk-otter-1408",
   "schemaVersion": 1,              // run-dir schema this state was written under
-  "state": "running",              // starting|running|succeeded|failed|aborted
+  "state": "running",              // starting|running|finishing|succeeded|failed|aborted
   "phase": "worker",               // planning|worker|verify|review|null; never "paused"
   "approach": 1,
   "maxApproaches": 3,           // approach denominator; null for a pre-v0.6 run dir
@@ -48,7 +48,7 @@ The one-call summary. Response:
   "iterationsBudget": 50,
   "iterationsUsed": 7,
   "iterationsRefunded": {"infra": 2, "grace": 0},  // earned refunds; survives a resume
-  "verdict": null,                 // "verified" | "unverified" | null while running
+  "verdict": null,                 // "verified" | "unverified" | null while running -- settled (non-null) once `state` reaches `finishing`, task 012/#56
   "reason": null,                  // why a non-succeeded run ended (also the grace-review note)
   "onComplete": "idle",
   "createdAt": "2026-08-08T13:08:09Z",
@@ -97,7 +97,8 @@ keys with no section of their own below:
 | `schemaVersion` | the run-dir schema this state was written under; a run dir whose recorded version is newer than the engine build refuses to start (see `docs/architecture.md`) |
 | `createdAt` / `startedAt` | first status write (state `starting`) / when the loop entered `running` |
 | `updatedAt` | last write of any field — every `update_status` stamps it |
-| `endedAt` | this **episode**'s terminal write; `null` while the run is still going, and reset when a resumed episode starts (so it can never predate `startedAt`) |
+| `endedAt` | this **episode**'s terminal write; `null` while the run is still going, and reset when a resumed episode starts (so it can never predate `startedAt`). Written the moment the outcome is settled, which with `reflect: true` is *before* `state` becomes terminal -- see `pendingTerminalState` |
+| `pendingTerminalState` | present only while `state` is `finishing` (task 012, #56): the terminal state (`succeeded`\|`failed`\|`aborted`) this run is going to become the moment the post-terminal `reflect` iteration is over. `verdict` is already the settled value at that point too -- nothing after `state` becomes `finishing` can change either one |
 | `reason` | why a non-succeeded run ended, or the note an off-budget grace review left; also episode-scoped, so a resumed run never reports the previous engine's reason |
 | `previousEndings` | earlier episodes' endings, oldest first — `{endedAt, reason, verdict}` per superseded ending, `[]` for a run still in its first episode, capped at the 50 most recent. Kept because the terminal `state` event in `events.jsonl` records the state but not the reason or verdict |
 | `termination` | present once the run was told to stop — see below |
@@ -241,7 +242,8 @@ engine mid-run (see docs/cli.md).
 
 #### `health` and `infraWait`
 
-`state` stays `starting|running|succeeded|failed|aborted` — there is **no**
+`state`'s values are `starting|running|finishing|succeeded|failed|aborted`
+(task 012, #56, adds `finishing`) — there is **no**
 `degraded` state value, because that would break every consumer's
 terminal-state logic (`ralphctl watch` included). A run that is sitting out an
 infra outage says so with two dedicated fields instead:
@@ -546,7 +548,7 @@ then follows. Event types:
 
 | type | payload highlights |
 |------|--------------------|
-| `state` | lifecycle transition: `state` is `running` (emitted by every engine process as it starts the job loop, resume included) or the terminal `succeeded`/`failed`/`aborted`; the startup event also carries `resumed` (`true` when this process picked up a run dir that already held recorded work) |
+| `state` | lifecycle transition: `state` is `running` (emitted by every engine process as it starts the job loop, resume included -- except a process that resumes a run dir already recorded `finishing`, task 012/#56 below, which has no job loop left to start and promotes straight to the terminal event), `finishing` (task 012, #56: the verdict is settled but the post-terminal `reflect` iteration has not run yet -- see status.json's `pendingTerminalState`) or the terminal `succeeded`/`failed`/`aborted`; the startup event also carries `resumed` (`true` when this process picked up a run dir that already held recorded work) |
 | `phase` | phase entered (planning/worker/verify/review), approach number |
 | `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
 | `iteration.attempt_archived` | a reused iteration number's earlier, crashed attempt was archived before the new one wrote: `number`, `attempt` (`1` for the oldest), `path` (`iterations/NNNN/attempts/NN`), `files` |

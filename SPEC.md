@@ -980,7 +980,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | field | type | meaning |
 |---|---|---|
 | `runId` | string | the run id |
-| `state` | string | `starting` \| `running` \| `succeeded` \| `failed` \| `aborted` |
+| `state` | string | `starting` \| `running` \| `finishing` \| `succeeded` \| `failed` \| `aborted` (task 012, #56 adds `finishing`: the outcome is settled, the post-terminal `reflect` iteration has not run yet -- see §12.2) |
 | `schemaVersion` | int | run-dir schema this state was written under (§5.7) |
 | `health` | string | `ok` \| `degraded` — degraded while sitting out an infra outage |
 | `infraWait` | object \| null | the backoff wait in progress: `since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`; `null` whenever nothing is being waited on |
@@ -996,6 +996,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `model` | string \| null | the model reference the run's iterations actually reported, `provider/model`; `null` until an iteration observes one |
 | `modelRaw` | string \| null | the provider's own id when it differs from the resolved reference (a gateway-local spelling); `null` when it does not |
 | `verdict` | string \| null | `verified` \| `unverified`; `null` until terminal |
+| `pendingTerminalState` | string | present only while `state` is `finishing`: the terminal state this run is going to become once the reflect window closes (§12.2) |
 | `reason` | string | why a non-succeeded run ended, or the grace-review note; **episode-scoped** like `endedAt` |
 | `termination` | object \| null | present once the run was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null` |
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
@@ -2573,7 +2574,9 @@ whether a figure is partial or derived.
 ### 8.7 Vanished containers, repair and doctor
 
 A run whose recorded state is non-terminal (`NONTERMINAL_STATES` is
-`("starting", "running")`) while **no container is running for it** is a
+`("starting", "running", "finishing")` -- task 012, #56, adds `finishing`:
+an engine that dies mid-reflect leaves a dangling run exactly like one
+that dies mid-worker) while **no container is running for it** is a
 dangling run. It is the shape a host reboot, an OOM kill or a `docker rm`
 leaves behind, and the run dir alone cannot distinguish it from a run that is
 working normally.
@@ -3531,8 +3534,8 @@ yields. Keys sort on raw payload values, not rendered cell text:
 on the bare counter rather than on the rendered `10/12`, `tasks` on the
 **completion ratio** so `5/7` outranks `100/250`, `startedAt`
 on the parsed instant so ISO values with different UTC offsets order correctly,
-and `state`/`verdict` in lifecycle order (`starting → running → succeeded →
-failed → aborted`, and no-verdict → `unverified` → `verified`). Missing values
+and `state`/`verdict` in lifecycle order (`starting → running → finishing →
+succeeded → failed → aborted`, and no-verdict → `unverified` → `verified`). Missing values
 sort last, and the run id breaks ties so the order is total and stable.
 `startedAt`, `iterationsUsed` and `approach` start descending; `--reverse`
 flips whichever direction the key starts with. A run with no plan at all has no
@@ -3892,9 +3895,43 @@ the loop has reached a terminal state.
   `notes.md`, `review-findings.md`, steering files, nor anything under
   `iterations/`. That is instructed, not sandboxed — reflect has the same tool
   access as every other phase. The engine-level guarantee is narrower and
-  absolute: the terminal `state`, `verdict` and `endedAt` are written *before*
-  reflect starts and are never touched by it, and `phase` resets to `None` when
-  it finishes, so a terminal run never looks mid-phase.
+  absolute: the job's outcome — `verdict`, `reason`, and the terminal state
+  it is going to reach — is **settled** before reflect starts and is never
+  touched by it, whatever `state` says on disk in the meantime (below), and
+  `phase` resets to `None` when it finishes, so a terminal run never looks
+  mid-phase.
+
+**The `finishing` state (task 012, #56) covers the reflect window itself.**
+Until this task, `_run_job_core()` wrote the real terminal `state` (and
+`endedAt`) the instant the outcome was decided — *before* the reflect
+iteration ran — so every surface gated on `state`/`TERMINAL_STATES` (`rm`,
+the hub's delete button, `ralphctl status`'s `ended:` line, a follower
+reading `events.jsonl`) treated a run that was still doing agent work as
+finished and safe to act on. With `reflect: true`, `LoopSupervisor._finish()`
+now writes the non-terminal `finishing` state instead — a member of
+`NONTERMINAL_STATES` (§5.2), so every zombie/liveness check still treats an
+engine that dies in this window as owning the run, exactly like `running` —
+plus `verdict` (the settled value; it does not wait for `state` to go
+terminal) and `pendingTerminalState` (the value `state` is going to become).
+`run_job()` calls `_promote_finishing_state()` once `_run_reflection()`
+returns (whether reflect ran, failed, or was skipped outright because a
+signal was already taking the engine down), which writes the real terminal
+`state` from `self._pending_terminal` — the exact values `_finish()`
+decided, never re-derived. With `reflect: false`, `_finish()` writes the
+terminal state directly, exactly as before this task, and `finishing` never
+appears at all.
+
+A process that **resumes** a run dir already recorded `finishing` (the
+engine died mid-reflect — a crash, a `docker stop`, a host reboot) has
+nothing left to decide: `run_job()` checks `state == "finishing"` before
+doing anything else and, if so, promotes straight from the recorded
+`pendingTerminalState`/`verdict` without re-entering the job loop, without
+re-running planning/worker/review, and without re-attempting reflect —
+redoing any of them would let a dead process's stale opinion overrule one
+that was already settled and written down. `ralphctl repair --set-state
+<state>` reaches the identical outcome by hand, with no engine started at
+all, since `pendingTerminalState` is sitting right there in status.json for
+an operator or script to read.
 - **It retries on an infra-shaped ending.** `reflect` is in
   `INFRA_RETRY_PHASES`, so a dead endpoint during the post-mortem is retried like
   any other phase, with two adjustments that follow from the job being over. Its
