@@ -45,9 +45,29 @@ SRC = REPO / "src" / "ralphd" / "engine"
 DOCKERFILE = (REPO / "container" / "Dockerfile").read_text()
 ENTRYPOINT = (REPO / "container" / "entrypoint.sh").read_text()
 SPEC = (REPO / "SPEC.md").read_text()
-ARCH = (REPO / "docs" / "architecture.md").read_text()
 STUB_OVERLAY = (REPO / "tests" / "docker-hostpath-wrapper"
                 / "Dockerfile.stub-overlay").read_text()
+
+
+def _architecture_text() -> str:
+    """`docs/architecture.md`, read lazily rather than at module import.
+
+    The last line of `.dockerignore` is `docs`, so a job container built
+    from `container/Dockerfile` (`COPY --chown=agent:agent . /opt/ralphd`)
+    never has a copy of this file -- reading it at import time would make
+    this whole module uncollectable there, before any test runs, which is
+    exactly what broke `tests/test_engine_uid_boundary_docker.py`'s proof
+    (#57 reopening, steering note 002): pytest could not even report which
+    tests it skipped, only "1 error during collection". Only the two
+    architecture-claim tests below need this text, and neither is one of
+    the three job-container-gated tests, so they skip instead of failing
+    collection when the file is absent."""
+    path = REPO / "docs" / "architecture.md"
+    if not path.exists():
+        pytest.skip("docs/architecture.md is not present -- .dockerignore's "
+                     "last line excludes docs/ from the image this test is "
+                     "running against, so a job container has no copy")
+    return path.read_text()
 
 
 # --- who can run this module's job-container-only tests -----------------
@@ -451,7 +471,8 @@ def test_spec_non_goals_and_image_description_agree_with_the_image():
 
 
 def test_architecture_documents_the_containment_boundary():
-    body = ARCH.split("### The uid boundary", 1)[1].split("\n### ", 1)[0]
+    arch = _architecture_text()
+    body = arch.split("### The uid boundary", 1)[1].split("\n### ", 1)[0]
     assert "setresuid(0, agent_uid, 0)" in body
     assert "real or saved" in body
     assert "effective" in body and "uid 1000 exactly as in v0.6" in body
@@ -464,7 +485,8 @@ def test_architecture_non_goals_no_longer_claim_the_signal_hazard_is_open():
     """The same document's non-goals list used to promise PID-namespace
     isolation *as* the answer to in-container kill signals; leaving that
     standing would contradict the section above it."""
-    para = ARCH.split("**Non-goals**", 1)[1].split("\n\n", 1)[0]
+    arch = _architecture_text()
+    para = arch.split("**Non-goals**", 1)[1].split("\n\n", 1)[0]
     assert "PID-namespace isolation" in para
     assert "v0.7" in para and "uid boundary" in para
     assert "torn down" in para  # what a namespace would still add
