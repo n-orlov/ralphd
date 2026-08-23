@@ -443,6 +443,128 @@ run's steering notes instead:
   that must name the signal to explain withholding it will otherwise reproduce
   the literal line
 
+## v0.8 — a run a human can interrupt, audit and believe
+
+Full PRD:
+[`docs/prds/v0.8-auditable-interruptible.md`](prds/v0.8-auditable-interruptible.md).
+v0.7 made the loop survive its own bad iterations; this wave decided whether the
+loop can be trusted at the moment a human touches it. Three of its requirements
+trace to one abort of a real run, and one to the closure that followed it.
+Requirement letters below are the PRD's; it does not use I–L.
+
+Phase 1 — the moment a human touches a run:
+
+- ✅ **A. A terminal state is not recorded until the unwind is over (#56).** A
+  third non-terminal state, `finishing`, written the instant the verdict is
+  known — with that verdict and the terminal state it will become already on
+  disk — and promoted only when the engine actually exits, so the crash-durable
+  write order v0.5 established is unchanged. `deletion_refusal` and
+  `deletion_fields` share the one refusal sentence during that window,
+  `ralphctl rm` refuses without `--force` and `--force`'s widened escape hatch
+  is documented, `ralphctl status`/the hub never show a terminal record beside
+  a live iteration, an `on_complete: idle` run stays deletable with its
+  container up (the regression the obvious fix invites), and killing the
+  engine mid-reflect still leaves the settled verdict readable on resume or
+  `repair`
+- ✅ **B. The fast lane is green on a developer host (#57, #50).** `tests.conftest`
+  now resolves to this repo's own conftest regardless of what else is on
+  `sys.path` (proven with a decoy top-level `tests` package ahead of the repo);
+  the browser tier's screenshot directory defaults to a user-writable tempdir
+  with the container path still honoured via env override; the three
+  uid-boundary tests skip outside a job container with a named reason and are
+  asserted to run and pass inside one; the timeline dialog's keyboard-focus
+  race was diagnosed and fixed; both environments' measured suite size and
+  wall-clock are recorded in `artifacts/reports/`. Two more host-only failures
+  surfaced afterward, via operator steering rather than the PRD, and were
+  fixed forward rather than left standing: the uid-boundary meta-tests needed
+  to exercise the non-container branch directly (faking `pwd.getpwnam`/
+  `os.getuid` rather than only running inside the container), and
+  `test_engine_uid_boundary.py`'s module-level read of `docs/architecture.md`
+  failed collection inside a job container outright (`docs/` is the last line
+  of `.dockerignore`, so the image never ships it) — fixed by making that read
+  lazy. Both fixes are verified only in this container; the docker-tier proof
+  itself (`--entrypoint python3` so the image's bare `exec` doesn't swallow
+  the test command) is host-verified-only, since this run's own container has
+  no docker socket
+- ✅ **C. The budget an operator granted survives a resume (#51).** The
+  effective iteration budget resumes as the larger of `status.json` and
+  `job.yaml`, logged once naming both numbers so the operator sees which won;
+  `resume --iterations +N` adds to that effective number, matching `--help`,
+  `status` and the hub; `PATCH /config/budget`'s "live-engine change" wording
+  is corrected to say it now persists across a resume
+
+Phase 2 — the surfaces a human reads:
+
+- ✅ **D. A closing keyword cannot close an issue nobody closed (#58).** A check
+  fails a commit message carrying a closing keyword plus an issue number the
+  closure record does not list as closed, fixtured on the real `9eaee65` body
+  that caused the regression; a second check re-GETs every issue a closure
+  record names as deliberately left open and fails if GitHub disagrees; both
+  the prohibition and its substitute wording ("a later wave that *resolves*
+  this", bare `#N`, `GH-N`) are stated in `worker.md`'s git policy, ahead of
+  the commit that needed them
+- ✅ **E. The hub stops flickering between two task lists (#27).** Both
+  client-side defects fixed: a stale poll timer surviving a navigation, and a
+  response from an older render landing after a newer one started (now
+  dropped by render-generation tag); browser-tier coverage fails with either
+  fix reverted; the reflex — the hub renders decisions Python made and never
+  applies a response it did not ask for — is stated once in
+  `docs/architecture.md` with a code-derived check
+- ✅ **F. A run's approach history is visible (#24).** `ralphctl tasks <run>
+  --approach N|--all` (and `--json`) read the archived approach directories
+  directly, counts always derived from the archived file rather than
+  recomputed; the hub's run detail renders the current approach expanded (the
+  live Tasks section and State documents panel already are that) and every
+  previous one collapsed, lazily fetching and rendering that archive's own
+  task table, `notes.md` and `review-findings.md` on first expand, cached
+  against the periodic poll rebuilding and silently re-collapsing an operator's
+  open row
+- ✅ **G. Image artifacts preview in the hub (#54).** One server-decided kind —
+  text / previewable image / opaque binary — sniffed from magic bytes and never
+  the extension, shared by `ralphctl artifacts ls` and the hub; a `.tar.gz`
+  keeps today's exact `ARTIFACT_BINARY` wording; a raw byte route resolves the
+  name through `state.artifact_relpath` and nothing else, serves only the
+  four-signature allow-list (`png`/`jpeg`/`gif`/`webp`) with
+  `X-Content-Type-Options: nosniff` and a Content-Type drawn from that
+  allow-list rather than `mimetypes.guess_type`, and falls back to today's
+  `pull` wording above a 5 MiB inline cap; SVG is deliberately excluded, with a
+  comment and a test naming the reason (stored XSS); a
+  Content-Security-Policy now covers every hub response; `app.js` branches the
+  artifact dialog on the server's kind, no client-side extension list anywhere
+
+Phase 3 — the deadlock we know about:
+
+- ✅ **H. An operator ruling can reach review (#26).** A written design
+  (`artifacts/reports/`) weighed four candidate mechanisms and chose a new
+  `ralphctl amend` verb writing directly into the run's `:ro`-mounted config
+  directory — never the run dir, never the API — so review's own
+  `_operator_amendment_review_context()` reads a file structurally outside the
+  agent's write access; a test proves anything the worker can write into the
+  run dir does not satisfy that reader; a fast-tier test drives a genuinely
+  deadlocked run to `succeeded`/`verified` with the amendment present and to
+  `failed`/`unverified` without it, both directions in one suite
+
+Phase 4 — close the loop:
+
+- ✅ **M. Finish the verification your predecessor could not (#45 context).** An
+  independent verification of `ralphctl suggestions show|apply`, run fresh at
+  this run's own HEAD rather than trusting the predecessor's notes, against
+  #28's and v0.7 requirement P's acceptance criteria; recorded in
+  `artifacts/reports/`, stating why the false `validation-failed` demotion
+  (an operator abort landing mid-verify on a pre-#45-fix engine) cannot recur
+  now that `_verify_no_verdict` covers `interrupted` uniformly
+- ⏳ **N. Close this wave's issues, from inside the run.** Tracked to land
+  later in this same run (`artifacts/reports/issue-traceability.md` and
+  `artifacts/reports/issue-closure.md`) — not yet executed as of this commit,
+  so this block does not claim it; see those two reports once written for
+  which of #24 #26 #27 #50 #51 #54 #56 #57 #58 actually closed and which
+  stayed open
+- ✅ **O. Docs, SPEC, the roadmap and the PRD index.** This block and the
+  `0.8.0` version bump landing together, late; the predecessor's PRD index row
+  replaced with its settled record rather than left reading a live snapshot
+  after that run ended (fact 13); this wave's own PRD committed
+  byte-identical to the job's `prd.md`, with its own index row, early
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7

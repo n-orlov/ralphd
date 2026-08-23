@@ -1,13 +1,14 @@
 """Task 033 (v0.7 requirement R): `docs/roadmap.md`'s v0.7 block and the bump.
 
-`tests/test_roadmap_v06.py`'s module for the *current* release. It is that
-module's structure, retargeted at this wave, with the two things v0.6's
-requirement J established kept intact:
+Retargeted by task 032 (v0.8 requirement O), the same way task 033 itself
+retargeted `tests/test_roadmap_v06.py` when this module was new: v0.7 is no
+longer the current release, so the "declared version has a block" half moved
+to `tests/test_roadmap_v08.py` and `SERIES` here is pinned to `(0, 7)` rather
+than read from `pyproject.toml`. Everything else -- coverage of every v0.7
+requirement letter and issue, the deferred-list checks, the requirement D/I/P/Q
+code-derived checks -- stays: v0.7's block is history now, not deleted, and
+still has to tell the truth about what shipped.
 
-* the roadmap's last milestone and the released version are the same fact, so
-  the block for `pyproject.toml`'s declared version must exist, must record
-  shipped work, and nothing may claim a milestone *after* it (fact 16: that
-  coupling is why the block and the bump land together, late);
 * a block may not claim a wave landed while omitting requirements of that wave,
   and the deferred list may not keep promising what the wave delivered. The
   requirement letters and issue numbers are parsed out of the PRD the block is
@@ -33,7 +34,6 @@ fails.
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -42,28 +42,18 @@ CLOSURE_REPORT = REPO_ROOT / "artifacts" / "reports" / "issue-closure.md"
 TRACEABILITY_REPORT = REPO_ROOT / "artifacts" / "reports" / "issue-traceability.md"
 CLOSURE_WAVE_HEADING = "# Issue closure record — ralphd v0.7"
 PRD = REPO_ROOT / "docs" / "prds" / "v0.7-trustworthy-unattended.md"
-PYPROJECT = REPO_ROOT / "pyproject.toml"
-INIT = REPO_ROOT / "src" / "ralphd" / "__init__.py"
 
 DEFERRED_HEADING = "## Later / explicitly deferred"
 
-# The milestone this wave ships. Unlike test_roadmap_v06.py's pinned SERIES,
-# this one is *derived*: this module is about the declared version's block, and
-# the assertion below is that the declared version is this one.
+# The milestone this module is about. Pinned, not read from `pyproject.toml`:
+# v0.7 is history now (task 032 retargeted this the same way task 033 itself
+# retargeted test_roadmap_v06.py's SERIES when v0.7 became current). The
+# "declared version has a block" half lives in tests/test_roadmap_v08.py.
 SERIES = (0, 7)
 
 # The verb requirement P added to `ralphctl`. It must exist in the parser (the
 # code-derived half) *and* be named in the block.
 WAVE_VERBS = ("suggestions",)
-
-
-def declared_version() -> str:
-    return tomllib.loads(PYPROJECT.read_text())["project"]["version"]
-
-
-def declared_series() -> tuple[int, int]:
-    major, minor = (int(p) for p in declared_version().split(".")[:2])
-    return major, minor
 
 
 def roadmap_text() -> str:
@@ -123,23 +113,6 @@ def _version_block_problems(text: str, series: tuple[int, int]) -> list[str]:
     return problems
 
 
-def test_the_declared_version_is_this_wave_and_both_literals_agree():
-    """The bump half of requirement R: 0.7.0 in `pyproject.toml` and in
-    `src/ralphd/__init__.py` (`test_packaging_metadata.py` owns the general
-    rule; this pins the number this block claims)."""
-    assert declared_series() == SERIES, (
-        f"docs/roadmap.md's v0.7 block is the current milestone, but "
-        f"pyproject.toml declares {declared_version()!r}")
-    m = re.search(r'^__version__ = "([^"]+)"', INIT.read_text(), re.MULTILINE)
-    assert m and m.group(1) == declared_version()
-
-
-def test_the_roadmap_has_a_block_for_the_declared_version():
-    """The released version and the roadmap's own last milestone are the same
-    thing: 0.7.0 ships v0.7, so `## v0.7` must exist and record shipped work."""
-    assert not _version_block_problems(roadmap_text(), declared_series())
-
-
 def test_the_version_block_check_catches_a_missing_or_unshipped_block():
     text, series = roadmap_text(), SERIES
     heading = f"## v{series[0]}.{series[1]}"
@@ -180,7 +153,7 @@ def test_the_prd_headings_parse_at_all():
 
 
 def test_every_prd_requirement_is_accounted_for_in_the_v07_block():
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
     assert not _coverage_problems(block)
 
@@ -195,7 +168,7 @@ def test_the_block_cites_every_issue_this_wave_names_not_only_the_range_ends():
     """The PRD writes requirement A's issues as the range `#35-#42`, so the
     parse above only demands #35 and #42. The block names all eight, which is
     what makes it usable as an issue -> requirement index."""
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     missing = [n for n in range(35, 43) if f"#{n}" not in block]
     assert not missing, f"the v0.7 block does not cite {missing}"
 
@@ -205,7 +178,7 @@ def test_the_v07_block_names_the_verb_the_wave_added():
 
     verbs = {a.dest: a for a in build_parser()._subparsers._group_actions}
     choices = set(next(iter(verbs.values())).choices)
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     for verb in WAVE_VERBS:
         assert verb in choices, f"WAVE_VERBS names {verb!r}, which the parser lacks"
         assert f"`ralphctl {verb}" in block, (
@@ -280,7 +253,7 @@ def test_the_auto_resume_flip_is_shipped_not_deferred():
 
     assert AUTO_RESUME_DEFAULT is True
     assert "auto_resume" not in deferred_section(roadmap_text())
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert "AUTO_RESUME_DEFAULT" in block and "--no-auto-resume" in block
 
 
@@ -385,7 +358,7 @@ def test_the_closure_record_parses_at_all():
 def test_requirement_q_is_shipped_and_says_what_the_receipts_say():
     """Task 042: the bullet flips to shipped only once the issues are closed,
     and its claim is the closure record's own set, not a retyped one."""
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
     assert not _requirement_q_problems(block)
 
@@ -421,7 +394,7 @@ def test_the_block_names_the_fault_class_requirement_d_added():
     from ralphd.engine.faults import FAULT_CLASS_SIGNAL, FAULT_CLASSES
 
     assert FAULT_CLASS_SIGNAL in FAULT_CLASSES
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert f"`{FAULT_CLASS_SIGNAL}`" in block, (
         "the v0.7 block claims requirement D shipped but never names the "
         f"third fault class ({FAULT_CLASS_SIGNAL!r})")

@@ -1,6 +1,6 @@
 # ralphd Architecture
 
-Status: as shipped in v0.7.0 unless marked otherwise (subsections dated to an
+Status: as shipped in v0.8.0 unless marked otherwise (subsections dated to an
 earlier version are historical design notes, kept because the reasoning still
 explains the code).
 

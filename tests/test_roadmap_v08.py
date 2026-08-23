@@ -1,0 +1,258 @@
+"""Task 032 (v0.8 requirement O): `docs/roadmap.md`'s v0.8 block and the bump.
+
+`tests/test_roadmap_v07.py`'s module for the *current* release, until the next
+wave retargets it the same way this task retargeted v0.7's: pin its `SERIES`
+to `(0, 7)` and move the "declared version has a block" half here. Two things
+established by earlier waves stay true:
+
+* the roadmap's last milestone and the released version are the same fact, so
+  the block for `pyproject.toml`'s declared version must exist, must record
+  shipped work, and nothing may claim a milestone *after* it;
+* a block may not claim a wave landed while omitting requirements of that
+  wave. The requirement letters and issue numbers are parsed out of the PRD
+  the block is about (`docs/prds/v0.8-auditable-interruptible.md`), never
+  retyped here. This PRD's letters run `A-H` and `M-O` -- it does not use
+  `I-L` at all, unlike v0.7's PRD, which used every letter up to `R`.
+
+One requirement is genuinely not shipped yet at the point this block is
+written: **N** (closing this wave's issues from inside the run) is scheduled
+later in this same run (tasks 033/035), after this task. The coverage check
+below only requires the letter and its issues to be *named*, not marked `✅`,
+so it does not force this block to claim a closure that has not happened; a
+dedicated test pins that N is still honestly marked pending. A later task
+(mirroring how task 042 amended `test_roadmap_v07.py` once v0.7's own
+requirement Q's receipts existed) should flip N's marker and extend this
+module with the receipt cross-check once `artifacts/reports/issue-closure.md`
+records this wave's closures.
+
+Every check is paired with a test that mutates the *real* roadmap text into
+wording it replaced (or a wrong version), so a check that stops discriminating
+fails.
+"""
+
+from __future__ import annotations
+
+import re
+import tomllib
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROADMAP = REPO_ROOT / "docs" / "roadmap.md"
+PRD = REPO_ROOT / "docs" / "prds" / "v0.8-auditable-interruptible.md"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
+INIT = REPO_ROOT / "src" / "ralphd" / "__init__.py"
+
+DEFERRED_HEADING = "## Later / explicitly deferred"
+
+# The milestone this wave ships. Derived, not pinned: this module is about the
+# *declared* version's block, per the docstring above.
+SERIES = (0, 8)
+
+# Verb this wave's requirement H added to `ralphctl` (#26). Must exist in the
+# parser (the code-derived half) *and* be named in the block.
+WAVE_VERBS = ("amend",)
+
+
+def declared_version() -> str:
+    return tomllib.loads(PYPROJECT.read_text())["project"]["version"]
+
+
+def declared_series() -> tuple[int, int]:
+    major, minor = (int(p) for p in declared_version().split(".")[:2])
+    return major, minor
+
+
+def roadmap_text() -> str:
+    return ROADMAP.read_text()
+
+
+def milestone_block(text: str, series: tuple[int, int]) -> str | None:
+    """The `## vX.Y ...` section body, or None when there is no such heading.
+
+    Stops at the deferred heading as well as at the next milestone: the last
+    milestone's block runs up against `## Later / explicitly deferred`, and a
+    coverage check that swallowed the deferred list could be satisfied by an
+    entry *deferring* the very requirement it is looking for.
+    """
+    heads = list(re.finditer(r"^## v(\d+)\.(\d+)\b", text, re.MULTILINE))
+    for i, m in enumerate(heads):
+        if (int(m.group(1)), int(m.group(2))) != series:
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        body = text[m.start(): end]
+        return body.split(DEFERRED_HEADING, 1)[0]
+    return None
+
+
+def deferred_section(text: str) -> str:
+    return text.split(DEFERRED_HEADING, 1)[1]
+
+
+def prd_requirements() -> dict[str, set[str]]:
+    """`{"A": {"56"}, ...}` from the PRD's own `## A. title (#56)` headings.
+
+    The letter range is `A-O`: this PRD skips `I-L` entirely, so widening the
+    regex that far (rather than to the letter it actually stops at) is safe --
+    no heading exists to match the gap.
+    """
+    out: dict[str, set[str]] = {}
+    for m in re.finditer(r"^## ([A-O])\. (.+)$", PRD.read_text(), re.MULTILINE):
+        out.setdefault(m.group(1), set()).update(re.findall(r"#(\d+)", m.group(2)))
+    return out
+
+
+# ------------------------------------------------- the block matches the version
+
+
+def _version_block_problems(text: str, series: tuple[int, int]) -> list[str]:
+    v = f"v{series[0]}.{series[1]}"
+    block = milestone_block(text, series)
+    if block is None:
+        return [f"docs/roadmap.md has no `## {v}` block for the declared version"]
+    problems = []
+    if "✅" not in block:
+        problems.append(f"the `## {v}` block records nothing as shipped")
+    heads = [(int(a), int(b)) for a, b in
+             re.findall(r"^## v(\d+)\.(\d+)\b", text, re.MULTILINE)]
+    ahead = sorted(h for h in heads if h > series)
+    if ahead:
+        problems.append(
+            f"docs/roadmap.md has milestone blocks after the declared version: {ahead}")
+    return problems
+
+
+def test_the_declared_version_is_this_wave_and_both_literals_agree():
+    """The bump half of requirement O: 0.8.0 in `pyproject.toml` and in
+    `src/ralphd/__init__.py` (`test_packaging_metadata.py` owns the general
+    rule; this pins the number this block claims)."""
+    assert declared_series() == SERIES, (
+        f"docs/roadmap.md's v0.8 block is the current milestone, but "
+        f"pyproject.toml declares {declared_version()!r}")
+    m = re.search(r'^__version__ = "([^"]+)"', INIT.read_text(), re.MULTILINE)
+    assert m and m.group(1) == declared_version()
+
+
+def test_the_roadmap_has_a_block_for_the_declared_version():
+    """The released version and the roadmap's own last milestone are the same
+    thing: 0.8.0 ships v0.8, so `## v0.8` must exist and record shipped work."""
+    assert not _version_block_problems(roadmap_text(), declared_series())
+
+
+def test_the_version_block_check_catches_a_missing_or_unshipped_block():
+    text, series = roadmap_text(), SERIES
+    heading = f"## v{series[0]}.{series[1]}"
+    assert heading in text, "fixture assumption: the block is there to remove"
+    # the pre-032 roadmap: no block for the version pyproject declares
+    assert _version_block_problems(text.replace(heading, "## Not a milestone"), series)
+    # a block that only *plans* the release records nothing shipped
+    block = milestone_block(text, series)
+    assert _version_block_problems(text.replace(block, block.replace("✅", "⏳")), series)
+    # a version the roadmap has already moved past (v0.7, with v0.8 after it)
+    assert _version_block_problems(text, (series[0], series[1] - 1))
+
+
+# --------------------------------------------------- the block covers the wave
+
+
+def _coverage_problems(block: str) -> list[str]:
+    problems = []
+    for letter, issues in sorted(prd_requirements().items()):
+        if not re.search(rf"\*\*{letter}\.", block):
+            problems.append(f"requirement {letter} is not in the v0.8 block")
+            continue
+        for issue in sorted(issues):
+            if f"#{issue}" not in block:
+                problems.append(f"requirement {letter}'s issue #{issue} is not cited")
+    return problems
+
+
+def test_the_prd_headings_parse_at_all():
+    """Guards the coverage check from passing because the PRD parse found
+    nothing -- and pins that the PRD really skips I-L, so a naive assumption
+    the letters run unbroken A-O would silently under-check nothing (there is
+    nothing at I-L to under-check) but *would* over-claim if this PRD ever
+    grew a requirement in that gap without this test noticing."""
+    reqs = prd_requirements()
+    assert set(reqs) == set("ABCDEFGHMNO"), sorted(reqs)
+    assert reqs["A"] == {"56"} and reqs["G"] == {"54"} and reqs["H"] == {"26"}
+    # N and O are the letters with no issue number of their own.
+    assert {k for k, v in reqs.items() if not v} == {"N", "O"}
+
+
+def test_every_prd_requirement_is_accounted_for_in_the_v08_block():
+    block = milestone_block(roadmap_text(), declared_series())
+    assert block is not None
+    assert not _coverage_problems(block)
+
+
+def test_the_coverage_check_catches_a_dropped_requirement_or_issue():
+    block = milestone_block(roadmap_text(), SERIES)
+    assert _coverage_problems(block.replace("**H.", "H."))
+    assert _coverage_problems(block.replace("#26", "the operator-ruling issue"))
+
+
+def test_the_block_cites_every_issue_this_wave_names():
+    """Every issue this wave's PRD names by letter has to be citable straight
+    off the block -- the whole point of the block as an issue -> requirement
+    index."""
+    block = milestone_block(roadmap_text(), declared_series())
+    for issues in prd_requirements().values():
+        for n in issues:
+            assert f"#{n}" in block, f"the v0.8 block does not cite #{n}"
+
+
+def test_the_v08_block_names_the_verb_the_wave_added():
+    from ralphd.cli.main import build_parser
+
+    verbs = {a.dest: a for a in build_parser()._subparsers._group_actions}
+    choices = set(next(iter(verbs.values())).choices)
+    block = milestone_block(roadmap_text(), declared_series())
+    for verb in WAVE_VERBS:
+        assert verb in choices, f"WAVE_VERBS names {verb!r}, which the parser lacks"
+        assert f"`ralphctl {verb}" in block, (
+            f"the v0.8 block claims requirement H shipped but never names "
+            f"`ralphctl {verb}`")
+
+
+# ---------------------------------------- requirement N is honestly not done yet
+
+
+def n_bullet(block: str) -> str | None:
+    bullets = [p for p in re.split(r"\n(?=- )", block) if "**N." in p]
+    return bullets[0] if len(bullets) == 1 else None
+
+
+def test_requirement_n_is_marked_pending_not_falsely_shipped():
+    """This task (032) runs before the issue-closure task (035) in this run's
+    own plan, so the block must not claim N shipped -- claiming it now would
+    be a false record of exactly the kind requirement D exists to catch on
+    commit messages. Once closure lands, a later task should flip this
+    marker (and this test) the way task 042 flipped v0.7's requirement Q."""
+    block = milestone_block(roadmap_text(), declared_series())
+    bullet = n_bullet(block)
+    assert bullet is not None, "the v0.8 block has no single requirement N bullet"
+    assert not bullet.startswith("- ✅"), (
+        "requirement N is marked shipped, but this wave's issues are not "
+        "closed yet as of this commit -- flip this check once they are")
+
+
+def test_the_pending_n_check_catches_a_falsely_shipped_claim():
+    block = milestone_block(roadmap_text(), SERIES)
+    bullet = n_bullet(block)
+    assert bullet is not None, "fixture assumption: the bullet is there to mutate"
+    faked = block.replace(bullet, bullet.replace("- \u23f3", "- \u2705", 1))
+    mutated_bullet = n_bullet(faked)
+    assert mutated_bullet is not None and mutated_bullet.startswith("- ✅")
+
+
+# ------------------------------------------- what the wave delivered is not deferred
+
+
+def test_the_deferred_list_is_unchanged_in_kind_by_this_wave():
+    """v0.8 does not resolve either standing deferred item (image publishing,
+    PID namespaces) -- unlike v0.6/v0.7, this wave has no deferred-list entry
+    of its own to correct, so the only property to hold is that the section
+    still exists and still names both."""
+    section = deferred_section(roadmap_text())
+    assert "PID-namespace" in section
+    assert "Publishing the Docker image" in section
