@@ -67,10 +67,21 @@ def pytest_image():
 
 
 def test_the_gated_uid_boundary_tests_are_collected_and_passing_in_a_job_container(pytest_image):
+    """`container/entrypoint.sh` (unmodified, per the module docstring) ends
+    in a bare `exec ralphd-engine`, which ignores any command handed to
+    `docker run` after the image name -- without `--entrypoint python3`
+    below, the command line here would silently start the *engine* instead
+    of pytest (it would exit 2 for want of a PRD, never having run a
+    single test), which is precisely how this test was found to have never
+    actually executed anywhere: #57 reopening, diagnosed against this
+    project's own image with `docker run --rm --user 1000:1000 <image>
+    /bin/echo HELLO` (prints ralphd's "no PRD" error, exit 2) versus the
+    same with `--entrypoint /bin/echo` (prints HELLO, exit 0)."""
     selector = " or ".join(GATED_TESTS)
     res = subprocess.run(
-        [REAL_DOCKER, "run", "--rm", "--user", "1000:1000", pytest_image,
-         "python3", "-m", "pytest", "-q", "-k", selector,
+        [REAL_DOCKER, "run", "--rm", "--user", "1000:1000",
+         "--entrypoint", "python3", pytest_image,
+         "-m", "pytest", "-q", "-k", selector,
          "/opt/ralphd/tests/test_engine_uid_boundary.py"],
         capture_output=True, text=True, timeout=180)
     out = res.stdout + res.stderr

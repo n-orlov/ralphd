@@ -84,16 +84,48 @@ def test_the_container_precondition_check_fires_without_an_agent_account(monkeyp
 
 
 def test_the_container_precondition_check_fires_on_the_wrong_uid(monkeypatch):
+    """Isolate the uid branch: fake a real `agent` account at 1000:1000 so
+    the account/uid-gid checks above it pass on ANY host (not just inside a
+    job container -- a bare developer host commonly has no `agent` account
+    at all, so without this fake the function would return at the
+    account-missing branch first and never reach the uid check, which is
+    exactly how this test was found to fail on a real host: #57
+    reopening), then force `os.getuid()` to disagree."""
+    fake_agent = pwd.struct_passwd(
+        ("agent", "x", 1000, 1000, "", "/home/agent", "/bin/bash"))
+    monkeypatch.setattr(pwd, "getpwnam",
+                        lambda name: fake_agent if name == "agent"
+                        else (_ for _ in ()).throw(KeyError(name)))
     monkeypatch.setattr(os, "getuid", lambda: 0)
     reason = _missing_container_precondition()
     assert reason is not None
     assert "not running as uid 1000" in reason
 
 
-def test_the_container_precondition_check_passes_inside_this_container():
-    """This suite always runs inside a job container as the agent (see the
-    module docstring), so the real check must find nothing missing here."""
+def test_the_container_precondition_check_reflects_both_directions(monkeypatch):
+    """Neither direction is fixed by which host runs this test: fake the
+    facts each way and assert the check flips with them, rather than
+    asserting a single hard-coded outcome that only held inside a job
+    container (#57 reopening -- the previous version of this test was named
+    `..._passes_inside_this_container` and its own docstring stated that
+    premise out loud, which is exactly the assumption #57 exists to
+    remove; it passed here and failed on a real developer host, where
+    `_missing_container_precondition()` is never `None`)."""
+    fake_agent = pwd.struct_passwd(
+        ("agent", "x", 1000, 1000, "", "/home/agent", "/bin/bash"))
+    monkeypatch.setattr(pwd, "getpwnam",
+                        lambda name: fake_agent if name == "agent"
+                        else (_ for _ in ()).throw(KeyError(name)))
+
+    # Facts say "this is the job container as the agent": None.
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
     assert _missing_container_precondition() is None
+
+    # Flip just the uid: a reason naming exactly what disagrees.
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    reason = _missing_container_precondition()
+    assert reason is not None
+    assert "not running as uid 1000" in reason
 
 
 # --- privsep: who the agent is -------------------------------------------
