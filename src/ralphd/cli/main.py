@@ -2902,7 +2902,100 @@ def _task_status_cell(task: dict, width: int) -> str:
     return f"{format_task_status(task):<{width}}"
 
 
+def _archived_approaches_dir(run_id: str) -> Path:
+    return run_root(run_id) / "approaches"
+
+
+def _archived_approach_dir(run_id: str, approach: int) -> Path:
+    """Where `LoopSupervisor._archive_approach()` (`engine/loop.py`) copies a
+    finished approach's `tasks.json`/`notes.md`/`review-findings.md`: task
+    019 (#24) reads through the SAME `NN` zero-padding, never a second
+    resolver."""
+    return _archived_approaches_dir(run_id) / f"{approach:02d}"
+
+
+def _archived_approach_numbers(run_id: str) -> list[int]:
+    """Every archived approach for a run, sorted numerically -- a directory
+    name that is not a plain integer (nothing `_archive_approach` ever
+    writes) is skipped rather than raising."""
+    adir = _archived_approaches_dir(run_id)
+    if not adir.is_dir():
+        return []
+    numbers = []
+    for p in adir.iterdir():
+        if not p.is_dir():
+            continue
+        try:
+            numbers.append(int(p.name))
+        except ValueError:
+            continue
+    return sorted(numbers)
+
+
+def _print_task_lines(tasks: list) -> None:
+    width = _task_status_width(tasks)
+    for t in tasks:
+        print(f"[{_task_status_cell(t, width)}] {t.get('id')} {t.get('title')}")
+
+
+def _cmd_tasks_approach(args, approach: int) -> None:
+    """`ralphctl tasks <run> --approach N` (task 019, #24): that approach's
+    OWN task table, read from `approaches/NN/tasks.json` through the same
+    hardened reader every other surface uses -- never recomputed from the
+    live plan, which may be several approaches further on by the time this
+    is read."""
+    _require_run(args.run_id)
+    adir = _archived_approach_dir(args.run_id, approach)
+    if not (adir / "tasks.json").exists():
+        die(1, f"approach {approach} was never archived for run "
+               f"{args.run_id} (no {adir / 'tasks.json'})")
+    res = read_tasks_doc(adir, persist=False)
+    payload = {**res.payload, "approach": approach}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return
+    notice = res.notice
+    if notice:
+        print(f"!! {notice}", file=sys.stderr)
+    print(f"approach {approach} (archived): "
+          f"{format_task_counts(res.counts)}")
+    _print_task_lines(res.tasks)
+
+
+def _cmd_tasks_all(args) -> None:
+    """`ralphctl tasks <run> --all` (task 019, #24): every archived approach
+    with its OWN completed/total counts, each taken from that approach's own
+    archived `tasks.json` -- never the live plan's counts repeated under a
+    different label."""
+    _require_run(args.run_id)
+    numbers = _archived_approach_numbers(args.run_id)
+    rows = []
+    for n in numbers:
+        res = read_tasks_doc(_archived_approach_dir(args.run_id, n),
+                              persist=False)
+        counts = res.counts
+        rows.append({"approach": n, "counts": counts,
+                     "summary": format_task_counts(counts),
+                     **res.contract})
+    if args.json:
+        print(json.dumps({"approaches": rows}, indent=2))
+        return
+    if not rows:
+        print(f"no archived approaches for run {args.run_id} yet",
+              file=sys.stderr)
+        return
+    for row in rows:
+        print(f"approach {row['approach']:02d}: {row['summary']}")
+
+
 def cmd_tasks(args):
+    approach = getattr(args, "approach", None)
+    if approach is not None:
+        _cmd_tasks_approach(args, approach)
+        return
+    if getattr(args, "all", False):
+        _cmd_tasks_all(args)
+        return
     live, tasks = _tasks_doc(args.run_id)
     if not live:
         print(_TASKS_SNAPSHOT_NOTICE, file=sys.stderr)
@@ -2915,9 +3008,7 @@ def cmd_tasks(args):
     if args.json:
         print(json.dumps({**tasks, "live": live}, indent=2))
         return
-    width = _task_status_width(tasks.get("tasks", []))
-    for t in tasks.get("tasks", []):
-        print(f"[{_task_status_cell(t, width)}] {t.get('id')} {t.get('title')}")
+    _print_task_lines(tasks.get("tasks", []))
 
 
 # Task 040 (#6): what `ralphctl logs` says on stderr when it served the
@@ -5561,6 +5652,18 @@ def build_parser() -> argparse.ArgumentParser:
     ]:
         s = sub.add_parser(name)
         s.add_argument("run_id")
+        if name == "tasks":
+            # Task 019 (#24): read an archived approach's OWN tasks.json
+            # instead of the live plan -- `--approach N` picks one, `--all`
+            # lists every archived approach with its own counts. Mutually
+            # exclusive: each names a different document to read.
+            g = s.add_mutually_exclusive_group()
+            g.add_argument("--approach", type=int, default=None,
+                           help="print approaches/NN/tasks.json's own task "
+                                "table instead of the live plan")
+            g.add_argument("--all", action="store_true",
+                           help="list every archived approach with its own "
+                                "completed/total counts")
         s.set_defaults(func=fn)
 
     s = sub.add_parser("resume", help="start a fresh container over an "

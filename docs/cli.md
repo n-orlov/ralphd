@@ -1366,6 +1366,35 @@ entry, so a plan with no failed task prints byte-identically to before.
 (`{"014": "validation-exhausted"}`, omitted entirely when nothing failed),
 exactly as `GET /tasks` serves it.
 
+**`--approach N` / `--all` read an archived approach's OWN task table (task
+019, #24).** Every time the review ladder starts a new approach, the engine
+copies the finished approach's `tasks.json`/`notes.md`/`review-findings.md`
+into `approaches/NN/` (`LoopSupervisor._archive_approach()`,
+`engine/loop.py`) before wiping the live plan for the next attempt — so the
+plain command above only ever shows the CURRENT approach.
+
+- `ralphctl tasks <run-id> --approach N` prints (and, with `--json`, carries)
+  approach `N`'s own task table, read straight from
+  `approaches/NN/tasks.json` through the same hardened reader as the live
+  path — never recomputed from the live plan, which may be several
+  approaches further on. `N` is zero-padded to two digits on disk
+  (`01`, `02`, …) but taken as a plain integer on the command line. An
+  approach that was never archived (including the CURRENT, still-live one)
+  is a clean, non-zero-exit error naming the missing file, never a
+  traceback.
+- `ralphctl tasks <run-id> --all` lists every archived approach with its own
+  `completed/total` summary, each counted from THAT approach's own archived
+  file (never the live plan's counts repeated under a different label).
+  `--json` carries one entry per approach with its raw `counts` dict plus
+  the same `tasksStale`/`tasksSource` contract as any other read. A run with
+  no archived approaches yet (including one still on its first attempt)
+  prints nothing and exits `0`, with a notice on stderr — not an error: it
+  has not failed an approach yet, which is good news, not a fault.
+- `--approach` and `--all` are mutually exclusive with each other (each
+  names a different document to read) and, unlike the plain command, always
+  read the run dir directly rather than trying the live API first: an
+  archived approach's files never change once written, live or dead run.
+
 ### `ralphctl steer <run-id> [message]`
 
 Send steering. Message from arg, `--file <f>`, or stdin.
