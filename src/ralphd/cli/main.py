@@ -48,6 +48,9 @@ from ..engine.state import (
     TASK_STATUS_LABELS,
     TERMINAL_STATES,
     TERMINATION_CLASS_SELF,
+    archived_approach_dir,
+    archived_approach_numbers,
+    archived_approaches_dir,
     artifact,
     artifact_entries,
     artifact_names,
@@ -2903,33 +2906,25 @@ def _task_status_cell(task: dict, width: int) -> str:
 
 
 def _archived_approaches_dir(run_id: str) -> Path:
-    return run_root(run_id) / "approaches"
+    return archived_approaches_dir(run_root(run_id))
 
 
 def _archived_approach_dir(run_id: str, approach: int) -> Path:
     """Where `LoopSupervisor._archive_approach()` (`engine/loop.py`) copies a
     finished approach's `tasks.json`/`notes.md`/`review-findings.md`: task
     019 (#24) reads through the SAME `NN` zero-padding, never a second
+    resolver -- `engine.state.archived_approach_dir`, moved there by task
+    020 (#24) so the hub's approach routes read through this identical
     resolver."""
-    return _archived_approaches_dir(run_id) / f"{approach:02d}"
+    return archived_approach_dir(run_root(run_id), approach)
 
 
 def _archived_approach_numbers(run_id: str) -> list[int]:
-    """Every archived approach for a run, sorted numerically -- a directory
-    name that is not a plain integer (nothing `_archive_approach` ever
-    writes) is skipped rather than raising."""
-    adir = _archived_approaches_dir(run_id)
-    if not adir.is_dir():
-        return []
-    numbers = []
-    for p in adir.iterdir():
-        if not p.is_dir():
-            continue
-        try:
-            numbers.append(int(p.name))
-        except ValueError:
-            continue
-    return sorted(numbers)
+    """Every archived approach for a run, sorted numerically -- delegates to
+    `engine.state.archived_approach_numbers` (moved there by task 020, #24)
+    so the CLI and the hub skip the same not-a-plain-integer directory names
+    the same way, through the same resolver."""
+    return archived_approach_numbers(run_root(run_id))
 
 
 def _print_task_lines(tasks: list) -> None:

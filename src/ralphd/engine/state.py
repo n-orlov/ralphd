@@ -1952,6 +1952,101 @@ def run_document_text(doc: dict) -> str:
                       run_document_body(doc)])
 
 
+# ---------------------------------------------------------------------------
+# Archived approaches (task 020, #24)
+#
+# Every approach an engine supersedes gets copied, verbatim, into
+# `approaches/NN/` by `LoopSupervisor._archive_approach()` (`engine/loop.py`):
+# that approach's own `tasks.json`, `notes.md` and `review-findings.md`,
+# frozen at the moment it was abandoned. Task 019 (#24) made `ralphctl tasks
+# <run> --approach N|--all` read them; the resolvers below are the SAME path
+# logic (moved here from `cli/main.py` so the hub route added by this task
+# reads through the identical resolver, never a second one) -- the CLI keeps
+# calling these, unchanged in behaviour.
+
+APPROACHES_DIR_NAME = "approaches"
+
+
+def archived_approaches_dir(run_root: Path) -> Path:
+    return Path(run_root) / APPROACHES_DIR_NAME
+
+
+def archived_approach_dir(run_root: Path, approach: int) -> Path:
+    """Where `_archive_approach()` writes approach `approach`'s frozen files
+    -- zero-padded to two digits, exactly as `_archive_approach` names the
+    directory."""
+    return archived_approaches_dir(run_root) / f"{approach:02d}"
+
+
+def archived_approach_numbers(run_root: Path) -> list[int]:
+    """Every archived approach for a run, sorted numerically -- a directory
+    name that is not a plain integer (nothing `_archive_approach` ever
+    writes) is skipped rather than raising."""
+    adir = archived_approaches_dir(run_root)
+    if not adir.is_dir():
+        return []
+    numbers = []
+    for p in adir.iterdir():
+        if not p.is_dir():
+            continue
+        try:
+            numbers.append(int(p.name))
+        except ValueError:
+            continue
+    return sorted(numbers)
+
+
+def archived_approach_summary(run_root: Path, approach: int) -> dict | None:
+    """One archived approach's task counts, taken from ITS OWN archived
+    `tasks.json` -- never recomputed from the live plan. None when this
+    approach was never archived (caller -> a clean error/404, not a
+    fabricated zero-count row)."""
+    adir = archived_approach_dir(run_root, approach)
+    if not (adir / "tasks.json").is_file():
+        return None
+    res = read_tasks_doc(adir, persist=False)
+    counts = res.counts
+    return {"approach": approach, "counts": counts,
+            "summary": format_task_counts(counts), **res.contract}
+
+
+def archived_approaches_list(run_root: Path) -> dict:
+    """Every archived approach's summary, in order -- the payload `ralphctl
+    tasks --all` (task 019) prints and the hub's approach-history panel
+    (task 021) lists from, so the two agree on which approaches exist and
+    what each one's counts are."""
+    approaches = [archived_approach_summary(run_root, n)
+                  for n in archived_approach_numbers(run_root)]
+    return {"approaches": [a for a in approaches if a is not None]}
+
+
+def archived_approach_view(run_root: Path, approach: int) -> dict | None:
+    """One archived approach's full task table plus its `notes.md`/
+    `review-findings.md` text, for the hub's approach-history dialog (task
+    020, #24) -- None when this approach was never archived (caller -> 404).
+
+    Tasks: `read_tasks_doc(...).payload`, the exact shape `GET /tasks` and
+    `ralphctl tasks --approach --json` (task 019) already serve, so an
+    archived approach's task table reads identically everywhere it appears.
+
+    Notes/findings: shaped through `run_documents` -- the SAME dicts and
+    `RUN_DOCUMENT_ABSENT` wording the live document dialogs use (task 022) --
+    restricted to the two documents `_archive_approach` actually copies.
+    `composite-prd.md`/`job.yaml` are never written into an archive dir, so
+    they are left out of this view entirely rather than reported as an
+    always-absent entry with no `config_dir` to blame; a caller that wants
+    those still has the live document endpoints.
+    """
+    adir = archived_approach_dir(run_root, approach)
+    if not (adir / "tasks.json").is_file():
+        return None
+    res = read_tasks_doc(adir, persist=False)
+    docs = {d["key"]: d for d in run_documents(adir, None, bodies=True)
+            if d["key"] in ("notes", "findings")}
+    return {"approach": approach, "tasks": res.payload,
+            "notice": res.notice or "",
+            "notes": docs["notes"], "findings": docs["findings"]}
+
 
 # ---------------------------------------------------------------------------
 # Artifacts (task 023, #18.3)

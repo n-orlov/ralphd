@@ -2703,6 +2703,36 @@ JSON endpoints served under `/api/`:
   …)` wording rather than bytes, and one that is no longer there with `(not
   written)` rather than a `404`. `404` for an unknown run id or a name that
   cannot address an artifact at all.
+- `GET /api/runs/<id>/approaches` and `GET /api/runs/<id>/approaches/<n>` —
+  the run's **archived approach history** for the hub's approach-history panel
+  and dialogs (task 020, issue #24): the same reader `ralphctl tasks <run>
+  --approach N|--all` (task 019) uses
+  (`ralphd.engine.state.archived_approaches_list`/`archived_approach_view`),
+  never a second resolver, so the CLI and the hub can never list a different
+  set of archived approaches or disagree about one's counts. The listing
+  answers `{runId, approaches: [{approach, counts, summary, tasksStale,
+  tasksSource}, ...]}`, one entry per approach `LoopSupervisor._archive_approach`
+  (`engine/loop.py`) copied into `approaches/NN/` before starting the next one
+  — `counts`/`summary` are that approach's **own** archived `tasks.json`, read
+  through the same hardened reader (`read_tasks_doc(..., persist=False)`) every
+  other tasks surface uses, never recomputed from the live plan. A run still on
+  its first approach (nothing archived yet) answers `{runId, approaches: []}`
+  rather than an error. `GET .../approaches/<n>` answers `{runId, approach,
+  tasks, notice, notes, findings}`: `tasks` is that approach's task table —
+  `TasksRead.payload`, byte-for-byte what `GET /tasks` and `ralphctl tasks
+  --approach --json` serve for a live plan, including `taskFailureKinds` (issue
+  #33) — and `notes`/`findings` are that approach's frozen `notes.md`/
+  `review-findings.md`, shaped exactly like the document dialog's entries
+  (task 022: `exists`, `bytes`, `sizeDisplay`, `body`, `text`) since
+  `_archive_approach` never copies `composite-prd.md`/`job.yaml`, so those two
+  keys are simply not part of this view. A document an approach never wrote
+  (e.g. a first approach that left no findings) is not an error — its `text`
+  is the `(not written)` wording, same as the live document dialogs. On-disk
+  only, with no `live` flag, like the document/artifact/fault endpoints above:
+  these files are the engine's own copies, written before the archived
+  approach is ever superseded, so a dead run's history reads exactly like a
+  live one's. `404` for an unknown run id, a non-numeric approach segment, or
+  an approach number that was never archived.
 - `GET /api/runs/<id>/fault` — why this run is (or last was) in trouble, for
   the hub's fault dialog behind the failure / infra-wait badge (task 026, issue
   #18.4). Byte-for-byte the document `ralphctl fault <run> --json` prints: the

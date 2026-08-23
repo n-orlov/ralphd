@@ -3700,6 +3700,16 @@ dir themselves and a live proxy would only add a way to disagree.
 - **Artifacts panel** — what the job left behind under `artifacts/`, size and
   path per entry, with a text artifact (the reflection report first among them)
   opening in a dialog and a binary one reported as such rather than mangled.
+- **Approach history panel** — every previous approach `_archive_approach`
+  copied into `approaches/NN/` before the loop started the next one, most
+  recent last, each row its own archived task counts (never the live plan's)
+  taken straight from that approach's OWN `tasks.json` — the same reader
+  `ralphctl tasks <run> --approach N|--all` uses, so the two can never list a
+  different set of approaches or disagree about one's counts. Expanding a row
+  opens that approach's full task table plus its frozen `notes.md`/
+  `review-findings.md`, shaped exactly like the state-documents panel's
+  entries (absence is `(not written)`, never an error). A run still on its
+  first approach shows no history at all rather than an empty panel.
 - **PRD dialog** — a *view PRD* button fed by the run's PRD endpoint, which
   proxies the live route and falls back to the run dir, so it works for a dead
   run too. Which file counts as "the PRD" — `composite-prd.md` when the engine

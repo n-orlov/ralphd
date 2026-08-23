@@ -64,6 +64,8 @@ from ..engine.state import (
     TASK_FAILURE_KINDS_FIELD,
     TASKS_STALE_LABEL,
     TERMINAL_STATES,
+    archived_approach_view,
+    archived_approaches_list,
     artifact,
     artifact_entries,
     artifact_summary_lines,
@@ -667,6 +669,53 @@ def artifact_view(reg: Path, run_id: str, name: str) -> dict | None:
             "text": artifact_text(entry)}
 
 
+def approaches_list_view(reg: Path, run_id: str) -> dict:
+    """Every archived approach's own task counts, for the hub's
+    approach-history panel (task 020/021, #24): the collapsed list of
+    previous approaches before any one of them is expanded.
+
+    `engine.state.archived_approaches_list` -- the SAME reader `ralphctl
+    tasks <run> --all` (task 019) uses -- so the hub and the CLI can never
+    list a different set of approaches or disagree about one's counts. A
+    run with none archived yet (still on its first approach, or one that
+    never needed a second) answers with an empty list rather than an error;
+    app.js renders that as no history section at all.
+
+    Purely on-disk, like `document_list`/`artifact_list`: these files are
+    copied by the engine's own `_archive_approach()` into the run dir, so a
+    dead run's archived approaches read exactly like a live one's -- there
+    is no live answer to prefer, hence no `live` flag.
+    """
+    payload = archived_approaches_list(reg / "runs" / run_id)
+    return {"runId": run_id, **payload}
+
+
+def approach_view(reg: Path, run_id: str, approach: int) -> dict | None:
+    """One archived approach's full task table plus its `notes.md`/
+    `review-findings.md` text, for the hub's approach-history dialog (task
+    020/021, #24) -- None when this approach was never archived (caller ->
+    404).
+
+    `engine.state.archived_approach_view` does the ONE shaping: the task
+    table is `read_tasks_doc(...).payload`, identical to `GET /tasks` and
+    `ralphctl tasks --approach --json` (task 019); the notes/findings
+    entries are the SAME dicts `document_view` returns for the live
+    documents (task 022's `RUN_DOCUMENT_ABSENT` discipline), given
+    `sizeDisplay`/`text` here too so app.js never has to word a missing
+    file differently depending on which dialog it is in.
+    """
+    view = archived_approach_view(reg / "runs" / run_id, approach)
+    if view is None:
+        return None
+    notes = _with_document_display(view["notes"])
+    findings = _with_document_display(view["findings"])
+    return {"runId": run_id, "approach": view["approach"],
+            "tasks": view["tasks"], "notice": view["notice"],
+            "notes": {**notes, "text": run_document_text(view["notes"])},
+            "findings": {**findings,
+                        "text": run_document_text(view["findings"])}}
+
+
 def prd_text(reg: Path, run_id: str) -> tuple[bool, str]:
     """A run's PRD for the hub's PRD dialog (task 056, #1).
 
@@ -1210,6 +1259,36 @@ class Handler(BaseHTTPRequestHandler):
                 if view is None:
                     self._send_json(
                         {"error": f"not an artifact name: {name!r}"}, 404)
+                    return
+                self._send_json(view)
+                return
+            if (len(segs) in (4, 5) and segs[:2] == ["api", "runs"]
+                    and segs[3] == "approaches"):
+                # Task 020 (#24): the run's archived approach history --
+                # the listing for the panel (task 021), one approach's task
+                # table + notes/findings for the dialog. Purely on-disk
+                # (`archived_approach_view`/`archived_approaches_list`),
+                # like the documents and artifacts above: `_archive_approach`
+                # writes these files into the run dir itself, so a dead
+                # run's history reads exactly like a live one's.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                if len(segs) == 4:
+                    self._send_json(approaches_list_view(reg, run_id))
+                    return
+                try:
+                    approach = int(segs[4])
+                except ValueError:
+                    self._send_json(
+                        {"error": f"bad approach number {segs[4]!r}"}, 404)
+                    return
+                view = approach_view(reg, run_id, approach)
+                if view is None:
+                    self._send_json(
+                        {"error": f"run {run_id} has no archived approach "
+                                  f"{approach}"}, 404)
                     return
                 self._send_json(view)
                 return
