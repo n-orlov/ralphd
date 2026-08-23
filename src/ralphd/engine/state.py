@@ -2086,6 +2086,60 @@ ARTIFACT_BINARY = "(binary file -- copy it out with `ralphctl artifacts <run> pu
 # How much of a file the text/binary sniff looks at.
 ARTIFACT_SNIFF_BYTES = 8192
 
+# The one server-decided "what is this file" answer both `ralphctl artifacts
+# ls` and the hub's artifacts panel show (task 022, #54) -- decided from
+# sniffed magic bytes, never a filename's extension, so a `.png` holding a ZIP
+# and a `.bin` holding a PNG are never confused for one another.
+ARTIFACT_KIND_TEXT = "text"
+ARTIFACT_KIND_IMAGE = "image"
+ARTIFACT_KIND_BINARY = "binary"
+
+# The four raster signatures ralphd is willing to call "previewable" -- the
+# same allow-list the raw byte route (task 023) will serve a `Content-Type`
+# from. Spelled once so a later route cannot invent a fifth.
+ARTIFACT_IMAGE_MIME_TYPES: tuple[str, ...] = (
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+)
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    """The `Content-Type` for `data` if its LEADING BYTES carry one of the
+    four raster signatures ralphd previews inline, else None.
+
+    Decided from magic bytes only, never a filename's extension: a file named
+    `screenshot.png` whose bytes are actually a ZIP's signature (`PK\x03\x04`)
+    answers None here, and a file named `payload.bin` whose bytes actually
+    start with the PNG signature answers `"image/png"`.
+
+    SVG is deliberately absent from this list even though it is, in the
+    everyday sense, an image format. It has no raster magic-byte signature --
+    it is XML text -- and rendering agent-authored SVG inline (an `<img>` or
+    `<object>` whose `src` is a run's own artifact) can execute an embedded
+    `<script>` or event handler against the hub's own origin: stored XSS
+    wearing a picture's extension, not a preview. Do not add an SVG signature
+    here; a later "just add svg support" patch is a regression against #54's
+    acceptance criteria, not a feature, and the test pinning this is deliberate.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _artifact_kind(is_text: bool, image_mime: str | None) -> str:
+    """`ARTIFACT_KIND_IMAGE`/`_TEXT`/`_BINARY` from the two sniffs
+    `artifact_entry` already runs. An image signature wins even if the head
+    happened to decode as text (it never does for the four formats above, but
+    the ordering is the deliberate one: previewable beats printable)."""
+    if image_mime:
+        return ARTIFACT_KIND_IMAGE
+    return ARTIFACT_KIND_TEXT if is_text else ARTIFACT_KIND_BINARY
+
 
 def artifact_names() -> list[str]:
     """The well-known artifact keys, in listing order."""
@@ -2173,6 +2227,12 @@ def artifact_entry(run_root: Path, rel_path: str, *,
       `exists`    whether the file is there,
       `bytes`     its size on disk (0 when absent),
       `isText`    whether it can be printed at all (`ARTIFACT_BINARY` if not),
+      `imageMime` the sniffed `Content-Type` (task 023's allow-list) when
+                  `kind` is `ARTIFACT_KIND_IMAGE`, else None,
+      `kind`      `ARTIFACT_KIND_TEXT`/`_IMAGE`/`_BINARY` -- the ONE
+                  server-decided answer (task 022, #54) both `ralphctl
+                  artifacts ls` and the hub's artifacts panel show, sniffed
+                  from magic bytes and never from the extension,
       `body`      the text -- omitted entirely with `bodies=False`, for a file
                   that does not exist and for a binary one, since an empty
                   string would read like an empty file (`artifact_body` turns
@@ -2182,7 +2242,8 @@ def artifact_entry(run_root: Path, rel_path: str, *,
     path = Path(run_root) / ARTIFACTS_DIR_NAME / rel
     entry = {"path": rel, "key": artifact_key(rel), "title": artifact_title(rel),
              "file": str(path), "available": True, "exists": False,
-             "bytes": 0, "isText": True}
+             "bytes": 0, "isText": True, "imageMime": None,
+             "kind": ARTIFACT_KIND_TEXT}
     try:
         entry["exists"] = path.is_file()
         if entry["exists"]:
@@ -2198,6 +2259,8 @@ def artifact_entry(run_root: Path, rel_path: str, *,
         entry["body"] = RUN_DOCUMENT_UNREADABLE
         return entry
     entry["isText"] = _artifact_is_text(head)
+    entry["imageMime"] = _sniff_image_mime(head)
+    entry["kind"] = _artifact_kind(entry["isText"], entry["imageMime"])
     if bodies and entry["isText"]:
         try:
             entry["body"] = path.read_text(errors="replace")
@@ -2280,7 +2343,7 @@ def artifact_body(entry: dict) -> str:
     the one wording for blank / never-written / unreadable / binary."""
     if not isinstance(entry, dict) or not entry.get("exists"):
         return RUN_DOCUMENT_ABSENT
-    if not entry.get("isText", True):
+    if entry.get("kind", ARTIFACT_KIND_TEXT) != ARTIFACT_KIND_TEXT:
         return ARTIFACT_BINARY
     body = entry.get("body")
     if body is None:
