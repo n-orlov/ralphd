@@ -9,6 +9,15 @@ covers the other two ways a milestone block lies:
 * it exists for a version nobody released, or the released version has no block
   at all (checked here against `pyproject.toml`, and in
   `test_packaging_metadata.py` against the shipped markers);
+
+Retargeted by task 033 (v0.7 requirement R): this module used to read the series
+from `pyproject.toml`, which was v0.6's own while 0.6.0 was the release. With
+0.7.0 declared, `declared_series()` names v0.7, so the v0.6 checks would grade
+the *wrong block* (and its coverage check would demand v0.6's PRD requirements
+from v0.7's block). The series is therefore pinned to `SERIES` here and the
+"declared version has a block" half moved to `tests/test_roadmap_v07.py`, which
+is the module for the current release; `declared_series()` stays, used only to
+assert this block is a *past* milestone.
 * it claims a wave landed while quietly omitting requirements of that wave, or
   keeps deferring what the wave delivered. The requirement letters and issue
   numbers are not retyped here: they are parsed out of the PRD the block is
@@ -32,6 +41,10 @@ PRD = REPO_ROOT / "docs" / "prds" / "v0.6-first-release.md"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 DEFERRED_HEADING = "## Later / explicitly deferred"
+
+# The milestone this module is about. Pinned, not read from `pyproject.toml`:
+# v0.6 is history now (see the module docstring).
+SERIES = (0, 6)
 
 # Verbs this wave added to `ralphctl` for requirement F's CLI parity. Each must
 # exist in the parser (the code-derived half) *and* be named in the block.
@@ -91,14 +104,25 @@ def _version_block_problems(text: str, series: tuple[int, int]) -> list[str]:
     return problems
 
 
-def test_the_roadmap_has_a_block_for_the_declared_version():
-    """The released version and the roadmap's own last milestone are the same
-    thing: 0.6.0 ships v0.6, so `## v0.6` must exist and record shipped work."""
-    assert not _version_block_problems(roadmap_text(), declared_series())
+def test_the_roadmap_has_a_block_for_this_milestone():
+    """v0.6 shipped, so `## v0.6` must exist and record shipped work. The
+    *declared* version's block is `test_roadmap_v07.py`'s business."""
+    problems = [p for p in _version_block_problems(roadmap_text(), SERIES)
+                if "milestone blocks after" not in p]
+    assert not problems
+
+
+def test_v06_is_a_past_milestone_of_the_declared_version():
+    """The pin above is only honest while 0.6 is behind the release: if the
+    version ever went back to 0.6.x, this module would be the current one
+    again and would have to enforce the no-later-blocks half itself."""
+    assert declared_series() > SERIES, (
+        f"pyproject declares {declared_series()}, so v0.6 is not history: this "
+        "module's SERIES pin (task 033) needs revisiting")
 
 
 def test_the_version_block_check_catches_a_missing_or_unshipped_block():
-    text, series = roadmap_text(), declared_series()
+    text, series = roadmap_text(), SERIES
     heading = f"## v{series[0]}.{series[1]}"
     assert heading in text, "fixture assumption: the block is there to remove"
     # the pre-044 roadmap: no block for the version pyproject declares
@@ -127,6 +151,7 @@ def _coverage_problems(block: str) -> list[str]:
 
 
 def test_the_prd_headings_parse_at_all():
+    # (v0.6's PRD; v0.7's own parse is checked in test_roadmap_v07.py)
     """Guards the coverage check from passing because the PRD parse found
     nothing (the failure mode of every "for each documented X" test)."""
     reqs = prd_requirements()
@@ -135,13 +160,13 @@ def test_the_prd_headings_parse_at_all():
 
 
 def test_every_prd_requirement_is_accounted_for_in_the_v06_block():
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
     assert not _coverage_problems(block)
 
 
 def test_the_coverage_check_catches_a_dropped_requirement_or_issue():
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert _coverage_problems(block.replace("**G.", "G."))
     assert _coverage_problems(block.replace("#19", "the delete issue"))
 
@@ -151,7 +176,7 @@ def test_the_v06_block_names_the_verbs_the_wave_added():
 
     verbs = {a.dest: a for a in build_parser()._subparsers._group_actions}
     choices = set(next(iter(verbs.values())).choices)
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     for verb in WAVE_VERBS:
         assert verb in choices, f"WAVE_VERBS names {verb!r}, which the parser lacks"
         assert f"`ralphctl {verb}`" in block, (

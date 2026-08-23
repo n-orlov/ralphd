@@ -3,7 +3,7 @@
 Versions are milestones, not promises of dates. Each version is releasable on its
 own; scope may shift between minors, not the ordering of the big rocks.
 
-> **Status (v0.6 close-out):** v0.1 through v0.6's engine/CLI/hub-UI feature
+> **Status (v0.7 close-out):** v0.1 through v0.7's engine/CLI/hub-UI feature
 > scope is implemented and covered by black-box tests, including a real
 > docker-sibling e2e tier and a real browser e2e tier for the hub — see
 > `artifacts/reports/traceability.md` (v0.1–v0.4 requirements),
@@ -263,17 +263,139 @@ Phase 4 — close the loop:
   `README.md`, `docs/` and `SPEC.md` — each correction landed with the check
   that would have caught it
 
+## v0.7 — trustworthy unattended operation
+
+Full PRD: [`docs/prds/v0.7-trustworthy-unattended.md`](prds/v0.7-trustworthy-unattended.md).
+v0.6 made a *running* run's numbers truthful; this wave decides whether ralphd
+can be left running overnight. Its organising principle: **no single iteration
+may be able to end the run, and no surface may report a previous episode's facts
+as this one's.** Every requirement came from a real incident in this project's
+own runs — a verifier that killed its own supervisor and ended a 9h36m job, a
+slow iteration that took the engine down with it, a resume that deleted the
+transcript explaining the crash. Requirement letters below are the PRD's.
+
+Phase 0 — the loop improves its own material:
+
+- ✅ **A. v0.6's reflection diff, reviewed, tightened and tested (#35, #36, #37,
+  #38, #39, #40, #41, #42).** The eight prompt changes the previous wave's
+  post-mortem proposed, landed as committed prose rather than a diff nobody
+  applied, each tighter than the suggestion and each pinned by a prompt test
+  with a mutation matrix: sandbox safety — never signal by pattern, never touch
+  a container/image/volume you did not create (#35); how to resolve a
+  terminally `failed` task instead of grinding on it (#36); steering is
+  delivered once, so its durable part goes into the notes first (#37); the test
+  budget against the iteration clock (#38); a `## Standing rules` notes block
+  written by planning and preserved by the worker (#39); no tally that was not
+  derived from `tasks.json` in that same iteration, and a review that
+  cross-checks evidence (#40); planning spot-checks the PRD's claims about the
+  code before breaking it down (#41); a last-attempt validation verdict hands
+  off the residual gap (#42)
+
+Phase 1 — containment: one bad iteration must not cost the run:
+
+- ✅ **B. The iteration timeout fails the iteration, not the engine (#28).** The
+  runner no longer re-awaits a task `asyncio.wait_for` already cancelled, and
+  the per-iteration guard catches `BaseException` — a deliberate containment
+  boundary, commented where it is and why — so a timed-out or cancelled
+  iteration is recorded failed (`meta.json`, `faultClass`, refund bookkeeping)
+  and the next iteration starts
+- ✅ **C. No verdict means no verdict (#45).** One predicate decides "the
+  verifier never reached a verdict" (error, timeout, no traffic, interrupt);
+  on that path a task's `status`, `validationAttempts` and `validationNotes`
+  are left byte-for-byte unchanged, and the wording keeps "reached a negative
+  verdict" apart from "never reached one"
+- ✅ **D. Fault classification: signals, and a bare `aborted` after traffic
+  (#49).** A third verdict `signal` for an iteration killed by one (never
+  retried into whatever sent it), and a bare in-band `aborted` that ended well
+  inside its own timeout with no operator abort is `infra` — retried and
+  refunded — with the threshold a named constant justified from the run that
+  produced the evidence
+- ✅ **E. A self-inflicted abort is not an operator abort (#46).** Termination
+  carries a class (`operator`/`self`) plus evidence — the last tool call before
+  the signal, read from the transcript — so `ralphctl status` never prints a
+  bare `reason: signal 15`; a genuine operator abort is still never
+  resurrected, a self-inflicted one is eligible for auto-resume
+- ✅ **F. No manufactured reflection failures, and no stale tombstones (#47,
+  #43).** An engine unwinding on a signal records reflect as *not attempted*
+  instead of writing a `FAILED.md` nobody caused, and a reflect attempt that
+  succeeds deletes any earlier tombstone, so `artifacts ls` stops advertising
+  a reflect-failed alias beside the report that exists
+- ✅ **G. Steering is consumed on success, not on delivery (#34).**
+  At-least-once delivery with at-most-once application: the note is marked
+  consumed after the iteration that carried it succeeded, so an iteration that
+  dies leaves its instruction pending for the next one; `meta.json` keeps
+  `steeringDelivered` apart from `steeringConsumed`
+- ✅ **H. A crashed iteration's transcript survives the resume (#44).** The
+  resume reuses the iteration *number*, not the record: whatever an earlier
+  attempt left in the slot moves to `iterations/NNNN/attempts/NN/`, readable
+  through `ralphctl iteration`, and an archive is never counted as an iteration
+- ✅ **I. The agent cannot signal its own supervisor (#48).** The uid boundary:
+  the engine keeps real and saved uid `0` while each iteration's `pi` runs as
+  the agent's uid, so `pkill -f ralphd-engine` from inside a task iteration is
+  a no-op — proven by a docker-tier test — while run-dir ownership, the config
+  overlay, the editable install and the commit identity are unchanged
+
+Phase 2 — honest status across a crash and a resume:
+
+- ✅ **J. Liveness comes from docker, not from a field the dead engine wrote
+  (#31).** Three states instead of two: an exited-but-present container is
+  `dangling`, surfaced as such by `status`, `runs`, `doctor` and the hub
+- ✅ **K. `endedAt` and `reason` are episode-scoped (#30).** A resumed run's
+  permanent record no longer carries a previous episode's ending; the earlier
+  endings are kept as `previousEndings` instead of being reported as this one's
+- ✅ **L. Refund counters survive a resume (#32).** `iterationsRefunded`
+  ({infra, grace}) is persisted and re-seeded, so budget earned back during an
+  outage is not silently forfeited by the next episode
+- ✅ **M. `failed` says which kind of failed (#33).** A failed task may carry
+  `failureKind` (`validation-exhausted`/`requirement-unmet`), derived for
+  pre-v0.7 records, with sub-counts on every surface that counts statuses — and
+  a plan whose only obstacle is a failed task routes to review instead of
+  waiting for an operator
+- ✅ **N. A silently skipped verification gate warns (carried from #29).** A
+  vigilant run whose worker iteration finds the gate empty while unverified
+  work sits behind it says so once, per approach
+
+Phase 3 — the two deferred decisions, taken:
+
+- ✅ **O. `auto_resume` defaults to ON.** The single literal
+  (`AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py`) flipped now that the
+  crash-loop guard and the never-resurrect rule have been validated on real
+  runs; opting out is `start --no-auto-resume` or `ralphctl config set
+  auto_resume false`
+- ✅ **P. A review-and-apply verb for the reflection diff.**
+  `ralphctl suggestions <id> [show|apply]` plans a reflection diff host-side and
+  says what it would touch before writing anything, all-or-nothing, `--only
+  PATH` for a subset, refusing to touch a live run's prompts and naming another
+  run's conflicting diff — an operator-driven verb, never a loop that edits its
+  own prompts
+
+Phase 4 — close the loop:
+
+- ⏳ **Q. Close the wave's issues from inside the run (#28, #30–#49).** The
+  wave's own last requirement, done after the verification sweeps pass: it
+  extends `artifacts/reports/issue-traceability.md` with a section per issue
+  (requirement → task → commit → tests) and closes each fully-landed issue over
+  the GitHub REST API, recording every closure in
+  `artifacts/reports/issue-closure.md`. Pending as this block is written; read
+  those two reports for what actually closed, and treat an issue named there as
+  not landed as still open
+- ✅ **R. Docs, SPEC and the roadmap.** Docs in the same commit as the
+  behaviour, every claim this wave adds paired with a code-derived check and a
+  mutation case, answered open questions moved out of SPEC §16 with their
+  evidence rather than edited in place, and this block plus the `0.7.0` version
+  bump landed together, late
+
 ## Later / explicitly deferred
 
-- PID-namespace isolation of agent iterations from in-container kill signals
-  (a supervisor-level SIGKILL/SIGTERM currently reaches the running `pi`
-  subprocess directly since it shares the container's PID namespace; giving
-  each iteration its own PID namespace would let the engine distinguish
-  "stop this one iteration" from "the whole container is being torn down"
-  more cleanly) — noted during task 060's operator escalation, not attempted
-  there; rationale: prompt rules alone did not prevent the iteration-103
-  pkill incident, so engine-level self-protection is needed, not just
-  prompt-level guidance.
+- PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
+  requirement I closed the hazard it was filed for with a **uid boundary** —
+  the engine keeps real and saved uid `0` while each iteration's `pi` runs as
+  the agent's uid, so an iteration cannot signal its own supervisor (`pkill -f
+  ralphd-engine` from inside a task iteration is a no-op, proven by the docker
+  tier). What a private PID namespace would still add is narrower: letting the
+  engine tell "stop this one iteration" from "the whole container is being torn
+  down" from the process tree itself, and hiding the engine's pid from the agent
+  entirely. Not attempted; SPEC §13.4 records the boundary and what is left.
 - Publishing the Docker image and the wheel. The image builds locally and is
   content-hashed (v0.6 requirement H) — including from a `pipx`-style install,
   whose wheel ships the image inputs as package data — and the docker tier

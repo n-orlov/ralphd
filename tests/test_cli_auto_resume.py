@@ -94,8 +94,11 @@ def test_roadmap_records_the_shipped_default_flip_and_names_the_single_place():
         "the deferred list still promises the auto_resume default flip, which "
         "v0.7 shipped")
     # The flip is recorded as shipped where self-recovery is described, and
-    # still names the single place the default lives.
-    v05 = text.split("## v0.5", 1)[1].split("## Later", 1)[0]
+    # still names the single place the default lives. Scoped to the v0.5 block
+    # alone: task 033 added a `## v0.7` block that also names the flag and the
+    # literal, and a slice running to `## Later` would be satisfied by *that*
+    # block while v0.5's own note said nothing.
+    v05 = text.split("## v0.5", 1)[1].split("## v0.6", 1)[0]
     assert "--auto-resume" in v05
     assert "--no-auto-resume" in v05, "the shipped note must name the opt-out"
     assert "AUTO_RESUME_DEFAULT" in v05
