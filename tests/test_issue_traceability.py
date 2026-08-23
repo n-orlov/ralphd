@@ -17,6 +17,11 @@ start out `pending` because the map is written *before* task 038 closes
 anything, and its requirements N, O and P closed SPEC entries rather than
 issues, so they are traced to SPEC sections instead of to a `## #N` heading.
 
+The v0.8 wave (#24, #26, #27, #50, #51, #54, #56, #57, #58; task 033 of
+`selfdev-v08-auditable`) is the same contract again: its `**Closure:**` lines
+also start out `pending`, written before task 035 closes anything, and its
+requirement letters run A-H (the PRD does not use I-L).
+
 A report that names a commit that never landed, or a test that no longer
 exists, is worse than no report, so its claims are re-read too. That
 extraction and those three checks live in `tests/report_claims.py` (task 041)
@@ -54,7 +59,10 @@ V07_ISSUES = [28] + [n for n in range(30, 50) if n != 29] + [52, 53, 55]
 # traceability is recorded against SPEC sections and they carry no `## #N`
 # heading: letter -> the SPEC section its own section must name.
 V07_SPEC_REQUIREMENTS = {"N": "4.4", "O": "15", "P": "16"}
-ISSUES_IN_SCOPE = V05_ISSUES + V06_ISSUES + V07_ISSUES
+# Wave 4 (v0.8): the 9 issues the PRD owns for closure from inside the run.
+# Mapped by task 033, closed (or left deliberately open) by task 035.
+V08_ISSUES = [24, 26, 27, 50, 51, 54, 56, 57, 58]
+ISSUES_IN_SCOPE = V05_ISSUES + V06_ISSUES + V07_ISSUES + V08_ISSUES
 
 # What a `**Closure:**` line may claim about one issue.
 CLOSURE_CLAIMED = "closed"
@@ -131,6 +139,23 @@ def test_the_v07_wave_maps_every_issue_to_a_requirement_and_a_task() -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_the_v08_wave_maps_every_issue_to_a_requirement_and_a_task() -> None:
+    """Same chain again, one wave on: #24, #26, #27, #50, #51, #54, #56, #57
+    and #58 each carry issue -> requirement letter -> task number -> commit ->
+    tests. The letters run A-H, the PRD's own (it does not use I-L)."""
+    sections = _sections(_report_text())
+    problems = []
+    for issue in V08_ISSUES:
+        section = sections.get(issue, "")
+        if not re.search(r"requirement [A-H]\b", section):
+            problems.append(f"#{issue}: no requirement letter")
+        if not re.search(r"^\| 0\d\d\b", section, re.MULTILINE):
+            problems.append(f"#{issue}: no task row in its evidence table")
+        if "tests/" not in section:
+            problems.append(f"#{issue}: names no test")
+    assert not problems, "\n".join(problems)
+
+
 def test_the_v07_requirements_with_no_issue_are_traced_to_spec() -> None:
     """Requirements N, O and P close SPEC entries rather than GitHub issues, and
     the PRD asks for their traceability against those sections instead. A
@@ -192,7 +217,7 @@ def test_every_issue_section_states_its_closure() -> None:
     text = _report_text()
     claims = _closure_claims(text)
     problems = []
-    for issue in V06_ISSUES + V07_ISSUES:
+    for issue in V06_ISSUES + V07_ISSUES + V08_ISSUES:
         state = claims.get(issue)
         if state is None:
             problems.append(f"#{issue}: no **Closure:** line")
