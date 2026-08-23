@@ -353,30 +353,34 @@ def test_the_note_records_what_the_finished_run_actually_did():
 # --------------------------------------------------------------------------
 
 V07_RUN_ID = "selfdev-v07-unattended"
-# Copied verbatim from that run's own `<run-dir>/status.json` `usage` rollup at
-# the iteration that wrote the row: no provider quote at all (`costUSD: 0`
-# beside 239M billed tokens -- the implausible zero `cost_status` calls unknown)
-# and a host-derived figure from the shipped AWS Bedrock table, so the bucket's
+# The run's own SETTLED record (task 031, v0.8): the predecessor ended
+# `aborted` / `unverified` on an operator abort, so this is no longer a
+# snapshot written from inside a running job -- it is a final figure a later
+# run's task read off the finished PRD/facts, the same way v0.6's row is a
+# final figure. No provider quote at all (`costUSD: 0` beside 278.1M billed
+# tokens -- the implausible zero `cost_status` calls unknown) and a
+# host-derived figure from the shipped AWS Bedrock table, so the bucket's
 # merged verdict is `derived`.
 V07_USAGE = {
-    "input": 7642,
-    "output": 2002734,
-    "cacheRead": 222320424,
-    "cacheWrite": 14802418,
-    "totalTokens": 239133218,
-    "costDerivedUSD": 279.160118,
+    "input": 8912,
+    "output": 2312664,
+    "cacheRead": 256981204,
+    "cacheWrite": 18797220,
+    "totalTokens": 278100000,
+    "costDerivedUSD": 323.62,
     "costStatus": "derived",
     "costUSD": 0,
 }
-# The same snapshot's iteration counters: `iterationsUsed` is what the engine
+# The same run's final iteration counters: `iterationsUsed` is what the engine
 # CHARGED against the budget, `iteration` the raw slot count the log holds. The
 # row reports the charged one, and the gap is what the note has to explain.
-V07_CHARGED = 100
-V07_RAW = 107
-# And its plan, counted from `<run-dir>/tasks.json`: 47 tasks, 44 `completed`
-# when the row was written, the rest being the documentation/verification tail a
-# run cannot have finished before it has finished it.
-V07_TASKS = {"total": 47, "completed": 44}
+V07_CHARGED = 138
+V07_RAW = 146
+# And its plan, counted from the predecessor's own final `tasks.json`: 47
+# tasks, 46 `completed`. The 47th (task 041) reads `validation-failed` -- a
+# false record task 030 (this run) independently explains; the tally here is
+# the plan's own count, not a claim that the demotion was correct.
+V07_TASKS = {"total": 47, "completed": 46}
 
 V07_TALLY = re.compile(r"(?P<completed>\d+)\+? of (?P<total>\d+) tasks completed")
 
@@ -387,13 +391,14 @@ def _v07_cells(text: str) -> list[str]:
     return rows[V07_RUN_ID]
 
 
-def _snapshot_problems(text: str) -> list[str]:
-    """Every way the in-flight row can misreport the run that wrote it."""
+def _settled_problems(text: str) -> list[str]:
+    """Every way the settled row can misreport the run it closed out."""
     outcome, iterations, tokens, cost = _v07_cells(text)[1:5]
     problems: list[str] = []
 
-    if "not started" in outcome:
-        problems.append(f"outcome cell {outcome!r} still says the run never ran")
+    if "still running" in outcome or "not started" in outcome:
+        problems.append(
+            f"outcome cell {outcome!r} does not read as a finished run")
     m = V07_TALLY.search(outcome)
     if not m:
         problems.append(f"outcome cell {outcome!r} states no task tally")
@@ -404,76 +409,73 @@ def _snapshot_problems(text: str) -> list[str]:
             f"tasks, the plan holds {V07_TASKS['completed']} of "
             f"{V07_TASKS['total']}")
 
-    if iterations != f"{V07_CHARGED}{SNAPSHOT_MARKER}":
+    if not iterations.isdigit():
+        problems.append(f"iteration cell {iterations!r} is not a final count")
+    elif int(iterations) != V07_CHARGED:
         problems.append(
-            f"iteration cell {iterations!r} is not the charged "
-            f"{V07_CHARGED}{SNAPSHOT_MARKER}")
+            f"iteration cell {iterations!r} is not the charged {V07_CHARGED}")
     expected_tokens = f"{V07_USAGE['totalTokens'] / 1_000_000:.1f}M"
-    if tokens != f"{expected_tokens}{SNAPSHOT_MARKER}":
+    if tokens != expected_tokens:
         problems.append(
-            f"token cell {tokens!r} is not the recorded "
-            f"{expected_tokens}{SNAPSHOT_MARKER}")
+            f"token cell {tokens!r} is not the recorded {expected_tokens!r}")
 
-    if SNAPSHOT_MARKER not in cost:
-        problems.append(f"cost cell {cost!r} presents a floor as a total")
+    for name, cell in (("iteration", iterations), ("token", tokens),
+                       ("cost", cost)):
+        if SNAPSHOT_MARKER in cell:
+            problems.append(
+                f"{name} cell {cell!r} still marks a finished run's count "
+                f"as a snapshot floor")
+
     expected_cost = state.format_cost(V07_USAGE)
-    if cost.replace(SNAPSHOT_MARKER, "", 1) != expected_cost:
+    if cost != expected_cost:
         problems.append(
-            f"cost cell {cost!r} is not format_cost's {expected_cost!r} "
-            f"plus the snapshot marker")
+            f"cost cell {cost!r} is not format_cost's {expected_cost!r}")
     return problems
 
 
-def test_the_v07_row_reports_that_runs_own_snapshot():
+def test_the_v07_row_reports_the_runs_settled_record():
     # The premise: the recorded payload really is quote-less and host-derived,
     # so "derived" is earned from the shipped classifier, not asserted here.
     assert state.cost_status(V07_USAGE) == "derived"
     assert state.is_zero_quote(V07_USAGE) is True
-    assert _snapshot_problems(_index_text()) == []
+    assert _settled_problems(_index_text()) == []
 
 
-def test_a_snapshot_row_left_reading_not_started_is_caught():
-    # The wording the row shipped with before its run existed.
+def test_a_settled_row_left_reading_still_running_is_caught():
+    # The wording the row shipped with while the run was still running.
     cells = _v07_cells(_index_text())
     text = _index_text().replace(
-        f"| {cells[1]} | {cells[2]} | {cells[3]} | {cells[4]} |",
-        "| not started | \u2014 | \u2014 | \u2014 |")
-    problems = _snapshot_problems(text)
-    assert "outcome cell 'not started' still says the run never ran" in problems
-    assert any("is not the charged" in p for p in problems)
+        f"| {cells[1]} |",
+        "| still running / 44+ of 47 tasks completed |")
+    problems = _settled_problems(text)
+    assert any("does not read as a finished run" in p for p in problems)
 
 
-def test_a_snapshot_row_dropping_the_floor_marker_is_caught():
+def test_a_settled_row_wearing_the_floor_marker_is_caught():
+    # Task 039's own wording, reapplied to the now-settled figures.
     cells = _v07_cells(_index_text())
+    marked = [f"{c}{SNAPSHOT_MARKER}" for c in cells[2:5]]
     text = _index_text().replace(
         f"| {cells[2]} | {cells[3]} | {cells[4]} |",
-        "| {} | {} | {} |".format(*(c.replace(SNAPSHOT_MARKER, "", 1)
-                                    for c in cells[2:5])))
-    assert _snapshot_problems(text) == [
-        f"iteration cell {cells[2].rstrip(SNAPSHOT_MARKER)!r} is not the charged "
-        f"{V07_CHARGED}{SNAPSHOT_MARKER}",
-        f"token cell {cells[3].rstrip(SNAPSHOT_MARKER)!r} is not the recorded "
-        f"{V07_USAGE['totalTokens'] / 1_000_000:.1f}M{SNAPSHOT_MARKER}",
-        f"cost cell {cells[4].replace(SNAPSHOT_MARKER, '', 1)!r} presents a "
-        f"floor as a total",
-    ]
+        f"| {marked[0]} | {marked[1]} | {marked[2]} |")
+    problems = _settled_problems(text)
+    assert any("still marks a finished run's count as a snapshot floor" in p
+               for p in problems)
 
 
-def test_a_snapshot_row_charging_the_raw_slot_count_is_caught():
+def test_a_settled_row_charging_the_raw_slot_count_is_caught():
     cells = _v07_cells(_index_text())
-    text = _index_text().replace(
-        f"| {cells[2]} |", f"| {V07_RAW}{SNAPSHOT_MARKER} |")
-    assert _snapshot_problems(text) == [
-        f"iteration cell '{V07_RAW}{SNAPSHOT_MARKER}' is not the charged "
-        f"{V07_CHARGED}{SNAPSHOT_MARKER}"]
+    text = _index_text().replace(f"| {cells[2]} |", f"| {V07_RAW} |")
+    assert _settled_problems(text) == [
+        f"iteration cell '{V07_RAW}' is not the charged {V07_CHARGED}"]
 
 
-def test_a_snapshot_row_quoting_a_derived_figure_as_money_is_caught():
+def test_a_settled_row_quoting_the_derived_figure_as_flat_money_is_caught():
     cells = _v07_cells(_index_text())
-    text = _index_text().replace(f"| {cells[4]} |", "| $279.16+ |")
-    assert _snapshot_problems(text) == [
-        f"cost cell '$279.16+' is not format_cost's "
-        f"{state.format_cost(V07_USAGE)!r} plus the snapshot marker"]
+    text = _index_text().replace(f"| {cells[4]} |", "| $323.62 |")
+    assert _settled_problems(text) == [
+        f"cost cell '$323.62' is not format_cost's "
+        f"{state.format_cost(V07_USAGE)!r}"]
 
 
 def test_the_index_says_what_the_floor_marker_means():
@@ -499,31 +501,41 @@ def _v07_note(text: str) -> str:
     return para[:para.index("\n- ") if "\n- " in para else len(para)]
 
 
-def test_the_v07_note_explains_the_gap_between_charged_and_raw():
-    """The row reports the engine's 100 against 107 raw slots, and that 100 is
-    itself inflated by #32 (the run's engine image predates this wave's fix, so
-    its one resume restarted the refund counters). The note has to say both, or
-    the row is two unexplained numbers."""
+def test_the_v07_note_explains_the_settled_record_and_the_false_demotion():
+    """The row reports the engine's 138 against 146 raw slots, the run's own
+    aborted/unverified ending, and (task 031) the false `validation-failed`
+    on task 041 -- explained rather than left as an unexplained contradiction
+    with the tally the row itself states."""
     lowered = " ".join(_v07_note(_index_text()).lower().split())
     for phrase in (
-        # the snapshot itself, and where its figures came from
-        "snapshot", "status.json", "running", "approach 1",
+        # the settled ending, and where its figures came from
+        "settled", "aborted", "unverified", "operator abort",
         # charged vs raw, and the refund mechanism that separates them
         str(V07_CHARGED), str(V07_RAW), "refunded",
-        # ...and that the charged figure is still too high, per #32
-        "inflated", "#32", "95",
-        # the two defects the run reproduced on itself while running
-        "mid-iteration 38", "#44",
+        # the task tally, and the specific false record
+        "46", "47", "task 041", "validation-failed", "false",
+        # who re-verified it, and that no automated check catches this class
+        "task 030", "no automated check",
         # the cost cell is an estimate, never presented as quoted money
         "estimate", "derive",
     ):
         assert phrase in lowered, f"the v0.7 note does not say {phrase!r}"
-    # A snapshot's cells are a floor; nothing may call them final.
-    assert "final record" not in lowered
+    # The counts are final now: nothing may still call the run in progress.
+    assert "still running" not in lowered
 
 
-def test_a_note_hiding_the_refund_loss_is_caught():
+def test_a_note_hiding_the_false_demotion_is_caught():
     text = _index_text().replace(
-        "**That 100 is itself inflated**", "That 100 is what was charged")
+        "**The 47th, task 041, reads `validation-failed`, and that reading is "
+        "false.**",
+        "The 47th, task 041, reads `validation-failed`.")
     lowered = " ".join(_v07_note(text).lower().split())
-    assert "inflated" not in lowered
+    assert "false" not in lowered
+
+
+def test_a_note_inventing_an_automated_check_is_caught():
+    text = _index_text().replace(
+        "**No automated check here catches this class of error\n  in general**",
+        "A dedicated check here catches this class of error")
+    lowered = " ".join(_v07_note(text).lower().split())
+    assert "no automated check" not in lowered

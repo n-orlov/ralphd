@@ -29,7 +29,7 @@ that run's final `status.json`, which is why the marker is what the checks in
 | `selfdev-roadmap-4` | [selfdev-roadmap-4.md](selfdev-roadmap-4.md) | succeeded / verified | 43 | 27.6M | $17.35 |
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
-| `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | still running / 44+ of 47 tasks completed | 100+ | 239.1M+ | ~$279.16+ derived |
+| `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | aborted / unverified — 46 of 47 tasks completed | 138 | 278.1M | ~$323.62 derived |
 | `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | still running / 0+ of 36 tasks completed | 2+ | 1.2M+ | ~$2.27+ derived |
 
 Notes worth keeping with the documents:
@@ -76,34 +76,41 @@ Notes worth keeping with the documents:
   (`ralphctl start --price-strategy aws`) derives ≈ $374 — an estimate at that
   table's rates, not money any provider quoted. Full evidence in
   `artifacts/reports/issue-traceability.md`.
-- **`v0.7-trustworthy-unattended.md`'s row is that run's own snapshot of
-  itself**, read from its `status.json` by the iteration that wrote the row —
-  hence the `+` on every count. At that moment: `state: running`, no verdict
-  yet, on approach 1 of a possible 10 (it never replanned), 44 of its 47 planned
-  tasks `completed`. The three still open are the tail a run cannot do for
-  itself before it has done it: this very row, the roadmap bullet that waits on
-  the issue closures, and the final green sweep of the test suite. All 24 issues
-  in the brief (#28, #30–#49, #52, #53, #55) are already closed on GitHub with a
-  closing comment (`artifacts/reports/issue-closure.md`, traced per issue in
-  `artifacts/reports/issue-traceability.md`).
-  The iteration cell is the 100 the engine charged against a 500 budget, not the
-  107 raw iteration slots the log holds: 12 attempts were classified
-  infrastructure faults, which are retried and refunded rather than charged
-  (`iterationsUsed`). **That 100 is itself inflated**, by the same issue #32 this
-  wave fixes — the run is driven by an engine image built before the fix, so its
-  one resume restarted the refund counters at zero: 12 attempts faulted on
-  infrastructure and only the 7 after the resume survived as credit, so the
-  guarantee implies 95 charged, not 100. The cell reports what the engine wrote,
-  for the same reason v0.6's does. That resume is itself this wave's subject
-  matter: the engine died mid-iteration 38 on issue #28 (an iteration that
-  overran its 45-minute cap took the supervisor down with it), and the crashed
-  attempt's transcript is gone because the resumed attempt reused the slot —
-  issue #44, also fixed here, but not in the image that was running.
-  The cost cell is `derived`, not quoted: the gateway reported `costUSD: 0`
-  beside 239M billed tokens, which the shipped classifier calls unknown (#14,
-  v0.6), and the host-side AWS Bedrock price table derives ≈ $279 from the same
-  recorded counters. It is an estimate at that table's rates, not money any
-  provider quoted, and — like the counts beside it — a floor.
+- **`v0.7-trustworthy-unattended.md`'s row is now that run's settled
+  record**, not the in-progress snapshot it wore before the job ended: the run
+  ended `aborted` / `unverified` on an operator abort at `2026-08-23T08:50:53Z`,
+  138 iterations charged against its budget (146 raw iteration slots the log
+  holds — the 8-slot gap is attempts classified infrastructure faults, retried
+  and refunded rather than charged, `iterationsUsed`, the same #32 mechanism
+  v0.6's and v0.7's own earlier snapshot explained), 278.1M tokens, and a
+  `derived` cost of ~$323.62: the gateway reported `costUSD: 0` beside those
+  278.1M billed tokens, which the shipped classifier calls unknown (#14, v0.6),
+  and the host-side AWS Bedrock price table derives ≈ $323.62 from the same
+  recorded counters — an estimate at that table's rates, not money any
+  provider quoted. All 24 intended issue closures happened (`#28, #30–#49,
+  #52, #53, #55`, closing comments in `artifacts/reports/issue-closure.md`,
+  traced per issue in `artifacts/reports/issue-traceability.md`), and 46 of
+  the plan's 47 tasks are `completed`.
+  **The 47th, task 041, reads `validation-failed`, and that reading is false.**
+  The operator's abort landed mid-*verify* on task 041's own check
+  (`ralphctl suggestions show|apply`), on an engine build that still predated
+  the fix for #45: that build's verifier treated "no verdict reached" the
+  same as "judged unmet" and demoted the task on the interrupt, instead of
+  leaving its status untouched the way v0.7's own task 012 (the #45 fix) made
+  every later engine build do. `selfdev-v08-auditable`'s own task 030
+  independently re-verified `ralphctl suggestions show|apply` at that run's own
+  HEAD, hand-driving the real binary against scratch registries as well as
+  re-running the existing suite, and found the deliverable sound against both
+  #28's and v0.7 requirement P's acceptance criteria, plus confirmed the
+  demoting mechanism cannot recur on the engine as it stands today — see that
+  run's own report for the evidence (a run-dir artifact, not a file this
+  repository carries). **No automated check here catches this class of error
+  in general**: a run can end — successfully, even — after the very iteration
+  that would have caught its own last task's misfiled status, so this
+  correction is a one-time, human-legible fact about one historical run, kept
+  here because a person read the evidence, not a rule this table's own tests
+  enforce by reading a different run's live registry, which they deliberately
+  do not do.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
