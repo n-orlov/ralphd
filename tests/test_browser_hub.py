@@ -1184,14 +1184,26 @@ _PILL_CELL_WIDTH = f"{_PILL_CELL}.getBoundingClientRect().width"
 # Injected as a stylesheet, not as inline styles on the table: the hub repolls
 # every 4 s and `renderTasks` rebuilds the whole table, so inline styles are
 # silently dropped mid-test (they were, and the squeeze became a no-op).
+#
+# Task 024 (#54) added a `Content-Security-Policy: style-src 'self'` header
+# to every hub response, which blocks a freshly-created `<style>` element's
+# `textContent` (an inline stylesheet) exactly as it would block an inline
+# `style=""` attribute -- so the squeeze rules are inserted at runtime into
+# `style.css`'s OWN, already same-origin-permitted `CSSStyleSheet` object via
+# `insertRule()` instead of appending a new inline `<style>` node. CSP
+# governs how a stylesheet resource is *loaded*, not runtime CSSOM mutation
+# of a sheet the page was already allowed to load -- confirmed against this
+# hub's real CSP header, not merely asserted.
 _SQUEEZE = """(() => {
-  const s = document.createElement('style');
-  s.id = 'squeeze-probe';
-  s.textContent = '#task-box table{table-layout:fixed;width:90px}'
-    + '#task-box th:nth-child(1){width:20px}'
-    + '#task-box th:nth-child(2){width:24px}'
-    + '#task-box th:nth-child(3){width:46px}';
-  document.head.appendChild(s);
+  const sheet = Array.from(document.styleSheets).find(
+    s => s.href && s.href.includes('style.css'));
+  const rules = [
+    '#task-box table{table-layout:fixed;width:90px}',
+    '#task-box th:nth-child(1){width:20px}',
+    '#task-box th:nth-child(2){width:24px}',
+    '#task-box th:nth-child(3){width:46px}',
+  ];
+  for (const r of rules) sheet.insertRule(r, sheet.cssRules.length);
   return document.querySelectorAll('#task-box thead th').length;
 })()"""
 

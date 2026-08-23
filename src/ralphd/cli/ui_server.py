@@ -98,6 +98,36 @@ from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
 
+# Task 024 (#54): sent on EVERY hub response (`_send_json`/`_send_bytes`, so
+# the static bundle, every JSON API route and the raw artifact byte route
+# all carry it -- see the two send helpers below). The hub serves files an
+# agent inside the job container wrote (artifacts, notes, PRD text,
+# reflection reports) back to a browser at the operator's own origin; this
+# is the barrier that stops one of those files turning into script that can
+# act against that origin (steal the page's view of OTHER runs, call the
+# DELETE endpoint, etc).
+#
+# No `'unsafe-inline'` anywhere: `index.html`/`app.js` contain no inline
+# `<script>`, no `onclick="..."` attributes and no `<style>` blocks or
+# `style="..."` HTML attributes (`app.js` only ever sets `.style.display`
+# as a DOM property, which CSP's `style-src` does not govern) -- so
+# `script-src 'self'` and `style-src 'self'` cost the hub nothing. Every
+# resource the page needs (`app.js`, `style.css`, the raw artifact bytes)
+# is same-origin, so `default-src 'self'` covers images without a separate
+# `img-src` needing to widen anything. `base-uri`/`form-action`/
+# `frame-ancestors` are locked to `'none'`/`'self'` defensively even though
+# the hub uses none of the three today.
+HUB_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self'; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+
 DEFAULT_LOG_TAIL = 200
 
 # Task 056 (#1): shown by the hub's PRD dialog when a run dir has no PRD at
@@ -1155,6 +1185,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Security-Policy", HUB_CSP)
         self.end_headers()
         self.wfile.write(data)
 
@@ -1163,6 +1194,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Security-Policy", HUB_CSP)
         if nosniff:
             # Task 023 (#54): the raw artifact byte route's own header --
             # never sent by the static bundle or JSON routes, which have no

@@ -2477,6 +2477,22 @@ same package) that reads `~/.ralphd/runs/*` and proxies each run's *live*
 container API when reachable. `--port` defaults to a free ephemeral port;
 prints `serving hub at http://<bind>:<port>` on startup. Ctrl-C to stop.
 
+Every response — the static bundle, every JSON route below and the raw
+artifact byte route — carries a `Content-Security-Policy` header (task 024,
+issue #54; constant `ui_server.HUB_CSP`), sent from the two shared response
+helpers (`_send_json`/`_send_bytes`) so no route can forget it:
+`default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self';
+connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors
+'none'`. No `'unsafe-inline'`/`'unsafe-eval'` anywhere — the static bundle
+has no inline `<script>`, no `onclick="..."` attribute and no inline
+`style="..."` attribute or `<style>` block, so the tight policy costs the
+hub nothing. The point is the same one `X-Content-Type-Options: nosniff`
+serves on the raw artifact route below: a file an agent inside the job
+container wrote (an artifact, a note, a PRD, a reflection report) is served
+back to a browser at the operator's own origin, and this is the barrier
+that stops one of those files turning into script that acts against that
+origin.
+
 JSON endpoints served under `/api/`:
 
 - `GET /api/runs` — run list (PRD req 21): `{"runs": [{runId, state,
