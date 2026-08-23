@@ -214,10 +214,22 @@ def test_the_drop_keeps_root_real_and_saved_and_sets_groups_first(monkeypatch):
     if reason:
         pytest.skip(reason)
     calls: list[tuple] = []
+    # Root's group list going in is just [0]; the mock mirrors what the real
+    # initgroups() does -- replaces the list with /etc/group's entry for the
+    # agent's own account, i.e. just its own gid, no supplementary groups --
+    # so with no operator-granted group to preserve, setgroups() is never
+    # reached at all (see test_the_drop_keeps_an_operator_granted_supplementary_group
+    # for the case where it is).
+    groups = [0]
     monkeypatch.setattr(privsep.os, "getuid", lambda: 0)
-    monkeypatch.setattr(privsep.os, "getgroups", lambda: [0])
-    monkeypatch.setattr(privsep.os, "initgroups",
-                        lambda name, gid: calls.append(("initgroups", name, gid)))
+    monkeypatch.setattr(privsep.os, "getgroups", lambda: list(groups))
+
+    def fake_initgroups(name, gid):
+        nonlocal groups
+        groups = [gid]
+        calls.append(("initgroups", name, gid))
+
+    monkeypatch.setattr(privsep.os, "initgroups", fake_initgroups)
     monkeypatch.setattr(privsep.os, "setgroups",
                         lambda gs: calls.append(("setgroups", list(gs))))
     monkeypatch.setattr(privsep.os, "setresgid",
