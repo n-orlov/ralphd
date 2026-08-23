@@ -1209,3 +1209,62 @@ def test_the_overview_names_the_engines_real_console_script():
         f"the overview calls the engine {match.group(1)!r}; the installed "
         f"console script is {engine[0]!r} (the distribution is named "
         f"{'ralphd'!r}, which is not a command)")
+
+
+# ---- the hub's render rule is stated, and derived from the guard ----------
+
+APP_JS = REPO_ROOT / "src" / "ralphd" / "cli" / "web" / "app.js"
+
+# Task 016 (#27)'s stale-response guard: every render closure re-checks its
+# own captured generation against the live one before touching the DOM or
+# installing a refresh timer. This is the mechanism the render-rule prose
+# (docs/architecture.md §7, task 018) names as *why* the hub "never applies
+# a response it did not ask for" -- so the check for the prose's claim is a
+# check that this exact guard is still present in both renderers, not a
+# check on the prose itself.
+RENDER_GUARD_RE = re.compile(r"myGen\s*!==\s*renderGeneration")
+
+
+def _render_rule_stated(text: str) -> bool:
+    low = " ".join(text.lower().split())
+    return ("renders decisions python made" in low
+            and "never applies a response it did not ask for" in low)
+
+
+def test_the_render_rule_is_stated_and_the_guard_exists_in_app_js():
+    assert _render_rule_stated(ARCH_DOC.read_text()), (
+        "docs/architecture.md no longer states the hub's render rule (task "
+        "018, #27): that it renders decisions Python made and never applies "
+        "a response it did not ask for")
+    app_js = APP_JS.read_text()
+    hits = RENDER_GUARD_RE.findall(app_js)
+    # renderRunList and renderRunDetail each check it before painting the
+    # DOM, and again before installing their refresh timer -- at least one
+    # hit per renderer's two call sites is the derived evidence for the
+    # doc's claim; losing the guard from either renderer breaks the rule
+    # the prose asserts, so require it to appear more than once (a single
+    # remaining occurrence would mean one renderer regressed to unguarded).
+    assert len(hits) >= 2, (
+        "app.js no longer carries the myGen !== renderGeneration guard in "
+        "both renderers -- the render-rule claim in docs/architecture.md is "
+        f"no longer backed by the code (found {len(hits)} occurrence(s))")
+
+
+def test_the_render_rule_check_would_catch_a_removed_guard():
+    """Mutation case: strip the guard from a copy of app.js's text and the
+    same check that passes above must fail."""
+    app_js = APP_JS.read_text()
+    assert RENDER_GUARD_RE.search(app_js), "nothing to strip -- fix the fixture"
+    mutated = RENDER_GUARD_RE.sub("true", app_js)
+    hits = RENDER_GUARD_RE.findall(mutated)
+    assert len(hits) == 0
+    assert not (len(hits) >= 2)
+
+
+def test_the_render_rule_prose_check_would_catch_a_missing_statement():
+    assert not _render_rule_stated(
+        "the hub is a plain JS client with no build step, talking only to "
+        "the JSON endpoints ui_server.py serves")
+    assert _render_rule_stated(
+        "The hub renders decisions Python made and never applies a "
+        "response it did not ask for.")

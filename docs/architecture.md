@@ -1413,6 +1413,25 @@ flooded the tail with one element per delta; the shared renderer's
 guard (already exercised by the CLI) collapses each thinking block to
 exactly one `[thinking…]` line.
 
+**The hub's render rule (task 018, #27).** The hub renders decisions Python
+made and never applies a response it did not ask for. `cli/web/app.js` is a
+client in the strict sense: every screen it shows is data `ui_server.py`
+already decided (the JSON payload), and `app.js` never lets a stale answer
+land on a screen the user has since navigated away from. The mechanism is
+`renderGeneration` (task 016, #27): `router()` mints a new generation on
+every navigation, each render closure (`renderRunList`/`renderRunDetail`)
+captures the generation it was born with as `myGen`, and both the DOM write
+and the refresh-timer install are gated on `myGen === renderGeneration`
+still holding once the awaited `fetch` resolves — so a second, faster
+navigation that supersedes a slow first one lets the first one's response
+arrive, decode, and then be silently discarded rather than painted over the
+newer screen. The same guard, checked a second time against a per-render
+`loadSeq` counter, catches a slow *periodic refresh* tick response landing
+after a newer tick of the *same* render superseded it. A test in
+`tests/test_docs_semantics.py` derives this paragraph's claim from the code
+(the `myGen !== renderGeneration` guard is present in both renderers) and
+fails, by mutation, if the guard is removed.
+
 ## 8. Docker image
 
 The default job image is **built locally from this checkout** and tagged
