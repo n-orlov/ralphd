@@ -294,3 +294,12 @@ class JobConfig:
         if tier == "fast":
             return self.fast_model or self.model
         return self.model
+
+
+# Task 043 (#52): the strategy names as one tuple, derived from the presets
+# `model_for` actually resolves, so `ralphctl`'s `--model-strategy` choices and
+# `ralphctl config set model_strategy`'s validation cannot drift from them.
+# Deliberately NOT a default: which strategy ships is JobConfig's own
+# `model_strategy` field, stated once (see DEFAULT_PRICE_STRATEGY's comment for
+# the same discipline applied to a cost knob).
+MODEL_STRATEGIES = tuple(JobConfig.STRATEGY_TIERS)

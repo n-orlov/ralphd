@@ -405,8 +405,13 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 
 ```
 ~/.ralphd/                       # the "registry" — RALPHD_REGISTRY overrides
-├── config.yaml                  # registry-wide defaults: image, network, on_complete,
-│                                #   default_llm_profile, auto_resume, pricing map
+├── config.yaml                  # registry-wide defaults (`ralphctl config`, §6.2):
+│                                #   image, base_image, dockerfile, on_complete,
+│                                #   default_llm_profile, network, auto_resume,
+│                                #   price_strategy, model, fast_model,
+│                                #   model_strategy, thinking
+│                                # plus the nested `pricing:` map, which
+│                                #   `config set` cannot write (§8.6)
 ├── llm-profiles/<name>.yaml     # named LLM profiles (env/mounts/pi fragments)
 ├── templates/<name>/            # job templates: job.yaml + optional prd/skills/creds
 ├── runs/<run-id>/               # bind-mounted at /run/ralphd — the source of truth
@@ -1528,10 +1533,15 @@ seconds), `RALPHD_INFRA_RETRY_BACKOFF_MAX_S`, `RALPHD_INFRA_RETRY_MAX`,
 
 1. an explicit flag on `ralphctl start`;
 2. the `--template`'s `job.yaml` value (§6.7);
-3. the registry default in `<registry>/config.yaml` — only for the eight keys
+3. the registry default in `<registry>/config.yaml` — only for the twelve keys
    that have one (`ralphctl config set`): the three image supply keys `image`,
    `base_image` and `dockerfile`, plus `on_complete`, `network`, `auto_resume`,
-   `default_llm_profile` (the fallback for `--llm`) and `price_strategy`;
+   `default_llm_profile` (the fallback for `--llm`), `price_strategy`, and the
+   four that decide which models a job runs — `model`, `fast_model`,
+   `model_strategy` and `thinking` (#52). A named LLM profile may itself carry
+   `model`/`fast_model`/`price_strategy`, and a registry-wide value beats it:
+   a profile answers *where do I route*, while `model_strategy` is a cost
+   policy, and a profile can carry neither it nor `thinking`;
 4. the hardcoded default in `ralphctl` (`_TEMPLATE_SCALAR_FIELDS`).
 
 The winner is written into `job.yaml`, and **only non-null keys are written** — an
@@ -1772,8 +1782,8 @@ pi:                                  # pi provider config for this container
 | key | type | meaning |
 |---|---|---|
 | `description` | string | free text, shown by `ralphctl llm show` |
-| `model` | string | default strong-tier model ref for a job started with this profile; an explicit `--model` beats it |
-| `fast_model` | string | default fast-tier ref; `--fast-model` beats it |
+| `model` | string | default strong-tier model ref for a job started with this profile; an explicit `--model` beats it, and so does a template/registry value (#52) |
+| `fast_model` | string | default fast-tier ref; `--fast-model` and a template/registry value beat it |
 | `price_strategy` | string | which built-in rate table may derive a cost for this profile's routes (§8.6); one of `PRICE_STRATEGIES`, validated at resolve time so a typo is a `ProfileError` rather than a silent `none`. `--price-strategy` and a template/registry value beat it |
 | `env` | mapping | env vars for the container. Entries resolve top to bottom and each one joins the resolution environment, so a later entry — and `mounts`/`pi` — may reference an earlier one |
 | `mounts` | list | `host:container[:ro]` specs added to `docker run`; the host side is `~`-expanded |
@@ -3019,8 +3029,9 @@ gateway outage plausibly lasts.
 explicit CLI flag, then the `--template`'s `job.yaml`, then the registry-wide
 default in `<registry>/config.yaml` (`ralphctl config set`), then the
 hardcoded default in the table above. Only `image`, `base_image`, `dockerfile`,
-`on_complete`, `default_llm_profile` (feeding `--llm`), `network`, `auto_resume`
-and `price_strategy` have a registry-wide layer; the rest skip straight from
+`on_complete`, `default_llm_profile` (feeding `--llm`), `network`, `auto_resume`,
+`price_strategy`, `model`, `fast_model`, `model_strategy` and `thinking` — twelve
+keys — have a registry-wide layer; the rest skip straight from
 template to hardcoded default. Every flag defaults to `None` in the parser
 rather than to its real value, so "not given" stays distinguishable from
 "given the value the default happens to be" and the chain can be applied

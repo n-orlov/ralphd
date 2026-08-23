@@ -73,10 +73,10 @@ ralphctl start --prd <file|-> [options]
 | `--max-approaches <n>` | 3 | review-loop approach limit |
 | `--vigilant` | off | per-task verification |
 | `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state) |
-| `--model <id>` | profile default | default model (pi model ID) |
-| `--fast-model <id>` | profile default | model for phases a `cost-optimized`/`balanced` strategy routes to the cheap tier |
-| `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced` — the three presets `JobConfig.STRATEGY_TIERS` defines (anything else is a usage error): which phase gets `--model` and which gets `--fast-model`. A true per-phase override (`model_overrides`, keys `planning\|worker\|review\|verify\|reflect`) is a `job.yaml` key only: no `start` flag sets it |
-| `--thinking <level>` | — | pi thinking level |
+| `--model <id>` | profile default | default model (pi model ID); falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:` |
+| `--fast-model <id>` | profile default | model for phases a `cost-optimized`/`balanced` strategy routes to the cheap tier; same fallback chain as `--model` (template, then the registry's `fast_model`, then the profile) |
+| `--model-strategy <s>` | quality-first | `quality-first\|cost-optimized\|balanced` — the three presets `JobConfig.STRATEGY_TIERS` defines (anything else is a usage error): which phase gets `--model` and which gets `--fast-model`. Falls back to the `--template`'s value, then the registry's `model_strategy` (`ralphctl config`); an LLM profile cannot carry it. A true per-phase override (`model_overrides`, keys `planning\|worker\|review\|verify\|reflect`) is a `job.yaml` key only: no `start` flag sets it |
+| `--thinking <level>` | — | pi thinking level; falls back to the `--template`'s value, then the registry's `thinking` (`ralphctl config`) |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
@@ -2010,7 +2010,19 @@ Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
 (`true`/`false` — validated on `set` and stored as a real boolean; the
 registry-wide default for `start --auto-resume`), `price_strategy`
 (`none`/`aws` — validated on `set`; the registry-wide default for
-`start --price-strategy`).
+`start --price-strategy`), and the four keys that decide which models a job
+runs (#52): `model` and `fast_model` (any pi `provider/model-id` string),
+`model_strategy` (one of `JobConfig.STRATEGY_TIERS`' presets — validated on
+`set`, so a typo exits `2` rather than silently resolving to the shipped
+strategy) and `thinking` (any string `pi --thinking` accepts).
+
+For `model`, `fast_model` and `price_strategy` a **named LLM profile** can
+state a value too (see [llm-profiles.md](llm-profiles.md)); a registry-wide
+value beats it, and neither `model_strategy` nor `thinking` can be carried by a
+profile at all. That is the point of having all four here: a profile answers
+*where do I route and with what credentials*, while `model_strategy` answers
+*how much am I willing to spend on which phase* — a cost policy rather than a
+routing fact.
 
 - `get` prints `<key>: <value>`, or `<key>: (unset)` if the key has never
   been `set` — this is not an error (exit `0` either way).
@@ -2025,7 +2037,8 @@ registry-wide default for `start --auto-resume`), `price_strategy`
 `ralphctl start` layers these in as the **registry-wide fallback** for the
 same-named flags (`--image`, `--base-image`, `--dockerfile`, `--on-complete`,
 `--network`, `--auto-resume`,
-`--price-strategy`)
+`--price-strategy`, `--model`, `--fast-model`, `--model-strategy`,
+`--thinking`)
 and for `--llm`
 (via `default_llm_profile`), between an explicit flag/`--template` value and
 the hardcoded built-in default: explicit flag > `--template` > `ralphctl

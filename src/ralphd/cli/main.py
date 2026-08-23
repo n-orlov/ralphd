@@ -36,7 +36,7 @@ from typing import Self
 import yaml
 
 from .. import __version__
-from ..engine.config import PRICE_STRATEGIES
+from ..engine.config import MODEL_STRATEGIES, PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -1313,10 +1313,22 @@ _TEMPLATE_SCALAR_FIELDS = {
 # here: they contradict each other, so they are settled as one unit by
 # `_resolve_image_supply` below -- under the same key names, at the same three
 # levels -- rather than filled in field by field.
+#
+# Task 043 (#52): `model`, `fast_model`, `model_strategy` and `thinking` are
+# here too. A named LLM profile can already carry `model`/`fast_model`, but a
+# profile answers *where do I route and with what credentials* while
+# `model_strategy` answers *how much am I willing to spend on which phase* --
+# a cost policy, not a routing fact -- and a profile cannot carry
+# `model_strategy`/`thinking` at all. All four belong at the registry level,
+# symmetrically, rather than two in the profile and two nowhere. As with
+# `price_strategy`, a registry-wide value therefore beats the profile's.
 _REGISTRY_CONFIG_FIELD_KEYS = {"on_complete": "on_complete",
                                "llm": "default_llm_profile", "network": "network",
                                "auto_resume": "auto_resume",
-                               "price_strategy": "price_strategy"}
+                               "price_strategy": "price_strategy",
+                               "model": "model", "fast_model": "fast_model",
+                               "model_strategy": "model_strategy",
+                               "thinking": "thinking"}
 
 
 def _resolve_image_supply(args, cfg: dict, reg_cfg: dict) -> None:
@@ -4773,7 +4785,15 @@ _CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
                 "base_image": None, "dockerfile": None,
                 "default_llm_profile": None, "network": None,
                 "auto_resume": ("true", "false"),
-                "price_strategy": PRICE_STRATEGIES}
+                "price_strategy": PRICE_STRATEGIES,
+                # Task 043 (#52): the four keys that decide which models a job
+                # runs. `model_strategy` is validated against the presets
+                # `JobConfig.model_for` resolves, so a typo exits 2 instead of
+                # silently falling back to the shipped strategy; `model`,
+                # `fast_model` and `thinking` are free-form provider/pi strings,
+                # like `image`.
+                "model": None, "fast_model": None,
+                "model_strategy": MODEL_STRATEGIES, "thinking": None}
 # keys stored as real booleans in `<registry>/config.yaml` (task 026)
 _CONFIG_BOOL_KEYS = {"auto_resume"}
 
@@ -4782,7 +4802,8 @@ def cmd_config(args):
     """Registry-wide defaults at `<registry>/config.yaml` (PRD req 25):
     `image`, `base_image`, `dockerfile` (the three image supply points, ranked
     as one unit by `_resolve_image_supply`), `on_complete`,
-    `default_llm_profile`, `network`, `auto_resume`, `price_strategy`. `start`
+    `default_llm_profile`, `network`, `auto_resume`, `price_strategy`,
+    `model`, `fast_model`, `model_strategy`, `thinking`. `start`
     layers these in between a `--template`'s value and the hardcoded fallback
     (see `_apply_template`); `doctor` reads `default_llm_profile` directly."""
     if args.key not in _CONFIG_KEYS:
@@ -5386,7 +5407,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
     s.add_argument("--fast-model")
     s.add_argument("--model-strategy", default=None,
-                   choices=["quality-first", "cost-optimized", "balanced"])
+                   choices=list(MODEL_STRATEGIES))
     s.add_argument("--thinking", help="pi thinking level")
     s.add_argument("--price-strategy", default=None, choices=list(PRICE_STRATEGIES),
                    help="derive a cost for routes the provider does not price "

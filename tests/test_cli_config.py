@@ -177,3 +177,112 @@ def test_template_still_overrides_registry_default(ctl):
     assert res.returncode == 0, res.stderr
     job = _job_yaml(ctl, "cfg-template-wins")
     assert job["on_complete"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Task 043 (#52): the four keys that decide which models a job runs. One test
+# per rung of the chain, each asserting on the `job.yaml` the run actually
+# gets (the file the engine reads and `resume` replays), not on argparse.
+# ---------------------------------------------------------------------------
+
+MODEL_KEYS = ("model", "fast_model", "model_strategy", "thinking")
+
+
+def test_the_four_model_keys_are_settable_and_readable(ctl):
+    for key, value in zip(MODEL_KEYS, ("prov/strong", "prov/fast",
+                                       "cost-optimized", "high")):
+        assert ctl.run("config", "set", key, value).returncode == 0
+        res = ctl.run("config", "get", key)
+        assert res.returncode == 0, res.stderr
+        assert value in res.stdout
+    cfg = _config_yaml(ctl)
+    assert cfg["model"] == "prov/strong" and cfg["fast_model"] == "prov/fast"
+    assert cfg["model_strategy"] == "cost-optimized" and cfg["thinking"] == "high"
+
+
+def test_start_uses_the_registry_defaults_for_the_four_model_keys(ctl):
+    """Rung 3: registry beats the hardcoded fallback, in job.yaml."""
+    ctl.run("config", "set", "model", "prov/registry-strong")
+    ctl.run("config", "set", "fast_model", "prov/registry-fast")
+    ctl.run("config", "set", "model_strategy", "balanced")
+    ctl.run("config", "set", "thinking", "medium")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-models-registry")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "cfg-models-registry")
+    assert job["model"] == "prov/registry-strong"
+    assert job["fast_model"] == "prov/registry-fast"
+    assert job["model_strategy"] == "balanced"
+    assert job["thinking"] == "medium"
+
+
+def test_a_template_beats_the_registry_default_for_the_four_model_keys(ctl):
+    """Rung 2."""
+    for key, value in zip(MODEL_KEYS, ("prov/reg", "prov/reg-fast",
+                                       "cost-optimized", "low")):
+        ctl.run("config", "set", key, value)
+    tdir = ctl.registry / "templates" / "models"
+    tdir.mkdir(parents=True)
+    (tdir / "job.yaml").write_text("model: prov/tmpl\nfast_model: prov/tmpl-fast\n"
+                                   "model_strategy: balanced\nthinking: high\n")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-models-template", "--template", "models")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "cfg-models-template")
+    assert job["model"] == "prov/tmpl" and job["fast_model"] == "prov/tmpl-fast"
+    assert job["model_strategy"] == "balanced" and job["thinking"] == "high"
+
+
+def test_explicit_flags_beat_a_template_and_the_registry_default(ctl):
+    """Rung 1: the flag wins over both lower rungs at once."""
+    for key, value in zip(MODEL_KEYS, ("prov/reg", "prov/reg-fast",
+                                       "cost-optimized", "low")):
+        ctl.run("config", "set", key, value)
+    tdir = ctl.registry / "templates" / "models"
+    tdir.mkdir(parents=True)
+    (tdir / "job.yaml").write_text("model: prov/tmpl\nfast_model: prov/tmpl-fast\n"
+                                   "model_strategy: balanced\nthinking: high\n")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-models-flag", "--template", "models",
+                  "--model", "prov/flag", "--fast-model", "prov/flag-fast",
+                  "--model-strategy", "quality-first", "--thinking", "none")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "cfg-models-flag")
+    assert job["model"] == "prov/flag" and job["fast_model"] == "prov/flag-fast"
+    assert job["model_strategy"] == "quality-first" and job["thinking"] == "none"
+
+
+def test_with_nothing_set_anywhere_the_hardcoded_fallbacks_still_apply(ctl):
+    """Rung 4, and the reason `_TEMPLATE_SCALAR_FIELDS["model"]` is None:
+    ralphd ships no model ref of its own (pi's own default applies), so an
+    unset `model`/`fast_model`/`thinking` must stay out of job.yaml entirely
+    rather than acquiring some host's route.
+    """
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "cfg-models-hardcoded")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "cfg-models-hardcoded")
+    assert "model" not in job and "fast_model" not in job
+    assert "thinking" not in job
+    from ralphd.engine.config import MODEL_STRATEGIES
+    assert job["model_strategy"] in MODEL_STRATEGIES
+
+
+def test_set_model_strategy_validates_against_the_presets(ctl):
+    """A typo exits 2 rather than silently resolving to the shipped strategy
+    (`model_for`'s unknown-name fallback would hide it)."""
+    res = ctl.run("config", "set", "model_strategy", "qualtiy-first")
+    assert res.returncode == 2, res.stderr
+    for name in ("quality-first", "cost-optimized", "balanced"):
+        assert name in res.stderr
+    assert _config_yaml(ctl).get("model_strategy") is None
+
+
+def test_model_fast_model_and_thinking_are_free_form(ctl):
+    """Unlike `model_strategy`, these three are provider/pi strings ralphd
+    cannot enumerate -- validating them would break every host whose gateway
+    ralphd has never heard of (same reason `image` takes any string)."""
+    for key in ("model", "fast_model", "thinking"):
+        res = ctl.run("config", "set", key, "anything-at-all/x")
+        assert res.returncode == 0, res.stderr
+        assert _config_yaml(ctl)[key] == "anything-at-all/x"

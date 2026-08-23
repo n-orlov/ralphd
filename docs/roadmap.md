@@ -385,6 +385,25 @@ Phase 4 — close the loop:
   evidence rather than edited in place, and this block plus the `0.7.0` version
   bump landed together, late
 
+Arriving mid-wave, by operator steering rather than from the PRD — the first
+requirement this project has taken while the run producing it was still going,
+which is why it has no letter in `docs/prds/v0.7-trustworthy-unattended.md`
+(that file stays byte-identical to the run's own `prd.md`) and is recorded in the
+run's steering note instead:
+
+- ✅ **S. Registry-wide defaults for the four keys that choose a job's models
+  (#52).** `model`, `fast_model`, `model_strategy` and `thinking` joined the
+  eight keys `ralphctl config set` already covered, so an operator states them
+  once per host instead of on every launch: same precedence chain as before
+  (flag > `--template` > `<registry>/config.yaml` > hardcoded), one table
+  wider, no second mechanism. `model_strategy` is validated against
+  `JobConfig.STRATEGY_TIERS`' presets so a typo exits `2` rather than silently
+  resolving to the shipped strategy; the other three stay free-form, because
+  ralphd cannot enumerate a host's routes. The hardcoded fallbacks are
+  deliberately untouched — `_TEMPLATE_SCALAR_FIELDS["model"] = None` means
+  "pi's own default", and baking one host's Bedrock route into the source would
+  break every host without it
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7

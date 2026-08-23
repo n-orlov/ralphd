@@ -18,7 +18,10 @@ the same treatment for everything else this wave changed, section by section:
     from four real reads of a real run dir, and the cache file name, the re-read
     budget and the `{tasksStale,tasksSource}` field names come from the module;
   * 6.2/6.7/7.1's key lists are `ralphctl`'s own (`_CONFIG_KEYS`,
-    `_TEMPLATE_SCALAR_FIELDS`, `resolve_profile`);
+    `_TEMPLATE_SCALAR_FIELDS`, `resolve_profile`), and so is 3.3's host-layout
+    comment naming what `config.yaml` may hold (task 043, #52: it is the third
+    place the registry-wide key set is written down, and the one that had
+    already drifted);
   * 8.6's strategy values and rate-table facts come from `config.PRICE_STRATEGIES`
     and `engine/pricing_aws.py`, and every `cost*` marker the runner writes has to
     be documented somewhere in the spec;
@@ -48,7 +51,7 @@ ENGINE_DIR = SRC / "engine"
 CLI_DIR = SRC / "cli"
 
 COUNT_WORDS = {5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
-               10: "ten"}
+               10: "ten", 11: "eleven", 12: "twelve"}
 # Small counts live apart from COUNT_WORDS on purpose: 6.2's key-count check
 # flags *any* number word it finds in the paragraph, and that paragraph legitimately
 # says "three answers to one question" about the image keys.
@@ -572,6 +575,74 @@ def test_the_registry_layer_check_would_catch_the_six_key_claim():
     assert "the registry-layer key list omits `base_image`" in problems
     assert "the registry-layer key list omits `dockerfile`" in problems
     assert any("spelled count 'six'" in p for p in problems), problems
+
+
+# ---- 3.3: the host-layout tree names the same keys, and only those --------
+
+def _tree_config_keys_from(section: str) -> set[str]:
+    """The key names 3.3's tree comment attributes to `config.yaml`.
+
+    The comment is a claim about the same set `_CONFIG_KEYS` holds, so it is
+    read rather than eyeballed: everything between the entry's first `:` and
+    the ` plus ` that introduces the nested `pricing:` map (which `config set`
+    cannot write, so it is deliberately not a `_CONFIG_KEYS` member) is a
+    comma-separated list of bare key names.
+    """
+    lines = section.splitlines()
+    start = next(i for i, ln in enumerate(lines) if "config.yaml" in ln)
+    block = [lines[start].split("#", 1)[1]]
+    for ln in lines[start + 1:]:
+        body = ln.split("#", 1)
+        if len(body) != 2 or body[0].strip() not in ("\u2502", "|"):
+            break
+        block.append(body[1])
+    text = " ".join(part.strip() for part in block)
+    listed = text.split(" plus ", 1)[0].split(":", 1)[1]
+    names = [n.strip() for n in listed.split(",") if n.strip()]
+    bad = [n for n in names if not re.fullmatch(r"[a-z_]+", n)]
+    assert not bad, (
+        "SPEC.md 3.3's config.yaml comment is no longer a plain "
+        f"comma-separated key list (unparsable items: {bad})")
+    return set(names)
+
+
+def _tree_config_keys() -> set[str]:
+    return _tree_config_keys_from(_spec_section("### 3.3"))
+
+
+def test_the_host_layout_tree_names_config_sets_own_keys():
+    assert _tree_config_keys() == _registry_keys(), (
+        "SPEC.md 3.3's `config.yaml` comment is not `_CONFIG_KEYS`")
+
+
+def test_the_host_layout_tree_check_would_catch_the_drifted_comment():
+    """Three mutations, because the claim can fail in three directions.
+
+    The pre-#52 comment is the real one: it named five of the keys and had
+    already drifted, since `config set` had accepted `price_strategy`,
+    `base_image` and `dockerfile` since v0.6 and the tree never said so.
+    """
+    keys = _registry_keys()
+    old = ("### 3.3\n\n```\n"
+           "\u251c\u2500\u2500 config.yaml   # registry-wide defaults: image, network, "
+           "on_complete,\n"
+           "\u2502                 #   default_llm_profile, auto_resume\n"
+           "```\n")
+    documented = _tree_config_keys_from(old)
+    assert documented != keys
+    assert {"price_strategy", "base_image", "dockerfile", "model",
+            "model_strategy"} - documented
+    # a key dropped from today's comment fails...
+    section = _spec_section("### 3.3")
+    dropped = section.replace("price_strategy, model,", "model,", 1)
+    assert dropped != section
+    assert _tree_config_keys_from(dropped) != keys
+    # ...and so does an invented one, so the comment cannot be "made true" by
+    # listing a key `config set` would refuse.
+    invented = section.replace("model_strategy, thinking",
+                              "model_strategy, thinking, api_token", 1)
+    assert invented != section
+    assert _tree_config_keys_from(invented) != keys
 
 
 def test_the_template_scalar_list_is_the_clis_own_field_set():
