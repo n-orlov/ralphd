@@ -5,6 +5,42 @@
 const REFRESH_MS = 4000;
 let refreshTimer = null;
 
+// Task 016 (#27): `router()` is synchronous and does not await the async
+// view renderer it kicks off (`renderRunList`/`renderRunDetail`), so a
+// second navigation landing inside the first render's `await load()` used
+// to (a) clear a `refreshTimer` that had not been *set* yet -- the first
+// render only assigns it after its initial `load()` resolves -- orphaning
+// that timer once it finally got installed, and (b) let the first render's
+// now-superseded HTTP response still be applied to the DOM after the
+// second render had already taken over. `renderGeneration` fixes both:
+// every `router()` call mints a new generation and every render closure
+// captures the generation it was born with, checking it before touching
+// the DOM *and* before installing a timer. Only the current generation is
+// ever allowed to do either, so exactly one navigation's refresh loop is
+// ever live and a stale response is discarded rather than rendered.
+let renderGeneration = 0;
+
+// Test-only instrumentation (never read by the app itself): the number of
+// `setInterval` handles currently outstanding for the auto-refresh loop.
+// Wired through `startRefreshLoop`/`stopRefreshLoop` below rather than
+// bumped next to the generation guard, so a test can prove the guard
+// itself is what keeps this at 1 -- reverting the guard while leaving this
+// counter in place makes the counter observably wrong, which is the point.
+let liveRefreshLoops = 0;
+window.__hubRefreshLoopCount = () => liveRefreshLoops;
+
+function startRefreshLoop(fn) {
+  liveRefreshLoops += 1;
+  return setInterval(fn, REFRESH_MS);
+}
+
+function stopRefreshLoop(id) {
+  if (id) {
+    clearInterval(id);
+    liveRefreshLoops -= 1;
+  }
+}
+
 function h(tag, attrs, children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -880,12 +916,20 @@ async function loadSteering(runId) {
 function router() {
   const hash = location.hash || "#/";
   const m = hash.match(/^#\/run\/([^/]+)$/);
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  // Mint a fresh generation for this navigation FIRST, synchronously, so
+  // that even a render already in flight (awaiting its own initial fetch)
+  // can tell -- via its captured `myGen` -- that it has been superseded the
+  // moment this function returns, well before its `await` resolves.
+  renderGeneration += 1;
+  const myGen = renderGeneration;
+  stopRefreshLoop(refreshTimer);
+  refreshTimer = null;
   if (m) {
-    renderRunDetail(decodeURIComponent(m[1]));
+    renderRunDetail(decodeURIComponent(m[1]), myGen);
   } else {
-    renderRunList();
+    renderRunList(myGen);
   }
+  return myGen;
 }
 
 window.addEventListener("hashchange", router);
@@ -898,15 +942,27 @@ window.addEventListener("DOMContentLoaded", () => {
 
 // ---------------------------------------------------------- run list view
 
-async function renderRunList() {
+async function renderRunList(myGen) {
   const app = document.getElementById("app");
   app.innerHTML = "";
   app.appendChild(h("h2", {}, ["Runs"]));
   const tableWrap = h("div", { id: "run-list-wrap" }, [h("p", { class: "muted" }, ["loading…"])]);
   app.appendChild(tableWrap);
 
+  // Task 016 (#27): a second tag, independent of `renderGeneration` --
+  // covers a slow poll tick's response arriving after a *later* tick of
+  // the SAME render (sort-click-triggered reloads included), which the
+  // navigation-level generation alone would not catch.
+  let loadSeq = 0;
+
   async function load() {
+    // Task 016 (#27): a render superseded by a later navigation (`router()`
+    // bumped `renderGeneration` already) must neither apply a response nor
+    // -- second check -- one already in flight when it lost the race.
+    if (myGen !== renderGeneration) return;
+    const seq = ++loadSeq;
     const { ok, body } = await getJSON("/api/runs");
+    if (myGen !== renderGeneration || seq !== loadSeq) return;
     tableWrap.innerHTML = "";
     if (!ok) {
       tableWrap.appendChild(h("p", { class: "muted" }, ["failed to load run list"]));
@@ -959,12 +1015,17 @@ async function renderRunList() {
   }
 
   await load();
-  refreshTimer = setInterval(load, REFRESH_MS);
+  // Task 016 (#27): only install the loop if this render is still the one
+  // `router()` most recently asked for -- otherwise a render that lost the
+  // race installs a timer nothing will ever clear (the `stopRefreshLoop`
+  // call already happened, in the *next* `router()` call, before this one
+  // got here).
+  if (myGen === renderGeneration) refreshTimer = startRefreshLoop(load);
 }
 
 // -------------------------------------------------------- run detail view
 
-async function renderRunDetail(runId) {
+async function renderRunDetail(runId, myGen) {
   const app = document.getElementById("app");
   app.innerHTML = "";
   app.appendChild(h("p", {}, [h("a", { href: "#/" }, ["← runs"])]));
@@ -1057,8 +1118,21 @@ async function renderRunDetail(runId) {
     }
   });
 
+  // Task 016 (#27): see the matching comment in `renderRunList` -- a second
+  // tag, independent of `renderGeneration`, catching a slow poll tick's
+  // response arriving after a later tick of this same view.
+  let loadSeq = 0;
+
   async function load() {
+    // Task 016 (#27): same discard-if-superseded rule as `renderRunList`'s
+    // `load()` -- see the comment there. The detail view's `load()` also
+    // touches many more sub-panels (logs, steering, documents, artifacts),
+    // all of which are skipped for a superseded render by never running at
+    // all rather than trying to guard each one individually.
+    if (myGen !== renderGeneration) return;
+    const seq = ++loadSeq;
     const { ok, status, body } = await getJSON(`/api/runs/${encodeURIComponent(runId)}`);
+    if (myGen !== renderGeneration || seq !== loadSeq) return;
     if (!ok) {
       summary.innerHTML = "";
       summary.appendChild(h("p", { class: "muted" }, [
@@ -1079,7 +1153,7 @@ async function renderRunDetail(runId) {
   }
 
   await load();
-  refreshTimer = setInterval(load, REFRESH_MS);
+  if (myGen === renderGeneration) refreshTimer = startRefreshLoop(load);
 }
 
 // Task 031 (#19): the run-detail page's delete control -- the same affordance
