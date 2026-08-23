@@ -1844,14 +1844,38 @@ def _write_job_yaml(path: Path, job: dict) -> None:
         "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))
 
 
-def _apply_iterations_topup(job: dict, spec: str) -> None:
-    """`--iterations +N` bumps the existing budget by N; a bare integer sets
-    it absolutely (documented as `+N` but an absolute value is harmless and
-    occasionally convenient)."""
+def _effective_budget_base(job: dict, rdir: Path) -> int:
+    """Task 011 (#51): the base that `resume --iterations +N` tops up.
+
+    This has to be the same number the engine's own `_seed_iteration_budget`
+    (task 010, `engine/main.py`) would pick at the *next* startup --
+    `max(status.json's recorded iterationsBudget, job.yaml's iterations)` --
+    never job.yaml's alone. Before this, a live top-up (`ralphctl budget
+    <run-id> +N`) that already raised status.json above job.yaml's value was
+    silently discarded by a `+N` resume: `+N` was added to the *smaller*
+    job.yaml figure, so an operator watching `status`/`GET /config` for
+    `iterationsBudget` saw a number go backwards. job.yaml is still allowed to
+    win when an operator raised *it* directly between episodes (the ordinary
+    case, and #51's second acceptance direction) -- this is `max()`, not
+    "status.json always wins".
+    """
+    job_budget = int(job.get("iterations", 25))
+    status = _read_json(rdir / "status.json", {}) or {}
+    status_budget = status.get("iterationsBudget")
+    if isinstance(status_budget, int) and status_budget > job_budget:
+        return status_budget
+    return job_budget
+
+
+def _apply_iterations_topup(job: dict, spec: str, base: int) -> None:
+    """`--iterations +N` bumps `base` (the *effective* budget -- see
+    `_effective_budget_base`, task 011) by N; a bare integer sets the
+    resulting job.yaml value absolutely (documented as `+N` but an absolute
+    value is harmless and occasionally convenient)."""
     spec = spec.strip()
     try:
         if spec.startswith("+"):
-            job["iterations"] = int(job.get("iterations", 25)) + int(spec[1:])
+            job["iterations"] = base + int(spec[1:])
         else:
             job["iterations"] = int(spec)
     except ValueError:
@@ -2037,7 +2061,8 @@ def cmd_resume(args):
     job_path = cdir / "job.yaml"
     job = _read_job_yaml(job_path)
     if args.iterations:
-        _apply_iterations_topup(job, args.iterations)
+        _apply_iterations_topup(job, args.iterations,
+                                 _effective_budget_base(job, rdir))
         _write_job_yaml(job_path, job)
     prev_meta = host_meta(run_id)
     # `--image` on resume pins as always; with no flag, reproduce the image this
@@ -5635,8 +5660,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("run_id")
     s.add_argument("iterations", metavar="+N|N",
                    help="budget top-up (+10) or absolute new budget (40); "
-                        "live-engine change only -- use "
-                        "`resume --iterations +N` for a fresh container")
+                        "persists across a resume -- "
+                        "`resume --iterations +N` only to add more")
     s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")

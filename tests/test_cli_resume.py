@@ -113,6 +113,23 @@ def test_resume_iterations_topup_bumps_job_yaml(ctl):
     assert json.loads(lines["iterations"]) == 15
 
 
+def test_resume_iterations_topup_adds_to_status_json_not_job_yaml_when_higher(ctl):
+    """Task 011 (#51): a live `ralphctl budget` top-up already raised
+    status.json's `iterationsBudget` above job.yaml's `iterations` (e.g. a
+    previous container's `PATCH /config/budget`). `resume --iterations +N`
+    must add N to *that* effective figure -- the same one the engine's own
+    startup seeding (task 010) would pick -- never to the smaller job.yaml
+    number, or the operator's earlier top-up is silently lost."""
+    rdir, cdir = _seed_run(ctl, "tst-topup-status", iterations=5)
+    (rdir / "status.json").write_text(
+        json.dumps({"state": "failed", "iterationsBudget": 40}))
+    res = ctl.run("resume", "tst-topup-status", "--iterations", "+10")
+    assert res.returncode == 0, res.stderr
+    job_text = (cdir / "job.yaml").read_text()
+    lines = dict(line.split(": ", 1) for line in job_text.splitlines() if line)
+    assert json.loads(lines["iterations"]) == 50
+
+
 def test_resume_iterations_absolute_value(ctl):
     _rdir, cdir = _seed_run(ctl, "tst-abs", iterations=5)
     res = ctl.run("resume", "tst-abs", "--iterations", "30")

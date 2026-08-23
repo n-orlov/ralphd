@@ -1590,8 +1590,12 @@ value, so `ralphctl` *imports* `engine/config.DEFAULT_MODEL_STRATEGY` —
 container, `job.yaml` loses to the `RALPHD_*` overrides above and to nothing else.
 Two edits happen after the fact: `ralphctl resume --iterations +N` rewrites
 `job.yaml` on the host before the new container starts, while `ralphctl budget
-<run-id> +N` changes only the **live** engine's counter — `/config/job.yaml` is a
-read-only mount, so making an increase outlive the container needs the resume form.
+<run-id> +N` changes only the **live** engine's counter and status.json —
+`/config/job.yaml` is a read-only mount, so the engine cannot rewrite it there.
+That live change still persists across a resume, because a fresh container's
+own startup seeds its budget from `max(status.json's iterationsBudget,
+job.yaml's iterations)` (§9.2, task 010, #51); `resume --iterations +N` is only
+needed to add *more* on top of that effective number, not merely to keep it.
 
 `GET /config` reports the effective view — budgets, flags, model block, resolved
 pricing table — and deliberately excludes `api_token` and `extra`.
@@ -2776,10 +2780,14 @@ ever served**, by any route, at any verbosity.
 iteration boundary, since the loop reads the budget every turn, and is
 immediately visible as `iterationsBudget` in `/status` and
 `budgets.iterations` in `/config`. It emits `budget_changed` with the previous
-value, the delta and the usage at the time. It is a live-engine change only:
-`/config/job.yaml` is a read-only mount, so the engine cannot persist it
-there, and carrying a larger budget into a fresh container is a `resume`
-concern. Two rejections are specified: `422` when `iterations` is missing or
+value, the delta and the usage at the time. It is a live-engine change to
+`/config/job.yaml` (read-only, so the engine cannot rewrite it there) that
+persists across a resume anyway: a fresh container's own startup seeds
+`cfg.iterations` from `max(status.json's iterationsBudget, job.yaml's
+iterations)` (task 010, #51), so a plain `resume` with no flags already
+carries a live top-up forward; `resume --iterations +N` (task 011) adds to
+that same effective number rather than to job.yaml's alone, only needed to
+add *more*. Two rejections are specified: `422` when `iterations` is missing or
 unparseable, and `409` when the requested value is below
 `iterations_used_charged`, because a budget may be set to current usage or
 above but never retroactively below what has already been spent.
@@ -3315,11 +3323,14 @@ job is nearly there and nearly out of iterations". `+10` is relative, a bare
 `40` absolute; a bare `-5` is an *absolute* -5 and is rejected rather than read
 as a decrement, so lowering a budget means passing the value you want. The new
 value takes effect at the next boundary and every accepted change emits a
-`budget_changed` audit event. It is a live-engine change only, because
-`/config/job.yaml` is a read-only mount the engine never rewrites — use
-`resume <id> --iterations +N` when the new budget has to survive a fresh
-container. Exit `5` when the engine refuses (the result would fall below
-`iterationsUsed`, or the job is finished), `2` for a malformed spec.
+`budget_changed` audit event. It is a live-engine change to `/config/job.yaml`
+(read-only, the engine never rewrites it) that still persists across a
+resume — a fresh container's own startup seeds its budget from the larger of
+status.json's and job.yaml's figures (task 010, #51) — so `resume <id>
+--iterations +N` (task 011) is only needed to add *more* on top, adding to
+that same effective number rather than to job.yaml's alone. Exit `5` when the
+engine refuses (the result would fall below `iterationsUsed`, or the job is
+finished), `2` for a malformed spec.
 
 `abort` terminates the job, honouring the run's on-complete mode. `stop` shuts
 down an idle *finished* container — `/shutdown`, then `docker rm -f`, then

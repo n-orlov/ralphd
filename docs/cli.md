@@ -1465,9 +1465,14 @@ value is live at the next iteration boundary and immediately visible in
 `status` (`iterationsBudget`) and `GET /config`; every accepted change emits a
 `budget_changed` audit event.
 
-This is a **live-engine** change only: `/config/job.yaml` is a read-only mount,
-so the engine never rewrites it. Use `resume <run-id> --iterations +N` when the
-new budget has to survive a fresh container.
+This is a **live-engine** change to `/config/job.yaml` (read-only, so the
+engine never rewrites it) but it now persists across a resume: a fresh
+container's own startup seeds its budget from `max(status.json's
+iterationsBudget, job.yaml's iterations)` (task 010, #51), so a plain
+`resume <run-id>` with no flags already carries this top-up forward.
+`resume <run-id> --iterations +N` is only needed to add *more* on top, and
+it adds to that same effective (seeded) number, never to job.yaml's alone
+(task 011).
 
 Exit `0` applied · `5` the engine refused (resulting budget below
 `iterationsUsed`, or the job already finished — resume instead) · `1` the
@@ -1973,9 +1978,12 @@ continues the job instead of re-planning; `resume` just has to reproduce
   flags. `resume` has no override flags of its own for these yet; only the
   recorded values are replayed.
 
-`--iterations +10` adds 10 to the existing budget in `job.yaml` before the
-container starts (a bare integer, e.g. `--iterations 30`, sets it
-absolutely instead); omit it to just continue with whatever budget remains.
+`--iterations +10` adds 10 to the *effective* budget -- `max(status.json's
+iterationsBudget, job.yaml's iterations)`, the same number the engine's own
+startup seeding (task 010, #51) would pick -- before the container starts (a
+bare integer, e.g. `--iterations 30`, sets it absolutely instead); omit it to
+just continue with whatever budget remains (a plain resume already carries a
+live `ralphctl budget` top-up forward without this flag).
 `--allow-docker`, `--image`, `--port`, `--api-bind`, `--network` (defaults
 to the network recorded at start time), `--no-detach` mirror
 `start`'s flags of the same name. `--image` on `resume` pins as always; with no

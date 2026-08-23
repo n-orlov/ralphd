@@ -385,11 +385,15 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         and immediately visible in `GET /status` (`iterationsBudget`) and
         `GET /config` (`budgets.iterations`).
 
-        It is a *live-engine* change: `/config/job.yaml` is a read-only mount,
-        so the engine cannot persist it there -- the new budget lives in this
-        engine process (and in status.json's iterationsBudget); a later
-        `ralphctl resume <run-id> --iterations +N` is what carries a bigger
-        budget into a fresh container.
+        It is a *live-engine* change to `/config/job.yaml` (read-only, so the
+        engine cannot rewrite it there) but it persists across a resume: the
+        new value lives in this engine process AND in status.json's
+        `iterationsBudget`, and a fresh container's own startup seeds
+        `cfg.iterations` from max(status.json's iterationsBudget, job.yaml's
+        iterations) (task 010, #51) -- so a later `resume <run-id>` with no
+        flags already carries this top-up forward. `resume --iterations +N`
+        is only needed to add *more* on top, and it now adds to that same
+        effective (seeded) number rather than to job.yaml's alone (task 011).
         """
         if finished():
             raise problem(409, "job finished",
