@@ -2101,6 +2101,14 @@ ARTIFACT_IMAGE_MIME_TYPES: tuple[str, ...] = (
     "image/png", "image/jpeg", "image/gif", "image/webp",
 )
 
+# The raw byte route (task 023, #54) never streams an artifact past this many
+# bytes -- an operator's browser has no business rendering, say, a 200MB
+# screenshot inline, and a job could otherwise make the hub's own response
+# huge just by writing a big enough PNG. Above the cap the route answers with
+# `ARTIFACT_BINARY` (today's `pull` wording) instead of the bytes, exactly as
+# it already does for a non-image kind.
+ARTIFACT_INLINE_MAX_BYTES = 5 * 1024 * 1024
+
 
 def _sniff_image_mime(data: bytes) -> str | None:
     """The `Content-Type` for `data` if its LEADING BYTES carry one of the
@@ -2301,6 +2309,47 @@ def artifact(run_root: Path, name, *, bodies: bool = True) -> dict | None:
     if rel is None:
         return None
     return artifact_entry(run_root, rel, bodies=bodies)
+
+
+def artifact_raw(run_root: Path, name) -> dict | None:
+    """The raw-bytes answer for the hub's byte route (task 023, #54).
+
+    Resolves `name` through `artifact_relpath` -- the ONE resolver, the same
+    traversal/absolute-path guard every other artifact lookup uses -- and
+    answers None for anything that name cannot address at all (caller ->
+    404). This is deliberate: a second, ad-hoc path check anywhere on this
+    route would be a second resolver, and the one guarding traversal is
+    `artifact_relpath`'s docstring's whole point.
+
+    For a name that DOES resolve, this never guesses a `Content-Type` from
+    the URL or the extension -- only a file whose SNIFFED kind is
+    `ARTIFACT_KIND_IMAGE` (the same sniff `artifact_entry` already runs) and
+    whose size is at or under `ARTIFACT_INLINE_MAX_BYTES` is ever answered
+    with its real bytes and a `Content-Type` drawn from
+    `ARTIFACT_IMAGE_MIME_TYPES`. Everything else -- text, opaque binary, a
+    file that was never written, or an image over the cap -- answers with
+    `contentType=None` and today's `pull` wording (`ARTIFACT_BINARY`) as
+    `body`, so a browser is never handed a stream of bytes it cannot make
+    sense of; it gets the exact sentence a terminal already prints instead.
+
+    Returns a dict with:
+      `contentType`  one of `ARTIFACT_IMAGE_MIME_TYPES`, or None,
+      `body`         the raw image bytes (contentType set), else the UTF-8
+                     encoded `pull` wording.
+    """
+    rel = artifact_relpath(name)
+    if rel is None:
+        return None
+    entry = artifact_entry(run_root, rel, bodies=False)
+    if (not entry["exists"] or entry["kind"] != ARTIFACT_KIND_IMAGE
+            or entry["bytes"] > ARTIFACT_INLINE_MAX_BYTES):
+        return {"contentType": None, "body": ARTIFACT_BINARY.encode()}
+    path = Path(run_root) / ARTIFACTS_DIR_NAME / rel
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return {"contentType": None, "body": ARTIFACT_BINARY.encode()}
+    return {"contentType": entry["imageMime"], "body": data}
 
 
 def format_artifact_size(entry: dict) -> str:

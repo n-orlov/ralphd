@@ -2703,6 +2703,24 @@ JSON endpoints served under `/api/`:
   …)` wording rather than bytes, and one that is no longer there with `(not
   written)` rather than a `404`. `404` for an unknown run id or a name that
   cannot address an artifact at all.
+- `GET /api/runs/<id>/artifacts-raw/<path>` — the raw byte route (task 023,
+  issue #54) an `<img src>` can point at directly, since a dialog cannot embed
+  an image from a JSON endpoint. Same name shape as `artifacts` above (one
+  percent-encoded segment, or several real ones) and the SAME single
+  resolver, `state.artifact_relpath` — no second, looser path check lives on
+  this route (`state.artifact_raw` does the resolving; a test asserts it is
+  the only one). The `Content-Type` is **never guessed from the URL or
+  filename** (no `mimetypes.guess_type`): only a file whose sniffed magic
+  bytes are a previewable image (`state.ARTIFACT_KIND_IMAGE`, task 022) *and*
+  whose size is at or under `state.ARTIFACT_INLINE_MAX_BYTES` is ever answered
+  with its real bytes and a `Content-Type` drawn from `state.
+  ARTIFACT_IMAGE_MIME_TYPES` (`image/png`/`image/jpeg`/`image/gif`/
+  `image/webp`); every answer carries `X-Content-Type-Options: nosniff`.
+  Anything else — text, opaque binary, a name that was never written, or an
+  image over the size cap — answers `200` with today's `pull` wording
+  (`state.ARTIFACT_BINARY`) as plain text instead of a stream of bytes a
+  browser cannot make sense of; only a name `state.artifact_relpath` refuses
+  outright (traversal, an absolute path) or an unknown run id gets a `404`.
 - `GET /api/runs/<id>/approaches` and `GET /api/runs/<id>/approaches/<n>` —
   the run's **archived approach history** for the hub's approach-history panel
   and dialogs (task 020, issue #24): the same reader `ralphctl tasks <run>

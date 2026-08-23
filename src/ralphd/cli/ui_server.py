@@ -68,6 +68,7 @@ from ..engine.state import (
     archived_approaches_list,
     artifact,
     artifact_entries,
+    artifact_raw,
     artifact_summary_lines,
     artifact_text,
     cost_breakdown,
@@ -1157,10 +1158,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _send_bytes(self, data: bytes, code=200, content_type="application/octet-stream"):
+    def _send_bytes(self, data: bytes, code=200, content_type="application/octet-stream",
+                    *, nosniff: bool = False):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        if nosniff:
+            # Task 023 (#54): the raw artifact byte route's own header --
+            # never sent by the static bundle or JSON routes, which have no
+            # agent-authored bytes to worry a browser's own sniffer with.
+            self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1235,6 +1242,43 @@ class Handler(BaseHTTPRequestHandler):
                         {"error": f"unknown document {segs[4]!r}"}, 404)
                     return
                 self._send_json(view)
+                return
+            if (len(segs) >= 5 and segs[:2] == ["api", "runs"]
+                    and segs[3] == "artifacts-raw"):
+                # Task 023 (#54): the raw byte route for a previewable image's
+                # dialog (task 025) -- `<img src>` cannot point at a JSON
+                # endpoint. Same name shape as `artifacts` above (one
+                # percent-encoded segment or several real ones), resolved
+                # through the SAME single resolver, `state.artifact_relpath`
+                # (via `artifact_raw`) -- an origin that also exposes `DELETE
+                # /api/runs/<id>` does not get a second, looser path check.
+                #
+                # Never `mimetypes.guess_type` on the URL/filename: the
+                # `Content-Type` is only ever one of `state.
+                # ARTIFACT_IMAGE_MIME_TYPES`, decided from the file's own
+                # sniffed magic bytes (`artifact_raw`), with
+                # `X-Content-Type-Options: nosniff` on every answer. Anything
+                # that is not a previewable image under the inline size cap --
+                # text, opaque binary, absent, or an image over the cap --
+                # answers 200 with today's `pull` wording as plain text
+                # instead of bytes a browser cannot make sense of; only a name
+                # `state.artifact_relpath` refuses outright (traversal, an
+                # absolute path, an unknown run) answers 404.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_bytes(b"not found\n", 404, "text/plain",
+                                     nosniff=True)
+                    return
+                name = "/".join(unquote(s) for s in segs[4:])
+                raw = artifact_raw(reg / "runs" / run_id, name)
+                if raw is None:
+                    self._send_bytes(b"not found\n", 404, "text/plain",
+                                     nosniff=True)
+                    return
+                self._send_bytes(
+                    raw["body"], 200,
+                    raw["contentType"] or "text/plain; charset=utf-8",
+                    nosniff=True)
                 return
             if (len(segs) >= 4 and segs[:2] == ["api", "runs"]
                     and segs[3] == "artifacts"):
