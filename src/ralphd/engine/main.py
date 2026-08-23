@@ -82,6 +82,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _seed_iteration_budget(cfg: JobConfig, run: RunDir) -> None:
+    """Task 010 (#51): the effective iteration budget at startup is
+    max(status.json's recorded `iterationsBudget`, job.yaml's `iterations`),
+    never job.yaml's alone.
+
+    Without this, an operator top-up (`PATCH /config/budget` /
+    `ralphctl budget`) is silently undone the moment the container restarts:
+    the engine re-reads the read-only-mounted job.yaml from scratch and
+    forgets the live change status.json already recorded. A status.json
+    figure below job.yaml's (the ordinary case: no top-up ever happened, or
+    an operator raised job.yaml itself for a resume) must NOT win -- job.yaml
+    is allowed to raise the floor, just never to lower a ceiling the run
+    already earned.
+
+    Called once, before the loop starts, so `cfg.iterations` (and thus
+    `budget_left()`, `GET /config`, `GET /status`) sees the winner from the
+    very first iteration -- and exactly once, so the log/event pair below
+    cannot fire twice for one process.
+    """
+    status_budget = run.read_status().get("iterationsBudget")
+    job_budget = cfg.iterations
+    if isinstance(status_budget, int) and status_budget > job_budget:
+        cfg.iterations = status_budget
+        source = "status.json"
+    else:
+        source = "job.yaml"
+    log.info("iteration budget seeded from %s: status.json=%s job.yaml=%s "
+             "-> effective=%s", source, status_budget, job_budget, cfg.iterations)
+    run.emit("budget_seeded", statusJsonIterations=status_budget,
+             jobYamlIterations=job_budget, effectiveIterations=cfg.iterations,
+             source=source)
+
+
 async def _run_on_complete_cmd(cfg: JobConfig, run: RunDir, final_state: str) -> None:
     """Run the operator-supplied `on_complete_cmd` shell hook exactly once,
     after the job has reached a terminal state (PRD req 26). Receives
@@ -137,6 +170,8 @@ async def amain() -> int:
         log.error("%s", exc)
         lock_fh.close()
         return EXIT_SCHEMA_TOO_NEW
+
+    _seed_iteration_budget(cfg, run)
 
     workspace = Path(os.environ.get("RALPHD_WORKSPACE_DIR", str(WORKSPACE_DIR)))
     workspace.mkdir(parents=True, exist_ok=True)
