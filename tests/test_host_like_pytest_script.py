@@ -54,12 +54,21 @@ def test_script_unsets_ralphd_vars_uses_a_fresh_home_and_shadows_tests_package(t
         "    assert real_conftest.RALPHCTL != 'not-the-real-ralphctl'\n"
     )
 
+    env = dict(os.environ)
+    # Drive the script with an explicit interpreter override (PYTHON=...)
+    # instead of relying on this container's own .venv living at the
+    # hard-coded path the script used to require -- a developer host's venv
+    # can live anywhere, and this is the only way to actually exercise the
+    # override branch rather than the .venv fallback (task 043).
+    import sys
+
+    env["PYTHON"] = sys.executable
     result = subprocess.run(
         ["bash", str(SCRIPT), str(probe)],
         cwd=str(REPO),
         capture_output=True,
         text=True,
-        env=dict(os.environ),
+        env=env,
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr

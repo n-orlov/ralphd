@@ -52,9 +52,25 @@ while IFS='=' read -r name _; do
 done < <(env)
 
 cd "$REPO_ROOT"
+
+# Interpreter selection: prefer an explicit override (PYTHON=..., set by a
+# caller or a test that wants to exercise a specific interpreter), else this
+# repo's own .venv if it exists (this job container's own layout), else fall
+# back to whatever `python3` is on PATH -- a developer host's venv may live
+# anywhere (~/.virtualenvs/..., uv's default, a system tox env, a plain
+# `pip install -e .` into an already-active env), so hard-coding the .venv
+# path exits 127 there (steering note 003, task 043).
+if [ -n "${PYTHON:-}" ] && [ -x "${PYTHON:-}" ]; then
+  PY="$PYTHON"
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  PY="$REPO_ROOT/.venv/bin/python"
+else
+  PY="$(command -v python3)"
+fi
+
 # GNU env requires -u/-i options ahead of NAME=VALUE assignments.
 exec env \
   "${unset_args[@]}" \
   HOME="$CLEAN_HOME" \
   PYTHONPATH="$DECOY_ROOT${PYTHONPATH:+:${PYTHONPATH}}" \
-  "$REPO_ROOT/.venv/bin/python" -m pytest -q "$@"
+  "$PY" -m pytest -q "$@"
