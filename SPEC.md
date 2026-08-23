@@ -618,9 +618,9 @@ configured strategy. `None` means "whatever `pi` defaults to".
 
 | strategy | planning | worker | review | verify | reflect |
 |---|---|---|---|---|---|
-| `quality-first` (default) | strong | strong | strong | strong | strong |
+| `quality-first` | strong | strong | strong | strong | strong |
 | `cost-optimized` | strong | fast | fast | fast | fast |
-| `balanced` | strong | fast | strong | fast | strong |
+| `balanced` (default) | strong | fast | strong | fast | strong |
 
 The strong tier is `model`, the fast tier is `fast_model` falling back to
 `model`. `reflect` mirrors `review` in every strategy — the same post-hoc
@@ -1501,7 +1501,7 @@ Every field:
 | `iteration_timeout_s` | int | `2700` (45m) | wall-clock limit for one iteration |
 | `model` | string \| null | `null` | strong-tier pi model ref (`provider/model-id`); `null` means pi's own default |
 | `fast_model` | string \| null | `null` | fast-tier ref; falls back to `model` when unset |
-| `model_strategy` | string | `quality-first` | which tier each phase gets (table below); an unrecognised value silently resolves as `quality-first` |
+| `model_strategy` | string | `balanced` | which tier each phase gets (table below). The shipped default is `engine/config.DEFAULT_MODEL_STRATEGY` (`balanced`) — stated once, and deliberately not the same decision as the fallback: an *unrecognised* value silently resolves as `quality-first`, the most capable preset, so a typo can never quietly downgrade a phase to the fast tier |
 | `model_overrides` | map phase→ref | `{}` | per-phase model, beating the strategy; keys are `planning`, `worker`, `review`, `verify`, `reflect`. `job.yaml`-only — no `start` flag sets it |
 | `thinking` | string \| null | `null` | pi `--thinking` level, e.g. `medium`, `high` |
 | `api_token` | string \| null | `null` | bearer token the API requires; `RALPHD_API_TOKEN` (how `start --api-token` delivers it) overrides |
@@ -1518,9 +1518,9 @@ Strategy tiers (`JobConfig.STRATEGY_TIERS`); `reflect` deliberately mirrors
 
 | strategy | planning | worker | review | verify | reflect |
 |---|---|---|---|---|---|
-| `quality-first` (default) | strong | strong | strong | strong | strong |
+| `quality-first` | strong | strong | strong | strong | strong |
 | `cost-optimized` | strong | fast | fast | fast | fast |
-| `balanced` | strong | fast | strong | fast | strong |
+| `balanced` (default) | strong | fast | strong | fast | strong |
 
 Seven fields also take an env override at engine load, so a run (or a test) can be
 retuned without editing `job.yaml`: `RALPHD_API_TOKEN`,
@@ -1546,7 +1546,10 @@ seconds), `RALPHD_INFRA_RETRY_BACKOFF_MAX_S`, `RALPHD_INFRA_RETRY_MAX`,
 
 The winner is written into `job.yaml`, and **only non-null keys are written** — an
 absent key means the engine's own `JobConfig` default applies, so every default
-lives in `engine/config.py` alone and is never duplicated host-side. Inside the
+lives in `engine/config.py` alone and is never duplicated host-side:
+`model_strategy` is the only one of the four model keys with a non-null rung-4
+value, so `ralphctl` *imports* `engine/config.DEFAULT_MODEL_STRATEGY` —
+`balanced` (#53) — instead of re-typing the name. Inside the
 container, `job.yaml` loses to the `RALPHD_*` overrides above and to nothing else.
 Two edits happen after the fact: `ralphctl resume --iterations +N` rewrites
 `job.yaml` on the host before the new container starts, while `ralphctl budget
@@ -2995,7 +2998,7 @@ returns immediately.
 | `--reflect` | off | one extra post-terminal `reflect` iteration into `artifacts/reflection/` |
 | `--model REF` | unset | `pi` model ref for the main phases |
 | `--fast-model REF` | unset | model for cheap/auxiliary work |
-| `--model-strategy S` | `quality-first` | one of `quality-first`, `cost-optimized`, `balanced` |
+| `--model-strategy S` | `balanced` | one of `quality-first`, `cost-optimized`, `balanced` |
 | `--thinking LEVEL` | unset | `pi` thinking level |
 | `--price-strategy S` | `none` | derive a cost for routes the provider does not price (or prices with an implausible zero): `aws` uses the built-in Bedrock rate table (§8.6) |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |

@@ -264,8 +264,13 @@ def test_with_nothing_set_anywhere_the_hardcoded_fallbacks_still_apply(ctl):
     job = _job_yaml(ctl, "cfg-models-hardcoded")
     assert "model" not in job and "fast_model" not in job
     assert "thinking" not in job
-    from ralphd.engine.config import MODEL_STRATEGIES
-    assert job["model_strategy"] in MODEL_STRATEGIES
+    # Task 044 (#53): the strategy IS shipped, so it must be in job.yaml -- and
+    # it must be the one constant, not merely "some known preset" (the earlier
+    # `in MODEL_STRATEGIES` form passed happily while engine and host
+    # disagreed). tests/test_default_model_strategy.py owns the rest.
+    from ralphd.engine.config import DEFAULT_MODEL_STRATEGY, MODEL_STRATEGIES
+    assert job["model_strategy"] == DEFAULT_MODEL_STRATEGY
+    assert DEFAULT_MODEL_STRATEGY in MODEL_STRATEGIES
 
 
 def test_set_model_strategy_validates_against_the_presets(ctl):

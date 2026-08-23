@@ -672,7 +672,7 @@ contents, no LLM env values):
               "infraStartupTimeoutS": 150.0, "infraRetryBackoffS": [2, 5, 15, 30, 60, 120, 300],
               "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0},
   "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false},
-  "model": {"strategy": "quality-first", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
+  "model": {"strategy": "balanced", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
   "priceTables": {"names": [], "answers": "neither", "tables": []},  // which table may price this run, in order

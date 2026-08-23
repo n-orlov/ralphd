@@ -36,7 +36,8 @@ from typing import Self
 import yaml
 
 from .. import __version__
-from ..engine.config import MODEL_STRATEGIES, PRICE_STRATEGIES
+from ..engine.config import (DEFAULT_MODEL_STRATEGY, MODEL_STRATEGIES,
+                             PRICE_STRATEGIES)
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -1289,7 +1290,10 @@ def image_staleness(ref: str | None, *, source_hash: str | None,
 _TEMPLATE_SCALAR_FIELDS = {
     "iterations": 25, "max_approaches": 3, "vigilant": False,
     "reflect": False, "on_complete": "exit", "on_complete_cmd": None, "timeout": 480,
-    "iteration_timeout": 45, "model_strategy": "quality-first", "llm": "host",
+    "iteration_timeout": 45, "llm": "host",
+    # default lives in engine/config.DEFAULT_MODEL_STRATEGY alone (task 044) --
+    # never a second literal here
+    "model_strategy": DEFAULT_MODEL_STRATEGY,
     "model": None, "fast_model": None, "thinking": None,
     # Task 010 (#14): None here means "nobody on the host decided" -- the
     # profile may then supply one, and if nothing does the key is omitted

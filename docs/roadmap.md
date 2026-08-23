@@ -386,10 +386,11 @@ Phase 4 — close the loop:
   bump landed together, late
 
 Arriving mid-wave, by operator steering rather than from the PRD — the first
-requirement this project has taken while the run producing it was still going,
-which is why it has no letter in `docs/prds/v0.7-trustworthy-unattended.md`
-(that file stays byte-identical to the run's own `prd.md`) and is recorded in the
-run's steering note instead:
+requirements this project has taken while the run producing them was still
+going, which is why they have no letter in
+`docs/prds/v0.7-trustworthy-unattended.md`
+(that file stays byte-identical to the run's own `prd.md`) and are recorded in the
+run's steering notes instead:
 
 - ✅ **S. Registry-wide defaults for the four keys that choose a job's models
   (#52).** `model`, `fast_model`, `model_strategy` and `thinking` joined the
@@ -403,6 +404,19 @@ run's steering note instead:
   deliberately untouched — `_TEMPLATE_SCALAR_FIELDS["model"] = None` means
   "pi's own default", and baking one host's Bedrock route into the source would
   break every host without it
+- ✅ **T. `balanced` is the shipped default model strategy (#53).** Every run
+  that never chose a strategy was getting `quality-first` — the strong model in
+  all five phases — so the default was the most expensive preset, chosen by
+  nobody. `balanced` now ships: strong for planning, review and reflect, fast
+  for worker and verify. The default lives in exactly one place
+  (`engine/config.DEFAULT_MODEL_STRATEGY`, imported host-side by
+  `ralphctl start`'s template table), and it is deliberately **not** the same
+  constant as `model_for`'s unknown-name fallback, which stays `quality-first`:
+  what ships may be the cheap compromise, but a misspelled strategy must
+  degrade to the most capable preset rather than quietly downgrade a phase.
+  Nothing changes for a run with no `fast_model` — the fast tier falls back to
+  `model` — and a host that wants the old behaviour states it once with
+  `ralphctl config set model_strategy quality-first` (bullet S)
 
 ## Later / explicitly deferred
 

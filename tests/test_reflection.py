@@ -86,7 +86,8 @@ def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_fac
     assert final_status["phase"] is None  # restored after the reflect iteration
 
     # -- the reflect iteration itself: own prompt, own phase, model per
-    # strategy (default quality-first -> the (only) configured model tier)
+    # strategy (the shipped default routes `reflect` to the strong tier, and
+    # only one model is configured here anyway)
     iters = sorted((e.run_dir / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
     assert metas[-1]["phase"] == "reflect"

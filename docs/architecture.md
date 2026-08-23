@@ -456,9 +456,9 @@ draws the strong model and which the fast one:
 
 | preset | planning | worker | review | verify | reflect |
 |--------|----------|--------|--------|--------|---------|
-| `quality-first` (default) | strong | strong | strong | strong | strong |
+| `quality-first` | strong | strong | strong | strong | strong |
 | `cost-optimized` | strong | fast | fast | fast | fast |
-| `balanced` | strong | fast | strong | fast | strong |
+| `balanced` (default) | strong | fast | strong | fast | strong |
 
 "Strong" and "fast" tiers are just two model IDs in job config — any model
 pi can reach is valid in either slot. The engine sets the model per-iteration via

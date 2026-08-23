@@ -116,6 +116,24 @@ def list_prompts() -> list[dict]:
     return [{"name": n, "source": prompt_source(n)} for n in PROMPT_NAMES]
 
 
+# Task 044 (#53): the strategy a job runs when nobody chose one, stated
+# EXACTLY ONCE. `balanced` ships instead of `quality-first` because it is the
+# only preset that spends the strong model where the reasoning is (planning,
+# review, reflect) and the fast one where the work is mechanical, so the
+# out-of-the-box run is affordable without being obviously worse; a host that
+# wants the old behaviour states `model_strategy: quality-first` once
+# (`ralphctl config set model_strategy quality-first`, task 043).
+#
+# Deliberately NOT the same constant as `model_for`'s unknown-name fallback
+# (which stays `quality-first`): "what ships" and "what an unrecognised name
+# degrades to" are two different decisions -- the fallback must be the
+# most-capable preset, because a typo must never quietly *downgrade* a phase's
+# model, while the shipped default may be the cheap compromise. Collapsing them
+# into one name would mean a later default flip silently retargeted the
+# fallback too.
+DEFAULT_MODEL_STRATEGY = "balanced"
+
+
 @dataclass
 class JobConfig:
     run_id: str = "unnamed-run"
@@ -130,7 +148,7 @@ class JobConfig:
     # model tiers: any pi "provider/model" ref; phase → tier via strategy
     model: str | None = None          # strong tier (pi default model when None)
     fast_model: str | None = None     # fast tier (falls back to model)
-    model_strategy: str = "quality-first"
+    model_strategy: str = DEFAULT_MODEL_STRATEGY
     model_overrides: dict = field(default_factory=dict)  # phase → model ref
     thinking: str | None = None       # pi --thinking level
     api_token: str | None = None
@@ -288,6 +306,10 @@ class JobConfig:
         """Resolve the pi model ref for a phase; None = pi's own default."""
         if override := self.model_overrides.get(phase):
             return override
+        # An unrecognised name resolves as `quality-first` -- the most capable
+        # preset, NOT DEFAULT_MODEL_STRATEGY (task 044/#53): a typo must never
+        # silently downgrade a phase to the fast tier, and the shipped default
+        # must be free to be the cheap compromise. Keep these two apart.
         tiers = self.STRATEGY_TIERS.get(self.model_strategy,
                                         self.STRATEGY_TIERS["quality-first"])
         tier = tiers.get(phase, "strong")
