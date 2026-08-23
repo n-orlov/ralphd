@@ -260,8 +260,19 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
     assert code == 409
 
     # events replay contains the full story. Task 032 (#13): the *first*
-    # `state` event is now the `running` transition every engine emits at
-    # startup, so the replay ends on a *terminal* state event, not on any.
+    # `state` event used to be the `running` transition every engine emits
+    # at startup. Task 010 (#51) then made `_seed_iteration_budget` emit a
+    # `budget_seeded` event before `loop.run_job()` ever starts (so the
+    # winning iteration budget is logged exactly once before any iteration
+    # can consume it) -- that event is now unconditionally the very first
+    # thing in the log, ahead of the startup `running` transition, for
+    # every fresh run. Task 040 (#51) updated this assertion to match
+    # rather than move the emit later, since moving it would either delay
+    # the seeding past code that already reads `cfg.iterations` (the
+    # `maxApproaches`/budget-carrying initial status write in
+    # engine/main.py's `amain`) or split "seeded" from "logged" across two
+    # places -- both worse than a startup event ordering that never
+    # changes. The replay still ends on a *terminal* state event, not any.
     req = urllib.request.Request(
         f"http://127.0.0.1:{e.port}/events?since=0")
     types = []
@@ -274,7 +285,8 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
                 if ev["type"] == "state" and ev["state"] in (
                         "succeeded", "failed", "aborted"):
                     break
-    assert types[0] == "state"  # the startup `running` transition
+    assert types[0] == "budget_seeded"  # task 010 (#51): seeded before the loop starts
+    assert types[1] == "state"  # the startup `running` transition, right after
     assert "iteration.start" in types and "signal" in types
     assert types.count("phase") >= 2  # planning + review
 
