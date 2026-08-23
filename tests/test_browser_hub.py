@@ -1671,13 +1671,34 @@ def test_timeline_row_opens_the_iteration_dialog(tmp_path, pw):
         assert int(pw.eval_js(_DIALOGS)) == 0
 
         # -- the other row opens its OWN iteration (keyboard-reachable) ----
-        pw.eval_js("document.querySelector('.timeline-item[data-iteration=\"1\"]')"
-                   ".focus() || 'focused'")
-        assert pw.eval_js(
-            "document.activeElement.getAttribute('data-iteration')").strip('"') == "1"
-        assert pw.run("press", "Enter").returncode == 0
-        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
-                         "iteration: 1")
+        # Task 008 (#57): the same race the job.yaml document dialog above
+        # retries through -- the 4s `load()` poll's `renderTimeline` rebuild
+        # can replace this row (clearing its focus) between the `.focus()`
+        # eval below and the separate `press Enter` invocation, two
+        # independent playwright-cli subprocess calls, not one atomic
+        # action, through no fault of the row. Proven with a scratch,
+        # much-faster poll copy of app.js in
+        # artifacts/reports/task-008-timeline-dialog-diagnosis.md: today's
+        # single-attempt version failed 10/10 there; this retry loop passed
+        # 10/10. Retry the whole focus+press cycle until the dialog opens.
+        focus_js = (
+            "(() => { const el = document.querySelector('.timeline-item"
+            "[data-iteration=\"1\"]'); if (!el) return 'missing';"
+            " el.focus(); return document.activeElement === el ? 'focused' : 'lost'; })()")
+        deadline = time.time() + 40
+        body = ""
+        while time.time() < deadline and "iteration: 1" not in body:
+            if pw.eval_js(focus_js).strip('"') != "focused":
+                continue
+            assert pw.run("press", "Enter").returncode == 0
+            for _ in range(10):
+                body = pw.eval_js(
+                    "document.querySelector('.text-dialog')"
+                    " ? document.querySelector('.text-dialog').textContent : ''")
+                if "iteration: 1" in body:
+                    break
+                time.sleep(0.2)
+        assert "iteration: 1" in body, body
         assert "phase planning" in body, body
         assert EXIT_REASON_CLEAN in body, body
         assert "planning transcript line" in body, body
