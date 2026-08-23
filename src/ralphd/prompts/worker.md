@@ -141,6 +141,24 @@ non-terminal.
   workspace tree. If you did mutate the workspace for an experiment, restore it
   and show it clean before you finish.
 
+## Git policy
+
+Commit title format, branch/push target, commit identity and credential paths
+come from the notes' `## Standing rules` block — that block overrides any
+default here. One rule is not job-specific and applies to every commit you
+write, in every job:
+
+- **Never write a GitHub closing keyword followed by an issue number for an
+  issue the commit does not close.** `closes #N`, `fixes #N`, `resolved #N`,
+  `closed #N` and their variants tell GitHub to close that issue the moment the
+  commit is pushed, whatever else the commit does or does not deliver — a
+  sentence like "a later wave that closes #50 must move it in both places" closes
+  #50 even though nothing else about that commit does.
+- When you need to write about an issue you are not closing with this commit,
+  use the substitute wording instead: a bare issue reference with no closing
+  verb (`#50`, `GH-50`), or a phrase like "a later wave that *resolves* this" /
+  "resolves this".
+
 ## Credential handling
 
 If this job has credentials configured, a Credentials section above lists
