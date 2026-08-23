@@ -1057,6 +1057,16 @@ async function renderRunDetail(runId, myGen) {
   ]);
   const usageSec = h("section", {}, [h("h2", {}, ["Usage / cost"]), h("div", { id: "usage-box" })]);
   const taskSec = h("section", {}, [h("h2", {}, ["Tasks"]), h("div", { id: "task-box" })]);
+  // Task 021 (#24): every PREVIOUS approach `_archive_approach` froze into
+  // `approaches/NN/`, most recent last, collapsed until clicked -- the
+  // CURRENT approach's own task table/notes/findings are already visible in
+  // the sections above, so this panel would only duplicate them; hidden
+  // entirely (not even an empty placeholder) for a run still on its first
+  // approach, per SPEC.md's "Approach history panel" bullet.
+  const approachSec = h("section", { id: "approach-history-sec", style: "display:none" }, [
+    h("h2", {}, ["Approach history"]),
+    h("div", { id: "approach-box" }, []),
+  ]);
   const timelineSec = h("section", {}, [h("h2", {}, ["Iteration timeline"]), h("div", { id: "timeline-box" })]);
   const logSec = h("section", {}, [
     h("h2", {}, ["Live log tail"]),
@@ -1082,6 +1092,7 @@ async function renderRunDetail(runId, myGen) {
   app.appendChild(artifactSec);
   app.appendChild(usageSec);
   app.appendChild(taskSec);
+  app.appendChild(approachSec);
   app.appendChild(timelineSec);
   app.appendChild(logSec);
   app.appendChild(steerSec);
@@ -1150,6 +1161,7 @@ async function renderRunDetail(runId, myGen) {
     await loadSteering(runId);
     await loadDocuments(runId);
     await loadArtifacts(runId);
+    await loadApproaches(runId);
   }
 
   await load();
@@ -1477,6 +1489,148 @@ function statCard(label, value, wrap) {
     h("div", { class: "k" }, [label]),
     h("div", { class: "v" }, [inner || text]),
   ]);
+}
+
+// --------------------------------------------------- approach history (#24)
+
+// Task 021 (#24): every PREVIOUS approach `_archive_approach` (`engine/loop.py`)
+// froze into `approaches/NN/` before the loop restarted the plan, listed
+// oldest first / most recent last (SPEC.md's "Approach history panel"
+// bullet), each row collapsed until clicked. The CURRENT approach is not a
+// row here at all -- its task table is already the "Tasks" section above and
+// its notes.md/review-findings.md are already the "State documents" panel, so
+// duplicating them here would only disagree with those sections the moment
+// either one polled at a different tick. A run still on its first approach
+// (nothing archived yet) hides the WHOLE section rather than showing an empty
+// panel -- `approachSec.style.display` toggles, never a placeholder sentence.
+//
+// Expanding a row fetches `GET /api/runs/<id>/approaches/<n>` exactly once
+// (cached on the row's own body element) and renders that approach's OWN
+// task table with THE SAME `renderTasks` the live plan uses, plus its
+// notes.md/review-findings.md as document buttons styled and behaved exactly
+// like the state-documents panel's (`.document-item`/`.document-absent`) --
+// the text is already inline in the fetched payload (task 020's
+// `archived_approach_view`), so opening one costs no further request, unlike
+// the live documents panel's per-click fetch.
+
+const APPROACH_LOAD_FAILED = "failed to load the run's approach history";
+
+// Same exists/absent affordance as `renderDocuments`' `document-item`s, but
+// the click just opens the text already in hand (no per-click fetch) since
+// an archived approach's notes/findings arrive inline with the row's data.
+function approachDocItem(d, onOpen) {
+  const label = String((d && (d.name || d.key)) || "");
+  const size = String((d && d.sizeDisplay) || "");
+  if (d && d.exists === true) {
+    return h("button", {
+      type: "button", class: "document-item",
+      "data-document": String(d.key || ""),
+      title: String(d.title || ""),
+      onclick: onOpen,
+    }, [label, h("span", { class: "muted document-size" }, [" " + size])]);
+  }
+  return h("span", {
+    class: "document-item document-absent",
+    "data-document": String((d && d.key) || ""),
+    "data-document-absent": "1",
+    title: String((d && d.title) || ""),
+  }, [label, h("span", { class: "muted document-size" }, [" " + size])]);
+}
+
+async function expandArchivedApproach(bodyBox, runId, num) {
+  // Loaded once per row; a second toggle-open just re-shows what is already
+  // there rather than re-fetching a frozen file.
+  if (bodyBox.dataset.loaded === "1") return;
+  bodyBox.innerHTML = "";
+  bodyBox.appendChild(h("p", { class: "muted" }, ["(loading…)"]));
+  const { ok, body } = await getJSON(
+    `/api/runs/${encodeURIComponent(runId)}/approaches/${encodeURIComponent(String(num))}`);
+  bodyBox.innerHTML = "";
+  if (!ok || !body) {
+    bodyBox.appendChild(h("p", { class: "muted" }, [APPROACH_LOAD_FAILED]));
+    return;
+  }
+  bodyBox.dataset.loaded = "1";
+  const tableBox = h("div", { class: "approach-tasks" }, []);
+  renderTasks(tableBox, body.tasks);
+  bodyBox.appendChild(tableBox);
+  const notesText = (body.notes && typeof body.notes.text === "string") ? body.notes.text : "";
+  const findingsText = (body.findings && typeof body.findings.text === "string") ? body.findings.text : "";
+  bodyBox.appendChild(h("div", { class: "document-list approach-doc-list" }, [
+    approachDocItem(body.notes, () => {
+      openTextDialog("notes.md — approach " + String(num) + " — " + runId, notesText, null);
+    }),
+    approachDocItem(body.findings, () => {
+      openTextDialog("review-findings.md — approach " + String(num) + " — " + runId, findingsText, null);
+    }),
+  ]));
+  if (body.notice) {
+    bodyBox.appendChild(h("p", { class: "muted" }, [String(body.notice)]));
+  }
+}
+
+function renderArchivedApproachEntry(runId, entry) {
+  const num = entry.approach;
+  const bodyBox = h("div", { class: "approach-body" }, []);
+  const summaryText = "Approach " + String(num) +
+    (entry.summary ? " — " + String(entry.summary) : "");
+  const details = h("details", { class: "approach-entry", "data-approach": String(num) }, [
+    h("summary", {}, [summaryText]),
+    bodyBox,
+  ]);
+  // Lazily fetched on first expand, like `openDocumentDialog`'s per-click
+  // fetch -- a collapsed row costs nothing beyond the one listing request.
+  details.addEventListener("toggle", () => {
+    if (details.open) expandArchivedApproach(bodyBox, runId, num);
+  });
+  return details;
+}
+
+function renderApproachHistory(box, sec, ok, listBody, runId) {
+  if (!ok || !listBody) {
+    // A failed load is shown, not silently swallowed -- same contract as every
+    // other on-disk panel (documents/artifacts) on this page.
+    sec.style.display = "";
+    box.innerHTML = "";
+    delete box.dataset.approaches;
+    box.appendChild(h("p", { class: "muted" }, [APPROACH_LOAD_FAILED]));
+    return;
+  }
+  const archived = Array.isArray(listBody.approaches) ? listBody.approaches : [];
+  if (archived.length === 0) {
+    // SPEC.md: "A run still on its first approach shows no history at all
+    // rather than an empty panel."
+    sec.style.display = "none";
+    box.innerHTML = "";
+    delete box.dataset.approaches;
+    return;
+  }
+  sec.style.display = "";
+  const sorted = [...archived].sort((a, b) => (a.approach ?? 0) - (b.approach ?? 0));
+  // Task 016/017's own lesson applied here: an archived approach is FROZEN
+  // the moment `_archive_approach` writes it, so the set of rows this poll
+  // wants can only grow, never change -- once every row is already in the
+  // DOM, leave the whole subtree alone rather than rebuilding it, or the
+  // 4s refresh timer would silently re-collapse (and forget the fetched
+  // body of) any row the operator has open.
+  const wanted = sorted.map((e) => String(e.approach)).join(",");
+  if (box.dataset.approaches === wanted) return;
+  box.dataset.approaches = wanted;
+  box.innerHTML = "";
+  const list = h("div", { class: "approach-list", id: "approach-list" }, []);
+  for (const entry of sorted) {
+    list.appendChild(renderArchivedApproachEntry(runId, entry));
+  }
+  box.appendChild(list);
+}
+
+async function loadApproaches(runId) {
+  const box = document.getElementById("approach-box");
+  const sec = document.getElementById("approach-history-sec");
+  if (!box || !sec) return;
+  const { ok, body } = await getJSON(`/api/runs/${encodeURIComponent(runId)}/approaches`);
+  if (!document.getElementById("approach-box") || !document.getElementById("approach-history-sec")) return;
+  renderApproachHistory(box, sec, ok, body, runId);
 }
 
 function renderTasks(el, tasks) {

@@ -2091,6 +2091,149 @@ def _seed_work_faulted_run(registry, run_id, **status):
     return run_dir
 
 
+# ---------------------------------------- approach history panel (#24) ----
+
+_APPROACH_ENTRIES = "document.querySelectorAll('.approach-entry').length"
+_APPROACH_SEC_VISIBLE = (
+    "getComputedStyle(document.getElementById('approach-history-sec'))"
+    ".display !== 'none'")
+
+
+def _seed_approach_history_run(registry, run_id):
+    """A dead run with two archived approaches (task 020's fixture files),
+    each with its OWN task list and its OWN notes.md/review-findings.md,
+    deliberately different from both each other and the live plan -- so a
+    row that shows the wrong approach's data is caught."""
+    run_dir = _write_dead_run(registry, run_id, state="failed",
+                              verdict="unverified", approach=3)
+    (run_dir / "tasks.json").write_text(json.dumps(
+        {"tasks": [{"id": "901", "title": "live plan, approach 3",
+                    "status": "pending"}]}))
+    a1 = run_dir / "approaches" / "01"
+    a1.mkdir(parents=True)
+    (a1 / "tasks.json").write_text(json.dumps(
+        {"tasks": [{"id": "001", "title": "approach one, task one",
+                    "status": "completed"},
+                   {"id": "002", "title": "approach one, task two",
+                    "status": "failed",
+                    "notes": "gave up: requirement C unmet"}]}))
+    (a1 / "notes.md").write_text("# Notes (approach 1)\nran out of budget\n")
+    (a1 / "review-findings.md").write_text(
+        "# Findings (approach 1)\nmissed requirement C entirely\n")
+    a2 = run_dir / "approaches" / "02"
+    a2.mkdir(parents=True)
+    (a2 / "tasks.json").write_text(json.dumps(
+        {"tasks": [{"id": "001", "title": "approach two, task one",
+                    "status": "completed"}]}))
+    # deliberately no notes.md/review-findings.md for approach 2 -- an
+    # archived approach can have nothing to say and must still answer cleanly
+    return run_dir
+
+
+def test_run_detail_approach_history_expands_a_previous_approach(tmp_path, pw):
+    """Task 021 (#24): every previous approach `_archive_approach` froze into
+    `approaches/NN/` is one collapsed row away, most recent last, expanding to
+    that approach's OWN task table and its OWN notes.md/review-findings.md --
+    never the live plan's, and never another approach's. A run still on its
+    first approach (nothing archived) shows no history panel at all.
+
+    Drives the real accordion (`<details>`/`<summary>`) with a real click, and
+    proves the panel consumes only the server's `GET /api/runs/<id>/approaches`
+    and `GET /api/runs/<id>/approaches/<n>` -- no client-side counting.
+    """
+    from ralphd.cli.ui_server import approach_view
+    from ralphd.engine.state import RUN_DOCUMENT_ABSENT
+
+    registry = tmp_path / "registry"
+    _seed_approach_history_run(registry, "run-approach-hist")
+    _write_dead_run(registry, "run-approach-none", state="succeeded",
+                    verdict="verified", approach=1)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # -- a run still on its first approach: no panel at all -------------
+        pw.open(f"{server.base}/#/run/run-approach-none")
+        _wait_for(pw, "document.body.innerText", "succeeded")
+        time.sleep(1.0)   # give the async approaches fetch a beat to land
+        assert pw.eval_js(_APPROACH_SEC_VISIBLE) == "false"
+        assert int(pw.eval_js(_APPROACH_ENTRIES)) == 0
+
+        # -- a run with two archived approaches ------------------------------
+        pw.open(f"{server.base}/#/run/run-approach-hist")
+        _wait_for_count_ge(pw, _APPROACH_ENTRIES, 2)
+        assert pw.eval_js(_APPROACH_SEC_VISIBLE) == "true"
+        # most recent last -- approach 1's row precedes approach 2's
+        order = pw.eval_js(
+            "[...document.querySelectorAll('.approach-entry')]"
+            ".map(e => e.dataset.approach).join(',')")
+        assert order.strip('"') == "1,2", order
+        # collapsed by default, no fetch made yet: the live task table above
+        # is untouched by this panel's data
+        assert pw.eval_js(
+            "document.querySelector('.approach-entry[data-approach=\"1\"]').open"
+        ) == "false"
+        live_rows = pw.eval_js(
+            "[...document.querySelectorAll('#task-box tr[data-task-id]')]"
+            ".map(e => e.dataset.taskId).join(',')")
+        assert live_rows.strip('"') == "901", live_rows
+
+        # -- expand approach 1's row: its OWN task table shows up -----------
+        pw.click('.approach-entry[data-approach="1"] summary')
+        rows = _wait_for(
+            pw,
+            "[...document.querySelectorAll('.approach-entry[data-approach=\"1\"]"
+            " tr[data-task-id]')].map(e => e.dataset.taskId).join(',')",
+            "001")
+        assert "002" in rows, rows
+        # the live task table above is untouched -- still the live plan's row
+        live_rows = pw.eval_js(
+            "[...document.querySelectorAll('#task-box tr[data-task-id]')]"
+            ".map(e => e.dataset.taskId).join(',')")
+        assert live_rows.strip('"') == "901", live_rows
+        pw.screenshot(SCREENSHOTS_DIR / "33-approach-history-expanded.png")
+
+        # -- and its OWN notes.md/review-findings.md, not another approach's --
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.approach-entry[data-approach=\"1\"]"
+            " .document-item').length")) == 2
+        assert int(pw.eval_js(_DIALOGS)) == 0
+        pw.click('.approach-entry[data-approach="1"]'
+                 ' button.document-item[data-document="findings"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "missed requirement C entirely")
+        assert "approach 1" in body.lower() or "1" in body, body
+        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
+                         ".textContent")
+        dialog_body = json.loads(raw) if raw.startswith('"') else raw
+        assert dialog_body == approach_view(
+            registry, "run-approach-hist", 1)["findings"]["text"]
+        pw.click(".text-dialog .dialog-close button")
+        deadline = time.time() + 10
+        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
+            time.sleep(0.2)
+
+        # -- approach 2's row: no notes/findings ever written, still clean ---
+        assert pw.eval_js(
+            "document.querySelector('.approach-entry[data-approach=\"2\"]').open"
+        ) == "false"
+        pw.click('.approach-entry[data-approach="2"] summary')
+        _wait_for(
+            pw,
+            "[...document.querySelectorAll('.approach-entry[data-approach=\"2\"]"
+            " tr[data-task-id]')].map(e => e.dataset.taskId).join(',')",
+            "001")
+        text = pw.eval_js(
+            "document.querySelector('.approach-entry[data-approach=\"2\"]')"
+            ".textContent")
+        assert RUN_DOCUMENT_ABSENT in text, text
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.approach-entry[data-approach=\"2\"]"
+            " [data-document-absent]').length")) == 2
+    finally:
+        server.stop()
+
+
 def test_run_detail_opens_the_fault_dialog_from_the_badge(tmp_path, pw):
     """Task 026 (#18.4): `state: failed` / `⚠ degraded` told an operator that
     something went wrong and nothing more -- WHICH signature fired, how far up

@@ -443,3 +443,31 @@ th.actions-col { cursor: default; }
   color: #fff;
 }
 #delete-status { margin: 0.5rem 0 0; }
+
+/* Task 021 (#24): the approach-history panel -- every previous approach
+   collapsed until clicked, same `<details>`/`<summary>` chrome, and the
+   expanded body's notes/findings buttons reuse `.document-item`/
+   `.document-absent` (task 022) so an archived approach's documents look
+   exactly like the live State documents panel's. */
+.approach-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.approach-entry {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem;
+}
+
+.approach-entry summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.approach-entry summary:focus-visible { outline: 2px solid var(--accent); }
+
+.approach-body { margin-top: 0.5rem; }
+.approach-doc-list { margin-top: 0.4rem; }
+
