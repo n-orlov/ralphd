@@ -30,6 +30,7 @@ that run's final `status.json`, which is why the marker is what the checks in
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
 | `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | still running / 44+ of 47 tasks completed | 100+ | 239.1M+ | ~$279.16+ derived |
+| `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | still running / 0+ of 36 tasks completed | 2+ | 1.2M+ | ~$2.27+ derived |
 
 Notes worth keeping with the documents:
 
