@@ -4288,6 +4288,27 @@ and are your cleanup.
 The engine's HTTP API is the job's whole control surface, and its exposure is two
 independent settings.
 
+**`--api-token` is a network control (who on the network may call the API at
+all) and was never a container boundary (task 005/#62, requirement A).** It
+predates and is orthogonal to the *container* boundary below — a second,
+independent gate that closes the hole `--api-token` never covered: an
+iteration running inside the same container and network namespace as the
+engine's own control plane, over the same loopback port an operator's
+`ralphctl` also reaches. `ralphctl start`/`resume` provision a
+`JobConfig.control_token` **unconditionally**, whether or not the operator
+ever passes `--api-token`, and it gates only the mutating half of the API
+(`POST /steering`, `/interrupt`, `/pause`, `/resume`, `/retry`, `/abort`,
+`/shutdown`, `PATCH /config/budget`, every `PUT`/`DELETE` under `/config`),
+checked against `X-Ralphd-Control-Token`, a header distinct from `--api-token`'s
+`Authorization: Bearer`. `PiRunner` strips `RALPHD_CONTROL_TOKEN` (and
+`RALPHD_PORT`/`RALPHD_API_TOKEN`/`RALPHD_BIND`) from a spawned iteration's own
+environment (task 003), so an iteration's own HTTP client can never present
+it — asserted per mutating route in `tests/test_control_plane_auth.py`. See
+`docs/api.md`'s "container boundary" section for the full route inventory and
+the fact-5 measurement this closes. This is not a sandbox claim (fact 17): a
+container with its own docker socket mounted can still reach the control plane
+some other way; what this closes is the one demonstrated, cheap route.
+
 - **Default: loopback, no auth.** The container's port 7777 is published as
   `-p 127.0.0.1:<port>:7777`. Nothing off the host can reach it, so nothing more
   is required to make that true.

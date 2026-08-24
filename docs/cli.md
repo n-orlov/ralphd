@@ -96,7 +96,7 @@ ralphctl start --prd <file|-> [options]
 | `--port <n>` | auto | host port for the API |
 | `--api-bind <addr>` | 127.0.0.1 | host interface to publish on |
 | `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. Falls back to the registry's `network` (`ralphctl config`) if set. |
-| `--api-token <t\|auto>` | none | require bearer auth on **every** route (`auto` generates + stores); orthogonal to the mutating-only control token `start` always provisions regardless of this flag (task 004, requirement A — see `docs/api.md`'s "container boundary" section) |
+| `--api-token <t\|auto>` | none | require bearer auth on **every** route (`auto` generates + stores); a **network control** (who on the network the operator exposed the port to may call the API at all) — it was **never a container boundary** and is orthogonal to the mutating-only control token `start` always provisions regardless of this flag (task 005/#62, requirement A — see `docs/api.md`'s "container boundary" section for the code-derived detail) |
 | `--env KEY=VAL` | — | extra container env (repeatable) |
 | `--no-detach` | detached | stream events until completion instead of returning at launch; the exit code mirrors the job verdict (0 verified / 1 otherwise) |
 
