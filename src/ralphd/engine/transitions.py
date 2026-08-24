@@ -240,3 +240,84 @@ STATE_HAT: dict[str, str | None] = {
 # `verify` is included even though it is unreachable in the non-vigilant
 # variant: the hat exists in both, the *transition* into it does not.
 HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect")
+
+
+# ---------------------------------------------------------------------------
+# Response-contract schemas — one per hat, declared beside the mapping above
+# ---------------------------------------------------------------------------
+# Task 009 (requirement C, #60 pillar 1). Fact 4: `pi` has no
+# `--response-format`/`--schema`/tool-forcing, so nothing enforces a hat's
+# final output shape except the harness reading it back — this dict is what
+# `ralphd.engine.contracts.validate_payload` (the *only* validator code path,
+# see that module's docstring and fact 16/#65's lesson) validates against.
+# These are a subset of JSON Schema: "type", "properties", "required",
+# "additionalProperties" and per-property "enum" — exactly what
+# `contracts.validate_payload` implements, nothing more.
+#
+# Per #60's decided channel split: worker/verify report small verdicts
+# inline in the final assistant text (COMPLETE/VERIFIED sentinels become
+# schema fields here); planning (and, per the PRD, plausibly review) is
+# file-borne — the hat drafts `plan-proposal.json` in its scratch area and
+# the *schema below* covers only the pointer-plus-summary its final output
+# carries, not the proposal file's own shape (task 011's business, and its
+# own schema — the plan schema explicitly has no `status` field, per
+# requirement C).
+HAT_SCHEMAS: dict[str, dict] = {
+    "planning": {
+        "type": "object",
+        "required": ["proposal_path", "summary"],
+        "properties": {
+            # Pointer to the file-borne plan-proposal.json (task 011 reads
+            # and lints it); never the plan content itself.
+            "proposal_path": {"type": "string"},
+            "summary": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    "worker": {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {
+            # Replaces the bare COMPLETE sentinel (ledger guard 8) with a
+            # field the harness reads instead of scanning free text.
+            "verdict": {"type": "string", "enum": ["complete", "no_verdict"]},
+            "task_id": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    "verify": {
+        "type": "object",
+        "required": ["task_id", "verdict"],
+        "properties": {
+            "task_id": {"type": "string"},
+            "verdict": {"type": "string", "enum": ["verified", "rejected"]},
+            "reason": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    "review": {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {
+            # Replaces the bare VERIFIED sentinel (review.md) with a field.
+            "verdict": {"type": "string", "enum": ["verified", "rejected"]},
+            "reason": {"type": "string"},
+            # Optional file-borne findings, same channel shape as planning.
+            "findings_path": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    "reflect": {
+        "type": "object",
+        "required": ["outcome"],
+        "properties": {
+            "outcome": {
+                "type": "string",
+                "enum": ["succeeded", "failed", "aborted"],
+            },
+            "notes": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+}
