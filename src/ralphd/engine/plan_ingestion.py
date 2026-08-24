@@ -217,18 +217,25 @@ def lint_proposal(payload: dict) -> list[str]:
 # repo: it lived only inside that run's own run directory, which this job's
 # harness tore down once the run finished, and it was never committed here.
 # `TASK_042_SUCCESS_CRITERIA` below is therefore reconstructed, not lifted
-# byte-for-byte from a surviving file -- it quotes the exact surviving
-# clause from commit `5f6b6d9`'s prose ("required `status.json` to leave
-# `state: running` before its closing report could send") verbatim inside a
-# criterion-shaped sentence, which is the closest a fixture can get to
-# "verbatim" once the original file itself is gone. `tests/test_plan_ingestion.py`
-# names this limitation explicitly rather than presenting the fixture as a
-# recovered original.
+# byte-for-byte from a surviving file. What IS verifiable is narrower than
+# earlier commit messages here claimed (see the fix-up in task 012's second
+# pass): commit `5f6b6d9^`'s copy of `docs/prds/README.md` (the parent of
+# the commit that rewrote that row -- `git show 5f6b6d9^:docs/prds/README.md`)
+# contains, as prose reflowed across a hard line wrap, the clause
+#     required `status.json` to leave `state: running` before its closing
+#     report could send
+# This clause is embedded byte-for-byte (after collapsing the source's own
+# whitespace-only line wrap, which changes no word) as a literal substring
+# of `TASK_042_SUCCESS_CRITERIA` below -- not merely quoted in this comment.
+# `tests/test_plan_ingestion.py` asserts that substring relationship directly
+# against the git blob, so the claim is checked, not just written down; it
+# also names the limitation that the fixture as a whole is a reconstruction,
+# not a recovered original file.
 TASK_042_SUCCESS_CRITERIA = (
-    "The run's closing report can only send once status.json shows the run "
-    "has left `state: running` and reached a terminal state; the run must "
-    "already be terminal before this task's own success criteria can be "
-    "observed to hold."
+    "Task 042's own success criteria required `status.json` to leave "
+    "`state: running` before its closing report could send, which makes "
+    "this run's own terminal state a precondition of this task's own "
+    "success criteria being observed to hold."
 )
 
 # Cue phrases naming THIS run's own terminal state (not terminal states in

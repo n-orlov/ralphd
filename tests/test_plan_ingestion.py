@@ -12,6 +12,7 @@ observable in isolation, exactly as `test_response_contracts.py` and
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -156,14 +157,42 @@ def test_a_status_field_is_rejected_not_honoured():
 # anywhere reachable from this repo (it lived only in that run's own run
 # directory, torn down once the run finished, and was never committed
 # here). `pi.TASK_042_SUCCESS_CRITERIA` is therefore a reconstruction, not a
-# recovered original: it quotes the one clause that *does* survive verbatim
-# in this repo's own history (commit `5f6b6d9`'s prose, before
-# docs/prds/README.md's row for that run was settled: "required
-# `status.json` to leave `state: running` before its closing report could
-# send") inside a criterion-shaped sentence. This test names that
-# limitation rather than presenting the fixture as byte-identical to the
-# original file.
+# recovered original. What *is* checked, by the test right below, is
+# narrower and stronger than a comment's say-so: `git show 5f6b6d9^` (the
+# commit *before* the one that rewrote `docs/prds/README.md`'s row for that
+# run) holds the clause "required `status.json` to leave `state: running`
+# before its closing report could send" as prose, reflowed across a hard
+# line wrap in the markdown source. The test below reads that historical
+# git blob directly and asserts the clause is a literal substring of it
+# (after collapsing the source's own whitespace-only line wrap -- no word
+# changes), and that the same clause is a literal substring of
+# `TASK_042_SUCCESS_CRITERIA` itself -- so the "verbatim" claim is proven
+# against the repository's own history in this run, not merely asserted in
+# a comment (task 012's first pass shipped exactly that unproven assertion
+# and a validation pass caught it: the fixture text did not actually
+# contain the clause it claimed to quote).
 # ---------------------------------------------------------------------------
+
+def test_task_042_fixture_embeds_the_clause_that_survives_in_git_history():
+    """Proves the "verbatim" claim in `TASK_042_SUCCESS_CRITERIA`'s own
+    comment against the actual git blob, rather than trusting the comment."""
+    import re
+    import subprocess
+
+    blob = subprocess.check_output(
+        ["git", "show", "5f6b6d9^:docs/prds/README.md"],
+        cwd=Path(__file__).resolve().parents[1],
+    ).decode()
+    normalised = re.sub(r"\s+", " ", blob)
+    clause = (
+        "required `status.json` to leave `state: running` before its "
+        "closing report could send"
+    )
+    assert clause in normalised, "the surviving clause is not in the cited git blob"
+    assert clause in pi.TASK_042_SUCCESS_CRITERIA, (
+        "the fixture no longer embeds the clause it claims to quote verbatim"
+    )
+
 
 def test_v08_task_042s_reconstructed_criteria_is_rejected():
     """The fixture is a reconstruction, not a recovered original -- see the
