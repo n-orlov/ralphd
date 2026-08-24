@@ -249,6 +249,18 @@ class JobConfig:
     # no price; the derived cost is published separately and marked derived,
     # never merged into provider-reported `costUSD`. Overridable per run with
     # RALPHD_PRICING (a JSON object of the same shape).
+    # Task 010 (requirement C, #60 pillar 1, fact 19): a hat's final output
+    # is a response contract, not provider-enforced (fact 4) -- a malformed,
+    # absent or wrong-shape payload is an ordinary case the harness
+    # re-prompts, carrying the specific validation error back to the hat.
+    # `contract_retry_max` is how many RE-PROMPTS are granted after the
+    # first attempt (so `contract_retry_max + 1` total attempts) before the
+    # harness gives up and scores the iteration as an agent fault against
+    # the budget, continuing per the table rather than hanging forever on a
+    # hat that never recovers. Overridable with RALPHD_CONTRACT_RETRY_MAX;
+    # see `engine/contract_enforcement.py` for the mechanism itself (not
+    # wired into `_run_job_core` yet -- that is task 014's cutover).
+    contract_retry_max: int = 2
     pricing: dict = field(default_factory=dict)
     # Task 010 (#14): `none` (default) | `aws`. When `aws`, a route the
     # provider did not price (or priced with an implausible zero) is costed
@@ -313,6 +325,8 @@ class JobConfig:
                     cfg.pricing = parsed
         if v := os.environ.get("RALPHD_PRICE_STRATEGY"):
             cfg.price_strategy = normalize_price_strategy(v)
+        if v := os.environ.get("RALPHD_CONTRACT_RETRY_MAX"):
+            cfg.contract_retry_max = int(v)
         return cfg
 
     def effective(self) -> dict:
@@ -341,6 +355,12 @@ class JobConfig:
                 "onComplete": self.on_complete,
                 "onCompleteCmd": self.on_complete_cmd,
                 "reflect": self.reflect,
+            },
+            # Task 010: the response-contract re-prompt policy (requirement
+            # C). `retryMax` is re-prompts granted after the first attempt
+            # -- `retryMax + 1` total attempts before an agent fault.
+            "contracts": {
+                "retryMax": self.contract_retry_max,
             },
             "model": {
                 "strategy": self.model_strategy,
