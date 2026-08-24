@@ -96,7 +96,7 @@ ralphctl start --prd <file|-> [options]
 | `--port <n>` | auto | host port for the API |
 | `--api-bind <addr>` | 127.0.0.1 | host interface to publish on |
 | `--network <net>` | docker default (bridge) | docker network for the job container. `host` shares the host network namespace so the job can reach host-only / VPN / tailnet services; with `host` there is no port publishing — the engine itself listens on `--port` bound to `--api-bind` (via `RALPHD_PORT`/`RALPHD_BIND`). Any other value is passed to `docker run --network` with normal `-p` publishing. Recorded in `host.json`; `resume` reuses it. Falls back to the registry's `network` (`ralphctl config`) if set. |
-| `--api-token <t\|auto>` | none | require bearer auth (`auto` generates + stores) |
+| `--api-token <t\|auto>` | none | require bearer auth on **every** route (`auto` generates + stores); orthogonal to the mutating-only control token `start` always provisions regardless of this flag (task 004, requirement A — see `docs/api.md`'s "container boundary" section) |
 | `--env KEY=VAL` | — | extra container env (repeatable) |
 | `--no-detach` | detached | stream events until completion instead of returning at launch; the exit code mirrors the job verdict (0 verified / 1 otherwise) |
 
@@ -2051,6 +2051,16 @@ continues the job instead of re-planning; `resume` just has to reproduce
   `--workspace` itself).
 - The recorded `.api-token`, if any (`-e RALPHD_API_TOKEN=...`), so the
   same client-side token keeps working against the new container.
+- **The recorded `.control-token` (task 004, #62 candidate 1, requirement
+  A), unconditionally** -- unlike `.api-token`, this one exists on every
+  run `start` created after task 004 landed, whether or not `--api-token`
+  was ever passed, because it is what gates the mutating half of the API
+  (`/abort`, `/pause`, `/resume`, `/retry`, `/shutdown`,
+  `PATCH /config/budget`, every `PUT`/`DELETE` under `/config`) closed to
+  an iteration by default -- see `docs/api.md`'s "container boundary"
+  section. A run started before task 004 (no `.control-token` on disk)
+  resumes exactly as it did before: the mutating gate stays open, the same
+  as `.api-token`'s own absent-file behaviour, never retrofitted.
 - The `--llm` wiring resolved at `start` time (task 058, operator steering
   018): whichever env vars and extra mounts `start` added on top of the
   base wiring above — `--llm host`'s forwarded `HOST_LLM_ENV` vars

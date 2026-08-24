@@ -16,15 +16,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from ralphd.engine.api import create_app
+from ralphd.engine.api import classify_method, create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
-
-# Safe reads: never mutate anything the run cares about.
-_OBSERVATION_METHODS = frozenset({"GET", "HEAD"})
-# The four verbs this API actually uses to mutate state.
-_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 # FastAPI/Starlette's own auto-generated documentation UI -- framework
 # furniture, not part of the PRD's route inventory. Named explicitly rather
@@ -59,17 +54,14 @@ EXPECTED_MUTATING = frozenset(
 
 
 def classify(method: str) -> str:
-    """Classify a single HTTP method as 'observation' or 'mutating'.
-
-    Anything that is neither a safe read (GET/HEAD) nor one of the four
-    mutating verbs this API uses is 'unclassified' -- callers must treat
-    that as a failure, never default it either way.
+    """Task 002/004 (#62): thin alias over `ralphd.engine.api.classify_method`
+    -- kept as a module-level name here so the rest of this file (written
+    before the canonical copy moved into `api.py`) does not have to change,
+    but there is exactly one classification rule, imported, not
+    re-declared. See the mutation-case test below for why 'unclassified'
+    must never default either way.
     """
-    if method in _OBSERVATION_METHODS:
-        return "observation"
-    if method in _MUTATING_METHODS:
-        return "mutating"
-    return "unclassified"
+    return classify_method(method)
 
 
 def app_routes(app: FastAPI) -> list[tuple[str, str]]:

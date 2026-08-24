@@ -219,7 +219,8 @@ async def amain() -> int:
     server = uvicorn.Server(uvicorn.Config(app, host=bind, port=port,
                                            log_level="warning"))
     api_task = asyncio.create_task(server.serve())
-    log.info("API listening on %s:%d (auth=%s)", bind, port, bool(cfg.api_token))
+    log.info("API listening on %s:%d (auth=%s, controlAuth=%s)", bind, port,
+              bool(cfg.api_token), bool(cfg.control_token))
 
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):

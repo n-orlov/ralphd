@@ -13,7 +13,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from .. import API_VERSION, __version__
 from ..log_merge import apply_tail, boundary_line, iteration_dirs, merge_entries
-from .config import CONFIG_DIR, PROMPT_NAMES, JobConfig, list_prompts, overlay_write_path
+from .config import (CONFIG_DIR, PROMPT_NAMES, JobConfig, classify_method,
+                     list_prompts, overlay_write_path)
 from .creds import (
     api_creds_dir,
     clear_creds_tombstone,
@@ -105,6 +106,30 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             if supplied != f"Bearer {cfg.api_token}":
                 return JSONResponse({"title": "unauthorized", "status": 401},
                                     status_code=401)
+        # Task 004 (#62 candidate 1, requirement A): the boundary, distinct
+        # from the `api_token` gate above. `api_token` is an operator
+        # opt-in that (when set) happens to gate every route including
+        # this one; it is unset by default and unset in most of this
+        # module's own component tests, so it cannot be *the* thing that
+        # keeps an iteration off `/abort` et al in a default deployment --
+        # see artifacts/reports/requirement-a-boundary-design.md. This
+        # second check is unconditional in shape (mutating routes ask for
+        # it whenever `control_token` is configured) and `ralphctl start`/
+        # `resume` (task 004) provision one on every real run regardless of
+        # whether the operator ever passed `--api-token`, so the mutating
+        # surface is closed by default rather than by operator choice.
+        # A JobConfig built directly (this module's own unit/component
+        # tests) never sets `control_token`, so those tests are unaffected.
+        # Deliberately a different header than `Authorization`
+        # (`X-Ralphd-Control-Token`) so an operator request can satisfy both
+        # gates independently in one call.
+        if cfg.control_token and classify_method(request.method) == "mutating":
+            supplied = request.headers.get("x-ralphd-control-token", "")
+            if supplied != cfg.control_token:
+                return JSONResponse(
+                    {"title": "unauthorized", "status": 401,
+                     "detail": "mutating routes require the control token"},
+                    status_code=401)
         return await call_next(request)
 
     def finished() -> bool:

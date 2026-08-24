@@ -52,7 +52,36 @@ CONTROL_PLANE_ENV_VARS = frozenset({
     "RALPHD_PORT",
     "RALPHD_BIND",
     "RALPHD_API_TOKEN",
+    # Task 004 (#62 candidate 1): the mutating-only gate's secret
+    # (`JobConfig.control_token`) locates/authenticates to the control
+    # plane exactly like `RALPHD_API_TOKEN` does, so it is stripped from a
+    # spawned iteration's environment for the same reason.
+    "RALPHD_CONTROL_TOKEN",
 })
+
+
+# Task 004 (#62 candidate 1, requirement A): the per-route mutating/
+# observation classification, ONE canonical copy (fact from the PRD's own
+# harness lesson: "a shared fix with a live second copy is not a fix") --
+# `engine/api.py`'s auth gate, `tests/test_route_inventory.py`'s inventory
+# test and `cli/main.py`'s control-token attach point all import it from
+# here (not `engine/api.py`, which pulls in FastAPI -- `cli/main.py` is
+# deliberately stdlib-only) rather than each keeping a private frozenset
+# that could drift out of sync with the others.
+MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+OBSERVATION_METHODS = frozenset({"GET", "HEAD"})
+
+
+def classify_method(method: str) -> str:
+    """'observation' (GET/HEAD), 'mutating' (POST/PUT/PATCH/DELETE), or
+    'unclassified' for anything else -- callers must treat 'unclassified'
+    as a failure, never default it either way (see
+    tests/test_route_inventory.py's mutation case)."""
+    if method in OBSERVATION_METHODS:
+        return "observation"
+    if method in MUTATING_METHODS:
+        return "mutating"
+    return "unclassified"
 
 
 def overlay_or_config(rel: str) -> Path:
@@ -173,6 +202,19 @@ class JobConfig:
     model_overrides: dict = field(default_factory=dict)  # phase → model ref
     thinking: str | None = None       # pi --thinking level
     api_token: str | None = None
+    # Task 004 (#62 candidate 1, requirement A): a second, mandatory-by-
+    # default secret gating *only* the mutating half of the API (see this
+    # module's `MUTATING_METHODS`/`classify_method`, above). Independent
+    # of `api_token`: `api_token` is an operator opt-in that (when set)
+    # gates every route, unit tests that build a JobConfig directly never
+    # set it, and mutating routes stay reachable exactly as before for
+    # them. `control_token` is what `ralphctl start`/`resume` provision
+    # unconditionally (task 004), so a real deployment closes the mutating
+    # surface even when the operator never passed `--api-token` at all.
+    # Checked against the `X-Ralphd-Control-Token` header, never
+    # `Authorization`, so both gates can be satisfied independently in one
+    # request.
+    control_token: str | None = None
     # Infra-fault fail-fast/retry knobs (task 001a). Startup window: how long
     # a planning/worker iteration may run with ZERO observed LLM traffic
     # (no parseable pi NDJSON event at all) before the engine kills it as an
@@ -249,6 +291,8 @@ class JobConfig:
         cfg = cls(**kwargs, extra={k: v for k, v in raw.items() if k not in known})
         if tok := os.environ.get("RALPHD_API_TOKEN"):
             cfg.api_token = tok
+        if tok := os.environ.get("RALPHD_CONTROL_TOKEN"):
+            cfg.control_token = tok
         if v := os.environ.get("RALPHD_INFRA_STARTUP_TIMEOUT"):
             cfg.infra_startup_timeout_s = float(v)
         if v := os.environ.get("RALPHD_INFRA_RETRY_BACKOFF_S"):

@@ -63,7 +63,12 @@ def env_dumper(tmp_path):
 def test_control_plane_vars_named():
     # Pinned so a future PRD/doc change to which coordinates "locate the
     # control API" has to touch this test, not just the implementation.
-    assert CONTROL_PLANE_ENV_VARS == {"RALPHD_PORT", "RALPHD_BIND", "RALPHD_API_TOKEN"}
+    # Task 004 (#62 candidate 1) added RALPHD_CONTROL_TOKEN: the mutating-
+    # only gate's secret locates/authenticates to the control plane exactly
+    # like RALPHD_API_TOKEN does, so a spawned iteration must never inherit
+    # it either.
+    assert CONTROL_PLANE_ENV_VARS == {"RALPHD_PORT", "RALPHD_BIND",
+                                      "RALPHD_API_TOKEN", "RALPHD_CONTROL_TOKEN"}
 
 
 def test_runner_strips_control_plane_vars_from_base_environ(env_dumper, tmp_path, monkeypatch):
@@ -111,12 +116,14 @@ def test_runner_strips_control_plane_vars_reintroduced_by_extra_env(
 
 def test_iteration_environment_has_no_control_plane_coords(engine_factory):
     os.environ["RALPHD_API_TOKEN"] = "sekret-e2e-tok"
+    os.environ["RALPHD_CONTROL_TOKEN"] = "sekret-e2e-control-tok"
     try:
         e = engine_factory(job={"on_complete": "idle"})
         marker = e.run_dir / ".stub-env.json"
         seen = wait_for_env_marker(marker, predicate=lambda d: bool(d))
         assert seen, "stub never dumped its environment"
-        for name in ("RALPHD_PORT", "RALPHD_API_TOKEN", "RALPHD_BIND"):
+        for name in ("RALPHD_PORT", "RALPHD_API_TOKEN", "RALPHD_BIND",
+                     "RALPHD_CONTROL_TOKEN"):
             assert name not in seen, (
                 f"{name} present in the iteration's own environment: "
                 "the control-plane coordinate leaked")
@@ -125,3 +132,4 @@ def test_iteration_environment_has_no_control_plane_coords(engine_factory):
         assert "RALPHD_RUN_DIR" in seen
     finally:
         del os.environ["RALPHD_API_TOKEN"]
+        del os.environ["RALPHD_CONTROL_TOKEN"]

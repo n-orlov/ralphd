@@ -37,7 +37,7 @@ import yaml
 
 from .. import __version__
 from ..engine.config import (DEFAULT_MODEL_STRATEGY, MODEL_STRATEGIES,
-                             PRICE_STRATEGIES)
+                             MUTATING_METHODS, PRICE_STRATEGIES)
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -221,6 +221,19 @@ def api(run_id: str, method: str, path: str, body: dict | None = None,
     token_file = run_root(run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
+    # Task 004 (#62 candidate 1, requirement A): the mutating-only gate.
+    # `.control-token` is provisioned unconditionally by `start`/`resume`
+    # (unlike `.api-token`, which only exists when the operator opted into
+    # `--api-token`), so this is the one place ralphctl needs to change for
+    # every mutating command (abort/pause/resume/retry/shutdown/budget/the
+    # config CRUD) to keep working over the moved surface -- they all share
+    # this one `api()` helper. Read fresh per call, not cached, so a
+    # `resume` that rotates the file mid-process is picked up.
+    if method in MUTATING_METHODS:
+        control_file = run_root(run_id) / ".control-token"
+        if control_file.exists():
+            req.add_header("X-Ralphd-Control-Token",
+                          control_file.read_text().strip())
     if data is not None:
         req.add_header("Content-Type", content_type or "application/octet-stream")
         req.data = data
@@ -1464,6 +1477,21 @@ def cmd_start(args):
         tf.write_text(token)
         os.chmod(tf, 0o600)
 
+    # Task 004 (#62 candidate 1, requirement A): the mutating-only gate's
+    # secret. Provisioned unconditionally -- NOT gated on `--api-token` --
+    # so a real run closes `/abort`, `/pause`, `/resume`, `/retry`,
+    # `/shutdown`, `PATCH /config/budget` and every `PUT`/`DELETE` under
+    # `/config` to an iteration by default, whether or not the operator
+    # ever opted into `--api-token`. `.control-token` lives beside
+    # `.api-token` in the run dir for the same reason `.api-token` does
+    # (task 003 strips `RALPHD_CONTROL_TOKEN` from a spawned iteration's
+    # own environment; the file's readability from inside the container is
+    # requirement D's job, not this one's).
+    control_token = secrets.token_urlsafe(24)
+    ctf = rdir / ".control-token"
+    ctf.write_text(control_token)
+    os.chmod(ctf, 0o600)
+
     # Named LLM profile (docs/llm-profiles.md): resolved once, here, before
     # anything else touches it -- job.yaml's model/fast_model defaults and
     # the later env/mounts/pi wiring both read from this single resolution
@@ -1641,6 +1669,7 @@ def cmd_start(args):
     _write_auto_resume_setting(cdir, args.auto_resume)
     if token:
         env_args += ["-e", f"RALPHD_API_TOKEN={token}"]
+    env_args += ["-e", f"RALPHD_CONTROL_TOKEN={control_token}"]
 
     cmd = [DOCKER, "run", "-d", "--name", job_container_name(run_id),
            "--init", *port_args,
@@ -2089,6 +2118,13 @@ def cmd_resume(args):
     token_file = rdir / ".api-token"
     if token_file.exists():
         env_args += ["-e", f"RALPHD_API_TOKEN={token_file.read_text().strip()}"]
+    # Task 004: `.control-token` was provisioned unconditionally at `start`
+    # (or, for a run dir predating task 004, is simply absent -- an older
+    # run resumes with the mutating gate open, exactly as it always was;
+    # `resume` never retrofits a boundary the run did not start with).
+    control_file = rdir / ".control-token"
+    if control_file.exists():
+        env_args += ["-e", f"RALPHD_CONTROL_TOKEN={control_file.read_text().strip()}"]
 
     # Reproduce the exact `--llm` wiring (env vars + extra mounts) resolved
     # at `start` time (task 058, operator steering 018) -- never re-derived

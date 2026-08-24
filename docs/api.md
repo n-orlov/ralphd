@@ -3,7 +3,9 @@
 Each job container serves this HTTP API (default `:7777`, published to
 `127.0.0.1:<host-port>` by `ralphctl`). Content type is JSON unless noted. When an
 API token is configured, every route requires `Authorization: Bearer <token>` and
-replies `401` otherwise.
+replies `401` otherwise. **This is an operator opt-in and is orthogonal to the
+container boundary below** — see "The container boundary" for the gate that
+holds by default, with or without `--api-token`.
 
 Errors are JSON in FastAPI's `{"detail": {...}}` envelope, and the body inside
 it is problem-*shaped* — `{"title", "status", "detail"}`, built by the one
@@ -11,6 +13,59 @@ helper `ralphd.engine.api.problem`. It is not RFC 7807 on the wire: there is no
 `type` member and the media type is plain `application/json`. The one route-less
 reply is the auth middleware's `401`, which has no `detail` envelope around it:
 `{"title": "unauthorized", "status": 401}`.
+
+## The container boundary (requirement A, #62)
+
+An iteration (the agent process the engine spawns for planning/worker/
+verify/review/reflect) runs inside the same container and network
+namespace as the engine's own control-plane API, over the same loopback
+port an operator's `ralphctl` also reaches. Fact 5
+(`docs/prds/v0.9-declarative-loop.md`) measured a probe agent doing nothing
+but reading its own environment reaching every mutating route below — the
+iteration is not a sandboxed peer of the operator, and nothing in this
+boundary claims it is a sandbox at all (fact 17: with a real docker socket
+mounted, an iteration that wants the control plane badly enough can reach
+it some other way; what this closes is the one demonstrated, cheap route).
+
+Two independent gates, and only the second is the boundary:
+
+- **`api_token`** (`Authorization: Bearer <token>`) — optional, operator
+  chosen (`ralphctl start --api-token auto|<value>`), and when set it gates
+  *every* route, mutating or not. Unset by default. This predates
+  requirement A and is unaffected by it.
+- **`control_token`** (`X-Ralphd-Control-Token: <token>`) — gates *only*
+  the mutating routes listed below, and `ralphctl start`/`resume` provision
+  one **unconditionally**, whether or not the operator ever passes
+  `--api-token`. `PiRunner` never hands a spawned iteration's process the
+  coordinate that would let it construct this header
+  (`RALPHD_CONTROL_TOKEN` is one of the names `engine/config.py`'s
+  `CONTROL_PLANE_ENV_VARS` strips — same mechanism as `RALPHD_PORT` and
+  `RALPHD_API_TOKEN`, task 003), so an iteration's own HTTP client can never
+  present it — asserted per route in
+  `tests/test_control_plane_auth.py`.
+
+**Mutating routes** (require `control_token` when one is configured, i.e.
+unconditionally for any run started or resumed by `ralphctl` after task
+004): `POST /steering`, `POST /interrupt`, `POST /pause`, `POST /resume`,
+`POST /retry`, `POST /abort`, `POST /shutdown`, `PATCH /config/budget`,
+`PUT /config/prompts/{name}`, `PUT`/`DELETE /config/skills/{name}`,
+`PUT`/`DELETE /config/creds/{name}`, `PUT /config/llm`. This list is
+code-derived, not hand-maintained: `tests/test_route_inventory.py`'s
+`EXPECTED_MUTATING` is exactly this set, checked against the live app's own
+`app.routes` on every test run.
+
+**Observation routes** (never gated by `control_token`; an iteration may
+read all of these): `GET /healthz`, `GET /version`, `GET /status`,
+`GET /tasks`, `GET /prd`, `GET /notes`, `GET /iterations`,
+`GET /iterations/{n}`, `GET /iterations/{n}/output`, `GET /logs`,
+`GET /events`, `GET /artifacts` and `GET /artifacts/{path}`, `GET /config`,
+`GET /config/prompts`, `GET /config/skills`, `GET /config/skills/{name}`,
+`GET /config/creds`, `GET /steering`.
+
+`--api-token` was never a container boundary and its docstrings/CLI help
+say so: it is a network control (who on the network the operator exposed
+the port to may call the API at all), not a defence against the iteration
+running inside the same container the API is served from.
 
 ## Conventions
 
