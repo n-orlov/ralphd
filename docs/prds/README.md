@@ -30,8 +30,8 @@ that run's final `status.json`, which is why the marker is what the checks in
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
 | `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | aborted / unverified — 46 of 47 tasks completed | 138 | 278.1M | ~$323.62 derived |
-| `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | still running / crossed approach boundary — approach 1: 42 of 43 tasks completed (archived `approaches/01`); approach 2 (live): 5+ of 8 tasks completed | 110+ | 234.9M+ | ~$92.48+ derived |
-| `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | not started | — | — | — |
+| `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | succeeded / verified — approach 1: 42 of 43 tasks completed (archived `approaches/01`); approach 2: 8 of 8 tasks completed | 119 | 249.6M | ~$105.23 derived |
+| `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | still running / 0+ of 36 tasks completed | 3+ | 2.7M+ | ~$3.40+ derived |
 
 Notes worth keeping with the documents:
 
@@ -112,27 +112,37 @@ Notes worth keeping with the documents:
   here because a person read the evidence, not a rule this table's own tests
   enforce by reading a different run's live registry, which they deliberately
   do not do.
-- **`v0.8-auditable-interruptible.md`'s row is still a snapshot** — the `+`
-  marker is on because a run cannot count the iterations that go on to
-  document and verify it — but it now crosses an **approach boundary**, and
-  the row says so rather than presenting the two plans as one. Approach 1
-  landed the wave's entire behaviour (42 of its 43 planned tasks `completed`;
-  the 43rd, task 042, sat `in-progress` — never `failed` — when the engine
-  ended the approach for "no task progress in 3 iterations": that task's own
-  success criteria required `status.json` to leave `state: running` before its
-  closing report could send, which no in-run iteration can observe, so three
-  workers correctly refused to fabricate it and the approach starved) and
-  closed all nine wave issues (`#24 #26 #27 #50 #51 #54 #56 #57 #58`). Its plan
-  and notes are archived verbatim at `approaches/01/{tasks.json,notes.md}`
-  rather than overwritten, precisely so a later run's requirement F could be
-  demonstrated against real archived data instead of a synthetic stand-in
-  (`selfdev-v08-auditable`'s own task 002). Approach 2 adds no behaviour: it
-  re-proves every PRD requirement at the post-wave HEAD, re-checks the closure
-  record against a fresh GitHub GET, and records fresh sweeps and this very
-  row — so the "5+ of 8 tasks completed" half of the outcome cell counts only
-  approach 2's own plan, not approach 1's, and the iteration/token/cost cells
-  are the run's cumulative totals across both approaches, read live from this
-  run's own `status.json` in the iteration that wrote this row.
+- **`v0.8-auditable-interruptible.md`'s row is now that run's settled
+  record**, not the in-progress snapshot it wore across the approach
+  boundary: the run ended `succeeded` / `verified` at `2026-08-24T01:19:15Z`,
+  119 iterations charged against its budget (121 raw iteration slots the log
+  holds — the 2-slot gap is attempts classified infrastructure faults,
+  retried and refunded rather than charged, `iterationsUsed`, the same #32
+  mechanism v0.6's and v0.7's rows explained), 249.6M tokens, and a `derived`
+  cost of ~$105.23, on approach 2 of a possible 8. Approach 1 landed the
+  wave's entire behaviour (42 of its 43 planned tasks `completed`) and closed
+  all nine wave issues (`#24 #26 #27 #50 #51 #54 #56 #57 #58`), but the
+  engine ended it at `2026-08-23T22:58:46Z` on "3 iterations with no task
+  progress": the 43rd, task 042, made its own success criteria depend on the
+  run having left `state: running`, which cannot happen while an iteration is
+  executing, so three worker iterations correctly refused to fabricate it and
+  the approach starved. That task is **#63's impossible task** — the incident
+  that got "no plan may contain a task gated on this run being terminal"
+  filed as a mechanism its successor run (`selfdev-v09-fsm-loop`) now encodes
+  at ingestion time. Approach 1's plan and notes are archived verbatim at
+  `approaches/01/{tasks.json,notes.md}` rather than overwritten. Approach 2
+  added no behaviour: it re-proved every PRD requirement at the post-wave
+  HEAD, re-checked the closure record against a fresh GitHub GET, and
+  completed its own 8 of 8 tasks — the replan cost 19 iterations and $18.33
+  (`usage.byApproach`: approach 1 $86.90, run $105.23) to re-establish
+  finished work. The outcome cell's task tally is approach 2's own plan, not
+  approach 1's; the iteration/token/cost cells are the run's cumulative
+  totals across both approaches, read from this run's own final `status.json`.
+- **`v0.9-declarative-loop.md`'s row is a live snapshot** — the `+` marker is
+  on because a run cannot count the iterations that go on to document and
+  verify it. This is `selfdev-v08-auditable`'s heir: it inherits that run's
+  guards and, per requirement M, wrote the settled row above from that run's
+  own final record rather than leaving it as the snapshot it landed with.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
