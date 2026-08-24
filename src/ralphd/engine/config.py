@@ -34,6 +34,27 @@ OVERLAY_DIR = Path(os.environ.get(
         ".ralphd" / "config-overlay")))
 
 
+# Task 003 (#62 candidate 2, requirement A): the coordinates that locate
+# and authenticate to the engine's own control-plane HTTP API. Defence in
+# depth alongside requirement A's route split (task 004) -- `PiRunner.run`
+# strips these from the base `os.environ` before spawning `pi`, so a
+# spawned iteration never inherits the port it could probe, the bind
+# address, or the bearer token that would let it succeed once it did. Fact
+# 5's probe (read your own environment, then hit the API) used exactly
+# these two names; `RALPHD_BIND` is the third "locates the API" coordinate
+# (host-network jobs only, `engine/main.py`'s `bind`) and is stripped for
+# the same reason even though fact 5 didn't need it. Every other RALPHD_*
+# var (RALPHD_RUN_DIR, RALPHD_WORKSPACE_DIR, RALPHD_SELF_CONTAINER_ID, the
+# RALPHD_HOST_* docker-sibling coordinates, ...) is deliberately NOT here:
+# an iteration legitimately needs those to do its job or to label sibling
+# containers, and none of them locates or authenticates to the API.
+CONTROL_PLANE_ENV_VARS = frozenset({
+    "RALPHD_PORT",
+    "RALPHD_BIND",
+    "RALPHD_API_TOKEN",
+})
+
+
 def overlay_or_config(rel: str) -> Path:
     """Resolve a `/config`-relative path, preferring a runtime overlay entry
     (written via the API) over the corresponding path under the (possibly

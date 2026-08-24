@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import state
+from .config import CONTROL_PLANE_ENV_VARS
 from .pricing import PricingSource
 from .privsep import agent_child_kwargs
 from .redact import scrub_text
@@ -156,7 +157,15 @@ class PiRunner:
             cmd += ["--model", model]
         if thinking:
             cmd += ["--thinking", thinking]
+        # Task 003 (#62, requirement A): an iteration never inherits the
+        # coordinates that locate or authenticate to the engine's own
+        # control-plane API, however they got into this process's
+        # environment -- the base `os.environ` (set by `docker run -e`,
+        # fact 5's demonstrated path) AND any `extra_env` override, so a
+        # future LLM-env rotation can't reintroduce them by accident either.
         env = {**os.environ, **(extra_env or {})}
+        for _name in CONTROL_PLANE_ENV_VARS:
+            env.pop(_name, None)
 
         result = IterationResult()
         _t0 = time.monotonic()
