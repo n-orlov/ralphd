@@ -3363,6 +3363,23 @@ class RunDir:
         atomic_write_json(self.status_file, status)
         return status
 
+    def write_tasks(self, data: dict) -> None:
+        """THE one authorized write path for tasks.json (task 013). Every
+        authoritative task-state mutation -- across the whole engine --
+        must land on disk through this method and no other. Before this,
+        three separate call sites in loop.py (:2478, :2508, :2800 at the
+        commit that wrote this comment) each called `atomic_write_json`
+        directly against `self.run.tasks_file`; a fourth or fifth write
+        site could appear anywhere in the tree with nothing to notice.
+        Now they all route through here, and
+        `tests/test_task_state_writer.py` runs an AST audit over the
+        whole of `src/ralphd` that fails if any module (this one
+        included, outside this exact method) ever again calls a
+        write-shaped function with `tasks_file` as its target -- with a
+        planted-second-writer mutation case proving the audit actually
+        catches one."""
+        atomic_write_json(self.tasks_file, data)
+
     def read_tasks(self) -> dict:
         """The tasks.json payload, via the hardened read path (task 002/#15):
         a mid-write file yields the last-good payload, never `{}`."""

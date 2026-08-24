@@ -2475,7 +2475,7 @@ class LoopSupervisor:
                 t["criteriaFingerprint"] = self._criteria_fingerprint(t.get("successCriteria", ""))
                 changed = True
         if changed:
-            atomic_write_json(self.run.tasks_file, data)
+            self.run.write_tasks(data)
 
     def _check_criteria_edits(self, tasks_data: dict) -> None:
         """Task 008: compare each task's current successCriteria against its
@@ -2505,7 +2505,7 @@ class LoopSupervisor:
                 t["criteriaFingerprint"] = current
                 changed = True
         if changed:
-            atomic_write_json(self.run.tasks_file, tasks_data)
+            self.run.write_tasks(tasks_data)
 
     def _flagged_criteria_review_context(self) -> str:
         """Task 009: render the explicit list of tasks flagged
@@ -2797,7 +2797,7 @@ class LoopSupervisor:
                         "a judgement that the requirement is unmeetable",
                         tid, attempts, TASK_FAILURE_VALIDATION_EXHAUSTED)
                 break
-        atomic_write_json(self.run.tasks_file, tasks_data)
+        self.run.write_tasks(tasks_data)
         self._emit_task_changes()
         return False
 
