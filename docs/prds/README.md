@@ -31,6 +31,7 @@ that run's final `status.json`, which is why the marker is what the checks in
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
 | `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | aborted / unverified — 46 of 47 tasks completed | 138 | 278.1M | ~$323.62 derived |
 | `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | still running / crossed approach boundary — approach 1: 42 of 43 tasks completed (archived `approaches/01`); approach 2 (live): 5+ of 8 tasks completed | 110+ | 234.9M+ | ~$92.48+ derived |
+| `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | not started | — | — | — |
 
 Notes worth keeping with the documents:
 
