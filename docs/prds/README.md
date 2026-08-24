@@ -30,7 +30,7 @@ that run's final `status.json`, which is why the marker is what the checks in
 | `selfdev-v05-resilience` | [v0.5-resilience.md](v0.5-resilience.md) | succeeded / verified | 132 | 163.9M | unpriced route |
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
 | `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | aborted / unverified — 46 of 47 tasks completed | 138 | 278.1M | ~$323.62 derived |
-| `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | still running / 40+ of 43 tasks completed | 95+ | 221.0M+ | ~$84.63+ derived |
+| `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | still running / crossed approach boundary — approach 1: 42 of 43 tasks completed (archived `approaches/01`); approach 2 (live): 5+ of 8 tasks completed | 110+ | 234.9M+ | ~$92.48+ derived |
 
 Notes worth keeping with the documents:
 
@@ -111,6 +111,28 @@ Notes worth keeping with the documents:
   here because a person read the evidence, not a rule this table's own tests
   enforce by reading a different run's live registry, which they deliberately
   do not do.
+- **`v0.8-auditable-interruptible.md`'s row is still a snapshot** — the `+`
+  marker is on because a run cannot count the iterations that go on to
+  document and verify it — but it now crosses an **approach boundary**, and
+  the row says so rather than presenting the two plans as one. Approach 1
+  landed the wave's entire behaviour (42 of its 43 planned tasks `completed`;
+  the 43rd, task 042, sat `in-progress` — never `failed` — when the engine
+  ended the approach for "no task progress in 3 iterations": that task's own
+  success criteria required `status.json` to leave `state: running` before its
+  closing report could send, which no in-run iteration can observe, so three
+  workers correctly refused to fabricate it and the approach starved) and
+  closed all nine wave issues (`#24 #26 #27 #50 #51 #54 #56 #57 #58`). Its plan
+  and notes are archived verbatim at `approaches/01/{tasks.json,notes.md}`
+  rather than overwritten, precisely so a later run's requirement F could be
+  demonstrated against real archived data instead of a synthetic stand-in
+  (`selfdev-v08-auditable`'s own task 002). Approach 2 adds no behaviour: it
+  re-proves every PRD requirement at the post-wave HEAD, re-checks the closure
+  record against a fresh GitHub GET, and records fresh sweeps and this very
+  row — so the "5+ of 8 tasks completed" half of the outcome cell counts only
+  approach 2's own plan, not approach 1's, and the iteration/token/cost cells
+  are the run's cumulative totals across both approaches, read live from this
+  run's own `status.json` in the iteration that wrote this row.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
+
