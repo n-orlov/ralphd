@@ -151,6 +151,86 @@ def test_a_status_field_is_rejected_not_honoured():
 
 
 # ---------------------------------------------------------------------------
+# lint_own_terminal_state -- requirement H's plan-time half (task 012,
+# #63's incident, fact 13). The literal v0.8 task 042 JSON no longer exists
+# anywhere reachable from this repo (it lived only in that run's own run
+# directory, torn down once the run finished, and was never committed
+# here). `pi.TASK_042_SUCCESS_CRITERIA` is therefore a reconstruction, not a
+# recovered original: it quotes the one clause that *does* survive verbatim
+# in this repo's own history (commit `5f6b6d9`'s prose, before
+# docs/prds/README.md's row for that run was settled: "required
+# `status.json` to leave `state: running` before its closing report could
+# send") inside a criterion-shaped sentence. This test names that
+# limitation rather than presenting the fixture as byte-identical to the
+# original file.
+# ---------------------------------------------------------------------------
+
+def test_v08_task_042s_reconstructed_criteria_is_rejected():
+    """The fixture is a reconstruction, not a recovered original -- see the
+    section comment above and `plan_ingestion.TASK_042_SUCCESS_CRITERIA`'s
+    own comment for exactly which clause survives verbatim and why the rest
+    does not. It still has to trip the lint the same way the real task did."""
+    payload = {
+        "tasks": [_basic_task("042", successCriteria=pi.TASK_042_SUCCESS_CRITERIA)]
+    }
+    errors = pi.lint_own_terminal_state(payload)
+    assert any("042" in e and "terminal state" in e for e in errors)
+
+
+def test_leaving_state_running_is_rejected_regardless_of_terminal_wording():
+    r"""The `leave/leaves/left/leaving \`state: running\`` clause alone is
+    already v0.8 task 042's exact shape, independent of whether the literal
+    words "terminal state" also appear."""
+    payload = {
+        "tasks": [_basic_task(
+            "001",
+            successCriteria=(
+                "this task's report can only send once status.json leaves "
+                "`state: running`"
+            ),
+        )]
+    }
+    errors = pi.lint_own_terminal_state(payload)
+    assert any("001" in e for e in errors)
+
+
+def test_a_criterion_that_merely_mentions_status_is_accepted():
+    """Both directions asserted, per task 012's own success criteria: a
+    criterion that mentions "status" (or even a *different* thing's
+    terminal-ness, task 008's `finishing` non-terminal *run state* included)
+    without gating this task's own completion on this run's own terminal
+    state must not be flagged."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "001",
+                successCriteria=(
+                    "GET /status exposes the current task counts, and a test "
+                    "asserts each key is present"
+                ),
+            ),
+            _basic_task(
+                "002",
+                successCriteria=(
+                    "`finishing` lands as a non-terminal run state in the "
+                    "transition table, asserted by a test"
+                ),
+            ),
+        ]
+    }
+    assert pi.lint_own_terminal_state(payload) == []
+
+
+def test_own_terminal_state_lint_is_wired_into_proposal_parsing(tmp_path):
+    """`_parse_proposal` (ingestion's step 3) runs `lint_own_terminal_state`
+    alongside `lint_proposal`, not instead of it -- a proposal can fail on
+    both lints at once and both errors surface."""
+    payload = {"tasks": [_basic_task("042", successCriteria=pi.TASK_042_SUCCESS_CRITERIA)]}
+    _, errors = pi._parse_proposal(json.dumps(payload))
+    assert any("terminal state" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
 # ingest_proposal -- ids survive verbatim, every task starts pending
 # ---------------------------------------------------------------------------
 

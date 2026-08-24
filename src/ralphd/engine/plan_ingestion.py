@@ -22,6 +22,10 @@ input, in three ordered steps:
      no empty/boilerplate `successCriteria`, and — the enforcement point for
      requirement C's rule that a proposal "carrying a status field is
      rejected, not honoured" — no task may smuggle a `status` of its own.
+     Requirement H's own-terminal-state rule (task 012, #63's incident) is
+     also enforced at this step, by `lint_own_terminal_state` alongside
+     `lint_proposal` — kept as a separate, separately-tested function rather
+     than folded into `lint_proposal` itself.
 
 Only after all three steps pass does `ingest_proposal` build the harness's
 own `tasks.json` document, initialising every task to `pending` regardless
@@ -51,6 +55,7 @@ and 010.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -196,6 +201,102 @@ def lint_proposal(payload: dict) -> list[str]:
     return errors
 
 
+# ---------------------------------------------------------------------------
+# Requirement H's ingestion-time half (#63's incident, fact 13, task 012):
+# reject a task whose successCriteria makes THIS run's own terminal state a
+# precondition of the task's own completion. v0.8's task 042 is the incident
+# this exists for: approach 1's 43rd (and last) task made its closing report
+# conditional on `status.json` having already left `state: running`, which
+# no iteration executing *inside* that same run can ever observe -- three
+# worker iterations correctly refused to fabricate it and the approach
+# starved on "no task progress in 3 iterations" (docs/prds/README.md's
+# settled row for `selfdev-v08-auditable`, and this repo's own commit
+# `5f6b6d9` before that row was rewritten, are where that account survives).
+#
+# The literal task 042 JSON no longer exists anywhere reachable from this
+# repo: it lived only inside that run's own run directory, which this job's
+# harness tore down once the run finished, and it was never committed here.
+# `TASK_042_SUCCESS_CRITERIA` below is therefore reconstructed, not lifted
+# byte-for-byte from a surviving file -- it quotes the exact surviving
+# clause from commit `5f6b6d9`'s prose ("required `status.json` to leave
+# `state: running` before its closing report could send") verbatim inside a
+# criterion-shaped sentence, which is the closest a fixture can get to
+# "verbatim" once the original file itself is gone. `tests/test_plan_ingestion.py`
+# names this limitation explicitly rather than presenting the fixture as a
+# recovered original.
+TASK_042_SUCCESS_CRITERIA = (
+    "The run's closing report can only send once status.json shows the run "
+    "has left `state: running` and reached a terminal state; the run must "
+    "already be terminal before this task's own success criteria can be "
+    "observed to hold."
+)
+
+# Cue phrases naming THIS run's own terminal state (not terminal states in
+# general -- `finishing` as a non-terminal *run state* in some other task's
+# criteria, e.g. task 008's, must not trip this). Matched literally against
+# lowercased text, deliberately not as one giant regex, so each cue stays
+# readable and auditable on its own.
+_OWN_TERMINAL_STATE_CUES: tuple[str, ...] = (
+    "terminal state",
+    "run is terminal",
+    "run has terminated",
+    "run's own terminal state",
+    "own terminal state",
+    "run being terminal",
+    "run becomes terminal",
+)
+
+# A leave/leaves/left/leaving `state: running` clause is on its own already
+# the own-terminal-state trap (v0.8 task 042's exact shape), independent of
+# whether the literal words "terminal state" also appear.
+_LEAVES_RUNNING_RE = re.compile(
+    r"le(?:ave|aves|ft|aving)\s+`?state:\s*running`?", re.IGNORECASE,
+)
+
+# Words that turn a mere mention of terminal-state vocabulary into a
+# precondition on it -- "before the run is terminal" is the trap; "the run
+# terminating cleanly is described in docs/architecture.md" is not.
+_PRECONDITION_CUES: tuple[str, ...] = (
+    "before", "until", "once", "depends on", "depend on", "requires",
+    "require", "cannot", "can not", "can only", "only once", "after",
+)
+
+
+def _depends_on_own_terminal_state(criteria: str) -> bool:
+    """True if `criteria` gates the task's own completion on this run
+    having already reached a terminal state -- the #63 trap. A criterion
+    that merely mentions "status" or a terminal state as a *fact about the
+    system* (not a precondition of this task's own success) is not flagged;
+    both directions have their own test in `tests/test_plan_ingestion.py`."""
+    lowered = criteria.lower()
+    if _LEAVES_RUNNING_RE.search(lowered):
+        return True
+    has_terminal_cue = any(cue in lowered for cue in _OWN_TERMINAL_STATE_CUES)
+    if not has_terminal_cue:
+        return False
+    return any(cue in lowered for cue in _PRECONDITION_CUES)
+
+
+def lint_own_terminal_state(payload: dict) -> list[str]:
+    """Requirement H's plan-time lint (task 012): reject any task whose
+    `successCriteria` depends on this run's own terminal state, naming the
+    offending task and quoting the criterion. Kept separate from
+    `lint_proposal` (see that function's own docstring) -- the two are
+    always run together by `_parse_proposal`, but each is independently
+    testable and each names its offending task the same way."""
+    errors: list[str] = []
+    for t in payload.get("tasks", []):
+        criteria = t.get("successCriteria", "")
+        if isinstance(criteria, str) and _depends_on_own_terminal_state(criteria):
+            errors.append(
+                f"task {t.get('id')!r}: successCriteria depends on this run's "
+                f"own terminal state, which no iteration executing inside the "
+                f"run can ever observe (#63's incident, v0.8 task 042): "
+                f"{criteria!r}"
+            )
+    return errors
+
+
 def _parse_proposal(text: str | None) -> tuple[dict | None, list[str]]:
     """Turn the raw text of `plan-proposal.json` into `(payload, errors)`,
     running steps 2 and 3 in order. Mirrors
@@ -210,7 +311,7 @@ def _parse_proposal(text: str | None) -> tuple[dict | None, list[str]]:
     shape_errors = validate_proposal_shape(payload)
     if shape_errors:
         return None, shape_errors
-    lint_errors = lint_proposal(payload)
+    lint_errors = lint_proposal(payload) + lint_own_terminal_state(payload)
     if lint_errors:
         return None, lint_errors
     return payload, []
