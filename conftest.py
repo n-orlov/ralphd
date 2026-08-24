@@ -1,47 +1,18 @@
 """Root-level conftest, loaded by pytest before it collects (and therefore
 before it imports) anything under `tests/`.
 
-Purpose (task 005, #50): guarantee that `import tests.conftest` (and the
-sibling absolute imports several test modules use, e.g. `from
-tests.test_roadmap_v07 import closed_issues`) always resolve to *this*
-repository's `tests` package, no matter what else on `sys.path` also
-happens to be importable as `tests` (another project's test suite, a
-decoy package placed ahead of this repo by `PYTHONPATH`, a pytest plugin
-that pushes its own directory onto `sys.path` during early setup, etc.).
+Its whole job is to make the name `tests` mean *this* repository's `tests/`
+directory. **The mechanism, the measurements and the reasoning all live in
+`tests_package_pin.py`** -- read that file, not this one. It is a separate
+module rather than code here because a conftest is only loaded for invocations
+that collect something under this repository, and the guarantee has to hold for
+the ones that do not (`scripts/host_like_pytest.sh` runs an out-of-tree probe;
+it loads that module with `-p tests_package_pin` instead). Keeping the rule
+conftest-only was the original bug's own shape one level out: a guarantee that
+held for the invocation it was written for.
 
-Mechanism: `tests/` has no `__init__.py` (deliberately -- see below), so
-it is a PEP 420 *namespace* package. A namespace package's `__path__` is
-the list of every `sys.path` entry that contains a `tests/` directory,
-in the order those entries are found *at the moment `tests` is first
-imported* -- and submodule lookups (`tests.conftest`) search that
-`__path__` in order, using the first hit. So whichever `tests/` directory
-sits earliest in `sys.path`, at the time of the first `import tests`,
-wins every subsequent `tests.*` import for the rest of the process.
-
-This conftest.py is the earliest hook pytest gives us before that first
-import can happen (it loads before collecting/importing anything under
-`tests/`, including `tests/conftest.py` itself, and after any early
-plugin/`-p` module has already run its own top-level code -- so it can
-undo an early plugin's `sys.path` manipulation too). Inserting this
-repository's root at `sys.path[0]` here, unconditionally, makes this
-repository's `tests/` the first portion in the merge, regardless of what
-was already on `sys.path` when this file started loading.
-
-Deliberately NOT fixed by adding `tests/__init__.py`: that would make
-`tests/` a *regular* package, which changes which base directory pytest's
-own "prepend" import mode inserts on `sys.path` for every module
-collected under `tests/` -- and ~40 of this suite's test modules already
-rely on bare top-level imports (`from test_cli_docker import ...` rather
-than `from tests.test_cli_docker import ...`), which depend on `tests/`
-itself (not its parent) being directly on `sys.path`. Making `tests/` a
-namespace package (the status quo) preserves that; a regular package
-would break all of them at once. `sys.path.insert` below only reorders
-`sys.path`, so it does not touch that dependency either way.
-
-Tested by tests/test_tests_conftest_resolution.py, which plants a decoy
-top-level `tests` package (both a plain `PYTHONPATH` entry and one pushed
-by an early-loading pytest plugin) ahead of this repo on `sys.path` and
-asserts collection still resolves `tests.conftest` to this repo's copy.
+Task 005 (#50), mechanism corrected in #64. Tested by
+tests/test_tests_conftest_resolution.py.
 """
 
 from __future__ import annotations
@@ -50,7 +21,23 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent
+
+# Keep this repository's root first on `sys.path`. This is NOT the `tests`
+# guarantee -- see tests_package_pin.py: a regular `tests` package anywhere on
+# `sys.path` beats a namespace portion at position 0, so ordering was never the
+# lever. It stays for other repo-rooted absolute imports (and so that
+# `import tests_package_pin` below works however pytest was invoked),
+# unconditional so the invariant does not depend on pytest's own prepend-mode
+# bookkeeping.
 _root_str = str(_REPO_ROOT)
 if _root_str in sys.path:
     sys.path.remove(_root_str)
 sys.path.insert(0, _root_str)
+
+from tests_package_pin import pin_tests_package  # noqa: E402  (needs sys.path above)
+
+# Called explicitly rather than left to the module's own import-time call, so
+# that this file states the guarantee it is responsible for instead of relying
+# on an import side effect -- and so it still holds if the module was already
+# imported (as a `-p` plugin) before this conftest loaded.
+pin_tests_package()

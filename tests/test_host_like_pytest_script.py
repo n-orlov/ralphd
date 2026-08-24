@@ -91,3 +91,32 @@ def test_script_places_decoy_ahead_of_repo_on_pythonpath():
     text = SCRIPT.read_text()
     assert "DECOY_CONFTEST" in text
     assert 'PYTHONPATH="$DECOY_ROOT' in text, "decoy must be prepended, not appended"
+
+
+def test_the_decoy_is_a_regular_package_not_a_namespace_portion():
+    """#64: a decoy without `__init__.py` is a namespace *portion*, which loses
+    to plain `sys.path` ordering -- so planting one proved almost nothing. The
+    shape that ships in the wild (and that broke this suite: two installed
+    wheels with a top-level `tests/`) is a regular package, which pre-empts this
+    repo's portion from anywhere on `sys.path`. Assert the script plants that
+    one, or its host-like claim is weaker than the environment it models."""
+    text = SCRIPT.read_text()
+    assert '"$DECOY_ROOT/tests/__init__.py"' in text, (
+        "the decoy must be a regular package (see #64) -- a namespace portion"
+        " decoy is beaten by sys.path order alone"
+    )
+
+
+def test_script_loads_the_tests_package_pin_as_a_plugin():
+    """The script's targets can be outside the repository (the probe above is),
+    and pytest only loads the conftests on the path to its arguments -- so the
+    repo-root conftest.py, and with it the `tests` pin, may never load at all.
+    `-p tests_package_pin` is what makes the guarantee hold for this
+    invocation; without it the regular-package decoy the script itself plants
+    wins. `tests/test_tests_conftest_resolution.py` proves that by mutation."""
+    text = SCRIPT.read_text()
+    assert "-p tests_package_pin" in text, (
+        "out-of-tree targets never load the repo-root conftest, so the pin has"
+        " to arrive as a plugin (#64)"
+    )
+    assert (REPO / "tests_package_pin.py").is_file()
