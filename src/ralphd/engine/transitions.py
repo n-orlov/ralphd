@@ -1,0 +1,242 @@
+"""ralphd.engine.transitions — the declared FSM table for the v0.9 loop.
+
+Task 008 (requirement B, #60 pillar 2): states, legal transitions, guard
+predicate *names* and per-hat entries as ONE data structure, with vigilant
+and non-vigilant expressed as two variants of that one structure rather than
+two implicit paths through `_run_job_core`. Nothing in this module executes
+anything and nothing in `_run_job_core` reads it yet — that cutover is
+task 014. This module is the design; task 009 adds each hat's response
+schema beside its entry, task 013 gives task-state writes one path, task 014
+makes the engine actually walk this table instead of the hand-written
+branches in `loop.py`.
+
+Every transition and guard name below is traceable to a mechanism cited in
+`artifacts/reports/conformance-ledger.md` (task 006/007) or to the PRD's
+acceptance text for requirement B; see the `# ledger guard N` / `# fact N`
+comments next to each entry.
+"""
+
+from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# States
+# ---------------------------------------------------------------------------
+# STEP_STATES are states an iteration or a deterministic harness decision
+# occupies while an approach is running. `finishing` and the three outcomes
+# are RUN states — status.json's top-level `state` field — not step states;
+# `finishing` is explicitly non-terminal (fact 11, #56): it is the window
+# that covers the reflect unwind before the run promotes to its real
+# outcome. `verify` only exists as a *reachable* state in the vigilant
+# variant (see VIGILANT_DELTA below) but is always present in the state
+# inventory so both variants can be rendered from the same enumeration.
+
+STEP_STATES: tuple[str, ...] = (
+    "planning",
+    "worker",
+    "verify",
+    "review",
+    "replan",   # the approach boundary, as an explicit state (requirement B)
+    "reflect",  # the post-finishing unwind iteration (fact 11, #56)
+)
+
+RUN_TERMINAL_STATES: tuple[str, ...] = ("succeeded", "failed", "aborted")
+
+# Every state the table can name, step states plus the run-level ones.
+ALL_STATES: tuple[str, ...] = STEP_STATES + ("finishing",) + RUN_TERMINAL_STATES
+
+# The table's single entry point (requirement B: "entry at `planning`").
+ENTRY_STATE: str = "planning"
+
+
+class Transition:
+    """One legal edge: a target state, gated by a named predicate.
+
+    The predicate itself is not implemented here — only its *name* is
+    declared, so the table stays a pure data structure. Task 014 supplies
+    the guard functions the executor calls by these names.
+    """
+
+    __slots__ = ("guard", "target")
+
+    def __init__(self, target: str, guard: str) -> None:
+        self.target = target
+        self.guard = guard
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return f"Transition({self.target!r}, guard={self.guard!r})"
+
+    def __eq__(self, other: object) -> bool:
+        return (isinstance(other, Transition)
+                and self.target == other.target
+                and self.guard == other.guard)
+
+    def __hash__(self) -> int:
+        return hash((self.target, self.guard))
+
+
+def T(target: str, guard: str) -> Transition:
+    """Short constructor so the table below reads as data, not code."""
+    return Transition(target, guard)
+
+
+# ---------------------------------------------------------------------------
+# The table shared by both variants
+# ---------------------------------------------------------------------------
+# One entry per state -> tuple of legal Transitions, in the order the
+# current engine tries them (first-match-wins is NOT implied here — the
+# executor's guard evaluation order is task 014's business; this is the
+# inventory of what is legal, not a priority list). Terminal states have an
+# empty tuple: there is no transition out of a terminal state, by
+# construction, and a test asserts that emptiness holds for exactly the
+# three RUN_TERMINAL_STATES and nothing else.
+
+TABLE: dict[str, tuple[Transition, ...]] = {
+    "planning": (
+        # ledger guard 1: an instant/infra failure retries planning in
+        # place without costing the approach (loop.py:1978-1985).
+        T("planning", "instant_failure_streak"),
+        # ledger guard 2: an empty plan advances the approach rather than
+        # entering the worker loop (loop.py:1989).
+        T("replan", "empty_plan"),
+        # requirement B: "planning -> worker".
+        T("worker", "planning_produced_tasks"),
+    ),
+    "worker": (
+        # the common case: no verdict yet, same state, next task or retry.
+        T("worker", "no_verdict_yet"),
+        # honoured COMPLETE (ledger guard 8) — verdict ready for review.
+        T("review", "verdict_ready"),
+        # ledger guard 10: three zero-progress iterations fail the approach.
+        T("review", "stagnation_exhausted"),
+        # ledger guard 9: nothing actionable left and something `failed`
+        # routes to review for a verdict instead of stagnating.
+        T("review", "blocked_with_failures"),
+    ),
+    "review": (
+        # ledger guard 12: a VERIFIED verdict is discarded while operator
+        # steering is pending, and the run is routed back to worker so it
+        # gets consumed (fact 10, STEERING_ACTIONABLE_PHASES).
+        T("worker", "steering_pending_at_verified"),
+        # the run's one success edge.
+        T("finishing", "verified"),
+        # rejected, and an approach is still available — replan.
+        T("replan", "rejected_approach_left"),
+        # rejected, and this was the last approach / budget is gone.
+        T("finishing", "rejected_no_approach_left"),
+    ),
+    "replan": (
+        # requirement B: "the approach boundary as a transition with a
+        # guard". Two outcomes only: another approach, or the run is out of
+        # budget/approaches and must finish.
+        T("planning", "budget_and_approach_left"),
+        T("finishing", "budget_or_approach_exhausted"),
+    ),
+    "finishing": (
+        # fact 11 / #56: `finishing` is non-terminal — it always has a
+        # successor, either the reflect unwind or straight to the decided
+        # outcome when reflect is off.
+        T("reflect", "reflect_enabled"),
+        T("succeeded", "reflect_disabled_outcome_succeeded"),
+        T("failed", "reflect_disabled_outcome_failed"),
+        T("aborted", "reflect_disabled_outcome_aborted"),
+    ),
+    "reflect": (
+        # the reflect unwind always ends by promoting to the outcome that
+        # was decided before `finishing` was entered (`_promote_finishing_state`).
+        T("succeeded", "reflect_done_outcome_succeeded"),
+        T("failed", "reflect_done_outcome_failed"),
+        T("aborted", "reflect_done_outcome_aborted"),
+    ),
+    "succeeded": (),
+    "failed": (),
+    "aborted": (),
+}
+
+
+# ---------------------------------------------------------------------------
+# The vigilant delta — the ONLY difference between the two variants
+# ---------------------------------------------------------------------------
+# Requirement B: "the two modes differ only by which table variant is
+# selected". `verify` is reachable only under vigilant (ledger guard 4: the
+# disk-persisted verified record gates it, not a before/after diff), and a
+# vigilant worker also transitions to `verify` per completed task pending
+# verification. Non-vigilant leaves `TABLE` untouched and simply never
+# enters `verify` (`verify`'s successors are empty in that variant, and
+# nothing in `worker`'s non-vigilant successors names it as a target).
+
+VIGILANT_DELTA: dict[str, tuple[Transition, ...]] = {
+    "worker": TABLE["worker"] + (
+        # ledger guard 4: a completed task not yet in the verified record
+        # (this process's or a resumed one's) must be verified.
+        T("verify", "completed_task_pending_verification"),
+    ),
+    "verify": (
+        # requirement B: "verify -> worker | worker(next)". Both targets are
+        # `worker`; the guard name is what distinguishes "retry the same
+        # task" from "move on to the next pending task" — the table records
+        # both edges rather than collapsing them into one, so a test can
+        # name each guard separately even though they share a target.
+        T("worker", "verify_failed_retry_same_task"),
+        T("worker", "verify_passed_next_task"),
+    ),
+}
+
+
+def table_for(vigilant: bool) -> dict[str, tuple[Transition, ...]]:
+    """Compose `TABLE` with `VIGILANT_DELTA` (vigilant) or leave `verify`
+    unreachable (non-vigilant). This is the ONLY function that produces a
+    variant's table — there must never be a second, hand-written
+    non-vigilant table sitting beside this one.
+    """
+    table = dict(TABLE)
+    if vigilant:
+        table.update(VIGILANT_DELTA)
+    else:
+        table["verify"] = ()
+    return table
+
+
+def successors(state: str, vigilant: bool) -> tuple[Transition, ...]:
+    """Every legal transition out of `state` for the given variant. Always
+    returns a tuple (possibly empty) — never raises for a state the table
+    knows about, so successors are enumerable for every declared state."""
+    return table_for(vigilant).get(state, ())
+
+
+def is_legal(state: str, target: str, vigilant: bool) -> bool:
+    """True iff `target` is a legal successor of `state` in this variant."""
+    return any(edge.target == target for edge in successors(state, vigilant))
+
+
+def guard_names(state: str, vigilant: bool) -> tuple[str, ...]:
+    """The declared guard names for `state`'s transitions, in table order."""
+    return tuple(edge.guard for edge in successors(state, vigilant))
+
+
+# ---------------------------------------------------------------------------
+# Per-hat entries
+# ---------------------------------------------------------------------------
+# Which hat (prompt-driven role) occupies each step state. `replan` and
+# `finishing` are deterministic harness decisions with no hat of their own:
+# `replan` is the approach-boundary bookkeeping between review and the next
+# planning entry, and `finishing` is the reflect-unwind gate, not a role an
+# agent plays. Task 009 hangs each hat's response-contract schema beside
+# this same mapping.
+
+STATE_HAT: dict[str, str | None] = {
+    "planning": "planning",
+    "worker": "worker",
+    "verify": "verify",
+    "review": "review",
+    "replan": None,
+    "finishing": None,
+    "reflect": "reflect",
+    "succeeded": None,
+    "failed": None,
+    "aborted": None,
+}
+
+# The hats that need a response-contract schema (task 009) and a prompt.
+# `verify` is included even though it is unreachable in the non-vigilant
+# variant: the hat exists in both, the *transition* into it does not.
+HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect")
