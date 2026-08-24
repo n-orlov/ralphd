@@ -79,9 +79,9 @@ def test_mutation_force_widening_is_really_in_the_guard():
 import json
 import os
 import subprocess
-import sys
 
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+from tests.conftest import RALPHCTL
+
 STUB_DOCKER = REPO_ROOT / "tests" / "stub-docker" / "docker"
 
 

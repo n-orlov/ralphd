@@ -47,6 +47,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (STEERING_APPLIED, STEERING_CONSUMED_FILE,
                                  STEERING_PENDING, RunDir, steering_entries)
+from tests.conftest import RALPHCTL
 
 NOTE = "Stop rewriting the tests; fix the runner instead.\n"
 
@@ -384,9 +385,7 @@ def test_the_live_api_calls_the_note_pending_until_an_iteration_earns_it(tmp_pat
 def _steer_list(registry: Path, run_id: str) -> list[str]:
     import os
     import subprocess
-    import sys
-    ralphctl = Path(sys.executable).parent / "ralphctl"
-    res = subprocess.run([str(ralphctl), "steer", run_id, "--list"],
+    res = subprocess.run([str(RALPHCTL), "steer", run_id, "--list"],
                          env={**os.environ, "RALPHD_REGISTRY": str(registry)},
                          capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, (res.stdout, res.stderr)

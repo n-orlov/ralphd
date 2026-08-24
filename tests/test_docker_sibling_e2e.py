@@ -88,7 +88,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -97,9 +96,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import RALPHCTL
+
 REPO = Path(__file__).parent.parent
 WRAPPER = REPO / "tests" / "docker-hostpath-wrapper" / "docker"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 DOCKER_SOCK = "/var/run/docker.sock"
 REAL_DOCKER = shutil.which("docker")
 

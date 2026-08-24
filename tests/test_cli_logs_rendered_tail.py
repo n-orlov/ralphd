@@ -19,11 +19,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import time
-from pathlib import Path
 
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+from tests.conftest import RALPHCTL
 
 _STUB_ENV = {"STUB_RICH_EVENTS": "1", "STUB_TASKS": "4"}
 

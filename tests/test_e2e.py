@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import RALPHD_ENGINE, with_ralphd_importable
+
 REPO = Path(__file__).parent.parent
 STUB_PI = REPO / "tests" / "stub-pi"
 
@@ -50,18 +52,32 @@ class EngineProc:
         # (e.g. this very test suite running inside a docker-enabled ralphd
         # job); strip them so tests are deterministic regardless of the host
         # environment, and only set them via explicit stub_env.
-        env = {
+        #
+        # PATH, in order (same construction as LiveRun in tests/conftest.py):
+        # STUB_PI first, because tests depend on the stub `pi` shadowing any
+        # real one; then the *resolved* engine's directory, which on a
+        # `pip install --user -e .` layout is ~/.local/bin and not the
+        # interpreter's /usr/bin (#65) -- this entry is what the old
+        # `Path(sys.executable).parent` spelling got wrong; then the
+        # interpreter's own directory, which is still needed on its own
+        # account because tests/stub-pi/pi is `#!/usr/bin/env python3` and
+        # must run under the interpreter running pytest; then ambient PATH.
+        # with_ralphd_importable() wraps the *merged* dict, after stub_env,
+        # because stub_env is where the HOME override arrives and the import
+        # path that has to survive it must be applied last (#67).
+        env = with_ralphd_importable({
             **base_env,
-            "PATH": f"{STUB_PI}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+            "PATH": ":".join([str(STUB_PI), str(RALPHD_ENGINE.parent),
+                              str(Path(sys.executable).parent), os.environ["PATH"]]),
             "STUB_RUN_DIR": str(self.run_dir),
             "RALPHD_RUN_DIR": str(self.run_dir),
             "RALPHD_CONFIG_DIR": str(self.config_dir),
             "RALPHD_WORKSPACE_DIR": str(self.workspace),
             "RALPHD_PORT": str(self.port),
             **(stub_env or {}),
-        }
+        })
         self.proc = subprocess.Popen(
-            ["ralphd-engine"], env=env,
+            [str(RALPHD_ENGINE)], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
     # -- black-box surface -------------------------------------------------
@@ -963,10 +979,10 @@ def test_engine_help_version_pristine_and_exit_zero(tmp_path, flag):
     before = _snapshot(workdir)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("RALPHD_")}
-    env["PATH"] = f"{Path(sys.executable).parent}:{os.environ['PATH']}"
+    env["PATH"] = f"{RALPHD_ENGINE.parent}:{os.environ['PATH']}"
 
     proc = subprocess.run(
-        ["ralphd-engine", flag], cwd=workdir, env=env,
+        [str(RALPHD_ENGINE), flag], cwd=workdir, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
 
     assert proc.returncode == 0

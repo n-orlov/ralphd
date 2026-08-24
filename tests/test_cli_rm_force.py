@@ -20,15 +20,15 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import RALPHCTL
+
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 DOCKER_SOCK = "/var/run/docker.sock"
 IMAGE = "alpine:3"  # tiny stand-in for the job image
 

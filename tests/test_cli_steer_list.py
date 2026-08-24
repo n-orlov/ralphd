@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -38,10 +37,9 @@ from test_cli_ui import StubEngineApi, UiServer, _write_run_with_api, ui
 from ralphd.cli.main import _STEER_SNAPSHOT_NOTICE, _steer_preview
 from ralphd.cli.ui_server import NO_STEERING
 from ralphd.engine.state import STEERING_APPLIED, STEERING_CONSUMED_FILE, STEERING_PENDING
+from tests.conftest import RALPHCTL
 
 __all__ = ["UiServer", "ctl", "ui", "unix_sock"]
-
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 
 ONE = "Focus on the <tests> & drop the docs task.\n\nSecond paragraph.\n"
 TWO = "Then ship it.\n"

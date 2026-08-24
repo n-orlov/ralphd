@@ -21,11 +21,9 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import time
-from pathlib import Path
 
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+from tests.conftest import RALPHCTL
 
 _SIGINT_EXIT_CODE = 130
 

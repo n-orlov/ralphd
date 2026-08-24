@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import RALPHCTL
+
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 
 SECRET = "sk-live-DO-NOT-LEAK-9f3a1c"
 

@@ -21,15 +21,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from ralphd.engine import loop as loop_mod
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir, amendment_entries, write_amendment
-
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+from tests.conftest import RALPHCTL
 
 
 def _supervisor(tmp_path: Path) -> LoopSupervisor:

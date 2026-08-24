@@ -26,17 +26,16 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from ralphd.cli import image
 from ralphd.cli import main as cli
+from tests.conftest import RALPHCTL
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 
 # The hash this checkout's image inputs produce -- computed by the same unit
 # ralphctl uses, never transcribed, so this file cannot rot when a source file

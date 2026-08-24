@@ -23,6 +23,8 @@ from pathlib import Path
 import pytest
 from test_e2e import STUB_PI, EngineProc, free_port
 
+from tests.conftest import RALPHD_ENGINE, with_ralphd_importable
+
 
 def _chmod_tree_ro(root: Path) -> None:
     for p in root.rglob("*"):
@@ -54,9 +56,17 @@ def overlay_engine(tmp_path):
             k: v for k, v in os.environ.items()
             if k not in ("RALPHD_HOST_WORKSPACE", "RALPHD_HOST_RUN_DIR", "RALPHD_RUN_ID")
         }
-        env = {
+        # This fixture bypasses EngineProc.__init__ (it needs /config chmod'd
+        # read-only *before* the engine starts), so it has to repeat what
+        # __init__ does about script/module resolution rather than inherit it:
+        # spawn the *resolved* ralphd-engine and put its directory on PATH
+        # instead of trusting the ambient one (#65), and put this checkout's
+        # import path on the child so the HOME override below does not cost it
+        # `import ralphd` on a `pip install --user -e .` layout (#67).
+        env = with_ralphd_importable({
             **base_env,
-            "PATH": f"{STUB_PI}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+            "PATH": ":".join([str(STUB_PI), str(RALPHD_ENGINE.parent),
+                              str(Path(sys.executable).parent), os.environ["PATH"]]),
             "STUB_RUN_DIR": str(run_dir),
             "RALPHD_RUN_DIR": str(run_dir),
             "RALPHD_CONFIG_DIR": str(config_dir),
@@ -64,14 +74,14 @@ def overlay_engine(tmp_path):
             "RALPHD_PORT": str(port),
             "HOME": str(fake_home),
             **stub_env,
-        }
+        })
         e = EngineProc.__new__(EngineProc)
         e.run_dir = run_dir
         e.config_dir = config_dir
         e.workspace = workspace
         e.port = port
         e.proc = subprocess.Popen(
-            ["ralphd-engine"], env=env,
+            [str(RALPHD_ENGINE)], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         e.fake_home = fake_home
         procs.append(e)

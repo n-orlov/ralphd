@@ -27,11 +27,9 @@ import json
 import os
 import select
 import subprocess
-import sys
 import time
-from pathlib import Path
 
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+from tests.conftest import RALPHCTL
 
 # Slow enough (several seconds of total job runtime) that a buffered
 # implementation's "first" line -- which would only arrive at job end --

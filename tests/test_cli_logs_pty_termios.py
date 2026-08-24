@@ -29,12 +29,10 @@ import os
 import pty
 import signal
 import subprocess
-import sys
 import termios
 import time
-from pathlib import Path
 
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+from tests.conftest import RALPHCTL
 
 # Timeouts here are deliberately generous (task 045 suite hygiene): these
 # tests spawn a real engine plus a real `ralphctl` subprocess under a pty,

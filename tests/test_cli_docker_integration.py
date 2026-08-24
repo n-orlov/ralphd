@@ -18,13 +18,13 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
 import pytest
 
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+from tests.conftest import RALPHCTL
+
 DOCKER_SOCK = "/var/run/docker.sock"
 IMAGE = "alpine:3"  # tiny stand-in for the job image; entrypoint exits at once
 

@@ -33,6 +33,7 @@ import pytest
 
 from ralphd.cli import ui_server
 from ralphd.engine.state import NONTERMINAL_STATES, TERMINAL_STATES
+from tests.conftest import RALPHCTL
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_cli_ui import UiServer, ui
@@ -42,7 +43,6 @@ __all__ = ["UiServer", "ui"]
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 DOCKER_SOCK = "/var/run/docker.sock"
 IMAGE = "alpine:3"  # tiny stand-in for the job image
 

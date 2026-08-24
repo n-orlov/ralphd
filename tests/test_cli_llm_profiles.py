@@ -22,9 +22,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.conftest import RALPHCTL
+
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 
 sys.path.insert(0, str(REPO / "src"))
 from ralphd.cli import llm_profiles

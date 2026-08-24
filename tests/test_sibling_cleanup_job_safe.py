@@ -29,17 +29,16 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
 import pytest
 
 from ralphd.engine.loop import LoopSupervisor
+from tests.conftest import RALPHCTL
 
 REPO = Path(__file__).parent.parent
 SKILL_MD = REPO / "examples" / "skills" / "toolchain-sibling" / "SKILL.md"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 DOCKER_SOCK = "/var/run/docker.sock"
 REAL_DOCKER = shutil.which("docker")
 

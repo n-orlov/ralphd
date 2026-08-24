@@ -43,6 +43,7 @@ import pytest
 
 from ralphd.cli import image
 from ralphd.cli import main as cli
+from tests.conftest import RALPHCTL
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
@@ -422,7 +423,7 @@ def test_doctor_on_a_checkout_says_so(tmp_path):
     reg = tmp_path / "registry"
     (reg / "runs").mkdir(parents=True)
     res = subprocess.run(
-        [str(Path(sys.executable).parent / "ralphctl"), "--json", "doctor"],
+        [str(RALPHCTL), "--json", "doctor"],
         env={**{k: v for k, v in os.environ.items() if k != "RALPHD_IMAGE"},
              "RALPHD_DOCKER": str(STUB_DOCKER), "RALPHD_REGISTRY": str(reg),
              "STUB_DOCKER_IMAGES": SOURCE_TAG},

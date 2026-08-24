@@ -12,14 +12,14 @@ import json
 import os
 import socket
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import RALPHCTL, with_ralphd_importable
+
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
 
 
 class Ctl:
@@ -34,13 +34,20 @@ class Ctl:
         self.prd.write_text("# Test PRD\n\nDo the thing.\n")
 
     def run(self, *argv: str, env: dict | None = None) -> subprocess.CompletedProcess:
-        full_env = {
+        # `env` is caller-supplied and several callers use it to hand ralphctl
+        # a different HOME (tests/test_cli_resume_llm_wiring.py asserts on the
+        # ~/.aws mount it derives from one). On a `pip install --user -e .`
+        # layout that hides `ralphd` from the child just as it does from the
+        # engine, so this shared runner -- imported by ~10 modules via the
+        # `ctl` fixture -- routes the *merged* env through the same helper the
+        # engine launchers use (#67).
+        full_env = with_ralphd_importable({
             **os.environ,
             "RALPHD_DOCKER": str(STUB_DOCKER),
             "RALPHD_REGISTRY": str(self.registry),
             "STUB_DOCKER_LOG": str(self.log),
             **(env or {}),
-        }
+        })
         return subprocess.run([str(RALPHCTL), *argv], env=full_env,
                               capture_output=True, text=True, timeout=60)
 

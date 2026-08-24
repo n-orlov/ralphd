@@ -33,12 +33,12 @@ import ast
 import os
 import pwd
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from ralphd.engine import privsep
+from tests.conftest import RALPHD_ENGINE
 
 REPO = Path(__file__).parent.parent
 SRC = REPO / "src" / "ralphd" / "engine"
@@ -416,8 +416,8 @@ def test_an_unprivileged_engine_runs_and_records_that_it_has_no_boundary(tmp_pat
     env = {**os.environ, "RALPHD_RUN_DIR": str(run_dir),
            "RALPHD_CONFIG_DIR": str(config_dir),
            "RALPHD_WORKSPACE_DIR": str(tmp_path / "ws")}
-    res = subprocess.run([str(Path(sys.executable).parent / "ralphd-engine")],
-                         env=env, capture_output=True, text=True, timeout=60)
+    res = subprocess.run([str(RALPHD_ENGINE)], env=env, capture_output=True,
+                         text=True, timeout=60)
     assert res.returncode == 2, res.stdout + res.stderr  # "no PRD", not a crash
     out = res.stdout + res.stderr
     assert "no uid boundary" in out
@@ -428,7 +428,7 @@ def test_an_unprivileged_engine_runs_and_records_that_it_has_no_boundary(tmp_pat
 def test_version_and_help_still_touch_nothing(tmp_path):
     """--version exits inside parse_args, before the drop: still no side
     effects of any kind (SPEC 13.4's first self-protection bullet)."""
-    engine = str(Path(sys.executable).parent / "ralphd-engine")
+    engine = str(RALPHD_ENGINE)
     res = subprocess.run([engine, "--version"], capture_output=True, text=True,
                          timeout=30, cwd=tmp_path)
     assert res.returncode == 0

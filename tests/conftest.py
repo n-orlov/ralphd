@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import site
 import socket
 import subprocess
 import sys
@@ -19,7 +21,206 @@ import pytest
 
 REPO = Path(__file__).parent.parent
 STUB_PI = REPO / "tests" / "stub-pi"
-RALPHCTL = Path(sys.executable).parent / "ralphctl"
+
+# --- the child's import path under an overridden HOME (#67) ----------------
+# 19 modules launch the engine with HOME pointed at a tmp dir, deliberately:
+# a virgin $HOME is the whole subject of the creds/skills/prompts/llm tests
+# (where ~/.pi/agent/models.json lands, where credentials are placed, that
+# nothing pre-existing is read). On a `pip install --user -e .` layout that
+# override also un-installs the world for the child, because user
+# site-packages is $HOME/.local/lib/pythonX.Y/site-packages and `site`
+# derives it from HOME at interpreter start. The child dies with
+# ModuleNotFoundError before it binds a port -- and the test never sees the
+# traceback, because the engine's stdout is a PIPE nothing reads until the
+# test is already failing. The symptom is `TimeoutError: engine API never
+# came up`, 15 seconds later, in a fixture, with no mention of imports.
+# Measured on tests/test_cli_creds_crud.py before this fix: 1 passed, 7
+# errors in 105s, identical under an interpreter with the console scripts
+# beside it -- so this is a separate defect from #65's script-location bug
+# and no virtualenv hides it.
+#
+# TWO variables are needed, and the reason is worth stating because setting
+# only the obvious one leaves the bug in place:
+#
+#   PYTHONUSERBASE is the load-bearing half. HOME does not just hide
+#   `ralphd`; it hides everything installed with it. `--version` on this box
+#   with HOME overridden and PYTHONPATH=<repo>/src set gets exactly as far as
+#   `src/ralphd/engine/main.py:13` and dies on `import uvicorn` -- uvicorn,
+#   fastapi and pyyaml all live in the same user site-packages. Pinning
+#   PYTHONUSERBASE to the value this interpreter resolved *before* the
+#   override (site.getuserbase(), which reads the real HOME) restores the
+#   whole set at once, and is inert on any layout where user site is not in
+#   play (a venv disables it outright).
+#
+#   PYTHONPATH=<repo>/src is not needed for importability once the above is
+#   set, and is added for a different reason: it decides *which* build the
+#   child imports. These are black-box tests of this tree, so the child
+#   should load this checkout's `ralphd`, not whichever build happens to sit
+#   in site-packages -- which under a non-editable install would be a stale
+#   wheel, and the tests would silently pass or fail against code that is not
+#   the code under review. Prepended, never assigned, because
+#   scripts/host_like_pytest.sh runs the suite with a decoy `tests` package
+#   on $PYTHONPATH and clobbering it would quietly disarm that scenario.
+#
+# Applied at every point the suite spawns this repo's code, not only the
+# engine: `ralphctl` is the same package behind a second console script, so
+# tests/test_cli_docker.py's `Ctl.run` (which lets callers pass a HOME, and
+# test_cli_resume_llm_wiring.py does) needs it just as much.
+REPO_SRC = REPO / "src"
+# Resolved once, at import, from the pytest process's own (real) HOME --
+# reading it later would be reading it through whatever override the caller
+# just applied.
+_USER_BASE = site.getuserbase()
+
+
+def with_ralphd_importable(env: dict[str, str]) -> dict[str, str]:
+    """`env` made safe for an engine child even when it overrides HOME (#67):
+    user site-packages pinned by absolute path, and this checkout's `src/`
+    ahead of it on $PYTHONPATH.
+
+    The PYTHONPATH half is skipped when there is no `src/ralphd` beside these
+    tests (a wheel-only layout), where there is no checkout to prefer and
+    naming a non-existent directory would only mislead whoever debugs the next
+    import failure. PYTHONUSERBASE is set unconditionally: it costs nothing
+    where user site is disabled, and guessing wrong about the layout is the
+    whole of this issue.
+    """
+    out = {**env, "PYTHONUSERBASE": _USER_BASE}
+    if (REPO_SRC / "ralphd").is_dir():
+        inherited = env.get("PYTHONPATH")
+        out["PYTHONPATH"] = os.pathsep.join(
+            [str(REPO_SRC), *([inherited] if inherited else [])])
+    return out
+
+
+# --- console-script resolution (#65) --------------------------------------
+# Every shell-out in this suite needs the absolute path of a console script
+# installed from this repo (`ralphctl`, `ralphd-engine`). What used to stand
+# here was the one-liner `Path(sys.executable).parent / "ralphctl"`, which is
+# only correct when the interpreter and the script share a `bin/` -- true
+# inside a virtualenv, false for `pip install --user -e .` against a system
+# interpreter: there the interpreter is /usr/bin/python3 while the script is
+# ~/.local/bin/ralphctl, so the guess became /usr/bin/ralphctl and every one
+# of the ~45 modules that shells out died on FileNotFoundError.
+#
+# It died *slowly*, which is the part worth engineering against: the argv
+# never reaches an exec, so LiveRun.wait_api()/wait_terminal() below just
+# poll a status.json nobody will ever write until their own timeouts expire.
+# A wrong layout therefore costs hours of wall clock before it reports
+# anything, and reports it as a timeout rather than as "the script is not
+# where I looked". Hence _startup_error()/pytest_configure() below: one
+# clear failure at session start, naming every location searched.
+#
+# The order in _script_candidates() is load-bearing:
+#   1. $RALPHD_TEST_<SCRIPT> -- an explicit operator override outranks any
+#      guess (the same escape hatch PYTHON= gives scripts/host_like_pytest.sh)
+#      and, when set, is *authoritative*: a typo must fail loudly naming
+#      itself rather than silently fall through to the copy the operator was
+#      trying to bypass.
+#   2. beside the interpreter -- this must beat $PATH, not the other way
+#      round: inside a venv the venv's own script is the build under test,
+#      while a stale ~/.local/bin copy can easily sit earlier on $PATH. A
+#      bare shutil.which() would quietly test the wrong build, so it is only
+#      ever consulted as step 3.
+#   3. on $PATH -- the `--user` layout, where the script exists nowhere near
+#      the interpreter and $PATH is the only thing that knows about it.
+SCRIPTS = ("ralphctl", "ralphd-engine")
+
+
+def _override_var(name: str) -> str:
+    """The override environment variable for a console script, *derived* from
+    the script name (ralphctl -> RALPHD_TEST_RALPHCTL) so the two can never
+    drift apart as scripts are added."""
+    return "RALPHD_TEST_" + name.upper().replace("-", "_")
+
+
+def _script_candidates(name: str, interpreter_dir: Path,
+                       environ) -> list[tuple[str, Path | None]]:
+    """Where `name` is looked for, in order, as (description, path) pairs.
+
+    Single source of truth for both the search and the error message, so a
+    candidate cannot be searched without also being reported (or reported
+    without being searched). `path` is None when that source says nothing --
+    e.g. `ralphctl` is not on $PATH at all.
+    """
+    var = _override_var(name)
+    override = environ.get(var)
+    if override:
+        return [(f"${var}", Path(override))]  # authoritative -- see above
+    search_path = environ.get("PATH")
+    on_path = shutil.which(name, path=search_path) if search_path else None
+    return [
+        ("beside the interpreter", interpreter_dir / name),
+        ("on $PATH", Path(on_path) if on_path else None),
+    ]
+
+
+def _resolve_script(name: str, interpreter_dir: Path, environ) -> Path | None:
+    """First candidate that actually exists, or None if none of them do."""
+    for _description, candidate in _script_candidates(name, interpreter_dir, environ):
+        if candidate is not None and candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_ralphctl(interpreter_dir: Path, environ) -> Path | None:
+    return _resolve_script("ralphctl", interpreter_dir, environ)
+
+
+def _resolve_engine(interpreter_dir: Path, environ) -> Path | None:
+    return _resolve_script("ralphd-engine", interpreter_dir, environ)
+
+
+def _startup_error(interpreter_dir: Path, environ) -> str | None:
+    """None when every script in SCRIPTS resolves; otherwise the whole
+    complaint as one string, naming each location searched for each missing
+    script plus the override that would fix it."""
+    problems = []
+    for name in SCRIPTS:
+        if _resolve_script(name, interpreter_dir, environ) is not None:
+            continue
+        var = _override_var(name)
+        lines = [f"cannot find the `{name}` console script this suite shells out to."
+                 " Searched, in order:"]
+        for description, candidate in _script_candidates(name, interpreter_dir, environ):
+            lines.append(f"  - {description}: {candidate if candidate else '(nothing)'}")
+        lines.append(f"Install this repo (`pip install -e .`) into the interpreter"
+                     f" running pytest ({sys.executable}), or set"
+                     f" {var}=/abs/path/to/{name} to point the suite at a"
+                     f" specific build. See #65.")
+        problems.append("\n".join(lines))
+    return "\n\n".join(problems) if problems else None
+
+
+_INTERPRETER_DIR = Path(sys.executable).parent
+
+# Deliberately still a plain `Path`, never None: ~25 modules do
+# `from tests.conftest import RALPHCTL` and `str(RALPHCTL)` straight into an
+# argv, and tests/test_tests_conftest_resolution.py asserts on its value, so
+# the unresolved case must not change this name's type. The fallback below is
+# only ever reached when pytest_configure() is about to abort the session
+# anyway, where it serves purely as the "beside the interpreter" label.
+RALPHCTL = _resolve_ralphctl(_INTERPRETER_DIR, os.environ) or _INTERPRETER_DIR / "ralphctl"
+RALPHD_ENGINE = _resolve_engine(_INTERPRETER_DIR, os.environ) or _INTERPRETER_DIR / "ralphd-engine"
+
+
+def pytest_configure(config):
+    """Turn a missing console script into one immediate, self-explaining
+    session error (#65) instead of ~45 modules' worth of subprocess
+    FileNotFoundErrors that only surface hours later as fixture timeouts.
+
+    Deliberately NOT accompanied by a warning about the interpreter-adjacent
+    guess being wrong. An earlier revision emitted a PytestConfigWarning
+    whenever `ralphctl` resolved away from the interpreter's own bin/, because
+    ~19 modules still computed `Path(sys.executable).parent / "ralphctl"` for
+    themselves and no conftest can reach a constant another module evaluates
+    at its own import time. Those modules now all import RALPHCTL from here,
+    so the condition it fired on -- a `pip install --user -e .` layout -- is
+    simply a supported layout, and a warning on every session of a supported
+    layout is noise that trains operators to ignore warnings."""
+    problem = _startup_error(_INTERPRETER_DIR, os.environ)
+    if problem:
+        raise pytest.UsageError(problem)
 
 
 def free_port() -> int:
@@ -44,17 +245,30 @@ class LiveRun:
         (self.config_dir / "job.yaml").write_text(
             "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items()))
         self.port = free_port()
-        env = {
+        # The engine's PATH: STUB_PI stays *first*, because tests depend on the
+        # stub `pi` shadowing any real one the operator has installed. After it
+        # come the two directories that can hold this repo's own scripts -- the
+        # resolved engine's (#65: on a `--user` layout that is ~/.local/bin,
+        # not the interpreter's bin) and the interpreter's -- and only then the
+        # ambient PATH. Before #65 the engine's own directory was absent here
+        # and `ralphd-engine` was spawned by bare name, so the spawn worked
+        # only when the ambient PATH happened to carry ~/.local/bin.
+        # with_ralphd_importable() wraps the *merged* dict, after stub_env:
+        # stub_env is where the HOME override arrives (#67), so the two
+        # variables that have to survive it are applied last rather than
+        # buried in the defaults where a caller could shadow them by accident.
+        env = with_ralphd_importable({
             **os.environ,
-            "PATH": f"{STUB_PI}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+            "PATH": ":".join([str(STUB_PI), str(RALPHD_ENGINE.parent),
+                              str(_INTERPRETER_DIR), os.environ["PATH"]]),
             "STUB_RUN_DIR": str(self.run_dir),
             "RALPHD_RUN_DIR": str(self.run_dir),
             "RALPHD_CONFIG_DIR": str(self.config_dir),
             "RALPHD_WORKSPACE_DIR": str(self.workspace),
             "RALPHD_PORT": str(self.port),
             **(stub_env or {}),
-        }
-        self.proc = subprocess.Popen(["ralphd-engine"], env=env,
+        })
+        self.proc = subprocess.Popen([str(RALPHD_ENGINE)], env=env,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True)
         (self.run_dir / "host.json").write_text(json.dumps({
@@ -78,7 +292,11 @@ class LiveRun:
         raise TimeoutError(f"job never finished; last status: {status}")
 
     def ralphctl(self, *argv: str) -> subprocess.CompletedProcess:
-        env = {**os.environ, "RALPHD_REGISTRY": str(self.registry)}
+        # Wrapped too, not only the engine: `ralphctl` is the same package
+        # behind a different console script, so any test that hands it a
+        # different HOME hides `ralphd` from it in exactly the same way (#67).
+        env = with_ralphd_importable(
+            {**os.environ, "RALPHD_REGISTRY": str(self.registry)})
         return subprocess.run([str(RALPHCTL), *argv], env=env,
                               capture_output=True, text=True, timeout=60)
 
