@@ -11,6 +11,15 @@ from env vars set by the test:
   STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
   STUB_WORKER_STALLS_BY_APPROACH  comma-separated stall texts, one per
                       approach (task 026, #61 -- structural-wall signature)
+  STUB_WORKER_WORK_FAULT  if set, every Worker invocation emits real
+                      assistant text/tokens (produced traffic) then exits
+                      1 with no verdict reported at all -- a deterministic
+                      "work" fault classification (task 123, #60): unlike
+                      STUB_INSTANT_FAIL_COUNT/STUB_WORKER_STALLS this never
+                      trips the infra-retry wrapper or the stagnation
+                      guard's infra/signal carve-out, so the assigned
+                      task's pre-spawn in-progress claim is expected to
+                      stay in-progress, never rolled back to pending.
   STUB_TOOL_SLEEP     seconds to sleep AFTER emitting `tool_execution_start`
                       but BEFORE emitting the matching `tool_execution_end`
                       inside `emit_rich_preamble` (default 0; only takes
@@ -609,6 +618,17 @@ elif "Role: Worker" in prompt:
             _stall_text = _texts[min(_n, len(_texts)) - 1]
         emit_final(_stall_text)
         sys.exit(0)
+    if os.environ.get("STUB_WORKER_WORK_FAULT"):
+        # Task 123 (#60): a deterministic, produced-traffic-then-nonzero-exit
+        # shape -- classify_fault sees real tokens/final_text (produced_
+        # traffic=True) plus a nonzero, non-signal exit and no known infra
+        # signature in the (empty) error text, so this always resolves
+        # "work", never "infra"/"signal" -- the harness's pre-spawn
+        # in-progress claim on the assigned task must NOT be rolled back
+        # for this shape (contrast STUB_INSTANT_FAIL_COUNT, which is the
+        # "infra" side of the same rollback guard).
+        emit_final("stub: deliberate work failure, no verdict reported")
+        sys.exit(1)
     tool_call = thinking_text = None
     echo_secrets = [s for s in os.environ.get("STUB_ECHO_SECRET", "").split(",") if s]
     if echo_secrets:
@@ -693,6 +713,21 @@ elif "Role: Worker" in prompt:
         # payload, the SAME transitions.task_status_report_errors path
         # review/reflect already go through.
         text = f"completed {picked['id']}"
+        # Task 123 (#60): task 116 dropped the stable human-readable closing
+        # line a completed-plan worker iteration used to emit inline (the
+        # old code mutated tasks.json itself and could see the post-write
+        # state; the new stub can no longer write status, only predict it).
+        # Predict the outcome the harness will apply to THIS payload under
+        # the default non-vigilant contract (`complete` -> `completed`,
+        # matching `_TASK_SATISFIES_DEPENDENCY`/`_PLAN_FULLY_RESOLVED_
+        # STATUSES` above): if every OTHER task is already resolved, this
+        # report finishes the plan in the same iteration that used to say
+        # so, so keep saying so -- tests/test_cli_logs.py and
+        # tests/test_cli_logs_follow_liveness.py assert on this literal
+        # line, unmodified in intent since before task 116.
+        others = [t for t in tasks if t.get("id") != picked["id"]]
+        if all(t["status"] in _PLAN_FULLY_RESOLVED_STATUSES for t in others):
+            text += "\neverything finished"
         if echo_secrets:
             text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
         text += "\n" + json.dumps({"verdict": "complete", "task_id": picked["id"]})

@@ -137,6 +137,11 @@ class LoopSupervisor:
         self._last_fault_class: str | None = None
         self._last_fault_error: str = ""
         self._instant_failure_streak = 0
+        # Task 123 (#60): task ids the harness has already written a
+        # dead-dependency blocked note for (`_step_worker`), so a plan that
+        # stays blocked across several worker iterations in a row does not
+        # grow notes.md by one duplicate line per iteration.
+        self._blocked_notes_written: set[str] = set()
         # Task 010 (#5): the error signature the current instant-failure
         # streak is made of, plus the memoised verdict for the attempt
         # _check_instant_failure() scored last (the infra-retry wrapper
@@ -2400,6 +2405,35 @@ class LoopSupervisor:
             {"task_id": assigned_task_id, "task_status": target})
         return []
 
+    def _record_worker_iteration_verdict(self, iteration_number: int,
+                                          verdict: str,
+                                          task_id: str | None) -> None:
+        """Task 123 (#60): task 116 moved the worker's per-task completion
+        signal off the bare `<promise>COMPLETE</promise>` line (still only
+        emitted for the separate whole-plan marker further down) onto a
+        JSON verdict whose last line is never that literal sentinel, so
+        `IterationResult.saw_complete` -- which only ever recognised the
+        exact sentinel text -- can no longer tell an operator (or a
+        black-box test, e.g. `tests/test_crash_consistency.py`) which
+        iteration actually applied a task's completion. Record it directly
+        in that iteration's own `meta.json`, mirroring how `_verify_task`
+        already enriches a verify iteration's meta with `verifiedTask`/
+        `verifyOutcome` rather than inventing a second convention. Only
+        called once a verdict's contract has genuinely been applied to
+        tasks.json (never for a schema violation or a bare 'no_verdict').
+        """
+        itdir = self.run.iteration_dir(iteration_number)
+        meta_path = itdir / "meta.json"
+        if not meta_path.exists():
+            return
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            meta = {}
+        meta["appliedVerdict"] = verdict
+        meta["appliedTaskId"] = task_id
+        atomic_write_json(meta_path, meta)
+
     async def _ask_router(self, prompt: str) -> tuple[str, dict]:
         """The router's own model call (task 018, requirement E): one tiny,
         UNCOUNTED question -- no iteration slot, no `iterations_used`
@@ -2566,9 +2600,36 @@ class LoopSupervisor:
             selected = scheduler.select_next_task(
                 tasks_before.get("tasks", []))
             assigned_id = selected.get("id") if isinstance(selected, dict) else None
+            if selected is None:
+                # Task 123 (#60): the harness -- not the agent, and not
+                # `tests/stub-pi/pi`'s own emulation -- is the one place
+                # that runs the dependency graph now (task 116 moved
+                # `select_next_task` here), so it is also the one place
+                # that notices a task can NEVER become unblocked (a
+                # `dependsOn` naming a `failed`/`skipped` ancestor) and
+                # says so, once, rather than asking worker.md's prompt or
+                # the stub to notice it independently a second time. Only
+                # written the first time this exact blocked set is seen
+                # (by id) so a plan that stays blocked for several
+                # iterations in a row (e.g. while the stagnation guard
+                # counts down) does not grow notes.md once per iteration.
+                blocked_by = state.task_blocked_by(tasks_before.get("tasks", []))
+                if blocked_by:
+                    new_ids = sorted(set(blocked_by) - self._blocked_notes_written)
+                    if new_ids:
+                        lines = [
+                            f"task {tid} blocked: dependency "
+                            f"{','.join(blocked_by[tid])} failed/skipped, "
+                            "not completed"
+                            for tid in new_ids]
+                        with open(self.run.notes_file, "a") as f:
+                            f.write("\n" + "\n".join(lines) + "\n")
+                        self._blocked_notes_written.update(new_ids)
+            claimed_from = None
             if isinstance(selected, dict) and selected.get("status") in (
                     "pending", "validation-failed"):
                 old_status = selected.get("status")
+                claimed_from = old_status
                 for t in tasks_before.get("tasks", []):
                     if t.get("id") == assigned_id:
                         t["status"] = "in-progress"
@@ -2578,8 +2639,35 @@ class LoopSupervisor:
             before = json.dumps(tasks_before, sort_keys=True)
             extra = self._worker_assignment_extra(selected)
             result = await self.run_iteration("worker", extra=extra)
+            worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)
+
+            # Task 123 (#60): the pre-spawn `in-progress` claim just above
+            # is the harness's OWN bet that this iteration will actually
+            # work the task -- when the iteration never reached the model
+            # at all (an infra fault: broken endpoint, no-traffic timeout,
+            # or an instant zero-work startup failure -- all classify
+            # `"infra"` per `faults.classify_fault`), the bet did not pay
+            # off and the claim must be given back so the NEXT worker
+            # iteration (this one, on retry, or a fresh approach) can pick
+            # the same task up from `pending`/`validation-failed` again
+            # instead of finding it stuck `in-progress` with nothing behind
+            # that status. A genuine WORK fault (the agent reached the
+            # model and failed doing the task) is left `in-progress` --
+            # that is real, if unsuccessful, work attempted on it, and the
+            # existing validation-failed/stagnation machinery already
+            # handles that case. Only a claim made THIS pass is rolled
+            # back (`claimed_from` is None for an already-in-progress pick
+            # resumed from an earlier pass, which is left exactly as it
+            # was found).
+            if claimed_from is not None and self._last_fault_class == "infra":
+                for t in tasks_after.get("tasks", []):
+                    if t.get("id") == assigned_id and t.get("status") == "in-progress":
+                        t["status"] = claimed_from
+                        self.run.write_tasks(tasks_after)
+                        self._emit_task_status(assigned_id, "in-progress", claimed_from)
+                        break
 
             # Task 025 (requirement H, #63) / task 116: a worker's FINAL
             # line may be a JSON `verdict` report -- "unsatisfiable" (a
@@ -2612,6 +2700,8 @@ class LoopSupervisor:
                         self.run.emit("log", level="error", message=message)
                         self._abort_reason = message
                         return ("tail",)
+                    self._record_worker_iteration_verdict(
+                        worker_iter_n, "unsatisfiable", assigned_id)
                     tasks_after = self.run.read_tasks()
                     stagnant = 0
                     if any(task_is_actionable(t)
@@ -2634,6 +2724,8 @@ class LoopSupervisor:
                         self.run.emit("log", level="error", message=message)
                         self._abort_reason = message
                         return ("tail",)
+                    self._record_worker_iteration_verdict(
+                        worker_iter_n, "complete", assigned_id)
                     tasks_after = self.run.read_tasks()
                     stagnant = 0
                     applied_this_iteration = True

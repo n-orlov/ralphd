@@ -195,7 +195,15 @@ def test_sigkill_at_iteration_boundary_then_resume_completes(engine_factory):
         (e1.run_dir / "iterations" / f"{review_number - 1:04d}" / "meta.json").read_text())
     assert worker_meta["phase"] == "worker"
     assert "endedAt" in worker_meta
-    assert worker_meta["sawComplete"] is True
+    # Task 116 (#60 pillar 3) moved per-task completion off the bare
+    # `<promise>COMPLETE</promise>` sentinel `sawComplete` recognised onto a
+    # JSON verdict contract whose last line is never that literal text, so
+    # task 123 gave the worker iteration its own `meta.json` observable
+    # (`_record_worker_iteration_verdict`) recording exactly which verdict
+    # was applied to which task -- assert on that instead of the retired
+    # sentinel-based field.
+    assert worker_meta["appliedVerdict"] == "complete"
+    assert worker_meta["appliedTaskId"] == "002"
     tasks_after_kill = json.loads((e1.run_dir / "tasks.json").read_text())["tasks"]
     assert sum(1 for t in tasks_after_kill if t["status"] == "completed") == 2
 

@@ -36,10 +36,11 @@ immediately starts the next iteration.
    `dependsOn` includes a task that is `failed` or `skipped` (not merely
    still pending — genuinely dead), it can never become unblocked; **the
    harness derives this and marks the dependent `blocked` on every surface
-   (`ralphctl tasks`, the hub, `GET /tasks`'s `taskBlockedBy` map) the
-   moment the dependency reaches `failed`/`skipped` — you do not have to
-   notice or record it yourself**, and the scheduler never assigns such a
-   task to you in the first place.
+   (`ralphctl tasks`, the hub, `GET /tasks`'s `taskBlockedBy` map, and a
+   note appended to the handoff notes file naming the blocked task and its
+   dead dependency) the moment the dependency reaches `failed`/`skipped` —
+   you do not have to notice or record it yourself**, and the scheduler
+   never assigns such a task to you in the first place.
 3. Do the work in the workspace for the assigned task.
 4. Verify your own work against the task's `successCriteria` (actually run the
    commands / check the files — do not assume).

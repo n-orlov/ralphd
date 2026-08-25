@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-from test_e2e import engine_factory
+from test_e2e import EngineProc, engine_factory
 
 __all__ = ["engine_factory"]
 
@@ -78,6 +78,53 @@ def test_instant_worker_failures_abort_fast_without_burning_approaches(engine_fa
     assert len(list((e.run_dir / "iterations").iterdir())) == 4
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
     assert all(t["status"] == "pending" for t in tasks)
+
+
+def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_path_factory):
+    """Task 123 (#60): the harness's pre-spawn `in-progress` claim (task
+    116) on the task a worker iteration is assigned must be rolled back to
+    the task's PRIOR status when that iteration never reaches the model at
+    all (an infra fault -- reuses the exact instant-startup-failure shape
+    the two tests above already assert the terminal state for), but must
+    be LEFT `in-progress` when the iteration genuinely reached the model
+    and failed doing real work on it (a `work` fault) -- a real, if
+    unsuccessful, attempt is not the same claim as a bet that never paid
+    off, and rolling it back too would erase that the task was actually
+    being worked on.
+
+    Two separate engine processes, each over its OWN tmp dir
+    (`engine_factory`'s own fixture reuses one `tmp_path` for every engine
+    it starts within a single test -- fine for every other test in this
+    module, which only ever starts one, but wrong here since the two
+    directions need two independent run dirs).
+    """
+    # Direction 1: infra fault (never reached the model) -> rolled back to
+    # `pending` -- the same STUB_INSTANT_FAIL_COUNT shape as the test above,
+    # asserted independently here so this node's own two assertions do not
+    # depend on that test surviving unmodified.
+    e_infra = engine_factory(
+        job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
+        stub_env={"STUB_INSTANT_FAIL_SKIP": "1", "STUB_INSTANT_FAIL_COUNT": "10",
+                  **FAST_BACKOFF})
+    assert e_infra.proc.wait(timeout=60) == 1
+    infra_tasks = json.loads((e_infra.run_dir / "tasks.json").read_text())["tasks"]
+    assert all(t["status"] == "pending" for t in infra_tasks)
+
+    # Direction 2: work fault (reached the model, failed doing the task) ->
+    # left `in-progress`, never silently reverted to `pending`.
+    e_work = EngineProc(
+        tmp_path_factory.mktemp("work_fault"),
+        {"run_id": "e2e", "iterations": 12, "max_approaches": 1, "on_complete": "exit"},
+        stub_env={"STUB_TASKS": "1", "STUB_WORKER_WORK_FAULT": "1"})
+    try:
+        assert e_work.proc.wait(timeout=60) == 1
+        status = json.loads((e_work.run_dir / "status.json").read_text())
+        assert status["state"] == "failed"
+        work_tasks = json.loads((e_work.run_dir / "tasks.json").read_text())["tasks"]
+        assert len(work_tasks) == 1
+        assert work_tasks[0]["status"] == "in-progress"
+    finally:
+        e_work.stop()
 
 
 def test_genuine_stagnation_guard_still_fails_job_unaffected(engine_factory):

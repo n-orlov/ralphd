@@ -172,12 +172,37 @@ def test_the_builder_carries_raw_counts_rendered_strings_and_the_contract(tmp_pa
         "tasksFailed": 0,
         "tasksFailedValidationExhausted": 0,
         "tasksFailedRequirementUnmet": 0,
+        # Task 021 (#60 pillar 3) added this raw count alongside the failure
+        # ones above; task 123 caught this exact-dict assertion up (it went
+        # red at task 101, unrelated to this wave's own worker/prompt work) --
+        # 0 here too, because MID_PLAN has no dead-dependency subtree either.
+        "tasksBlocked": 0,
         "tasksDisplay": "5/7",
         "tasksSummary": "5/7 completed (1 in-progress, 1 validation-failed)",
         "tasksTrouble": ["1 validation-failed", "1 in-progress"],
         "tasksColumn": "5/7 \u26a0",
         "tasksStale": False, "tasksSource": "file",
     }
+
+
+def test_the_builder_carries_the_blocked_count_and_leads_the_trouble_list(tmp_path):
+    """Task 123 (#60): the rendered-string case the previous test's own name
+    already promised ("raw counts, RENDERED STRINGS and the contract") but
+    never actually exercised for `blocked` -- a dead-dependency subtree must
+    show up as a raw count, in the trouble sentence list (leading it, per
+    `TASK_TROUBLE_KEYS`), and in the compact column's warning glyph, exactly
+    like `validationFailed`/`inProgress` already do above."""
+    blocked_plan = {"version": 1, "goal": "ship it", "tasks": [
+        {"id": "001", "status": "failed"},
+        {"id": "002", "status": "pending", "dependsOn": ["001"]},
+        {"id": "003", "status": "completed"},
+    ]}
+    run_dir = _seed_run_dir(tmp_path / "reg", "blocked-fields",
+                            tasks_text=json.dumps(blocked_plan))
+    fields = read_tasks_doc(run_dir, persist=False).row_fields
+    assert fields["tasksBlocked"] == 1
+    assert fields["tasksTrouble"][0] == "1 blocked"
+    assert fields["tasksColumn"] == "1/3 \u26a0"
 
 
 def test_cli_and_hub_rows_carry_the_identical_task_fields(tmp_path):

@@ -33,7 +33,9 @@ from scratch, trusting nothing the worker wrote about its own work.
    one sentence, list which criteria DID verify and with what evidence, and
    propose a concrete follow-up task (title plus successCriteria) closing
    just that gap — so the next worker carves out the gap instead of the loop
-   stalling on a `failed` task.
+   stalling on a `failed` task. `reason` is what becomes the task's own
+   `validationNotes` (step 3 above), so this handoff is the only place that
+   record can carry it.
 
 ## Rules
 

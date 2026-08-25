@@ -29,7 +29,7 @@ from pathlib import Path
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "src" / "ralphd" / "prompts"
 
 # the step that records an ordinary failing verdict; the handoff refines it
-FAILING_VERDICT_ANCHOR = "4. If ANY criterion is not met"
+FAILING_VERDICT_ANCHOR = "if ANY criterion is not met"
 
 
 def _task_verify_text() -> str:
@@ -42,9 +42,9 @@ def _last_attempt_step() -> str:
     """The last-attempt handoff step's text, up to the next heading/step."""
     text = _task_verify_text()
     match = re.search(
-        r"^5\.\s(.*?)(?=^\d+[a-z]?\.\s|^#)", text, re.DOTALL | re.MULTILINE)
+        r"^4\.\s(.*?)(?=^\d+[a-z]?\.\s|^#)", text, re.DOTALL | re.MULTILINE)
     assert match, (
-        "task-verify.md has no `5.` step describing what a failing verdict on "
+        "task-verify.md has no `4.` step describing what a failing verdict on "
         "the LAST available validation attempt must hand off (#42)")
     return match.group(1)
 
@@ -68,13 +68,13 @@ def test_task_verify_has_a_last_attempt_handoff_step():
 def test_the_last_attempt_step_says_how_to_recognise_the_last_attempt():
     _assert_all("recognise the last attempt", [
         r"validationAttempts",
-        r"third miss marks it `failed`",
+        r"third miss\s*\n?\s*marks it `failed`",
     ])
 
 
 def test_the_last_attempt_step_requires_the_residual_gap_in_one_sentence():
     _assert_all("name the residual gap in one sentence", [
-        r"name the residual gap\s*\n?\s*in one sentence",
+        r"name the residual gap in\s*\n?\s*one sentence",
     ])
 
 
@@ -88,13 +88,13 @@ def test_the_last_attempt_step_requires_a_concrete_follow_up_task():
     _assert_all("propose a follow-up task", [
         r"propose a concrete\s*\n?\s*follow-up task",
         r"title plus\s*\n?\s*successCriteria",
-        r"closing just that gap",
+        r"closing\s*\n?\s*just that gap",
     ])
 
 
 def test_the_last_attempt_step_says_why_the_handoff_matters():
     _assert_all("why a precise handoff matters", [
-        r"instead of the loop stalling on a `failed`",
+        r"instead of the loop\s*\n?\s*stalling on a `failed`",
     ])
 
 
@@ -104,7 +104,7 @@ def test_the_last_attempt_step_follows_the_failing_verdict_step():
         f"task-verify.md no longer contains {FAILING_VERDICT_ANCHOR!r}; "
         "retarget this test at whichever step records a failing verdict")
     verdict_at = text.index(FAILING_VERDICT_ANCHOR)
-    handoff_at = text.index("5. If this failing verdict")
+    handoff_at = text.index("4. If this rejecting verdict")
     assert verdict_at < handoff_at, (
         "the last-attempt handoff step must come after the step that records "
         f"a failing verdict, but the verdict step is at {verdict_at} and the "
