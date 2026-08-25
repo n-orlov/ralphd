@@ -334,7 +334,7 @@ def test_the_module_map_check_would_catch_the_missing_v06_modules():
     for module in ("cli/image.py", "engine/pricing_aws.py"):
         assert module in modules
         assert _module_map_problems(_without(section, module), modules), module
-    invented = section + "\n| `src/ralphd/engine/scheduler.py` | queues jobs |"
+    invented = section + "\n| `src/ralphd/engine/nonexistent_module.py` | queues jobs |"
     assert _module_map_problems(invented, modules)
 
 
