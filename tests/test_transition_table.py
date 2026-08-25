@@ -1,8 +1,12 @@
 """Task 008: the declared transition table is data, complete, and the two
 variants differ only by the declared delta — not by two hand-written tables.
 
-No engine cutover is asserted here (that is task 014's job); these tests
-only prove the table itself is a correct, enumerable design.
+Task 014 cut the engine over to this table (`engine.loop`'s `_run_job_core`
+now drives it through `TransitionExecutor`); the behavioural proof of that
+cutover (illegal transition refused, variants differ only by selection, no
+legacy dual path) lives in `tests/test_transition_executor_cutover.py`, not
+here. These tests only prove the table itself is a correct, enumerable
+design.
 """
 
 from __future__ import annotations
@@ -180,13 +184,15 @@ def test_deterministic_states_have_no_hat():
 
 
 # ---------------------------------------------------------------------------
-# No engine cutover yet
+# The engine cutover (task 014)
 # ---------------------------------------------------------------------------
 
-def test_loop_py_does_not_yet_import_the_table():
-    """Task 008 is declaration only; task 014 does the cutover. If loop.py
-    starts importing this module before task 014 lands, that is a sign the
-    plan's ordering slipped, not a bug in this test."""
+def test_loop_py_now_imports_the_table():
+    """Task 008 was declaration only; task 014 is the cutover -- loop.py now
+    drives this table instead of a hand-written imperative flow. See
+    tests/test_transition_executor_cutover.py for the behavioural proof
+    (illegal transition refused, variants differ only by selection)."""
     loop_src = (REPO_ROOT / "src" / "ralphd" / "engine" / "loop.py").read_text()
-    assert "engine.transitions" not in loop_src
-    assert "from ralphd.engine import transitions" not in loop_src
+    assert ("from . import transitions" in loop_src
+            or "from ralphd.engine import transitions" in loop_src
+            or "engine.transitions" in loop_src)

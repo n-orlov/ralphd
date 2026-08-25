@@ -52,8 +52,11 @@ class Transition:
     """One legal edge: a target state, gated by a named predicate.
 
     The predicate itself is not implemented here — only its *name* is
-    declared, so the table stays a pure data structure. Task 014 supplies
-    the guard functions the executor calls by these names.
+    declared, so the table stays a pure data structure. Task 014's
+    `TransitionExecutor` and `LoopSupervisor`'s `_step_*` handlers compute
+    each guard's truth value at runtime and pass the *name* through to
+    `is_legal`/`TransitionExecutor.advance` for the refusal message and the
+    audit trail — the table itself holds no callable.
     """
 
     __slots__ = ("guard", "target")
@@ -106,11 +109,19 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("worker", "no_verdict_yet"),
         # honoured COMPLETE (ledger guard 8) — verdict ready for review.
         T("review", "verdict_ready"),
-        # ledger guard 10: three zero-progress iterations fail the approach.
-        T("review", "stagnation_exhausted"),
         # ledger guard 9: nothing actionable left and something `failed`
         # routes to review for a verdict instead of stagnating.
         T("review", "blocked_with_failures"),
+        # ledger guard 10 (task 014 correction, verified against
+        # loop.py's actual runtime shape at the cutover: `stagnant >= 3`
+        # leaves `verdict_ready` False, so the run goes straight to the
+        # approach boundary -- `_archive_approach` then the next approach
+        # -- WITHOUT a review verdict ever being requested. The ledger's
+        # own guard-10 citation says "fail the approach", not "route to
+        # review"; task 008's first draft of this row said `review`, which
+        # this task's cutover proved wrong against the code it now
+        # executes rather than merely declares.
+        T("replan", "stagnation_exhausted"),
     ),
     "review": (
         # ledger guard 12: a VERIFIED verdict is discarded while operator
@@ -240,6 +251,62 @@ STATE_HAT: dict[str, str | None] = {
 # `verify` is included even though it is unreachable in the non-vigilant
 # variant: the hat exists in both, the *transition* into it does not.
 HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect")
+
+
+# ---------------------------------------------------------------------------
+# The runtime primitive that walks this table (task 014, requirement B)
+# ---------------------------------------------------------------------------
+# "One module holds the table and nothing else holds transition logic"
+# (requirement B's acceptance): the executor that refuses an edge the table
+# above does not list lives HERE, beside the table it enforces, rather than
+# in a second module. `engine.loop`'s step handlers (`_step_planning`,
+# `_step_worker`, `_step_review`, `_step_replan`) compute the guard that
+# fired and call `LoopSupervisor._advance`, which delegates to exactly this
+# class -- nothing in `loop.py` re-implements `is_legal`'s check.
+
+
+class IllegalTransition(RuntimeError):
+    """Raised when a caller asks the executor to move to a target state the
+    declared table does not list as a legal successor of the current state,
+    for the variant in force. The refusal happens HERE -- inside the one
+    runtime primitive every state move must pass through -- not by a test
+    reading `TABLE`/`VIGILANT_DELTA` back and asserting a property about
+    them (requirement B's acceptance: "by driving an illegal one and seeing
+    it refused, not by reading the table back").
+    """
+
+    def __init__(self, state: str, target: str, guard: str, vigilant: bool) -> None:
+        self.state = state
+        self.target = target
+        self.guard = guard
+        self.vigilant = vigilant
+        variant = "vigilant" if vigilant else "non-vigilant"
+        super().__init__(
+            f"illegal transition: {state!r} -> {target!r} (guard={guard!r}, "
+            f"{variant} variant) is not in the declared table"
+        )
+
+
+class TransitionExecutor:
+    """Advances a run's FSM position by exactly one table-declared edge at a
+    time. `vigilant` selects the table variant (`table_for`) -- the ONLY
+    difference between the two modes' behaviour here (requirement B: "the
+    two modes differ only by which table variant is selected"); there is no
+    second, hand-written non-vigilant executor anywhere.
+    """
+
+    __slots__ = ("vigilant",)
+
+    def __init__(self, vigilant: bool) -> None:
+        self.vigilant = vigilant
+
+    def advance(self, state: str, target: str, guard: str) -> str:
+        """Move from `state` to `target` via the named `guard`'s edge, or
+        raise `IllegalTransition`. Returns `target` on success so a caller
+        can write `state = executor.advance(state, target, guard)`."""
+        if not is_legal(state, target, self.vigilant):
+            raise IllegalTransition(state, target, guard, self.vigilant)
+        return target
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from . import state
+from . import transitions
 from .config import (
     CONFIG_DIR,
     DEFAULT_INFRA_RETRY_BACKOFF_S,
@@ -219,6 +220,16 @@ class LoopSupervisor:
         # for the whole life of a run with `reflect: false` (there, _finish()
         # writes the real terminal state immediately and this is never set).
         self._pending_terminal: tuple[str, str, dict] | None = None
+        # Task 014 (requirement B, #60 pillar 2): the FSM position
+        # `_run_job_core` walks (`engine.transitions.STEP_STATES`) and the
+        # ONE runtime primitive allowed to move it -- constructed once, up
+        # front, from `cfg.vigilant`, which is the ONLY way the two modes'
+        # behaviour differs here (there is no second, hand-written
+        # non-vigilant executor). `self._approach` is set for real in
+        # `_run_job_core` once `_resume_point()` has run; `None` here is
+        # just "not started yet".
+        self._executor = transitions.TransitionExecutor(cfg.vigilant)
+        self._approach: int | None = None
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
     REFUND_KINDS = ("infra", "grace")
@@ -1925,6 +1936,24 @@ class LoopSupervisor:
         decided, not necessarily what `state` reads on status.json the
         instant this coroutine returns -- see `_finish()`/run_job() for the
         `finishing` window that covers the reflect iteration still ahead.
+
+        Task 014 (requirement B, #60 pillar 2): this is now a plain
+        dispatch loop over `engine.transitions`' declared table -- the
+        `planning` / `worker` / `review` / `replan` branch-and-while
+        sequencing that used to live here directly has been replaced, not
+        wrapped, by the `_step_*` handlers below. Each handler runs exactly
+        the guard computation the ledger cites for its state and returns
+        which declared edge fired; `self._advance()` is the ONLY place a
+        state actually changes, and it refuses (`transitions.IllegalTransition`)
+        anything the table does not list for `self.cfg.vigilant`'s variant.
+        `verify` is walked the same way, nested inside `_step_worker` (it
+        always returns straight to `worker`, per the table, before that
+        method's own state-changing return). The two exceptional escapes
+        that predate the table -- budget exhaustion (with its grace-review
+        attempt) and the instant-failure fail-fast abort -- are not
+        table-declared edges (the PRD's minimum transition list does not
+        name them) and remain short-circuit returns straight to the tail,
+        exactly as before.
         """
         # Task 022 (#30): read the ending fields before overwriting them.
         previous_endings = self._previous_endings()
@@ -1952,246 +1981,38 @@ class LoopSupervisor:
         self.run.emit("state", state="running",
                       resumed=self._resuming_existing_run_dir())
         start_approach, resuming = self._resume_point()
+        self._approach = start_approach
+        skip_planning = resuming
+        step = transitions.ENTRY_STATE  # "planning"
         try:
-            for approach in range(start_approach, self.cfg.max_approaches + 1):
-                self.run.update_status(approach=approach)
-                if not self.budget_left():
-                    # Task 002: covers the resume edge case where a prior
-                    # process already completed every task for this
-                    # approach but the process died/ran out of budget
-                    # before any review ran at all.
-                    if await self._maybe_grace_review(approach):
-                        return "succeeded"
+            while True:
+                if step == "planning":
+                    outcome = await self._step_planning(skip_planning)
+                    skip_planning = False
+                elif step == "replan":
+                    outcome = self._step_replan()
+                elif step == "worker":
+                    outcome = await self._step_worker()
+                elif step == "review":
+                    outcome = await self._step_review()
+                else:  # pragma: no cover - defensive only: the executor
+                    # already refuses any target outside the declared
+                    # table, so `step` can only hold a value one of the
+                    # branches above handles.
+                    raise AssertionError(f"no step handler for state {step!r}")
+                kind = outcome[0]
+                if kind == "done":
+                    return outcome[1]
+                if kind == "tail":
                     break
-                skip_planning = resuming and approach == start_approach
-                if not skip_planning:
-                    self.run.emit("phase", phase="planning", approach=approach)
+                _, target, guard = outcome
+                step = self._advance(step, target, guard)
 
-                    # Retry planning in place (same approach, task 059)
-                    # for as long as it keeps hitting instant startup/infra
-                    # failures -- an empty tasks.json produced by a crashed
-                    # planning invocation is not a genuine "planning
-                    # produced nothing useful" situation that should cost
-                    # an approach; it's the same class of fault the worker
-                    # loop's stagnation guard must not score either.
-                    while True:
-                        await self._gate()
-                        presult = await self.run_iteration("planning")
-                        if self._check_instant_failure(presult, self.iterations_used):
-                            break  # abort_reason set; budget_left() now False
-                        if self._instant_failure_streak and self.budget_left():
-                            continue
-                        break
-                    if not self.budget_left():
-                        break
-                    if not self.run.read_tasks().get("tasks"):
-                        self.run.emit("log", level="error",
-                                      message="planning produced no tasks.json")
-                        continue
-
-                # Task 008: establish (or backfill, for a run resumed from
-                # before this feature existed) a criteriaFingerprint
-                # baseline for every task before the worker loop's first
-                # before/after diff -- otherwise the fingerprint field
-                # appearing for the first time inside that diff would look
-                # like spurious task progress.
-                self._ensure_criteria_baseline()
-
-                # worker loop
-                stagnant = 0
-                verdict_ready = False
-                while self.budget_left():
-                    await self._gate()
-                    tasks_before = self.run.read_tasks()
-                    before = json.dumps(tasks_before, sort_keys=True)
-                    result = await self.run_iteration("worker")
-                    tasks_after = self.run.read_tasks()
-                    self._warn_if_batched(tasks_before, tasks_after)
-
-                    if self.cfg.vigilant:
-                        # Do NOT gate this on a before/after diff scoped to
-                        # this single run_iteration() call (task 052): if
-                        # the engine crashed after a prior worker iteration
-                        # completed a task but before (or during) its verify
-                        # iteration, a resumed process's very first snapshot
-                        # already shows that task as "completed", so a
-                        # before/after diff taken *this* process would never
-                        # see it as newly-completed again and its mandatory
-                        # verification would be silently skipped forever.
-                        # Instead, consult the engine-owned, disk-persisted
-                        # verified-task record (survives crash/resume) --
-                        # anything currently "completed" that isn't in it
-                        # still needs a verify iteration, whether it just
-                        # completed in this process or was left over from a
-                        # killed prior one.
-                        verified_ids = self.run.read_verified_tasks()
-                        pending_verify = [
-                            t for t in tasks_after.get("tasks", [])
-                            if t.get("status") == "completed"
-                            and t["id"] not in verified_ids
-                        ]
-                        if not pending_verify:
-                            self._warn_if_verify_gate_empty(tasks_after)
-                        for task in pending_verify:
-                            if self.budget_left():
-                                await self._gate()
-                                await self._verify_task(task)
-                        # Re-read after any verification-driven status updates
-                        tasks_after = self.run.read_tasks()
-
-                    # Task 008: a worker that rewrites a task's successCriteria
-                    # after that task has already failed verification at
-                    # least once is quietly moving the bar instead of doing
-                    # the work -- flag it persistently so review (task 009)
-                    # can demand independent re-verification of the new text.
-                    self._check_criteria_edits(tasks_after)
-
-                    if self._check_instant_failure(result, self.iterations_used):
-                        break
-                    if self._instant_failure_streak:
-                        # An instant startup/infra failure that hasn't yet
-                        # hit the abort threshold: must not count as either
-                        # progress or no-progress evidence (task 059) --
-                        # skip stagnation bookkeeping entirely this pass.
-                        continue
-
-                    after = json.dumps(tasks_after, sort_keys=True)
-                    # Task 046 (#55): the COMPLETE the loop acts on is the
-                    # HONOURED one -- the marker cross-checked against the plan
-                    # that was just re-read -- not the raw string the agent
-                    # emitted. A signal is a claim about tasks.json, and
-                    # tasks.json is right here; refusing an unearned one is
-                    # strictly stronger than any assertion about how the marker
-                    # was formatted, because it does not depend on formatting at
-                    # all. Both uses below must read `honoured_complete`, and the
-                    # stagnation one especially: resetting the counter on the RAW
-                    # marker would let an agent that emits COMPLETE every
-                    # iteration while changing nothing hold `stagnant` at 0
-                    # forever -- trading a false conclusion for an endless loop.
-                    outstanding = (self._outstanding_for_completion(tasks_after)
-                                   if result.saw_complete else [])
-                    honoured_complete = result.saw_complete and not outstanding
-                    if outstanding:
-                        names = ", ".join(
-                            f"{t.get('id', '?')} ({t.get('status', 'unknown')})"
-                            for t in outstanding[:10])
-                        self.run.emit(
-                            "log", level="warning",
-                            message=(
-                                f"iteration {self.iterations_used} signalled "
-                                f"COMPLETE with "
-                                f"{len(outstanding)} task(s) not completed or "
-                                f"skipped: {names}; refusing the signal and "
-                                "continuing the worker loop (task 046, #55)"))
-                    stagnant = stagnant + 1 if (before == after and not honoured_complete
-                                                and not result.interrupted) else 0
-                    blocked = self._unresolved_failures(tasks_after)
-                    if stagnant and blocked:
-                        # Task 024 (#33): the plan holds no task a worker
-                        # iteration could still pick up, and at least one is
-                        # `failed` -- so the worker CANNOT signal COMPLETE
-                        # (worker.md recognises only completed/skipped) and it
-                        # just spent a whole iteration without changing
-                        # tasks.json. Before this, the run sat here until the
-                        # stagnation guard failed the approach and the next one
-                        # replanned the whole wave against an already-finished
-                        # repo; the only escape was an operator editing the
-                        # record by hand (the `043d` incident). Route to review
-                        # instead: entry to review is the engine's decision, and
-                        # a verdict on work-with-a-hole is worth strictly more
-                        # than a replan. It is still only entry -- the reviewer
-                        # decides whether the run succeeded.
-                        #
-                        # Why gated on `stagnant` rather than firing the moment
-                        # a task fails: the worker's two legitimate resolutions
-                        # (carve the residual gap into a NEW task, or relabel
-                        # `skipped` with an honest justification -- worker.md's
-                        # completion-signal section) both need one iteration to
-                        # apply, and either one makes tasks.json change. So the
-                        # worker always gets that iteration; only a worker that
-                        # demonstrably did nothing with it hands the run to
-                        # review.
-                        names = ", ".join(
-                            f"{t['id']} ({task_failure_kind(t)})" for t in blocked)
-                        self.run.emit(
-                            "log", level="warning",
-                            message=(
-                                f"no task left for a worker iteration to act on "
-                                f"and {len(blocked)} failed: {names}; routing to "
-                                "review for a verdict rather than stagnating "
-                                "(task 024, #33)"))
-                        verdict_ready = True
-                        break
-                    if stagnant >= 3:
-                        self.run.emit("log", level="error",
-                                      message="3 iterations with no task progress; "
-                                              "failing approach")
-                        break
-                    if honoured_complete:
-                        verdict_ready = True
-                        self.run.emit("signal", signal="COMPLETE")
-                        break
-
-                if not self.budget_left():
-                    # Task 002: a job whose worker loop ran out of budget
-                    # with every task already completed -- whether or not
-                    # the worker happened to signal COMPLETE on that final
-                    # iteration -- gets exactly one off-budget grace review
-                    # rather than going terminal failed/unverified with all
-                    # work done and no reviewer ever having looked at it.
-                    if await self._maybe_grace_review(approach):
-                        return "succeeded"
-                    break
-                if not verdict_ready:
-                    self._archive_approach(approach)
-                    continue
-
-                # review
-                await self._gate()
-                self.run.emit("phase", phase="review", approach=approach)
-                review = await self.run_iteration(
-                    "review", extra=self._review_extra_context())
-                while review.saw_verified and self.run.pending_steering():
-                    # Refuse to let a VERIFIED verdict make the run terminal
-                    # while operator steering still sits unconsumed. review
-                    # and verify are pure verification phases that never act
-                    # on steering (STEERING_ACTIONABLE_PHASES); if steering
-                    # lands just before what would otherwise be the final
-                    # VERIFIED review, going terminal here would strand it
-                    # forever -- nothing after a terminal-succeeded run ever
-                    # reads pending steering again. Instead: discard this
-                    # verdict, run one more (actionable) worker iteration so
-                    # the steering actually gets consumed, then re-review.
-                    names = ", ".join(p.name for p in self.run.pending_steering())
-                    self.run.emit(
-                        "log", level="warning",
-                        message=(f"steering pending ({names}) at VERIFIED verdict; "
-                                 "deferring, routing back to worker to consume it"))
-                    if not self.budget_left():
-                        break
-                    await self._gate()
-                    self.run.emit("phase", phase="worker", approach=approach)
-                    await self.run_iteration("worker")
-                    if not self.budget_left():
-                        break
-                    await self._gate()
-                    self.run.emit("phase", phase="review", approach=approach)
-                    review = await self.run_iteration(
-                        "review", extra=self._review_extra_context())
-                if review.saw_verified and not self.run.pending_steering():
-                    self.run.emit("signal", signal="VERIFIED")
-                    self._finish("succeeded", "verified",
-                                **self._unconsumed_steering_patch())
-                    return "succeeded"
-                self.run.emit("log", message=f"review rejected approach {approach}")
-                self._archive_approach(approach)
-                self._write_composite_prd(approach)
-
-            state = "aborted" if self._abort_reason else "failed"
-            self._finish(state, "unverified",
+            final_state = "aborted" if self._abort_reason else "failed"
+            self._finish(final_state, "unverified",
                         reason=self._abort_reason or self._terminal_reason_note,
                         **self._unconsumed_steering_patch())
-            return state
+            return final_state
         except Exception as exc:  # engine bug — record, don't vanish
             # Deliberately still `Exception`, not BaseException: the
             # per-iteration containment boundary in _run_iteration_once
@@ -2199,12 +2020,336 @@ class LoopSupervisor:
             # anything reaching here that is NOT an Exception is a real
             # shutdown request (KeyboardInterrupt/SystemExit, or a cancel()
             # on this coroutine) and must unwind the engine rather than be
-            # rewritten into a terminal "engine error" verdict.
+            # rewritten into a terminal "engine error" verdict. A refused
+            # transition (transitions.IllegalTransition) is deliberately
+            # caught here too: an engine bug that proposes an edge the
+            # table does not list is exactly the class of error this
+            # boundary exists for.
             self.run.emit("log", level="error", message=f"engine error: {exc!r}")
             self._finish("failed", "unverified",
                         reason=f"engine error: {exc}",
                         **self._unconsumed_steering_patch())
             return "failed"
+
+    def _advance(self, state: str, target: str, guard: str) -> str:
+        """The one place `_run_job_core`'s dispatch loop moves its FSM
+        position between the step states named in `engine.transitions`.
+        Delegates entirely to `self._executor` (a
+        `transitions.TransitionExecutor`, constructed once in `__init__`
+        from `self.cfg.vigilant`) -- this method holds no transition logic
+        of its own, so there is exactly one place an illegal edge can be
+        refused, and it is not here.
+        """
+        return self._executor.advance(state, target, guard)
+
+    async def _step_planning(self, skip_planning: bool) -> tuple:
+        """The `planning` state. Guards: `instant_failure_streak` (self-loop,
+        handled by the inner retry `while True` without ever leaving this
+        method -- an in-place retry is not a state CHANGE), `empty_plan`
+        (-> replan) and `planning_produced_tasks` (-> worker). Returns
+        `("done", <state>)` on an off-budget grace-reviewed success,
+        `("tail",)` to fall straight to the terminal-failure/-abort tail
+        (budget ran out with no grace review, or an instant-failure streak
+        just tripped `self._abort_reason`), or `("advance", target, guard)`.
+        """
+        approach = self._approach
+        self.run.update_status(approach=approach)
+        if not self.budget_left():
+            # Task 002: covers the resume edge case where a prior process
+            # already completed every task for this approach but the
+            # process died/ran out of budget before any review ran at all.
+            if await self._maybe_grace_review(approach):
+                return ("done", "succeeded")
+            return ("tail",)
+        if not skip_planning:
+            self.run.emit("phase", phase="planning", approach=approach)
+
+            # Retry planning in place (same approach, task 059) for as long
+            # as it keeps hitting instant startup/infra failures -- an empty
+            # tasks.json produced by a crashed planning invocation is not a
+            # genuine "planning produced nothing useful" situation that
+            # should cost an approach; it's the same class of fault the
+            # worker loop's stagnation guard must not score either. This IS
+            # the table's `instant_failure_streak` self-loop (planning ->
+            # planning); it stays an in-process retry rather than a real
+            # dispatch-level revisit because nothing else changes between
+            # attempts.
+            while True:
+                await self._gate()
+                presult = await self.run_iteration("planning")
+                if self._check_instant_failure(presult, self.iterations_used):
+                    break  # abort_reason set; budget_left() now False
+                if self._instant_failure_streak and self.budget_left():
+                    continue
+                break
+            if not self.budget_left():
+                return ("tail",)
+            if not self.run.read_tasks().get("tasks"):
+                self.run.emit("log", level="error",
+                              message="planning produced no tasks.json")
+                return ("advance", "replan", "empty_plan")
+
+        # Task 008: establish (or backfill, for a run resumed from before
+        # this feature existed) a criteriaFingerprint baseline for every
+        # task before the worker loop's first before/after diff --
+        # otherwise the fingerprint field appearing for the first time
+        # inside that diff would look like spurious task progress. Runs
+        # exactly once per approach, whether planning ran or was skipped
+        # (a resumed process's first visit to `worker`).
+        self._ensure_criteria_baseline()
+        return ("advance", "worker", "planning_produced_tasks")
+
+    def _step_replan(self) -> tuple:
+        """The `replan` state: the approach boundary as a transition with a
+        guard (requirement B). `budget_and_approach_left` -> `planning`
+        (bumping `self._approach`); `budget_or_approach_exhausted` ->
+        `finishing`, which `_run_job_core` has no dispatch branch for on
+        purpose -- reaching it IS the tail (see module docstring on why
+        `finishing`/the terminal outcome are `run_job()`'s business, not
+        this dispatch loop's).
+        """
+        if self._approach < self.cfg.max_approaches:
+            self._approach += 1
+            self._advance("replan", "planning", "budget_and_approach_left")
+            return ("advance", "planning", "budget_and_approach_left")
+        self._advance("replan", "finishing", "budget_or_approach_exhausted")
+        return ("tail",)
+
+    async def _step_worker(self) -> tuple:
+        """The `worker` state, including the vigilant `verify` sub-cycle.
+
+        Guards: `no_verdict_yet` (self-loop, stays inside this method's own
+        `while` exactly like the pre-cutover code -- no state CHANGE
+        happens on every ordinary iteration, so there is nothing for the
+        dispatch loop above to revisit); `completed_task_pending_verification`
+        / `verify_failed_retry_same_task` / `verify_passed_next_task` (the
+        worker <-> verify round trip, validated through `self._advance()`
+        but -- like the self-loop -- never surfaced to the dispatch loop,
+        because the table declares verify's only successor as `worker`);
+        `verdict_ready`, `blocked_with_failures` (-> review); and
+        `stagnation_exhausted` (-> replan -- ledger guard 10 fails the
+        approach directly, it does NOT get a review verdict; task 008's
+        first draft of the table had this row wrong, corrected by this
+        cutover against the runtime behaviour it now executes).
+        """
+        approach = self._approach
+        stagnant = 0
+        verdict_ready = False
+        guard_ready: str | None = None
+        while self.budget_left():
+            await self._gate()
+            tasks_before = self.run.read_tasks()
+            before = json.dumps(tasks_before, sort_keys=True)
+            result = await self.run_iteration("worker")
+            tasks_after = self.run.read_tasks()
+            self._warn_if_batched(tasks_before, tasks_after)
+
+            if self.cfg.vigilant:
+                # Do NOT gate this on a before/after diff scoped to this
+                # single run_iteration() call (task 052): if the engine
+                # crashed after a prior worker iteration completed a task
+                # but before (or during) its verify iteration, a resumed
+                # process's very first snapshot already shows that task as
+                # "completed", so a before/after diff taken *this* process
+                # would never see it as newly-completed again and its
+                # mandatory verification would be silently skipped forever.
+                # Instead, consult the engine-owned, disk-persisted
+                # verified-task record (survives crash/resume) -- anything
+                # currently "completed" that isn't in it still needs a
+                # verify iteration, whether it just completed in this
+                # process or was left over from a killed prior one.
+                verified_ids = self.run.read_verified_tasks()
+                pending_verify = [
+                    t for t in tasks_after.get("tasks", [])
+                    if t.get("status") == "completed"
+                    and t["id"] not in verified_ids
+                ]
+                if not pending_verify:
+                    self._warn_if_verify_gate_empty(tasks_after)
+                else:
+                    self._advance("worker", "verify",
+                                 "completed_task_pending_verification")
+                    any_failed = False
+                    for task in pending_verify:
+                        if self.budget_left():
+                            await self._gate()
+                            ok = await self._verify_task(task)
+                            any_failed = any_failed or not ok
+                    self._advance(
+                        "verify", "worker",
+                        "verify_failed_retry_same_task" if any_failed
+                        else "verify_passed_next_task")
+                # Re-read after any verification-driven status updates
+                tasks_after = self.run.read_tasks()
+
+            # Task 008: a worker that rewrites a task's successCriteria
+            # after that task has already failed verification at least
+            # once is quietly moving the bar instead of doing the work --
+            # flag it persistently so review (task 009) can demand
+            # independent re-verification of the new text.
+            self._check_criteria_edits(tasks_after)
+
+            if self._check_instant_failure(result, self.iterations_used):
+                break
+            if self._instant_failure_streak:
+                # An instant startup/infra failure that hasn't yet hit the
+                # abort threshold: must not count as either progress or
+                # no-progress evidence (task 059) -- skip stagnation
+                # bookkeeping entirely this pass.
+                continue
+
+            after = json.dumps(tasks_after, sort_keys=True)
+            # Task 046 (#55): the COMPLETE the loop acts on is the HONOURED
+            # one -- the marker cross-checked against the plan that was
+            # just re-read -- not the raw string the agent emitted. A
+            # signal is a claim about tasks.json, and tasks.json is right
+            # here; refusing an unearned one is strictly stronger than any
+            # assertion about how the marker was formatted, because it does
+            # not depend on formatting at all. Both uses below must read
+            # `honoured_complete`, and the stagnation one especially:
+            # resetting the counter on the RAW marker would let an agent
+            # that emits COMPLETE every iteration while changing nothing
+            # hold `stagnant` at 0 forever -- trading a false conclusion
+            # for an endless loop.
+            outstanding = (self._outstanding_for_completion(tasks_after)
+                           if result.saw_complete else [])
+            honoured_complete = result.saw_complete and not outstanding
+            if outstanding:
+                names = ", ".join(
+                    f"{t.get('id', '?')} ({t.get('status', 'unknown')})"
+                    for t in outstanding[:10])
+                self.run.emit(
+                    "log", level="warning",
+                    message=(
+                        f"iteration {self.iterations_used} signalled "
+                        f"COMPLETE with "
+                        f"{len(outstanding)} task(s) not completed or "
+                        f"skipped: {names}; refusing the signal and "
+                        "continuing the worker loop (task 046, #55)"))
+            stagnant = stagnant + 1 if (before == after and not honoured_complete
+                                        and not result.interrupted) else 0
+            blocked = self._unresolved_failures(tasks_after)
+            if stagnant and blocked:
+                # Task 024 (#33): the plan holds no task a worker iteration
+                # could still pick up, and at least one is `failed` -- so
+                # the worker CANNOT signal COMPLETE (worker.md recognises
+                # only completed/skipped) and it just spent a whole
+                # iteration without changing tasks.json. Before this, the
+                # run sat here until the stagnation guard failed the
+                # approach and the next one replanned the whole wave
+                # against an already-finished repo; the only escape was an
+                # operator editing the record by hand (the `043d`
+                # incident). Route to review instead: entry to review is
+                # the engine's decision, and a verdict on work-with-a-hole
+                # is worth strictly more than a replan. It is still only
+                # entry -- the reviewer decides whether the run succeeded.
+                #
+                # Why gated on `stagnant` rather than firing the moment a
+                # task fails: the worker's two legitimate resolutions
+                # (carve the residual gap into a NEW task, or relabel
+                # `skipped` with an honest justification -- worker.md's
+                # completion-signal section) both need one iteration to
+                # apply, and either one makes tasks.json change. So the
+                # worker always gets that iteration; only a worker that
+                # demonstrably did nothing with it hands the run to review.
+                names = ", ".join(
+                    f"{t['id']} ({task_failure_kind(t)})" for t in blocked)
+                self.run.emit(
+                    "log", level="warning",
+                    message=(
+                        f"no task left for a worker iteration to act on "
+                        f"and {len(blocked)} failed: {names}; routing to "
+                        "review for a verdict rather than stagnating "
+                        "(task 024, #33)"))
+                verdict_ready = True
+                guard_ready = "blocked_with_failures"
+                break
+            if stagnant >= 3:
+                self.run.emit("log", level="error",
+                              message="3 iterations with no task progress; "
+                                      "failing approach")
+                break
+            if honoured_complete:
+                verdict_ready = True
+                guard_ready = "verdict_ready"
+                self.run.emit("signal", signal="COMPLETE")
+                break
+
+        if not self.budget_left():
+            # Task 002: a job whose worker loop ran out of budget with
+            # every task already completed -- whether or not the worker
+            # happened to signal COMPLETE on that final iteration -- gets
+            # exactly one off-budget grace review rather than going
+            # terminal failed/unverified with all work done and no
+            # reviewer ever having looked at it. Checked BEFORE
+            # `verdict_ready` below on purpose, matching the pre-cutover
+            # ordering exactly: an honoured COMPLETE that lands in the same
+            # instant the budget runs out still goes through the grace
+            # path, not straight to a real review.
+            if await self._maybe_grace_review(approach):
+                return ("done", "succeeded")
+            return ("tail",)
+        if not verdict_ready:
+            self._archive_approach(approach)
+            return ("advance", "replan", "stagnation_exhausted")
+        return ("advance", "review", guard_ready)
+
+    async def _step_review(self) -> tuple:
+        """The `review` state. Guards: `steering_pending_at_verified`
+        (-> worker, looped in place exactly like the pre-cutover code --
+        the dispatch loop above never sees this as a state change, because
+        the review phase itself decides when it is done retrying);
+        `verified` (-> finishing, i.e. `("done", "succeeded")`);
+        `rejected_approach_left` (-> replan); `rejected_no_approach_left`
+        (-> finishing, i.e. `("tail",)`).
+        """
+        approach = self._approach
+        await self._gate()
+        self.run.emit("phase", phase="review", approach=approach)
+        review = await self.run_iteration(
+            "review", extra=self._review_extra_context())
+        while review.saw_verified and self.run.pending_steering():
+            # Refuse to let a VERIFIED verdict make the run terminal while
+            # operator steering still sits unconsumed. review and verify
+            # are pure verification phases that never act on steering
+            # (STEERING_ACTIONABLE_PHASES); if steering lands just before
+            # what would otherwise be the final VERIFIED review, going
+            # terminal here would strand it forever -- nothing after a
+            # terminal-succeeded run ever reads pending steering again.
+            # Instead: discard this verdict, run one more (actionable)
+            # worker iteration so the steering actually gets consumed, then
+            # re-review.
+            names = ", ".join(p.name for p in self.run.pending_steering())
+            self.run.emit(
+                "log", level="warning",
+                message=(f"steering pending ({names}) at VERIFIED verdict; "
+                         "deferring, routing back to worker to consume it"))
+            self._advance("review", "worker", "steering_pending_at_verified")
+            if not self.budget_left():
+                break
+            await self._gate()
+            self.run.emit("phase", phase="worker", approach=approach)
+            await self.run_iteration("worker")
+            if not self.budget_left():
+                break
+            await self._gate()
+            self.run.emit("phase", phase="review", approach=approach)
+            review = await self.run_iteration(
+                "review", extra=self._review_extra_context())
+        if review.saw_verified and not self.run.pending_steering():
+            self._advance("review", "finishing", "verified")
+            self.run.emit("signal", signal="VERIFIED")
+            self._finish("succeeded", "verified",
+                        **self._unconsumed_steering_patch())
+            return ("done", "succeeded")
+        self.run.emit("log", message=f"review rejected approach {approach}")
+        self._archive_approach(approach)
+        self._write_composite_prd(approach)
+        if approach < self.cfg.max_approaches:
+            self._advance("review", "replan", "rejected_approach_left")
+            return ("advance", "replan", "rejected_approach_left")
+        self._advance("review", "finishing", "rejected_no_approach_left")
+        return ("tail",)
 
     def _unconsumed_steering_patch(self) -> dict:
         """status.json patch (task 006) applied at every terminal-state write:
