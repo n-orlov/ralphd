@@ -727,10 +727,11 @@ contents, no LLM env values):
   "runId": "...",
   "budgets": {"iterations": 25, "maxApproaches": 3, "jobTimeoutS": 28800, "iterationTimeoutS": 2700,
               "infraStartupTimeoutS": 150.0, "infraRetryBackoffS": [2, 5, 15, 30, 60, 120, 300],
-              "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0},
+              "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0,
+              "routerTimeoutS": 60.0},
   "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false},
   "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
-  "model": {"strategy": "balanced", "model": null, "fastModel": null, "overrides": {}, "thinking": null},
+  "model": {"strategy": "balanced", "model": null, "fastModel": null, "routerModel": null, "overrides": {}, "thinking": null},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
   "priceTables": {"names": [], "answers": "neither", "tables": []},  // which table may price this run, in order
@@ -751,6 +752,7 @@ The infra-fault (LLM endpoint/network outage) budgets, all settable in
 | `infraRetryBackoffMaxS` | `infra_retry_backoff_max_s` / `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` | `300.0` | cap on a single backoff wait (clamps the repeating tail) |
 | `infraRetryMax` | `infra_retry_max` / `RALPHD_INFRA_RETRY_MAX` | `null` | optional attempt cap, **honoured only when set explicitly**; `null` means no cap — retry for as long as the outage budget allows |
 | `infraOutageBudgetS` | `infra_outage_budget_s` / `RALPHD_INFRA_OUTAGE_BUDGET_S` | `14400.0` (4h) | wall-clock budget for one fault episode: retries continue while the cumulative wait stays under it; the episode resets on any successful iteration. The post-terminal `reflect` iteration gets `min(this, 300s)` — the job is already over, so a still-dead endpoint must not hold the container open for hours (a `reflect_infra_delay` event covers the wait before its first attempt) |
+| `routerTimeoutS` | `router_timeout_s` / `RALPHD_ROUTER_TIMEOUT_S` | `60.0` | task 018 (requirement E): the wall-clock cap on a single router call (`engine.router.decide`, via `LoopSupervisor._ask_router`) — a hung router call cannot stall the loop; a timeout counts as one failed attempt against `contracts.retryMax`, then the declared fallback edge is taken |
 
 `contracts.retryMax` (`contract_retry_max` / `RALPHD_CONTRACT_RETRY_MAX`, default
 `2`) is how many re-prompts a hat gets after its first attempt before a

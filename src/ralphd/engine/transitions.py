@@ -254,6 +254,42 @@ HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect")
 
 
 # ---------------------------------------------------------------------------
+# The router's declared fallback -- task 018, requirement E, #60 pillar 2
+# ---------------------------------------------------------------------------
+# "The harness decides wherever the table makes it unambiguous -- one legal
+# transition, or an obvious next pending task. Only a genuine choice reaches
+# a model." Every hand-written `_step_*` method (planning/worker/review/
+# replan) computes its own guard directly from disk state and NEVER reaches
+# the router, whatever this dict says -- `ROUTER_FALLBACK` only matters to
+# `engine.loop._step_generic_hat` (task 015's one shipped fallback for any
+# OTHER state the table names), and then only when that state has more than
+# one legal edge (task 015 shipped only the single-edge case; task 018 is
+# what makes a multi-edge one work, via `engine.router`).
+#
+# "Say in the table what that fallback is for each ambiguous state"
+# (requirement E's acceptance): a state that can reach the router MUST name,
+# right here, which of its own declared edges (by GUARD name) the harness
+# takes when the router's answer is invalid/unparseable even after the
+# retry budget, or when the call times out. This is not a second table --
+# it is a value alongside the one that already exists, exactly like
+# STATE_HAT/HAT_SCHEMAS beside TABLE.
+#
+# Empty by default: no *shipped* state is router-ambiguous today (every real
+# hat still has a hand-written `_step_*` method that decides its own guard
+# deterministically) -- this dict exists so a FUTURE multi-edge hat can
+# declare its fallback beside its table entry, proven end to end only by a
+# test that registers one (mirroring task 015's no-op hat fixture).
+ROUTER_FALLBACK: dict[str, str] = {}
+
+
+def fallback_guard(state: str) -> str | None:
+    """The declared deterministic fallback guard for `state`, or None when
+    none is declared (a state with 0 or 1 legal edges never needs one --
+    it is resolved without ever reaching the router)."""
+    return ROUTER_FALLBACK.get(state)
+
+
+# ---------------------------------------------------------------------------
 # The runtime primitive that walks this table (task 014, requirement B)
 # ---------------------------------------------------------------------------
 # "One module holds the table and nothing else holds transition logic"

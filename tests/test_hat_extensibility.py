@@ -283,13 +283,23 @@ def test_the_noop_state_is_gone_after_the_fixture_tears_down():
 
 
 # ---------------------------------------------------------------------------
-# 4. the generic fallback is scoped: a state with more than one legal edge
-#    (a real guard) is refused rather than silently taking the first one.
+# 4. the generic fallback requires a hat to be declared -- an unregistered
+#    state (no `transitions.STATE_HAT` entry at all, whatever its edge
+#    count) is refused rather than silently doing something with it. The
+#    OLD narrower rule this test used to assert ("more than one legal edge
+#    is always refused") is superseded by task 018 (requirement E): a
+#    multi-edge state with a hat AND a declared `transitions.ROUTER_FALLBACK`
+#    entry now runs end to end through `engine.router` -- see
+#    tests/test_router_engine.py for that path's own coverage. This test
+#    keeps proving the ADJACENT guard that never changed: no hat, no run,
+#    whatever the table says about edges.
 # ---------------------------------------------------------------------------
 
-def test_the_generic_fallback_refuses_a_state_with_more_than_one_edge():
+def test_the_generic_fallback_refuses_a_state_with_no_declared_hat():
     import ralphd.engine.loop as loop_module
     sup = LoopSupervisor.__new__(LoopSupervisor)  # bypass __init__: no I/O needed
     edges = (tr.T("worker", "a"), tr.T("review", "b"))
-    with pytest.raises(AssertionError, match="exactly one unconditional edge"):
-        asyncio.run(loop_module.LoopSupervisor._step_generic_hat(sup, "bogus", edges))
+    assert "bogus_task015_no_hat" not in tr.STATE_HAT
+    with pytest.raises(AssertionError, match="no hat declared"):
+        asyncio.run(loop_module.LoopSupervisor._step_generic_hat(
+            sup, "bogus_task015_no_hat", edges))

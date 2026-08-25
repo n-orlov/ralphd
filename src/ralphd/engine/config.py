@@ -261,6 +261,21 @@ class JobConfig:
     # see `engine/contract_enforcement.py` for the mechanism itself (not
     # wired into `_run_job_core` yet -- that is task 014's cutover).
     contract_retry_max: int = 2
+    # Task 018 (requirement E, #60 pillar 2): the router's own model and
+    # latency budget. `router_model` is one new key through the EXISTING
+    # `model_overrides` mechanism (`model_overrides["router"]` still wins
+    # when set, see `model_for`) -- this is deliberately NOT pillar 4's
+    # per-hat model roles (Non-goals): one key, not a config rewrite.
+    # Unset (`None`), it resolves to the fast tier (a one-question
+    # classification never needs the strong model) via `model_for`.
+    # Overridable with RALPHD_ROUTER_MODEL / RALPHD_ROUTER_TIMEOUT_S.
+    # `router_retry_max` reuses `contract_retry_max`'s N-then-fallback shape
+    # rather than adding a second retry-count knob (task 010's policy,
+    # requirement E's acceptance: "the loop ... falls back to the
+    # deterministic choice the table declares" after N failures) -- see
+    # `LoopSupervisor._step_generic_hat`.
+    router_model: str | None = None
+    router_timeout_s: float = 60.0
     pricing: dict = field(default_factory=dict)
     # Task 010 (#14): `none` (default) | `aws`. When `aws`, a route the
     # provider did not price (or priced with an implausible zero) is costed
@@ -327,6 +342,10 @@ class JobConfig:
             cfg.price_strategy = normalize_price_strategy(v)
         if v := os.environ.get("RALPHD_CONTRACT_RETRY_MAX"):
             cfg.contract_retry_max = int(v)
+        if v := os.environ.get("RALPHD_ROUTER_MODEL"):
+            cfg.router_model = v
+        if v := os.environ.get("RALPHD_ROUTER_TIMEOUT_S"):
+            cfg.router_timeout_s = float(v)
         return cfg
 
     def effective(self) -> dict:
@@ -349,6 +368,10 @@ class JobConfig:
                 # null = no explicit attempt cap (retry within the budget).
                 "infraRetryMax": self.infra_retry_max,
                 "infraOutageBudgetS": self.infra_outage_budget_s,
+                # Task 018 (requirement E): the router's latency budget --
+                # a call that hangs cannot stall the loop; see
+                # `LoopSupervisor._ask_router` / `engine.router.decide`.
+                "routerTimeoutS": self.router_timeout_s,
             },
             "flags": {
                 "vigilant": self.vigilant,
@@ -366,6 +389,11 @@ class JobConfig:
                 "strategy": self.model_strategy,
                 "model": self.model,
                 "fastModel": self.fast_model,
+                # Task 018 (requirement E): the router's own model key,
+                # surfaced next to the tiers it borrows a fallback from --
+                # `model_for("router")` resolves this, then fastModel, then
+                # model, unless `overrides["router"]` is set (checked first).
+                "routerModel": self.router_model,
                 "overrides": dict(self.model_overrides),
                 "thinking": self.thinking,
             },
@@ -391,6 +419,12 @@ class JobConfig:
         """Resolve the pi model ref for a phase; None = pi's own default."""
         if override := self.model_overrides.get(phase):
             return override
+        # Task 018 (requirement E): the router is not a strategy-tiered
+        # phase (it has no per-strategy row in STRATEGY_TIERS -- deliberately,
+        # Non-goals rules out a config rewrite for it) -- its own
+        # `router_model` knob, then the fast tier, then the strong one.
+        if phase == "router":
+            return self.router_model or self.fast_model or self.model
         # An unrecognised name resolves as `quality-first` -- the most capable
         # preset, NOT DEFAULT_MODEL_STRATEGY (task 044/#53): a typo must never
         # silently downgrade a phase to the fast tier, and the shipped default

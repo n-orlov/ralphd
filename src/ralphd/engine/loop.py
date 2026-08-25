@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from . import contracts
+from . import router
 from . import state
 from . import transitions
 from .config import (
@@ -168,6 +169,13 @@ class LoopSupervisor:
         # _seed_refunds() for why the counters are persisted rather than
         # folded into the iterations_used seed above.
         self._infra_refunded, self._grace_refunded = self._seed_refunds()
+        # Task 018 (requirement E, #60 pillar 2): sequence number for this
+        # process's own router transcripts (`artifacts/router/NNNN.jsonl`) --
+        # a plain counter, not an iteration slot: router calls are NEVER
+        # charged as work iterations (`self.iterations_used` is untouched by
+        # `_ask_router`), so they get no `iterations/NNNN/` directory of
+        # their own.
+        self._router_calls = 0
         # Task 008 (#5): the *episode clock* driving infra retries. One
         # "episode" is one continuous outage: consecutive infra-classified
         # attempts with no iteration reaching the model in between. Retries
@@ -2147,35 +2155,38 @@ class LoopSupervisor:
         and `transitions.HAT_SCHEMAS` entries beside it runs end to end
         without another line changing here or in `engine.transitions`.
 
-        Deliberately narrow, matching the PRD's own "trivial no-op hat"
-        wording: this drives only a state with exactly ONE legal edge --
-        an unconditional transition, no guard to evaluate from the hat's
-        payload. A hat whose transition depends on WHAT the hat reported
-        (more than one legal edge to choose between) is a materially
-        different problem -- there is no declared convention yet for how a
-        payload maps to a guard name -- and earns its own dedicated
-        `_step_*` method, exactly like planning/worker/review/replan.
+        A state with exactly one legal edge is resolved exactly as task 015
+        shipped it: an unconditional transition taken the instant the hat's
+        own payload validates, no model consulted at all. Task 018
+        (requirement E, #60 pillar 2) is what widens this to a state with
+        MORE than one legal edge -- "a hat whose transition depends on WHAT
+        the hat reported" is no longer a case this method refuses; it is
+        the one case `engine.router` exists for. The state's own
+        `transitions.ROUTER_FALLBACK` entry MUST be declared before that
+        happens (an ambiguous table entry without one is a programming
+        error caught by `router.decide()` itself, not a runtime hazard).
+        Deterministic-first still holds even here: the router is reached
+        ONLY on this branch, for a state with a genuine choice -- never for
+        any of the four hand-written `_step_*` methods, which compute their
+        own guard from disk state and never import this module's router
+        call at all.
 
         The hat's response is validated against its declared schema via
         `contracts.validate_payload` (task 009's schema, the *only*
         validator code path, fact 16/#65) -- a violation ends the run
-        rather than silently taking the edge anyway, so a broken trivial
-        hat fails exactly as loudly as a broken planning/worker/review one
+        rather than silently taking an edge anyway, so a broken trivial hat
+        fails exactly as loudly as a broken planning/worker/review one
         would. (Full N-then-agent-fault re-prompting, task 010's policy, is
         wired for the file-borne plan proposal (`plan_ingestion`) and unit
         -tested in isolation (`contract_enforcement.enforce_contract`) but
         not yet threaded into every inline hat's live iteration -- this
         method covers its own hat with a single validation pass; widening
         that to a retry loop for arbitrary inline hats is separate,
-        unstarted work, not claimed here.)
+        unstarted work, not claimed here. The router's OWN re-prompt loop,
+        below, is unrelated: it re-prompts the ROUTER, not the hat, about
+        which edge to take, and every one of ITS attempts is a plain
+        `_ask_router` call -- never a work iteration.)
         """
-        if len(edges) != 1:
-            raise AssertionError(
-                f"state {state!r} has {len(edges)} legal edges; the generic "
-                "fallback only drives a state with exactly one unconditional "
-                "edge -- a hat whose transition needs a real guard needs its "
-                "own dedicated _step_* method")
-        edge = edges[0]
         hat = transitions.STATE_HAT.get(state)
         if not hat:
             raise AssertionError(
@@ -2195,8 +2206,57 @@ class LoopSupervisor:
             self.run.emit("log", level="error", message=message)
             self._abort_reason = message
             return ("tail",)
-        self._advance(state, edge.target, edge.guard)
-        return ("advance", edge.target, edge.guard)
+        if len(edges) == 1:
+            edge = edges[0]
+            self._advance(state, edge.target, edge.guard)
+            return ("advance", edge.target, edge.guard)
+        # Task 018: a genuine choice -- the router's one constrained
+        # question, validated against both the table's legal transitions
+        # and its own schema (engine.router.ROUTER_SCHEMA), re-prompted on
+        # an invalid answer, and falling back to the state's OWN declared
+        # deterministic choice (never an illegal transition) after
+        # `contract_retry_max` extra attempts or a hung call.
+        outcome = await router.decide(
+            state, self.cfg.vigilant, ask=self._ask_router,
+            fallback_guard=transitions.fallback_guard(state),
+            retry_max=self.cfg.contract_retry_max,
+            timeout_s=self.cfg.router_timeout_s)
+        self.run.emit(
+            "log", level=("warning" if outcome.used_fallback else "info"),
+            message=(f"router selected {state!r} -> {outcome.target!r} "
+                     f"(guard={outcome.guard!r}, attempts={outcome.attempts}"
+                     + (", FELL BACK to the declared deterministic choice "
+                        "after exhausting the router's retry budget"
+                        if outcome.used_fallback else "") + ")"))
+        self._advance(state, outcome.target, outcome.guard)
+        return ("advance", outcome.target, outcome.guard)
+
+    async def _ask_router(self, prompt: str) -> tuple[str, dict]:
+        """The router's own model call (task 018, requirement E): one tiny,
+        UNCOUNTED question -- no iteration slot, no `iterations_used`
+        increment, no `meta.json` (contrast `_run_iteration_once`, which
+        does all three for a real hat). "Router calls ... are not charged
+        as work iterations" is true here by construction, not by a
+        separate check: this method never calls `_run_iteration_once` or
+        touches `self.iterations_used` at all.
+
+        Usage IS accounted, separately: `_accumulate_usage(..., phase=
+        "router")` folds into `usage.byPhase["router"]` so the router's
+        cost is visible, not hidden (requirement E's acceptance) -- while
+        staying out of every OTHER phase's bucket and out of the overall
+        iteration count.
+        """
+        router_dir = self.run.artifacts_dir / "router"
+        router_dir.mkdir(parents=True, exist_ok=True)
+        self._router_calls += 1
+        transcript = router_dir / f"{self._router_calls:04d}.jsonl"
+        model = self.cfg.model_for("router")
+        result = await self.runner.run(
+            prompt, transcript, model=model,
+            timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
+        if result.usage:
+            self._accumulate_usage(result.usage, phase="router")
+        return (result.final_text or ""), (result.usage or {})
 
     async def _step_planning(self, skip_planning: bool) -> tuple:
         """The `planning` state. Guards: `instant_failure_streak` (self-loop,

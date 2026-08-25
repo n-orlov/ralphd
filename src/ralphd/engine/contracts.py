@@ -117,6 +117,22 @@ def validate_payload(hat: str, payload: Any) -> list[str]:
     return _validate_against(schema, payload, "$")
 
 
+def validate_against(schema: dict, payload: Any) -> list[str]:
+    """Validate `payload` against an arbitrary schema in this module's
+    restricted subset, for a caller that has no `transitions.HAT_SCHEMAS`
+    entry to key off (task 018's `engine.router`: the router's own answer
+    shape -- `{"next_step": ..., "task_id": ...}` -- is not a per-hat
+    response contract, so it has no HATS entry, but its answer still MUST
+    go through this module's one schema engine (fact 16/#65), not a
+    second, hand-rolled one living in `router.py`.
+
+    A thin wrapper over the same `_validate_against` that `validate_payload`
+    itself calls -- there is still exactly one engine; this only widens
+    which schema dict it may be pointed at.
+    """
+    return _validate_against(schema, payload, "$")
+
+
 def hats_with_schemas() -> frozenset[str]:
     """The hats that currently have a declared schema -- used by the
     enumeration test to prove every hat in `transitions.HATS` has one, and
