@@ -97,6 +97,55 @@ Design invariants:
   `pending -> in-progress` for the exact task being worked while that
   iteration is still in flight, not only after it ends.
 
+### The declared transition table (task 008/014/016, requirement B)
+
+States, legal transitions and guard-predicate names live as one data
+structure in `src/ralphd/engine/transitions.py` (`TABLE` plus the
+`VIGILANT_DELTA` that is the *only* difference between vigilant and
+non-vigilant); `engine.loop.LoopSupervisor._advance()` walks it through
+`transitions.TransitionExecutor.advance()`, which raises
+`IllegalTransition` for any edge the table for the variant in force does
+not list — refusal happens at the one runtime primitive every state move
+passes through, not by a test reading the table back. The table below is
+generated from that module, not hand-copied; see
+`scripts/render_transition_table.py`'s docstring and
+`tests/test_transition_table_docs.py` for how drift is caught.
+
+<!-- BEGIN GENERATED TRANSITION TABLE (scripts/render_transition_table.py) -->
+
+Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_table.py` — do not hand-edit this block; regenerate it with `python scripts/render_transition_table.py --write` and let `tests/test_transition_table_docs.py` catch drift. Entry state: `planning`. Run-terminal states (`status.json`'s top-level `state`, not a step state): `succeeded`, `failed`, `aborted`.
+
+| State | Hat | Variant | Target | Guard |
+|---|---|---|---|---|
+| `planning` | planning | both | `planning` | `instant_failure_streak` |
+| `planning` | planning | both | `replan` | `empty_plan` |
+| `planning` | planning | both | `worker` | `planning_produced_tasks` |
+| `worker` | worker | both | `worker` | `no_verdict_yet` |
+| `worker` | worker | both | `review` | `verdict_ready` |
+| `worker` | worker | both | `review` | `blocked_with_failures` |
+| `worker` | worker | both | `replan` | `stagnation_exhausted` |
+| `worker` | worker | vigilant only | `verify` | `completed_task_pending_verification` |
+| `verify` | verify | vigilant only | `worker` | `verify_failed_retry_same_task` |
+| `verify` | verify | vigilant only | `worker` | `verify_passed_next_task` |
+| `review` | review | both | `worker` | `steering_pending_at_verified` |
+| `review` | review | both | `finishing` | `verified` |
+| `review` | review | both | `replan` | `rejected_approach_left` |
+| `review` | review | both | `finishing` | `rejected_no_approach_left` |
+| `replan` | — | both | `planning` | `budget_and_approach_left` |
+| `replan` | — | both | `finishing` | `budget_or_approach_exhausted` |
+| `reflect` | reflect | both | `succeeded` | `reflect_done_outcome_succeeded` |
+| `reflect` | reflect | both | `failed` | `reflect_done_outcome_failed` |
+| `reflect` | reflect | both | `aborted` | `reflect_done_outcome_aborted` |
+| `finishing` | — | both | `reflect` | `reflect_enabled` |
+| `finishing` | — | both | `succeeded` | `reflect_disabled_outcome_succeeded` |
+| `finishing` | — | both | `failed` | `reflect_disabled_outcome_failed` |
+| `finishing` | — | both | `aborted` | `reflect_disabled_outcome_aborted` |
+| `succeeded` | — | — | `— (terminal)` | `—` |
+| `failed` | — | — | `— (terminal)` | `—` |
+| `aborted` | — | — | `— (terminal)` | `—` |
+
+<!-- END GENERATED TRANSITION TABLE -->
+
 ### Phase prompts
 
 Prompt templates ship inside the installed package (`src/ralphd/prompts/`) —
