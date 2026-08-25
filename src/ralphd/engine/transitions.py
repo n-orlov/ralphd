@@ -152,6 +152,14 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("finishing", "rejected_no_approach_left"),
     ),
     "replan": (
+        # ledger guard NEW (requirement I, #61): a repeated STRUCTURAL
+        # blocker -- this approach's stagnation signature equals its
+        # predecessor's -- ends the run right here instead of consuming
+        # (and losing) another approach on the same wall
+        # (loop.py:_step_replan / _blocker_signature / _record_
+        # stagnation_signature). A DIFFERENT blocker signature never
+        # matches, so a distinct wall still gets its retry.
+        T("finishing", "repeated_blocker_signature"),
         # requirement B: "the approach boundary as a transition with a
         # guard". Two outcomes only: another approach, or the run is out of
         # budget/approaches and must finish.

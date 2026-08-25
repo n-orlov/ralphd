@@ -146,6 +146,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `finishing` | `verified` |
 | `review` | review | both | `replan` | `rejected_approach_left` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
+| `replan` | — | both | `finishing` | `repeated_blocker_signature` |
 | `replan` | — | both | `planning` | `budget_and_approach_left` |
 | `replan` | — | both | `finishing` | `budget_or_approach_exhausted` |
 | `reflect` | reflect | both | `succeeded` | `reflect_done_outcome_succeeded` |

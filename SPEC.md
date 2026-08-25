@@ -1015,6 +1015,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `previousEndings` | array | earlier episodes' endings, oldest first: `{endedAt, reason, verdict}` per superseded ending, capped at the 50 most recent, `[]` in a first episode |
 | `updatedAt` | string | last write of any field |
 | `deadlineAt` | string | wall-clock deadline, extended by every infra wait |
+| `blockerSignatures` | object | `{"<approach>": "<signature>"}` — per-approach worker-stagnation blocker signature (task 101, #61), written the moment an approach fails on stagnation; `_step_replan`'s `repeated_blocker_signature` guard compares the entry for the approach that just failed against its immediate predecessor's, and a genuine match ends the run rather than spending another approach on the identical structural wall. Absent for a run that has never stagnated |
 
 Cost fields deserve their own contract, because **a missing price is not a
 price of zero**:

@@ -9,6 +9,8 @@ from env vars set by the test:
   STUB_TASKS          number of tasks the planner creates (default 2)
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
   STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
+  STUB_WORKER_STALLS_BY_APPROACH  comma-separated stall texts, one per
+                      approach (task 026, #61 -- structural-wall signature)
   STUB_TOOL_SLEEP     seconds to sleep AFTER emitting `tool_execution_start`
                       but BEFORE emitting the matching `tool_execution_end`
                       inside `emit_rich_preamble` (default 0; only takes
@@ -558,6 +560,16 @@ if _timeout_hang_count:
 
 
 if "Role: Planner" in prompt:
+    # Task 026 (#61): a marker counting how many times the Planner has run
+    # this process (== the current approach number, 1-based) -- lets the
+    # Worker role below pick an approach-specific stall text with
+    # STUB_WORKER_STALLS_BY_APPROACH, without either role having to read
+    # status.json's own `approach` field.
+    _approach_marker = marker("approach-count")
+    _approach_n = 1
+    if os.path.exists(_approach_marker):
+        _approach_n = int(open(_approach_marker).read()) + 1
+    open(_approach_marker, "w").write(str(_approach_n))
     # STUB_TASKS_JSON lets a test hand the planner an exact tasks list
     # (including optional dependsOn/priority fields) instead of the plain
     # auto-numbered STUB_TASKS sequence -- needed for deterministic
@@ -580,7 +592,22 @@ elif "Role: Worker" in prompt:
         open(marker("huge-sent"), "w").write("1")
         print(json.dumps({"type": "message_update", "padding": "x" * (1024 * 1024)}))
     if os.environ.get("STUB_WORKER_STALLS"):
-        emit_final("spinning wheels, no progress")
+        # Task 026 (#61): STUB_WORKER_STALLS_BY_APPROACH is a comma-separated
+        # list of stall texts, one per approach (1-based; the last entry
+        # repeats for any approach past the list's length) -- lets a test
+        # make two consecutive approaches hit either the SAME wall (matching
+        # text -> matching blocker signature) or a genuinely DIFFERENT one,
+        # without either role reading status.json directly. Unset/empty
+        # falls back to the one constant text every prior test using
+        # STUB_WORKER_STALLS relies on.
+        _by_approach = os.environ.get("STUB_WORKER_STALLS_BY_APPROACH")
+        _stall_text = "spinning wheels, no progress"
+        if _by_approach:
+            _texts = _by_approach.split(",")
+            _approach_marker = marker("approach-count")
+            _n = int(open(_approach_marker).read()) if os.path.exists(_approach_marker) else 1
+            _stall_text = _texts[min(_n, len(_texts)) - 1]
+        emit_final(_stall_text)
         sys.exit(0)
     tool_call = thinking_text = None
     echo_secrets = [s for s in os.environ.get("STUB_ECHO_SECRET", "").split(",") if s]

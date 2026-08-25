@@ -162,6 +162,7 @@ keys with no section of their own below:
 | `iterationsRefunded` | `{infra, grace}` — the refunds this run has earned, written as they are earned and read back by the next engine process, so a `resume` (or an auto-resume after a crash) no longer re-charges refunds granted before it (issue #32). Absent, and read as zeroes, until the run earns its first refund; a pre-v0.7 run dir therefore keeps its recorded `iterationsUsed`. Infra refunds are subtracted from `iterationsUsed`; a grace review's refund is deliberately not (it stays visible as a used iteration) but is still subtracted from the budget comparison |
 | `unconsumedSteering` | steering files still pending at the terminal write |
 | `steering` | live counts — `{pending, consumed}` over `steering/NNN-*.md`, added by the API rather than stored |
+| `blockerSignatures` | per-approach worker-stagnation blocker signature (task 101, #61) — `{"<approach>": "<signature>"}`, written the moment an approach fails on stagnation; the `replan` guard compares the entry for the approach that just failed against its predecessor's, and a genuine match ends the run instead of spending another approach on the same structural wall. Absent for a run that has never stagnated |
 
 There is no `paused` value anywhere in this payload: `POST /pause` holds the
 loop at the next iteration boundary without changing `state` or `phase` (see

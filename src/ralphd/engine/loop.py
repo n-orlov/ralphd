@@ -2417,6 +2417,24 @@ class LoopSupervisor:
         `finishing`/the terminal outcome are `run_job()`'s business, not
         this dispatch loop's).
         """
+        # Task 026 (#61): a repeated STRUCTURAL blocker -- this approach's
+        # own stagnation signature equalling its predecessor's -- ends the
+        # run right here instead of consuming (and losing) another approach
+        # to the identical wall. Guarded on an actual signature existing for
+        # BOTH `self._approach` and `self._approach - 1`: a replan entered
+        # for any other reason (review rejection, empty plan, ...) never
+        # wrote one for `self._approach`, so this guard is silently absent
+        # there by construction, not by a special case for those paths.
+        signatures = self.run.read_status().get("blockerSignatures") or {}
+        this_sig = signatures.get(str(self._approach))
+        prev_sig = signatures.get(str(self._approach - 1))
+        if this_sig is not None and this_sig == prev_sig:
+            self._terminal_reason_note = (
+                f"approach {self._approach} stagnated on the same "
+                f"structural blocker as approach {self._approach - 1} "
+                f"(#61): {this_sig}")
+            self._advance("replan", "finishing", "repeated_blocker_signature")
+            return ("tail",)
         if self._approach < self.cfg.max_approaches:
             self._approach += 1
             self._advance("replan", "planning", "budget_and_approach_left")
@@ -2641,6 +2659,15 @@ class LoopSupervisor:
                               "approach"
                               + (f" (outstanding: {names})" if names else "")),
                     outstandingTasks=outstanding_tasks)
+                # Task 026 (#61): persist THIS approach's blocker signature
+                # before the approach boundary -- `_step_replan` (the guard
+                # predicate the PRD asks for) reads it back, keyed by
+                # approach number, to tell a repeated structural wall from
+                # a distinct one on the next approach. Written here rather
+                # than in `_step_replan` because only this call site has
+                # the failing iteration's own `result` in hand.
+                self._record_stagnation_signature(
+                    approach, self._blocker_signature(result))
                 break
             if honoured_complete:
                 verdict_ready = True
@@ -2666,6 +2693,49 @@ class LoopSupervisor:
             self._archive_approach(approach)
             return ("advance", "replan", "stagnation_exhausted")
         return ("advance", "review", guard_ready)
+
+    def _blocker_signature(self, result: IterationResult) -> str | None:
+        """A stable signature for a stagnating worker's blocker (#61),
+        borrowing `_instant_failure_signature`'s normalisation shape (case-
+        folded, digits stripped, whitespace collapsed, truncated) so the
+        SAME structural wall reported in slightly different wording across
+        attempts still compares equal, while a genuinely different blocker
+        does not. Derived from the final stagnant worker iteration's own
+        text (`final_text`, falling back to `error_message`) because that
+        is the only evidence at the stagnation boundary that has a chance
+        of surviving a replan -- tasks.json's own ids and titles do not (a
+        fresh plan invents new ones).
+
+        None when there is no usable text at all -- an absent signature
+        never matches anything (including another absent one), so a
+        content-free stagnation never triggers the `repeated_blocker_
+        signature` guard by coincidence.
+        """
+        text = (result.final_text or result.error_message or "").strip()
+        if not text:
+            return None
+        normalized = re.sub(r"\s+", " ", re.sub(r"[0-9]+", "N", text.lower()))
+        return normalized[:500]
+
+    def _record_stagnation_signature(self, approach: int,
+                                     signature: str | None) -> None:
+        """Persist `signature` for `approach` on status.json's
+        `blockerSignatures` map -- disk, not memory, so the signature
+        survives both the approach boundary and a process restart (#61:
+        "today nothing does"). `_step_replan`'s guard reads this same map
+        back to compare `self._approach` against `self._approach - 1`.
+
+        A None signature is simply not recorded: absence at `self._approach`
+        already reads as "never stagnated with usable text", which is
+        exactly the fact a missing entry should carry -- no separate null
+        marker needed.
+        """
+        if signature is None:
+            return
+        status = self.run.read_status()
+        signatures = dict(status.get("blockerSignatures") or {})
+        signatures[str(approach)] = signature
+        self.run.update_status(blockerSignatures=signatures)
 
     async def _step_review(self) -> tuple:
         """The `review` state. Guards: `steering_pending_at_verified`
