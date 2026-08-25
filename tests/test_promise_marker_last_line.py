@@ -328,7 +328,12 @@ def test_an_unearned_complete_is_refused_and_the_loop_keeps_working(tmp_path):
                                      _signal_done))
     msgs = _log_messages(root)
     assert "signalled COMPLETE with 2 task(s) not completed or skipped" in msgs
-    assert "001 (pending), 002 (pending)" in msgs
+    # Task 116: the harness itself claims task 001 `in-progress` (the
+    # scheduler's own pick, persisted strictly before this iteration's
+    # subprocess was spawned) before the scripted handler ever runs --
+    # so the very first refused-COMPLETE snapshot already shows it moved
+    # off `pending`, unlike task 002 which the scheduler never touched.
+    assert "001 (in-progress), 002 (pending)" in msgs
     assert "refusing the signal and continuing the worker loop (task 046, #55)" in msgs
     assert sup.runner.phases.count("worker") == 4, sup.runner.phases
     assert _signals(root).count("COMPLETE") == 1, "one earned signal, at the end"

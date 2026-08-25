@@ -110,6 +110,19 @@ Design invariants:
   view keeps updating (never blank) for the length of a long worker
   iteration purely from the log stream.
 
+  **Task 116 update:** the picture above still holds for the harness's
+  OWN pre-spawn claim — the pending -> in-progress move `_step_worker`
+  now writes and emits itself, strictly before the worker subprocess is
+  spawned (the scheduler, task 115, picks the task; the agent no longer
+  edits `tasks.json` at all, fact 9). That write is a genuine at-transition
+  event, not the transient mid-iteration state task 022 retired the poller
+  over, so it DOES surface as its own `task` event now — an operator
+  watching `GET /tasks`/`ralphctl tasks` sees the claim the instant it
+  happens, through the event stream as well as the on-disk re-read. The
+  in-iteration gap task 022 describes still exists for everything AFTER
+  that claim: no further status event for the same task appears until the
+  subprocess has exited and the harness applies its reported verdict.
+
 ### The declared transition table (task 008/014/016, requirement B)
 
 States, legal transitions and guard-predicate names live as one data

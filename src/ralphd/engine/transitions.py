@@ -622,3 +622,32 @@ def worker_unsatisfiable_report_errors(payload: Any) -> list[str]:
         errors.append(
             "verdict 'unsatisfiable' requires a non-empty reason")
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Task 116 (#60 pillar 3, fact 9): the sibling semantic check for the
+# worker's ORDINARY per-task completion report -- the harness-owned
+# replacement for "the agent edits tasks.json directly". Same split as
+# `worker_unsatisfiable_report_errors` just above: schema validation is
+# `contracts.validate_payload`'s job, this is the business rule (a
+# `task_id` is required so the harness's own contract-violation message
+# can name exactly which assignment a malformed report was for -- the move
+# it authorises is always over the task THIS iteration was assigned,
+# `LoopSupervisor._apply_worker_completion_report`, never a task_id the
+# payload could invent unilaterally).
+# ---------------------------------------------------------------------------
+
+
+def worker_completion_report_errors(payload: Any) -> list[str]:
+    """Errors in a worker's `verdict: "complete"` report, or an empty list
+    when the report is well-formed. A payload that does not claim
+    `verdict == "complete"` at all is never in violation here -- the same
+    "nothing proposed, nothing to check" shape every sibling check in this
+    module uses.
+    """
+    if not isinstance(payload, dict) or payload.get("verdict") != "complete":
+        return []
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        return ["verdict 'complete' requires a non-empty task_id"]
+    return []

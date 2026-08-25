@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import contracts
 from . import router
+from . import scheduler
 from . import state
 from . import transitions
 from .config import (
@@ -1351,6 +1352,28 @@ class LoopSupervisor:
                 self.run.emit("task", taskId=tid, oldStatus=old, newStatus=status)
         self._last_task_snapshot = tasks
 
+    def _emit_task_status(self, task_id: str, old_status, new_status: str,
+                          **extra) -> None:
+        """Every direct, immediate "a specific task's status just moved"
+        emit (a reported claim applied the instant its hat's subprocess
+        exits, or -- task 116 -- the harness's own pre-spawn claim) goes
+        through here, not a bare `self.run.emit("task", ...)`, so it also
+        updates `_last_task_snapshot` in the same breath. Without that
+        second write, the general end-of-iteration `_emit_task_changes()`
+        diff (called for every iteration, any hat, at the finalisation
+        point BEFORE a hat-applied report or this iteration's pre-spawn
+        claim runs) still holds the PRE-transition value for this task the
+        next time it runs, at the next iteration's own finalisation --
+        and duplicates the exact transition this method already reported,
+        one iteration late (caught live: task 116's own
+        `test_task_in_progress_visible_while_worker_iteration_running`
+        saw both the pre-spawn in-progress claim and the applied-completion
+        move emitted a second time, one iteration after each really
+        happened)."""
+        self.run.emit("task", taskId=task_id, oldStatus=old_status,
+                      newStatus=new_status, **extra)
+        self._last_task_snapshot[task_id] = new_status
+
     # Task 022 (requirement F): `_poll_task_changes` -- a 0.25s background
     # poller that ran alongside the agent subprocess re-reading tasks.json
     # so a status transition written mid-iteration (e.g. pending ->
@@ -2259,7 +2282,7 @@ class LoopSupervisor:
                     t["status"] = target
                     break
             self.run.write_tasks(tasks_data)
-            self.run.emit("task", taskId=task_id, oldStatus=current, newStatus=target)
+            self._emit_task_status(task_id, current, target)
         return []
 
     def _apply_unsatisfiable_report(self, payload: dict) -> list[str]:
@@ -2307,8 +2330,8 @@ class LoopSupervisor:
                 t["unsatisfiableReason"] = reason
                 break
         self.run.write_tasks(tasks_data)
-        self.run.emit("task", taskId=task_id, oldStatus=current,
-                      newStatus="skipped", unsatisfiableReason=reason)
+        self._emit_task_status(task_id, current, "skipped",
+                               unsatisfiableReason=reason)
         # Fact 19's hazard: log the violation-shaped moment LOUDLY, at the
         # instant it happens, not just as a quiet status flip an operator
         # would have to notice by diffing tasks.json.
@@ -2317,6 +2340,64 @@ class LoopSupervisor:
             message=(f"worker reported task {task_id!r}'s criteria cannot "
                       f"be satisfied as written: {reason} (task 025, #63); "
                       "marked skipped"))
+        return []
+
+    def _worker_assignment_extra(self, task: dict | None) -> str:
+        """Task 116 (#60 pillar 3, fact 9): the one thing a worker
+        iteration needs told to it now that the HARNESS -- not the agent --
+        runs `engine.scheduler.select_next_task` and owns every task-status
+        write: which task_id it has been assigned this iteration, already
+        persisted as `in-progress` on disk (if it was not already) strictly
+        before this text is even built. `task` is `None` only when nothing
+        was selectable at all (an empty/fully-resolved plan, or the #33
+        "nothing actionable but something failed" case) -- worker.md's own
+        "say so and stop" path, not a task_id to guess at.
+        """
+        if not isinstance(task, dict):
+            return (
+                "## Task assigned this iteration\n\n"
+                "No task is currently selectable (nothing pending, "
+                "in-progress or validation-failed with satisfied "
+                "dependencies). Read tasks.json and the notes file to "
+                "understand why and report back -- do not invent a "
+                "task_id.\n")
+        return (
+            "## Task assigned this iteration\n\n"
+            f"- **id**: {task.get('id', '')}\n"
+            f"- **title**: {task.get('title', '')}\n"
+            f"- **status**: {task.get('status', '')}\n"
+            f"- **successCriteria**: {task.get('successCriteria', '')}\n")
+
+    def _apply_worker_completion_report(self, payload: dict,
+                                         assigned_task_id: str | None) -> list[str]:
+        """Task 116 (#60 pillar 3, fact 9): translate a worker's own
+        `{"verdict": "complete", "task_id": ...}` report into the SAME
+        declared task-status move `_apply_reported_task_status` already
+        applies for review/reflect -- not a second mechanism. Both the
+        task moved and the target status are the HARNESS's decision, never
+        taken from the agent's word alone: the task is always the one
+        `engine.scheduler.select_next_task` assigned THIS iteration, before
+        the subprocess was even spawned (`assigned_task_id`), and the
+        target is `awaiting-validation` under vigilant / `completed`
+        otherwise. A payload naming a *different* task_id is not silently
+        redirected onto it -- that would let a stray or fabricated task_id
+        claim a move the harness never assigned -- it is a contract
+        violation instead, exactly like any other reported move the
+        declared table refuses: a payload that disagrees with reality is
+        still just a claim (task 116's acceptance).
+        """
+        if not assigned_task_id:
+            return ["verdict 'complete' reported with no task assigned "
+                    "this iteration (nothing selectable for a worker to "
+                    "complete)"]
+        reported_id = payload.get("task_id")
+        if reported_id and reported_id != assigned_task_id:
+            return [f"verdict 'complete' names task_id {reported_id!r} but "
+                    f"task {assigned_task_id!r} is the one this iteration "
+                    "was assigned"]
+        target = "awaiting-validation" if self.cfg.vigilant else "completed"
+        return self._apply_reported_task_status(
+            {"task_id": assigned_task_id, "task_status": target})
         return []
 
     async def _ask_router(self, prompt: str) -> tuple[str, dict]:
@@ -2468,47 +2549,101 @@ class LoopSupervisor:
         while self.budget_left():
             await self._gate()
             tasks_before = self.run.read_tasks()
+            # Task 116 (#60 pillar 3, fact 9): the HARNESS -- not the agent
+            # -- decides which task a worker iteration works on, through
+            # the pure scheduler (task 115) applied to the plan as it
+            # stands right now, and persists any pending/validation-failed
+            # -> in-progress claim itself, strictly BEFORE the subprocess
+            # below is spawned (`tests/test_worker_harness_owned_status.py`
+            # asserts the on-disk status is already in-progress at the
+            # moment `run_iteration` is invoked). An already-in-progress
+            # pick (a resumed claim) is left untouched -- writing it again
+            # would be a no-op read followed by an identical write, and
+            # `before`'s snapshot below is taken AFTER this write so a
+            # resumed run's very first pass through this loop does not
+            # read as "progress" for the stagnation counter just because
+            # the claim moved.
+            selected = scheduler.select_next_task(
+                tasks_before.get("tasks", []))
+            assigned_id = selected.get("id") if isinstance(selected, dict) else None
+            if isinstance(selected, dict) and selected.get("status") in (
+                    "pending", "validation-failed"):
+                old_status = selected.get("status")
+                for t in tasks_before.get("tasks", []):
+                    if t.get("id") == assigned_id:
+                        t["status"] = "in-progress"
+                        break
+                self.run.write_tasks(tasks_before)
+                self._emit_task_status(assigned_id, old_status, "in-progress")
             before = json.dumps(tasks_before, sort_keys=True)
-            result = await self.run_iteration("worker")
+            extra = self._worker_assignment_extra(selected)
+            result = await self.run_iteration("worker", extra=extra)
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)
 
-            # Task 025 (requirement H, #63): a worker's FINAL line may be a
-            # JSON `verdict: "unsatisfiable"` report instead of the plain
-            # COMPLETE/no_verdict sentinel -- "a task's criteria cannot be
-            # satisfied as written", with a reason, reported through the
-            # contract rather than guessed at or silently reworked. Parsed
-            # opportunistically: a non-JSON last line (the ordinary sentinel
-            # case) or a JSON object that is not this report leaves the rest
-            # of this method's existing behaviour completely untouched.
+            # Task 025 (requirement H, #63) / task 116: a worker's FINAL
+            # line may be a JSON `verdict` report -- "unsatisfiable" (a
+            # task's criteria cannot be satisfied as written), "complete"
+            # (the ASSIGNED task above is done -- task 116 folds the old
+            # "agent edits tasks.json directly" channel, fact 9, into this
+            # same reported-contract shape `_apply_reported_task_status`
+            # already uses for every other hat) or "no_verdict" (still
+            # working, nothing to apply). Parsed opportunistically: a
+            # non-JSON last line (plain chatter, or the separate literal
+            # `<promise>COMPLETE</promise>` whole-plan marker handled
+            # further down, unchanged) or a JSON object with no `verdict`
+            # key at all leaves the rest of this method's existing
+            # behaviour completely untouched.
             try:
-                unsatisfiable_payload = json.loads(
-                    last_nonblank_line(result.final_text))
+                payload = json.loads(last_nonblank_line(result.final_text))
             except (json.JSONDecodeError, TypeError):
-                unsatisfiable_payload = None
-            if (isinstance(unsatisfiable_payload, dict)
-                    and unsatisfiable_payload.get("verdict") == "unsatisfiable"):
-                schema_errors = contracts.validate_payload(
-                    "worker", unsatisfiable_payload)
-                report_errors = (
-                    schema_errors
-                    or self._apply_unsatisfiable_report(unsatisfiable_payload))
-                if report_errors:
+                payload = None
+            verdict = payload.get("verdict") if isinstance(payload, dict) else None
+            applied_this_iteration = False
+            if verdict is not None:
+                schema_errors = contracts.validate_payload("worker", payload)
+                if verdict == "unsatisfiable":
+                    report_errors = (
+                        schema_errors
+                        or self._apply_unsatisfiable_report(payload))
+                    if report_errors:
+                        message = ("'worker' contract violation: "
+                                   + "; ".join(report_errors))
+                        self.run.emit("log", level="error", message=message)
+                        self._abort_reason = message
+                        return ("tail",)
+                    tasks_after = self.run.read_tasks()
+                    stagnant = 0
+                    if any(task_is_actionable(t)
+                           for t in tasks_after.get("tasks", [])):
+                        self._advance("worker", "worker",
+                                     "unsatisfiable_targeted_replan")
+                        continue
+                    verdict_ready = True
+                    guard_ready = "unsatisfiable_and_nothing_left"
+                    break
+                elif verdict == "complete":
+                    report_errors = (
+                        schema_errors
+                        or transitions.worker_completion_report_errors(payload)
+                        or self._apply_worker_completion_report(
+                            payload, assigned_id))
+                    if report_errors:
+                        message = ("'worker' contract violation: "
+                                   + "; ".join(report_errors))
+                        self.run.emit("log", level="error", message=message)
+                        self._abort_reason = message
+                        return ("tail",)
+                    tasks_after = self.run.read_tasks()
+                    stagnant = 0
+                    applied_this_iteration = True
+                elif schema_errors:
                     message = ("'worker' contract violation: "
-                               + "; ".join(report_errors))
+                               + "; ".join(schema_errors))
                     self.run.emit("log", level="error", message=message)
                     self._abort_reason = message
                     return ("tail",)
-                tasks_after = self.run.read_tasks()
-                stagnant = 0
-                if any(task_is_actionable(t)
-                       for t in tasks_after.get("tasks", [])):
-                    self._advance("worker", "worker",
-                                 "unsatisfiable_targeted_replan")
-                    continue
-                verdict_ready = True
-                guard_ready = "unsatisfiable_and_nothing_left"
-                break
+                # verdict == "no_verdict": nothing to apply this iteration.
 
             if self.cfg.vigilant:
                 # Task 020 (requirement F bullet 4): the vigilant claim
@@ -2559,6 +2694,26 @@ class LoopSupervisor:
             # flag it persistently so review (task 009) can demand
             # independent re-verification of the new text.
             self._check_criteria_edits(tasks_after)
+
+            if applied_this_iteration:
+                # Task 116: a "complete" verdict just applied is definite
+                # progress -- `stagnant` is already reset above -- and
+                # whether the WHOLE run is now done is the harness's own
+                # question to answer from the record it just wrote, not
+                # something the agent has to notice or re-assert with a
+                # separate marker (contrast the literal
+                # `<promise>COMPLETE</promise>` path below, which is
+                # unchanged and still available for a reply that carries no
+                # JSON verdict at all). `_outstanding_for_completion` is the
+                # exact same check `honoured_complete` already crosschecks
+                # a promise-marker claim against; here it is the sole
+                # decision, made directly from state.
+                if not self._outstanding_for_completion(tasks_after):
+                    verdict_ready = True
+                    guard_ready = "verdict_ready"
+                    self.run.emit("signal", signal="COMPLETE")
+                    break
+                continue
 
             if self._check_instant_failure(result, self.iterations_used):
                 break
@@ -3439,11 +3594,18 @@ class LoopSupervisor:
         itself rather than the retired `vigilant-verified.json` sidecar
         (fact 2, #29).
 
-        A worker iteration's own write is still the legacy "agent edits
-        tasks.json directly" channel (fact 9 -- that cutover to a reported
-        contract the harness applies is task 027's, not this one's), so
-        the raw claim it leaves behind still says `completed`, the same
-        word the non-vigilant terminal uses. This is the one place that
+        Task 116 (fact 9) landed that cutover: `_step_worker` now writes
+        `awaiting-validation` directly through `_apply_worker_completion_
+        report` the moment a worker's own `verdict: "complete"` contract
+        report is applied, so a fresh `completed` claim from that channel
+        never actually reaches this method any more. This relabel stays as
+        a defensive, idempotent no-op for anything else that might still
+        leave a bare `completed` behind on disk (a run resumed from a
+        pre-116 approach's tasks.json, or a future hat this method has not
+        been told about yet) -- not the primary channel any more, but
+        cheap insurance against exactly the failure mode #29 already
+        taught this codebase to distrust: a second, undeclared path to the
+        same status word. This is the one place that
         distinction actually matters: called with the record freshly
         re-read right after a worker iteration's subprocess has already
         exited (never while it is still running, matching requirement F's

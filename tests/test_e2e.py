@@ -1153,20 +1153,23 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
     running* -- with no engine-side poll required (task 022, requirement
     F: the engine's own `_poll_task_changes`, the 0.25s background poller
     that used to re-read `tasks.json` purely to turn this into a live
-    `task` *event*, is retired). The stub worker writes in-progress,
-    sleeps (simulating real work), then writes completed -- giving this
+    `task` *event*, is retired). Since task 116, the harness itself claims
+    the task -- writes `in-progress` and emits the matching `task` event --
+    strictly BEFORE spawning the worker subprocess for iteration 2, so the
+    stub's `STUB_SLEEP` window (it does no file write of its own for this
+    any more; the harness's pre-spawn write already happened) gives this
     test a real window in which the iteration is still running (no
     meta.json endedAt yet) but tasks.json already shows in-progress.
 
-    The second half proves the poller is actually gone, not merely
-    unused: task status changes are visible via the "task" event stream
-    only at a step transition now (requirement F's rule -- a status never
-    changes mid-hat), so the transient in-progress state that only ever
-    existed *during* this worker iteration is never itself observed as a
-    discrete `task` event at all; the one `task` event this iteration
-    produces jumps straight from `pending` to `completed`, emitted only
-    once the iteration has fully ended (`_emit_task_changes()` at the
-    post-iteration call site, strictly after `iteration.end`)."""
+    The second half proves both halves of requirement F's rule at once:
+    a status never changes mid-hat (so the ONLY `task` events for 001 are
+    the harness's own pending->in-progress claim, which lands strictly
+    BEFORE iteration 2 even starts, and the pending->completed... no --
+    in-progress->completed move applied from the worker's JSON verdict,
+    which lands strictly AFTER iteration 2's `iteration.end`) -- there is
+    no third, mid-hat event for the transient state, because there is no
+    transient state left to observe: the harness already committed
+    in-progress before iteration 2's subprocess so much as started."""
     e = engine_factory(job={"on_complete": "idle"},
                        stub_env={"STUB_SLEEP": "2", "STUB_TASKS": "1"})
     e.wait_api()
@@ -1198,12 +1201,14 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
 
     e.wait_state(("succeeded",))
 
-    # -- no "task" event for the transient in-progress state was ever
-    # emitted (the poller that used to produce it is gone); the one "task"
-    # event this run produces for task 001 jumps pending -> completed,
-    # and it lands strictly after iteration 2's own "iteration.end" -------
+    # -- exactly the two "task" events requirement F's step-transition rule
+    # allows: the harness's own pending -> in-progress claim (strictly
+    # BEFORE iteration 2 starts) and the completed move applied from the
+    # worker's JSON verdict (strictly AFTER iteration 2's "iteration.end") --
+    # never a change while the hat itself is running -----------------------
     req = urllib.request.Request(f"http://127.0.0.1:{e.port}/events?since=0")
     task_events_for_001 = []
+    saw_iteration_2_start_idx = None
     saw_iteration_2_end_idx = None
     with urllib.request.urlopen(req, timeout=10) as resp:
         for idx, raw in enumerate(resp):
@@ -1213,6 +1218,9 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
             obj = json.loads(line[6:])
             if obj.get("type") == "task" and obj.get("taskId") == "001":
                 task_events_for_001.append((idx, obj))
+            if (obj.get("type") == "iteration.start" and obj.get("number") == 2
+                    and saw_iteration_2_start_idx is None):
+                saw_iteration_2_start_idx = idx
             if (obj.get("type") == "iteration.end" and obj.get("number") == 2
                     and saw_iteration_2_end_idx is None):
                 saw_iteration_2_end_idx = idx
@@ -1223,10 +1231,14 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
                 # ends on its own, so this reader must break on the
                 # terminal state event itself rather than rely on EOF.
                 break
-    assert not any(obj.get("newStatus") == "in-progress"
-                   for _idx, obj in task_events_for_001), task_events_for_001
+    in_progress_events = [(idx, obj) for idx, obj in task_events_for_001
+                          if obj.get("newStatus") == "in-progress"]
     completed_events = [(idx, obj) for idx, obj in task_events_for_001
                         if obj.get("newStatus") == "completed"]
+    assert len(in_progress_events) == 1, task_events_for_001
+    assert in_progress_events[0][1].get("oldStatus") == "pending"
+    assert saw_iteration_2_start_idx is not None
+    assert in_progress_events[0][0] < saw_iteration_2_start_idx
     assert completed_events, task_events_for_001
     assert saw_iteration_2_end_idx is not None
     assert all(idx > saw_iteration_2_end_idx for idx, _obj in completed_events)

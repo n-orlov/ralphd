@@ -627,65 +627,37 @@ elif "Role: Worker" in prompt:
         tool_call, thinking_text = emit_rich_preamble(
             tool_name="bash", tool_args={"command": "python -m pytest tests/ -q"},
             thinking_text="Picking the next pending task and making it pass.")
+    # Task 116 (#60 pillar 3, fact 9): the HARNESS -- not this stub -- now
+    # runs the scheduler and owns every task-status write. The assignment
+    # it decided is injected into the prompt under "## Task assigned this
+    # iteration", the same "- **id**:" shape the Role: Verifier branch below
+    # already parses -- reuse that shape rather than re-deriving the
+    # picking algorithm a second time in this stub.
+    assigned_id = None
+    if "## Task assigned this iteration" in prompt:
+        for line in prompt.splitlines():
+            line = line.strip()
+            if line.startswith("- **id**:"):
+                assigned_id = line.split(":", 1)[1].strip()
+                break
     with open(tasks_file) as f:
         d = json.load(f)
     tasks = d["tasks"]
-    # Pick validation-failed first, then in-progress, then apply the
-    # dependsOn/priority-aware scheduler to pending tasks (mirrors
-    # worker.md's documented pick rule -- see task 048). With no
-    # dependsOn/priority fields anywhere in the plan this degenerates to
-    # plain list order (today's behaviour, unchanged).
-    validation_failed = [t for t in tasks if t["status"] == "validation-failed"]
-    in_progress = [t for t in tasks if t["status"] == "in-progress"]
-    picked = None
-    if validation_failed:
-        picked = validation_failed[0]
-    elif in_progress:
-        picked = in_progress[0]
-    else:
-        status_by_id = {t["id"]: t["status"] for t in tasks}
-        candidates = []
-        blocked_notes = []
-        for t in tasks:
-            if t["status"] != "pending":
-                continue
-            deps = t.get("dependsOn") or []
-            unmet = [dep for dep in deps
-                     if status_by_id.get(dep) not in _TASK_SATISFIES_DEPENDENCY]
-            if unmet:
-                dead = [dep for dep in unmet if status_by_id.get(dep) in ("failed", "skipped")]
-                if dead:
-                    blocked_notes.append(
-                        f"task {t['id']} blocked: dependency "
-                        f"{','.join(dead)} failed/skipped, not completed")
-                continue
-            candidates.append(t)
-        if candidates:
-            # highest priority wins (missing = 0); ties broken by list order
-            best_priority = max(c.get("priority", 0) for c in candidates)
-            for c in candidates:
-                if c.get("priority", 0) == best_priority:
-                    picked = c
-                    break
-        if blocked_notes:
-            with open(os.path.join(run, "notes.md"), "a") as f:
-                f.write("\n" + "\n".join(blocked_notes) + "\n")
+    picked = next((t for t in tasks if t.get("id") == assigned_id), None) \
+        if assigned_id else None
     if picked is not None:
-        if os.environ.get("STUB_REWRITE_CRITERIA") and picked["status"] == "validation-failed":
+        if (os.environ.get("STUB_REWRITE_CRITERIA")
+                and picked.get("validationAttempts", 0) >= 1):
+            # A worker that failed verification once and then cheats by
+            # rewriting the criteria instead of the actual work (task 008).
+            # This is the one field a worker may still edit directly --
+            # `successCriteria`, not `status` -- since the harness's own
+            # contract-applied move only ever touches the latter.
             picked["successCriteria"] = (
                 picked.get("successCriteria", "") + " (rewritten by worker)")
-        # Mandatory first write of the iteration (mirrors worker.md's rule):
-        # flip the picked task to in-progress and persist it *before* doing
-        # any "work", then sleep to simulate work time -- this is the window
-        # in which an operator/black-box test can observe the task as
-        # in-progress while the iteration is still running.
-        picked["status"] = "in-progress"
-        with open(tasks_file, "w") as f:
-            json.dump(d, f)
+            with open(tasks_file, "w") as f:
+                json.dump(d, f)
         time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
-        picked["status"] = "completed"
-        with open(tasks_file, "w") as f:
-            json.dump(d, f)
     # record steering whenever a worker iteration sees it. Anchor on the
     # engine's *injected* header (loop.py writes
     # "## Operator steering (MUST take priority)" / "... (pending, ...)"),
@@ -696,16 +668,34 @@ elif "Role: Worker" in prompt:
     if steering_marker in prompt:
         with open(marker("saw-steering"), "a") as f:
             f.write(prompt[prompt.rindex(steering_marker):][:2000])
-    if all(t["status"] in _PLAN_FULLY_RESOLVED_STATUSES for t in d["tasks"]):
-        text = "everything finished"
-        if echo_secrets:
-            text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
-        text += "\n<promise>COMPLETE</promise>"
-        emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
+    if picked is None:
+        # Nothing was assigned this iteration -- either the plan is
+        # already fully resolved (emit the legacy whole-plan marker,
+        # unaffected by task 116: this path carries no per-task JSON
+        # verdict at all, matching worker.md's own "never both in the
+        # same reply" rule), or something failed with nothing actionable
+        # left (#33) and this stub has no adversarial behaviour to offer
+        # for that case -- a plain no-op reply lets the engine's own
+        # blocked-with-failures routing (task 024) take it from here.
+        if all(t["status"] in _PLAN_FULLY_RESOLVED_STATUSES for t in tasks):
+            text = "everything finished"
+            if echo_secrets:
+                text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
+            text += "\n<promise>COMPLETE</promise>"
+            emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
+        else:
+            emit_final("nothing assigned this iteration and something is "
+                       "blocked", tool_call=tool_call, thinking_text=thinking_text)
     else:
-        text = "completed one task"
+        # Task 116: report the outcome through the contract instead of
+        # writing tasks.json's `status` field directly -- the harness
+        # applies `awaiting-validation`/`completed` itself from this
+        # payload, the SAME transitions.task_status_report_errors path
+        # review/reflect already go through.
+        text = f"completed {picked['id']}"
         if echo_secrets:
             text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
+        text += "\n" + json.dumps({"verdict": "complete", "task_id": picked["id"]})
         emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Reviewer" in prompt:

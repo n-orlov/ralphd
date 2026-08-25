@@ -17,41 +17,49 @@ immediately starts the next iteration.
 
 ## What to do
 
-1. Read the task state file (`tasks.json`) and the handoff notes file.
-2. Pick ONE task to work on:
-   - first any task with status `validation-failed` (read its `validationNotes`),
-   - otherwise the first `in-progress` task,
-   - otherwise apply the scheduler to `pending` tasks: consider only pending
-     tasks whose `dependsOn` (if the field is present) are ALL `completed`;
-     among those, pick the one with the highest `priority` (a plain number;
-     treat a missing `priority` as 0); break ties by plain list order (the
-     first such task in `tasks.json`). If no task in the plan has a
-     `dependsOn` or `priority` field, this degenerates to exactly "the
-     first pending task in list order".
-   - If a pending task's `dependsOn` includes a task that is `failed` or
-     `skipped` (not merely still pending — genuinely dead), it can never
-     become unblocked. **The harness derives this and marks the dependent
-     `blocked` on every surface (`ralphctl tasks`, the hub, `GET /tasks`'
-     `taskBlockedBy` map) the moment the dependency reaches `failed`/
-     `skipped` — you do not need to notice it yourself or write about it in
-     the notes file.** The scheduler rule above ("all `dependsOn` must be
-     `completed`") already means such a task is never picked; just move on
-     to the next viable task (or, if none are viable, say so in the notes
-     and stop this iteration without picking anything).
-3. **Mandatory first write of this iteration**: before touching any other
-   file or running any other command, write the picked task's status to
-   `in-progress` in `tasks.json` and save it. This is not optional and not
-   deferrable — an operator watching events/`ralphctl` must be able to see
-   which task is being worked *while the iteration is still running*, not
-   only after it ends. If the task is already `in-progress` (you picked it
-   up from a previous, interrupted iteration), still rewrite it so the
-   write timestamp/event is fresh. Only after this write do the work in
-   the workspace.
+1. Read the task state file (`tasks.json`, read-only — you never write to it,
+   see below) and the handoff notes file for context on the whole plan.
+2. **You have been assigned exactly one task this iteration.** The harness —
+   not you — already ran the picking algorithm (validation-failed first in
+   list order; else the first in-progress task; else the pending-task
+   scheduler: only pending tasks whose `dependsOn` are ALL `completed`,
+   highest `priority` wins, ties by list order) and put the result under
+   `## Task assigned this iteration` below, together with its `id`, `title`
+   and `successCriteria`. It also already wrote that task to `in-progress`
+   in `tasks.json` itself, strictly before this iteration started — there is
+   nothing for you to pick and nothing for you to write for that move. Work
+   on exactly that task and no other. If that section says nothing is
+   currently selectable, read `tasks.json` and the notes file yourself to see
+   why (commonly: a `failed` task blocking everything with nothing else
+   actionable — see `## Completion signal` below for how to resolve that)
+   and act accordingly; do not invent a task_id. If a pending task's
+   `dependsOn` includes a task that is `failed` or `skipped` (not merely
+   still pending — genuinely dead), it can never become unblocked; **the
+   harness derives this and marks the dependent `blocked` on every surface
+   (`ralphctl tasks`, the hub, `GET /tasks`'s `taskBlockedBy` map) the
+   moment the dependency reaches `failed`/`skipped` — you do not have to
+   notice or record it yourself**, and the scheduler never assigns such a
+   task to you in the first place.
+3. Do the work in the workspace for the assigned task.
 4. Verify your own work against the task's `successCriteria` (actually run the
    commands / check the files — do not assume).
-5. Update tasks.json: set the task's status to `completed` only if the success
-   criteria genuinely hold; otherwise leave it `in-progress` with a note of where
-   you got stuck added to the notes file.
+5. **Report your outcome through the contract — this is the only way your
+   status claim reaches disk.** End your reply's last non-blank line with
+   exactly one JSON object:
+   - `{"verdict": "complete", "task_id": "<the assigned id>"}` if you
+     finished the assigned task and its `successCriteria` genuinely hold.
+     The harness applies the resulting status itself — `awaiting-validation`
+     under vigilant verification, `completed` otherwise — you do not set
+     either one yourself, and a `task_id` naming any task other than the one
+     you were assigned is refused as a contract violation, not silently
+     redirected.
+   - `{"verdict": "no_verdict"}` if you did not finish this iteration (the
+     harness leaves the task at `in-progress` for a future iteration to
+     continue); note where you got stuck in the notes file.
+   - the `verdict: "unsatisfiable"` report below, for a task whose criteria
+     cannot be met as written.
+   Never together with the completion marker (`## Completion signal` below) in
+   the same reply — each iteration's last line is exactly one of these.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. **Preserve the
    notes' `## Standing rules` block verbatim** through every rewrite — it is the
@@ -65,10 +73,15 @@ immediately starts the next iteration.
 
 ## Rules
 
-- ONE task per iteration (see THE ONE RULE above). If a task turns out to be
-  non-atomic, split it into new tasks in tasks.json and complete only the first.
-- Edit tasks.json carefully: read it, modify the specific task, write valid JSON
-  back. Never remove tasks; add discovered work as new tasks.
+- ONE task per iteration (see THE ONE RULE above). If the assigned task turns
+  out to be non-atomic, do only the smallest atomic first piece of it and
+  describe the remainder precisely in the notes file so a later planning/
+  replan pass can carve it into a new task — `tasks.json` is harness-owned
+  (see step 5 above); you never create, edit or remove an entry in it
+  yourself for ordinary task work. The one narrow, pre-existing exception is
+  resolving a permanently `failed` task (`## Completion signal` below), which
+  still asks you to write `tasks.json` directly — that mechanism is outside
+  this wave's scope and unchanged.
 - If operator steering is present in your prompt, it takes priority over
   everything else — including the PRD and the current task order. Handle it as
   described under `## Operator steering` below: copy it down, then act on it.
@@ -187,9 +200,21 @@ applies whether or not that section is present:
 
 ## Completion signal
 
-When and ONLY when EVERY task in tasks.json has reached a terminal status —
-`completed`, or `skipped` with justification in the notes — end your reply with
-this exact line:
+The ordinary case is step 5 above: report `verdict: "complete"` for the task
+you were assigned, and the harness applies the status change itself. The
+literal marker below is a separate, narrower signal for the one situation
+step 5 cannot cover — an iteration with NOTHING assigned (`## Task assigned
+this iteration` said nothing was selectable) because every task in the plan
+has ALREADY reached a terminal status — `completed`, `validated`, or
+`skipped` with justification in the notes — before this iteration even
+started; there is no completion the harness has not already recorded. Do not
+try to use it to declare your OWN just-finished task done: at the moment you
+write this reply, `tasks.json` still shows that task `in-progress` (the
+harness applies your step-5 report only after this subprocess exits), so
+checking "every task is terminal" yourself would always be one task short of
+true for exactly the iteration that finishes the last one. When, and ONLY
+when, that check genuinely holds without your own assigned task in question at
+all, end your reply with this exact line:
 
 <promise>COMPLETE</promise>
 
