@@ -124,6 +124,20 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # this task's cutover proved wrong against the code it now
         # executes rather than merely declares.
         T("replan", "stagnation_exhausted"),
+        # Task 025 (requirement H, #63): a worker's `verdict: "unsatisfiable"`
+        # report is a state change (the named task moves to `skipped`,
+        # `unsatisfiableReason` recorded on its record) the moment the
+        # harness applies it -- so it is progress, not the silence the
+        # stagnation guard exists to catch. Two declared outcomes, chosen
+        # by whether anything else is still actionable once that one task is
+        # off the table: other work left keeps the SAME approach and the
+        # worker loop simply continues (a targeted replan of that one task
+        # -- worker.md's own carve-a-new-task/skip escape hatch handles the
+        # follow-up, on a LATER iteration, same as it already does for a
+        # `failed` task); nothing left routes to review for a verdict, same
+        # reasoning as `blocked_with_failures` just above.
+        T("worker", "unsatisfiable_targeted_replan"),
+        T("review", "unsatisfiable_and_nothing_left"),
     ),
     "review": (
         # ledger guard 12: a VERIFIED verdict is discarded while operator
@@ -517,8 +531,16 @@ HAT_SCHEMAS: dict[str, dict] = {
         "properties": {
             # Replaces the bare COMPLETE sentinel (ledger guard 8) with a
             # field the harness reads instead of scanning free text.
-            "verdict": {"type": "string", "enum": ["complete", "no_verdict"]},
+            # Task 025 (requirement H, #63) adds `"unsatisfiable"`: a worker
+            # that finds a task's criteria cannot be satisfied AS WRITTEN
+            # reports it here, with `task_id` and `reason` (semantic
+            # check -- both non-empty -- is `worker_unsatisfiable_report_
+            # errors` below, the same two-layer split `task_status_report_
+            # errors` already uses for task 019's plain status reports).
+            "verdict": {"type": "string",
+                        "enum": ["complete", "no_verdict", "unsatisfiable"]},
             "task_id": {"type": "string"},
+            "reason": {"type": "string"},
             "notes": {"type": "string"},
         },
         "additionalProperties": False,
@@ -558,3 +580,37 @@ HAT_SCHEMAS: dict[str, dict] = {
         "additionalProperties": False,
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Task 025 (requirement H, #63): the worker's "criteria cannot be satisfied
+# as written" report -- the semantic half layered ON TOP OF a hat's schema
+# validation (`contracts.validate_payload`, the only SCHEMA validator, fact
+# 16/#65), same split `task_status_report_errors` above already uses. A
+# `verdict: "unsatisfiable"` claim with no `task_id` or no `reason` names
+# nothing a reviewer or a later worker iteration could act on -- it is not a
+# report at all, and `_step_worker` treats a non-empty return here exactly
+# like a schema violation (a contract violation, ending the run loudly
+# rather than silently taking the claim anyway).
+# ---------------------------------------------------------------------------
+
+
+def worker_unsatisfiable_report_errors(payload: Any) -> list[str]:
+    """Errors in a worker's `verdict: "unsatisfiable"` report, or an empty
+    list when the report is well-formed. A payload that does not claim
+    `verdict == "unsatisfiable"` at all is never in violation here -- exactly
+    the same "nothing proposed, nothing to check" shape
+    `task_status_report_errors` uses for a payload with no `task_status`.
+    """
+    if not isinstance(payload, dict) or payload.get("verdict") != "unsatisfiable":
+        return []
+    errors = []
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        errors.append(
+            "verdict 'unsatisfiable' requires a non-empty task_id")
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        errors.append(
+            "verdict 'unsatisfiable' requires a non-empty reason")
+    return errors

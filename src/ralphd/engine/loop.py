@@ -2267,6 +2267,63 @@ class LoopSupervisor:
             self.run.emit("task", taskId=task_id, oldStatus=current, newStatus=target)
         return []
 
+    def _apply_unsatisfiable_report(self, payload: dict) -> list[str]:
+        """Task 025 (requirement H, #63): apply a worker's `verdict:
+        "unsatisfiable"` report -- a task's criteria cannot be satisfied as
+        written, with a reason -- the moment its own subprocess has
+        already exited, same discipline as `_apply_reported_task_status`
+        just above (only one write reaches disk, through `RunState.
+        write_tasks`, task 013's sole writer, and it happens strictly
+        after the hat's own subprocess has exited).
+
+        Schema validation (`contracts.validate_payload`) is the caller's
+        job; this is the semantic half: `transitions.
+        worker_unsatisfiable_report_errors` checks `task_id`/`reason` are
+        both non-empty, `task_id` must resolve against tasks.json, and the
+        move to `skipped` must be LEGAL from the task's current status in
+        this run's variant -- the exact same declared task-status table
+        task 019's plain status reports are checked against
+        (`transitions.task_status_report_errors`), not a second one. The
+        move IS the state change this task's acceptance asks for: it lands
+        in the SAME tasks.json write this method already has to make for
+        the reason text, so `_step_worker`'s existing before/after diff
+        sees genuine progress with no further plumbing.
+        """
+        errors = transitions.worker_unsatisfiable_report_errors(payload)
+        if errors:
+            return errors
+        task_id = payload.get("task_id")
+        reason = payload.get("reason")
+        tasks_data = self.run.read_tasks()
+        current = None
+        for t in tasks_data.get("tasks", []):
+            if t.get("id") == task_id:
+                current = t.get("status", "pending")
+                break
+        if current is None:
+            return [f"task_status: task_id {task_id!r} not found in tasks.json"]
+        status_errors = transitions.task_status_report_errors(
+            {"task_status": "skipped"}, current, self.cfg.vigilant)
+        if status_errors:
+            return status_errors
+        for t in tasks_data.get("tasks", []):
+            if t.get("id") == task_id:
+                t["status"] = "skipped"
+                t["unsatisfiableReason"] = reason
+                break
+        self.run.write_tasks(tasks_data)
+        self.run.emit("task", taskId=task_id, oldStatus=current,
+                      newStatus="skipped", unsatisfiableReason=reason)
+        # Fact 19's hazard: log the violation-shaped moment LOUDLY, at the
+        # instant it happens, not just as a quiet status flip an operator
+        # would have to notice by diffing tasks.json.
+        self.run.emit(
+            "log", level="warning",
+            message=(f"worker reported task {task_id!r}'s criteria cannot "
+                      f"be satisfied as written: {reason} (task 025, #63); "
+                      "marked skipped"))
+        return []
+
     async def _ask_router(self, prompt: str) -> tuple[str, dict]:
         """The router's own model call (task 018, requirement E): one tiny,
         UNCOUNTED question -- no iteration slot, no `iterations_used`
@@ -2383,6 +2440,13 @@ class LoopSupervisor:
         approach directly, it does NOT get a review verdict; task 008's
         first draft of the table had this row wrong, corrected by this
         cutover against the runtime behaviour it now executes).
+
+        Task 025 (requirement H, #63) adds `unsatisfiable_targeted_replan`
+        (self-loop, applied and audited exactly like the verify round trip
+        above, the moment a worker's `verdict: "unsatisfiable"` report
+        lands and other tasks remain actionable) and
+        `unsatisfiable_and_nothing_left` (-> review, same reasoning as
+        `blocked_with_failures` when nothing else is left to try).
         """
         approach = self._approach
         stagnant = 0
@@ -2395,6 +2459,43 @@ class LoopSupervisor:
             result = await self.run_iteration("worker")
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)
+
+            # Task 025 (requirement H, #63): a worker's FINAL line may be a
+            # JSON `verdict: "unsatisfiable"` report instead of the plain
+            # COMPLETE/no_verdict sentinel -- "a task's criteria cannot be
+            # satisfied as written", with a reason, reported through the
+            # contract rather than guessed at or silently reworked. Parsed
+            # opportunistically: a non-JSON last line (the ordinary sentinel
+            # case) or a JSON object that is not this report leaves the rest
+            # of this method's existing behaviour completely untouched.
+            try:
+                unsatisfiable_payload = json.loads(
+                    last_nonblank_line(result.final_text))
+            except (json.JSONDecodeError, TypeError):
+                unsatisfiable_payload = None
+            if (isinstance(unsatisfiable_payload, dict)
+                    and unsatisfiable_payload.get("verdict") == "unsatisfiable"):
+                schema_errors = contracts.validate_payload(
+                    "worker", unsatisfiable_payload)
+                report_errors = (
+                    schema_errors
+                    or self._apply_unsatisfiable_report(unsatisfiable_payload))
+                if report_errors:
+                    message = ("'worker' contract violation: "
+                               + "; ".join(report_errors))
+                    self.run.emit("log", level="error", message=message)
+                    self._abort_reason = message
+                    return ("tail",)
+                tasks_after = self.run.read_tasks()
+                stagnant = 0
+                if any(task_is_actionable(t)
+                       for t in tasks_after.get("tasks", [])):
+                    self._advance("worker", "worker",
+                                 "unsatisfiable_targeted_replan")
+                    continue
+                verdict_ready = True
+                guard_ready = "unsatisfiable_and_nothing_left"
+                break
 
             if self.cfg.vigilant:
                 # Task 020 (requirement F bullet 4): the vigilant claim
@@ -2522,9 +2623,24 @@ class LoopSupervisor:
                 guard_ready = "blocked_with_failures"
                 break
             if stagnant >= 3:
-                self.run.emit("log", level="error",
-                              message="3 iterations with no task progress; "
-                                      "failing approach")
+                # Task 025 (requirement H, #63): name what is left outstanding
+                # ON THE EVENT PAYLOAD, not just folded into a message string
+                # a reader has to parse -- the pre-existing message alone did
+                # not say which tasks were still open, "which is why the
+                # operator could not see the cause in the log" (PRD
+                # requirement H).
+                outstanding_tasks = [
+                    {"id": t.get("id"), "status": t.get("status", "pending")}
+                    for t in tasks_after.get("tasks", []) if isinstance(t, dict)
+                ]
+                names = ", ".join(
+                    f"{o['id']} ({o['status']})" for o in outstanding_tasks)
+                self.run.emit(
+                    "log", level="error",
+                    message=("3 iterations with no task progress; failing "
+                              "approach"
+                              + (f" (outstanding: {names})" if names else "")),
+                    outstandingTasks=outstanding_tasks)
                 break
             if honoured_complete:
                 verdict_ready = True

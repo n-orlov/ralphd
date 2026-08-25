@@ -224,3 +224,28 @@ back. So when you need to talk *about* the signal — above all when you are
 explaining why you are withholding it — write "the completion marker" and do not
 reproduce the literal line: write "tasks remain, so I am not emitting the
 completion marker", never a sentence with the line itself inside it.
+
+## Reporting unsatisfiable criteria
+
+Sometimes a task's `successCriteria` cannot be satisfied AS WRITTEN, for a
+reason that has nothing to do with how many attempts you spend on it —
+contradictory requirements, a criterion that assumes hardware or an
+environment this sandbox does not have, a criterion invalidated by a
+decision made elsewhere in the plan. Grinding through `validationAttempts`
+to reach `failed` first, so you can then follow the `skipped`-relabelling
+process above, wastes iterations proving something you already know. Report
+it directly instead: end this iteration's reply with, as its LAST
+non-blank line (nothing after it — same placement rule as the completion
+marker above, and never together with the completion marker in the same
+reply), exactly one JSON object:
+
+{"verdict": "unsatisfiable", "task_id": "<the task's id>", "reason": "<why, specifically, the criteria cannot be met as written>"}
+
+The harness applies this itself: it moves that task to `skipped` and records
+your `reason` on the task's own record (`unsatisfiableReason`) in the same
+write — you do not separately edit the task's `status` for this one. Both
+`task_id` and `reason` are required and must be non-empty; an empty or
+missing `reason`, or a `task_id` that does not match a task in `tasks.json`,
+is a contract violation and ends the run rather than being silently
+accepted. Do not use this to avoid ordinary work you could actually do —
+it is for criteria that are wrong, not for criteria that are merely hard.

@@ -77,7 +77,8 @@ def test_wrong_shape_json_reuses_validate_payload_errors():
     # valid JSON, but "verdict" is not one of worker's enum values.
     payload, errors = ce.parse_response("worker", json.dumps({"verdict": "maybe"}))
     assert payload is None
-    assert errors == ["$.verdict: 'maybe' is not one of ['complete', 'no_verdict']"]
+    assert errors == ["$.verdict: 'maybe' is not one of "
+                       "['complete', 'no_verdict', 'unsatisfiable']"]
 
 
 def test_a_valid_payload_comes_back_with_no_errors():
