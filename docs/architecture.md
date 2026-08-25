@@ -614,13 +614,19 @@ genuinely needs cross-task ordering or prioritisation (see
 `prompts/planning.md`). The worker's pick rule (`prompts/worker.md`): among
 `pending` tasks whose `dependsOn` are all `completed`, pick the highest
 `priority` (missing = 0), ties broken by list order; a task blocked by a
-`failed`/`skipped` dependency is never silently ground against — the worker
-notes the blockage in the handoff notes file and moves on. With no
+`failed`/`skipped` dependency (directly or transitively, through another
+merely-blocked task) is never silently ground against, but the worker does
+not have to notice or record it either -- the harness derives it itself
+(`engine.state.task_blocked_by`, task 021, requirement F) and marks the
+dependent `blocked` on every surface (`ralphctl tasks`, the hub, and
+`GET /tasks`'/`GET /status`'s own `taskBlockedBy` map / `blocked` count)
+the moment the dependency reaches `failed`/`skipped`. With no
 `dependsOn`/`priority` fields anywhere in the plan this is identical to
 plain sequential list-order picking. This rule lives entirely in the phase
 prompts (the engine does not parse or enforce it in code) — it is the agent
 reading `tasks.json` and the prompt's instructions, same as task selection
-always has been.
+always has been; the `blocked` DERIVATION, unlike the pick rule itself, is
+engine code (`engine/state.py`), not prompt text.
 
 ### Reading `tasks.json`: unknown is not zero (task 002, #15)
 

@@ -319,11 +319,11 @@ def fallback_guard(state: str) -> str | None:
 # tuple, it does not add to it) -- `validated` is the verifier-granted
 # terminal, and `completed` stays the non-vigilant terminal.
 #
-# `blocked` (task 021's harness-derived dead-dependency label) is
-# deliberately NOT a status in this table: it is never the TARGET of a
-# transition a hat proposes, only a read-time annotation the harness
-# computes from a dependency's own status, so there is nothing to validate
-# here for it.
+# `blocked` (task 021's harness-derived dead-dependency label,
+# `engine.state.task_blocked_by()`) is deliberately NOT a status in this
+# table: it is never the TARGET of a transition a hat proposes, only a
+# read-time annotation the harness computes from a dependency's own status,
+# so there is nothing to validate here for it.
 
 TASK_STATUSES: tuple[str, ...] = (
     "pending",

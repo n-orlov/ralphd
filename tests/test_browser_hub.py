@@ -1071,6 +1071,71 @@ def test_run_detail_opens_a_task_in_a_dialog(tmp_path, pw):
 
 
 # --------------------------------------------------------------------------
+# task 021 (#60 pillar 3): dead dependencies are harness-derived, and the
+# dead subtree is visible in the hub -- not just `ralphctl tasks`
+# --------------------------------------------------------------------------
+
+def test_run_detail_marks_a_dead_dependencys_subtree_blocked(tmp_path, pw):
+    """A dependency that reaches `failed`/`skipped` dooms its dependents
+    WITHOUT the harness ever changing their own `status` -- and the hub
+    shows it, not just `ralphctl tasks`, per the PRD's own wording ("Dead
+    subtrees are visible in `ralphctl tasks` and the hub").
+
+    Task 004 is dead outright; 005 depends on it directly (blocked); 006
+    depends on 005, which is itself only blocked, not dead -- proving the
+    derivation is transitive, not one hop. Task 007 depends on 001
+    (completed, a SATISFIED dependency) and is NOT blocked.
+    """
+    registry = tmp_path / "registry"
+    tasks = {"tasks": [
+        {"id": "001", "title": "unrelated done task", "status": "completed"},
+        {"id": "004", "title": "the one that died", "status": "failed",
+         "failureKind": "requirement-unmet"},
+        {"id": "005", "title": "direct dependent", "status": "pending",
+         "dependsOn": ["004"]},
+        {"id": "006", "title": "transitive dependent", "status": "pending",
+         "dependsOn": ["005"]},
+        {"id": "007", "title": "unaffected dependent", "status": "pending",
+         "dependsOn": ["001"]},
+    ]}
+    dead = _write_dead_run(registry, "run-blocked", state="running", verdict=None)
+    (dead / "tasks.json").write_text(json.dumps(tasks))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-blocked")
+        _wait_for(pw, "document.body.innerText", "transitive dependent")
+        assert int(pw.eval_js("document.querySelectorAll('tr.task-row').length")) == 5
+
+        # -- rows, selected by POSITION (avoids CSS attribute-value quoting
+        # noise): 001, 004, 005, 006, 007 in that order. 005/006 flagged
+        # blocked by their own direct dead/doomed dependency; 007 (a
+        # satisfied dependency) is not.
+        rows = "Array.from(document.querySelectorAll('tr.task-row'))"
+        blocked_005 = pw.eval_js(f"{rows}[2].dataset.blocked").strip('"')
+        blocked_006 = pw.eval_js(f"{rows}[3].dataset.blocked").strip('"')
+        blocked_007 = pw.eval_js(f"{rows}[4].dataset.blocked").strip('"')
+        assert blocked_005 == "004", blocked_005
+        assert blocked_006 == "005", blocked_006
+        assert blocked_007 == "", blocked_007
+        assert int(pw.eval_js(
+            "document.querySelectorAll('tr.task-row-blocked').length")) == 2
+        row_005_text = pw.eval_js(f"{rows}[2].textContent")
+        assert "blocked by 004" in row_005_text, row_005_text
+
+        # -- the dialog states the same fact in words, same wording as
+        # `ralphctl tasks`/`engine.state.format_task_status` -------------
+        pw.eval_js(f"{rows}[2].click()")
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "direct dependent")
+        assert "status: pending (blocked by 004)" in body, body
+        pw.screenshot(SCREENSHOTS_DIR / "15-task-blocked.png")
+    finally:
+        server.stop()
+
+
+# --------------------------------------------------------------------------
 # task 005 (#15): a stale task read is labelled, and the table never blinks
 # --------------------------------------------------------------------------
 

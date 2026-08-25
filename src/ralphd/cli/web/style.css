@@ -252,6 +252,11 @@ footer.autorefresh {
 .task-row:hover, .task-row:focus { background: rgba(127, 127, 127, 0.12); outline: none; }
 .task-row:focus-visible { outline: 2px solid var(--accent); }
 
+/* task 021 (#60 pillar 3): a task the dependency graph dooms -- same warn
+   colour as .tasks-trouble/.pill-stale, so a dead subtree in the plan
+   reads as the same kind of fact everywhere it shows up. */
+.task-row-blocked { background: rgba(200, 120, 0, 0.08); }
+
 /* task 056 (#1): the PRD (and, task 057, task-detail) dialog. Plain
    <dialog>, no library: a scrollable monospace text box whose content is
    inserted as text nodes only (see app.js's openTextDialog). */

@@ -30,11 +30,14 @@ immediately starts the next iteration.
      first pending task in list order".
    - If a pending task's `dependsOn` includes a task that is `failed` or
      `skipped` (not merely still pending — genuinely dead), it can never
-     become unblocked. Do not silently grind against it or skip it forever
-     in silence: append a line to the handoff notes file naming the blocked
-     task and the dead dependency, then pick the next viable task instead
-     (or, if none are viable, say so in the notes and stop this iteration
-     without picking anything).
+     become unblocked. **The harness derives this and marks the dependent
+     `blocked` on every surface (`ralphctl tasks`, the hub, `GET /tasks`'
+     `taskBlockedBy` map) the moment the dependency reaches `failed`/
+     `skipped` — you do not need to notice it yourself or write about it in
+     the notes file.** The scheduler rule above ("all `dependsOn` must be
+     `completed`") already means such a task is never picked; just move on
+     to the next viable task (or, if none are viable, say so in the notes
+     and stop this iteration without picking anything).
 3. **Mandatory first write of this iteration**: before touching any other
    file or running any other command, write the picked task's status to
    `in-progress` in `tasks.json` and save it. This is not optional and not

@@ -1353,22 +1353,35 @@ class TasksRead:
         return task_failure_kinds(self.tasks)
 
     @property
+    def blocked_by(self) -> dict:
+        """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}`
+        for this read's tasks -- derived through `task_blocked_by()`, exactly
+        the same pattern `failure_kinds` follows for a different overlay, and
+        for the same reason: a plan written before this existed carries no
+        such field at all, so there is nothing to fall back to but derive."""
+        return task_blocked_by(self.tasks)
+
+    @property
     def payload(self) -> dict:
         """Task 025 (#33): the plan as every surface SERVES it -- `GET /tasks`,
         `ralphctl tasks --json`'s on-disk path and the hub's run-detail payload
         -- so the three cannot answer differently.
 
         tasks.json verbatim, then the read's provenance (`contract`), then the
-        derived failure kinds; both are appended LAST, so a plan key of the
-        same name can forge neither. The kinds key is omitted entirely when no
-        task is failed: for a derived map, empty and absent state the same fact
-        ("nothing failed here"), so an older engine's answer needs no
+        derived failure kinds, then (task 021) the derived blocked-by map --
+        all three appended LAST, so a plan key of the same name can forge
+        none of them. Each derived key is omitted entirely when its map is
+        empty: for a derived map, empty and absent state the same fact
+        ("nothing failed/blocked here"), so an older engine's answer needs no
         translating.
         """
         out = {**self.doc, **self.contract}
         kinds = self.failure_kinds
         if kinds:
             out[TASK_FAILURE_KINDS_FIELD] = kinds
+        blocked = self.blocked_by
+        if blocked:
+            out[TASK_BLOCKED_FIELD] = blocked
         return out
 
     @property
@@ -1426,6 +1439,11 @@ class TasksRead:
                 "failedValidationExhausted", 0),
             "tasksFailedRequirementUnmet": counts.get(
                 "failedRequirementUnmet", 0),
+            # Task 021 (#60 pillar 3): how many tasks the dependency graph
+            # dooms, raw -- same reason the failure counts travel raw above,
+            # a row sortable only on `completed/total` cannot tell a plan
+            # that is merely mid-flight from one with a dead subtree in it.
+            "tasksBlocked": counts.get("blocked", 0),
             "tasksDisplay": fraction,
             # A plan-less run gets no summary either: `0/0 completed` would be
             # a claim about a plan that does not exist.
@@ -1624,6 +1642,107 @@ TASK_COUNT_SUBKEYS = tuple(TASK_FAILURE_COUNT_KEYS.values())
 # tasks.json written before task 024 -- see `task_failure_kind()`.
 TASK_FAILURE_KINDS_FIELD = "taskFailureKinds"
 
+# Task 021 (#60 pillar 3, PRD requirement F): a second OVERLAY count, same
+# discipline as the failure-kind sub-counts above -- `blocked` is not a
+# seventh status (a task the dependency graph dooms keeps its own real
+# status, `pending`/`in-progress`/`validation-failed`/`awaiting-validation`),
+# so it never gets a status key of its own either. `TASK_COUNT_OVERLAY_KEYS`
+# is the full exclusion list -- both this wave's overlay and task 025's --
+# every consumer that walks a counts dict as "statuses" (i.e. expects the
+# keys it is summing to add to `total`) must exclude, exactly the way
+# `TASK_COUNT_SUBKEYS` alone used to be that list before this key existed.
+TASK_COUNT_OVERLAY_KEYS = TASK_COUNT_SUBKEYS + ("blocked",)
+
+# A `dependsOn` entry is SATISFIED only by these two statuses -- the same pair
+# `tests/stub-pi/pi`'s scheduler emulation already uses
+# (`_TASK_SATISFIES_DEPENDENCY`), brought into the engine here as the one
+# place that answer is decided rather than reimplemented a third time.
+# `skipped` deliberately does NOT satisfy it: the PRD's own vocabulary calls
+# `failed` AND `skipped` "terminal dead" for a dependency chain's purposes
+# (docs/prds/v0.9-declarative-loop.md, requirement F) -- a skipped dependency
+# never did the work a dependent needs, any more than a failed one did.
+TASK_DEPENDENCY_SATISFIED_STATUSES = ("completed", "validated")
+TASK_DEPENDENCY_DEAD_STATUSES = ("failed", "skipped")
+
+
+def task_blocked_by(tasks: list) -> dict[str, list[str]]:
+    """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}` for
+    every task that can never be completed because a `dependsOn` entry --
+    directly, or transitively through another doomed task -- reached
+    `failed` or `skipped`. This is the PRD's "dead dependencies are
+    harness-derived" requirement: the harness marks the dependents here, so
+    no prompt has to notice and no agent has to write a note about it
+    (worker.md used to ask for exactly that, by hand).
+
+    A task already `completed`/`validated` is a SINK: whatever its own
+    `dependsOn` said, the work is done, so doom does not propagate PAST it to
+    its own dependents either -- a well-formed engine never lets that happen,
+    but a hand-edited or legacy plan might, and the answer here must not
+    invent a blocked label for a task that finished. A task already
+    `failed`/`skipped` is a SOURCE of doom, never a KEY of the returned map
+    (it is dead in its own right -- `task_failure_kind()`/plain `status`
+    already say so; being a cause for someone else is a different fact from
+    being blocked oneself). Everything else -- `pending`, `in-progress`,
+    `validation-failed`, `awaiting-validation` -- is still in flight and can
+    be doomed.
+
+    Fixpoint over the dependency graph, so a chain of several doomed tasks
+    (task 004 dead -> 005 doomed -> 006 doomed) is caught, not just direct
+    dependents. Each task's list is its OWN direct `dependsOn` entries that
+    are themselves doomed (dead or doomed), sorted, so a reader can follow
+    the chain one hop at a time from any task without a second traversal.
+    Ids only, never a live task dict held by reference. A task with no id is
+    skipped, same rule as `task_failure_kinds`: there is nothing for a
+    consumer to key on.
+    """
+    by_id: dict[str, dict] = {}
+    depends_on: dict[str, list[str]] = {}
+    order: list[str] = []
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if tid is None or tid == "":
+            continue
+        tid = str(tid)
+        by_id[tid] = t
+        order.append(tid)
+        raw_deps = t.get("dependsOn")
+        depends_on[tid] = ([str(d) for d in raw_deps]
+                            if isinstance(raw_deps, list) else [])
+
+    dead = {tid for tid, t in by_id.items()
+            if t.get("status", "pending") in TASK_DEPENDENCY_DEAD_STATUSES}
+    doomed = set(dead)
+    changed = True
+    while changed:
+        changed = False
+        for tid in order:
+            if tid in doomed:
+                continue
+            status = by_id[tid].get("status", "pending")
+            if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+                continue  # a sink: done regardless of what it depended on
+            if any(dep in doomed for dep in depends_on.get(tid, [])):
+                doomed.add(tid)
+                changed = True
+
+    out: dict[str, list[str]] = {}
+    for tid in order:
+        if tid in dead or tid not in doomed:
+            continue
+        causes = sorted(dep for dep in depends_on.get(tid, []) if dep in doomed)
+        if causes:
+            out[tid] = causes
+    return out
+
+
+# Task 021: the field name under which the derived blocked-by map is
+# published -- the exact sibling of `TASK_FAILURE_KINDS_FIELD` above, same
+# reasoning: `GET /tasks`, `ralphctl tasks --json` and the hub's run-detail
+# payload all serve `{task id: [ancestor ids]}`, never a copy.
+TASK_BLOCKED_FIELD = "taskBlockedBy"
+
 
 def task_failure_kind(task: dict) -> str | None:
     """Which kind of `failed` a task record is, or None when it is not failed.
@@ -1675,6 +1794,15 @@ def task_counts(tasks: list) -> dict:
     They are SUB-counts, not statuses: the status keys still sum to `total`,
     and the sub-counts sum to `failed`. Both invariants hold for a legacy
     record too, because the kind is derived (`task_failure_kind`).
+
+    Task 021 (#60 pillar 3): a plan holding a dead dependency also gets a
+    `blocked` OVERLAY count -- how many tasks `task_blocked_by()` dooms --
+    present only when at least one task is actually doomed (same "only what
+    is there gets a key" rule as the sub-counts, so a plan with no
+    `dependsOn` at all, or none of them dead, looks exactly as it did before
+    this existed). It is not a status either -- see
+    `TASK_COUNT_OVERLAY_KEYS`, the exclusion list a consumer walking these
+    keys as statuses must use, now that there are two kinds of overlay.
     """
     counts = {"total": len(tasks)}
     subcounts: dict = {}
@@ -1687,6 +1815,9 @@ def task_counts(tasks: list) -> dict:
             sub = TASK_FAILURE_COUNT_KEYS[kind]
             subcounts[sub] = subcounts.get(sub, 0) + 1
     counts.update(subcounts)
+    blocked = task_blocked_by(tasks)
+    if blocked:
+        counts["blocked"] = len(blocked)
     return counts
 
 
@@ -1713,7 +1844,7 @@ def task_failure_kinds(tasks: list) -> dict:
     return out
 
 
-def format_task_status(task: dict) -> str:
+def format_task_status(task: dict, blocked_by: list | None = None) -> str:
     """Task 025 (#33): ONE task record's status as a human reads it --
     `failed (validation-exhausted)` / `failed (requirement-unmet)` for a failed
     task, the bare status for everything else.
@@ -1723,13 +1854,23 @@ def format_task_status(task: dict) -> str:
     kinds in a counts summary -- so "1 failed (validation-exhausted)" in a
     tally and `failed (validation-exhausted)` on the task itself are the same
     words, not two vocabularies for one fact.
+
+    Task 021 (#60 pillar 3): `blocked_by`, when given a non-empty list --
+    this task's entry in `task_blocked_by()`'s map -- appends
+    ` (blocked by 004, 005)` after the raw status, so the record's real
+    status (`pending`, `in-progress`, ...) is never hidden by the overlay,
+    only annotated. Optional and keyword-friendly so every existing call
+    site that has no dependency graph handy keeps working unchanged.
     """
     if not isinstance(task, dict):
         return "unknown"
     status = task.get("status")
     status = str(status) if status else "unknown"
     kind = task_failure_kind(task)
-    return f"{status} ({kind})" if kind else status
+    text = f"{status} ({kind})" if kind else status
+    if blocked_by:
+        text += f" (blocked by {', '.join(str(b) for b in blocked_by)})"
+    return text
 
 
 # Task 013 (#21): how a `task_counts()` key is SPELLED for a human, in ONE
@@ -1753,14 +1894,19 @@ TASK_STATUS_LABELS = {"inProgress": "in-progress",
 # they are shown (worst first). Not a rendering decision the hub gets to make
 # on its own: `ralphctl runs` flags the same ones.
 #
+# Task 021 (#60 pillar 3): `blocked` leads -- a dead subtree cannot be
+# resolved by another worker iteration at all, which is worse news than a
+# task merely awaiting one (unlike `failed`, nothing routes a `blocked` task
+# back to review on its own; an operator or a targeted replan has to act).
+#
 # Task 025 (#33): a `failed` task is trouble under BOTH meanings -- a
 # requirement nobody met, or a task the engine gave up validating -- and it is
-# worse news than a plan merely mid-flight, so the two kinds lead. Plain
-# `failed` is listed last of the three as the FALLBACK for a counts dict with
-# no sub-counts (a pre-v0.7 engine's `GET /status`); `_failed_kinds_known`
+# worse news than a plan merely mid-flight, so the two kinds lead the rest.
+# Plain `failed` is listed last of the three as the FALLBACK for a counts dict
+# with no sub-counts (a pre-v0.7 engine's `GET /status`); `_failed_kinds_known`
 # suppresses it whenever the kinds are known, so one failed task can never be
 # flagged twice.
-TASK_TROUBLE_KEYS = ("failedRequirementUnmet", "failedValidationExhausted",
+TASK_TROUBLE_KEYS = ("blocked", "failedRequirementUnmet", "failedValidationExhausted",
                      "failed", "validationFailed", "inProgress")
 
 

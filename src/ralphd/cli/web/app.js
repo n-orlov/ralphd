@@ -472,13 +472,38 @@ function taskFailureKind(doc, t) {
   return typeof own === "string" && own ? own : null;
 }
 
+// Task 021 (#60 pillar 3): a task the dependency graph dooms -- a
+// `dependsOn` entry that reached `failed`/`skipped`, directly or through
+// another doomed task -- WITHOUT the harness ever changing this task's own
+// `status`. "Dead dependencies are harness-derived": the answer is DERIVED
+// SERVER-SIDE (`engine.state.task_blocked_by`, via
+// `ui_server._with_task_blocked_by`) and arrives as the payload's
+// `taskBlockedBy` map, the exact sibling of `taskFailureKinds` above -- never
+// recomputed here from `dependsOn` in JS, which would be a second copy of
+// the SATISFIES-a-dependency rule (`engine.state.TASK_DEPENDENCY_SATISFIED_
+// STATUSES` -- a task's OWN terminal-success status only; `skipped`
+// deliberately does not qualify). Returns the sorted list of ancestor ids
+// that doom this task, or null when it is not blocked at all.
+function taskBlockedBy(doc, t) {
+  const map = doc && typeof doc.taskBlockedBy === "object" && doc.taskBlockedBy
+    ? doc.taskBlockedBy : null;
+  if (!map) return null;
+  const id = t && t.id == null ? "" : String(t.id);
+  const by = map[id];
+  return Array.isArray(by) && by.length > 0 ? by.map(String) : null;
+}
+
 // The status as `engine.state.format_task_status` words it -- `failed
-// (validation-exhausted)` -- so the pill, the task dialog and `ralphctl tasks`
-// say the same words about the same task.
+// (validation-exhausted)`, or `pending (blocked by 004, 005)` -- so the pill,
+// the task dialog and `ralphctl tasks` say the same words about the same
+// task.
 function taskStatusText(doc, t) {
   const status = t && t.status ? String(t.status) : "unknown";
   const kind = taskFailureKind(doc, t);
-  return kind ? status + " (" + kind + ")" : status;
+  let text = kind ? status + " (" + kind + ")" : status;
+  const by = taskBlockedBy(doc, t);
+  if (by) text += " (blocked by " + by.join(", ") + ")";
+  return text;
 }
 
 function taskDialogText(t, doc) {
@@ -1712,10 +1737,12 @@ function renderTasks(el, tasks) {
     // natively focusable.
     const open = () => { openTaskDialog(t, doc); };
     const kind = taskFailureKind(doc, t);
+    const blockedBy = taskBlockedBy(doc, t);
     tbody.appendChild(h("tr", {
-      class: "task-row",
+      class: "task-row" + (blockedBy ? " task-row-blocked" : ""),
       "data-task-id": String(t.id == null ? "" : t.id),
       "data-failure-kind": String(kind || ""),
+      "data-blocked": blockedBy ? blockedBy.join(",") : "",
       role: "button",
       tabindex: "0",
       title: "show this task's success criteria",
@@ -1729,7 +1756,15 @@ function renderTasks(el, tasks) {
       // server's wording -- otherwise the hub shows the one word `failed` for
       // both meanings and the operator has to open tasks.json to tell a
       // requirement nobody met from a task the engine stopped validating.
-      h("td", {}, kind ? [pill(t.status), " ", pill(kind)] : [pill(t.status)]),
+      //
+      // Task 021 (#60 pillar 3): a task the dependency graph dooms gets a
+      // `blocked` pill alongside its OWN real status -- so a dead subtree
+      // is visible in the row itself, not only inside the dialog.
+      h("td", {}, [
+        pill(t.status),
+        ...(kind ? [" ", pill(kind)] : []),
+        ...(blockedBy ? [" ", pill("blocked by " + blockedBy.join(", "))] : []),
+      ]),
       h("td", {}, [String(t.title || "")]),
     ]));
   }

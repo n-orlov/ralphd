@@ -61,6 +61,7 @@ from ..engine.state import (
     NONTERMINAL_STATES,
     STEERING_APPLIED,
     STEERING_PENDING,
+    TASK_BLOCKED_FIELD,
     TASK_FAILURE_KINDS_FIELD,
     TASKS_STALE_LABEL,
     TERMINAL_STATES,
@@ -90,6 +91,7 @@ from ..engine.state import (
     run_document_text,
     run_documents,
     steering_entries,
+    task_blocked_by,
     task_failure_kinds,
     tasks_read_notice,
 )
@@ -961,6 +963,25 @@ def _with_task_failure_kinds(tasks: dict) -> dict:
     return out
 
 
+def _with_task_blocked_by(tasks: dict) -> dict:
+    """Task 021 (#60 pillar 3): the `taskBlockedBy` map -- `{task id: [dead/
+    doomed ancestor ids]}` -- DERIVED from the task list in a LIVE `GET
+    /tasks` payload, the exact sibling of `_with_task_failure_kinds` above and
+    for the same reason: the payload may come from an engine that predates
+    this field, or may carry a forged key of that name written straight into
+    tasks.json by an agent. One call to `engine.state.task_blocked_by` -- the
+    function `GET /tasks` (via `TasksRead.payload`) and `ralphctl tasks` use
+    -- so the hub cannot show a dead subtree differently from the CLI. Absent
+    entirely when nothing is blocked, exactly as `TasksRead.payload` omits it
+    on the on-disk path.
+    """
+    out = {k: v for k, v in tasks.items() if k != TASK_BLOCKED_FIELD}
+    blocked = task_blocked_by(tasks.get("tasks") or [])
+    if blocked:
+        out[TASK_BLOCKED_FIELD] = blocked
+    return out
+
+
 def _with_tasks_read_label(tasks: dict) -> dict:
     """Task 005 (#15): render the read's provenance into the two display
     strings the browser shows -- `tasksLabel` (the short badge, e.g. `stale`)
@@ -1029,7 +1050,11 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # a pre-v0.7 engine's plan -- and a `taskFailureKinds` key an agent
         # wrote into tasks.json itself -- cannot reach the browser unlabelled
         # or forged. Exactly ONE derivation on each path, never both.
+        #
+        # Task 021 (#60 pillar 3): same discipline, same reason, for the
+        # derived `taskBlockedBy` dead-dependency map.
         tasks = _with_task_failure_kinds(live_tasks)
+        tasks = _with_task_blocked_by(tasks)
     tasks = _with_tasks_read_label(tasks)
 
     iterations = []

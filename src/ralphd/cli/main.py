@@ -44,6 +44,7 @@ from ..engine.state import (
     NO_ARTIFACTS,
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
+    TASK_BLOCKED_FIELD,
     TASK_FAILURE_KINDS,
     TASK_STATUS_LABELS,
     TERMINAL_STATES,
@@ -2931,16 +2932,25 @@ def _tasks_doc(run_id: str) -> tuple[bool, dict]:
 _TASK_STATUS_MIN_WIDTH = 17
 
 
-def _task_status_width(tasks: list) -> int:
-    widths = [len(format_task_status(t)) for t in tasks if isinstance(t, dict)]
+def _task_status_width(tasks: list, blocked_by: dict | None = None) -> int:
+    widths = []
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id")) if t.get("id") is not None else None
+        by = (blocked_by or {}).get(tid) if tid else None
+        widths.append(len(format_task_status(t, by)))
     return max([_TASK_STATUS_MIN_WIDTH, *widths])
 
 
-def _task_status_cell(task: dict, width: int) -> str:
+def _task_status_cell(task: dict, width: int, blocked_by: list | None = None) -> str:
     """The status column of one `ralphctl tasks` line: the shared
     `format_task_status` wording (so a failed task says WHICH kind of failed it
-    is, derived for a plan written before task 024), padded to `width`."""
-    return f"{format_task_status(task):<{width}}"
+    is, derived for a plan written before task 024; task 021 (#60 pillar 3)
+    adds the ` (blocked by ...)` suffix when `blocked_by` -- this task's own
+    entry in the harness-derived `taskBlockedBy` map -- is non-empty), padded
+    to `width`."""
+    return f"{format_task_status(task, blocked_by):<{width}}"
 
 
 def _archived_approaches_dir(run_id: str) -> Path:
@@ -2965,10 +2975,17 @@ def _archived_approach_numbers(run_id: str) -> list[int]:
     return archived_approach_numbers(run_root(run_id))
 
 
-def _print_task_lines(tasks: list) -> None:
-    width = _task_status_width(tasks)
+def _print_task_lines(tasks: list, blocked_by: dict | None = None) -> None:
+    """Task 021 (#60 pillar 3): `blocked_by` is the harness-derived
+    `{task id: [dead/doomed ancestor ids]}` map (`taskBlockedBy` on the wire,
+    `TasksRead.blocked_by` on disk) -- optional, so a caller with no such map
+    handy (or an older engine's payload with no such key) prints exactly as
+    it always did."""
+    width = _task_status_width(tasks, blocked_by)
     for t in tasks:
-        print(f"[{_task_status_cell(t, width)}] {t.get('id')} {t.get('title')}")
+        tid = str(t.get("id")) if t.get("id") is not None else None
+        by = (blocked_by or {}).get(tid) if tid else None
+        print(f"[{_task_status_cell(t, width, by)}] {t.get('id')} {t.get('title')}")
 
 
 def _cmd_tasks_approach(args, approach: int) -> None:
@@ -2992,7 +3009,7 @@ def _cmd_tasks_approach(args, approach: int) -> None:
         print(f"!! {notice}", file=sys.stderr)
     print(f"approach {approach} (archived): "
           f"{format_task_counts(res.counts)}")
-    _print_task_lines(res.tasks)
+    _print_task_lines(res.tasks, res.blocked_by)
 
 
 def _cmd_tasks_all(args) -> None:
@@ -3041,7 +3058,7 @@ def cmd_tasks(args):
     if args.json:
         print(json.dumps({**tasks, "live": live}, indent=2))
         return
-    _print_task_lines(tasks.get("tasks", []))
+    _print_task_lines(tasks.get("tasks", []), tasks.get(TASK_BLOCKED_FIELD) or {})
 
 
 # Task 040 (#6): what `ralphctl logs` says on stderr when it served the
