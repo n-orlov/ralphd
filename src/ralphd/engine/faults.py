@@ -43,27 +43,36 @@ FAULT_CLASS_SIGNAL = "signal"
 FAULT_CLASSES: tuple[str, ...] = (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
                                  FAULT_CLASS_SIGNAL)
 
-# Task 014 (#49 part 2): how long an iteration may have run and still have its
-# bare in-band `aborted` read as a provider-side stream abort rather than as the
-# agent's own failure. SPEC 16 Q1 called this discriminator "a threshold nobody
-# can derive from first principles"; the `selfdev-v06-release` run supplies it
-# empirically. Iteration 145 of that run recorded `error: aborted` with
-# `faultClass: "work"` **39 seconds** into an `iteration_timeout_s` of
-# 45 minutes (2700s, the default) -- the leading edge of a DNS outage whose next
-# five iterations matched an infra signature and were correctly retried and
-# refunded. Same outage, opposite treatment, decided only by whether a token had
-# been emitted before the stream died; and 145 was charged for an approach AND
-# destroyed a steering note.
+# Task 014 (#49 part 2) introduced a duration bound here,
+# `ABORTED_STREAM_MAX_DURATION_S = 120.0`, to decide whether a bare in-band
+# `aborted` after real traffic was the provider hanging up mid-stream (infra)
+# or the agent's own failure (work). It was derived from a SAMPLE OF ONE:
+# iteration 145 of `selfdev-v06-release` recorded `error: aborted` with
+# `faultClass: "work"` 39 seconds into a 45-minute cap, and 120s was chosen as
+# "three times that observed 39s".
 #
-# 120s is chosen as three times that observed 39s (so the shape that motivated
-# the rule is not sitting on the boundary) while staying ~4% of the default
-# 45-minute cap: an iteration doing real work reaches the model, plans, edits
-# files and runs tests, which is minutes at the very least, so a *worked* whole
-# iteration cannot land under this bar. Deliberately absolute rather than a
-# fraction of `iteration_timeout_s`: the cap is not recorded in an iteration's
-# meta.json, so a fraction could not be re-derived by `state.fault_explanation`
-# from the on-disk record and the explanation would diverge from the verdict.
-ABORTED_STREAM_MAX_DURATION_S = 120.0
+# Steering 005 (run `selfdev-v09-fsm-loop`) retired it. The bound argued only
+# that a *worked* iteration cannot land under 120s -- a defence against false
+# positives, and sound -- but offered nothing for the other direction, and a
+# provider can hang up on a stream at any point, so the population of genuine
+# stream-abort durations has no upper bound to calibrate against. That run's
+# own 15 bare-`aborted` incidents landed at 115s, 156s, 173s, 174s, 218s, 272s,
+# 279s, 307s, 339s, 364s, 530s, 800s, 996s, 1439s and 2542s -- 14 of 15 ABOVE
+# the 120s bound, every one a genuine provider-side abort, every one
+# misclassified `work` by the bound, and three of them (94/100/101: 279s,
+# 173s, 339s) failed an approach of that run via the stagnation guard while
+# nothing about the plan was actually stuck.
+#
+# The fix decides the branch on the SHAPE that was always the real
+# discriminator instead (see the branch below) and drops duration entirely: an
+# agent that fails at its own work reports what failed -- an assertion, a
+# traceback, a nonzero exit -- it does not exit 0 with the single word
+# "aborted" as its whole error text. That conjunction (bare text, a clean
+# exit, traffic present, no infra signature, not interrupted, no abort
+# recorded for the run) is the discriminator; a clock added nothing to it and,
+# empirically, actively hurt it. There is deliberately no replacement
+# constant -- a bigger arbitrary number is the same mistake with a longer
+# fuse.
 
 # A *bare* `aborted` -- the whole error text, not `aborted: Premature close`
 # (which the `stream` signature family owns) and not a longer message that
@@ -207,12 +216,14 @@ FAULT_REASON_WORK = (
 FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED = (
     "no LLM traffic at all and no recognized signature -- an unclassifiable "
     "no-traffic failure is treated as infra")
-# Task 014 (#49 part 2): the answer to SPEC 16 Q1 -- a bare `aborted` that
-# arrived after real traffic, with no abort recorded for the run, and well
-# inside the iteration's own timeout, is the provider hanging up mid-stream.
+# Task 014 (#49 part 2), reworded by steering 005 (run selfdev-v09-fsm-loop):
+# the answer to SPEC 16 Q1 -- a bare `aborted` with a clean exit that arrived
+# after real traffic, with no abort recorded for the run, is the provider
+# hanging up mid-stream, whatever its duration.
 FAULT_REASON_ABORTED_STREAM = (
-    "a bare `aborted` ended this iteration well inside its own timeout with no "
-    "abort recorded for the run -- the provider hung up mid-stream")
+    "a bare `aborted` with a clean exit ended this iteration after real "
+    "traffic, with no abort recorded for the run -- the provider hung up "
+    "mid-stream")
 
 
 def matched_signature(error_text: str | None) -> dict | None:
@@ -250,7 +261,6 @@ def explain_fault(
     produced_traffic: bool = False,
     operator_abort: bool = False,
     operator_abort_recorded: bool = False,
-    duration_s: float | None = None,
 ) -> dict:
     """``classify_fault``'s verdict *with its reasoning*, from exactly the same
     inputs (task 025, #18.4).
@@ -284,13 +294,14 @@ def explain_fault(
     model is now its own class, ``FAULT_CLASS_SIGNAL`` -- see that constant for
     why it is neither ``"work"`` nor ``"infra"`` and why it is not retried.
 
-    Task 014 (#49 part 2, closing SPEC 16 Q1): ``duration_s`` is how long the
-    agent process actually ran (``IterationResult.duration_s``; the on-disk
-    re-derivation passes the iteration's recorded ``durationS``). It decides
-    exactly ONE shape -- a bare ``aborted`` after real traffic, with no abort
-    recorded, that ended within ``ABORTED_STREAM_MAX_DURATION_S`` -- which is
-    ``"infra"`` rather than ``"work"``. An unknown (``None``) duration never
-    fires that branch: nothing is known, so nothing is reclassified.
+    Task 014 (#49 part 2, closing SPEC 16 Q1) added a shape -- a bare
+    ``aborted`` after real traffic, with a clean exit and no abort recorded --
+    that reads as ``"infra"`` rather than ``"work"``. Steering 005 (run
+    selfdev-v09-fsm-loop) removed the duration bound that used to gate it: the
+    branch below now fires on the shape alone (see ``ABORTED_STREAM_MAX_DURATION_S``'s
+    former definition, kept as a comment where it stood, for why an absolute
+    clock was the wrong test -- a provider can hang up on a stream at any
+    point, so no duration is disqualifying).
 
     Known and deliberate imprecision that remains (issue #49, which replaced
     the now-closed #23 as the owner of this taxonomy): an engine-side give-up
@@ -301,7 +312,14 @@ def explain_fault(
     reached the model stays ``"infra"`` by the no-traffic rule below, on
     purpose: with zero traffic it is textually indistinguishable from a
     provider-side stream abort, and treating "nothing ran" as retryable and
-    refundable is exactly the accounting rule that rule exists to enforce.
+    refundable is exactly the accounting rule that rule exists to enforce. And
+    (steering 005's own residual, named rather than re-boarded with a
+    threshold): a genuine agent crash whose *entire* final error text happens
+    to be the single word "aborted", with a clean exit code, is still read as
+    the provider hanging up -- deliberately, because that is textually
+    identical to the real thing and a real crash reporting nothing but that
+    one word with a clean exit is vanishingly unlikely (a crash reports what
+    crashed).
     """
     signature = matched_signature(error_text)
     is_failure = (
@@ -348,18 +366,21 @@ def explain_fault(
                     "reason": FAULT_REASON_INTERRUPTED, "signature": None}
         # Task 014 (#49 part 2): the answer to SPEC 16 Q1. A bare `aborted`
         # with a CLEAN exit status (so no signal: `interrupted` is False and
-        # the branch above did not fire) that arrived within
-        # ABORTED_STREAM_MAX_DURATION_S is the provider hanging up mid-stream,
-        # not the agent failing: no real work iteration finishes -- let alone
-        # fails with a one-word error -- inside two minutes, and every other
-        # reading of a bare `aborted` is already owned by a branch above (an
+        # the branch above did not fire) is the provider hanging up
+        # mid-stream, not the agent failing, WHATEVER its duration (steering
+        # 005, run selfdev-v09-fsm-loop, retired the duration bound this used
+        # to carry -- see the comment above ABORTED_STREAM_MAX_DURATION_S's
+        # former home): no real work iteration exits 0 with the single word
+        # "aborted" as its whole error text, and every other reading of a
+        # bare `aborted` is already owned by a branch above (an
         # operator/engine abort by the carve-out, a signal by the branch
         # above, `aborted: Premature close` by the `stream` signature family).
         # Being `infra` it is retried and refunded, which is the whole point:
         # iteration 145 of selfdev-v06-release was charged an approach for one
-        # of these while the five iterations after it were refunded.
-        if (is_bare_aborted(error_text) and duration_s is not None
-                and duration_s <= ABORTED_STREAM_MAX_DURATION_S):
+        # of these while the five iterations after it were refunded, and this
+        # run's own iterations 94/100/101 were charged the same way for
+        # landing a few seconds past an arbitrary clock.
+        if is_bare_aborted(error_text) and exit_code == 0:
             return {"faultClass": FAULT_CLASS_INFRA,
                     "reason": FAULT_REASON_ABORTED_STREAM, "signature": None}
         return {"faultClass": FAULT_CLASS_WORK, "reason": FAULT_REASON_WORK,
@@ -379,7 +400,6 @@ def classify_fault(
     produced_traffic: bool = False,
     operator_abort: bool = False,
     operator_abort_recorded: bool = False,
-    duration_s: float | None = None,
 ) -> FaultClass | None:
     """Classify one finished iteration's failure signal.
 
@@ -429,10 +449,12 @@ def classify_fault(
 
     Task 014 (#49 part 2) narrows ``"work"`` once more, closing SPEC 16 Q1: a
     bare ``aborted`` that arrived after real traffic, with no abort recorded
-    for the run and a clean exit status, within
-    ``ABORTED_STREAM_MAX_DURATION_S`` of the iteration's start is ``"infra"``
-    (a stream the provider hung up on), so it is retried and refunded instead
-    of costing an approach. Past that threshold it stays ``"work"``.
+    for the run and a clean exit status, is ``"infra"`` (a stream the
+    provider hung up on), so it is retried and refunded instead of costing an
+    approach. Steering 005 (run selfdev-v09-fsm-loop) removed the duration
+    bound this used to carry (``ABORTED_STREAM_MAX_DURATION_S``): the shape
+    alone decides it now, at any duration -- see the comment where that
+    constant used to be defined for the evidence that retired it.
 
     Task 013 (#49): returns ``"signal"`` for the shape that used to be folded
     into ``"work"`` -- an iteration that reached the model and was then ended
@@ -477,5 +499,4 @@ def classify_fault(
         produced_traffic=produced_traffic,
         operator_abort=operator_abort,
         operator_abort_recorded=operator_abort_recorded,
-        duration_s=duration_s,
     )["faultClass"]

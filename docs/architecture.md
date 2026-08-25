@@ -1800,18 +1800,18 @@ Three deliberate details:
   on `"infra"` alone) never relaunches into whatever wanted the run stopped.
   Requirement I's own subject: an iteration that `pkill`s something is exactly
   how this shape arises.
-- **A bare `aborted` inside two minutes is the provider hanging up** (task 014,
-  #49 part 2). With traffic already observed, a clean exit status, no abort
-  recorded for the run, and a duration no longer than
-  `faults.ABORTED_STREAM_MAX_DURATION_S` (120s), a one-word `aborted` is
+- **A bare `aborted` with a clean exit is the provider hanging up, at any
+  duration** (task 014, #49 part 2; the duration bound retired by task 117 /
+  steering 005). With traffic already observed, a clean exit status
+  (`exit_code == 0`) and no abort recorded for the run, a one-word `aborted` is
   `faultClass: "infra"` — retried and refunded — rather than `"work"`. No
-  iteration that did real work finishes, let alone fails with a one-word error,
-  that fast. The threshold is empirical, not invented: `selfdev-v06-release`'s
-  iteration 145 was charged an approach for exactly this shape 39 seconds into a
-  45-minute cap, as the leading edge of a DNS outage whose next five iterations
-  were correctly refunded. Past the threshold the shape stays `"work"`, because
-  it is no longer distinguishable from an agent that worked and then aborted
-  (SPEC §17 records the whole trade-off).
+  iteration that did real work exits 0 with nothing but that one word as its
+  error text. This used to be bounded by `faults.ABORTED_STREAM_MAX_DURATION_S`
+  (120s), derived from a single 39s sample (`selfdev-v06-release` iteration
+  145); `selfdev-v09-fsm-loop` then produced 15 more real samples of this exact
+  shape, 14 of them above 120s, and failed an approach on three of them in a
+  row before the bound was retired in favour of deciding the shape alone
+  (SPEC §17 entry 1 records the whole history).
 
 Anything else that produced **no** LLM traffic at all is classified `"infra"`
 too: an unclassifiable no-traffic failure is far likelier to be an

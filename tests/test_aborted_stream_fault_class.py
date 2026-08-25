@@ -1,17 +1,25 @@
-"""Task 014 (#49 part 2): a bare in-band `aborted` that ended well inside its
-own timeout, with no operator abort recorded, is `infra` even when traffic
-preceded it -- and SPEC's open question 1 is closed with the evidence that
-settled it.
+"""Task 014 (#49 part 2): a bare in-band `aborted` with a clean exit is
+`infra` even when traffic preceded it -- and SPEC's open question 1 is closed
+with the evidence that settled it.
 
-The shape: `selfdev-v06-release`'s iteration 145 recorded `error: aborted` with
-`faultClass: "work"` 39 seconds into a 45-minute `iteration_timeout_s`, as the
-leading edge of a DNS outage whose next five iterations matched an infra
-signature and were retried and refunded. Same outage, opposite treatment,
-decided only by whether a token had been emitted before the stream died.
+Task 117 (steering 005, run `selfdev-v09-fsm-loop`) removed the duration bound
+task 014 first decided this with (`faults.ABORTED_STREAM_MAX_DURATION_S`,
+120s, derived from a SAMPLE OF ONE: iteration 145 of `selfdev-v06-release`,
+39s). That run's own 15 bare-`aborted`-after-traffic incidents were every one
+a genuine provider-side abort; 14 of the 15 landed ABOVE 120s, and three in a
+row (iterations 94/100/101) tripped the stagnation guard and failed an
+approach for a plan that was not actually stuck. A provider can hang up on a
+stream at any point, so the population of genuine abort durations has no
+upper bound a clock could be calibrated against -- raising the bound would
+only move where the next failure landed. The discriminator is decided on
+SHAPE instead: a bare `aborted`, a clean `exit_code == 0`, traffic present, no
+infra signature, not `interrupted`, no abort recorded for the run. `work`
+this is, whatever the duration.
 
-What must NOT move: a genuinely operator-initiated abort is never `infra` (the
-carve-out), a signal-killed iteration stays `signal` (task 013), and a bare
-`aborted` past the threshold stays `work`.
+What must NOT move: a genuinely operator-initiated abort is never `infra`
+(the carve-out), a signal-killed iteration stays `signal` (task 013), a bare
+`aborted` with a NONZERO exit stays `work` (the clean-exit half of the new
+conjunction), and a message that merely mentions "aborted" stays `work`.
 """
 
 from __future__ import annotations
@@ -23,7 +31,6 @@ import pytest
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.faults import (
-    ABORTED_STREAM_MAX_DURATION_S,
     FAULT_CLASS_INFRA,
     FAULT_CLASS_SIGNAL,
     FAULT_CLASS_WORK,
@@ -42,74 +49,66 @@ from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, fault_explanation
 
 REPO = Path(__file__).resolve().parents[1]
-EARLY = 39.0        # the observed instant: iteration 145 of selfdev-v06-release
-LATE = 1800.0       # half an hour in: an iteration that really did work
+EARLY = 39.0         # the observed instant: iteration 145 of selfdev-v06-release
+LATE = 1800.0        # half an hour in: an iteration that, before task 117, was
+                     # (wrongly) read as having really done work
+REALLY_LATE = 2542.0  # iteration 59 of selfdev-v09-fsm-loop's real number --
+                      # 42 minutes in, the same fault as one at 39s
 
 # ------------------------------------------------------------------ the table
 # The four corners of (traffic / no traffic) x (abort recorded / not) for the
-# bare `aborted`, at the observed 39s -- plus the boundary either side of the
-# threshold, the unknown-duration case, and the shapes that must not move.
+# bare `aborted`, plus duration having NO effect any more, plus the shapes
+# that must not move.
 # id -> (kwargs, expected class, expected reason)
 CORNERS: dict[str, tuple[dict, str | None, str | None]] = {
-    # ---- the case #49 part 2 moves ------------------------------------
+    # ---- the case #49 part 2 / task 117 moves --------------------------
     "traffic-no-abort-early": (
-        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True,
-         "duration_s": EARLY},
+        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True},
         FAULT_CLASS_INFRA, FAULT_REASON_ABORTED_STREAM),
     # ---- the other three corners -------------------------------------
     "traffic-abort-recorded-early": (
         {"error_text": "aborted", "exit_code": 0, "produced_traffic": True,
-         "duration_s": EARLY, "operator_abort": True},
+         "operator_abort": True},
         FAULT_CLASS_WORK, FAULT_REASON_ABORT_RECORDED),
     "no-traffic-no-abort-early": (
-        {"error_text": "aborted", "exit_code": 0, "produced_traffic": False,
-         "duration_s": EARLY},
+        {"error_text": "aborted", "exit_code": 0, "produced_traffic": False},
         FAULT_CLASS_INFRA, FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED),
     "no-traffic-abort-recorded-early": (
         {"error_text": "aborted", "exit_code": 0, "produced_traffic": False,
-         "duration_s": EARLY, "operator_abort": True},
+         "operator_abort": True},
         FAULT_CLASS_WORK, FAULT_REASON_ABORT_RECORDED),
-    # ---- the duration boundary, either side ---------------------------
-    "boundary-just-inside": (
-        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True,
-         "duration_s": ABORTED_STREAM_MAX_DURATION_S - 0.001},
-        FAULT_CLASS_INFRA, FAULT_REASON_ABORTED_STREAM),
-    "boundary-exactly-at": (
-        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True,
-         "duration_s": ABORTED_STREAM_MAX_DURATION_S},
-        FAULT_CLASS_INFRA, FAULT_REASON_ABORTED_STREAM),
-    "boundary-just-outside": (
-        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True,
-         "duration_s": ABORTED_STREAM_MAX_DURATION_S + 0.001},
-        FAULT_CLASS_WORK, FAULT_REASON_WORK),
+    # ---- duration has NO effect any more (task 117) -------------------
     "traffic-no-abort-late": (
-        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True,
-         "duration_s": LATE},
-        FAULT_CLASS_WORK, FAULT_REASON_WORK),
-    # duration unknown: nothing is known, so nothing is reclassified
-    "traffic-no-abort-duration-unknown": (
-        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True,
-         "duration_s": None},
+        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True},
+        FAULT_CLASS_INFRA, FAULT_REASON_ABORTED_STREAM),
+    "traffic-no-abort-really-late": (
+        # iteration 59's real number -- 2542s, 42 minutes in. Same fault as
+        # one at 39s: the old 120s bound would have called this `work`.
+        {"error_text": "aborted", "exit_code": 0, "produced_traffic": True},
+        FAULT_CLASS_INFRA, FAULT_REASON_ABORTED_STREAM),
+    # ---- the clean-exit half of the conjunction (new in task 117) -----
+    "nonzero-exit-bare-aborted": (
+        {"error_text": "aborted", "exit_code": 1, "produced_traffic": True},
         FAULT_CLASS_WORK, FAULT_REASON_WORK),
     # ---- shapes that must NOT move ------------------------------------
     "signal-beats-the-new-branch": (
         {"error_text": "aborted", "exit_code": 130, "interrupted": True,
-         "produced_traffic": True, "duration_s": EARLY},
+         "produced_traffic": True},
         FAULT_CLASS_SIGNAL, FAULT_REASON_INTERRUPTED),
     "premature-close-is-a-signature": (
         {"error_text": "Error: aborted: Premature close", "exit_code": 0,
-         "produced_traffic": True, "duration_s": EARLY},
+         "produced_traffic": True},
         FAULT_CLASS_INFRA, FAULT_REASON_SIGNATURE),
     "not-a-bare-aborted": (
         {"error_text": "the task was aborted by the test harness",
-         "exit_code": 1, "produced_traffic": True, "duration_s": EARLY},
+         "exit_code": 1, "produced_traffic": True},
         FAULT_CLASS_WORK, FAULT_REASON_WORK),
     "early-work-failure-is-still-work": (
         {"error_text": "pytest failed: 3 tests", "exit_code": 1,
-         "produced_traffic": True, "duration_s": EARLY},
+         "produced_traffic": True},
         FAULT_CLASS_WORK, FAULT_REASON_WORK),
     "clean-exit-early": (
-        {"exit_code": 0, "produced_traffic": True, "duration_s": EARLY},
+        {"exit_code": 0, "produced_traffic": True},
         None, None),
 }
 
@@ -133,27 +132,41 @@ def test_the_reason_matches_the_verdict_in_every_corner(case):
 
 def test_a_bare_aborted_after_traffic_inside_the_threshold_is_not_work():
     """The defect, stated on its own so a revert cannot hide inside a table:
-    iteration 145's exact shape."""
+    iteration 145's exact shape (name kept for the ledger -- the "threshold"
+    it once named is gone; the assertion it makes is not)."""
     verdict = classify_fault(error_text="aborted", exit_code=0,
-                             produced_traffic=True, duration_s=EARLY)
+                             produced_traffic=True)
     assert verdict != FAULT_CLASS_WORK, \
         "a provider-side stream abort must not cost an approach"
     assert verdict == FAULT_CLASS_INFRA
 
 
+def test_a_bare_aborted_well_past_the_old_120s_bound_is_still_infra():
+    """The regression task 117 fixes, stated on its own: the exact shape that
+    failed approach 2 of selfdev-v09-fsm-loop (94/100/101, all >120s) must
+    resolve `infra`, not `work`, regardless of how long the iteration ran."""
+    for duration in (121.0, LATE, REALLY_LATE):
+        r = IterationResult(exit_code=0, interrupted=False)
+        r.final_text = "partial answer"
+        r.error_message = "aborted"
+        r.duration_s = duration
+        assert classify_fault(
+            error_text=r.error_message, exit_code=r.exit_code,
+            interrupted=r.interrupted, produced_traffic=True,
+        ) == FAULT_CLASS_INFRA, duration
+
+
 def test_an_operator_initiated_abort_is_still_never_infra():
-    """The carve-out is intact: whatever the duration or the traffic, an abort
-    on the record is not retried as an outage."""
+    """The carve-out is intact: whatever the traffic, an abort on the record
+    is not retried as an outage."""
     for produced_traffic in (True, False):
-        for duration in (0.5, EARLY, LATE, None):
-            for recorded in (True, False):
-                verdict = classify_fault(
-                    error_text="aborted", exit_code=0,
-                    produced_traffic=produced_traffic, duration_s=duration,
-                    operator_abort=True, operator_abort_recorded=recorded)
-                assert verdict != FAULT_CLASS_INFRA, (produced_traffic,
-                                                      duration, recorded)
-                assert verdict == FAULT_CLASS_WORK
+        for recorded in (True, False):
+            verdict = classify_fault(
+                error_text="aborted", exit_code=0,
+                produced_traffic=produced_traffic,
+                operator_abort=True, operator_abort_recorded=recorded)
+            assert verdict != FAULT_CLASS_INFRA, (produced_traffic, recorded)
+            assert verdict == FAULT_CLASS_WORK
 
 
 def test_bare_aborted_recognizes_only_the_bare_word():
@@ -166,18 +179,17 @@ def test_bare_aborted_recognizes_only_the_bare_word():
     assert not is_bare_aborted("run aborted after 3 retries")
 
 
-def test_the_threshold_is_a_named_constant_justified_from_the_evidence():
-    """SPEC called this "a threshold nobody can derive from first principles";
-    the constant therefore has to carry the run that derived it."""
-    assert ABORTED_STREAM_MAX_DURATION_S == 120.0
-    src = (REPO / "src" / "ralphd" / "engine" / "faults.py").read_text()
-    block = src.split("ABORTED_STREAM_MAX_DURATION_S = ")[0]
-    comment = block[block.index("# Task 014"):]
-    for needle in ("selfdev-v06-release", "145", "39 seconds",
-                   "45 minutes", "2700s"):
-        assert needle in comment, f"the justification omits {needle!r}"
-    assert "iteration_timeout_s" in comment, \
-        "the comment must say why the threshold is absolute, not a fraction"
+def test_classify_fault_takes_no_duration_parameter_any_more():
+    """The regression this locks: `classify_fault`/`explain_fault` must not
+    accept `duration_s` at all -- a caller passing it should fail loudly (a
+    TypeError), not silently ignore it, so a reintroduced duration gate can't
+    hide behind an accepted-but-unused kwarg."""
+    with pytest.raises(TypeError):
+        classify_fault(error_text="aborted", exit_code=0,
+                       produced_traffic=True, duration_s=39.0)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        explain_fault(error_text="aborted", exit_code=0,
+                      produced_traffic=True, duration_s=39.0)  # type: ignore[call-arg]
 
 
 def test_classify_fault_still_delegates_to_the_one_ladder():
@@ -200,12 +212,16 @@ def _aborted_after_traffic(duration_s: float) -> IterationResult:
     return r
 
 
-def test_the_loop_records_infra_for_an_early_aborted_after_traffic(tmp_path):
+def test_the_loop_records_infra_for_an_early_and_a_late_aborted_after_traffic(tmp_path):
+    """Task 117: duration no longer decides this at the engine layer either --
+    `_classify_result` never reads `result.duration_s` for this shape."""
     sup = _supervisor(tmp_path)
     assert sup._classify_result(_aborted_after_traffic(EARLY)) \
         == FAULT_CLASS_INFRA
     assert sup._classify_result(_aborted_after_traffic(LATE)) \
-        == FAULT_CLASS_WORK
+        == FAULT_CLASS_INFRA
+    assert sup._classify_result(_aborted_after_traffic(REALLY_LATE)) \
+        == FAULT_CLASS_INFRA
 
 
 @pytest.mark.asyncio
@@ -231,7 +247,12 @@ async def test_the_wrapper_retries_and_refunds_the_early_aborted(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_late_aborted_after_traffic_is_not_retried(tmp_path):
+async def test_a_late_aborted_after_traffic_is_now_also_retried(tmp_path):
+    """The behaviour task 117 changes, at the wrapper: this used to assert
+    `calls == ["worker"]` (not retried, because 1800s > the old 120s bound).
+    That was the defect -- a genuine stream abort at half an hour in is the
+    same fault as one at 39s, so it is retried and refunded exactly like the
+    early case now."""
     sup = _supervisor(tmp_path)
     calls: list[str] = []
 
@@ -241,8 +262,8 @@ async def test_a_late_aborted_after_traffic_is_not_retried(tmp_path):
 
     sup._run_iteration_once = fake_once  # type: ignore[method-assign]
     await sup.run_iteration("worker")
-    assert calls == ["worker"], calls
-    assert sup._infra_refunded == 0
+    assert len(calls) == 3, calls
+    assert sup._infra_refunded > 0
 
 
 # ------------------------------------------- the on-disk re-derivation agrees
@@ -266,11 +287,20 @@ def _run_with_iteration(tmp_path: Path, **over) -> Path:
 def test_the_explanation_re_derives_the_same_verdict_from_the_record(tmp_path):
     """`state.fault_explanation` re-derives the classifier's reasoning from
     meta.json alone -- it has to reach the recorded verdict, or every run of
-    this shape carries a spurious divergence notice."""
+    this shape carries a spurious divergence notice. Also proves the
+    re-derivation no longer reads `durationS` at all: a record with a huge
+    `durationS` (task 117's own regression) still re-derives `infra`."""
     exp = fault_explanation(_run_with_iteration(tmp_path))
     assert exp["faultClass"] == FAULT_CLASS_INFRA
     assert exp["reason"] == FAULT_REASON_ABORTED_STREAM
     assert exp["notices"] == [], exp["notices"]
+
+    exp_late = fault_explanation(_run_with_iteration(
+        tmp_path / "late", durationS=REALLY_LATE,
+        endedAt="2026-09-04T10:42:22Z"))
+    assert exp_late["faultClass"] == FAULT_CLASS_INFRA
+    assert exp_late["reason"] == FAULT_REASON_ABORTED_STREAM
+    assert exp_late["notices"] == [], exp_late["notices"]
 
 
 def test_a_pre_fix_record_of_this_shape_is_flagged_as_diverging(tmp_path):
@@ -287,16 +317,16 @@ def test_a_pre_fix_record_of_this_shape_is_flagged_as_diverging(tmp_path):
 
 # --------------------------------------------------------------- the documents
 @pytest.mark.parametrize("path, needles", [
-    ("SPEC.md", ["`faults.ABORTED_STREAM_MAX_DURATION_S` (120s)",
-                 "task 014, #49 part 2",
+    ("SPEC.md", ["task 014, #49 part 2",
                  "return `\"work\"` \u2014 **unless** the",
                  "What is left, deliberately",
                  "## 17. Answered questions",
-                 "**39 seconds**"]),
-    ("docs/api.md", ["a bare `aborted` that arrived within two minutes"]),
-    ("docs/architecture.md", ["**A bare `aborted` inside two minutes is the "
-                              "provider hanging up**",
-                              "`faults.ABORTED_STREAM_MAX_DURATION_S` (120s)"]),
+                 "**39 seconds**",
+                 "Task 117 retired `ABORTED_STREAM_MAX_DURATION_S`"]),
+    ("docs/api.md", ["a bare `aborted` with a clean exit and no abort "
+                     "recorded for the run, at any duration"]),
+    ("docs/architecture.md", ["is the provider hanging up, at any\n  duration",
+                              "the duration bound retired by task 117"]),
     ("docs/cli.md", ["the provider hung up mid-stream"]),
 ])
 def test_the_docs_state_the_new_rule(path, needles):
@@ -305,14 +335,30 @@ def test_the_docs_state_the_new_rule(path, needles):
         assert needle in text, f"{path} is missing: {needle}"
 
 
-def test_section_8_2_keeps_the_residual_limitation_it_did_not_fix(tmp_path):
-    """The ladder's own section has to say what is still misclassified -- a bare
-    `aborted` past the threshold -- rather than reading as if #49 closed it."""
+@pytest.mark.parametrize("path", ["SPEC.md", "docs/architecture.md",
+                                  "docs/api.md", "docs/cli.md"])
+def test_the_retired_constant_is_gone_from_the_docs_rule_itself(path):
+    """The constant may still be named as HISTORY (task 014 introduced it,
+    task 117 retired it) but none of these surfaces may still state the rule
+    itself in terms of it (a live "within Ns" / "inside two minutes" claim)."""
+    text = (REPO / path).read_text()
+    assert "within two minutes" not in text
+    assert "inside two minutes" not in text
+
+
+def test_section_8_2_no_longer_carries_the_duration_residual():
+    """The ladder's own section must not read as if a bare `aborted` past a
+    duration bound still misclassifies -- that residual is gone along with
+    the bound that created it."""
     text = (REPO / "SPEC.md").read_text()
     section = text.split("### 8.2 Infra versus work")[1].split("### 8.3")[0]
     assert "**What is left, deliberately.**" in section
-    assert "still classifies\nas `\"work\"` (step 6)" in section
-    assert "ABORTED_STREAM_MAX_DURATION_S" in section
+    assert "at any\n   duration" in section
+    assert ("ABORTED_STREAM_MAX_DURATION_S" in section
+            and "retired" in section), \
+        "the section must still name the retired constant as history"
+    assert "still classifies\nas \"work\" (step 6)" not in section, \
+        "the old duration residual must not still be claimed"
 
 
 def test_the_open_question_moved_out_of_section_16_rather_than_being_edited():
@@ -327,9 +373,11 @@ def test_the_open_question_moved_out_of_section_16_rather_than_being_edited():
         "operator's\n   abort?" in answered
     assert "§16 question 1 through v0.6" in answered
     assert "answered by task 014, #49 part 2" in answered
+    assert "task 117" in answered, \
+        "the answer's own correction is not recorded next to it"
     # the answer's own evidence, not just a verdict
     for needle in ("selfdev-v06-release", "iteration 145", "**39 seconds**",
-                   "45-minute", "120s"):
+                   "45-minute", "120s", "selfdev-v09-fsm-loop"):
         assert needle in answered, f"the answer omits its evidence: {needle}"
     # and §16 still holds the questions that are genuinely open
     assert "Does the outage budget belong per-episode or per-job?" in questions

@@ -1011,11 +1011,6 @@ class LoopSupervisor:
             no_traffic_timeout=result.no_traffic_timeout,
             produced_traffic=bool(result.final_text) or bool(result.usage),
             operator_abort=self.operator_abort_requested,
-            # Task 014 (#49 part 2): how long the agent actually ran -- the ONE
-            # shape it decides is a bare in-band `aborted` after traffic (a
-            # provider-side stream abort, retried and refunded, rather than an
-            # approach charged to the agent). None when no subprocess ran.
-            duration_s=result.duration_s,
             # Steering 004: the verdict is decided by the flag above; this one
             # only lets `explain_fault` word the reason honestly (an abort that
             # arrived from outside vs. this engine giving up on its own).
@@ -2573,6 +2568,27 @@ class LoopSupervisor:
                 # no-progress evidence (task 059) -- skip stagnation
                 # bookkeeping entirely this pass.
                 continue
+            if self._last_fault_class in ("infra", "signal"):
+                # Task 117 (steering 005): an iteration whose own fault class
+                # is `"infra"` or `"signal"` reached this line either because
+                # the retry wrapper gave up on it (outage budget spent or
+                # `infra_retry_max` reached -- see
+                # `_run_iteration_with_infra_retry`) or because it never was
+                # retried in the first place (`"signal"` is never retried).
+                # Neither is evidence about whether THIS PLAN is stuck: the
+                # agent never got a fair shot at the task (infra) or was cut
+                # off before it could fail on its own (signal). Skipping
+                # stagnation bookkeeping entirely this pass -- exactly like
+                # the `_instant_failure_streak` carve-out just above, for the
+                # same underlying reason -- means the counter is neither
+                # incremented NOR reset: it holds exactly where it was,
+                # because "nothing was learned this pass" is not the same
+                # claim as "progress was made this pass". The regression this
+                # fixes: three genuine provider stream-aborts (94/100/101 of
+                # run selfdev-v09-fsm-loop) were misclassified `"work"` by a
+                # since-retired duration bound and failed an approach through
+                # this exact guard while nothing about the plan was stuck.
+                continue
 
             after = json.dumps(tasks_after, sort_keys=True)
             # Task 046 (#55): the COMPLETE the loop acts on is the HONOURED
@@ -2602,6 +2618,12 @@ class LoopSupervisor:
                         f"{len(outstanding)} task(s) not completed or "
                         f"skipped: {names}; refusing the signal and "
                         "continuing the worker loop (task 046, #55)"))
+            # Task 117 (steering 005): the `self._last_fault_class in
+            # ("infra", "signal")` gate a few lines above already excludes
+            # those iterations from reaching this line at all (`continue`),
+            # so this ternary is unchanged from before that task -- it never
+            # needed to know about fault class itself, only about whether
+            # tasks.json moved and whether the marker was honoured.
             stagnant = stagnant + 1 if (before == after and not honoured_complete
                                         and not result.interrupted) else 0
             blocked = self._unresolved_failures(tasks_after)
