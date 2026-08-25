@@ -85,10 +85,10 @@ a { color: var(--accent); }
   border: 1px solid var(--border);
 }
 
-.pill-succeeded, .pill-completed, .pill-verified, .pill-ok { color: var(--ok); border-color: var(--ok); }
+.pill-succeeded, .pill-completed, .pill-verified, .pill-ok, .pill-validated { color: var(--ok); border-color: var(--ok); }
 .pill-failed, .pill-error { color: var(--err); border-color: var(--err); }
 .pill-running, .pill-in-progress { color: var(--accent); border-color: var(--accent); }
-.pill-pending, .pill-unknown, .pill-paused { color: var(--warn); border-color: var(--warn); }
+.pill-pending, .pill-unknown, .pill-paused, .pill-awaiting-validation { color: var(--warn); border-color: var(--warn); }
 /* Task 005 (#15): a stale task read is a caution, not an error -- same warn
    colour as the other "this is not settled" pills. */
 .pill-stale { color: var(--warn); border-color: var(--warn); }

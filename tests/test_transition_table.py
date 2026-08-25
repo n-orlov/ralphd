@@ -93,14 +93,24 @@ def test_vigilant_worker_can_reach_verify():
 
 
 def test_there_is_exactly_one_function_that_produces_a_variant_table():
-    """`table_for` is the only producer of a variant's table -- guards
-    against a second, hand-written non-vigilant table creeping in later."""
+    """`table_for` is the only producer of a variant of the STEP-state
+    table (`TABLE`/`VIGILANT_DELTA`) -- guards against a second,
+    hand-written non-vigilant table creeping in later.
+
+    Task 019 (requirement F) adds a SECOND declared table --
+    `TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA`, a different concern
+    (one task's `status` field, not the run's own FSM position) -- with
+    its own analogous producer, `task_status_table_for`. The invariant this
+    test guards is now "exactly one producer PER declared table", not
+    "exactly one producer in the whole module": it still fails if either
+    table grows a second, duplicate producer.
+    """
     tree = ast.parse(MODULE_PATH.read_text())
     producers = [
         node.name for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name.endswith("table_for")
     ]
-    assert producers == ["table_for"]
+    assert sorted(producers) == ["table_for", "task_status_table_for"]
 
 
 # ---------------------------------------------------------------------------

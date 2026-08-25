@@ -4252,13 +4252,16 @@ def _append_run_event(rdir: Path, type_: str, **data) -> dict:
     return event
 
 
-_TASK_STATUSES = ("pending", "in-progress", "completed", "validation-failed",
-                  "failed", "skipped")
-# Task 025 (#33): still FIVE statuses plus `pending` -- the two meanings of
-# `failed` are told apart by the `failureKind` label (engine/state.py's
-# `TASK_FAILURE_KINDS`), never by a sixth status, which is what keeps every
-# surface that counts statuses adding up. `_diagnose_tasks_json` below
-# validates both halves together.
+_TASK_STATUSES = ("pending", "in-progress", "awaiting-validation", "validated",
+                  "completed", "validation-failed", "failed", "skipped")
+# Task 019 (requirement F, #60 pillar 3): now SEVEN statuses plus `pending`
+# -- `awaiting-validation` (the vigilant worker's claim state) and
+# `validated` (the vigilant verifier-granted terminal) joined the five
+# task 025 counted, mirroring `engine.transitions.TASK_STATUSES` exactly.
+# The two meanings of `failed` are told apart by the `failureKind` label
+# (engine/state.py's `TASK_FAILURE_KINDS`), never by a sixth status, which
+# is what keeps every surface that counts statuses adding up.
+# `_diagnose_tasks_json` below validates both halves together.
 _STATUS_STATES = ("starting", "running", "finishing", "succeeded", "failed",
                   "aborted")
 # Recorded states that mean "a live engine still owns this run": if no

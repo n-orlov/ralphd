@@ -2206,6 +2206,21 @@ class LoopSupervisor:
             self.run.emit("log", level="error", message=message)
             self._abort_reason = message
             return ("tail",)
+        if isinstance(payload, dict) and payload.get("task_id") and "task_status" in payload:
+            # Task 019 (requirement F, #60 pillar 3): a hat's reported
+            # `task_status` for a specific `task_id` is a proposed
+            # task-state CHANGE. This call happens strictly AFTER
+            # `run_iteration()` above returned -- the hat's own subprocess
+            # has already exited by the time any status lands on disk, so
+            # there is no window in which the record changes WHILE the hat
+            # executes (task 019's second acceptance test drives exactly
+            # this and samples the record throughout).
+            ts_errors = self._apply_reported_task_status(payload)
+            if ts_errors:
+                message = f"{hat!r} contract violation: " + "; ".join(ts_errors)
+                self.run.emit("log", level="error", message=message)
+                self._abort_reason = message
+                return ("tail",)
         if len(edges) == 1:
             edge = edges[0]
             self._advance(state, edge.target, edge.guard)
@@ -2230,6 +2245,46 @@ class LoopSupervisor:
                         if outcome.used_fallback else "") + ")"))
         self._advance(state, outcome.target, outcome.guard)
         return ("advance", outcome.target, outcome.guard)
+
+    def _apply_reported_task_status(self, payload: dict) -> list[str]:
+        """Task 019 (requirement F): validate and (if legal) apply one
+        hat-reported `task_status` move for `payload["task_id"]`.
+
+        Checked against `transitions.task_status_report_errors` -- the
+        declared task-status table for this run's variant -- given the
+        task's CURRENT on-disk status; an unknown `task_id` or an illegal
+        move both come back as a non-empty errors list, which
+        `_step_generic_hat` treats exactly like a schema violation (a
+        contract violation, ending the run rather than silently taking the
+        move anyway). A no-op report (`task_status` already matches
+        `current`) is legal by construction
+        (`is_legal_task_status_transition`) and simply writes nothing.
+
+        This is the ONLY place a hat's reported task-status claim reaches
+        disk: through `RunState.write_tasks` (task 013's sole writer), and
+        only once, after the hat's own subprocess has already exited.
+        """
+        task_id = payload.get("task_id")
+        target = payload.get("task_status")
+        tasks_data = self.run.read_tasks()
+        current = None
+        for t in tasks_data.get("tasks", []):
+            if t.get("id") == task_id:
+                current = t.get("status", "pending")
+                break
+        if current is None:
+            return [f"task_status: task_id {task_id!r} not found in tasks.json"]
+        errors = transitions.task_status_report_errors(payload, current, self.cfg.vigilant)
+        if errors:
+            return errors
+        if target != current:
+            for t in tasks_data.get("tasks", []):
+                if t.get("id") == task_id:
+                    t["status"] = target
+                    break
+            self.run.write_tasks(tasks_data)
+            self.run.emit("task", taskId=task_id, oldStatus=current, newStatus=target)
+        return []
 
     async def _ask_router(self, prompt: str) -> tuple[str, dict]:
         """The router's own model call (task 018, requirement E): one tiny,

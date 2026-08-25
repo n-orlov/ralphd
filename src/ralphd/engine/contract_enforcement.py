@@ -47,7 +47,10 @@ class EventSink(Protocol):
     def emit(self, type_: str, **data: Any) -> dict: ...
 
 
-def parse_response(hat: str, raw: str | None) -> tuple[dict | None, list[str]]:
+def parse_response(
+    hat: str, raw: str | None,
+    *, extra_validate: "Callable[[dict], list[str]] | None" = None,
+) -> tuple[dict | None, list[str]]:
     """Turn one attempt's raw hat output into `(payload, errors)`.
 
     `errors` is empty iff `payload` is a validated dict. Three ordinary
@@ -60,6 +63,18 @@ def parse_response(hat: str, raw: str | None) -> tuple[dict | None, list[str]]:
     - wrong-shape: `raw` is valid JSON but fails `contracts.validate_payload`
       against `hat`'s declared schema (wrong type, missing required field,
       bad enum value, unexpected field, ...).
+
+    `extra_validate` (task 019, requirement F, #60 pillar 3) is an optional
+    SEMANTIC check layered on top of the schema pass above -- never a
+    second schema validator (fact 16/#65 stays satisfied: `validate_payload`
+    is still the only call site that reads a hat's `HAT_SCHEMAS` entry).
+    It runs only once the payload is already schema-valid, and its errors
+    are folded in exactly like a schema violation: same shape, same
+    re-prompt treatment by `enforce_contract` below. A hat reporting a
+    `task_status` move the declared status table
+    (`transitions.is_legal_task_status_transition`) forbids is the concrete
+    case this exists for, but the hook itself knows nothing about task
+    statuses -- the caller supplies the check.
     """
     if raw is None or not raw.strip():
         return None, ["response: no payload produced (absent output)"]
@@ -70,6 +85,10 @@ def parse_response(hat: str, raw: str | None) -> tuple[dict | None, list[str]]:
     errors = validate_payload(hat, payload)
     if errors:
         return None, errors
+    if extra_validate is not None:
+        extra_errors = extra_validate(payload)
+        if extra_errors:
+            return None, list(extra_errors)
     return payload, []
 
 
@@ -99,6 +118,7 @@ def enforce_contract(
     *,
     max_retries: int,
     state: EventSink | None = None,
+    extra_validate: "Callable[[dict], list[str]] | None" = None,
 ) -> ContractResult:
     """Validate a hat's response, re-prompting on failure.
 
@@ -112,6 +132,15 @@ def enforce_contract(
     emitted once and the result comes back with `agent_fault=True`: the
     caller scores this as one iteration against the budget and continues
     per the table, exactly as any other worker/verify/review outcome would.
+
+    `extra_validate` (task 019) is forwarded to `parse_response` unchanged
+    -- a payload that is schema-valid but fails this SEMANTIC check (e.g. an
+    illegal task-status move) is re-prompted through this exact same loop,
+    with the same events, the same retry budget and the same eventual
+    agent-fault outcome as a malformed/absent/wrong-shape payload. "Handled
+    as task 010 handles any other" is true by construction: there is no
+    second retry loop, only a second reason `parse_response` can hand back
+    a non-empty `errors` list.
     """
     if max_retries < 0:
         raise ValueError("max_retries must be >= 0")
@@ -120,7 +149,7 @@ def enforce_contract(
     errors: list[str] = []
     for attempt in range(max_retries + 1):
         raw = respond(attempt, prior_errors)
-        payload, errors = parse_response(hat, raw)
+        payload, errors = parse_response(hat, raw, extra_validate=extra_validate)
         if not errors:
             return ContractResult(ok=True, payload=payload, attempts=attempt + 1,
                                    agent_fault=False, errors=[])

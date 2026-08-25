@@ -431,7 +431,14 @@ def test_a_record_with_no_status_at_all_blocks_completion():
 
 
 def test_the_completion_statuses_are_the_two_worker_md_recognises():
-    assert state_mod.TASK_COMPLETION_STATUSES == ("completed", "skipped")
+    # Task 019 (requirement F): `TASK_COMPLETION_STATUSES` now also carries
+    # `validated`, the vigilant mini-FSM's own terminal a worker never
+    # writes itself -- only the harness applies it, off verify's verdict.
+    # worker.md (the legacy, non-vigilant agent-writes-its-own-status path
+    # task 019 deliberately leaves untouched) still recognises exactly the
+    # original two; that subset relationship is what this guards now.
+    assert set(("completed", "skipped")) <= set(state_mod.TASK_COMPLETION_STATUSES)
+    assert "validated" in state_mod.TASK_COMPLETION_STATUSES
 
 
 def test_the_outstanding_list_is_the_plan_order_of_everything_unfinished(tmp_path):

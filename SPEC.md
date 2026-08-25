@@ -1119,7 +1119,7 @@ its own bookkeeping fields to it.
 | `tasks[]` | array | the plan, in intended execution order |
 | `tasks[].id` | string | zero-padded ordinal, e.g. `"001"` |
 | `tasks[].title` | string | imperative, one deliverable |
-| `tasks[].status` | string | `pending` \| `in-progress` \| `completed` \| `validation-failed` \| `failed` \| `skipped` |
+| `tasks[].status` | string | `pending` \| `in-progress` \| `awaiting-validation` \| `validated` \| `completed` \| `validation-failed` \| `failed` \| `skipped` — the last two of those eight (task 019, requirement F) are the vigilant mini-FSM's own claim/terminal pair, applied by the harness off a hat's declared transition, never written by an agent itself; see the note below the actionable-statuses paragraph |
 | `tasks[].successCriteria` | string | independently checkable, in natural language |
 | `tasks[].priority` | int | optional scheduler hint, missing means `0` |
 | `tasks[].dependsOn` | array | optional task ids that must be `completed` first |
@@ -1137,6 +1137,26 @@ linear plan omits both optional fields entirely. Those three statuses —
 this" means, in one place; `completed`, `skipped` and `failed` are resolved as
 far as the worker loop is concerned, whether or not the requirement behind them
 was met.
+
+**The task-status mini-FSM (task 019, requirement F, #60 pillar 3).** A task's
+`status` is a small declared transition table of its own
+(`engine.transitions.TASK_STATUS_TABLE` / `TASK_STATUS_VIGILANT_DELTA`,
+mirroring the run's own step-state table, §4.1) — a status change is something
+the *harness* applies at a hat's step transition, off that hat's own reported
+outcome, never a report card an agent writes into the record directly. The
+vigilant variant inserts `awaiting-validation` as the worker's claim state (in
+place of claiming `completed` outright) and `validated` as the terminal verify
+grants — both join `TASK_COMPLETION_STATUSES` (`validated` only) and stay out
+of `TASK_ACTIONABLE_STATUSES` (`awaiting-validation` is waiting on verify,
+`validated` is done); the non-vigilant variant never produces either. A status
+reported that the declared table does not permit for the task's current status
+is refused the same way any other malformed hat payload is (§4.3's contract
+enforcement) — re-prompted, then scored an agent fault once retries run out,
+not silently applied "just in case". As of this task, the mechanism is proven
+end to end only through the generic hat fallback (§4.1's synthetic/future
+states); `worker`/`verify`'s own legacy, non-vigilant `<promise>COMPLETE</promise>`
+/ `<task-verified>` sentinel path (§4.3) is deliberately left untouched here —
+routing it through this same table is a later task's cutover, not this one's.
 
 **The two meanings of `failed` (task 024, #33).** `failed` used to mean both
 "a verifier judged this requirement unmet" and "the engine consumed the last of

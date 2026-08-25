@@ -18,6 +18,8 @@ comments next to each entry.
 
 from __future__ import annotations
 
+from typing import Any
+
 # ---------------------------------------------------------------------------
 # States
 # ---------------------------------------------------------------------------
@@ -287,6 +289,138 @@ def fallback_guard(state: str) -> str | None:
     none is declared (a state with 0 or 1 legal edges never needs one --
     it is resolved without ever reaching the router)."""
     return ROUTER_FALLBACK.get(state)
+
+
+# ---------------------------------------------------------------------------
+# The task-status mini-FSM the harness advances at transitions (task 019,
+# requirement F, #60 pillar 3)
+# ---------------------------------------------------------------------------
+# A SEPARATE declared table from the step-state TABLE above: this one
+# governs one task record's `status` field, not the run's own FSM position.
+# Same reading rule as the table above -- "the declared table is what a
+# caller checks against, not a second hand-derived copy of the same fact" --
+# kept here, beside the per-hat schemas, because a proposed task-status move
+# is exactly the kind of hat OUTPUT this module already governs: worker/
+# verify report through `HAT_SCHEMAS`, and a `task_status` field on a report
+# is the same kind of claim a `verdict` field already is.
+#
+# The operator's ruling is the spec (PRD section F): "task state changes
+# only at step transitions, and only the harness makes them", and target
+# lifecycle, from #60:
+#
+#   vigilant:     pending -> in-progress -> awaiting-validation -> validated
+#                                ^               | verify
+#                                +-- validation-failed <--+
+#   non-vigilant: pending -> in-progress -> completed
+#   either:       failed / skipped (terminal dead)
+#
+# `awaiting-validation` REPLACES `completed` as the worker's claim state in
+# vigilant mode (the delta below overwrites `in-progress`'s whole successor
+# tuple, it does not add to it) -- `validated` is the verifier-granted
+# terminal, and `completed` stays the non-vigilant terminal.
+#
+# `blocked` (task 021's harness-derived dead-dependency label) is
+# deliberately NOT a status in this table: it is never the TARGET of a
+# transition a hat proposes, only a read-time annotation the harness
+# computes from a dependency's own status, so there is nothing to validate
+# here for it.
+
+TASK_STATUSES: tuple[str, ...] = (
+    "pending",
+    "in-progress",
+    "awaiting-validation",
+    "validated",
+    "validation-failed",
+    "completed",
+    "failed",
+    "skipped",
+)
+
+TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
+    "pending": ("in-progress",),
+    # non-vigilant's claim path -- vigilant overrides this entry entirely
+    # (see TASK_STATUS_VIGILANT_DELTA below).
+    "in-progress": ("completed", "failed", "skipped"),
+    # a task a worker iteration can still act on (state.TASK_ACTIONABLE_
+    # STATUSES) may be judged unmeetable and relabelled `skipped`, or may
+    # simply be picked back up -- same rule as `pending`/`in-progress`
+    # holds for `validation-failed`.
+    "validation-failed": ("in-progress", "failed", "skipped"),
+    # Unreachable in the non-vigilant variant: nothing in the base table
+    # ever targets these two, they exist only so `TASK_STATUSES`/successors
+    # are enumerable for both variants from the one inventory.
+    "awaiting-validation": (),
+    "validated": (),
+    "completed": (),
+    "failed": (),
+    "skipped": (),
+}
+
+TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
+    # replaces the non-vigilant claim path: a vigilant worker's completed
+    # claim is not trusted on its own word, it waits for verify.
+    "in-progress": ("awaiting-validation", "failed", "skipped"),
+    # verify's own verdict: `validated` is the vigilant terminal, a
+    # negative verdict loops to `validation-failed` for a retry, and an
+    # exhausted validation budget (`state.VALIDATION_ATTEMPT_LIMIT`) may
+    # force straight to `failed` from here in one disk write (`_verify_
+    # task`'s own sequencing: `validation-failed` is set in memory first,
+    # then overwritten to `failed` before the single write lands).
+    "awaiting-validation": ("validated", "validation-failed", "failed"),
+}
+
+
+def task_status_table_for(vigilant: bool) -> dict[str, tuple[str, ...]]:
+    """Compose `TASK_STATUS_TABLE` with `TASK_STATUS_VIGILANT_DELTA` -- the
+    ONLY function that produces a variant's task-status table, mirroring
+    `table_for` above."""
+    table = dict(TASK_STATUS_TABLE)
+    if vigilant:
+        table.update(TASK_STATUS_VIGILANT_DELTA)
+    return table
+
+
+def legal_next_task_statuses(status: str, vigilant: bool) -> tuple[str, ...]:
+    """Every legal next status for a task currently at `status`, for the
+    given variant. Always returns a tuple (possibly empty), mirroring
+    `successors()` above."""
+    return task_status_table_for(vigilant).get(status, ())
+
+
+def is_legal_task_status_transition(current: str, target: str, vigilant: bool) -> bool:
+    """True iff moving a task from `current` to `target` is legal in this
+    variant. A no-op (`current == target`) is always legal -- it is not a
+    move at all, and a hat re-stating the status it already holds is not a
+    violation of anything."""
+    if current == target:
+        return True
+    return target in legal_next_task_statuses(current, vigilant)
+
+
+def task_status_report_errors(payload: Any, current_status: str, vigilant: bool) -> list[str]:
+    """The semantic check layered ON TOP OF a hat's schema validation
+    (`contracts.validate_payload`, the only SCHEMA validator, fact 16/#65 --
+    this is not a second one of those: it is a business-rule check of the
+    same KIND as `plan_ingestion`'s semantic lint over an already
+    schema-valid plan proposal).
+
+    A payload carrying no `task_status` field proposes no task-state change
+    at all and is never in violation here -- exactly the in-step case the
+    PRD's operator ruling describes ("in-step there is no task-state change
+    at all"). Only once a hat's OUTPUT actually proposes a move is there
+    anything for the declared table above to accept or refuse.
+    """
+    if not isinstance(payload, dict):
+        return []
+    target = payload.get("task_status")
+    if target is None:
+        return []
+    if not is_legal_task_status_transition(current_status, target, vigilant):
+        variant = "vigilant" if vigilant else "non-vigilant"
+        return [f"task_status: {current_status!r} -> {target!r} is not a "
+                f"legal transition in the declared {variant} task-status "
+                "table"]
+    return []
 
 
 # ---------------------------------------------------------------------------

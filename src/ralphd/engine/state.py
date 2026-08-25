@@ -679,7 +679,11 @@ def format_image(rec: dict | None) -> str:
 # so they must agree key-for-key -- a second copy of this mapping is how
 # `tasks: 5/7 completed` and `tasks: 5/7 completed (1 in-progress)` start
 # disagreeing about the same file.
-_TASK_COUNT_KEYS = {"in-progress": "inProgress", "validation-failed": "validationFailed"}
+# Task 019 (requirement F): `awaiting-validation` is the only new key that
+# needs a camelCase mapping here -- `validated` has no hyphen, so it
+# already passes through unchanged (see `task_counts()` below).
+_TASK_COUNT_KEYS = {"in-progress": "inProgress", "validation-failed": "validationFailed",
+                    "awaiting-validation": "awaitingValidation"}
 
 
 # The names of a run's well-known documents, in ONE place: `RunDir`'s
@@ -1529,23 +1533,45 @@ TASK_FAILURE_REQUIREMENT_UNMET = "requirement-unmet"
 TASK_FAILURE_KINDS = (TASK_FAILURE_VALIDATION_EXHAUSTED,
                       TASK_FAILURE_REQUIREMENT_UNMET)
 
+# Task 019 (requirement F, #60 pillar 3): the two harness-advanced statuses
+# that replace an agent's own claim of `completed` in VIGILANT mode --
+# `awaiting-validation` is the worker's claim state (the harness sets it
+# once a worker reports done, before verify ever runs) and `validated` is
+# the verifier-granted terminal. `completed` stays the non-vigilant
+# terminal unchanged. See `engine.transitions.TASK_STATUS_TABLE`/
+# `TASK_STATUS_VIGILANT_DELTA` for the declared table these two are legal
+# moves in, and #60's rename note (PRD fact 8) for the readers that had to
+# move with them: `_TASK_COUNT_KEYS`, `TASK_STATUS_LABELS`, `/status`
+# counters, `ralphctl status`, `ralphctl tasks` and the hub's labels/task
+# dialog (all below and in `cli/main.py`/`cli/web/app.js`, generically --
+# neither hardcodes a status enumeration, so most of them moved for free
+# once these two constants and the two mappings below exist).
+TASK_STATUS_AWAITING_VALIDATION = "awaiting-validation"
+TASK_STATUS_VALIDATED = "validated"
+
 # The statuses a worker iteration can still ACT on -- the scheduler in
 # `worker.md` picks a task in exactly this set (validation-failed first, then
 # in-progress, then an unblocked pending one). Everything else -- `completed`,
-# `skipped`, `failed` under either meaning -- is resolved as far as the worker
-# loop is concerned, whether or not the requirement behind it was met.
+# `skipped`, `failed` under either meaning, and (vigilant-only)
+# `awaiting-validation`/`validated` -- is resolved as far as the worker loop
+# is concerned, whether or not the requirement behind it was met. A task
+# `awaiting-validation` is NOT actionable: it is waiting on verify, not on
+# another worker iteration, exactly like `completed` was before task 019.
 TASK_ACTIONABLE_STATUSES = ("pending", "in-progress", "validation-failed")
 
 # Task 046 (#55): the statuses that make a task DONE as far as the worker's
 # completion marker is concerned -- exactly the two worker.md's completion
-# signal recognises. Deliberately narrower than "not actionable": a `failed`
+# signal recognises, PLUS `validated` (task 019): a vigilant task the
+# verifier has granted its terminal is done in exactly the same sense
+# `completed` is done in non-vigilant mode -- neither is waiting on
+# anything else. Deliberately narrower than "not actionable": a `failed`
 # task is unactionable but is NOT completion, which is the whole point of the
 # #33 vocabulary above and of the route-to-review path that resolves it. The
 # engine cross-checks a COMPLETE against this set before honouring it, so a
 # marker that appears for any reason (an agent quoting the protocol, a
 # formatting slip, a model deciding it is close enough) cannot end the worker
 # loop while the plan itself still says otherwise.
-TASK_COMPLETION_STATUSES = ("completed", "skipped")
+TASK_COMPLETION_STATUSES = ("completed", "validated", "skipped")
 
 
 def task_blocks_completion(task: dict) -> bool:
@@ -1694,6 +1720,11 @@ def format_task_status(task: dict) -> str:
 # one surface and `1 inProgress` in another get born.
 TASK_STATUS_LABELS = {"inProgress": "in-progress",
                       "validationFailed": "validation-failed",
+                      # Task 019 (requirement F): `validated` needs no entry
+                      # here (no hyphen to spell out -- the raw key already
+                      # reads as a human sentence), only `awaiting-validation`
+                      # does, via its counts key.
+                      "awaitingValidation": "awaiting-validation",
                       # Task 025 (#33): the two sub-counts read as what they
                       # are -- a kind OF `failed`, never a status of their own.
                       "failedValidationExhausted": "failed (validation-exhausted)",
