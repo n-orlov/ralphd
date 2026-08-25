@@ -42,6 +42,7 @@ from report_claims import (
     node_problems,
     parse_claims,
     path_problems,
+    retired_problems,
 )
 
 REPORT = REPORTS_DIR / "issue-traceability.md"
@@ -206,7 +207,9 @@ def test_every_commit_this_report_names_is_a_real_commit() -> None:
 
 def test_every_path_and_test_node_this_report_names_exists() -> None:
     claims = parse_claims(REPORT)
-    problems = path_problems(claims) + node_problems(claims)
+    problems = (
+        path_problems(claims) + node_problems(claims) + retired_problems(claims)
+    )
     assert not problems, "\n".join(problems)
 
 

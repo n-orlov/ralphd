@@ -20,12 +20,15 @@ import pytest
 from report_claims import (
     REPO_ROOT,
     REPORTS_DIR,
+    ReportClaims,
+    RetiredClaim,
     commit_problems,
     defines_test,
     node_problems,
     parse_claims,
     path_problems,
     report_files,
+    retired_problems,
 )
 
 REPORTS = report_files()
@@ -67,6 +70,49 @@ def test_every_listed_path_exists(claims) -> None:
 def test_every_listed_test_node_exists(claims) -> None:
     problems = node_problems(claims)
     assert not problems, "\n".join(problems)
+
+
+def test_every_retired_claim_stays_retired(claims) -> None:
+    """The STRONG direction: a `!retired` path must not exist, a `!retired`
+    node must not collect."""
+    problems = retired_problems(claims)
+    assert not problems, "\n".join(problems)
+
+
+def test_a_live_path_wrongly_marked_retired_is_caught() -> None:
+    """Mutation case: `retired_problems` must fail loudly when a `!retired`
+    citation names something that is, in fact, still there -- the marker
+    would otherwise be a silent way to switch off a real check."""
+    live_path = "tests/report_claims.py"
+    assert (REPO_ROOT / live_path).exists()
+    claims = ReportClaims(
+        report=REPORTS_DIR / "conformance-ledger.md",
+        shas=[],
+        paths=[],
+        nodes=[],
+        retired=[RetiredClaim(live_path, None, line=1)],
+    )
+    problems = retired_problems(claims)
+    assert problems, "a still-existing path marked !retired must be flagged"
+    assert live_path in problems[0]
+
+
+def test_a_live_node_wrongly_marked_retired_is_caught() -> None:
+    """Same mutation, for the node form: a test that still collects must not
+    be silently accepted just because a report calls it retired."""
+    live_path = "tests/test_report_claims.py"
+    live_node = "test_a_node_family_wildcard_needs_a_real_match"
+    assert defines_test((REPO_ROOT / live_path).read_text(), live_node)
+    claims = ReportClaims(
+        report=REPORTS_DIR / "conformance-ledger.md",
+        shas=[],
+        paths=[],
+        nodes=[],
+        retired=[RetiredClaim(live_path, live_node, line=1)],
+    )
+    problems = retired_problems(claims)
+    assert problems, "a still-collecting node marked !retired must be flagged"
+    assert live_node in problems[0]
 
 
 def test_the_reports_are_not_all_claimless(claims) -> None:

@@ -26,6 +26,18 @@ The claim vocabulary the reports use, and how it is read:
   unrelated files (`container/Dockerfile`) in the other column.
 * A trailing `*` (`::test_retry_proxy_*`, standing for a family of tests) is
   a prefix: at least one test in the file must match it.
+* A trailing `!retired` on any of the three forms above marks a
+  *deliberately retired* citation -- a report is allowed to keep naming a
+  path or test that a later task removed, as long as it says so, and the
+  check runs in the STRONG direction: `` `tests/foo.py!retired` `` fails if
+  `tests/foo.py` still exists on disk (it was not actually retired, so the
+  marker is a lie), and `` `tests/foo.py::test_bar!retired` `` fails if
+  `tests/foo.py` still exists AND still defines `test_bar` (the node was not
+  actually retired). A `!retired` node whose file is gone entirely trivially
+  passes -- it cannot collect, which is exactly the point. The marker
+  attaches to one citation at a time; a continuation `` `::test_baz!retired`
+  `` needs its own suffix even when the path it continues was itself marked
+  retired.
 """
 
 from __future__ import annotations
@@ -45,10 +57,10 @@ REPO_DIRS = ("tests", "src", "docs", "examples", "artifacts", "tools", "containe
 TOKEN_RE = re.compile(r"`[^`\n]+`")
 SHA_RE = re.compile(r"^`([0-9a-f]{7,40})`$")
 PATH_RE = re.compile(
-    rf"^`((?:{'|'.join(REPO_DIRS)})/[\w./-]+?)(::[\w:*]+)?`$"
+    rf"^`((?:{'|'.join(REPO_DIRS)})/[\w./-]+?)(::[\w:*]+)?(!retired)?`$"
 )
 # `::test_b` / `\u2026::test_b` -- a node id continuing the last named path.
-NODE_ONLY_RE = re.compile(r"^`(?:\u2026|\.\.\.)?(::[\w:*]+)`$")
+NODE_ONLY_RE = re.compile(r"^`(?:\u2026|\.\.\.)?(::[\w:*]+)(!retired)?`$")
 
 
 @dataclass(frozen=True)
@@ -67,11 +79,22 @@ class NodeClaim:
 
 
 @dataclass(frozen=True)
+class RetiredClaim:
+    """A `!retired`-marked citation: `path` is always set; `node` is set only
+    for the `path::node!retired` / `::node!retired` forms."""
+
+    path: str | None
+    node: str | None
+    line: int
+
+
+@dataclass(frozen=True)
 class ReportClaims:
     report: Path
     shas: list[Claim]
     paths: list[Claim]
     nodes: list[NodeClaim]
+    retired: list[RetiredClaim]
 
     @property
     def name(self) -> str:
@@ -92,6 +115,7 @@ def parse_claims(report: Path) -> ReportClaims:
     shas: list[Claim] = []
     paths: list[Claim] = []
     nodes: list[NodeClaim] = []
+    retired: list[RetiredClaim] = []
     current: str | None = None
     for lineno, line in enumerate(text.splitlines(), start=1):
         for token in TOKEN_RE.finditer(line):
@@ -102,17 +126,34 @@ def parse_claims(report: Path) -> ReportClaims:
                 continue
             hit = PATH_RE.match(chunk)
             if hit:
-                paths.append(Claim(hit.group(1), lineno))
+                is_retired = bool(hit.group(3))
                 if hit.group(2):
                     # Only a path named *with* a node id becomes the one that
-                    # later bare node ids continue.
+                    # later bare node ids continue -- whether or not THIS
+                    # citation is retired, so a retired first row can still
+                    # be followed by `::other_node!retired` continuations.
                     current = hit.group(1)
-                    nodes.append(NodeClaim(current, hit.group(2).lstrip(":"), lineno))
+                    node_name = hit.group(2).lstrip(":")
+                    if is_retired:
+                        retired.append(RetiredClaim(current, node_name, lineno))
+                    else:
+                        paths.append(Claim(current, lineno))
+                        nodes.append(NodeClaim(current, node_name, lineno))
+                elif is_retired:
+                    retired.append(RetiredClaim(hit.group(1), None, lineno))
+                else:
+                    paths.append(Claim(hit.group(1), lineno))
                 continue
             node = NODE_ONLY_RE.match(chunk)
             if node:
-                nodes.append(NodeClaim(current, node.group(1).lstrip(":"), lineno))
-    return ReportClaims(report=report, shas=shas, paths=paths, nodes=nodes)
+                node_name = node.group(1).lstrip(":")
+                if node.group(2):
+                    retired.append(RetiredClaim(current, node_name, lineno))
+                else:
+                    nodes.append(NodeClaim(current, node_name, lineno))
+    return ReportClaims(
+        report=report, shas=shas, paths=paths, nodes=nodes, retired=retired
+    )
 
 
 def commit_problems(claims: ReportClaims) -> list[str]:
@@ -178,5 +219,41 @@ def node_problems(claims: ReportClaims) -> list[str]:
             problems.append(
                 f"{claims.where(claim.line)}: {claim.path} has no test named "
                 f"{claim.node}"
+            )
+    return problems
+
+
+def retired_problems(claims: ReportClaims) -> list[str]:
+    """The STRONG direction for `!retired`: a citation marked retired must
+    NOT resolve. A retired path that still exists on disk, or a retired node
+    that still collects (its file exists and still defines it), is wrong --
+    either it was never actually retired, or the marker is stale and should
+    be removed instead of carried forward.
+    """
+    problems = []
+    sources: dict[str, str] = {}
+    for claim in claims.retired:
+        if claim.path is None:
+            problems.append(
+                f"{claims.where(claim.line)}: bare retired node id with no "
+                f"path: ::{claim.node}!retired"
+            )
+            continue
+        target = REPO_ROOT / claim.path
+        if claim.node is None:
+            if target.exists():
+                problems.append(
+                    f"{claims.where(claim.line)}: path marked !retired but "
+                    f"still exists: {claim.path}"
+                )
+            continue
+        if not target.exists():
+            # The whole file is gone -- the node cannot collect either way.
+            continue
+        source = sources.setdefault(claim.path, target.read_text())
+        if defines_test(source, claim.node):
+            problems.append(
+                f"{claims.where(claim.line)}: {claim.path}::{claim.node} is "
+                f"marked !retired but still collects"
             )
     return problems
