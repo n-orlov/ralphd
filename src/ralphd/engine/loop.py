@@ -13,6 +13,7 @@ import shutil
 import time
 from pathlib import Path
 
+from . import contracts
 from . import state
 from . import transitions
 from .config import (
@@ -25,7 +26,7 @@ from .config import (
 from .faults import classify_fault
 from .llm import current_env
 from .pricing import resolve_pricing
-from .runner import IterationResult, PiRunner
+from .runner import IterationResult, PiRunner, last_nonblank_line
 from .state import (
     TASK_FAILURE_VALIDATION_EXHAUSTED,
     TERMINATION_CLASS_OPERATOR,
@@ -1995,11 +1996,20 @@ class LoopSupervisor:
                     outcome = await self._step_worker()
                 elif step == "review":
                     outcome = await self._step_review()
-                else:  # pragma: no cover - defensive only: the executor
-                    # already refuses any target outside the declared
-                    # table, so `step` can only hold a value one of the
-                    # branches above handles.
-                    raise AssertionError(f"no step handler for state {step!r}")
+                else:
+                    # Task 015 (requirement B): any OTHER state the table
+                    # names is driven by the one generic fallback below --
+                    # this is what lets a genuinely new hat run without a
+                    # further edit here. `transitions.successors` returning
+                    # empty for a state nobody declared is still an engine
+                    # bug (the executor already refuses any target outside
+                    # the declared table, so a step handler proposing one
+                    # cannot reach this line), hence the assertion rather
+                    # than a silent no-op.
+                    edges = transitions.successors(step, self.cfg.vigilant)
+                    if not edges:  # pragma: no cover - defensive only
+                        raise AssertionError(f"no step handler for state {step!r}")
+                    outcome = await self._step_generic_hat(step, edges)
                 kind = outcome[0]
                 if kind == "done":
                     return outcome[1]
@@ -2041,6 +2051,69 @@ class LoopSupervisor:
         refused, and it is not here.
         """
         return self._executor.advance(state, target, guard)
+
+    async def _step_generic_hat(self, state: str, edges: tuple) -> tuple:
+        """Task 015 (requirement B, #60 pillar 2): the ONE hardcoded
+        fallback for any state `engine.transitions` declares that is not
+        one of the four hand-written `_step_*` methods above. This is what
+        makes the PRD's promise literal -- "adding a hypothetical hat is a
+        table entry plus a prompt plus a schema, with no edit to the
+        transition executor" -- and, this method is the proof, no edit to
+        THIS dispatcher either: once it exists, a new state that shows up
+        in `transitions.TABLE`/`VIGILANT_DELTA` with `transitions.STATE_HAT`
+        and `transitions.HAT_SCHEMAS` entries beside it runs end to end
+        without another line changing here or in `engine.transitions`.
+
+        Deliberately narrow, matching the PRD's own "trivial no-op hat"
+        wording: this drives only a state with exactly ONE legal edge --
+        an unconditional transition, no guard to evaluate from the hat's
+        payload. A hat whose transition depends on WHAT the hat reported
+        (more than one legal edge to choose between) is a materially
+        different problem -- there is no declared convention yet for how a
+        payload maps to a guard name -- and earns its own dedicated
+        `_step_*` method, exactly like planning/worker/review/replan.
+
+        The hat's response is validated against its declared schema via
+        `contracts.validate_payload` (task 009's schema, the *only*
+        validator code path, fact 16/#65) -- a violation ends the run
+        rather than silently taking the edge anyway, so a broken trivial
+        hat fails exactly as loudly as a broken planning/worker/review one
+        would. (Full N-then-agent-fault re-prompting, task 010's policy, is
+        wired for the file-borne plan proposal (`plan_ingestion`) and unit
+        -tested in isolation (`contract_enforcement.enforce_contract`) but
+        not yet threaded into every inline hat's live iteration -- this
+        method covers its own hat with a single validation pass; widening
+        that to a retry loop for arbitrary inline hats is separate,
+        unstarted work, not claimed here.)
+        """
+        if len(edges) != 1:
+            raise AssertionError(
+                f"state {state!r} has {len(edges)} legal edges; the generic "
+                "fallback only drives a state with exactly one unconditional "
+                "edge -- a hat whose transition needs a real guard needs its "
+                "own dedicated _step_* method")
+        edge = edges[0]
+        hat = transitions.STATE_HAT.get(state)
+        if not hat:
+            raise AssertionError(
+                f"state {state!r} has no hat declared in transitions.STATE_HAT")
+        approach = self._approach
+        await self._gate()
+        self.run.emit("phase", phase=state, approach=approach)
+        result = await self.run_iteration(state, prompt_name=hat)
+        try:
+            payload = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError):
+            errors = ["response: no parseable JSON payload (absent or malformed output)"]
+        else:
+            errors = contracts.validate_payload(hat, payload)
+        if errors:
+            message = f"{hat!r} contract violation: " + "; ".join(errors)
+            self.run.emit("log", level="error", message=message)
+            self._abort_reason = message
+            return ("tail",)
+        self._advance(state, edge.target, edge.guard)
+        return ("advance", edge.target, edge.guard)
 
     async def _step_planning(self, skip_planning: bool) -> tuple:
         """The `planning` state. Guards: `instant_failure_streak` (self-loop,
