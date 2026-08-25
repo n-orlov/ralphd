@@ -38,16 +38,19 @@ job start
        │    └─ [vigilant mode] VERIFY after each newly completed task;
        │                       failure ⇒ status=validation-failed, back to worker
        └─ REVIEW     (1 iteration)  independently re-check EVERY PRD requirement
-            ├─ satisfied  ⇒ <promise>VERIFIED</promise> ⇒ job succeeds
-            └─ not        ⇒ write review-findings.md ⇒ next approach with a
-                            composite PRD (original + findings + attempt history)
+            ├─ satisfied  ⇒ {"verdict": "verified"} ⇒ job succeeds
+            └─ not        ⇒ {"verdict": "rejected", ...} + review-findings.md ⇒
+                            next approach with a composite PRD (original +
+                            findings + attempt history)
 budget exhausted or max_approaches reached ⇒ job fails (state preserved)
 ```
 
 Design invariants:
 
 - **The worker's word is never trusted.** `COMPLETE` only gates entry to review.
-  Only the reviewer's `VERIFIED` ends the job successfully. Entry to review is the
+  Only the reviewer's own `"verified"` contract verdict ends the job
+  successfully (task 119, SPEC §4.3) -- not the retired `<promise>VERIFIED</promise>`
+  sentinel. Entry to review is the
   *engine's* decision, not the worker's: it also happens on the off-budget grace
   review and when a plan has nothing actionable left but a `failed` task in it
   (below).
@@ -61,10 +64,10 @@ Design invariants:
   writes are not atomic — which is why every reader goes through one hardened
   read path (§3, "Reading `tasks.json`: unknown is not zero") instead of
   assuming it can never catch a half-written file.
-- **Signals are exact sentinels** (`<promise>COMPLETE</promise>`,
-  `<promise>VERIFIED</promise>`) scanned from
-  the agent's final output; `verify` reports through a structured JSON contract
-  instead (task 118, SPEC §4.3). The two promise markers count **only as the final
+- **`COMPLETE` is an exact sentinel** (`<promise>COMPLETE</promise>`) scanned from
+  the agent's final output; `verify` and `review` each report through a
+  structured JSON contract instead (task 118, task 119, SPEC §4.3). The promise
+  marker itself must count **only as the final
   non-blank line** of that output, so an agent quoting the protocol — or
   explaining why it is *withholding* the signal — cannot accidentally emit it;
   mentioning one anywhere else is logged as "mentioned but did not end with it".

@@ -124,7 +124,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R2** | **Operator-initiated termination is never undone.** An `abort`/`stop` is recorded durably (`operator-termination.json` in the run dir) and is authoritative over every automatic mechanism: `classify_fault(operator_abort=...)` can never call it `"infra"`, the backoff wrapper never re-runs the iteration the operator just stopped, and `doctor --fix` never auto-resumes such a run. | Otherwise a `SIGINT` — which `pi` reports as the bare in-band error `aborted`, textually identical to a provider aborting a stream — reads as a transient fault, and the run the operator deliberately killed sits in backoff or comes back as a fresh container. |
 | **R3** | **The run directory on the host is the source of truth and outlives the container.** `~/.ralphd/runs/<run-id>/` is *always* a bind-mount (at `/run/ralphd`); `status.json`/`tasks.json` are written temp-then-rename; every host-side surface — `status`, `logs`, `runs`, the hub, `repair` — falls back to reading that directory when the API is unreachable, and says so (`"live": false`) rather than erroring. | Otherwise the container's death takes the run's observability with it: 29,720 lines of on-disk transcript with an empty log tail in the UI, `tasks: (none)` next to a 25 KB `tasks.json`, and every post-mortem done by hand in `output.jsonl`. |
 | **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down instead records `reflect: {ok: null, attempted, skipped}` — no attempt, no tombstone (§8.4). | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
-| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's `<promise>COMPLETE</promise>` gates entry to review and nothing else; the job succeeds only on the reviewer's `<promise>VERIFIED</promise>`, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach, and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
+| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's `<promise>COMPLETE</promise>` gates entry to review and nothing else; the job succeeds only on the reviewer's own `{"verdict": "verified"}` contract report, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach, and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
 | **R6** | **Secrets never reach disk or a transcript.** Credentials arrive as `<name>.env` files, are placed at `~/.creds/*.env` (mode `0600`) by the engine itself, and are never auto-exported into the agent's environment; only file *names* ever reach the run dir, the persisted job config, or a log line. On top of the prompt rule, redaction is **mechanical**: known secret values are scrubbed from `output.jsonl` at write time, from `events.jsonl` at emit time, and again as `GET /logs` serves. The redaction set is memory-only and no route returns it. | Otherwise one `cat` of a cred file, or one `docker inspect` of the engine container, writes a live token into host-visible history permanently — which prompt guidance alone demonstrably does not prevent. Persisting the redaction map to enable a second pass would put every secret on disk next to the transcript it protects, so that is forbidden too. |
 | **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, `--model-strategy cost-optimized` optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
 | **R8** | **The engine cannot be killed by the agent it supervises.** The job container carries `ralphd.role=job` alongside `ralphd.run=<run-id>`, siblings carry `ralphd.role=sibling`, and the container is told its own name via `RALPHD_SELF_CONTAINER_ID`. Every documented cleanup command — prompt, skill example, docs — is the two-filter, sibling-only form. | Otherwise the idiom ralphd itself teaches deletes the job container mid-iteration: that iteration's work and transcript are lost and the run dir is left non-terminal, which is exactly how a run becomes a zombie that `status` reports as healthy and still-running. |
@@ -531,7 +531,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/log_merge.py` | The one implementation of "a run's transcript": `iterations/NNNN/output.jsonl` in order, wrapped in synthesized `ralphd.iteration` boundary lines. Imported by the engine's `GET /logs` snapshot path *and* by host-side readers straight off the run dir, so both emit byte-identical lines. Scrubbing is an injected callback, never assumed. |
 | `src/ralphd/prompts/planning.md` | Planning phase: read the PRD, write `tasks.json` + `notes.md`, decide scope and optional `dependsOn`/`priority`. |
 | `src/ralphd/prompts/worker.md` | Worker phase: the one-task-per-iteration rule with its reasons, the task pick rule, credential handling, and the sibling-cleanup prohibition. |
-| `src/ralphd/prompts/review.md` | Review phase: independently re-check every PRD requirement, re-verify criteria flagged as edited after a validation failure, emit `VERIFIED` or write findings. Never fix anything. |
+| `src/ralphd/prompts/review.md` | Review phase: independently re-check every PRD requirement, re-verify criteria flagged as edited after a validation failure, report `{"verdict": "verified"}` or `{"verdict": "rejected", ...}` and write findings on rejection. Never fix anything. |
 | `src/ralphd/prompts/task-verify.md` | Vigilant-mode per-task verification against `successCriteria`, reporting through the `verify` response contract (task 118) instead of a `<task-verified>id</task-verified>` sentinel. |
 | `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
@@ -587,7 +587,7 @@ An iteration runs exactly one phase. There are five.
 | `planning` | `planning.md` | PRD, workspace | `tasks.json` (the plan) plus `notes.md` handoff notes; implements nothing |
 | `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | exactly one task advanced to `completed`, `notes.md` refreshed; `<promise>COMPLETE</promise>` when every task is done |
 | `verify` | `task-verify.md` | one task's `id`/`title`/`successCriteria` | `{"task_id": {id}, "verdict": "verified"}`, or `{"task_id": {id}, "verdict": "rejected", "reason": ...}` -- the harness applies `validated`/`validation-failed`/`failed` and copies `reason` onto that task's `validationNotes` (task 118) |
-| `review` | `review.md` | PRD (composite when present), `tasks.json`, workspace | `<promise>VERIFIED</promise>`, or `review-findings.md` listing every unmet requirement |
+| `review` | `review.md` | PRD (composite when present), `tasks.json`, workspace | `{"verdict": "verified"}`, or `{"verdict": "rejected", "reason": ..., "findings_path": "review-findings.md"}` with `review-findings.md` listing every unmet requirement -- the harness applies `succeeded`/`verified` or archives the approach from this payload (task 119) |
 | `reflect` | `reflect.md` | the finished run's own records | `artifacts/reflection/report.md`, optionally `suggestions.diff` |
 
 `planning` runs once per approach, then the `worker` loop (with `verify`
@@ -673,24 +673,31 @@ accumulated history rather than the original text alone.
 
 ### 4.3 Sentinels and completion
 
-Two exact strings carry agent claims scanned from the final assistant text of
-the iteration, not from tool output; a third hat (`verify`) reports through a
-structured JSON contract instead of a sentinel (task 118).
+One exact string carries an agent claim scanned from the final assistant
+text of the iteration, not from tool output: `worker`'s whole-plan
+`<promise>COMPLETE</promise>`. Both `verify` and `review` report through a
+structured JSON contract instead of a sentinel (task 118, task 119).
 
 | sentinel | emitted by | meaning to the engine |
 |---|---|---|
 | `<promise>COMPLETE</promise>` | `worker` | every task is `completed` (or justified `skipped`); end the worker loop and run `review` |
-| `<promise>VERIFIED</promise>` | `review` | every PRD requirement independently verified; the run is `succeeded`/`verified` |
 
 `verify`'s own claim is `{"task_id": ..., "verdict": "verified"|"rejected",
 "reason": ...}` (`transitions.HAT_SCHEMAS["verify"]`), validated against the task
 under verification by `_verify_task()` itself -- the harness applies the
-resulting status, never the agent's own `tasks.json` write.
+resulting status, never the agent's own `tasks.json` write. `review`'s own
+claim is `{"verdict": "verified"|"rejected", "reason": ..., "findings_path":
+...}` (`transitions.HAT_SCHEMAS["review"]`), read by `_review_verdict()` --
+the harness decides `succeeded`/`verified` or archives the approach from this
+payload alone, never from the retired `<promise>VERIFIED</promise>` sentinel.
 
-`COMPLETE` and `VERIFIED` are matched in `engine/runner.py`
-(`IterationResult.saw_complete` / `saw_verified`). Each match/contract report
-emits a `signal` event. A `VERIFIED` verdict is refused while operator
-steering is still unconsumed (§4.6). The reflect prompt ends on
+`COMPLETE` is matched in `engine/runner.py` (`IterationResult.saw_complete`);
+the retired `VERIFIED` sentinel is still matched too (`saw_verified`), but
+only for the "mentioned but did not end with it" operator diagnostic (task
+046, #55) that runs for every iteration regardless of phase -- review's own
+decision reads the JSON contract exclusively. Each honoured COMPLETE/
+contract report emits a `signal` event. A `VERIFIED` signal is refused while
+operator steering is still unconsumed (§4.6). The reflect prompt ends on
 `<promise>REFLECTED</promise>`, which the engine does not score: the report on
 disk is the deliverable (`_reflect_failure()`).
 
@@ -704,10 +711,14 @@ rules, one string-level and one semantic, and the second is the load-bearing one
    non-conclusion. This is deliberately not an "on its own line anywhere"
    (`MULTILINE ^…$`) match: an agent quoting the protocol in a fenced block, or
    echoing a `notes.md` section documenting it, legitimately puts the marker on a
-   line of its own. Both prompts already ask for exactly this shape ("end your
-   reply with this exact line"), and each names the signal in prose — "the
-   completion marker", "the verification marker" — so an agent explaining why it
-   is withholding the signal never has to reproduce the literal to do it.
+   line of its own. `worker.md` asks for exactly this shape for its own
+   sentinel ("end your reply with this exact line") and names the signal in
+   prose -- "the completion marker" -- so an agent explaining why it is
+   withholding it never has to reproduce the literal to do it. `review.md`
+   has no sentinel of its own to defend this way any more: a malformed JSON
+   payload simply is not the last line's valid JSON, so the same defence
+   falls out of requiring the LAST line to parse as the contract, with no
+   separate naming convention needed.
 2. **A COMPLETE is cross-checked against `tasks.json` before it is honoured.**
    `_outstanding_for_completion()` lists every task that is not `completed` or
    `skipped` (`state.TASK_COMPLETION_STATUSES`, `task_blocks_completion()`) in

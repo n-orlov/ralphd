@@ -205,7 +205,7 @@ def cancelled_worker_run(tmp_path):
         _plan,          # planning
         _cancel,        # worker attempt 1: the stray cancellation
         _finish_task,   # worker (the engine carried on)
-        lambda run: _ok(f"looks good\n{VERIFIED}"),   # review
+        lambda run: _ok("looks good\n" + json.dumps({"verdict": "verified"})),   # review
     ])
     state = asyncio.run(sup._run_job_core())
     return sup, state

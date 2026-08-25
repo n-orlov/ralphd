@@ -3006,6 +3006,43 @@ class LoopSupervisor:
         signatures[str(approach)] = signature
         self.run.update_status(blockerSignatures=signatures)
 
+    def _review_verdict(self, result: IterationResult) -> tuple[bool, dict | None, list[str]]:
+        """Task 119 (#60 pillar 3, fact 9): parse the review hat's final
+        line as a `review` contract payload (`{"verdict": "verified"|
+        "rejected", "reason": ..., "findings_path": ...}`,
+        `transitions.HAT_SCHEMAS["review"]`) -- `review.md` no longer ends
+        its reply with the bare `<promise>VERIFIED</promise>` sentinel
+        (`IterationResult.saw_verified`, still matched by `engine/runner.py`
+        for the operator-facing "mentioned but did not end with it"
+        diagnostic only, task 046/#55); this contract payload is the SOLE
+        channel this method reads to decide the verdict.
+
+        An absent/malformed payload, a schema violation, or a `rejected`
+        verdict with no `reason` (`transitions.review_report_errors`) is
+        treated as an ordinary non-verified verdict -- exactly the safe
+        default the sentinel scan always had (no marker seen == not
+        verified) -- never a run-ending contract violation: review's own
+        independent judgement, not the harness, is what decides whether an
+        approach is archived and replanned or the job goes terminal, so a
+        malformed reply simply fails to earn VERIFIED rather than crashing
+        the run.
+        """
+        try:
+            parsed = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            payload = parsed
+            contract_errors = (contracts.validate_payload("review", payload)
+                                or transitions.review_report_errors(payload))
+        else:
+            payload = None
+            contract_errors = [
+                "response: no parseable 'review' contract payload "
+                "(absent or malformed output)"]
+        verified = not contract_errors and payload.get("verdict") == "verified"
+        return verified, payload, contract_errors
+
     async def _step_review(self) -> tuple:
         """The `review` state. Guards: `steering_pending_at_verified`
         (-> worker, looped in place exactly like the pre-cutover code --
@@ -3018,9 +3055,10 @@ class LoopSupervisor:
         approach = self._approach
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach)
-        review = await self.run_iteration(
+        result = await self.run_iteration(
             "review", extra=self._review_extra_context())
-        while review.saw_verified and self.run.pending_steering():
+        verified, _payload, _errors = self._review_verdict(result)
+        while verified and self.run.pending_steering():
             # Refuse to let a VERIFIED verdict make the run terminal while
             # operator steering still sits unconsumed. review and verify
             # are pure verification phases that never act on steering
@@ -3046,9 +3084,10 @@ class LoopSupervisor:
                 break
             await self._gate()
             self.run.emit("phase", phase="review", approach=approach)
-            review = await self.run_iteration(
+            result = await self.run_iteration(
                 "review", extra=self._review_extra_context())
-        if review.saw_verified and not self.run.pending_steering():
+            verified, _payload, _errors = self._review_verdict(result)
+        if verified and not self.run.pending_steering():
             self._advance("review", "finishing", "verified")
             self.run.emit("signal", signal="VERIFIED")
             self._finish("succeeded", "verified",
@@ -3160,20 +3199,21 @@ class LoopSupervisor:
             "(task 002)"))
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach)
-        review = await self.run_iteration(
+        result = await self.run_iteration(
             "review", extra=self._review_extra_context())
         # Off-budget: this attempt must never count against the job's
         # iteration budget (same mechanism, and since task 023/#32 the same
         # persistence, as the infra-retry refund).
         self._refund_iteration("grace")
-        if review.saw_verified and not self.run.pending_steering():
+        verified, _payload, _errors = self._review_verdict(result)
+        if verified and not self.run.pending_steering():
             self.run.emit("signal", signal="VERIFIED")
             self._finish("succeeded", "verified", graceReview=True,
                         reason=("budget exhausted with all tasks completed; "
                                 "the grace review ran and VERIFIED"),
                         **self._unconsumed_steering_patch())
             return True
-        if review.saw_verified:
+        if verified:
             self._terminal_reason_note = (
                 "budget exhausted with all tasks completed; the grace "
                 "review VERIFIED but operator steering was still pending "
@@ -3387,8 +3427,8 @@ class LoopSupervisor:
             ("The following task(s) had their `successCriteria` text rewritten "
              "AFTER at least one validation failure, before being re-marked "
              "`completed`. A worker doing this may have quietly moved the bar "
-             "instead of doing the work. Before this review can emit "
-             "`<promise>VERIFIED</promise>`, you MUST independently re-verify "
+             "instead of doing the work. Before this review can report "
+             '`{"verdict": "verified"}`, you MUST independently re-verify '
              "EACH task listed below against its CURRENT successCriteria text "
              "as written now -- not the original text, not what the worker's "
              "notes claim -- and state an explicit pass/fail conclusion for "

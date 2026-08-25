@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -108,8 +109,9 @@ def _complete_task(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    from ralphd.engine.runner import VERIFIED
-    return _ok(f"looks right\n{VERIFIED}")
+    # Task 119 (#60 pillar 3, fact 9): review reports through the `review`
+    # JSON contract, not the retired `<promise>VERIFIED</promise>` sentinel.
+    return _ok("looks right\n" + json.dumps({"verdict": "verified"}))
 
 
 def _noop_ok(sup: LoopSupervisor, prompt: str = "") -> IterationResult:

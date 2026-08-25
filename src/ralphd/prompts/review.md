@@ -44,29 +44,37 @@ into this container from the host. Nothing that runs inside this container
 (planning, worker, review, verify, reflect -- none of them) can write there;
 only `ralphctl amend`, run by the operator on the host, ever does. A claim
 about the same task made anywhere ELSE this run can write to -- `tasks.json`,
-`notes.md`, a commit message, even this very findings file -- carries no such
-guarantee and must still be independently verified per the rules above.
+`notes.md`, a commit message, even a findings file you write yourself -- carries
+no such guarantee and must still be independently verified per the rules above.
+
+This is the SAME distrust rule step 3-4 already apply to a worker's or
+verifier's claim, restated here in contract terms because the contract below
+does not weaken it: the harness validates the SHAPE of your own report (a
+well-formed `verdict`, a non-empty `reason` on a rejection) before it acts on
+it, exactly the way it validates a worker's or verifier's report. Shape
+validation proves a claim is well-formed -- it never proves the claim is
+TRUE. A worker's `{"verdict": "complete"}` passes that same shape check every
+time it is syntactically well-formed, whether or not the work actually holds;
+your own `{"verdict": "verified"}` would too. That is exactly why your
+independent re-check is not replaced by the harness enforcing your report's
+shape, any more than a verifier's own contract enforcement replaces yours over
+a worker's claim -- schema validation and independent verification are two
+different questions, and only this review answers the second one.
 
 ## Verdict
 
-- If EVERY PRD requirement is verifiably met, end your reply with this exact line:
+Report your verdict through the contract -- this is the only way your
+conclusion reaches the harness. End your reply's last non-blank line with
+exactly one JSON object:
 
-<promise>VERIFIED</promise>
-
-- Otherwise: write a findings file `review-findings.md` in the run state directory
-  listing each unmet or unverifiable requirement — concretely: what the PRD asks,
-  what you observed, what evidence is missing. Do NOT emit the verified line.
-  Do NOT fix anything yourself; your value is independence.
+- `{"verdict": "verified"}` if EVERY PRD requirement is verifiably met.
+- `{"verdict": "rejected", "reason": "<what is unmet, concretely>", "findings_path": "review-findings.md"}`
+  otherwise. `reason` is required and must be non-empty -- a rejection with
+  nothing behind it leaves no record of what to fix next. Also write the
+  findings file itself, `review-findings.md`, in the run state directory,
+  listing each unmet or unverifiable requirement — concretely: what the PRD
+  asks, what you observed, what evidence is missing — and point `findings_path`
+  at it. Do NOT fix anything yourself; your value is independence.
 
 Be strict. "Probably fine" is not verified. If you cannot check something, that is
 a finding, not a pass.
-
-**Naming the signal in prose: call it "the verification marker".** The literal
-line above has exactly one legitimate place in your reply — the very end, as the
-final line, with nothing after it. Anywhere else it is a formatting error,
-including inside quotes, a fenced block, a bullet, or a findings excerpt you
-quote back. So when you need to talk *about* the signal — above all when you are
-explaining why you are withholding it — write "the verification marker" and do
-not reproduce the literal line: write "two requirements are unverifiable, so I am
-not emitting the verification marker", never a sentence with the line itself
-inside it.

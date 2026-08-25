@@ -92,7 +92,9 @@ def _finish_task(sup: LoopSupervisor) -> IterationResult:
 
 
 def _review_ok(sup: LoopSupervisor) -> IterationResult:
-    return _ok(f"looks good\n{VERIFIED}")
+    # Task 119 (#60 pillar 3, fact 9): review reports through the `review`
+    # JSON contract, not the retired `<promise>VERIFIED</promise>` sentinel.
+    return _ok("looks good\n" + json.dumps({"verdict": "verified"}))
 
 
 def _no_progress(sup: LoopSupervisor) -> IterationResult:

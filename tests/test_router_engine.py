@@ -20,6 +20,7 @@ isolation. This module proves the ENGINE side of the acceptance text:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ import pytest
 from ralphd.engine import transitions as tr
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, IterationResult, VERIFIED
+from ralphd.engine.runner import COMPLETE, IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events
 
 AMBIGUOUS_STATE = "task018_ambiguous_engine_state"
@@ -96,7 +97,9 @@ def _complete_task(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    return _ok(f"looks right\n{VERIFIED}")
+    # Task 119 (#60 pillar 3, fact 9): review reports through the `review`
+    # JSON contract, not the retired `<promise>VERIFIED</promise>` sentinel.
+    return _ok("looks right\n" + json.dumps({"verdict": "verified"}))
 
 
 def _ambiguous_ok(sup: LoopSupervisor, prompt: str = "") -> IterationResult:

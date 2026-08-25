@@ -34,9 +34,16 @@ Three layers, tested here in that order:
 
 Plus the prompt half: an agent has to be able to NAME the signal to explain
 withholding it, and if the only name it has is the literal line it will use the
-literal line. So `worker.md` supplies "the completion marker" and `review.md`
-"the verification marker", and both forbid reproducing the line anywhere but at
-the very end.
+literal line. So `worker.md` supplies "the completion marker" for its own
+`<promise>COMPLETE</promise>` sentinel, and forbids reproducing the line
+anywhere but at the very end. `review.md`'s own `VERIFIED` sentinel was
+retired in favour of a JSON contract (task 119, #60 pillar 3) -- it never had
+a naming convention of its own to preserve, and the coverage below of
+`saw_verified`/`VERIFIED` is now purely the low-level string mechanics
+(`IterationResult`), kept for the "mentioned but did not end with it"
+operator diagnostic (task 046, #55) that still runs for every iteration
+regardless of phase, not for anything review.md itself still asks an agent
+to write.
 
 Mutation matrix in the commit message / task notes.
 """
@@ -261,7 +268,9 @@ def _signal_done(sup: LoopSupervisor) -> IterationResult:
 
 
 def _review_verified(sup: LoopSupervisor) -> IterationResult:
-    return _ok(f"the PRD holds\n{VERIFIED}")
+    # Task 119 (#60 pillar 3, fact 9): review reports through the `review`
+    # JSON contract, not the retired `<promise>VERIFIED</promise>` sentinel.
+    return _ok("the PRD holds\n" + json.dumps({"verdict": "verified"}))
 
 
 def _run(root: Path, worker, **cfg_kw) -> tuple[LoopSupervisor, str]:
@@ -471,18 +480,21 @@ def _prompt(name: str) -> str:
     return (REPO / "src" / "ralphd" / "prompts" / f"{name}.md").read_text()
 
 
-@pytest.mark.parametrize("prompt, phrase", [("worker", "the completion marker"),
-                                            ("review", "the verification marker")])
+@pytest.mark.parametrize("prompt, phrase", [("worker", "the completion marker")])
 def test_each_prompt_supplies_the_prose_name_for_its_signal(prompt, phrase):
     """Prohibiting the literal is not enough on its own: the agent has to name
     the thing to explain withholding it, and if the only name it has is the
-    literal it will use the literal."""
+    literal it will use the literal. `review.md`'s own sentinel was retired
+    for a JSON contract (task 119, #60 pillar 3) -- it never needed this
+    convention afterwards, since a malformed JSON payload simply is not the
+    last line's valid JSON, with no substring-mention hazard to defend
+    against."""
     text = _prompt(prompt)
     assert f'call it "{phrase}"' in text
     assert f'write "{phrase}"' in text
 
 
-@pytest.mark.parametrize("prompt", ["worker", "review"])
+@pytest.mark.parametrize("prompt", ["worker"])
 def test_each_prompt_confines_the_literal_line_to_the_very_end(prompt):
     text = " ".join(_prompt(prompt).split())
     assert ("has exactly one legitimate place in your reply — the very end, as "
@@ -491,7 +503,7 @@ def test_each_prompt_confines_the_literal_line_to_the_very_end(prompt):
     assert "do not reproduce the literal line" in text
 
 
-@pytest.mark.parametrize("prompt", ["worker", "review"])
+@pytest.mark.parametrize("prompt", ["worker"])
 def test_each_prompt_names_the_quotation_shapes_that_do_not_count(prompt):
     text = " ".join(_prompt(prompt).split())
     assert "including inside quotes, a fenced block, a bullet" in text
@@ -500,11 +512,6 @@ def test_each_prompt_names_the_quotation_shapes_that_do_not_count(prompt):
 def test_the_worker_prompt_shows_the_withholding_sentence_to_write_instead():
     assert ('write "tasks remain, so I am not emitting the completion marker"'
             in " ".join(_prompt("worker").split()))
-
-
-def test_the_review_prompt_shows_the_withholding_sentence_to_write_instead():
-    assert ("so I am not emitting the verification marker"
-            in " ".join(_prompt("review").split()))
 
 
 # -- the docs ---------------------------------------------------------------

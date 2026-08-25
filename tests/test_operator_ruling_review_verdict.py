@@ -40,7 +40,7 @@ import pytest
 from ralphd.engine import loop as loop_mod
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import VERIFIED, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, write_amendment
 
 AMENDMENT_MARKER = "Operator rulings (task 028, #26)"
@@ -106,8 +106,11 @@ def _worker_stuck(run: RunDir, _prompt: str) -> IterationResult:
 
 def _review_honours_the_ruling(_run: RunDir, prompt: str) -> IterationResult:
     if AMENDMENT_MARKER in prompt:
-        return _ok(f"operator ruling found for task 001; honouring it\n{VERIFIED}")
-    return _ok("task 001 failed and no operator ruling was found; rejecting")
+        return _ok("operator ruling found for task 001; honouring it\n"
+                   + json.dumps({"verdict": "verified"}))
+    return _ok("task 001 failed and no operator ruling was found; rejecting\n"
+               + json.dumps({"verdict": "rejected",
+                             "reason": "no operator ruling found for task 001"}))
 
 
 def _supervisor(tmp_path: Path) -> LoopSupervisor:

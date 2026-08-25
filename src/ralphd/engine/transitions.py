@@ -684,3 +684,33 @@ def verify_report_errors(payload: Any) -> list[str]:
     if not isinstance(reason, str) or not reason.strip():
         return ["verdict 'rejected' requires a non-empty reason"]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Task 119 (#60 pillar 3, fact 9): review's sibling to `verify_report_errors`
+# just above -- review.md no longer ends its reply with the bare
+# `<promise>VERIFIED</promise>` sentinel; `LoopSupervisor._review_verdict`
+# reads its `{"verdict": "verified"|"rejected", "reason": ..., 
+# "findings_path": ...}` contract payload instead (`HAT_SCHEMAS["review"]`).
+# Same split as every sibling check in this module: schema validation is
+# `contracts.validate_payload`'s job, this is the business rule a `rejected`
+# verdict with nothing behind it would otherwise dodge -- a review that
+# rejects an approach without saying why leaves no record at all of what to
+# fix on the next attempt, exactly the gap a mandatory `reason` on a
+# rejected `verify` verdict already closes.
+# ---------------------------------------------------------------------------
+
+
+def review_report_errors(payload: Any) -> list[str]:
+    """Errors in a reviewer's `verdict: "rejected"` report, or an empty list
+    when the report is well-formed. A payload that does not claim
+    `verdict == "rejected"` at all (including a `verified` verdict, which
+    carries no such requirement) is never in violation here -- same
+    "nothing proposed, nothing to check" shape `verify_report_errors` uses.
+    """
+    if not isinstance(payload, dict) or payload.get("verdict") != "rejected":
+        return []
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return ["verdict 'rejected' requires a non-empty reason"]
+    return []

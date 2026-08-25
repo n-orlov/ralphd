@@ -747,9 +747,19 @@ elif "Role: Reviewer" in prompt:
     if done < fails_wanted:
         with open(os.path.join(run, "review-findings.md"), "w") as f:
             f.write(f"- finding from review #{done + 1}\n")
-        emit_final("requirements unmet", tool_call=tool_call, thinking_text=thinking_text)
+        # Task 119 (#60 pillar 3, fact 9): report through the `review`
+        # contract instead of the retired `<promise>VERIFIED</promise>`
+        # sentinel -- the harness applies the verdict from this payload.
+        emit_final(
+            "requirements unmet\n"
+            + json.dumps({
+                "verdict": "rejected",
+                "reason": f"finding from review #{done + 1}",
+                "findings_path": "review-findings.md",
+            }),
+            tool_call=tool_call, thinking_text=thinking_text)
     else:
-        emit_final("all requirements hold\n<promise>VERIFIED</promise>",
+        emit_final("all requirements hold\n" + json.dumps({"verdict": "verified"}),
                     tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Verifier" in prompt:

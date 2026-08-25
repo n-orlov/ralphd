@@ -206,7 +206,10 @@ def test_the_worker_schema_accepts_unsatisfiable_with_task_id_and_reason():
 
 
 def _review_verified(sup, prompt=""):
-    return _ok(f"the PRD holds for what remains\n{VERIFIED}")
+    # Task 119 (#60 pillar 3, fact 9): review reports through the `review`
+    # JSON contract, not the retired `<promise>VERIFIED</promise>` sentinel.
+    return _ok("the PRD holds for what remains\n"
+               + json.dumps({"verdict": "verified"}))
 
 
 def _review_rejects(sup, prompt=""):

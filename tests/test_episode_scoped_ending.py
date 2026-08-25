@@ -38,7 +38,7 @@ from test_cli_resume import _seed_run
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import PREVIOUS_ENDINGS_MAX, LoopSupervisor
-from ralphd.engine.runner import COMPLETE, VERIFIED, IterationResult
+from ralphd.engine.runner import COMPLETE, IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
 REPO = Path(__file__).resolve().parents[1]
@@ -125,7 +125,9 @@ def _finish_task(sup: LoopSupervisor) -> IterationResult:
 
 
 def _review_ok(sup: LoopSupervisor) -> IterationResult:
-    return _ok(f"looks good\n{VERIFIED}")
+    # Task 119 (#60 pillar 3, fact 9): review reports through the `review`
+    # JSON contract, not the retired `<promise>VERIFIED</promise>` sentinel.
+    return _ok("looks good\n" + json.dumps({"verdict": "verified"}))
 
 
 def _supervisor(root: Path, script: list, **cfg_kw) -> LoopSupervisor:
@@ -294,7 +296,14 @@ def test_a_crashed_episode_appends_nothing_and_no_ending_is_recorded_twice(
     assert len(crashed["previousEndings"]) == 1
 
     # ... and the resume after it still has exactly that one ending
-    sup3, state3 = _episode(root, [_review_ok])
+    # Resume lands back on `worker` here (task 001 is still `pending`, no
+    # worker iteration ever finished it) -- a filler with no JSON payload
+    # at all, safe regardless of which phase this script's one entry (it
+    # repeats forever) actually gets dispatched to: absent from `worker`'s
+    # `verdict` it is silently ignored (ordinary no-progress iteration),
+    # and absent from `review`'s contract it is an ordinary non-verified
+    # miss -- this test only cares about the ending record, not the outcome.
+    sup3, state3 = _episode(root, [lambda sup: _ok("nothing conclusive to report")])
     assert sup3.run.read_status()["previousEndings"] == \
         crashed["previousEndings"] == [
             {"endedAt": after_abort["endedAt"], "reason": after_abort["reason"],
