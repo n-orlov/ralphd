@@ -754,24 +754,20 @@ elif "Role: Verifier" in prompt:
     done = call_n - errors_wanted
 
     if done < fails_wanted:
-        # Write validation-failed into tasks.json
-        with open(tasks_file) as f:
-            d = json.load(f)
-        for t in d["tasks"]:
-            if t["id"] == task_id:
-                t["status"] = "validation-failed"
-                t["validationNotes"] = (
-                    f"stub: deliberate failure #{done + 1} for task {task_id}"
-                )
-                break
-        with open(tasks_file, "w") as f:
-            json.dump(d, f)
-        emit_final(f"stub verifier: failing task {task_id} (attempt {done + 1})")
+        # Task 118 (#60 pillar 1, fact 9): report through the `verify`
+        # contract instead of writing tasks.json directly -- the harness
+        # applies the status/validationNotes move from this payload.
+        emit_final(
+            f"stub verifier: failing task {task_id} (attempt {done + 1})\n"
+            + json.dumps({
+                "task_id": task_id,
+                "verdict": "rejected",
+                "reason": f"stub: deliberate failure #{done + 1} for task {task_id}",
+            }))
     else:
         emit_final(
             f"stub verifier: task {task_id} looks good\n"
-            f"<task-verified>{task_id}</task-verified>"
-        )
+            + json.dumps({"task_id": task_id, "verdict": "verified"}))
 
 elif "Role: Reflector" in prompt:
     # Task 019 (#5): a reflect-only failure knob. The engine must notice that

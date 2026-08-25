@@ -532,7 +532,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/prompts/planning.md` | Planning phase: read the PRD, write `tasks.json` + `notes.md`, decide scope and optional `dependsOn`/`priority`. |
 | `src/ralphd/prompts/worker.md` | Worker phase: the one-task-per-iteration rule with its reasons, the task pick rule, credential handling, and the sibling-cleanup prohibition. |
 | `src/ralphd/prompts/review.md` | Review phase: independently re-check every PRD requirement, re-verify criteria flagged as edited after a validation failure, emit `VERIFIED` or write findings. Never fix anything. |
-| `src/ralphd/prompts/task-verify.md` | Vigilant-mode per-task verification against `successCriteria`, emitting `<task-verified>id</task-verified>`. |
+| `src/ralphd/prompts/task-verify.md` | Vigilant-mode per-task verification against `successCriteria`, reporting through the `verify` response contract (task 118) instead of a `<task-verified>id</task-verified>` sentinel. |
 | `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
 | `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); phase→model resolution via `STRATEGY_TIERS`. |
@@ -586,7 +586,7 @@ An iteration runs exactly one phase. There are five.
 |---|---|---|---|
 | `planning` | `planning.md` | PRD, workspace | `tasks.json` (the plan) plus `notes.md` handoff notes; implements nothing |
 | `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | exactly one task advanced to `completed`, `notes.md` refreshed; `<promise>COMPLETE</promise>` when every task is done |
-| `verify` | `task-verify.md` | one task's `id`/`title`/`successCriteria` | `<task-verified>{id}</task-verified>`, or `status: validation-failed` + `validationNotes` on that task in `tasks.json` |
+| `verify` | `task-verify.md` | one task's `id`/`title`/`successCriteria` | `{"task_id": {id}, "verdict": "verified"}`, or `{"task_id": {id}, "verdict": "rejected", "reason": ...}` -- the harness applies `validated`/`validation-failed`/`failed` and copies `reason` onto that task's `validationNotes` (task 118) |
 | `review` | `review.md` | PRD (composite when present), `tasks.json`, workspace | `<promise>VERIFIED</promise>`, or `review-findings.md` listing every unmet requirement |
 | `reflect` | `reflect.md` | the finished run's own records | `artifacts/reflection/report.md`, optionally `suggestions.diff` |
 
@@ -673,21 +673,26 @@ accumulated history rather than the original text alone.
 
 ### 4.3 Sentinels and completion
 
-Three exact strings carry agent claims. The engine matches them in the final
-assistant text of the iteration, not in tool output.
+Two exact strings carry agent claims scanned from the final assistant text of
+the iteration, not from tool output; a third hat (`verify`) reports through a
+structured JSON contract instead of a sentinel (task 118).
 
 | sentinel | emitted by | meaning to the engine |
 |---|---|---|
 | `<promise>COMPLETE</promise>` | `worker` | every task is `completed` (or justified `skipped`); end the worker loop and run `review` |
 | `<promise>VERIFIED</promise>` | `review` | every PRD requirement independently verified; the run is `succeeded`/`verified` |
-| `<task-verified>{id}</task-verified>` | `verify` | that one task's success criteria hold |
+
+`verify`'s own claim is `{"task_id": ..., "verdict": "verified"|"rejected",
+"reason": ...}` (`transitions.HAT_SCHEMAS["verify"]`), validated against the task
+under verification by `_verify_task()` itself -- the harness applies the
+resulting status, never the agent's own `tasks.json` write.
 
 `COMPLETE` and `VERIFIED` are matched in `engine/runner.py`
-(`IterationResult.saw_complete` / `saw_verified`); the per-task sentinel is built
-from the task id in `_verify_task()`. Each match emits a `signal` event. A
-`VERIFIED` verdict is refused while operator steering is still unconsumed (§4.6).
-The reflect prompt ends on `<promise>REFLECTED</promise>`, which the engine does
-not score: the report on disk is the deliverable (`_reflect_failure()`).
+(`IterationResult.saw_complete` / `saw_verified`). Each match/contract report
+emits a `signal` event. A `VERIFIED` verdict is refused while operator
+steering is still unconsumed (§4.6). The reflect prompt ends on
+`<promise>REFLECTED</promise>`, which the engine does not score: the report on
+disk is the deliverable (`_reflect_failure()`).
 
 **A promise counts only as the last line, and only when the plan agrees.** Two
 rules, one string-level and one semantic, and the second is the load-bearing one.
@@ -757,8 +762,8 @@ Task-failure bookkeeping, all in `_verify_task()`:
 
 | condition | effect |
 |---|---|
-| sentinel emitted | task id added to `vigilant-verified.json`; `signal` event `taskVerified` |
-| verdict miss (a verifier ran to completion, no sentinel, no error) | `validationAttempts` incremented; `status` forced to `validation-failed` and a default `validationNotes` added if the verifier wrote none |
+| `verdict: "verified"` reported (via the `verify` contract, task 118) | task status set to `validated`; `signal` event `taskVerified` |
+| verdict miss (a verifier ran to completion with no valid `verify` contract payload for this task, or an explicit `rejected` verdict, and no error) | `validationAttempts` incremented; `status` forced to `validation-failed`; `validationNotes` taken from the payload's own `reason` when one was given, or a generic default naming the contract problem when the reply carried no valid payload at all |
 | `validationAttempts` reaches `VALIDATION_ATTEMPT_LIMIT` (3) | `status` forced to `failed` **and** `failureKind` written as `validation-exhausted` (§5.3) |
 | task already at `validationAttempts >= VALIDATION_ATTEMPT_LIMIT` | verification skipped |
 | the verify iteration reached **no verdict at all** — an in-band agent/provider error, the full `iteration_timeout_s`, the startup-window watchdog, or a signal (`error_message` / `timed_out` / `no_traffic_timeout` / `interrupted`) | retried up to `MAX_VERIFY_ERROR_RETRIES` (3) **without** consuming a validation attempt; if no attempt ever reaches a verdict, `status`, `validationAttempts` and `validationNotes` are left byte-for-byte as they were |
@@ -768,7 +773,7 @@ The last two rows are the load-bearing ones (task 012, #45): absence of a
 verdict is not a negative verdict, so neither an infrastructure fault nor one of
 the engine's own timeouts/interrupts may be recorded as a failed validation, and
 the note written on those paths says the verifier never reached a verdict rather
-than quoting the missing sentinel. The verify iteration's `meta.json` keeps the
+than claiming it reported nothing usable. The verify iteration's `meta.json` keeps the
 distinction on disk: `verifyOutcome: "error"` means no verdict was reached,
 `"fail"` means a verifier judged the criteria unmet (`verifiedTask`,
 `verifyOutcome`).
@@ -1162,7 +1167,7 @@ enforcement) — re-prompted, then scored an agent fault once retries run out,
 not silently applied "just in case". As of this task, the mechanism is proven
 end to end only through the generic hat fallback (§4.1's synthetic/future
 states); `worker`/`verify`'s own legacy, non-vigilant `<promise>COMPLETE</promise>`
-/ `<task-verified>` sentinel path (§4.3) is deliberately left untouched here —
+/ verify's own `verify`-contract path (§4.3) is deliberately left untouched here —
 routing it through this same table is a later task's cutover, not this one's.
 
 **The two meanings of `failed` (task 024, #33).** `failed` used to mean both

@@ -3412,10 +3412,31 @@ class LoopSupervisor:
         """Run one verify iteration (with bounded retry on transient agent/
         provider errors) for a newly-completed task.
 
-        Returns True when the verifier emits the correct sentinel,
-        False otherwise -- either because the task genuinely failed
-        verification (status forced to validation-failed or failed) or
-        because verification never reached a verdict at all / ran out of
+        Task 118 (#60 pillar 1, fact 9): the verifier reports its verdict
+        through the `verify` response contract (`{"task_id": ..., "verdict":
+        "verified"|"rejected", "reason": ...}`, `contracts.HAT_SCHEMAS
+        ["verify"]`) as its final line, exactly like every other hat task
+        116 already moved -- it no longer edits `tasks.json` itself, and the
+        engine no longer scans `result.final_text` for a literal
+        `<task-verified>{id}</task-verified>` sentinel. The harness -- this
+        method -- is what applies `validated`/`validation-failed`/`failed`
+        to the task record, from the payload it just read back, the same
+        "a report is a claim, the file is the fact" discipline
+        `_apply_reported_task_status` already uses for review/reflect.
+
+        A reply whose last line is not a well-formed `verify` contract
+        payload for THIS task (absent, malformed JSON, a schema violation,
+        a `task_id` naming some other task, or a `rejected` verdict with no
+        `reason` -- `transitions.verify_report_errors`) is treated exactly
+        like the pre-contract fallback always was: an explicit, non-error
+        verdict miss, not a run-ending contract violation -- the verifier
+        ran to completion and said nothing usable, which is still a verdict
+        miss, not a crash.
+
+        Returns True when the verifier reports `verdict: "verified"` for
+        this task, False otherwise -- either because the task genuinely
+        failed verification (status forced to validation-failed or failed)
+        or because verification never reached a verdict at all / ran out of
         budget before producing one (task's status left untouched -- see
         _verify_no_verdict).
         """
@@ -3435,14 +3456,33 @@ class LoopSupervisor:
 
         result: IterationResult | None = None
         verified = False
+        payload: dict | None = None
+        contract_errors: list[str] = []
         error_retries = 0
         while self.budget_left():
             result = await self.run_iteration("verify", extra=extra,
                                                prompt_name="task-verify")
             verify_iter_n = self.iterations_used  # captured after run_iteration increments it
 
-            sentinel = f"<task-verified>{tid}</task-verified>"
-            verified = sentinel in (result.final_text or "")
+            try:
+                parsed = json.loads(last_nonblank_line(result.final_text))
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                payload = parsed
+                contract_errors = (contracts.validate_payload("verify", payload)
+                                    or transitions.verify_report_errors(payload))
+                if not contract_errors and payload.get("task_id") != tid:
+                    contract_errors = [
+                        f"'verify' contract reported task_id "
+                        f"{payload.get('task_id')!r} but task {tid!r} is "
+                        "the one under verification"]
+            else:
+                payload = None
+                contract_errors = [
+                    "response: no parseable 'verify' contract payload "
+                    "(absent or malformed output)"]
+            verified = not contract_errors and payload.get("verdict") == "verified"
             # Task 012 (#45): "" only when a verifier actually reached a
             # verdict; anything else means this attempt says nothing at all
             # about the task.
@@ -3538,8 +3578,11 @@ class LoopSupervisor:
             return False
 
         # Verification failed with an explicit (non-error) verdict miss: a
-        # verifier ran to completion and did not emit the sentinel. Ensure
-        # status is validation-failed and increment the counter.
+        # verifier ran to completion but did not report `verdict: "verified"`
+        # for this task via the `verify` contract (task 118) -- either a
+        # genuine `rejected` verdict with a reason, or a reply that carried
+        # no valid contract payload at all (`contract_errors`, set above).
+        # Ensure status is validation-failed and increment the counter.
         tasks_data = self.run.read_tasks()
         for t in tasks_data.get("tasks", []):
             if t["id"] == tid:
@@ -3547,12 +3590,17 @@ class LoopSupervisor:
                 t["validationAttempts"] = attempts
                 if t.get("status") not in ("validation-failed", "failed"):
                     t["status"] = "validation-failed"
-                    if not t.get("validationNotes"):
+                    if contract_errors:
                         t["validationNotes"] = (
-                            "Verifier ran to completion and reached a negative "
-                            "verdict: it did not emit the task-verified "
-                            "sentinel."
-                        )
+                            "Verifier's final reply carried no valid "
+                            "'verify' contract payload for this task, so "
+                            "the run treats it as a negative verdict: "
+                            + "; ".join(contract_errors))
+                    else:
+                        t["validationNotes"] = (payload or {}).get(
+                            "reason", "").strip() or (
+                            "Verifier ran to completion and reported "
+                            "verdict: \"rejected\" with no reason given.")
                 if attempts >= VALIDATION_ATTEMPT_LIMIT:
                     # Task 024 (#33): the engine forcing `failed` here means
                     # ONE thing -- the validation rounds are used up -- and it

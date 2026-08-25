@@ -74,7 +74,7 @@ def _infra_result() -> IterationResult:
 def _verified_result(task_id: str) -> IterationResult:
     r = IterationResult(exit_code=0)
     r.duration_s = 30.0
-    r.final_text = f"<task-verified>{task_id}</task-verified>"
+    r.final_text = json.dumps({"task_id": task_id, "verdict": "verified"})
     return r
 
 

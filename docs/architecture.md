@@ -62,8 +62,9 @@ Design invariants:
   read path (§3, "Reading `tasks.json`: unknown is not zero") instead of
   assuming it can never catch a half-written file.
 - **Signals are exact sentinels** (`<promise>COMPLETE</promise>`,
-  `<promise>VERIFIED</promise>`, `<task-verified>id</task-verified>`) scanned from
-  the agent's final output. The two promise markers count **only as the final
+  `<promise>VERIFIED</promise>`) scanned from
+  the agent's final output; `verify` reports through a structured JSON contract
+  instead (task 118, SPEC §4.3). The two promise markers count **only as the final
   non-blank line** of that output, so an agent quoting the protocol — or
   explaining why it is *withholding* the signal — cannot accidentally emit it;
   mentioning one anywhere else is logged as "mentioned but did not end with it".
@@ -230,7 +231,7 @@ claiming a bug.
 
 A verify iteration that errors out mid-stream (agent/provider failure -- e.g. a
 Bedrock 502 -- surfaced as an assistant `message_end` with `stopReason: "error"`)
-before ever emitting the `<task-verified>{id}</task-verified>` sentinel is an
+before ever reporting a `verdict` through the `verify` contract (task 118) is an
 infrastructure fault, not a verdict, and must never be scored as a validation
 failure: the engine retries verification (bounded, `MAX_VERIFY_ERROR_RETRIES = 3`)
 without touching the task's `status` or `validationAttempts`. If every retry also
@@ -253,9 +254,9 @@ and if no attempt reaches a verdict, `status`, `validationAttempts` and
 `validationNotes` come out byte-for-byte as they went in (as they do when the
 iteration budget ran out before any verify iteration could run at all). The
 record distinguishes the two outcomes in words as well as in `verifyOutcome`: a
-negative verdict says a verifier ran to completion and did not emit the sentinel,
-while a no-verdict path says the verifier never reached a verdict and names what
-ended it.
+negative verdict says a verifier ran to completion and reported nothing the
+harness could treat as `verified`, while a no-verdict path says the verifier
+never reached a verdict and names what ended it.
 
 ### Criteria fingerprinting and edited-after-failure detection (task 008)
 

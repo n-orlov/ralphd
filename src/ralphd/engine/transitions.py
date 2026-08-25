@@ -651,3 +651,36 @@ def worker_completion_report_errors(payload: Any) -> list[str]:
     if not isinstance(task_id, str) or not task_id.strip():
         return ["verdict 'complete' requires a non-empty task_id"]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Task 118 (#60 pillar 1, fact 9): the sibling semantic check for the
+# verifier's own `verify` contract report -- same split every other check in
+# this module uses (schema validation is `contracts.validate_payload`'s job;
+# this is the business rule). `task_id` is required by the schema itself
+# (HAT_SCHEMAS["verify"]["required"]) for every verdict, so nothing here
+# repeats that check; what only a REJECTED verdict adds is a mandatory
+# `reason` -- the harness no longer accepts an agent's own free-text
+# `validationNotes` write (fact 9), so a rejection with nothing behind it
+# would leave no record at all of why. A verifier that names a task other
+# than the one it was actually asked about is not this function's business
+# either -- `LoopSupervisor._verify_task` checks that against the task under
+# verification directly, the same way `_apply_worker_completion_report`
+# checks a worker's task_id against the one the scheduler assigned.
+# ---------------------------------------------------------------------------
+
+
+def verify_report_errors(payload: Any) -> list[str]:
+    """Errors in a verifier's `verdict: "rejected"` report, or an empty list
+    when the report is well-formed. A payload that does not claim
+    `verdict == "rejected"` at all (including a `verified` verdict, which
+    carries no such requirement) is never in violation here -- the same
+    "nothing proposed beyond what the schema already checked, nothing more
+    to check" shape every sibling check in this module uses.
+    """
+    if not isinstance(payload, dict) or payload.get("verdict") != "rejected":
+        return []
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return ["verdict 'rejected' requires a non-empty reason"]
+    return []

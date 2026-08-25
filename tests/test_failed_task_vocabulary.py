@@ -198,10 +198,11 @@ def _verify_miss(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _verify_pass(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    """Emits the sentinel for WHICHEVER task the verify prompt names -- the id
-    is the one thing `_verify_task` matches on."""
+    """Reports `verdict: "verified"` for WHICHEVER task the verify prompt
+    names -- the id is the one thing `_verify_task` matches on."""
     m = re.search(r"\*\*id\*\*: (\S+)", prompt)
-    return _ok(f"<task-verified>{m.group(1) if m else TASK_ID}</task-verified>")
+    tid = m.group(1) if m else TASK_ID
+    return _ok(json.dumps({"task_id": tid, "verdict": "verified"}))
 
 
 def _review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResult:

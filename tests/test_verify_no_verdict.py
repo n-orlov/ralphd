@@ -8,15 +8,18 @@ the startup-window watchdog -> `no_traffic_timeout`) records no
 `error_message` at all, so it fell through to the verdict-miss bookkeeping:
 `status` forced to `validation-failed`, a validation attempt burned, and
 `validationNotes` reading "Verifier did not emit the task-verified
-sentinel." -- true of the bytes on disk and thoroughly misleading, since no
-verifier ever read the criteria. Three of those and the task is `failed`
-forever because of the engine's own timeouts.
+sentinel." (task 118 replaced that sentinel with the `verify` contract
+payload, but the underlying hazard this test guards is unchanged: a note
+claiming the verifier said nothing usable, when in fact no verifier ever
+read the criteria at all) -- true of the bytes on disk and thoroughly
+misleading. Three of those and the task is `failed` forever because of the
+engine's own timeouts.
 
 The rule under test: absence of a verdict is not a negative verdict.
 Whatever ended the attempt, `status`, `validationAttempts` and
 `validationNotes` come out byte-for-byte as they went in, and any note
 written on such a path says the verifier never reached a verdict rather than
-quoting the missing sentinel.
+claiming it reported nothing usable.
 
 Mutation case (recorded in the commit message): restoring the
 `error_message`-only condition in loop.py -- i.e. `no_verdict =
@@ -150,7 +153,7 @@ def test_a_finished_verifier_reached_a_verdict():
     """The pass and the genuine-miss cases must NOT be read as "no verdict"
     -- otherwise a real negative verdict would stop being recorded."""
     ok = IterationResult(exit_code=0, duration_s=42.0)
-    ok.final_text = "<task-verified>007</task-verified>"
+    ok.final_text = json.dumps({"task_id": "007", "verdict": "verified"})
     assert LoopSupervisor._verify_no_verdict(ok) == ""
 
     miss = IterationResult(exit_code=0, duration_s=42.0)
@@ -261,7 +264,12 @@ def test_an_engine_ended_verify_is_retried_without_consuming_an_attempt(
 # -- the other side of the line: a real verdict still counts ---------------
 
 
-def test_a_real_verdict_miss_still_records_a_validation_failure(tmp_path):
+def test_a_verdict_miss_with_no_contract_payload_still_records_a_validation_failure(tmp_path):
+    """A verify reply carrying no valid 'verify' contract payload at all
+    (task 118: no JSON, so nothing for the harness to apply) is still
+    treated as an explicit, non-error verdict miss -- the verifier ran to
+    completion and said nothing usable, which the run must not silently
+    treat as a pass or as an engine-side no-verdict case."""
     import asyncio
 
     def miss() -> IterationResult:
@@ -281,9 +289,66 @@ def test_a_real_verdict_miss_still_records_a_validation_failure(tmp_path):
     assert t["status"] == "validation-failed"
     assert t["validationAttempts"] == TASK["validationAttempts"] + 1
     notes = t["validationNotes"]
-    assert "sentinel" in notes
+    assert "contract payload" in notes
     assert "verdict" in notes.lower(), \
-        "the default note says a verifier ran and reached a verdict"
+        "the default note says the run treated this as a negative verdict"
+    assert _verify_metas(sup.run.root)[-1]["verifyOutcome"] == "fail"
+
+
+def test_a_real_rejected_verdict_records_its_own_reason(tmp_path):
+    """The other side of the same branch: a well-formed `verify` contract
+    payload with `verdict: "rejected"` records the verifier's OWN `reason`
+    verbatim as `validationNotes` -- the harness applies the payload's
+    claim, it does not invent a generic one when a real reason was given."""
+    import asyncio
+
+    def rejected() -> IterationResult:
+        r = IterationResult(exit_code=0, duration_s=42.0)
+        r.final_text = json.dumps({
+            "task_id": "007", "verdict": "rejected",
+            "reason": "criterion 2 does not hold: no test asserts it"})
+        r.usage = {"input": 10, "output": 5, "totalTokens": 15}
+        return r
+
+    sup = _supervisor(tmp_path, rejected)
+    task = dict(TASK)
+    task["validationNotes"] = ""
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": [task]})
+
+    assert asyncio.run(sup._verify_task(dict(task))) is False
+
+    t = json.loads(sup.run.tasks_file.read_text())["tasks"][0]
+    assert t["status"] == "validation-failed"
+    assert t["validationAttempts"] == TASK["validationAttempts"] + 1
+    assert t["validationNotes"] == \
+        "criterion 2 does not hold: no test asserts it"
+    assert _verify_metas(sup.run.root)[-1]["verifyOutcome"] == "fail"
+
+
+def test_a_rejected_verdict_with_no_reason_is_a_contract_violation_not_a_pass(tmp_path):
+    """`transitions.verify_report_errors` (task 118): a `rejected` verdict
+    with an empty/missing `reason` is itself a contract error -- the mutation
+    case for that helper. It must still land as a validation failure with a
+    generic note (never silently pass, never crash the run)."""
+    import asyncio
+
+    def rejected_no_reason() -> IterationResult:
+        r = IterationResult(exit_code=0, duration_s=42.0)
+        r.final_text = json.dumps({"task_id": "007", "verdict": "rejected"})
+        r.usage = {"input": 10, "output": 5, "totalTokens": 15}
+        return r
+
+    sup = _supervisor(tmp_path, rejected_no_reason)
+    task = dict(TASK)
+    task["validationNotes"] = ""
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": [task]})
+
+    assert asyncio.run(sup._verify_task(dict(task))) is False
+
+    t = json.loads(sup.run.tasks_file.read_text())["tasks"][0]
+    assert t["status"] == "validation-failed"
+    assert t["validationAttempts"] == TASK["validationAttempts"] + 1
+    assert "reason" in t["validationNotes"]
     assert _verify_metas(sup.run.root)[-1]["verifyOutcome"] == "fail"
 
 

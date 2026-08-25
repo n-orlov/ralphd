@@ -114,7 +114,7 @@ def _complete_task(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 def _verify_pass(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
     tid = sup.run.read_tasks()["tasks"][0]["id"]
-    r = _ok(f"<task-verified>{tid}</task-verified>")
+    r = _ok(json.dumps({"task_id": tid, "verdict": "verified"}))
     return r
 
 

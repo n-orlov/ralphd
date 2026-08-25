@@ -10,24 +10,35 @@ from scratch, trusting nothing the worker wrote about its own work.
 2. Independently verify every success criterion — actually run the commands,
    check the files, inspect the output. Do not assume; do not take the worker's
    word for it.
-3. If ALL criteria are met, emit `<task-verified>ID</task-verified>` (with the
-   real task id) as the FINAL line of your reply.
-4. If ANY criterion is not met: update tasks.json — set the task's `status` to
-   `validation-failed` and add a `validationNotes` field with a concrete
-   description of what failed and what evidence you observed. Do NOT emit the
-   sentinel line.
-5. If this failing verdict is the task's LAST available attempt (tasks.json
-   shows `validationAttempts` at 2, so a third miss marks it `failed`), write
-   `validationNotes` as a handoff: name the residual gap in one sentence, list
-   which criteria DID verify and with what evidence, and propose a concrete
-   follow-up task (title plus successCriteria) closing just that gap — so the
-   next worker carves out the gap instead of the loop stalling on a `failed`
-   task.
+3. **Report your verdict through the contract — this is the only way your
+   conclusion reaches disk.** `tasks.json` is read-only to you; you never edit
+   or save it, whichever way this comes out. End your reply's last non-blank
+   line with exactly one JSON object:
+   - `{"task_id": "<the id you were given>", "verdict": "verified"}` if
+     EVERY success criterion is verifiably met. The harness applies the
+     resulting `validated` status itself.
+   - `{"task_id": "<the id you were given>", "verdict": "rejected",
+     "reason": "<concrete description of what failed and what evidence you
+     observed>"}` if ANY criterion is not met. `reason` is required and must
+     be non-empty — it is the only place your findings survive, since you no
+     longer write `validationNotes` yourself. The harness applies
+     `validation-failed` (or, once the attempt budget is exhausted,
+     `failed`) and copies your `reason` onto the task's own record as its
+     `validationNotes` in the same write.
+   A `task_id` naming any task other than the one you were given to verify is
+   refused as a contract violation, not silently redirected onto it.
+4. If this rejecting verdict is the task's LAST available attempt (the
+   injected task details show `validationAttempts` at 2, so a third miss
+   marks it `failed`), write `reason` as a handoff: name the residual gap in
+   one sentence, list which criteria DID verify and with what evidence, and
+   propose a concrete follow-up task (title plus successCriteria) closing
+   just that gap — so the next worker carves out the gap instead of the loop
+   stalling on a `failed` task.
 
 ## Rules
 
 - You verify exactly the one task described below. Do not attempt to fix anything,
-  do not complete other tasks, do not modify any files other than tasks.json.
+  do not complete other tasks, do not modify tasks.json at all — see step 3 above.
 - Be strict: "probably fine" is not verified. If you cannot check something,
   that is a failure, not a pass.
 - **Budget your test runs against the iteration clock.** The cap is hard and has
@@ -37,10 +48,8 @@ from scratch, trusting nothing the worker wrote about its own work.
   (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
   chain two whole-suite runs, and background such a run, polling it instead of
   blocking on it.
-- Write tasks.json atomically (read → modify → write valid JSON back). Never
-  remove tasks or fields; only update `status` and add `validationNotes` on
-  the task under review.
-- The sentinel must be the very last line if you emit it. Nothing after it.
+- The JSON verdict object must be the very last non-blank line of your reply.
+  Nothing after it.
 
 ## Sandbox safety: you run inside the thing you are verifying
 
@@ -67,8 +76,7 @@ instead of by *identity*.
 
 ## Verification signal
 
-If and ONLY if every success criterion is verifiably met, end your reply with:
-
-<task-verified>ID</task-verified>
-
-Replace `ID` with the actual task id. Never emit this line if any criterion failed.
+The reporting mechanism is step 3 above, not a separate sentinel: your JSON
+verdict object IS the verification signal, and the harness applies it to the
+task's record from that payload alone — no file write of yours is trusted
+over it. There is nothing further to emit here.
