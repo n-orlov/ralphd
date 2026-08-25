@@ -1424,7 +1424,59 @@ class LoopSupervisor:
         the two can never disagree about what a resume is."""
         return bool(self.iterations_used and self.run.read_tasks().get("tasks"))
 
-    def _resume_point(self) -> tuple[int, bool]:
+    def _archived_approach_awaiting_replan(self, approach: int) -> bool:
+        """True iff `approach` was already reviewed and REJECTED by a prior
+        episode (`_step_review`'s rejection branch already ran
+        `_archive_approach(approach)`), but the crash happened before that
+        same episode ever recorded the bump to the next approach (or, if
+        `approach` was the last one available, before it recorded the
+        run's terminal outcome).
+
+        Task 017 (requirement... resume must reconstruct FSM *position*
+        from disk, not just "was planning done"): `_archive_approach` is
+        the ONLY thing that ever creates `approaches/<NN>/` (guard: read
+        `_step_review`), and it runs strictly after review's verdict is
+        already durably on disk -- there is no in-place write between it
+        and the next episode's `approach` bump (`_step_planning`'s
+        `update_status(approach=...)`) or the run's terminal write, so a
+        crash in that window leaves `approaches/<NN>/` present while
+        status.json's `approach` field still names the REJECTED approach,
+        not the one that should run next. Without this check, resuming
+        such a run dir would silently re-enter `worker` over the very
+        tasks.json review already rejected -- no gate skipped in the
+        normal case, but exactly one skipped here: the approach boundary
+        itself.
+        """
+        return (self.run.root / "approaches" / f"{approach:02d}").is_dir()
+
+    def _crashed_mid_review(self) -> bool:
+        """True iff the NEXT iteration slot (`iterations_used + 1` -- the
+        one a fresh attempt would reuse; `max_iteration_number()` counts
+        only *finished* iterations, so a crashed review invocation's slot
+        is never folded into `iterations_used` itself) already holds a
+        `review`-phase `meta.json` with no `endedAt`: `_step_review` never
+        writes anything to `tasks.json`, so nothing about the plan changed
+        between that crash and now, but a plain resume (which always
+        re-enters at `worker`, per `_step_planning`'s skip-planning
+        unconditional advance) would burn one throwaway worker iteration
+        first -- nothing is actionable, every task the crashed review was
+        about to judge is still `completed` -- before ever reaching review
+        again. That is one iteration of completed-seeming work repeated
+        for no reason: the crash left the FSM position at `review`, not at
+        `worker`, and resume should land exactly there (guard 25's
+        sibling; ledger guard 23's third case).
+        """
+        d = self.run.root / "iterations" / f"{self.iterations_used + 1:04d}"
+        meta_path = d / "meta.json"
+        if not meta_path.exists():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            return False
+        return meta.get("phase") == "review" and "endedAt" not in meta
+
+    def _resume_point(self) -> tuple[int, bool, str]:
         """Where run_job() should start on this engine invocation (PRD req
         16). A fresh run dir (no tasks.json yet, or no completed
         iterations recorded) starts at approach 1 with planning, exactly
@@ -1437,18 +1489,51 @@ class LoopSupervisor:
         the existing max (already seeded into self.iterations_used in
         __init__).
 
-        Returns (start_approach, skip_planning_for_start_approach).
+        A third case (task 017): the recorded approach was already
+        reviewed and rejected by a prior, crashed episode (see
+        `_archived_approach_awaiting_replan`) -- the dispatch loop must
+        start at the `replan` step, not `worker`, so the approach boundary
+        the crashed episode never got to record still happens exactly
+        once, through the same guarded transition a live run takes.
+
+        A fourth case (task 017): the prior episode was killed mid-`review`
+        invocation, before any verdict was ever recorded (see
+        `_crashed_mid_review`) -- the dispatch loop must start at `review`
+        directly rather than at `worker`, so resume does not spend one
+        throwaway worker iteration re-confirming there is nothing left to
+        do before ever reaching review again.
+
+        Returns (start_approach, skip_planning_for_start_approach,
+        start_step).
         """
         if not self._resuming_existing_run_dir():
-            return 1, False
+            return 1, False, transitions.ENTRY_STATE
         approach = self.run.read_status().get("approach") or 1
+        if self._archived_approach_awaiting_replan(approach):
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "was already reviewed and rejected by a crashed episode "
+                    "before it recorded the approach boundary; replanning "
+                    "instead of re-entering worker over the rejected tasks"))
+            return approach, False, "replan"
+        if self._crashed_mid_review():
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "was mid-review with no verdict recorded when the prior "
+                    "episode was killed; resuming directly into review "
+                    "instead of re-entering worker over already-completed work"))
+            return approach, False, "review"
         self.run.emit(
             "log",
             message=(
                 f"resuming existing run-dir state: approach {approach}, "
                 f"{self.iterations_used} iteration(s) already recorded; "
                 "skipping planning"))
-        return approach, True
+        return approach, True, transitions.ENTRY_STATE
 
     async def run_job(self) -> str:
         """Runs the job to a terminal state, then (if `reflect: true`) one
@@ -1981,10 +2066,8 @@ class LoopSupervisor:
         # with its own lifecycle transition. `resumed` says which case it is.
         self.run.emit("state", state="running",
                       resumed=self._resuming_existing_run_dir())
-        start_approach, resuming = self._resume_point()
+        start_approach, skip_planning, step = self._resume_point()
         self._approach = start_approach
-        skip_planning = resuming
-        step = transitions.ENTRY_STATE  # "planning"
         try:
             while True:
                 if step == "planning":

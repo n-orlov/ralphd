@@ -190,7 +190,27 @@ async def amain() -> int:
             log.error("no PRD at %s or %s", run.prd_file, prd_src)
             return 2
 
-    run.update_status(runId=cfg.run_id, state="starting", createdAt=utcnow(),
+    # Task 017 (requirement... reconstruct FSM position from disk on
+    # resume): every process start used to write `state="starting"`
+    # unconditionally, including over a run dir a prior, crashed episode
+    # had already left `finishing` (settled outcome, reflect unwind not
+    # yet promoted -- `_finish()`/`run_job()`). That clobbered the one
+    # field `run_job()`'s resume check reads BEFORE `LoopSupervisor` is
+    # even constructed, so `_promote_recorded_finishing_state` -- code
+    # written specifically for this restart -- could never actually run
+    # through the real engine binary; only the in-process unit tests that
+    # construct `LoopSupervisor` directly and skip `amain()` ever saw it
+    # fire. `finishing` is the one prior state worth preserving here:
+    # every other state (`running`, a stale terminal state after a budget
+    # bump, or none at all for a fresh run dir) is unconditionally
+    # overwritten again within moments by `_run_job_core`'s own first
+    # statement (`state="running"`) or by `run_job()` itself, so nothing
+    # else needs special handling at this one call site.
+    _preserved_state = run.read_status().get("state")
+    run.update_status(runId=cfg.run_id,
+                      state=(_preserved_state if _preserved_state == "finishing"
+                             else "starting"),
+                      createdAt=utcnow(),
                       schemaVersion=CURRENT_SCHEMA_VERSION,
                       # Task 012 (#5): health/infraWait are part of the status
                       # contract from the very first write, so a consumer never
