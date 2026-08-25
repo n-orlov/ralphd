@@ -40,10 +40,11 @@ from test_failed_task_vocabulary import (
     _events,
     _log_messages,
     _ok,
+    _plan_pointer,
     _steps,
     _supervisor,
     _task,
-    _write_plan,
+    _write_proposal,
 )
 
 __all__ = ["TASK_ID"]
@@ -57,8 +58,8 @@ def _run(root: Path, handlers: dict, **cfg_kw):
 
 
 def _plan_one(sup, prompt: str = "") -> IterationResult:
-    _write_plan(sup, [_task()])
-    return _ok("planned one task")
+    _write_proposal(sup, [_task()])
+    return _ok("planned one task\n" + _plan_pointer())
 
 
 def _signal_iteration(sup, prompt: str = "") -> IterationResult:

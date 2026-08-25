@@ -78,29 +78,38 @@ def test_fieldless_schema_behaves_sequentially(engine_factory):
 
 def test_blocked_by_failed_dependency_surfaced_in_notes_not_ground_against(
         engine_factory):
-    """A pending task whose dependsOn names a failed task can never become
-    unblocked; the worker must note the blockage (not silently spin on it
-    forever) and make progress on the other, viable task instead."""
+    """A pending task whose dependsOn names a dead (failed/skipped) task can
+    never become unblocked; the worker must note the blockage (not silently
+    spin on it forever) and make progress on the other, viable task instead.
+
+    Task 120 (#60): the planner's contract now rejects a task that smuggles
+    its own `status`, so "already failed at plan time" is no longer
+    reachable through STUB_TASKS_JSON -- task 001 instead becomes genuinely
+    dead via a real worker `verdict: "unsatisfiable"` report
+    (STUB_UNSATISFIABLE_TASK_IDS), which the harness applies as `skipped`,
+    itself one of `state.TASK_DEPENDENCY_DEAD_STATUSES` -- the scheduler
+    treats a `skipped` ancestor exactly as dead as a `failed` one.
+    """
     tasks = [
-        {"id": "001", "title": "already failed", "status": "failed",
+        {"id": "001", "title": "cannot be satisfied as written",
          "successCriteria": "c1"},
-        {"id": "002", "title": "blocked forever on 001", "status": "pending",
-         "successCriteria": "c2", "dependsOn": ["001"]},
-        {"id": "003", "title": "viable, unblocked", "status": "pending",
-         "successCriteria": "c3"},
+        {"id": "002", "title": "blocked forever on 001", "successCriteria": "c2",
+         "dependsOn": ["001"]},
+        {"id": "003", "title": "viable, unblocked", "successCriteria": "c3"},
     ]
     e = engine_factory(job={"on_complete": "idle", "max_approaches": 1},
-                       stub_env={"STUB_TASKS_JSON": json.dumps(tasks)})
+                       stub_env={"STUB_TASKS_JSON": json.dumps(tasks),
+                                 "STUB_UNSATISFIABLE_TASK_IDS": "001"})
     e.wait_api()
-    # Only 003 is workable; 002 stays pending forever (blocked), 001 stays
-    # failed -- neither "completed" nor "all completed", so this never
-    # reaches a succeeded/verified terminal state; wait for it to fail out
-    # via the stagnation guard instead.
+    # Only 003 is workable; 002 stays pending forever (blocked), 001 ends
+    # skipped (dead in its own right) -- neither "completed" nor "all
+    # completed", so this never reaches a succeeded/verified terminal
+    # state; wait for it to fail out via the stagnation guard instead.
     e.wait_state(("failed", "succeeded", "aborted"), timeout=60)
     final_tasks = {t["id"]: t["status"]
                    for t in json.loads((e.run_dir / "tasks.json").read_text())["tasks"]}
     assert final_tasks["003"] == "completed"
     assert final_tasks["002"] == "pending"  # never unblocked, never ground against
-    assert final_tasks["001"] == "failed"
+    assert final_tasks["001"] == "skipped"
     notes = (e.run_dir / "notes.md").read_text()
     assert "002" in notes and "001" in notes and "blocked" in notes.lower()

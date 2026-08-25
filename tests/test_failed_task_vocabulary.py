@@ -85,6 +85,45 @@ def _write_plan(sup: LoopSupervisor, tasks: list[dict]) -> None:
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
 
 
+_PROPOSAL_PASSTHROUGH = ("id", "title", "successCriteria", "dependsOn", "priority")
+
+
+def _write_proposal(sup: LoopSupervisor, tasks: list[dict],
+                    name: str = "plan-proposal.json") -> None:
+    """Task 120 (#60 pillar 1): write the file-borne `plan-proposal.json` a
+    real planning iteration drafts -- passthrough fields only, exactly what
+    `plan_ingestion.ingest_proposal` accepts (no `status`, no harness-owned
+    bookkeeping like `validationAttempts`) -- for use by a "planning" phase
+    handler in these scripted-agent tests. `_write_plan` above stays a
+    direct tasks.json seed for the tests that call `_verify_task`/etc
+    directly with no planning phase involved at all."""
+    clean = [{k: v for k, v in t.items() if k in _PROPOSAL_PASSTHROUGH}
+             for t in tasks]
+    atomic_write_json(sup.run.root / name, {"version": 1, "tasks": clean})
+
+
+def _plan_pointer(name: str = "plan-proposal.json", summary: str = "planned") -> str:
+    return json.dumps({"proposal_path": name, "summary": summary})
+
+
+def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
+                **cfg_kw) -> tuple[LoopSupervisor, str]:
+    """Task 120 (#60): planning's contract cannot carry a task's own
+    `status`/`validationAttempts`/`validationNotes` (the harness always
+    initialises every INGESTED task to `pending`) -- a plan already
+    holding those fields is exactly what a RESUMED run's tasks.json
+    legitimately looks like (a migration case, per this module's own
+    docstring), so these tests seed disk state the way a resume would and
+    skip planning entirely, the same way `_resume_point()` decides a real
+    engine process should -- `handlers` must have no `"planning"` key.
+    """
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(root, handlers, **cfg_kw)
+    _write_plan(sup, tasks)
+    sup.iterations_used = 1
+    return sup, asyncio.run(sup._run_job_core())
+
+
 def _task(**over) -> dict:
     task = {"id": TASK_ID, "title": "make the thing work",
             "status": "pending", "successCriteria": "the thing works"}
@@ -178,8 +217,8 @@ def _phases_recorded(root: Path) -> list[str]:
 # agrees, and once the record says `failed` the worker has nothing legitimate
 # left to do with it.
 def _plan(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    _write_plan(sup, [_task()])
-    return _ok("planned one task")
+    _write_proposal(sup, [_task()])
+    return _ok("planned one task\n" + _plan_pointer())
 
 
 def _claim_done(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
@@ -468,15 +507,12 @@ def test_a_legacy_failed_record_also_routes_to_review(tmp_path):
     """MIGRATION, end to end: a plan written before `failureKind` existed --
     `failed` with three recorded rounds and no label -- reads as exhausted and
     routes exactly the same way. The engine does not rewrite it."""
-    def legacy_plan(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-        _write_plan(sup, [_task(status="failed", validationAttempts=3,
-                                validationNotes="round 3: criterion 2 unmet")])
-        return _ok("planned (legacy record)")
-
     root = tmp_path / "run"
-    sup, state = _run(root, {"planning": legacy_plan, "worker": _give_up,
-                             "verify": _verify_miss,
-                             "review": _review_verified})
+    sup, state = _run_resumed(
+        root, {"worker": _give_up, "verify": _verify_miss,
+              "review": _review_verified},
+        [_task(status="failed", validationAttempts=3,
+              validationNotes="round 3: criterion 2 unmet")])
     status = sup.run.read_status()
     assert (state, status["verdict"]) == ("succeeded", "verified"), status
     assert f"{TASK_ID} ({TASK_FAILURE_VALIDATION_EXHAUSTED})" in \
@@ -491,14 +527,12 @@ def test_a_plan_with_work_left_is_never_routed_to_review(tmp_path):
     pick up -- otherwise one failed task would cut a plan's remaining work
     short. Here the second task stays `pending` and the worker keeps ignoring
     it, so the run ends on the stagnation guard, as before."""
-    def plan_two(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-        _write_plan(sup, [_task(status="failed", validationAttempts=3),
-                          _task(id="002", status="pending")])
-        return _ok("planned two tasks")
-
     root = tmp_path / "run"
-    sup, state = _run(root, {"planning": plan_two, "worker": _give_up,
-                             "verify": _verify_miss, "review": _review_verified})
+    sup, state = _run_resumed(
+        root, {"worker": _give_up, "verify": _verify_miss,
+              "review": _review_verified},
+        [_task(status="failed", validationAttempts=3),
+         _task(id="002", status="pending")])
     msgs = _log_messages(root)
     assert "routing to review" not in msgs, msgs
     assert "3 iterations with no task progress" in msgs, msgs

@@ -79,9 +79,10 @@ def _ok(text: str = "working") -> IterationResult:
 
 
 def _plan(sup: LoopSupervisor) -> IterationResult:
-    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": [
-        {"id": "001", "title": "t", "status": "pending", "successCriteria": "c"}]})
-    return _ok("planned")
+    atomic_write_json(sup.run.root / "plan-proposal.json", {"version": 1, "tasks": [
+        {"id": "001", "title": "t", "successCriteria": "c"}]})
+    return _ok("planned\n" +
+              json.dumps({"proposal_path": "plan-proposal.json", "summary": "planned"}))
 
 
 def _finish_task(sup: LoopSupervisor) -> IterationResult:

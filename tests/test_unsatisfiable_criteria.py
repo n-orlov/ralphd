@@ -136,6 +136,22 @@ def _run(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:
     return sup, asyncio.run(sup._run_job_core())
 
 
+def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
+                 **cfg_kw) -> tuple[LoopSupervisor, str]:
+    """Task 120 (#60): these seeded tasks start `in-progress`/carry fields
+    a real plan-proposal.json contract can never hold (a task's own
+    `status` is rejected at ingestion) -- exactly what tasks.json
+    legitimately looks like on a RESUMED run, so seed disk state that way
+    and skip planning entirely, the same way `_resume_point()` decides a
+    real engine process should. `handlers` must have no `"planning"` key.
+    """
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(root, handlers, **cfg_kw)
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
+    sup.iterations_used = 1
+    return sup, asyncio.run(sup._run_job_core())
+
+
 def _events(root: Path) -> list[dict]:
     p = root / "events.jsonl"
     if not p.exists():
@@ -236,13 +252,12 @@ def test_other_actionable_work_keeps_the_same_approach_and_the_worker_loop_conti
              _task(id=TASK_2, status="pending", title="the other thing",
                    successCriteria="the other thing works")]
 
-    sup, state = _run(root, {
-        "planning": [lambda s, p: (_write_plan(s, tasks), _ok("planned"))[1]],
+    sup, state = _run_resumed(root, {
         "worker": [lambda s, p: _unsatisfiable(TASK_1, "the two halves of "
                                               "this criterion contradict"),
                   _complete_task_2],
         "review": [_review_verified],
-    })
+    }, tasks)
 
     assert state == "succeeded", sup.run.read_status()
     doc = sup.run.read_tasks()
@@ -275,12 +290,11 @@ def test_nothing_left_actionable_routes_to_review_instead_of_stagnating(
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
-    sup, state = _run(root, {
-        "planning": [lambda s, p: (_write_plan(s, tasks), _ok("planned"))[1]],
+    sup, state = _run_resumed(root, {
         "worker": [lambda s, p: _unsatisfiable(
             TASK_1, "this criterion assumes hardware this box does not have")],
         "review": [_review_rejects],
-    }, max_approaches=1)
+    }, tasks, max_approaches=1)
 
     doc = sup.run.read_tasks()
     task = doc["tasks"][0]
@@ -304,11 +318,10 @@ def test_a_report_with_no_reason_is_a_contract_violation_and_aborts_loudly(
     tasks = [_task(status="in-progress")]
     bad = json.dumps({"verdict": "unsatisfiable", "task_id": TASK_1})
 
-    sup, state = _run(root, {
-        "planning": [lambda s, p: (_write_plan(s, tasks), _ok("planned"))[1]],
+    sup, state = _run_resumed(root, {
         "worker": [lambda s, p: _ok(f"no reason given\n{bad}")],
         "review": [_review_verified],
-    })
+    }, tasks)
 
     assert state == "aborted", sup.run.read_status()
     task = sup.run.read_tasks()["tasks"][0]
@@ -326,11 +339,10 @@ def test_an_unknown_task_id_is_also_a_contract_violation(tmp_path):
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
-    sup, state = _run(root, {
-        "planning": [lambda s, p: (_write_plan(s, tasks), _ok("planned"))[1]],
+    sup, state = _run_resumed(root, {
         "worker": [lambda s, p: _unsatisfiable("does-not-exist", "nope")],
         "review": [_review_verified],
-    })
+    }, tasks)
 
     assert state == "aborted", sup.run.read_status()
     assert "not found" in _log_messages(root)
@@ -347,11 +359,10 @@ def test_a_genuinely_silent_hat_still_fails_the_approach_after_three(
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
-    sup, state = _run(root, {
-        "planning": [lambda s, p: (_write_plan(s, tasks), _ok("planned"))[1]],
+    sup, state = _run_resumed(root, {
         "worker": [lambda s, p: _ok("I looked at this and made no progress")],
         "review": [_review_verified],
-    })
+    }, tasks)
 
     assert state == "failed", sup.run.read_status()
     assert sup.runner.calls["worker"] == 3      # type: ignore[attr-defined]
@@ -370,11 +381,10 @@ def test_the_approach_failure_event_names_the_outstanding_tasks_on_its_payload(
     tasks = [_task(status="in-progress"),
              _task(id=TASK_2, status="pending", title="another one")]
 
-    sup, state = _run(root, {
-        "planning": [lambda s, p: (_write_plan(s, tasks), _ok("planned"))[1]],
+    sup, state = _run_resumed(root, {
         "worker": [lambda s, p: _ok("stuck, no progress made")],
         "review": [_review_verified],
-    })
+    }, tasks)
 
     assert state == "failed"
     failure_events = [

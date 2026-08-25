@@ -82,12 +82,12 @@ def _ok(text: str) -> IterationResult:
 
 
 def _plan(run: RunDir, _prompt: str) -> IterationResult:
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [
+    atomic_write_json(run.root / "plan-proposal.json", {"version": 1, "tasks": [
         {"id": "001", "title": "impossible without a waiver",
-         "status": "pending",
          "successCriteria": "do something the worker cannot do alone"},
     ]})
-    return _ok("planned")
+    return _ok("planned\n" +
+              json.dumps({"proposal_path": "plan-proposal.json", "summary": "planned"}))
 
 
 def _worker_marks_failed(run: RunDir, _prompt: str) -> IterationResult:

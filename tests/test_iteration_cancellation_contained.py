@@ -184,10 +184,11 @@ async def test_a_cancellation_requested_from_outside_is_honoured(tmp_path):
 
 
 def _plan(run: RunDir) -> IterationResult:
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [
-        {"id": "001", "title": "t", "status": "pending",
+    atomic_write_json(run.root / "plan-proposal.json", {"version": 1, "tasks": [
+        {"id": "001", "title": "t",
          "successCriteria": "c"}]})
-    return _ok("planned")
+    return _ok("planned\n" +
+              json.dumps({"proposal_path": "plan-proposal.json", "summary": "planned"}))
 
 
 def _finish_task(run: RunDir) -> IterationResult:

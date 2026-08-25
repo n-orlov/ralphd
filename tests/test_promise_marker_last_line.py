@@ -248,9 +248,14 @@ def _signals(root: Path) -> list[str]:
 
 
 def _plan_two(sup: LoopSupervisor) -> IterationResult:
-    atomic_write_json(sup.run.tasks_file,
-                      _plan_doc(("001", "pending"), ("002", "pending")))
-    return _ok("planned two tasks")
+    atomic_write_json(sup.run.root / "plan-proposal.json",
+                      {"version": 1, "tasks": [
+                          {"id": "001", "title": "task 001", "successCriteria": "001 works"},
+                          {"id": "002", "title": "task 002", "successCriteria": "002 works"},
+                      ]})
+    return _ok("planned two tasks\n" +
+              json.dumps({"proposal_path": "plan-proposal.json",
+                         "summary": "planned two tasks"}))
 
 
 def _finish_one(sup: LoopSupervisor) -> IterationResult:
@@ -410,15 +415,22 @@ def test_an_earned_complete_is_progress_even_when_the_plan_did_not_change(tmp_pa
 
     root = tmp_path / "run"
     RunDir(root=root).update_status(state="starting")
-    sup = _supervisor(root, {"planning": plan_all_done,
-                             "worker": _steps(lambda s: _ok("read the notes"),
-                                              lambda s: _ok("re-read the notes"),
-                                              _signal_done),
+    # Task 120 (#60): a plan whose tasks are already `completed` at planning
+    # time cannot come through the real plan-proposal.json contract (a
+    # task's own `status` is rejected at ingestion) -- it is exactly what a
+    # RESUMED run's tasks.json legitimately looks like, so seed disk state
+    # that way and skip planning entirely, the same way `_resume_point()`
+    # decides a real engine process should.
+    sup = _supervisor(root, {"worker": _steps(lambda s: _ok("read the notes"),
+                                             lambda s: _ok("re-read the notes"),
+                                             _signal_done),
                              "review": _review_verified})
+    plan_all_done(sup)
+    sup.iterations_used = 1
     outcome = asyncio.run(sup._run_job_core())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" not in msgs, msgs
-    assert sup.runner.phases == ["planning", "worker", "worker", "worker", "review"]
+    assert sup.runner.phases == ["worker", "worker", "worker", "review"]
     assert _signals(root) == ["COMPLETE", "VERIFIED"]
     assert (outcome, sup.run.read_status()["verdict"]) == ("succeeded", "verified")
 

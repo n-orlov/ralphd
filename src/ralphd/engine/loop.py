@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from . import contracts
+from . import plan_ingestion
 from . import router
 from . import scheduler
 from . import state
@@ -2461,15 +2462,70 @@ class LoopSupervisor:
             self._accumulate_usage(result.usage, phase="router")
         return (result.final_text or ""), (result.usage or {})
 
+    async def _one_planning_attempt(self, extra: str):
+        """Run ONE `planning` iteration (with `extra` folded into the
+        prompt -- task 120's contract re-prompt carries the previous
+        attempt's specific validation errors here), retrying in place for
+        as long as it keeps hitting instant startup/infra failures -- an
+        agent process that never reached the model at all is not a genuine
+        "the plan proposal was rejected" situation, and must not be handed
+        to `plan_ingestion.enforce_plan_ingestion` as one of ITS attempts
+        (that budget is for genuine contract violations, not environment
+        flakiness). Returns the resolved `IterationResult`, or `None` once
+        `self._check_instant_failure` has tripped `self._abort_reason`
+        (`budget_left()` is False at that point; the caller's job is to
+        notice and stop, not to keep retrying).
+
+        This is exactly the retry shape `_step_planning` used inline before
+        task 120 split the "get one resolved attempt" concern (this method)
+        from the "is the attempt's payload a valid plan proposal" concern
+        (`plan_ingestion.enforce_plan_ingestion`, now the caller).
+        """
+        while True:
+            await self._gate()
+            presult = await self.run_iteration("planning", extra=extra)
+            if self._check_instant_failure(presult, self.iterations_used):
+                return None  # abort_reason set; budget_left() now False
+            if self._instant_failure_streak and self.budget_left():
+                continue
+            return presult
+
     async def _step_planning(self, skip_planning: bool) -> tuple:
         """The `planning` state. Guards: `instant_failure_streak` (self-loop,
-        handled by the inner retry `while True` without ever leaving this
-        method -- an in-place retry is not a state CHANGE), `empty_plan`
-        (-> replan) and `planning_produced_tasks` (-> worker). Returns
-        `("done", <state>)` on an off-budget grace-reviewed success,
-        `("tail",)` to fall straight to the terminal-failure/-abort tail
-        (budget ran out with no grace review, or an instant-failure streak
-        just tripped `self._abort_reason`), or `("advance", target, guard)`.
+        handled by `_one_planning_attempt`'s inner retry `while True`
+        without ever leaving this method -- an in-place retry is not a
+        state CHANGE), `empty_plan` (-> replan) and
+        `planning_produced_tasks` (-> worker). Returns `("done", <state>)`
+        on an off-budget grace-reviewed success, `("tail",)` to fall
+        straight to the terminal-failure/-abort tail (budget ran out with
+        no grace review, or an instant-failure streak just tripped
+        `self._abort_reason`), or `("advance", target, guard)`.
+
+        Task 120 (requirement C, #60 pillar 1): the planning hat no longer
+        writes `tasks.json` itself (fact 9) -- it drafts a file-borne
+        `plan-proposal.json` in the run's own scratch area
+        (`self.run.root`, the same directory the prompt's "Job context"
+        names as "Run state directory") and reports only a
+        pointer-plus-summary (`transitions.HAT_SCHEMAS["planning"]`) as its
+        final line. `plan_ingestion.enforce_plan_ingestion` -- already
+        implemented and unit-tested in isolation (task 011), just not
+        wired into a real iteration loop until now -- owns the whole
+        pointer-schema / proposal-shape / semantic-lint / ingestion
+        pipeline and the N-then-agent-fault re-prompt policy around it,
+        reusing `self.cfg.contract_retry_max` (the same knob the router
+        and every other contract already share). Its `respond` callback
+        below re-prompts the SAME approach's planning hat with the
+        previous attempt's specific errors folded into `extra` -- the
+        model genuinely sees what was wrong, exactly as any other contract
+        re-prompt does.
+
+        `enforce_plan_ingestion`'s own retry loop is synchronous (a plain
+        `respond(attempt, prior_errors) -> str | None` callable with no
+        `await` in its signature -- task 010's shape, reused verbatim
+        rather than re-derived for the file-borne case), so it runs off
+        the event loop via `asyncio.to_thread`; `respond` bridges back onto
+        THIS coroutine's own event loop with `run_coroutine_threadsafe`
+        rather than nesting a second event loop (which asyncio refuses).
         """
         approach = self._approach
         self.run.update_status(approach=approach)
@@ -2483,30 +2539,48 @@ class LoopSupervisor:
         if not skip_planning:
             self.run.emit("phase", phase="planning", approach=approach)
 
-            # Retry planning in place (same approach, task 059) for as long
-            # as it keeps hitting instant startup/infra failures -- an empty
-            # tasks.json produced by a crashed planning invocation is not a
-            # genuine "planning produced nothing useful" situation that
-            # should cost an approach; it's the same class of fault the
-            # worker loop's stagnation guard must not score either. This IS
-            # the table's `instant_failure_streak` self-loop (planning ->
-            # planning); it stays an in-process retry rather than a real
-            # dispatch-level revisit because nothing else changes between
-            # attempts.
-            while True:
-                await self._gate()
-                presult = await self.run_iteration("planning")
-                if self._check_instant_failure(presult, self.iterations_used):
-                    break  # abort_reason set; budget_left() now False
-                if self._instant_failure_streak and self.budget_left():
-                    continue
-                break
+            event_loop = asyncio.get_running_loop()
+
+            def respond(attempt: int, prior_errors):
+                # Once budget/abort has already been decided (by an
+                # earlier attempt's instant-failure streak), every further
+                # `enforce_plan_ingestion` attempt is a no-op "absent"
+                # response rather than another real subprocess spawn --
+                # the outer check below (`if not self.budget_left()`) is
+                # what actually stops the run; this just stops burning
+                # iterations once that outcome is already locked in.
+                if self._abort_reason is not None or not self.budget_left():
+                    return None
+                extra = ""
+                if prior_errors:
+                    extra = (
+                        "\n## Your previous plan-proposal.json was "
+                        "rejected\n\nFix every problem below and resubmit "
+                        "a corrected proposal (a fresh `proposal_path` "
+                        "pointer, same or a new file):\n"
+                        + "\n".join(f"- {e}" for e in prior_errors))
+                presult = asyncio.run_coroutine_threadsafe(
+                    self._one_planning_attempt(extra), event_loop).result()
+                if presult is None:
+                    return None
+                return last_nonblank_line(presult.final_text)
+
+            ingestion = await asyncio.to_thread(
+                plan_ingestion.enforce_plan_ingestion,
+                respond,
+                max_retries=self.cfg.contract_retry_max,
+                read_proposal=plan_ingestion.file_reader(self.run.root),
+                state=self.run,
+            )
             if not self.budget_left():
                 return ("tail",)
-            if not self.run.read_tasks().get("tasks"):
-                self.run.emit("log", level="error",
-                              message="planning produced no tasks.json")
+            if not ingestion.ok:
+                self.run.emit(
+                    "log", level="error",
+                    message=("planning produced no usable plan proposal: "
+                              + "; ".join(ingestion.errors)))
                 return ("advance", "replan", "empty_plan")
+            self.run.write_tasks(ingestion.tasks_doc)
 
         # Task 008: establish (or backfill, for a run resumed from before
         # this feature existed) a criteriaFingerprint baseline for every

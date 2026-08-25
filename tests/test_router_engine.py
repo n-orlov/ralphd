@@ -82,11 +82,12 @@ class _ScriptedAgent:
 
 
 def _plan(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": [
-        {"id": "001", "title": "do the thing", "status": "pending",
+    atomic_write_json(sup.run.root / "plan-proposal.json", {"version": 1, "tasks": [
+        {"id": "001", "title": "do the thing",
          "successCriteria": "the thing is done"},
     ]})
-    return _ok("planned")
+    return _ok("planned\n" +
+              json.dumps({"proposal_path": "plan-proposal.json", "summary": "planned"}))
 
 
 def _complete_task(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
