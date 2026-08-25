@@ -85,17 +85,30 @@ Design invariants:
   exhaustion, an explicit abort, or an unrecoverable engine bug ends the job.
   The runner must never leave an orphaned agent process behind (kill the
   process group on any exit path).
-- **Task status transitions are visible live, not just at iteration end.**
-  The worker prompt makes flipping the picked task to `in-progress` in
-  `tasks.json` the mandatory first write of the iteration — before any other
-  file edit or shell command. While the agent subprocess for a worker
-  iteration is running, the engine runs a lightweight background poller
-  (`LoopSupervisor._poll_task_changes`, ~4/s) that re-reads `tasks.json` and
-  emits `task` events for any status change immediately, instead of only
-  once via the post-iteration `_emit_task_changes()` call. An operator
-  watching `GET /events` or `GET /tasks` (or `ralphctl`) therefore sees
-  `pending -> in-progress` for the exact task being worked while that
-  iteration is still in flight, not only after it ends.
+- **In-step liveness is the log stream; task status changes only at a step
+  transition (task 022, requirement F).** A task's `status` field never
+  changes while a hat's subprocess is executing — `_emit_task_changes()`
+  runs only at the harness's own at-transition writes (a worker/verify
+  iteration ending, a vigilant claim relabelled, a verify verdict applied),
+  never on a timer. Before task 022, a 0.25s background poller
+  (`LoopSupervisor._poll_task_changes`) re-read `tasks.json` while the
+  agent subprocess for a worker iteration was still running, so a status
+  written mid-iteration (the worker prompt's old "flip to `in-progress`
+  first" instruction) surfaced as a `task` event immediately. That poller
+  is retired: `GET /tasks` already re-reads `tasks.json` from disk on
+  every call regardless of any poll, so an operator's `GET /tasks` /
+  `ralphctl tasks` view was never actually dependent on it; the one real
+  loss is a `task` *event* for a transient in-iteration state, which is
+  now never observed at all (`_emit_task_changes()`'s diff jumps straight
+  from the status before the iteration to the status after it). What an
+  operator watching a long-running iteration needs instead — proof the
+  run is still alive and doing something, not stalled — is what
+  `GET /logs?follow` (tailing `output.jsonl` as the agent subprocess
+  writes it) already provided independently of the poller, and continues
+  to provide with no change. See `artifacts/reports/poll-retirement.md`
+  for the itemised before/after and the test proving the hub's run-detail
+  view keeps updating (never blank) for the length of a long worker
+  iteration purely from the log stream.
 
 ### The declared transition table (task 008/014/016, requirement B)
 

@@ -1147,14 +1147,26 @@ def test_get_logs_follow_streams_across_iteration_boundaries(engine_factory):
 
 
 def test_task_in_progress_visible_while_worker_iteration_running(engine_factory):
-    """The engine must surface pending -> in-progress task transitions as
-    "task" events (and via GET /tasks) at the moment they happen, not only
-    once the whole worker iteration has finished (PRD/task 047: an operator
-    watching events/ralphctl during an iteration must see the exact task
-    being worked). The stub worker writes in-progress, sleeps (simulating
-    real work), then writes completed -- giving this test a real window in
-    which the iteration is still running (no meta.json endedAt yet) but
-    tasks.json already shows in-progress."""
+    """`GET /tasks` re-reads `tasks.json` from disk on every call, so an
+    operator watching `ralphctl tasks` (or the hub) during an iteration
+    sees the exact task being worked *while the iteration is still
+    running* -- with no engine-side poll required (task 022, requirement
+    F: the engine's own `_poll_task_changes`, the 0.25s background poller
+    that used to re-read `tasks.json` purely to turn this into a live
+    `task` *event*, is retired). The stub worker writes in-progress,
+    sleeps (simulating real work), then writes completed -- giving this
+    test a real window in which the iteration is still running (no
+    meta.json endedAt yet) but tasks.json already shows in-progress.
+
+    The second half proves the poller is actually gone, not merely
+    unused: task status changes are visible via the "task" event stream
+    only at a step transition now (requirement F's rule -- a status never
+    changes mid-hat), so the transient in-progress state that only ever
+    existed *during* this worker iteration is never itself observed as a
+    discrete `task` event at all; the one `task` event this iteration
+    produces jumps straight from `pending` to `completed`, emitted only
+    once the iteration has fully ended (`_emit_task_changes()` at the
+    post-iteration call site, strictly after `iteration.end`)."""
     e = engine_factory(job={"on_complete": "idle"},
                        stub_env={"STUB_SLEEP": "2", "STUB_TASKS": "1"})
     e.wait_api()
@@ -1184,26 +1196,40 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
         f"never observed task 001 as in-progress while its worker iteration "
         f"was still running; last statuses seen: {statuses}")
 
-    # -- the "task" event stream carries the transition live, before the
-    # iteration.end event for the same iteration -----------------------------
+    e.wait_state(("succeeded",))
+
+    # -- no "task" event for the transient in-progress state was ever
+    # emitted (the poller that used to produce it is gone); the one "task"
+    # event this run produces for task 001 jumps pending -> completed,
+    # and it lands strictly after iteration 2's own "iteration.end" -------
     req = urllib.request.Request(f"http://127.0.0.1:{e.port}/events?since=0")
-    saw_task_in_progress_idx = saw_iteration_2_end_idx = None
+    task_events_for_001 = []
+    saw_iteration_2_end_idx = None
     with urllib.request.urlopen(req, timeout=10) as resp:
         for idx, raw in enumerate(resp):
             line = raw.decode().strip()
             if not line.startswith("data: "):
                 continue
             obj = json.loads(line[6:])
-            if (obj.get("type") == "task" and obj.get("taskId") == "001"
-                    and obj.get("newStatus") == "in-progress"):
-                saw_task_in_progress_idx = idx
-            if (obj.get("type") == "iteration.end" and obj.get("number") == 2):
+            if obj.get("type") == "task" and obj.get("taskId") == "001":
+                task_events_for_001.append((idx, obj))
+            if (obj.get("type") == "iteration.end" and obj.get("number") == 2
+                    and saw_iteration_2_end_idx is None):
                 saw_iteration_2_end_idx = idx
+            if obj.get("type") == "state" and obj.get("state") in (
+                    "succeeded", "failed", "aborted"):
+                # /events replays the log then holds the connection open
+                # with a keepalive forever (steering note 004) -- it never
+                # ends on its own, so this reader must break on the
+                # terminal state event itself rather than rely on EOF.
                 break
-    assert saw_task_in_progress_idx is not None
+    assert not any(obj.get("newStatus") == "in-progress"
+                   for _idx, obj in task_events_for_001), task_events_for_001
+    completed_events = [(idx, obj) for idx, obj in task_events_for_001
+                        if obj.get("newStatus") == "completed"]
+    assert completed_events, task_events_for_001
     assert saw_iteration_2_end_idx is not None
-    assert saw_task_in_progress_idx < saw_iteration_2_end_idx
+    assert all(idx > saw_iteration_2_end_idx for idx, _obj in completed_events)
 
-    e.wait_state(("succeeded",))
     e.api("POST", "/shutdown")
     assert e.proc.wait(timeout=10) == 0

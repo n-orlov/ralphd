@@ -594,6 +594,59 @@ def test_steering_form_submit_creates_steering_file(tmp_path, pw, live):
     assert any("browser e2e steering message" in f.read_text() for f in steering_files)
 
 
+def test_run_detail_keeps_updating_through_a_long_worker_iteration(tmp_path, pw, live):
+    """Task 022 (requirement F): before this task, the engine ran a
+    0.25s background poller (`_poll_task_changes`) purely so a task-status
+    transition written mid-iteration surfaced as a live `task` event; that
+    poller is retired. This is the black-box proof that retiring it did
+    not cost the hub's run-detail view its in-step liveness during a long
+    worker iteration: the log tail (`#logbox`, server-rendered from
+    `output.jsonl` via the shared `log_render` module) and the task table
+    (`#task-box`, re-read from `tasks.json` on every `GET /tasks`) both
+    stay populated -- never blank, never reverting to the empty-state
+    placeholders -- across a worker iteration long enough (`STUB_SLEEP`)
+    to span several of the hub's own `REFRESH_MS` (4s) polls, with no
+    engine-side poller involved at all.
+    """
+    run = live(run_id="browser-liveness",
+               job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},
+               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "9"})
+    run.wait_api()
+
+    server = UiServer(run.registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/{run.run_id}")
+        # wait for the worker iteration itself (iteration 2 -- iteration 1
+        # is planning) to actually start before sampling: the task table has
+        # at least one row only once planning has finished and the stub
+        # worker's long STUB_SLEEP window has begun, so this is the signal
+        # that the samples below fall inside that window rather than before it.
+        _wait_for_count_ge(
+            pw, "document.querySelectorAll('#task-box tbody tr').length", 1, timeout=30)
+
+        samples = []
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            log_text = pw.eval_js("document.getElementById('logbox').innerText")
+            task_text = pw.eval_js("document.getElementById('task-box').innerText")
+            samples.append((log_text, task_text))
+            assert log_text.strip(), "log tail went blank mid-iteration"
+            assert task_text.strip(), "task table went blank mid-iteration"
+            assert "(no tasks)" not in task_text, (
+                f"task table reverted to the empty placeholder mid-iteration: "
+                f"{task_text!r}")
+            time.sleep(0.3)
+
+        assert len(samples) >= 4, (
+            f"not enough samples taken during the sleep window: {len(samples)}")
+
+        pw.screenshot(SCREENSHOTS_DIR / "05-run-detail-liveness.png")
+    finally:
+        run.wait_terminal(timeout=60)
+        server.stop()
+
+
 def test_module_reports_playwright_cli_present():
     """Sanity check the environment actually has the tool (this suite's
     success criteria requires the tests be run for real, not skipped)."""

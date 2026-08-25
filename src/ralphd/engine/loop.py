@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import json
 import logging
@@ -1085,65 +1084,66 @@ class LoopSupervisor:
         # of hanging out the full iteration timeout.
         startup_timeout_s = (min(self.cfg.infra_startup_timeout_s, timeout)
                              if phase in self.INFRA_RETRY_PHASES else None)
-        # Poll tasks.json while the agent subprocess is running so status
-        # transitions (e.g. pending -> in-progress) are emitted as "task"
-        # events the moment the agent writes them, not only after the whole
-        # iteration finishes (an operator watching events/ralphctl must see
-        # the exact task being worked while it's still in flight).
-        poll_task = asyncio.create_task(self._poll_task_changes())
+        # Task 022 (requirement F): tasks.json status transitions used to
+        # be surfaced live, while the agent subprocess was still running,
+        # by a 0.25s background poller (`_poll_task_changes`, retired here).
+        # In-step liveness is now the log stream alone (`GET /logs?follow`,
+        # which tails `output.jsonl` as the subprocess writes it) -- see
+        # docs/architecture.md and artifacts/reports/poll-retirement.md for
+        # what the poller used to provide and why the log stream already
+        # covers it. Task-status "task" events (`_emit_task_changes()`,
+        # still called below and at the harness's own at-transition writes)
+        # now only ever fire once an iteration has fully ended, matching
+        # requirement F's rule that a task's status changes only at a
+        # step transition, never while a hat is executing.
         try:
-            try:
-                result = await self.runner.run(
-                    prompt, itdir / "output.jsonl", model=model,
-                    thinking=self.cfg.thinking, timeout_s=timeout,
-                    extra_env=current_env(), startup_timeout_s=startup_timeout_s)
-            except BaseException as exc:
-                # THE CONTAINMENT BOUNDARY for an iteration (task 011, #28).
-                #
-                # Where: this one `await`, the narrowest scope that covers
-                # everything the agent subprocess and its plumbing can throw.
-                # Why here and not further out: the code BELOW this block is
-                # what makes a failed attempt legible -- meta.json's
-                # endedAt/faultClass, iteration.end, the usage accounting,
-                # the infra refund. A guard placed around the whole run (see
-                # `except Exception` in _run_job_core) can only end the job
-                # with an "engine error"; a guard placed here turns any
-                # explosion into an ordinary recorded failed iteration and
-                # lets the loop carry on.
-                #
-                # Why BaseException and not Exception: task 010's defect was
-                # an `asyncio.CancelledError` leaking out of the runner's own
-                # timeout plumbing, and CancelledError is a BaseException --
-                # so `except Exception` here could not see it and one
-                # iteration blowing its timeout took the whole engine down.
-                # The narrow catch was the second half of that bug: the
-                # runner is fixed, but nothing structural stopped the next
-                # stray cancellation from ending the job, so the boundary is
-                # widened deliberately rather than left to trust.
-                #
-                # Two things are deliberately NOT contained:
-                #  * KeyboardInterrupt / SystemExit -- the engine is being
-                #    shut down by its supervisor and must unwind, not
-                #    swallow it and start another iteration;
-                #  * a cancellation that was genuinely requested on THIS
-                #    task from outside (`cancelling()` counts cancel() calls
-                #    on us, and is 0 for a CancelledError that merely leaked
-                #    out of inner plumbing) -- ralphctl/asyncio asked this
-                #    coroutine to stop, so honour it.
-                cur = asyncio.current_task()
-                if isinstance(exc, (KeyboardInterrupt, SystemExit)) or (
-                        isinstance(exc, asyncio.CancelledError)
-                        and cur is not None and cur.cancelling() > 0):
-                    raise
-                # an engine-side iteration failure (stream error, OS error,
-                # a stray cancellation) must cost one iteration, not the
-                # whole job
-                result = IterationResult(exit_code=None)
-                result.error_message = f"engine iteration failure: {exc!r}"
-        finally:
-            poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poll_task
+            result = await self.runner.run(
+                prompt, itdir / "output.jsonl", model=model,
+                thinking=self.cfg.thinking, timeout_s=timeout,
+                extra_env=current_env(), startup_timeout_s=startup_timeout_s)
+        except BaseException as exc:
+            # THE CONTAINMENT BOUNDARY for an iteration (task 011, #28).
+            #
+            # Where: this one `await`, the narrowest scope that covers
+            # everything the agent subprocess and its plumbing can throw.
+            # Why here and not further out: the code BELOW this block is
+            # what makes a failed attempt legible -- meta.json's
+            # endedAt/faultClass, iteration.end, the usage accounting,
+            # the infra refund. A guard placed around the whole run (see
+            # `except Exception` in _run_job_core) can only end the job
+            # with an "engine error"; a guard placed here turns any
+            # explosion into an ordinary recorded failed iteration and
+            # lets the loop carry on.
+            #
+            # Why BaseException and not Exception: task 010's defect was
+            # an `asyncio.CancelledError` leaking out of the runner's own
+            # timeout plumbing, and CancelledError is a BaseException --
+            # so `except Exception` here could not see it and one
+            # iteration blowing its timeout took the whole engine down.
+            # The narrow catch was the second half of that bug: the
+            # runner is fixed, but nothing structural stopped the next
+            # stray cancellation from ending the job, so the boundary is
+            # widened deliberately rather than left to trust.
+            #
+            # Two things are deliberately NOT contained:
+            #  * KeyboardInterrupt / SystemExit -- the engine is being
+            #    shut down by its supervisor and must unwind, not
+            #    swallow it and start another iteration;
+            #  * a cancellation that was genuinely requested on THIS
+            #    task from outside (`cancelling()` counts cancel() calls
+            #    on us, and is 0 for a CancelledError that merely leaked
+            #    out of inner plumbing) -- ralphctl/asyncio asked this
+            #    coroutine to stop, so honour it.
+            cur = asyncio.current_task()
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)) or (
+                    isinstance(exc, asyncio.CancelledError)
+                    and cur is not None and cur.cancelling() > 0):
+                raise
+            # an engine-side iteration failure (stream error, OS error,
+            # a stray cancellation) must cost one iteration, not the
+            # whole job
+            result = IterationResult(exit_code=None)
+            result.error_message = f"engine iteration failure: {exc!r}"
 
         # Task 004 (#11): record the engine's own fault verdict next to the
         # raw signals it was derived from -- null for a clean iteration,
@@ -1356,20 +1356,15 @@ class LoopSupervisor:
                 self.run.emit("task", taskId=tid, oldStatus=old, newStatus=status)
         self._last_task_snapshot = tasks
 
-    async def _poll_task_changes(self, interval: float = 0.25) -> None:
-        """Background poller run alongside the agent subprocess: emits
-        task status-transition events (e.g. pending -> in-progress) the
-        moment tasks.json changes on disk, instead of only once the whole
-        iteration has finished. Cancelled by run_iteration() as soon as the
-        subprocess exits; tolerant of transient read/parse errors since the
-        agent may be mid-write.
-        """
-        while True:
-            try:
-                self._emit_task_changes()
-            except (OSError, ValueError):
-                pass
-            await asyncio.sleep(interval)
+    # Task 022 (requirement F): `_poll_task_changes` -- a 0.25s background
+    # poller that ran alongside the agent subprocess re-reading tasks.json
+    # so a status transition written mid-iteration (e.g. pending ->
+    # in-progress) surfaced as a "task" event immediately, instead of only
+    # once the whole iteration finished -- is retired. See
+    # artifacts/reports/poll-retirement.md for what it used to provide and
+    # why the log stream (`GET /logs?follow`) already covers in-step
+    # liveness without it; `_emit_task_changes()` above is still called,
+    # but only at the harness's own at-transition writes (never on a timer).
 
     # -- budget/limits -------------------------------------------------------
     @property
