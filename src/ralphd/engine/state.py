@@ -1578,10 +1578,29 @@ def task_blocks_completion(task: dict) -> bool:
     """True iff this task record must stop a COMPLETE signal being honoured.
 
     A task with no status at all blocks, same rule as `task_is_actionable`: an
-    unreadable record must never look finished."""
+    unreadable record must never look finished.
+
+    `awaiting-validation` deliberately does NOT block, even though it is
+    outside `TASK_COMPLETION_STATUSES` (task 025's counts and every other
+    surface must still show it as its own thing, distinct from `validated`).
+    By the time this runs, this pass's `_step_worker` has already tried
+    verify on every such task -- pending_verify is drained synchronously,
+    same pass, before this check ever sees the record (task 020) -- so a task
+    still sitting here is not "unverified because nobody looked", it is
+    either the negative-verdict paths (`validation-failed`, `failed`, both
+    still outside this set and still actionable/blocking respectively) or
+    verify tried and could not reach ANY verdict at all (task 050: retries on
+    a transient provider/infra error, exhausted). Pre-020, that ambiguity
+    had nowhere else to live and was folded into `completed` itself, which
+    never blocked a COMPLETE signal either -- an infra fault must not be able
+    to strand a run in the stagnation guard any more than #33's `failed`
+    tasks can (task 024's same review-gets-a-look reasoning, just for a
+    verdict nobody managed to render rather than one that came back
+    negative)."""
     if not isinstance(task, dict):
         return True
-    return task.get("status", "pending") not in TASK_COMPLETION_STATUSES
+    return task.get("status", "pending") not in (
+        TASK_COMPLETION_STATUSES + ("awaiting-validation",))
 
 # Task 025 (#33): how the two meanings are COUNTED, and how they are SPELLED.
 #
@@ -3422,58 +3441,85 @@ class RunDir:
         `/status` task counts, `ralphctl tasks`, the hub table."""
         return read_tasks_doc(self.root)
 
-    # -- vigilant-mode verification tracking (task 052) -------------------
-    # A record, engine-owned and never touched by the agent (unlike
-    # tasks.json), of which task ids have already received a passing
-    # ("taskVerified") verify iteration under vigilant mode. This is what
-    # lets a resumed engine tell "this task is still 'completed' because it
-    # was already verified" apart from "this task is still 'completed'
-    # because the prior process crashed between the worker iteration that
-    # completed it and the verify iteration that was supposed to check it"
-    # -- a per-process before/after tasks.json diff can't distinguish those
-    # two cases across a crash/resume boundary, since both leave the task
-    # showing status "completed" in the very first snapshot the new process
-    # ever reads.
-    # Entries are stored **approach-namespaced** on disk (`"2:001"`), because
-    # every approach's planning pass rewrites tasks.json renumbering its tasks
-    # from "001". A flat list of bare ids therefore has approach 2's task 001
-    # colliding with approach 1's already-verified task 001, so every completed
-    # task in every approach after the first reads as already verified and
-    # `pending_verify` computes empty forever -- silently disabling per-task
-    # verification for exactly the corrective approaches that most need it
-    # (issue #29). The approach number is engine-owned status, so the key stays
-    # stable across crash/resume, which is the whole point of the file.
+    # -- vigilant-mode verification: task record, not a sidecar (task 020) -
+    # Through v0.8 this was a separate file, engine-owned and never touched
+    # by the agent, of which task ids had already received a passing
+    # ("taskVerified") verify iteration under vigilant mode -- what let a
+    # resumed engine tell "this task is still 'completed' because it was
+    # already verified" apart from "... because the prior process crashed
+    # between the worker iteration that completed it and the verify
+    # iteration that was supposed to check it", since a per-process
+    # before/after tasks.json diff can't distinguish those two cases across
+    # a crash/resume boundary (both leave the task reading "completed" in
+    # the very first snapshot the new process ever sees). Entries were
+    # stored **approach-namespaced** (`"2:001"`) because every approach's
+    # planning pass rewrites tasks.json renumbering its tasks from "001", so
+    # a flat list of bare ids let approach 2's task 001 collide with
+    # approach 1's already-verified task 001 (issue #29).
+    #
+    # Requirement F bullet 4 folds that whole role into the task record
+    # itself: `LoopSupervisor._relabel_vigilant_claims` and `_verify_task`
+    # (`engine/loop.py`) write the vigilant mini-FSM's own `awaiting-
+    # validation` / `validated` statuses directly onto each task, so
+    # "already verified" and "still needs verification" are just that
+    # task's `status` field -- no second file to keep in sync, and #29's
+    # property holds for free: a later approach's tasks.json is a
+    # completely fresh document (renumbered from "001", no prior
+    # `status`), so it can never be misread as inheriting an earlier
+    # approach's `validated` task.
     @property
     def vigilant_verified_file(self) -> Path:
+        """The pre-0.9 sidecar's path -- read-only now, and only by
+        `migrate_legacy_vigilant_verified()` below, for a run dir that
+        predates the fold."""
         return self.root / "vigilant-verified.json"
 
     def current_approach(self) -> int:
-        """The approach number this run is on -- engine-owned status, so it is
-        stable across crash/resume. THE namespace both `read_verified_tasks()`
-        and `mark_task_verified()` key entries by; public since task 026, whose
-        in-process mirror of the record has to build the very same key."""
+        """The approach number this run is on -- engine-owned status, so it
+        is stable across crash/resume. Used by the legacy-sidecar migration
+        below (and, historically, by the record it is migrating away
+        from)."""
         return self.read_status().get("approach") or 1
 
-    def read_verified_tasks(self) -> set[str]:
-        """Bare ids already verified **in the current approach**. Unprefixed
-        entries are read as approach 1's, so a run whose file predates the
-        namespacing does not re-verify approach 1's work on resume."""
+    def migrate_legacy_vigilant_verified(self) -> None:
+        """One-way migration off the pre-0.9 `vigilant-verified.json`
+        sidecar (task 020), for a run dir an older engine build already
+        started. A no-op the instant it has run once: it deletes the
+        sidecar after folding it, so a resumed run dir never has one to
+        migrate a second time, and a run dir that never had vigilant mode
+        on (no sidecar ever written) returns immediately.
+
+        Every task still sitting at the legacy vigilant CLAIM state
+        `"completed"` becomes either `"validated"` (the sidecar's
+        approach-namespaced record says THIS approach's copy of it already
+        passed a verify iteration) or `"awaiting-validation"` (it does
+        not -- exactly the crash-between-completion-and-verification
+        window guard 4 protects, now expressed as the task's own status
+        instead of the absence of a sidecar entry, so the resumed engine's
+        ordinary `pending_verify` computation picks it back up unchanged).
+        """
+        if not self.vigilant_verified_file.exists():
+            return
         approach = self.current_approach()
-        verified: set[str] = set()
+        verified_ids: set[str] = set()
         for entry in read_json(self.vigilant_verified_file, []):
             prefix, sep, task_id = str(entry).partition(":")
             if not sep:
                 if approach == 1:
-                    verified.add(prefix)
+                    verified_ids.add(prefix)
                 continue
             if prefix == str(approach):
-                verified.add(task_id)
-        return verified
-
-    def mark_task_verified(self, task_id: str) -> None:
-        verified = {str(e) for e in read_json(self.vigilant_verified_file, [])}
-        verified.add(f"{self.current_approach()}:{task_id}")
-        atomic_write_json(self.vigilant_verified_file, sorted(verified))
+                verified_ids.add(task_id)
+        tasks_data = self.read_tasks()
+        changed = False
+        for t in tasks_data.get("tasks", []):
+            if t.get("status") != "completed":
+                continue
+            t["status"] = "validated" if t["id"] in verified_ids else "awaiting-validation"
+            changed = True
+        if changed:
+            self.write_tasks(tasks_data)
+        self.vigilant_verified_file.unlink()
 
     # -- resume (PRD req 16) ---------------------------------------------
     def max_iteration_number(self) -> int:

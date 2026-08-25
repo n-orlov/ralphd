@@ -485,9 +485,10 @@ def test_vigilant_happy_path(engine_factory):
         assert "verifiedTask" in vm
         assert vm["verifyOutcome"] == "pass"
 
-    # All tasks completed
+    # All tasks completed AND vigilant-validated (task 020: the terminal is
+    # `validated`, not the raw worker claim `completed`)
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
-    assert all(t["status"] == "completed" for t in tasks)
+    assert all(t["status"] == "validated" for t in tasks)
 
     # taskVerified signal emitted once per task
     events_text = (e.run_dir / "events.jsonl").read_text()
@@ -668,7 +669,7 @@ def test_vigilant_verify_fail_then_recovery(engine_factory):
 
     # The retried task (task 1) should show validationAttempts==1 and validationNotes
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
-    assert all(t["status"] == "completed" for t in tasks)
+    assert all(t["status"] == "validated" for t in tasks)
     retried = [t for t in tasks if t.get("validationAttempts", 0) >= 1]
     assert len(retried) == 1, "exactly one task should have been retried"
     rt = retried[0]
@@ -710,7 +711,7 @@ def test_criteria_edited_after_validation_failure_is_flagged(engine_factory):
 
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
     assert len(tasks) == 2
-    assert all(t["status"] == "completed" for t in tasks)
+    assert all(t["status"] == "validated" for t in tasks)
 
     retried = [t for t in tasks if t.get("validationAttempts", 0) >= 1]
     assert len(retried) == 1, "exactly one task should have been retried"
@@ -763,11 +764,11 @@ def test_vigilant_verify_transient_error_retries(engine_factory):
     assert verify_metas[1]["verifyOutcome"] == "pass"
 
     # The task was never scored as a validation failure: status went
-    # straight to completed, validationAttempts was never incremented, and
-    # no validationNotes were ever set.
+    # straight to validated (task 020), validationAttempts was never
+    # incremented, and no validationNotes were ever set.
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
     assert len(tasks) == 1
-    assert tasks[0]["status"] == "completed"
+    assert tasks[0]["status"] == "validated"
     assert tasks[0].get("validationAttempts", 0) == 0
     assert not tasks[0].get("validationNotes")
 
@@ -816,9 +817,15 @@ def test_vigilant_verify_error_exhausts_retries_without_failing_task(engine_fact
     assert len(verify_metas) == 4
     assert all(m["verifyOutcome"] == "error" for m in verify_metas)
 
+    # Task 020: the vigilant claim state the worker left behind was
+    # relabelled `awaiting-validation` before verify ever ran; verify never
+    # reached a verdict (infra error, retries exhausted), so that is
+    # EXACTLY where it stays -- "leaving the task's status ... exactly as
+    # the worker left it" now reads as this docstring's promise about the
+    # vigilant claim state, not the pre-020 literal `completed`.
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
     assert len(tasks) == 1
-    assert tasks[0]["status"] == "completed"
+    assert tasks[0]["status"] == "awaiting-validation"
     assert tasks[0].get("validationAttempts", 0) == 0
     assert not tasks[0].get("validationNotes")
 

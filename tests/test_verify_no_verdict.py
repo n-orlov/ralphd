@@ -199,9 +199,12 @@ def test_an_engine_ended_verify_leaves_the_task_byte_for_byte_unchanged(
 def test_an_engine_ended_verify_does_not_mark_the_task_verified(
         no_verdict_verify):
     sup, _before, _verified, _shape = no_verdict_verify
-    record = sup.run.root / "vigilant-verified.json"
-    verified_ids = json.loads(record.read_text()) if record.exists() else []
-    assert "007" not in json.dumps(verified_ids)
+    # Task 020: the verified terminal write IS the record now -- no separate
+    # sidecar to check. The previous test already asserted the raw bytes are
+    # byte-for-byte unchanged; confirm status specifically never became
+    # `validated`, and no taskVerified signal fired either.
+    t = json.loads(sup.run.tasks_file.read_bytes())["tasks"][0]
+    assert t["status"] != "validated"
     assert not [ev for ev in _events(sup.run.root)
                 if ev.get("signal") == "taskVerified"]
 

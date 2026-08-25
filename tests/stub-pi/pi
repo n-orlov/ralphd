@@ -189,6 +189,15 @@ prompt = sys.stdin.read()
 run = os.environ["STUB_RUN_DIR"]
 tasks_file = os.path.join(run, "tasks.json")
 
+# Task 020: the vigilant mini-FSM's terminal (`validated`) is as "done" as
+# the non-vigilant terminal (`completed`) for every purpose the stub itself
+# decides on -- picking a dependency as satisfied, and deciding whether the
+# whole plan is finished and COMPLETE is honestly earned. Mirrors
+# `engine.state.TASK_COMPLETION_STATUSES` without importing the engine (the
+# stub is a black-box double, task 052's rule -- fact 3).
+_TASK_SATISFIES_DEPENDENCY = ("completed", "validated")
+_PLAN_FULLY_RESOLVED_STATUSES = _TASK_SATISFIES_DEPENDENCY + ("skipped",)
+
 # The model this invocation reports having used, pi-style: a `provider` plus a
 # provider-side `model` id on every assistant message_end (task 012, #14).
 # `--model provider/id` from the engine is the default; STUB_MODEL overrides
@@ -614,7 +623,8 @@ elif "Role: Worker" in prompt:
             if t["status"] != "pending":
                 continue
             deps = t.get("dependsOn") or []
-            unmet = [dep for dep in deps if status_by_id.get(dep) != "completed"]
+            unmet = [dep for dep in deps
+                     if status_by_id.get(dep) not in _TASK_SATISFIES_DEPENDENCY]
             if unmet:
                 dead = [dep for dep in unmet if status_by_id.get(dep) in ("failed", "skipped")]
                 if dead:
@@ -659,7 +669,7 @@ elif "Role: Worker" in prompt:
     if steering_marker in prompt:
         with open(marker("saw-steering"), "a") as f:
             f.write(prompt[prompt.rindex(steering_marker):][:2000])
-    if all(t["status"] == "completed" for t in d["tasks"]):
+    if all(t["status"] in _PLAN_FULLY_RESOLVED_STATUSES for t in d["tasks"]):
         text = "everything finished"
         if echo_secrets:
             text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"

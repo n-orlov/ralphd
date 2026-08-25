@@ -89,20 +89,6 @@ class LoopSupervisor:
         # fresh run dir) so a restarted engine numbers its next iteration
         # N+1 instead of reusing/duplicating past numbers (PRD req 16).
         self.iterations_used = run.max_iteration_number()
-        # Task 026 (requirement N, carried from the closed #29): whether THIS
-        # process is continuing somebody else's run dir -- captured here,
-        # while iterations_used still holds only what was already on disk,
-        # because _resuming_existing_run_dir() answers about the run dir as it
-        # is *now* and starts returning True for every process as soon as it
-        # records its own first iteration. Read only by
-        # _warn_if_verify_gate_empty(), to say whether an unverified-by-this-
-        # process task has a benign explanation.
-        self._resumed_at_start = self._resuming_existing_run_dir()
-        # Task 026: the approach-namespaced ids (`"2:001"`, the key
-        # vigilant-verified.json uses) that THIS process saw a passing verify
-        # iteration for, plus the once-per-process latch for the warning.
-        self._verified_this_process: set[str] = set()
-        self._verify_gate_warned = False
         self._pause = asyncio.Event()
         self._pause.set()  # set = not paused
         # Task 015 (#5): the operator's "retry now" doorbell, shaped exactly
@@ -2416,28 +2402,33 @@ class LoopSupervisor:
             self._warn_if_batched(tasks_before, tasks_after)
 
             if self.cfg.vigilant:
-                # Do NOT gate this on a before/after diff scoped to this
-                # single run_iteration() call (task 052): if the engine
-                # crashed after a prior worker iteration completed a task
-                # but before (or during) its verify iteration, a resumed
-                # process's very first snapshot already shows that task as
-                # "completed", so a before/after diff taken *this* process
-                # would never see it as newly-completed again and its
-                # mandatory verification would be silently skipped forever.
-                # Instead, consult the engine-owned, disk-persisted
-                # verified-task record (survives crash/resume) -- anything
-                # currently "completed" that isn't in it still needs a
-                # verify iteration, whether it just completed in this
-                # process or was left over from a killed prior one.
-                verified_ids = self.run.read_verified_tasks()
+                # Task 020 (requirement F bullet 4): the vigilant claim
+                # state IS `awaiting-validation` on disk now -- the harness
+                # relabels a worker's raw `completed` write the moment this
+                # iteration's subprocess exits, strictly before anything
+                # else below reads tasks.json again, so "completed" never
+                # rests as vigilant's terminal even for one extra read.
+                # This is what used to need the separate `vigilant-
+                # verified.json` sidecar (task 052/#29): a crash between a
+                # worker iteration's completion write and the corresponding
+                # verify iteration used to leave both processes' first
+                # tasks.json snapshot reading identically "completed", so a
+                # same-process before/after diff couldn't tell "needs
+                # verification" from "already verified" across the crash
+                # boundary -- only a second, disk-persisted record could.
+                # Now the record IS the task itself: a crash leaves the
+                # task exactly at `awaiting-validation` (never advanced to
+                # `validated`, which only `_verify_task`'s own passing
+                # write can do), so guard 4's property -- resume finds it
+                # and verifies it -- holds from the task's own `status`
+                # field, asserted from disk state, with no sidecar and no
+                # before/after diff at all.
+                tasks_after = self._relabel_vigilant_claims(tasks_after)
                 pending_verify = [
                     t for t in tasks_after.get("tasks", [])
-                    if t.get("status") == "completed"
-                    and t["id"] not in verified_ids
+                    if t.get("status") == "awaiting-validation"
                 ]
-                if not pending_verify:
-                    self._warn_if_verify_gate_empty(tasks_after)
-                else:
+                if pending_verify:
                     self._advance("worker", "verify",
                                  "completed_task_pending_verification")
                     any_failed = False
@@ -3120,14 +3111,22 @@ class LoopSupervisor:
                 atomic_write_json(meta_path, meta)
 
             if verified:
-                self.run.mark_task_verified(tid)
-                # Task 026: remember it in-process too, under the same
-                # approach-namespaced key the record uses, so
-                # _warn_if_verify_gate_empty() can tell "the gate is quiet
-                # because I verified this task" from "the gate is quiet
-                # because the record says somebody did".
-                self._verified_this_process.add(
-                    f"{self.run.current_approach()}:{tid}")
+                # Task 020 (requirement F bullet 4, folding the retired
+                # vigilant-verified.json sidecar into the task record
+                # itself): the terminal write IS the verified record now --
+                # no separate approach-namespaced file to keep in sync.
+                # Since tasks.json is rewritten fresh (renumbered from
+                # "001") by every approach's own planning pass, this is
+                # also #29's fix by construction: a later approach's task
+                # "001" is a distinct dict with no `status` field carried
+                # over from an earlier approach's file, so it can never be
+                # misread as already `validated`.
+                tasks_data = self.run.read_tasks()
+                for t in tasks_data.get("tasks", []):
+                    if t["id"] == tid:
+                        t["status"] = "validated"
+                        break
+                self.run.write_tasks(tasks_data)
                 self.run.emit("signal", signal="taskVerified", taskId=tid)
                 log.info("task %s verified", tid)
                 return True
@@ -3231,51 +3230,57 @@ class LoopSupervisor:
             log.warning(msg)
             self.run.emit("log", level="warning", message=msg)
 
-    def _warn_if_verify_gate_empty(self, tasks: dict) -> None:
-        """Requirement N (task 026, carried from the closed #29): a broken
-        vigilant gate is INVISIBLE from outside.
+    def _relabel_vigilant_claims(self, tasks_data: dict) -> dict:
+        """Task 020 (requirement F bullet 4): the harness-owned half of the
+        vigilant claim -> verify transition, expressed on the task record
+        itself rather than the retired `vigilant-verified.json` sidecar
+        (fact 2, #29).
 
-        When `vigilant-verified.json` says a completed task is already
-        verified, `pending_verify` computes empty and the engine simply runs
-        worker iteration after worker iteration -- which from the outside
-        (`ralphctl status`, the event stream) is indistinguishable from a run
-        with nothing left to verify, or from a config change, or from a stall.
-        #29's colliding keys made every approach after the first read as fully
-        verified, and that was silent for 17 consecutive iterations of a real
-        run before anyone noticed. The fix landed; this is the tripwire for the
-        next variant of the same class.
+        A worker iteration's own write is still the legacy "agent edits
+        tasks.json directly" channel (fact 9 -- that cutover to a reported
+        contract the harness applies is task 027's, not this one's), so
+        the raw claim it leaves behind still says `completed`, the same
+        word the non-vigilant terminal uses. This is the one place that
+        distinction actually matters: called with the record freshly
+        re-read right after a worker iteration's subprocess has already
+        exited (never while it is still running, matching requirement F's
+        "task state changes only at step transitions" -- this call sits
+        squarely between two of them), it relabels every `completed` task
+        to the vigilant claim state `awaiting-validation` and persists
+        that before anything downstream ever computes `pending_verify`.
 
-        Fires only on the suspicious shape -- the gate computed empty *and*
-        some currently-completed task was never verified by this process -- and
-        exactly ONCE per process rather than per iteration: the condition holds
-        for every remaining worker iteration of the run, so warning per
-        iteration would bury the run's real events under a repeat of one fact.
-        A legitimate resume produces the same shape (an earlier process did the
-        verifying), so the message names both explanations and says which one
-        this process's own history supports instead of asserting a bug.
+        Idempotent by construction: a task already at `awaiting-validation`
+        or `validated` is untouched (this method only ever matches
+        `completed`), so calling it again on an unchanged record -- e.g. a
+        resumed process's very first read, before any new worker iteration
+        of its own has run -- is a no-op read, not a spurious write. That
+        idempotence, not a separate sidecar, is what makes guard 4's
+        property (a crash between completion and verification still leads
+        to verification after resume) hold from disk state alone: the
+        crash simply leaves the task at whichever of `completed` /
+        `awaiting-validation` it last reached, and the next process's
+        first call here (or, if the crash landed after this call already
+        ran, the unchanged `awaiting-validation` it already reads) still
+        surfaces it to `pending_verify` -- there is no window in which the
+        task reads as anything else.
+
+        Retires `_warn_if_verify_gate_empty` (task 026/#29's tripwire for a
+        broken gate reading as suspiciously quiet): that mechanism existed
+        because a SEPARATE approach-namespaced record could desync from
+        tasks.json (exactly what #29's key collision did). With the record
+        folded into the task itself there is no second copy to desync
+        from -- `pending_verify` computing empty is now always correct by
+        construction, so the tripwire has nothing left to catch.
         """
-        if self._verify_gate_warned:
-            return
-        approach = self.run.current_approach()
-        unseen = [t["id"] for t in tasks.get("tasks", [])
-                  if t.get("status") == "completed"
-                  and f"{approach}:{t['id']}" not in self._verified_this_process]
-        if not unseen:
-            return
-        self._verify_gate_warned = True
-        cause = ("this process resumed an existing run dir, so an earlier "
-                 "process may legitimately have verified them"
-                 if self._resumed_at_start else
-                 "this process started the run, so nothing can legitimately "
-                 "have verified them")
-        msg = (f"vigilant verification gate computed empty while "
-               f"{len(unseen)} completed task(s) this process never verified "
-               f"are on record as verified: {', '.join(unseen)} "
-               f"(approach {approach}); {cause}; check "
-               f"vigilant-verified.json against this run dir's verify "
-               f"iterations (issue #29). Warned once per engine process.")
-        log.warning(msg)
-        self.run.emit("log", level="warning", message=msg)
+        changed = False
+        for t in tasks_data.get("tasks", []):
+            if t.get("status") == "completed":
+                t["status"] = "awaiting-validation"
+                changed = True
+        if changed:
+            self.run.write_tasks(tasks_data)
+            self._emit_task_changes()
+        return tasks_data
 
     def _archive_approach(self, approach: int) -> None:
         dest = self.run.root / "approaches" / f"{approach:02d}"

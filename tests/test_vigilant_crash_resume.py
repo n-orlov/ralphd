@@ -1,4 +1,5 @@
-"""Vigilant-mode crash/resume regression (task 052).
+"""Vigilant-mode crash/resume regression (task 052; guard 4 in the
+conformance ledger, folded onto the task record by task 020).
 
 LoopSupervisor's vigilant-verify trigger used to detect a task's completion
 by diffing tasks.json snapshots taken immediately before/after a single
@@ -9,13 +10,19 @@ very first tasks.json snapshot already showed that task as "completed" --
 so the newly-completed diff never fired for it again, and its mandatory
 vigilant verification was silently skipped for the rest of the job (the job
 could still reach verdict=verified via the reviewer phase without that task
-ever having been vigilant-verified).
+ever having been vigilant-verified). The fix used to be a separate,
+approach-namespaced `vigilant-verified.json` sidecar; task 020 folds that
+role into the task record's own mini-FSM status instead -- the harness
+relabels a worker's raw `completed` claim to `awaiting-validation` the
+moment its subprocess exits, and only `_verify_task`'s own passing write
+ever advances it to `validated`, so the crash/resume property below now
+holds from that one field, with no sidecar to keep in sync.
 
-This test proves the fix: a task reaches "completed", the engine is SIGKILLed
-after that write but before the verify iteration for it ever finishes (its
-verify iteration's meta.json has startedAt but never endedAt -- killed while
-`pi` is still asleep at the top of its invocation, having touched no files
-yet), then a fresh engine resumes over the same run dir and the task DOES
+This test proves the fix: a task reaches `awaiting-validation`, the engine
+is SIGKILLed before the verify iteration for it ever finishes (its verify
+iteration's meta.json has startedAt but never endedAt -- killed while `pi`
+is still asleep at the top of its invocation, having touched no files yet),
+then a fresh engine resumes over the same run dir and the task DOES
 eventually get a real, passing verify iteration (a `taskVerified` signal is
 emitted for it, and its verify meta.json shows `verifyOutcome: pass`) before
 the job reaches its terminal succeeded/verified state.
@@ -85,10 +92,13 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
     verify_number = verify_meta["number"]
 
     # The task the worker completed just before this verify iteration
-    # started really is "completed" in tasks.json already.
+    # started has already been relabelled to the vigilant claim state
+    # `awaiting-validation` -- the harness does that the instant the
+    # worker's own subprocess exits (task 020), strictly before the verify
+    # iteration this test kills mid-flight ever starts.
     tasks_mid = json.loads((e1.run_dir / "tasks.json").read_text())["tasks"]
     assert len(tasks_mid) == 1
-    assert tasks_mid[0]["status"] == "completed"
+    assert tasks_mid[0]["status"] == "awaiting-validation"
 
     _kill(e1)
 
@@ -102,15 +112,15 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
     assert "verifyOutcome" not in crashed_meta
     assert not (e1.run_dir / ".stub-verify-call-count").exists()
 
-    # No taskVerified signal was ever emitted for it, and the engine-owned
-    # persisted verified-task record (if it exists at all yet) does not
-    # contain this task.
+    # No taskVerified signal was ever emitted for it, and the task record
+    # -- the ONLY place this is tracked since task 020's fold -- still
+    # shows it unverified (not "validated"): asserted from disk state, not
+    # a before/after diff.
     events_before = _events(e1.run_dir)
     assert not any(ev.get("type") == "signal" and ev.get("signal") == "taskVerified"
                    for ev in events_before)
-    verified_file = e1.run_dir / "vigilant-verified.json"
-    if verified_file.exists():
-        assert "001" not in json.loads(verified_file.read_text())
+    tasks_mid_after_kill = json.loads((e1.run_dir / "tasks.json").read_text())["tasks"]
+    assert tasks_mid_after_kill[0]["status"] == "awaiting-validation"
 
     # Resume: a fresh engine process over the SAME run dir.
     e2 = engine_factory(
@@ -140,10 +150,9 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
               if m.get("verifiedTask") == "001" and m.get("verifyOutcome") == "pass"]
     assert len(passing) == 1
 
-    # The persisted verified-task record now durably records task 001, keyed
-    # by the approach it belongs to (issue #29 -- ids renumber per approach).
-    verified_after = json.loads((e2.run_dir / "vigilant-verified.json").read_text())
-    assert "1:001" in verified_after
-
+    # The task record itself is now the durable verified marker (task 020
+    # folded the old `vigilant-verified.json` sidecar into it) -- no
+    # separate file survives to check.
+    assert not (e2.run_dir / "vigilant-verified.json").exists()
     tasks_final = json.loads((e2.run_dir / "tasks.json").read_text())["tasks"]
-    assert tasks_final[0]["status"] == "completed"
+    assert tasks_final[0]["status"] == "validated"

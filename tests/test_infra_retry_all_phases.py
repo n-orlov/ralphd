@@ -146,8 +146,9 @@ async def test_infra_shaped_verify_is_retried_without_touching_verify_budgets(
     # ... nor to the task's validationAttempts / status.
     t = sup.run.read_tasks()["tasks"][0]
     assert t.get("validationAttempts", 0) == 0
-    assert t["status"] == "completed"
-    assert "001" in sup.run.read_verified_tasks()
+    # Task 020: the verified terminal write IS the record now -- no separate
+    # sidecar to check.
+    assert t["status"] == "validated"
 
 
 @pytest.mark.asyncio
