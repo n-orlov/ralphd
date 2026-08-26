@@ -3754,44 +3754,152 @@ class RunDir:
         from)."""
         return self.read_status().get("approach") or 1
 
+    def _resolve_legacy_vigilant_ids(
+            self, by_approach: dict[int, set[str]], approach_now: int,
+            completed_tasks: list[dict]) -> tuple[set[str], bool]:
+        """The seam `migrate_legacy_vigilant_verified()`'s mutation test
+        patches to reproduce the pre-fix, current-approach-only matching:
+        direct hits under `approach_now`'s own namespace, PLUS -- the task
+        005/#75 fix -- any other approach's namespaced entry for a task id
+        whose archived snapshot for that same approach shows the identical
+        task dict already `"completed"` (guards #29's collision: an
+        approach that never got archived, or whose archived copy of this id
+        differs, contributes nothing). Returns `(resolved_ids, used_fallback)`
+        -- `used_fallback` is True the instant any id was resolved via the
+        second path, which the caller treats as reason enough to keep the
+        sidecar around rather than delete it.
+        """
+        resolved_ids: set[str] = set(by_approach.get(approach_now, set()))
+        used_fallback = False
+        for other_approach, ids in by_approach.items():
+            if other_approach == approach_now:
+                continue
+            archived_doc = read_tasks_doc(
+                archived_approach_dir(self.root, other_approach), persist=False
+            ).doc
+            archived_by_id = {t.get("id"): t for t in archived_doc.get("tasks", [])}
+            for t in completed_tasks:
+                task_id = t["id"]
+                if (task_id in ids and task_id not in resolved_ids
+                        and archived_by_id.get(task_id) == t):
+                    resolved_ids.add(task_id)
+                    used_fallback = True
+        return resolved_ids, used_fallback
+
+    @staticmethod
+    def _legacy_vigilant_fold_is_uncertain(
+            completed_tasks: list[dict], used_fallback: bool,
+            matched_completed: int) -> bool:
+        """The second seam the mutation test patches alongside
+        `_resolve_legacy_vigilant_ids`, to reproduce the pre-fix behaviour
+        in full: the old code unlinked the sidecar unconditionally, with no
+        notion of "the fold had to guess" or "matched nothing despite
+        something to match". True keeps the sidecar; False is the only
+        case confident enough to unlink -- no completed tasks needed
+        classifying at all (`not completed_tasks`), or every one of them
+        was resolved via a direct current-approach match with no fallback
+        needed.
+        """
+        return bool(completed_tasks) and (used_fallback or matched_completed == 0)
+
     def migrate_legacy_vigilant_verified(self) -> None:
-        """One-way migration off the pre-0.9 `vigilant-verified.json`
+        """One-way-WHEN-SAFE migration off the pre-0.9 `vigilant-verified.json`
         sidecar (task 020), for a run dir an older engine build already
-        started. A no-op the instant it has run once: it deletes the
-        sidecar after folding it, so a resumed run dir never has one to
-        migrate a second time, and a run dir that never had vigilant mode
-        on (no sidecar ever written) returns immediately.
+        started. A no-op for a run dir that never had vigilant mode on (no
+        sidecar ever written).
 
         Every task still sitting at the legacy vigilant CLAIM state
-        `"completed"` becomes either `"validated"` (the sidecar's
-        approach-namespaced record says THIS approach's copy of it already
-        passed a verify iteration) or `"awaiting-validation"` (it does
-        not -- exactly the crash-between-completion-and-verification
+        `"completed"` becomes either `"validated"` (the sidecar says it
+        already passed a verify iteration) or `"awaiting-validation"` (it
+        does not -- exactly the crash-between-completion-and-verification
         window guard 4 protects, now expressed as the task's own status
         instead of the absence of a sidecar entry, so the resumed engine's
         ordinary `pending_verify` computation picks it back up unchanged).
+
+        Task 005 (requirement J, #75): the sidecar's keys are
+        approach-namespaced (`"<approach>:<taskId>"`, task 020/#29) because
+        every approach's planning pass renumbers tasks.json from "001", so a
+        flat match would let approach 2's task "001" inherit approach 1's
+        already-verified task "001". The pre-fix code enforced that by
+        matching ONLY `current_approach()`'s namespace -- which is safe
+        exactly as long as the live tasks.json really is a fresh replan for
+        the current approach. It is NOT, on a run dir where the approach
+        counter advanced without the archive-then-replan that normally goes
+        with it (#72's now-fixed bug, or any future one shaped like it):
+        `selfdev-v09-fsm-loop` had `status.json.approach == 4` while
+        tasks.json still held the 20 tasks *completed and verified under
+        approach 3*, unrenumbered. Matching only approach 4's (empty)
+        namespace found nothing, demoted all 20 to `awaiting-validation`,
+        and then unlinked the sidecar anyway -- the sidecar was the only
+        record of the lost verifications, and it is one-way.
+
+        Fix: for a completed task the CURRENT approach's namespace does not
+        cover, fall back to any OTHER approach's namespaced entries for
+        that same task id, but only when that approach's own ARCHIVED
+        snapshot (`archived_approach_dir`) shows the identical task dict
+        (same id, title, successCriteria, status) already `"completed"` --
+        i.e. the live tasks.json is still, unrenumbered, that earlier
+        approach's plan, not a same-numbered-but-unrelated task from an
+        approach that WAS properly replanned (which is exactly what keeps
+        the #29 collision guarded: `archived_approach_dir` for an approach
+        that never got archived, or whose archived task differs, matches
+        nothing).
+
+        The fallback is a heuristic, not a certainty (it depends on the
+        archived snapshot really being the same document, never proven
+        beyond the id/title/successCriteria/status comparison), so using it
+        for ANY task, or resolving zero of a nonempty sidecar's names
+        against a nonempty set of completed tasks, withholds the delete: a
+        fold that had nothing to do (no completed tasks at all) is safe to
+        clean up; a fold that had to guess, or came up empty despite there
+        being something to match, is not -- an `vigilant_verified_migration`
+        event records which case fired, so "legitimately nothing to fold"
+        and "matched nothing while there was something to match" are
+        distinguishable in the record, not just in this method's return
+        value.
         """
         if not self.vigilant_verified_file.exists():
             return
-        approach = self.current_approach()
-        verified_ids: set[str] = set()
+        approach_now = self.current_approach()
+        by_approach: dict[int, set[str]] = {}
         for entry in read_json(self.vigilant_verified_file, []):
             prefix, sep, task_id = str(entry).partition(":")
             if not sep:
-                if approach == 1:
-                    verified_ids.add(prefix)
+                # Predates #29's own namespacing fix -- always approach 1.
+                by_approach.setdefault(1, set()).add(prefix)
                 continue
-            if prefix == str(approach):
-                verified_ids.add(task_id)
+            try:
+                approach_key = int(prefix)
+            except ValueError:
+                continue
+            by_approach.setdefault(approach_key, set()).add(task_id)
+
         tasks_data = self.read_tasks()
+        completed_tasks = [t for t in tasks_data.get("tasks", []) if t.get("status") == "completed"]
+
+        resolved_ids, used_fallback = self._resolve_legacy_vigilant_ids(
+            by_approach, approach_now, completed_tasks)
+
         changed = False
-        for t in tasks_data.get("tasks", []):
-            if t.get("status") != "completed":
-                continue
-            t["status"] = "validated" if t["id"] in verified_ids else "awaiting-validation"
+        matched_completed = 0
+        for t in completed_tasks:
+            t["status"] = "validated" if t["id"] in resolved_ids else "awaiting-validation"
             changed = True
+            if t["id"] in resolved_ids:
+                matched_completed += 1
         if changed:
             self.write_tasks(tasks_data)
+
+        uncertain = self._legacy_vigilant_fold_is_uncertain(
+            completed_tasks, used_fallback, matched_completed)
+        self.emit("vigilant_verified_migration",
+                   approach=approach_now,
+                   completedTaskCount=len(completed_tasks),
+                   matchedCount=matched_completed,
+                   usedFallback=used_fallback,
+                   sidecarKept=uncertain)
+        if uncertain:
+            return
         self.vigilant_verified_file.unlink()
 
     # -- resume (PRD req 16) ---------------------------------------------

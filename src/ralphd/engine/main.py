@@ -174,9 +174,10 @@ async def amain() -> int:
     _seed_iteration_budget(cfg, run)
     # Task 020 (requirement F bullet 4): fold a pre-0.9 run dir's
     # `vigilant-verified.json` sidecar into the task record before anything
-    # else touches tasks.json. A no-op the instant it has migrated once
-    # (the sidecar is deleted), and a no-op for any run dir that never had
-    # vigilant mode on.
+    # else touches tasks.json. A no-op for any run dir that never had
+    # vigilant mode on; the sidecar is only deleted once the fold is known
+    # to have preserved what it named (task 005/#75) -- otherwise it is left
+    # in place rather than destroyed alongside a lost verification.
     run.migrate_legacy_vigilant_verified()
 
     workspace = Path(os.environ.get("RALPHD_WORKSPACE_DIR", str(WORKSPACE_DIR)))

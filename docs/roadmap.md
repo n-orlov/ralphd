@@ -791,8 +791,30 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   Not yet landed.
 - ⏳ **C. The finishing tail gets time it cannot be robbed of (#72).** Not yet
   landed.
-- ⏳ **J. A resumed run dir does not lose an approach's verifications (#75).**
-  Not yet landed.
+- ✅ **J. A resumed run dir does not lose an approach's verifications (#75).**
+  `RunDir.migrate_legacy_vigilant_verified()` used to match the legacy
+  `vigilant-verified.json` sidecar's approach-namespaced entries
+  (`"<approach>:<taskId>"`) against `current_approach()` alone -- safe only
+  while the live tasks.json is a fresh replan for that approach, which it is
+  not on a run dir where the approach counter advanced without the
+  archive-then-replan that normally goes with it. Observed on
+  `selfdev-v09-fsm-loop`: `status.json.approach == 4` while tasks.json still
+  held 20 tasks completed and verified under approach 3, unrenumbered --
+  matching only approach 4's empty namespace demoted all 20 and then deleted
+  the sidecar anyway. Fixed: `RunDir._resolve_legacy_vigilant_ids` now falls
+  back to another approach's namespaced entries for a task id only when that
+  approach's own archived snapshot (`archived_approach_dir`) shows the
+  identical task dict already `completed` -- keeping #29's collision guard
+  intact for an approach that was never archived or whose archived copy
+  differs -- and `RunDir._legacy_vigilant_fold_is_uncertain` withholds the
+  sidecar delete whenever the fold needed that fallback, or matched nothing
+  while there were completed tasks it could have matched, emitting a
+  `vigilant_verified_migration` event either way so "legitimately nothing to
+  fold" and "matched nothing while there was something to match" are
+  distinguishable in the record. `tests/test_vigilant_verified_migration_task005.py`
+  reproduces the incident and pins the ordinary same-approach fold
+  unchanged; a mutation test proves the reproduction fails against the old
+  current-approach-only logic.
 - ⏳ **D. Complete the conformance ledger (#69).** Not yet landed.
 - ⏳ **E. Close SPEC.md's and docs/architecture.md's remaining gaps (#70).** Not
   yet landed.
