@@ -369,7 +369,18 @@ footer.autorefresh {
 .document-absent { cursor: default; opacity: 0.65; }
 .document-absent:hover { background: none; }
 
-/* artifacts panel (task 024, #18.3) -- same affordance as a document row */
+/* artifacts panel (task 024, #18.3) -- same affordance as a document row.
+   Task 021 (#82): the list is collapsed by default behind a native
+   `<details>`/`<summary>`, same chrome as `.approach-entry`. */
+.artifact-list-details summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.artifact-list-details summary:focus-visible { outline: 2px solid var(--accent); }
+
+.artifact-list-details .artifact-list { margin-top: 0.5rem; }
+
 .artifact-list {
   display: flex;
   flex-direction: column;

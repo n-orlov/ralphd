@@ -777,12 +777,24 @@ async function openArtifactDialog(runId, a) {
 }
 
 function renderArtifacts(box, ok, body, runId) {
-  box.innerHTML = "";
   if (!ok || !body) {
+    box.innerHTML = "";
+    delete box.dataset.artifacts;
     box.appendChild(h("p", { class: "muted" }, [ARTIFACT_LOAD_FAILED]));
     return;
   }
   const items = Array.isArray(body.artifacts) ? body.artifacts : [];
+  // Task 021 (#82) applies `renderApproachHistory`'s own lesson here: `load()`
+  // rebuilds every sub-panel, this one included, every REFRESH_MS, so an
+  // unconditional rebuild would silently re-collapse the `<details>` below
+  // the moment the operator opened it. Skip the rebuild entirely when the
+  // artifact set is unchanged from the last render -- the open/closed state
+  // (and any focus inside it) then survives untouched across polls.
+  const wanted = items.map((a) => String(a.path || a.key || "")).join("\u0000") +
+    "|" + String(body.notice || "");
+  if (box.dataset.artifacts === wanted) return;
+  box.dataset.artifacts = wanted;
+  box.innerHTML = "";
   const list = h("div", { class: "artifact-list", id: "artifact-list" }, []);
   for (const a of items) {
     const path = String(a.path || "");
@@ -805,10 +817,22 @@ function renderArtifacts(box, ok, body, runId) {
       h("span", { class: "muted artifact-size" }, [" " + size]),
     ]));
   }
-  box.appendChild(list);
+  // Collapsed by default, same native `<details>`/`<summary>` chrome as the
+  // approach-history panel (no hand-rolled toggle) -- a run with a long
+  // artifact tree used to push the whole page down every time. The summary
+  // carries the COUNT so collapsing it never hides whether the run left
+  // anything behind; each row stays a real `<button>`, unaffected by the
+  // wrapper, once the panel is expanded.
+  const details = h("details", { class: "artifact-list-details" }, [
+    h("summary", {}, ["artifacts (" + String(items.length) + ")"]),
+    list,
+  ]);
+  box.appendChild(details);
   if (body.notice) {
     // Wording comes from the server (`state.NO_ARTIFACTS`, the same line
     // `ralphctl artifacts ls` prints), like the document panel's notice.
+    // Kept outside the collapsed `<details>` so an empty run's notice is
+    // visible without expanding anything.
     box.appendChild(h("p", { class: "muted", id: "artifacts-notice" },
                       [String(body.notice)]));
   }

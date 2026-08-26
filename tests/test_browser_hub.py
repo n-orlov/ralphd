@@ -2125,6 +2125,18 @@ def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw)
         assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 3
         assert int(pw.eval_js(_DIALOGS)) == 0
 
+        # -- task 021 (#82): collapsed by default behind a native <details>,
+        # summary carries the COUNT so collapsing never hides whether the run
+        # left anything behind
+        assert pw.eval_js(
+            "document.querySelector('.artifact-list-details').open") == "false"
+        summary_text = pw.eval_js(
+            "document.querySelector('.artifact-list-details summary').textContent")
+        assert "3" in summary_text, summary_text
+        pw.click(".artifact-list-details summary")
+        assert pw.eval_js(
+            "document.querySelector('.artifact-list-details').open") == "true"
+
         # -- the reflect report ---------------------------------------------
         pw.click('button.artifact-item[data-artifact-key="report"]')
         body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
@@ -2161,12 +2173,17 @@ def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw)
 
         # -- the suggested diff, keyboard-reachable -------------------------
         # A <button> gets Enter/Space from the platform -- but the 4s `load()`
-        # poll legitimately replaces the panel's nodes, so a focus taken just
-        # before one lands is lost through no fault of the button: retry the
-        # whole focus+Enter cycle (never a mouse click here).
+        # poll legitimately replaces the panel's nodes (collapsing the
+        # `<details>` back to its default, task 021/#82), so a focus taken
+        # just before one lands is lost through no fault of the button:
+        # re-open the details and retry the whole focus+Enter cycle (never a
+        # mouse click here).
         focus_js = (
-            "(() => { const el = document.querySelector('button.artifact-item"
-            "[data-artifact-key=\"suggestions\"]'); el.focus();"
+            "(() => { const d = document.querySelector('.artifact-list-details');"
+            " if (d && !d.open) d.open = true;"
+            " const el = document.querySelector('button.artifact-item"
+            "[data-artifact-key=\"suggestions\"]'); if (!el) return 'missing';"
+            " el.focus();"
             " return document.activeElement === el ? 'focused' : 'lost'; })()")
         deadline = time.time() + 40
         body = ""
@@ -2237,6 +2254,9 @@ def test_run_detail_artifact_dialog_branches_on_server_kind(tmp_path, pw):
         pw.open(f"{server.base}/#/run/run-arts-kinds")
         _wait_for_count_ge(pw, _ARTIFACT_ITEMS, 3)
         assert int(pw.eval_js(_DIALOGS)) == 0
+        # task 021 (#82): expand the collapsed-by-default artifact list
+        # before clicking any row inside it.
+        pw.eval_js("(document.querySelector('.artifact-list-details').open = true)")
 
         # -- a previewable image: <img>, not <pre> -------------------------
         pw.click('button.artifact-item[data-artifact="screenshot.png"]')

@@ -382,6 +382,25 @@ def test_app_js_renders_artifacts_as_text_from_server_strings():
     assert "innerHTML" not in region.replace('box.innerHTML = "";', "")
 
 
+def test_app_js_collapses_the_artifact_list_behind_a_native_details():
+    """Task 021 (#82): the panel used to push the whole page down for a run
+    with a long artifact tree. `renderArtifacts` now wraps `.artifact-list`
+    in a native `<details>`/`<summary>` -- no hand-rolled toggle -- collapsed
+    by default, with the artifact COUNT in the summary so collapsing it never
+    hides whether the run left anything behind."""
+    src = STATIC_APP_JS.read_text()
+    region = src[src.index("function renderArtifacts"):
+                 src.index("async function loadArtifacts")]
+    assert 'h("details"' in region
+    assert 'h("summary"' in region
+    # collapsed by default: no `open` attribute set on the wrapper
+    details_call = region[region.index('h("details"'):region.index('h("summary"')]
+    assert "open" not in details_call
+    # the summary text carries the artifact count
+    summary_call = region[region.index('h("summary"'):]
+    assert "items.length" in summary_call[:summary_call.index(')') + 1]
+
+
 def _artifact_dialog_kind_branch(src: str) -> str:
     """The slice of `openArtifactDialog` that decides whether the dialog gets
     an image or the plain text body -- isolated so both the positive check
