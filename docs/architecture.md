@@ -1,8 +1,12 @@
 # ralphd Architecture
 
-Status: as shipped in v0.8.0 unless marked otherwise (subsections dated to an
+Status: as shipped in v0.9.0 unless marked otherwise (subsections dated to an
 earlier version are historical design notes, kept because the reasoning still
-explains the code).
+explains the code). This line stayed a wave behind v0.9's own release while
+#70's SPEC/architecture gaps were open; it moves to v0.9.0 now that task 011
+closes them (the router/`router_model` and the `PUT /config/prompts/{name}`
+correction above), and stays a wave behind v0.10 in turn until that wave's own
+doc task closes out its remaining gaps.
 
 ## 1. Overview
 
@@ -181,6 +185,30 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 
 <!-- END GENERATED TRANSITION TABLE -->
 
+### The router: one constrained question, deterministic-first (task 018, requirement E)
+
+Not every state above resolves to a single edge from disk alone. Where
+`transitions.successors(state, vigilant)` returns more than one legal edge
+(and only then — most states have ≤1 and never reach this path),
+`_step_generic_hat` asks `engine.router.decide()` one JSON question,
+validated against `router.ROUTER_SCHEMA` and the table's own legal targets,
+re-prompted up to `contract_retry_max` times and bounded by
+`JobConfig.router_timeout_s` (env `RALPHD_ROUTER_TIMEOUT_S`, default `60.0`,
+published as `GET /config`'s `budgets.routerTimeoutS`); a timeout or an
+answer that never validates falls back to the state's own declared choice
+(`transitions.fallback_guard`/`ROUTER_FALLBACK`) rather than ever taking an
+edge the table does not list. The router's own model is a dedicated config
+key, `router_model` (env `RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`,
+surfaced as `GET /config`'s `model.routerModel`) — checked after
+`model_overrides["router"]` and before falling back to `fast_model` then
+`model`; `router` carries no row of its own in the model-strategy table
+(a one-question classification never needs a per-strategy tier). Every call
+is its own transcript under `artifacts/router/NNNN.jsonl` (a plain counter,
+not an iteration slot: `LoopSupervisor._ask_router()` never increments
+`iterations_used` or writes a `meta.json`), and its usage folds into
+`usage.byPhase["router"]` so the cost of a call that is never charged as a
+work iteration is still visible, not hidden.
+
 ### Phase prompts
 
 Prompt templates ship inside the installed package (`src/ralphd/prompts/`) —
@@ -192,8 +220,13 @@ API (`PUT /config/prompts/{name}`, taking effect next iteration) covers the
 four phases `engine/config.py: PROMPT_NAMES` lists — `reflect` is deliberately
 not among them (it is not listed by `GET /config/prompts` or
 `ralphctl prompts ls` either), so the post-terminal reflection prompt can only
-be replaced by a mount or in the image. Prompts are authored fresh for this
-project.
+be replaced by a mount or in the image. `PUT /config/prompts/{name}` is one of
+the routes `control_token` gates unconditionally (task 005, requirement A /
+#62, SPEC §13.3), and no spawned iteration's own process can ever present
+that header (`PiRunner` strips `RALPHD_CONTROL_TOKEN` from its environment) —
+so this surface is, in practice, host-only: an operator calling it from
+outside the job container, never a phase configuring itself from inside one.
+Prompts are authored fresh for this project.
 
 ### Vigilant mode
 

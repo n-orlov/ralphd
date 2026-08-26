@@ -743,6 +743,13 @@ contents, no LLM env values):
 }
 ```
 
+`model.routerModel` (`job.yaml` key `router_model`, env `RALPHD_ROUTER_MODEL`)
+is the router's own model key (task 018, requirement E, #60 pillar 2): checked
+after `model.overrides.router` and before falling back to `fastModel` then
+`model` — see `routerTimeoutS` below for the router's latency budget and
+`usage.byPhase.router` for how its cost is accounted, folded in alongside the
+five hat phases without ever counting as a work iteration.
+
 The infra-fault (LLM endpoint/network outage) budgets, all settable in
 `job.yaml` and via env:
 
@@ -753,7 +760,7 @@ The infra-fault (LLM endpoint/network outage) budgets, all settable in
 | `infraRetryBackoffMaxS` | `infra_retry_backoff_max_s` / `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` | `300.0` | cap on a single backoff wait (clamps the repeating tail) |
 | `infraRetryMax` | `infra_retry_max` / `RALPHD_INFRA_RETRY_MAX` | `null` | optional attempt cap, **honoured only when set explicitly**; `null` means no cap — retry for as long as the outage budget allows |
 | `infraOutageBudgetS` | `infra_outage_budget_s` / `RALPHD_INFRA_OUTAGE_BUDGET_S` | `14400.0` (4h) | wall-clock budget for one fault episode: retries continue while the cumulative wait stays under it; the episode resets on any successful iteration. The post-terminal `reflect` iteration gets `min(this, 300s)` — the job is already over, so a still-dead endpoint must not hold the container open for hours (a `reflect_infra_delay` event covers the wait before its first attempt) |
-| `routerTimeoutS` | `router_timeout_s` / `RALPHD_ROUTER_TIMEOUT_S` | `60.0` | task 018 (requirement E): the wall-clock cap on a single router call (`engine.router.decide`, via `LoopSupervisor._ask_router`) — a hung router call cannot stall the loop; a timeout counts as one failed attempt against `contracts.retryMax`, then the declared fallback edge is taken |
+| `routerTimeoutS` | `router_timeout_s` / `RALPHD_ROUTER_TIMEOUT_S` | `60.0` | task 018 (requirement E): the wall-clock cap on a single router call (`engine.router.decide`, via `LoopSupervisor._ask_router`, model resolved from `model.routerModel`/`router_model` — see above) — a hung router call cannot stall the loop; a timeout counts as one failed attempt against `contracts.retryMax`, then the declared fallback edge is taken |
 
 `contracts.retryMax` (`contract_retry_max` / `RALPHD_CONTRACT_RETRY_MAX`, default
 `2`) is how many re-prompts a hat gets after its first attempt before a
@@ -870,7 +877,7 @@ restart.
 | Method & path | Body / response |
 |---------------|-----------------|
 | `GET /config/prompts` | list: `{"name": ..., "source": ...}` for every phase (`planning`, `worker`, `review`, `task-verify`); `source` is `builtin` / `mounted` (`/config/prompts/{name}.md`) / `api` (after a `PUT`) |
-| `PUT /config/prompts/{name}` | `text/markdown` body. Replaces a phase prompt override; `name` must be one of the four phase names above, else `422`; `204` on success. Effective next iteration that builds this phase's prompt. |
+| `PUT /config/prompts/{name}` | `text/markdown` body. Replaces a phase prompt override; `name` must be one of the four phase names above, else `422`; `204` on success. Effective next iteration that builds this phase's prompt. Gated by `control_token` (see "Two independent gates" above) unconditionally on any run `ralphctl` started or resumed, and `PiRunner` strips `RALPHD_CONTROL_TOKEN` from a spawned iteration's own environment (task 003/#62, requirement A) — so no phase's agent process can ever call this route itself; it is, in practice, host-only. |
 
 ### Skills — full CRUD
 

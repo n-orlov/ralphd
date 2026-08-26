@@ -539,7 +539,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
 | `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, grace review, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
 | `src/ralphd/engine/transitions.py` | The declared FSM table (§4, task 008/014): states, legal transitions, guard-predicate names and per-hat entries as one data structure, with vigilant and non-vigilant as two variants of it (`VIGILANT_DELTA`), plus `TransitionExecutor` — the one code path that walks the table and refuses an illegal move — and the router's declared per-state fallback (`ROUTER_FALLBACK`). |
-| `src/ralphd/engine/scheduler.py` | Task 115 (#60, requirement C/F): the pure task-selection algorithm (`select_next_task()`) -- validation-failed first, then in-progress, then the `dependsOn`/`priority`-aware pending scheduler, else `None` -- mirroring `worker.md`'s documented pick rule. Not yet wired into `loop.py` (task 116). |
+| `src/ralphd/engine/scheduler.py` | Task 115 (#60, requirement C/F): the pure task-selection algorithm (`select_next_task()`) -- validation-failed first, then in-progress, then the `dependsOn`/`priority`-aware pending scheduler, else `None` -- mirroring `worker.md`'s documented pick rule. Wired into `loop.py`'s `_step_worker` (task 116): the harness runs it and writes the pre-spawn `in-progress` claim itself, before the worker subprocess ever starts (§4.1). |
 | `src/ralphd/engine/router.py` | The harness's single constrained question for a state whose next legal edge is not decidable from disk alone (task 018): deterministic-first (never asks for a state with ≤1 legal edge), one JSON question validated against the table and a schema, bounded by a timeout, falling back to the table's declared choice rather than ever accepting an illegal transition. |
 | `src/ralphd/engine/contracts.py` | The one validator every hat response contract goes through (task 009, fact 16/#65): per-hat JSON schema declared beside its table entry, `validate_payload()`/`validate_against()` as the sole check, so there is exactly one re-derivation of "does this payload match its schema" in the whole codebase. |
 | `src/ralphd/engine/contract_enforcement.py` | The re-prompt loop around `contracts.validate_payload` (task 010): malformed JSON, an absent payload, and valid JSON of the wrong shape are all ordinary cases here, re-prompted with the specific validation error up to `contract_retry_max` times, logged loudly to `events.jsonl`, and scored as one agent-fault iteration if the hat never recovers. |
@@ -585,7 +585,7 @@ An iteration runs exactly one phase. There are five.
 | phase | prompt | given | must produce |
 |---|---|---|---|
 | `planning` | `planning.md` | PRD, workspace | a file-borne `plan-proposal.json` plus `{"proposal_path": ..., "summary": ..., "standing_rules": ...}` (task 120/107) -- the harness ingests the proposal into `tasks.json`, initialising every task to `pending`, and pins `standing_rules` (when supplied) as this run's own `standing-rules.md`, re-injected into `notes.md`'s `## Standing rules` block after every later iteration (§5.1) |
-| `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | exactly one task advanced to `completed`, `notes.md` refreshed; `<promise>COMPLETE</promise>` when every task is done |
+| `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | `{"verdict": "complete", "task_id": ...}` for the task the harness assigned this iteration (task 116) -- `{"verdict": "complete"}` alone is refused; a `no_verdict`/`unsatisfiable` verdict, or nothing parseable, leaves the task's status untouched -- the harness alone applies the resulting move (`awaiting-validation`/`completed`), never the agent's own `tasks.json` write; `notes.md` refreshed; the narrower whole-plan `<promise>COMPLETE</promise>` only when every task the plan holds was ALREADY terminal before this iteration started (§4.3) |
 | `verify` | `task-verify.md` | one task's `id`/`title`/`successCriteria` | `{"task_id": {id}, "verdict": "verified"}`, or `{"task_id": {id}, "verdict": "rejected", "reason": ...}` -- the harness applies `validated`/`validation-failed`/`failed` and copies `reason` onto that task's `validationNotes` (task 118) |
 | `review` | `review.md` | PRD (composite when present), `tasks.json`, workspace | `{"verdict": "verified"}`, or `{"verdict": "rejected", "reason": ..., "findings_path": "review-findings.md"}` with `review-findings.md` listing every unmet requirement -- the harness applies `succeeded`/`verified` or archives the approach from this payload (task 119) |
 | `reflect` | `reflect.md` | the finished run's own records | `artifacts/reflection/report.md`, optionally `suggestions.diff`, plus `{"report_written": ..., "suggestions_written": ...}` (harness applies the `ok`/`error` verdict from this payload and the file check together, task 121) |
@@ -632,6 +632,30 @@ The strong tier is `model`, the fast tier is `fast_model` falling back to
 `model`. `reflect` mirrors `review` in every strategy — the same post-hoc
 analysis role. The resolved reference is recorded per iteration (`meta.json`'s
 `model`, the `iteration.start` event), so a run's model mix is auditable.
+
+**The router is not a sixth phase (task 018, requirement E, #60 pillar 2).**
+`_step_generic_hat` only ever calls `engine.router.decide()` when
+`transitions.successors(state, vigilant)` returns more than one edge for the
+current state — deterministic-first: a state with ≤1 legal edge (most states,
+most of the time) never routes at all. When it does, `model_for("router")`
+resolves the model: `model_overrides["router"]` first if set, else the
+dedicated `router_model` config key (`JobConfig.router_model`, env
+`RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`), else `fast_model`, else
+`model` — `router` carries no row of its own in the strategy table above,
+deliberately (a one-question classification never needs a per-strategy tier).
+The call is a single JSON question validated against `router.ROUTER_SCHEMA`
+and the table's own legal edges, re-prompted up to `contract_retry_max` times,
+bounded by `router_timeout_s` (`RALPHD_ROUTER_TIMEOUT_S`, default `60.0`,
+surfaced as `GET /config`'s `budgets.routerTimeoutS`); a hang or an
+unrecoverable answer falls back to the state's own declared choice
+(`transitions.fallback_guard`/`ROUTER_FALLBACK`) rather than ever taking an
+edge the table does not list. `LoopSupervisor._ask_router()` is deliberately
+uncounted — no iteration slot, no `iterations_used` increment, no
+`meta.json` — but its cost is not hidden: each call gets its own transcript
+under `artifacts/router/NNNN.jsonl` (a plain counter, not an iteration
+directory) and its usage folds into `usage.byPhase["router"]` (§4.2) exactly
+like the five hat phases, so a run's model mix and cost are auditable even for
+the calls that never cost an iteration.
 
 ### 4.2 Iterations, approaches and the composite PRD
 
@@ -734,14 +758,34 @@ are recorded, with reasoning, in
 
 ### 4.3 Sentinels and completion
 
-One exact string carries an agent claim scanned from the final assistant
+One exact string still carries an agent claim scanned from the final assistant
 text of the iteration, not from tool output: `worker`'s whole-plan
-`<promise>COMPLETE</promise>`. Both `verify` and `review` report through a
-structured JSON contract instead of a sentinel (task 118, task 119).
+`<promise>COMPLETE</promise>` -- but only for the narrow case task 116 leaves
+it for (below). Every other claim, including the worker's PER-TASK one, is a
+structured JSON contract (task 116, task 118, task 119).
+
+**The worker's own per-task contract (task 116, #60 pillar 3, fact 9).**
+`_step_worker` runs `engine.scheduler.select_next_task()` itself and writes
+the pre-spawn `in-progress` claim before the subprocess even starts (§4.1) --
+the agent no longer picks a task or edits `tasks.json` at all. Its last line
+is parsed opportunistically as JSON and, if it carries a `verdict` key,
+validated against `transitions.HAT_SCHEMAS["worker"]`: `{"verdict":
+"complete", "task_id": ...}` for the task just assigned (a mismatched
+`task_id` is a contract violation, never silently redirected -- a stray or
+fabricated id must not claim a move the harness never assigned) moves it to
+`awaiting-validation` under vigilant mode or `completed` otherwise, through
+the SAME `_apply_reported_task_status` every other hat's reported move goes
+through; `{"verdict": "unsatisfiable", "task_id": ..., "reason": ...}`
+(requirement H, #63) marks it `skipped` with that reason recorded, routing to
+a targeted replan of that one task while the approach continues; `{"verdict":
+"no_verdict"}` (still working, or nothing assigned) applies nothing and the
+worker loop simply continues. A last line that is not valid JSON, or valid
+JSON with no `verdict` key, leaves this whole mechanism untouched -- including
+the legacy whole-plan sentinel below, which never shares a code path with it.
 
 | sentinel | emitted by | meaning to the engine |
 |---|---|---|
-| `<promise>COMPLETE</promise>` | `worker` | every task is `completed` (or justified `skipped`); end the worker loop and run `review` |
+| `<promise>COMPLETE</promise>` | `worker` | every task is `completed`/`validated` (or justified `skipped`) ALREADY, before this iteration started; end the worker loop and run `review` |
 
 `verify`'s own claim is `{"task_id": ..., "verdict": "verified"|"rejected",
 "reason": ...}` (`transitions.HAT_SCHEMAS["verify"]`), validated against the task
@@ -1264,11 +1308,19 @@ of `TASK_ACTIONABLE_STATUSES` (`awaiting-validation` is waiting on verify,
 reported that the declared table does not permit for the task's current status
 is refused the same way any other malformed hat payload is (§4.3's contract
 enforcement) — re-prompted, then scored an agent fault once retries run out,
-not silently applied "just in case". As of this task, the mechanism is proven
+not silently applied "just in case". As of task 019, the mechanism was proven
 end to end only through the generic hat fallback (§4.1's synthetic/future
-states); `worker`/`verify`'s own legacy, non-vigilant `<promise>COMPLETE</promise>`
-/ verify's own `verify`-contract path (§4.3) is deliberately left untouched here —
-routing it through this same table is a later task's cutover, not this one's.
+states); `worker`'s own per-task claim and `verify`'s own `verify`-contract
+path (§4.3) were deliberately left untouched there. Task 116 is that
+cutover: `worker`'s reported `{"verdict": "complete", "task_id": ...}` now
+goes through this SAME `_apply_reported_task_status` mechanism, moving the
+assigned task to `awaiting-validation`/`completed`; `verify`'s applied
+`validated`/`validation-failed`/`failed` already went through it from task
+019 itself (verify never had a separate, legacy write path to retire). The
+only claim left outside this table is the whole-plan
+`<promise>COMPLETE</promise>` sentinel (§4.3), which ends the worker loop
+rather than moving any one task's status and so has nothing in
+`TASK_STATUS_TABLE` to route through.
 
 **The two meanings of `failed` (task 024, #33).** `failed` used to mean both
 "a verifier judged this requirement unmet" and "the engine consumed the last of
@@ -1799,6 +1851,18 @@ loop phases (`planning`, `worker`, `review`, `task-verify`); `reflect` has a
 builtin prompt and resolves through the same order, but is not accepted by the
 CRUD route. An override takes effect the next time that phase builds a prompt and
 is never retroactive to an in-flight iteration.
+
+**The `api` overlay is a host-only surface under requirement A's split
+(#62, §13.3).** `PUT /config/prompts/{name}` (and every other `/config`
+mutation) is one of the routes `control_token` gates unconditionally, and
+`PiRunner` strips `RALPHD_CONTROL_TOKEN` from every spawned iteration's own
+environment (task 003) — so no phase's agent process can ever construct the
+header that would let it call this route from inside the job container itself.
+In practice the `api` overlay is set exactly the way `ralphctl prompts <run-id>
+set` implies: from the host, by an operator who holds the token `ralphctl
+start`/`resume` provisioned. This is the same shape as `PUT /config/skills`,
+`PUT /config/creds` and `PUT /config/llm` — every writer of the config overlay
+is reachable only from outside the container the phase it configures runs in.
 
 ### 6.5 Skills
 
