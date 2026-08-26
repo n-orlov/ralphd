@@ -1,0 +1,9 @@
+run_id: "e041-happy-81c31c45"
+iterations: 25
+max_approaches: 3
+vigilant: false
+on_complete: "idle"
+reflect: false
+model_strategy: "balanced"
+iteration_timeout_s: 2700
+job_timeout_s: 28800

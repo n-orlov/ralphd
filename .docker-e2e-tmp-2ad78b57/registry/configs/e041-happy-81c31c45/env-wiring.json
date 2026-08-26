@@ -1,0 +1,6 @@
+{
+  "extra_env": [
+    "STUB_TASKS=2",
+    "STUB_SLEEP=0"
+  ]
+}
