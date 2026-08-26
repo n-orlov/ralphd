@@ -855,7 +855,22 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   reproduces the incident and pins the ordinary same-approach fold
   unchanged; a mutation test proves the reproduction fails against the old
   current-approach-only logic.
-- ⏳ **D. Complete the conformance ledger (#69).** Not yet landed.
+- ✅ **D. Complete the conformance ledger (#69).** `f40d053` filled every
+  remaining `TODO` New-expression cell in both guard tables (24 rows: guards
+  1-3, 6-19, 21-26) with the guard's post-cutover location -- a
+  `transitions.TABLE` guard name where the guard became a declared table edge,
+  or the `loop.py` file:line where an internal bookkeeping mechanism is
+  unchanged in shape but relocated by the `_step_planning`/`_step_worker`/
+  `_step_review`/`_step_replan` refactor -- added the Test-count-drop section
+  walking the LoopSupervisor-importing-test-module delta table's two negative
+  deltas (the PRD's stale 51->45 naive-grep correction, and task 020's real
+  53->52 retirement), and added the retired-guard line naming guard 5's
+  `_warn_if_verify_gate_empty` half as the only guard the FSM cutover retires
+  outright rather than re-expresses.
+  `tests/test_conformance_ledger.py::test_no_new_expression_todo_cells` parses
+  both guard tables' last cell and fails on any literal `TODO`, paired with a
+  mutation test that reverts one real filled cell back to `TODO` in memory and
+  proves the same parser catches it.
 - ✅ **E. Close SPEC.md's and docs/architecture.md's remaining gaps (#70).**
   `grep -c router_model SPEC.md docs/architecture.md docs/api.md` was `0`/`0`/`0`
   at planning, now `2`/`2`/`2`: a new router paragraph in SPEC.md §4.1, a new
@@ -882,19 +897,44 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   `-m "not docker"` instead of letting it run nested and time out; the
   header no longer claims the tier self-skips for want of a socket. Making
   the nested docker tier pass is explicitly out of scope.
-- ⏳ **G. Nothing the last nine waves learned is lost.** Not yet landed.
-- ⏳ **H. Close this wave's issues, from inside the run.** Not yet landed; #69,
-  #70, #72, #73, #74 and #75 remain open.
+- ✅ **G. Nothing the last nine waves learned is lost.** `review`'s four
+  pre-existing successors in `transitions.TABLE` are unchanged by task 002's
+  two new edges, and the table's own invariants (terminal states carry empty
+  successor tuples; exactly the three `RUN_TERMINAL_STATES` do) still hold.
+  `tests/test_stagnation_excludes_nonwork_faults.py`, task 117's fault-shape
+  modules (`tests/test_aborted_stream_fault_class.py`,
+  `tests/test_fault_classifier.py`, `tests/test_cli_fault_explanation.py`) and
+  the claim-rollback tests from v0.9's task 123
+  (`tests/test_no_progress_instant_failures.py`'s
+  `test_claim_rollback_is_two_directional_by_fault_class`) all have an empty
+  `git diff` against this wave's own pre-wave sha `c4252df` -- nothing in them
+  was touched or weakened. The 11-module drift lane stayed green at every
+  commit this wave landed, most recently 444 passed in 18.64s.
+- ✅ **H. Close this wave's issues, from inside the run.** Task 015 (`75b1dd8`)
+  posted a requirement -> task -> commit -> tests comment on each of #69, #70,
+  #72, #73, #74 and #75, `PATCH`ed each to `state: closed`, then re-`GET` each
+  fresh (not the write's own echo) to confirm the resulting state --
+  `artifacts/reports/issue-closure.md`'s v0.10 section records the comment id
+  and the fresh-read closed timestamp for all six; #60 and #68 were read fresh
+  too and confirmed untouched, per this requirement's own exclusion.
 - ✅ **I. Docs, SPEC, the roadmap and the version bump.** Land this one early
   rather than last — the lesson v0.9's own requirement O paid for, deferred to
   the tail and lost to the clock. `pyproject.toml` and
   `src/ralphd/__init__.py` both declare `0.10.0`; `tests/test_roadmap_v09.py`
   is pinned to `SERIES = (0, 9)` the same way it once pinned
   `tests/test_roadmap_v08.py`, and `tests/test_roadmap_v010.py` carries the
-  current-release checks forward. Every other requirement in this block is
-  honestly marked ⏳ as of this commit — this bullet does not claim more than
-  its own requirement shipped
-- ⏳ **M. Your predecessor's row, and this wave's.** Not yet landed.
+  current-release checks forward. This bullet shipped first, per the PRD's own
+  instruction — unlike v0.9's requirement O, deferred to the tail and caught by
+  the clock — and does not claim more than its own requirement; the other
+  requirements' bullets in this block are updated in place as each lands.
+- ✅ **M. Your predecessor's row, and this wave's.** `selfdev-v09-fsm-loop`'s
+  row in `docs/prds/README.md` is left exactly as the operator settled it, per
+  this requirement's own instruction. This wave's own row was refreshed from a
+  fresh `status.json` read in `7b4a9b5` (task 016), replacing the `not
+  started` placeholder with a `+`-marked in-flight snapshot -- task count,
+  task-list total, transcript size and derived cost -- per the marker
+  convention `docs/prds/README.md`'s own notes describe for a non-terminal
+  run.
 
 ## Later / explicitly deferred
 

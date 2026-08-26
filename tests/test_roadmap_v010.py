@@ -235,29 +235,38 @@ def test_the_shipped_check_catches_a_block_that_stops_claiming_i():
     assert not _bullet(mutated, "I").startswith("- \u2705")
 
 
-def test_every_other_requirement_is_honestly_pending():
-    """The half of requirement I this module exists to police: a block written
-    before the rest of the wave landed must not claim more than it has. If a
-    later task ships one of these and forgets to flip its marker, that is this
-    module's job to catch too -- but flipping it *to* shipped is a change this
-    test then has to be updated to allow, the same way v0.9's requirement L
-    bullet check was amended once task 113 actually closed the issues."""
+def test_every_shipped_requirement_names_a_real_commit():
+    """D, G, H and M flipped to shipped once tasks 012/015/016 and the
+    untouched-regression-module property (G) landed; this replaces the
+    original pre-landing pending check (which pinned `DGHM` as still
+    `\u23f3`) now that requirement I's own promise -- update this test
+    alongside the roadmap bullet the moment a requirement ships -- has been
+    kept for all four. Each bullet must still read as substantive prose, not
+    a bare flip: it names at least one real commit sha."""
     block = milestone_block(roadmap_text(), declared_series())
     assert block is not None
-    for letter in "DGHM":
+    shas = {"D": "f40d053", "G": None, "H": "75b1dd8", "M": "7b4a9b5"}
+    for letter, sha in shas.items():
         bullet = _bullet(block, letter)
-        assert bullet.startswith("- \u23f3"), (
-            f"requirement {letter} is marked shipped, but no task has landed it "
-            "yet -- if it really has landed, update this test alongside the "
-            "roadmap bullet")
+        assert bullet.startswith("- \u2705"), (
+            f"requirement {letter} is marked pending, but it has landed -- "
+            "flip the roadmap bullet alongside this test")
+        if sha is not None:
+            assert sha in bullet, (
+                f"requirement {letter}'s bullet does not cite its landing "
+                f"commit {sha}")
 
 
-def test_the_pending_check_catches_a_prematurely_shipped_bullet():
+def test_the_shipped_requirement_check_catches_a_regressed_bullet():
+    """Mutation pair for the check above, in the direction the block no
+    longer allows: flipping a now-shipped bullet back to pending must still
+    be caught, the same way the pre-landing module caught the opposite
+    direction."""
     block = milestone_block(roadmap_text(), SERIES)
     bullet = _bullet(block, "D")
-    assert bullet.startswith("- \u23f3"), "fixture assumption: D is pending"
-    mutated = block.replace(bullet, bullet.replace("- \u23f3", "- \u2705", 1))
-    assert _bullet(mutated, "D").startswith("- \u2705")
+    assert bullet.startswith("- \u2705"), "fixture assumption: D is shipped"
+    mutated = block.replace(bullet, bullet.replace("- \u2705", "- \u23f3", 1))
+    assert not _bullet(mutated, "D").startswith("- \u2705")
 
 
 # ------------------------------------------- what the wave delivered is not deferred
