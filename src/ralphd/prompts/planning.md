@@ -73,7 +73,7 @@ offending task.
 
 4. Report your outcome as the LAST non-blank line of your final reply, a
    single JSON object:
-   `{"proposal_path": "plan-proposal.json", "summary": "<one line>"}`
+   `{"proposal_path": "plan-proposal.json", "summary": "<one line>", "standing_rules": "<the block, see step 5>"}`
    `proposal_path` is the path to the file you wrote in step 3, relative to
    the run state directory. The harness reads that file, validates its shape,
    lints it (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate
@@ -82,14 +82,21 @@ offending task.
    proposal, you will be re-prompted with the SPECIFIC error and asked to
    fix and resubmit `plan-proposal.json`. You do not write or edit
    `tasks.json` yourself, ever, under any circumstances.
-5. Write brief handoff notes to the notes file (max 50 lines): key facts about
-   the workspace a fresh worker needs (test command, entry points, gotchas).
-   Open the file with a `## Standing rules` block: the conventions every
-   later iteration must follow, which only you have read the PRD to find —
-   commit title format, branch and push target, commit identity,
-   credential file paths, the test commands measured in step 2b, and each
-   prohibition the PRD states. Workers rewrite the rest of the notes every iteration;
-   this block is what must survive that rewrite, so keep it self-contained.
+5. Supply the `## Standing rules` block as the `standing_rules` field of
+   that same JSON object: the conventions every later iteration must
+   follow, which only you have read the PRD to find — commit title format,
+   branch and push target, commit identity, credential file paths, the
+   test commands measured in step 2b, and each prohibition the PRD states.
+   Write the field starting with the literal heading line `## Standing
+   rules` followed by the rules themselves. The harness pins this text once
+   and re-injects it into the notes file's own `## Standing rules` section
+   after every later iteration, whatever that iteration wrote there — you
+   do not write it into the notes file directly, and a later worker
+   rewriting the rest of the notes file cannot lose it either way. Still
+   write brief handoff notes to the notes file yourself (max 50 lines):
+   key facts about the workspace a fresh worker needs (test command, entry
+   points, gotchas) — everything OTHER than the standing-rules block, which
+   the harness now owns.
 
 ## Rules
 

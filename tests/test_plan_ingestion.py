@@ -20,8 +20,11 @@ from ralphd.engine import plan_ingestion as pi
 from ralphd.engine.state import RunDir
 
 
-def _pointer(path: str, summary: str = "a plan") -> str:
-    return json.dumps({"proposal_path": path, "summary": summary})
+def _pointer(path: str, summary: str = "a plan", standing_rules: str | None = None) -> str:
+    payload = {"proposal_path": path, "summary": summary}
+    if standing_rules is not None:
+        payload["standing_rules"] = standing_rules
+    return json.dumps(payload)
 
 
 def _write(tmp_path, name: str, doc: dict | str) -> None:
@@ -321,6 +324,24 @@ def test_a_valid_first_attempt_ingests_without_a_reprompt(tmp_path):
     assert not result.agent_fault
     assert [t["id"] for t in result.tasks_doc["tasks"]] == ["001"]
     assert calls == [(0, None)]
+    # Task 107 (#60 pillar 3): omitting the optional `standing_rules`
+    # pointer field is unaffected -- the result carries the empty-string
+    # "nothing pinned" reading, not an error.
+    assert result.standing_rules == ""
+
+
+def test_a_pointer_carrying_standing_rules_passes_it_through_the_result(tmp_path):
+    _write(tmp_path, "plan-proposal.json", {"tasks": [_basic_task("001")]})
+
+    def respond(attempt, prior_errors):
+        return _pointer("plan-proposal.json",
+                        standing_rules="## Standing rules\n- commit as X")
+
+    result = pi.enforce_plan_ingestion(
+        respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
+    )
+    assert result.ok
+    assert result.standing_rules == "## Standing rules\n- commit as X"
 
 
 def test_an_absent_proposal_file_reprompts_with_the_specific_error(tmp_path):

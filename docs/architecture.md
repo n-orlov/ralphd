@@ -610,6 +610,7 @@ container and lets the CLI read state even when the container is dead.
 ├── tasks.json          # task state (source of truth)
 ├── .tasks-last-good.json # fallback copy, written ONLY when a read of tasks.json fails
 ├── notes.md            # agent handoff notes, ≤50 lines enforced by prompt
+├── standing-rules.md   # harness-pinned copy of notes.md's "## Standing rules" block (task 107)
 ├── review-findings.md  # written by failed reviews
 ├── vigilant-verified.json # task ids that have passed a verify iteration
 ├── operator-termination.json # what the operator asked for (abort/interrupt)

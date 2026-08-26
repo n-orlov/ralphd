@@ -695,9 +695,109 @@ PRD_FILE = "prd.md"
 COMPOSITE_PRD_FILE = "composite-prd.md"
 NOTES_FILE = "notes.md"
 FINDINGS_FILE = "review-findings.md"
+# Task 107 (#60 pillar 3): the notes' `## Standing rules` block, pinned by
+# the harness rather than trusted to worker.md's "preserve verbatim"
+# convention. This file is the SOURCE OF TRUTH the planner's `standing_rules`
+# contract field (transitions.HAT_SCHEMAS["planning"]) is copied into once
+# (RunDir.write_standing_rules), and every iteration re-injects it into
+# notes.md verbatim (see reinject_standing_rules) after the agent subprocess
+# has had its turn -- so an agent that rewrites notes.md wholesale can still
+# lose everything else it wrote, but never this block. Never exposed as an
+# operator-editable RUN_DOCUMENTS entry: it is mirrored INTO notes.md, which
+# already is one, and a second editable copy would just be a second place to
+# go stale against the first.
+STANDING_RULES_FILE = "standing-rules.md"
 # `job.yaml` lives in the run's *config* dir (mounted read-only at `/config`),
 # not in the run dir -- see `run_documents`.
 JOB_CONFIG_FILE = "job.yaml"
+
+# The one heading `reinject_standing_rules` looks for. Deliberately a plain
+# literal, matched at the start of a line -- the block it delimits runs from
+# this line to the next line starting with "## " (any other level-2 heading)
+# or end of file, exactly the span `worker.md`'s prose already describes to
+# an agent by convention; this function is what makes that span survive
+# without trusting the agent to have read the convention at all.
+STANDING_RULES_HEADING = "## Standing rules"
+
+# Written immediately after the pinned block's own content on every
+# harness injection (see `reinject_standing_rules`) -- an exact, private
+# delimiter that makes finding the block's END unambiguous no matter what
+# follows it (free prose with no heading of its own, a heading, nothing at
+# all). Once ANY reinjection has happened, every later one matches on this
+# marker, not on "the next heading" -- the heading-scan below is kept only
+# as the first-time fallback, for a notes.md that still carries the OLD,
+# pre-task-107 hand-written block (no marker yet).
+STANDING_RULES_END_MARKER = "<!-- /standing-rules: harness-pinned, task 107 -->"
+
+# Any markdown heading, any level -- the first-time fallback's "next
+# section starts here" guess, used only when `STANDING_RULES_END_MARKER`
+# is not present in the text at all.
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+
+def reinject_standing_rules(notes_text: str, pinned_block: str) -> str:
+    """Task 107 (#60 pillar 3): return `notes_text` with its
+    `STANDING_RULES_HEADING` section replaced by `pinned_block` verbatim --
+    or `pinned_block` prepended, if the agent's rewrite dropped the section
+    entirely. Every OTHER line of `notes_text` survives untouched, in place,
+    exactly as the agent wrote it: this is a splice, not a merge, and it
+    never inspects or judges the rest of the file.
+
+    The block's end is `STANDING_RULES_END_MARKER`, a private line this
+    function itself always writes right after the block's own content --
+    so a rewrite whose very next section has no heading at all (or one
+    that isn't `## `) still splices correctly on every reinjection after
+    the first. The very first time a run's notes.md is touched (or a
+    notes.md that predates this mechanism and carries the old hand-
+    written block with no marker yet), the marker is absent and the block
+    end falls back to "the next markdown heading, any level, or end of
+    file" -- a best-effort guess for content this function has never
+    itself produced.
+
+    `pinned_block` is stored (and passed in here) as the harness's own copy
+    -- `RunDir.read_standing_rules()` -- never anything an agent's own
+    notes.md write could influence, which is the whole point: a worker that
+    overwrites notes.md wholesale, heading and all, gets the pinned text
+    back the moment this runs, byte-for-byte, while every other line it
+    wrote is preserved as written.
+
+    A blank `pinned_block` is not a valid call (the one caller,
+    `LoopSupervisor._reinject_standing_rules`, already skips calling this at
+    all when nothing was ever pinned) but is handled harmlessly here too:
+    the heading section is stripped and nothing is re-added, rather than
+    raising, so this function stays a pure splice with no policy of its
+    own about when pinning is "on".
+    """
+    pinned = pinned_block.rstrip("\n")
+    lines = notes_text.splitlines()
+    start = None
+    end = len(lines)
+    marker_seen = False
+    for i, line in enumerate(lines):
+        if start is None:
+            if line.rstrip() == STANDING_RULES_HEADING:
+                start = i
+            continue
+        if line.rstrip() == STANDING_RULES_END_MARKER:
+            end = i + 1
+            marker_seen = True
+            break
+        if not marker_seen and _MD_HEADING_RE.match(line):
+            end = i
+            break
+    if start is None:
+        # No existing block to replace -- prepend, so the pinned text is
+        # always first regardless of what the agent's rewrite led with.
+        rest = notes_text.lstrip("\n")
+        if not pinned:
+            return rest
+        block = pinned + "\n" + STANDING_RULES_END_MARKER
+        return block + ("\n\n" + rest if rest else "\n")
+    before = "\n".join(lines[:start])
+    after = "\n".join(lines[end:])
+    block = (pinned + "\n" + STANDING_RULES_END_MARKER) if pinned else ""
+    pieces = [p for p in (before.rstrip("\n"), block, after.lstrip("\n")) if p]
+    return "\n\n".join(pieces) + ("\n" if pieces else "")
 
 
 def prd_path(run_root: Path, original: bool = False) -> Path | None:
@@ -3433,6 +3533,30 @@ class RunDir:
     @property
     def notes_file(self) -> Path:
         return self.root / NOTES_FILE
+
+    @property
+    def standing_rules_file(self) -> Path:
+        return self.root / STANDING_RULES_FILE
+
+    def read_standing_rules(self) -> str:
+        """The harness's own pinned copy of the notes' `## Standing rules`
+        block (task 107), or `""` when nothing has pinned one yet (an
+        older run, or a planning proposal that carried no `standing_rules`
+        field at all -- reinjection is a no-op in that case, see
+        `LoopSupervisor._reinject_standing_rules`)."""
+        try:
+            return self.standing_rules_file.read_text()
+        except FileNotFoundError:
+            return ""
+
+    def write_standing_rules(self, text: str) -> None:
+        """Pin `text` (the planner's `standing_rules` contract field,
+        already validated as a non-empty string by
+        `transitions.HAT_SCHEMAS["planning"]`) as this run's harness-owned
+        copy. Called exactly once per planning/replan that supplied one --
+        every later iteration's `_reinject_standing_rules` reads it back
+        unchanged, so this is the one place it can ever be updated."""
+        atomic_write(self.standing_rules_file, text)
 
     @property
     def findings_file(self) -> Path:

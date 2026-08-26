@@ -530,6 +530,17 @@ HAT_SCHEMAS: dict[str, dict] = {
             # and lints it); never the plan content itself.
             "proposal_path": {"type": "string"},
             "summary": {"type": "string"},
+            # Task 107 (#60 pillar 3): the notes' `## Standing rules` block
+            # content, supplied ONCE through this contract instead of
+            # trusting worker.md's "preserve verbatim" convention.
+            # Deliberately OPTIONAL, not required: an older stub/test that
+            # never supplies it keeps validating exactly as before (no
+            # `standing_rules` -> `_step_planning` pins nothing ->
+            # `_reinject_standing_rules` is a no-op every iteration,
+            # unchanged behaviour), while a planner that DOES supply it
+            # gets it pinned and re-injected after every iteration
+            # (`RunDir.write_standing_rules` / `state.reinject_standing_rules`).
+            "standing_rules": {"type": "string"},
         },
         "additionalProperties": False,
     },

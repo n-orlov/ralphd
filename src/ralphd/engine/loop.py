@@ -1023,6 +1023,33 @@ class LoopSupervisor:
             # arrived from outside vs. this engine giving up on its own).
             operator_abort_recorded=self._operator_abort_recorded)
 
+    def _reinject_standing_rules(self) -> None:
+        """Task 107 (#60 pillar 3): make the notes' `## Standing rules`
+        block survive an agent's own notes.md rewrite by CONSTRUCTION,
+        not by asking worker.md to preserve it -- called once at the end
+        of every iteration (`_run_iteration_once`), for every hat, not
+        only `worker`.
+
+        A no-op whenever nothing has ever been pinned
+        (`RunDir.read_standing_rules()` returns `""`): an older run, or a
+        planning proposal whose `standing_rules` contract field
+        (`transitions.HAT_SCHEMAS["planning"]`) was omitted, behaves
+        exactly as before this task -- the rest of notes.md stays a free
+        agent-writable workspace file either way, this only ever touches
+        the one heading-delimited span `state.reinject_standing_rules`
+        knows how to find.
+        """
+        pinned = self.run.read_standing_rules()
+        if not pinned.strip():
+            return
+        try:
+            current = self.run.notes_file.read_text()
+        except FileNotFoundError:
+            current = ""
+        updated = state.reinject_standing_rules(current, pinned)
+        if updated != current:
+            state.atomic_write(self.run.notes_file, updated)
+
     async def _run_iteration_once(self, phase: str, extra: str = "",
                                   prompt_name: str | None = None):
         n = self.iterations_used + 1
@@ -1245,6 +1272,12 @@ class LoopSupervisor:
             patch["model"] = result.model
             patch["modelRaw"] = result.model_raw
         self.run.update_status(**patch)
+        # Task 107 (#60 pillar 3): run for EVERY hat, not just worker --
+        # the pinned `## Standing rules` block must survive a review/
+        # verify/reflect iteration's notes.md rewrite exactly as readily
+        # as a worker's, and this is the one point every phase already
+        # passes through on its way back to `_run_job_core`.
+        self._reinject_standing_rules()
         return result
 
     @staticmethod
@@ -2628,6 +2661,16 @@ class LoopSupervisor:
                               + "; ".join(ingestion.errors)))
                 return ("advance", "replan", "empty_plan")
             self.run.write_tasks(ingestion.tasks_doc)
+            # Task 107 (#60 pillar 3): pin the planner's `standing_rules`
+            # contract field, once, as this run's harness-owned copy --
+            # `_reinject_standing_rules` (every iteration end, any hat)
+            # reads it back and splices it into notes.md, so nothing here
+            # writes notes.md directly. A replan that supplies a fresh
+            # block updates the pin the same way; a proposal that omits
+            # the field (or an approach that never replans) leaves
+            # whatever was pinned before untouched.
+            if ingestion.standing_rules.strip():
+                self.run.write_standing_rules(ingestion.standing_rules)
 
         # Task 008: establish (or backfill, for a run resumed from before
         # this feature existed) a criteriaFingerprint baseline for every

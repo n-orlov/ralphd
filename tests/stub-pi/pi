@@ -617,8 +617,14 @@ if "Role: Planner" in prompt:
         json.dump({"version": 1, "goal": "stub goal", "tasks": tasks}, f)
     with open(os.path.join(run, "notes.md"), "w") as f:
         f.write("planned by stub\n")
+    # Task 107 (#60 pillar 3): the standing-rules block travels through the
+    # planning contract's optional `standing_rules` field now, not written
+    # into notes.md directly -- the harness pins it and re-injects it after
+    # every later iteration regardless of what that iteration's own
+    # notes.md write did.
     emit_final("planning done\n" + json.dumps(
-        {"proposal_path": proposal_name, "summary": "planning done"}))
+        {"proposal_path": proposal_name, "summary": "planning done",
+         "standing_rules": "## Standing rules\n- stub-supplied convention\n"}))
 
 elif "Role: Worker" in prompt:
     if os.environ.get("STUB_HUGE_LINE") and not os.path.exists(marker("huge-sent")):

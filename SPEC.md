@@ -529,7 +529,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 |---|---|
 | `src/ralphd/__init__.py` | `__version__` and `API_VERSION` — nothing else. |
 | `src/ralphd/log_merge.py` | The one implementation of "a run's transcript": `iterations/NNNN/output.jsonl` in order, wrapped in synthesized `ralphd.iteration` boundary lines. Imported by the engine's `GET /logs` snapshot path *and* by host-side readers straight off the run dir, so both emit byte-identical lines. Scrubbing is an injected callback, never assumed. |
-| `src/ralphd/prompts/planning.md` | Planning phase: read the PRD, write `tasks.json` + `notes.md`, decide scope and optional `dependsOn`/`priority`. |
+| `src/ralphd/prompts/planning.md` | Planning phase: read the PRD, draft a file-borne `plan-proposal.json`, report a pointer plus the notes' `## Standing rules` block content through the `planning` contract (§4.2, §5.1), decide scope and optional `dependsOn`/`priority`. |
 | `src/ralphd/prompts/worker.md` | Worker phase: the one-task-per-iteration rule with its reasons, the task pick rule, credential handling, and the sibling-cleanup prohibition. |
 | `src/ralphd/prompts/review.md` | Review phase: independently re-check every PRD requirement, re-verify criteria flagged as edited after a validation failure, report `{"verdict": "verified"}` or `{"verdict": "rejected", ...}` and write findings on rejection. Never fix anything. |
 | `src/ralphd/prompts/task-verify.md` | Vigilant-mode per-task verification against `successCriteria`, reporting through the `verify` response contract (task 118) instead of a `<task-verified>id</task-verified>` sentinel. |
@@ -584,7 +584,7 @@ An iteration runs exactly one phase. There are five.
 
 | phase | prompt | given | must produce |
 |---|---|---|---|
-| `planning` | `planning.md` | PRD, workspace | `tasks.json` (the plan) plus `notes.md` handoff notes; implements nothing |
+| `planning` | `planning.md` | PRD, workspace | a file-borne `plan-proposal.json` plus `{"proposal_path": ..., "summary": ..., "standing_rules": ...}` (task 120/107) -- the harness ingests the proposal into `tasks.json`, initialising every task to `pending`, and pins `standing_rules` (when supplied) as this run's own `standing-rules.md`, re-injected into `notes.md`'s `## Standing rules` block after every later iteration (§5.1) |
 | `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | exactly one task advanced to `completed`, `notes.md` refreshed; `<promise>COMPLETE</promise>` when every task is done |
 | `verify` | `task-verify.md` | one task's `id`/`title`/`successCriteria` | `{"task_id": {id}, "verdict": "verified"}`, or `{"task_id": {id}, "verdict": "rejected", "reason": ...}` -- the harness applies `validated`/`validation-failed`/`failed` and copies `reason` onto that task's `validationNotes` (task 118) |
 | `review` | `review.md` | PRD (composite when present), `tasks.json`, workspace | `{"verdict": "verified"}`, or `{"verdict": "rejected", "reason": ..., "findings_path": "review-findings.md"}` with `review-findings.md` listing every unmet requirement -- the harness applies `succeeded`/`verified` or archives the approach from this payload (task 119) |
@@ -965,6 +965,7 @@ strictly append-only.
 ├── prd.md                   # the PRD exactly as handed to `ralphctl start`
 ├── composite-prd.md         # PRD + previous-approach history (§4.2), when written
 ├── notes.md                 # the agent's cross-iteration handoff notes
+├── standing-rules.md        # harness-pinned copy of notes.md's "## Standing rules" block (§4.3)
 ├── review-findings.md       # the reviewer's unmet-requirement list, when rejected
 ├── vigilant-verified.json   # engine-owned ids of tasks that passed verification
 ├── operator-termination.json # the operator's abort/stop intent (§4.6), when recorded

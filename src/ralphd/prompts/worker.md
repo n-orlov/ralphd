@@ -62,10 +62,12 @@ immediately starts the next iteration.
    Never together with the completion marker (`## Completion signal` below) in
    the same reply — each iteration's last line is exactly one of these.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
-   endlessly): current state, next step, any discovered gotchas. **Preserve the
-   notes' `## Standing rules` block verbatim** through every rewrite — it is the
-   only place the job's conventions survive between iterations, and a rewrite that
-   drops or paraphrases it drops them for good. **Never write a count into the
+   endlessly): current state, next step, any discovered gotchas. The notes'
+   `## Standing rules` block is harness-pinned (task 107): the harness
+   re-injects it verbatim after every iteration from the copy the planning
+   phase supplied, so a rewrite that drops or reorders it is restored before
+   the next iteration reads the file either way — you never need to retype
+   it, and doing so risks a stale duplicate. **Never write a count into the
    notes that you did not derive from `tasks.json` in this same iteration**
    ("52/55 done"): every later iteration copies it forward, and one of them
    eventually prints it in a deliverable as fact. Record how to recompute it
@@ -94,7 +96,9 @@ immediately starts the next iteration.
   (`nohup ... > /tmp/suite.log 2>&1 &`), polling it instead of blocking on it.
 - **Re-read the notes' `## Standing rules` block before your first commit** and
   obey it from that commit on: commit title format, branch and push target,
-  commit identity, credential paths, prohibitions. A breach already pushed is
+  commit identity, credential paths, prohibitions. It is harness-pinned (task
+  107): what you read there is always the planning phase's own copy, never a
+  worker's paraphrase. A breach already pushed is
   rarely worth rewriting history for — record the deviation instead.
 - Do not touch the run state directory except tasks.json, the notes file, and the
   artifacts directory.

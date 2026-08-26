@@ -360,6 +360,13 @@ class PlanIngestionResult:
     attempts: int
     agent_fault: bool
     errors: list[str] = field(default_factory=list)
+    # Task 107 (#60 pillar 3): the planning contract's optional
+    # `standing_rules` field, carried through so `LoopSupervisor._step_planning`
+    # can pin it (`RunDir.write_standing_rules`) without re-parsing the raw
+    # response itself. `""` (never `None`) when the pointer omitted the
+    # field or ingestion failed -- the same "absent means nothing to pin"
+    # reading `RunDir.read_standing_rules()` already uses.
+    standing_rules: str = ""
 
 
 def file_reader(base_dir: Path | str) -> Callable[[str], str | None]:
@@ -411,6 +418,7 @@ def enforce_plan_ingestion(
                 return PlanIngestionResult(
                     ok=True, tasks_doc=ingest_proposal(proposal),
                     attempts=attempt + 1, agent_fault=False, errors=[],
+                    standing_rules=pointer.get("standing_rules") or "",
                 )
         if state is not None:
             state.emit(EVENT_VIOLATION, hat="planning", attempt=attempt + 1,
