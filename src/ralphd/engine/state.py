@@ -1892,6 +1892,50 @@ def mark_tier_ladder_exhausted_if_at_top(task: dict) -> bool:
     return bool(at_top or task.get(TASK_TIER_LADDER_EXHAUSTED_FIELD))
 
 
+# ---------------------------------------------------------------------------
+# Task 015 (#68 half 2, requirement H): where a VERIFY dispatch provisions,
+# one rung down from the work it is checking -- and where the run-ending
+# verification provisions instead, which is never one of this ladder's rungs
+# at all.
+#
+# Decision 7: per-task verify runs at `max(effective tier - 1, trivial)` on
+# VERIFY's OWN ladder (`tiers.step_down_tier`, task 012), computed from the
+# tier the work actually ran at AFTER escalation -- `task_effective_tier`
+# above, never `task_baseline_tier`. A thrice-escalated task's verify still
+# gets a serious check; a task that never escalated gets verify's cheapest
+# rung, never a rung below it (the floor is `tiers.BOTTOM_TIER`, same as the
+# ladder itself).
+#
+# Decision 8: the run-level final verification -- the pass whose VERIFIED
+# verdict ends the run (`LoopSupervisor._review_verdict`/`_maybe_grace_
+# review`) -- is the one dispatch requirement I's "hats with no task in
+# hand keep their static half-1 role" rule does NOT cover: it always
+# provisions at `tiers.TOP_TIER`, regardless of any task's baseline or
+# effective tier (there is no task in hand to read one from, and even if
+# there were, the exit gate is never economised -- "never a bottom-rung
+# rubber stamp"). Both functions are pure and read-only: neither one
+# mutates the task record or touches `effectiveTier`/`tier` itself -- the
+# tier a VERIFY dispatch provisions at is a separate fact from the tier the
+# WORK it is checking is recorded at.
+def task_verify_tier(task: dict) -> str:
+    """The tier a PER-TASK verify/review dispatch provisions at (decision
+    7): one step down from `task`'s CURRENT effective tier
+    (`task_effective_tier` -- post-escalation, never the baseline),
+    floored at `tiers.BOTTOM_TIER` (`tiers.step_down_tier`). Checking is
+    cheaper than doing the work, but never cheaper than the ladder's own
+    floor."""
+    return tiers.step_down_tier(task_effective_tier(task))
+
+
+def run_level_verify_tier() -> str:
+    """The tier the run-ending verification pass always provisions at
+    (decision 8): `tiers.TOP_TIER`, unconditionally. Takes no argument on
+    purpose -- the whole point of decision 8 is that no task's tier,
+    present or absent, ever changes this answer; economise per task, never
+    on the exit gate."""
+    return tiers.TOP_TIER
+
+
 # Task 025 (#33): how the two meanings are COUNTED, and how they are SPELLED.
 #
 # A failure kind is not a sixth status, so it never gets a status key of its
