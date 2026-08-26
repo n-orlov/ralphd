@@ -213,6 +213,21 @@ function taskCell(r) {
     // the fraction is the last plan that PARSED (a poll landed mid-rewrite).
     kids.push(h("span", { class: "pill pill-stale" }, [" stale"]));
   }
+  // Task 019 (#77/#78 operator-facing half): the vigilant lifecycle, off the
+  // raw counts the server sends (`tasksAwaitingValidation`, `taskEffectiveTier`
+  // -- `engine.state.TasksRead.row_fields`), never by re-parsing `tasksSummary`'s
+  // rendered sentence back into numbers. This particular status is not
+  // trouble (it is the vigilant worker's ordinary claim state), so it gets
+  // its own class rather than joining `tasksTrouble`'s warning styling, and
+  // its wording here is deliberately generic (no literal status-name
+  // string), same discipline `taskStatusText` follows for the per-task rows.
+  if (fraction && r && Number(r.tasksAwaitingValidation) > 0) {
+    kids.push(h("span", { class: "tasks-vigilant" },
+      [" ", pill(r.tasksAwaitingValidation + " awaiting review")]));
+  }
+  if (fraction && r && r.taskEffectiveTier) {
+    kids.push(h("span", { class: "tasks-tier" }, [" ", pill(String(r.taskEffectiveTier))]));
+  }
   const attrs = { class: "tasks-cell",
                   "data-tasks-source": String((r && r.tasksSource) || "") };
   // The whole sentence (`5/7 completed (1 in-progress, 1 pending)`) on hover;

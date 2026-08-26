@@ -280,6 +280,63 @@ def test_an_unreadable_plan_with_no_last_good_shows_ignorance_not_zero(
     assert row["tasksStale"] is True and row["tasksSource"] == "unreadable"
 
 
+# --------------------------------------------------------------------------
+# task 019 (#77/#78 operator half): tasksValidated/tasksAwaitingValidation/
+# taskEffectiveTier are raw fields on the SAME row -- a vigilant run's
+# lifecycle, sent numerically rather than only spelled out in tasksSummary.
+# --------------------------------------------------------------------------
+
+VIGILANT_PLAN = {
+    "version": 1,
+    "goal": "ship it vigilantly",
+    "tasks": [
+        {"id": "001", "status": "validated", "effectiveTier": "hard"},
+        {"id": "002", "status": "validated", "effectiveTier": "normal"},
+        {"id": "003", "status": "awaiting-validation", "effectiveTier": "normal"},
+        {"id": "004", "status": "awaiting-validation", "effectiveTier": "trivial"},
+        {"id": "005", "status": "pending"},
+    ],
+}
+
+
+def test_row_fields_carry_validated_and_awaiting_validation_raw():
+    counts = task_counts(VIGILANT_PLAN["tasks"])
+    assert (counts["validated"], counts["awaitingValidation"],
+            counts["pending"], counts["total"]) == (2, 2, 1, 5)
+
+
+def test_row_fields_publish_validated_awaiting_validation_and_effective_tier(
+        tmp_path, ui):
+    """The hub run list's TASKS row for a vigilant run in flight: two
+    validated, two awaiting-validation, one pending -- the raw fields
+    `TasksRead.row_fields` sends carry all three facts numerically, and the
+    plan's worst-reached tier (`hard`, task 004's escalation ladder) rides
+    along beside them, not only inside `tasksSummary`'s rendered sentence.
+    """
+    reg = tmp_path / "reg"
+    _seed_hub_run(reg, "run-vigilant", tasks_text=json.dumps(VIGILANT_PLAN))
+    code, body = ui(reg).get("/api/runs")
+    assert code == 200, body
+    row = _row(body["runs"], "run-vigilant")
+    assert row["tasksTotal"] == 5
+    assert row["tasksValidated"] == 2
+    assert row["tasksAwaitingValidation"] == 2
+    assert row["taskEffectiveTier"] == "hard"
+    # the fraction already counts `validated` toward completion (task 018)
+    assert row["tasksDisplay"] == "2/5"
+
+
+def test_a_plan_with_no_escalation_history_gets_no_effective_tier(tmp_path, ui):
+    reg = tmp_path / "reg"
+    _seed_hub_run(reg, "run-plain", tasks_text=json.dumps(MID_PLAN))
+    code, body = ui(reg).get("/api/runs")
+    assert code == 200, body
+    row = _row(body["runs"], "run-plain")
+    assert row["tasksValidated"] == 0
+    assert row["tasksAwaitingValidation"] == 0
+    assert row["taskEffectiveTier"] is None
+
+
 def test_rows_of_several_runs_do_not_borrow_each_others_counts(tmp_path, ui):
     reg = tmp_path / "reg"
     _seed_hub_run(reg, "run-1", tasks_text=json.dumps(MID_PLAN))

@@ -1591,6 +1591,23 @@ class TasksRead:
             # a row sortable only on `completed/total` cannot tell a plan
             # that is merely mid-flight from one with a dead subtree in it.
             "tasksBlocked": counts.get("blocked", 0),
+            # Task 019 (requirement L, #77/#78): the vigilant lifecycle's two
+            # extra terminal/quasi-terminal statuses, raw, beside the
+            # completed/inProgress/... set above -- the hub cannot render a
+            # lifecycle it is never SENT, and parsing it back out of
+            # `tasksSummary`'s rendered sentence would be exactly the kind of
+            # second spelling this module exists to prevent.
+            "tasksValidated": counts.get("validated", 0),
+            "tasksAwaitingValidation": counts.get("awaitingValidation", 0),
+            # Task 019 (#68 requirement G): the effective-tier ladder's worst
+            # rung reached by ANY task in this plan, raw -- `None` when no
+            # task carries a recognised `effectiveTier` at all (nothing has
+            # ever escalated, or the plan predates the field). A summary
+            # across the whole plan rather than one task's tier: the row has
+            # no single "current" task to point at once several tasks have
+            # been claimed and released, so the worst rung reached is the one
+            # fact worth surfacing without opening tasks.json.
+            "taskEffectiveTier": task_row_effective_tier(self.tasks),
             "tasksDisplay": fraction,
             # A plan-less run gets no summary either: `0/0 completed` would be
             # a claim about a plan that does not exist.
@@ -1834,6 +1851,32 @@ def task_effective_tier(task: dict) -> str:
     if tiers.is_tier(effective):
         return effective
     return task_baseline_tier(task)
+
+
+def task_row_effective_tier(tasks: list) -> str | None:
+    """Task 019 (#68 requirement G, hub row): the highest effective tier ANY
+    task in `tasks` currently sits at (task 014's escalation ladder,
+    `task_effective_tier` above) -- for `TasksRead.row_fields`'s run-list
+    row. `None` when no task carries a recognised `effectiveTier` at all: a
+    plan that predates the field, or one where nothing has ever escalated
+    past its own baseline, has nothing to report, and `None` says so rather
+    than a confident `tiers.DEFAULT_TIER` that would claim escalation never
+    happened when really the record just never says.
+
+    Read-only and pure, exactly like `task_effective_tier`: it never writes
+    anything, and a task missing or malformed is simply skipped rather than
+    degraded to a fallback value that would then out-rank a genuine `trivial`.
+    """
+    best = None
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        raw = t.get(TASK_EFFECTIVE_TIER_FIELD)
+        if not tiers.is_tier(raw):
+            continue
+        if best is None or tiers.tier_rank(raw) > tiers.tier_rank(best):
+            best = raw
+    return best
 
 
 def claim_task_effective_tier(task: dict) -> str:
