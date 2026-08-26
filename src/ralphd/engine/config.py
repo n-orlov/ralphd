@@ -271,6 +271,47 @@ DEFAULT_HAT_MODEL_REF: str | None = None
 UNRECOGNISED_HAT_FALLBACK = "planning"
 
 
+def _model_family(ref: str | None) -> str:
+    """Coarse model-family classifier for requirement C's provider-shaped
+    thinking bundle (task 007). Looks at the ref text itself (a pi
+    `provider/model` string, e.g. `amazon-bedrock/eu.anthropic.claude-opus-5`
+    or `aigw-openai/openai.gpt-5.6-terra`) rather than a provider registry, so
+    it needs no network access and works before requirement D's startup
+    route check runs.
+
+    Only two buckets exist: `"openai"` for a ref naming that family (its own
+    differently-spelled `reasoning_effort` knob, PRD requirement C) and
+    `"native"` for every other family, including Anthropic/Bedrock -- the
+    vocabulary `pi --thinking` already speaks natively, so there is nothing
+    to translate for them.
+    """
+    if not ref:
+        return "native"
+    return "openai" if "openai" in ref.lower() else "native"
+
+
+@dataclass(frozen=True)
+class HatBundle:
+    """A hat's own (model ref, thinking/reasoning setting) bundle (task 007,
+    PRD requirement C): what `JobConfig.bundle_for` resolves and what
+    `loop.py`'s dispatch now hands to `runner.PiRunner.run`, replacing the
+    single global `cfg.thinking` string it used to pass unconditionally to
+    every hat's invocation.
+
+    Provider-shaped: at most ONE of `thinking` (pi's native `--thinking`
+    vocabulary -- off/minimal/low/medium/high/xhigh/max, spoken by every
+    family this table ships a default for today, Anthropic/Bedrock
+    included) or `effort` (the OpenAI family's own differently-spelled
+    reasoning-effort knob) is ever populated on a bundle `bundle_for`
+    produces -- never both -- so an OpenAI-family hat is never handed an
+    Anthropic thinking level it did not ask for, and vice versa (see
+    `bundle_for`'s docstring for exactly when each is chosen).
+    """
+    model: str | None = None
+    thinking: str | None = None
+    effort: str | None = None
+
+
 @dataclass
 class JobConfig:
     run_id: str = "unnamed-run"
@@ -304,7 +345,19 @@ class JobConfig:
     # up for free from a `models:` job.yaml key with zero extra parsing code,
     # then `__post_init__` folds it into `model_overrides` once, in one place.
     models: dict = field(default_factory=dict)  # alias for model_overrides
-    thinking: str | None = None       # pi --thinking level
+    thinking: str | None = None       # pi --thinking level, every hat's default
+    # Task 007 (PRD requirement C): the per-hat thinking/reasoning table,
+    # same shape family as `model_overrides` (phase -> setting) but never
+    # merged into it -- a model ref and its thinking setting are two
+    # different knobs even though they travel together in `HatBundle`. An
+    # entry is EITHER a plain string (pi's native `--thinking` vocabulary,
+    # exactly what the bare `thinking` field above already speaks) OR a
+    # one-key mapping naming which field of `HatBundle` it fills explicitly
+    # -- `{"thinking": "high"}` or `{"effort": "medium"}` -- so a hat whose
+    # model is OpenAI-family can carry that family's own differently-spelled
+    # effort knob instead of a level word that means nothing to it. See
+    # `bundle_for` for the resolution order.
+    thinking_overrides: dict = field(default_factory=dict)
     api_token: str | None = None
     # Task 004 (#62 candidate 1, requirement A): a second, mandatory-by-
     # default secret gating *only* the mutating half of the API (see this
@@ -498,6 +551,10 @@ class JobConfig:
                 "routerModel": self.router_model,
                 "overrides": dict(self.model_overrides),
                 "thinking": self.thinking,
+                # Task 007 (requirement C): the per-hat thinking table
+                # alongside the per-hat model table it travels with in
+                # `HatBundle` -- see `bundle_for`.
+                "thinkingOverrides": dict(self.thinking_overrides),
             },
             # Task 052 (#10): the host-side rate table as resolved (null when
             # none is configured, and the shipped default IS none) -- so an
@@ -547,4 +604,40 @@ class JobConfig:
         # bare `model` field -- there is no second, strategy-driven rung any
         # more (task 006).
         return self.model
+
+    def bundle_for(self, phase: str) -> HatBundle:
+        """Task 007 (PRD requirement C): the (model, thinking) bundle
+        `loop.py`'s dispatch hands to `runner.PiRunner.run`, replacing the
+        single global `cfg.thinking` string it used to pass unconditionally
+        to every hat's invocation.
+
+        `model_for` supplies the model half unchanged -- this method adds
+        nothing to that resolution order. The thinking half:
+
+        - an explicit `thinking_overrides[phase]` wins, and is
+          provider-shaped: a one-key mapping (`{"thinking": ...}` or
+          `{"effort": ...}`) names its own `HatBundle` field explicitly; a
+          plain string is auto-placed by `_model_family(model)` -- `.effort`
+          for an OpenAI-family hat, `.thinking` for every other family --
+          so an operator overriding a hat's setting need not know its
+          provider's own vocabulary to spell it correctly. Either way the
+          global `self.thinking` (an Anthropic-shaped level) never lands on
+          an overridden hat too -- the two `HatBundle` fields are mutually
+          exclusive on every bundle this method returns.
+        - absent an override, the old global `self.thinking` becomes this
+          hat's default bundle setting (PRD requirement C's back-compat
+          rule) -- landed into `.thinking` unconditionally, never guessed
+          into `.effort`, because the global field has always spoken pi's
+          native vocabulary and never the OpenAI one.
+        """
+        model = self.model_for(phase)
+        override = self.thinking_overrides.get(phase)
+        if override is None:
+            return HatBundle(model=model, thinking=self.thinking)
+        if isinstance(override, dict):
+            return HatBundle(model=model, thinking=override.get("thinking"),
+                              effort=override.get("effort"))
+        if _model_family(model) == "openai":
+            return HatBundle(model=model, effort=override)
+        return HatBundle(model=model, thinking=override)
 

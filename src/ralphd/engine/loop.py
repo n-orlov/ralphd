@@ -1094,7 +1094,14 @@ class LoopSupervisor:
         # Neither seed may read `attempts/` as an iteration: they are records of
         # one, not extra ones.
         itdir = self.run.begin_iteration_dir(n)
-        model = self.cfg.model_for(phase)
+        # Task 007 (PRD requirement C): the (model, thinking) bundle,
+        # replacing the separate `model_for`/`cfg.thinking` reads below --
+        # `bundle.model` is unchanged from `model_for(phase)`, and
+        # `bundle.thinking`/`bundle.effort` are what actually reaches
+        # `runner.PiRunner.run` now, instead of the single global
+        # `cfg.thinking` every hat used to share.
+        bundle = self.cfg.bundle_for(phase)
+        model = bundle.model
         pending = (self.run.pending_steering()
                    if phase in STEERING_ACTIONABLE_PHASES else [])
         prompt = self.build_prompt(phase, extra, prompt_name=prompt_name)
@@ -1153,7 +1160,8 @@ class LoopSupervisor:
         try:
             result = await self.runner.run(
                 prompt, itdir / "output.jsonl", model=model,
-                thinking=self.cfg.thinking, timeout_s=timeout,
+                thinking=bundle.thinking, effort=bundle.effort,
+                timeout_s=timeout,
                 extra_env=current_env(), startup_timeout_s=startup_timeout_s)
         except BaseException as exc:
             # THE CONTAINMENT BOUNDARY for an iteration (task 011, #28).

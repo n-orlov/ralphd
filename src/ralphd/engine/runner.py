@@ -148,6 +148,7 @@ class PiRunner:
         transcript: Path,
         model: str | None = None,
         thinking: str | None = None,
+        effort: str | None = None,
         timeout_s: int = 2700,
         extra_env: dict | None = None,
         startup_timeout_s: float | None = None,
@@ -155,8 +156,21 @@ class PiRunner:
         cmd = [self.pi_bin, "-p", "--mode", "json", "--no-session"]
         if model:
             cmd += ["--model", model]
+        # Task 007 (PRD requirement C): `thinking`/`effort` are the two
+        # provider-shaped halves of a hat's `config.HatBundle` -- pi's own
+        # CLI exposes exactly one flag for either (`--thinking <level>`;
+        # pi translates it into whatever the resolved model's own family
+        # needs, reasoning_effort included), so both compose onto the same
+        # flag. `thinking` wins when a bundle somehow carries both (never
+        # true for a bundle `JobConfig.bundle_for` itself produces -- see
+        # its docstring), so an `effort`-only bundle (an OpenAI-family hat)
+        # is never silently overridden by a stray Anthropic-shaped level,
+        # and is never left with NO flag either: its own value still reaches
+        # pi, just composed from its own field.
         if thinking:
             cmd += ["--thinking", thinking]
+        elif effort:
+            cmd += ["--thinking", effort]
         # Task 003 (#62, requirement A): an iteration never inherits the
         # coordinates that locate or authenticate to the engine's own
         # control-plane API, however they got into this process's
