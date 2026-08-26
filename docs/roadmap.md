@@ -858,8 +858,14 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
 - ⏳ **D. Complete the conformance ledger (#69).** Not yet landed.
 - ⏳ **E. Close SPEC.md's and docs/architecture.md's remaining gaps (#70).** Not
   yet landed.
-- ⏳ **F. `host_like_pytest.sh` stops disarming the isolation it depends on
-  (#73, #74).** Not yet landed.
+- ✅ **F. `host_like_pytest.sh` stops disarming the isolation it depends on
+  (#73, #74).** F1 (#73): `RALPHD_RUN_ID` is preserved through the `RALPHD_*`
+  scrub (or minted fresh when absent), so the docker tier's per-run tag is
+  never the shared `ralphd:test-local-dev` fallback. F2 (#74): the script
+  detects a usable docker socket and filters the docker tier out with
+  `-m "not docker"` instead of letting it run nested and time out; the
+  header no longer claims the tier self-skips for want of a socket. Making
+  the nested docker tier pass is explicitly out of scope.
 - ⏳ **G. Nothing the last nine waves learned is lost.** Not yet landed.
 - ⏳ **H. Close this wave's issues, from inside the run.** Not yet landed; #69,
   #70, #72, #73, #74 and #75 remain open.

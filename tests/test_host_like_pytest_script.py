@@ -178,6 +178,78 @@ def test_the_decoy_is_a_regular_package_not_a_namespace_portion():
     )
 
 
+def test_header_makes_no_self_skip_claim_about_the_docker_or_browser_tiers():
+    """F2 (#74): an earlier header claimed the docker (and browser) tiers
+    self-skip cleanly here for want of a socket/browser -- false, since this
+    script always runs inside a job container that has a real docker socket
+    mounted in. The header must describe what actually happens (the tier is
+    detected and filtered out, not left to self-skip) and must cite #74, not
+    repeat the false premise."""
+    text = SCRIPT.read_text()
+    assert "#74" in text
+    lowered = text.lower()
+    assert "self-skip" not in lowered or "false" in lowered, (
+        "a stray 'self-skip' claim must be framed as the false premise being"
+        " corrected, not restated as fact"
+    )
+    assert "no docker socket" not in lowered, (
+        "the header must not claim this environment lacks a docker socket"
+    )
+
+
+def test_script_filters_the_docker_tier_out_when_a_usable_socket_is_present(tmp_path):
+    """F2 (#74): rather than let the docker-marked modules attempt to run
+    nested (and time out against a bridge-gateway port this container
+    cannot reach), the script must detect a usable docker socket and
+    exclude the tier with ``-m "not docker"`` -- proven here by collecting
+    a real docker-marked module through the script and asserting nothing
+    from it is collected."""
+    env = dict(os.environ)
+    env["PYTHON"] = sys.executable
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "tests/test_docker_sibling_e2e.py", "--collect-only"],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    # exit code 5 is pytest's own "no tests collected" -- expected here since
+    # every test in the module is deselected, not an error in the script.
+    assert result.returncode == 5, result.stdout + result.stderr
+    assert "no tests collected" in (result.stdout + result.stderr), (
+        result.stdout + result.stderr
+    )
+    assert "deselected" in (result.stdout + result.stderr)
+
+
+def test_script_lets_an_explicit_marker_argument_override_the_default(tmp_path):
+    """An explicit ``-m`` after the script's own filename must win over the
+    default docker-exclusion the script injects -- proven by asking for only
+    the docker tier explicitly and getting it collected (not deselected to
+    zero)."""
+    env = dict(os.environ)
+    env["PYTHON"] = sys.executable
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "tests/test_docker_sibling_e2e.py",
+            "--collect-only",
+            "-m",
+            "docker",
+        ],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert "no tests collected" not in combined, combined
+
+
 def test_script_loads_the_tests_package_pin_as_a_plugin():
     """The script's targets can be outside the repository (the probe above is),
     and pytest only loads the conftests on the path to its arguments -- so the

@@ -28,12 +28,30 @@
 #     almost nothing;
 #   - a fresh, empty $HOME (rules out anything cached under the real one).
 #
-# Runs the PRD's literal acceptance command, `python -m pytest -q`, with no
-# `-m` marker filter: the docker- and browser-marked modules are expected to
-# skip themselves cleanly here (no docker socket, and Playwright/Chromium
-# is present so the browser tier actually runs) -- that self-skipping is
-# what makes one bare command comparable across all three environments this
-# task records.
+# Runs the PRD's literal acceptance command, `python -m pytest -q`. The
+# browser-marked modules are left alone -- Playwright/Chromium is present in
+# this job container, so that tier actually runs here, and stays comparable
+# with a bare developer host.
+#
+# The docker tier is different: this script always executes *inside* a
+# ralphd job container, which always has a real, working docker socket
+# bind-mounted in (that is how this job itself talks to its own sibling
+# containers) -- there is no "no socket here, so the tier self-skips
+# cleanly" environment to fall into. Running the docker-marked modules
+# anyway does not exercise the tier the way it runs on a bare host: it runs
+# *nested* (a sibling of a sibling), and the sibling's published port is on
+# a network namespace this container does not share, so every docker test
+# times out with `[Errno 111] Connection refused` against the bridge
+# gateway instead of skipping or passing. That false "it self-skips" premise
+# in an earlier version of this header cost a real 57-minute sweep
+# (8 failed, 6 errors, all in the five docker-marked modules) before anyone
+# noticed the failures were an artefact of nesting, not a real regression
+# (F2, #74). So: this script detects whether a usable docker socket is
+# present (i.e. whether it is itself running nested, which in practice is
+# every time) and, when it is, filters the docker tier out with
+# `-m "not docker"` instead of attempting to run it nested. Making the
+# nested docker tier actually pass is explicitly out of scope (#74) --
+# that tier still needs a real, unnested host run to mean anything.
 #
 # Usage: scripts/host_like_pytest.sh [extra pytest args...]
 #
@@ -96,6 +114,22 @@ else
   PY="$(command -v python3)"
 fi
 
+# F2 (#74): a usable docker socket means the docker-marked tests would run
+# *nested* here (see header) instead of self-skipping -- filter the whole
+# tier out with `-m "not docker"` rather than let it attempt that and time
+# out against a bridge-gateway port this container cannot reach. The check
+# mirrors tests/test_docker_sibling_e2e.py's own `_docker_available()`:
+# a `docker` binary on PATH, a real socket file, and a working
+# `docker version` round-trip. A caller who passes their own `-m` in the
+# extra args after this script's name overrides this default, same as any
+# other pytest argument would.
+marker_args=()
+if command -v docker >/dev/null 2>&1 \
+   && [ -S "${DOCKER_SOCK_PATH:-/var/run/docker.sock}" ] \
+   && docker version >/dev/null 2>&1; then
+  marker_args=("-m" "not docker")
+fi
+
 # `-p tests_package_pin` is load-bearing, not belt-and-braces. The repo-root
 # conftest.py also pins the `tests` package, but pytest only loads the conftests
 # on the path to the arguments it is given: point this script at a probe file
@@ -113,4 +147,4 @@ exec env \
   HOME="$CLEAN_HOME" \
   RALPHD_RUN_ID="$HOST_LIKE_RUN_ID" \
   PYTHONPATH="$DECOY_ROOT${PYTHONPATH:+:${PYTHONPATH}}" \
-  "$PY" -m pytest -q -p tests_package_pin "$@"
+  "$PY" -m pytest -q -p tests_package_pin "${marker_args[@]}" "$@"
