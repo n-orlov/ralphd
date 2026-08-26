@@ -2473,6 +2473,7 @@ class LoopSupervisor:
         # an invalid answer, and falling back to the state's OWN declared
         # deterministic choice (never an illegal transition) after
         # `contract_retry_max` extra attempts or a hung call.
+        router_calls_before = self._router_calls
         outcome = await router.decide(
             state, self.cfg.vigilant, ask=self._ask_router,
             fallback_guard=transitions.fallback_guard(state),
@@ -2485,6 +2486,29 @@ class LoopSupervisor:
                      + (", FELL BACK to the declared deterministic choice "
                         "after exhausting the router's retry budget"
                         if outcome.used_fallback else "") + ")"))
+        # Task 022 (P, #80): one line in `artifacts/router/decisions.jsonl`
+        # per COMPLETED decision (never per `_ask_router` attempt), so a
+        # surface can list router calls without hunting through raw
+        # transcripts -- `state.router_call_entries` is the one reader.
+        # Never charges an iteration or an approach: this is a plain
+        # `RunDir` write, the same one `self.run.emit("log", ...)` just
+        # above already made, not a hat call through `run_iteration`.
+        self.run.record_router_decision({
+            "state": state,
+            "vigilant": self.cfg.vigilant,
+            "candidateEdges": [{"target": e.target, "guard": e.guard}
+                               for e in edges],
+            "chosenTarget": outcome.target,
+            "chosenGuard": outcome.guard,
+            "usedRouter": outcome.used_router,
+            "usedFallback": outcome.used_fallback,
+            "fallbackGuard": transitions.fallback_guard(state),
+            "attempts": outcome.attempts,
+            "model": self.cfg.model_for("router"),
+            "usage": outcome.usage or {},
+            "transcripts": [f"{n:04d}.jsonl" for n in
+                            range(router_calls_before + 1, self._router_calls + 1)],
+        })
         self._advance(state, outcome.target, outcome.guard)
         return ("advance", outcome.target, outcome.guard)
 

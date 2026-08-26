@@ -46,6 +46,7 @@ from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
     NO_ARTIFACTS,
+    NO_ROUTER_CALLS,
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
     TASK_BLOCKED_FIELD,
@@ -76,6 +77,7 @@ from ..engine.state import (
     format_last_tool_call,
     format_local_time,
     format_provisioning_lines,
+    format_router_calls_listing,
     format_run_document_listing,
     format_task_counts,
     format_task_status,
@@ -89,6 +91,8 @@ from ..engine.state import (
     read_operator_termination,
     read_tasks_doc,
     record_operator_termination,
+    router_call_entries,
+    router_call_summary_lines,
     run_document,
     run_document_keys,
     run_document_text,
@@ -4828,6 +4832,44 @@ def cmd_artifacts(args):
                      else [NO_ARTIFACTS])]))
 
 
+def cmd_router(args):
+    """This run's router calls (task 022, P, #80): `ls` lists every
+    decision the router made -- most shipped runs have none, since
+    `transitions.ROUTER_FALLBACK` is `{}` by design and every real hat
+    today decides its own edge without ever reaching `engine.router` --
+    `show <index>` prints one decision's full header block.
+
+    Purely on-disk, like `ralphctl artifacts`: `state.router_call_entries`
+    reads `artifacts/router/decisions.jsonl`, the engine's own append-only
+    write, so a live run and one whose container is long gone read
+    identically. Every entry says explicitly that it consumed no iteration
+    and no approach (`state.ROUTER_CALL_NOTE`) -- never presented as a work
+    iteration, and it needs no `iterations/NNNN/` directory of its own.
+    """
+    _require_run(args.run_id)
+    root = run_root(args.run_id)
+    entries = router_call_entries(root)
+    if args.action == "show":
+        try:
+            index = int(args.index)
+        except (TypeError, ValueError):
+            die(2, "router show needs a numeric index (see `router ls`)")
+        entry = next((e for e in entries if e["index"] == index), None)
+        if entry is None:
+            die(1, f"run {args.run_id} has no router call #{index} "
+                   f"(recorded: {len(entries)})")
+        if args.json:
+            print(json.dumps({"runId": args.run_id, **entry}, indent=2))
+            return
+        print(f"run:       {args.run_id}")
+        sys.stdout.write("\n".join(router_call_summary_lines(entry)) + "\n")
+        return
+    out(args, {"runId": args.run_id, "routerCalls": entries},
+        "\n".join([f"run:       {args.run_id}",
+                   *(format_router_calls_listing(entries) if entries
+                     else [NO_ROUTER_CALLS])]))
+
+
 # ------------------------------------------- the review-and-apply verb (041)
 # `artifacts/reflection/suggestions.diff` is what a finished run proposes about
 # the loop's own material, and until now nothing could apply it: the reflect
@@ -6174,6 +6216,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "path under artifacts/; with `pull`: the destination "
                         f"directory (default: {_DEFAULT_ARTIFACTS_DEST})")
     s.set_defaults(func=cmd_artifacts)
+
+    s = sub.add_parser("router", help="this run's router calls: which "
+                       "legal edge the router picked for an ambiguous "
+                       "state, and its own cost/tokens -- never a work "
+                       "iteration")
+    s.add_argument("run_id")
+    s.add_argument("action", choices=["ls", "show"], nargs="?", default="ls")
+    s.add_argument("index", nargs="?", metavar="N",
+                   help="with `show`: the router call's index (see `ls`)")
+    s.set_defaults(func=cmd_router)
 
     s = sub.add_parser("suggestions", help="show a run's reflection diff and "
                        "what it would touch, and apply it to a checkout on "

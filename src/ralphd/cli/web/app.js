@@ -846,6 +846,87 @@ async function loadArtifacts(runId) {
   renderArtifacts(box, ok, body, runId);
 }
 
+// ------------------------------------------------------ router calls (#80)
+
+// Task 022 (P, #80): `engine.loop.LoopSupervisor._ask_router` is the ONE
+// model call this engine deliberately never charges as a work iteration --
+// no `iterations_used` bump, no `iterations/NNNN/` directory -- which used
+// to also mean it had NO surface at all: an operator could not tell "the
+// router ran and picked X" from "the router never ran" without reading a
+// raw NDJSON transcript by hand. `GET /api/runs/<id>/router` (ui_server.py's
+// `router_calls_view`) reports `state.router_call_entries`, read from
+// `artifacts/router/decisions.jsonl` -- the engine's own write, one line per
+// COMPLETED decision. Every entry already carries `chargesIteration: false`
+// and `note` (the "never a work iteration" sentence, worded once in
+// Python) -- this panel shows both, so nobody has to trust a caption alone.
+
+const ROUTER_CALLS_LOAD_FAILED = "failed to load the run's router calls";
+
+function renderRouterCalls(box, ok, body) {
+  if (!ok || !body) {
+    box.innerHTML = "";
+    delete box.dataset.routerCalls;
+    box.appendChild(h("p", { class: "muted" }, [ROUTER_CALLS_LOAD_FAILED]));
+    return;
+  }
+  const items = Array.isArray(body.routerCalls) ? body.routerCalls : [];
+  // Same rebuild-skip discipline as `renderArtifacts`/`renderApproachHistory`
+  // (task 021/020): `load()` reruns this every REFRESH_MS, so an
+  // unconditional rebuild would re-collapse an operator's open `<details>`.
+  const wanted = items.map((c) => String(c.index) + ":" + String(c.state) +
+    ":" + String(c.chosenTarget)).join("\u0000") + "|" + String(body.notice || "");
+  if (box.dataset.routerCalls === wanted) return;
+  box.dataset.routerCalls = wanted;
+  box.innerHTML = "";
+  const list = h("div", { class: "router-call-list", id: "router-call-list" }, []);
+  for (const c of items) {
+    const candidates = Array.isArray(c.candidateEdges)
+      ? c.candidateEdges.map((e) => `${e.target}(${e.guard})`).join(", ")
+      : "";
+    list.appendChild(h("div", { class: "router-call-item" }, [
+      h("span", { class: "router-call-index" }, ["#" + String(c.index)]),
+      h("span", { class: "router-call-state" }, [String(c.state || "")]),
+      h("span", { class: "router-call-arrow" }, [" \u2192 "]),
+      h("span", { class: "router-call-chosen" },
+        [String(c.chosenTarget || "") + " (guard=" + String(c.chosenGuard || "") + ")"]),
+      c.usedFallback ? h("span", { class: "router-call-fallback" }, [" FELL BACK"]) : null,
+      h("span", { class: "muted router-call-candidates" }, [" candidates: " + candidates]),
+      h("span", { class: "muted router-call-model" },
+        [" model: " + String(c.model || "(unset)")]),
+      h("span", { class: "muted router-call-cost" },
+        [" " + String(c.tokensDisplay || "") + " " + String(c.costDisplay || "")]),
+    ]));
+  }
+  // Collapsed by default, same native `<details>`/`<summary>` chrome as the
+  // artifacts panel (task 021) -- no hand-rolled toggle -- with the COUNT in
+  // the summary and the explicit "never charged" sentence right below it, so
+  // collapsing this panel never hides whether the router ran, or the fact
+  // that running is free.
+  const details = h("details", { class: "router-call-list-details" }, [
+    h("summary", {}, ["router calls (" + String(items.length) + ")"]),
+    h("p", { class: "muted" }, [
+      "a router call consumes no iteration and no approach; it is never " +
+      "presented as a work iteration and needs no iterations/NNNN/ directory",
+    ]),
+    list,
+  ]);
+  box.appendChild(details);
+  if (body.notice) {
+    // Wording from the server (`state.NO_ROUTER_CALLS`), like every other
+    // on-disk panel's empty-state notice.
+    box.appendChild(h("p", { class: "muted", id: "router-calls-notice" },
+                      [String(body.notice)]));
+  }
+}
+
+async function loadRouterCalls(runId) {
+  const box = document.getElementById("router-calls-box");
+  const { ok, body } = await getJSON(
+    `/api/runs/${encodeURIComponent(runId)}/router`);
+  if (!box) return;
+  renderRouterCalls(box, ok, body);
+}
+
 // ------------------------------------------------- fault explanation (#18.4)
 
 // Task 026 (#18.4): a degraded card said the run was sitting out an infra
@@ -1193,6 +1274,13 @@ async function renderRunDetail(runId, myGen) {
     h("h2", {}, ["Artifacts"]),
     h("div", { id: "artifacts-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
   ]);
+  // Task 022 (P, #80): the router's own decisions -- normally none, since
+  // no shipped state has ever reached a genuine multi-edge choice -- with
+  // the explicit "never a work iteration" note carried on the panel itself.
+  const routerSec = h("section", {}, [
+    h("h2", {}, ["Router calls"]),
+    h("div", { id: "router-calls-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
+  ]);
   const usageSec = h("section", {}, [h("h2", {}, ["Usage / cost"]), h("div", { id: "usage-box" })]);
   const taskSec = h("section", {}, [h("h2", {}, ["Tasks"]), h("div", { id: "task-box" })]);
   // Task 021 (#24): every PREVIOUS approach `_archive_approach` froze into
@@ -1228,6 +1316,7 @@ async function renderRunDetail(runId, myGen) {
   app.appendChild(summary);
   app.appendChild(docSec);
   app.appendChild(artifactSec);
+  app.appendChild(routerSec);
   app.appendChild(usageSec);
   app.appendChild(taskSec);
   app.appendChild(approachSec);
@@ -1299,6 +1388,7 @@ async function renderRunDetail(runId, myGen) {
     await loadSteering(runId);
     await loadDocuments(runId);
     await loadArtifacts(runId);
+    await loadRouterCalls(runId);
     await loadApproaches(runId);
   }
 

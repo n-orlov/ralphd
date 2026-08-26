@@ -87,9 +87,11 @@ from ..engine.state import (
     iteration_detail,
     iteration_detail_text,
     iteration_summary_lines,
+    NO_ROUTER_CALLS,
     prd_path,
     read_iteration_prompt,
     read_tasks_doc,
+    router_call_entries,
     run_document,
     run_document_summary_lines,
     run_document_text,
@@ -690,6 +692,29 @@ def artifact_list(reg: Path, run_id: str) -> dict:
                artifact_entries(reg / "runs" / run_id, bodies=False)]
     return {"runId": run_id, "artifacts": entries,
             "notice": "" if entries else NO_ARTIFACTS}
+
+
+def router_calls_view(reg: Path, run_id: str) -> dict:
+    """This run's router calls, for the hub's router panel (task 022, P,
+    #80): `state.router_call_entries` read from `artifacts/router/
+    decisions.jsonl`, the ONE surface a decision the router made is visible
+    on at all (before this, it was a raw NDJSON transcript under
+    `artifacts/router/NNNN.jsonl` plus a log line -- correct for the engine's
+    own accounting, invisible to an operator).
+
+    Every entry already carries `chargesIteration: False` and `note`
+    (`state.ROUTER_CALL_NOTE`) -- the "never a work iteration, never an
+    approach" fact is said on the DATA, not just once in this docstring, so
+    `ralphctl router` and the hub panel cannot drift on it.
+
+    Purely on-disk, like `artifact_list`/`document_list`: a live run and one
+    whose container is long gone read identically, and a run that never
+    reached a router-ambiguous state -- every shipped run, today -- answers
+    with an empty list plus `state.NO_ROUTER_CALLS`.
+    """
+    entries = router_call_entries(reg / "runs" / run_id)
+    return {"runId": run_id, "routerCalls": entries,
+            "notice": "" if entries else NO_ROUTER_CALLS}
 
 
 def artifact_view(reg: Path, run_id: str, name: str) -> dict | None:
@@ -1416,6 +1441,19 @@ class Handler(BaseHTTPRequestHandler):
                         {"error": f"not an artifact name: {name!r}"}, 404)
                     return
                 self._send_json(view)
+                return
+            if (len(segs) == 4 and segs[:2] == ["api", "runs"]
+                    and segs[3] == "router"):
+                # Task 022 (P, #80): this run's router-call listing (see
+                # `router_calls_view` -- purely on-disk, like the artifacts
+                # route just above). No per-entry dialog route yet: the
+                # listing payload already carries every field task 022's
+                # criteria asks for, so app.js's panel needs nothing more.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                self._send_json(router_calls_view(reg, run_id))
                 return
             if (len(segs) in (4, 5) and segs[:2] == ["api", "runs"]
                     and segs[3] == "approaches"):

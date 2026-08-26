@@ -3165,6 +3165,166 @@ def artifact_text(entry: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Task 022 (P, #80): the router-calls surface.
+#
+# `engine.loop.LoopSupervisor._ask_router` (loop.py:2675-2699) is the ONLY
+# model call in this engine that is deliberately, permanently uncounted: it
+# never increments `self.iterations_used`, never opens an `iterations/NNNN/`
+# directory, and its transcripts live under `artifacts/router/NNNN.jsonl`
+# instead (the `_router_calls` counter at loop.py:164-170 numbers them). That
+# is correct and load-bearing for the loop's own accounting, but it also
+# means a router call had NO surface at all before this task -- an operator
+# could not tell "the router ran and picked X" from "the router never ran"
+# without reading a raw NDJSON transcript by hand and cross-referencing
+# `transitions.TABLE` themselves.
+#
+# `LoopSupervisor._step_generic_hat` writes one JSON line to
+# `artifacts/router/decisions.jsonl` per COMPLETED router decision (not per
+# `_ask_router` attempt -- a decision that took three attempts before it
+# fell back is still one entry, with `attempts: 3`), through
+# `RunDir.record_router_decision` below. This is the ONE place that file is
+# written; everything here is a read-only shaping of it, exactly like
+# `artifact_entries`/`cost_breakdown` are read-only shapings of files the
+# engine writes elsewhere.
+#
+# `ROUTER_FALLBACK` is `{}` by design (transitions.py:310-323) and no shipped
+# state has more than one hand-decided legal edge today, so this file is
+# empty for every real run that has ever shipped -- see
+# `artifacts/reports/router-calls-surface.md` for that claim's evidence.
+# This surface exists anyway, ahead of any real router-ambiguous hat, so a
+# future one (a v0.12 peer gate, per the PRD) arrives observable from day
+# one instead of needing its own follow-up task.
+
+# `artifacts/router/decisions.jsonl`'s own filename, spelled once.
+ROUTER_DECISIONS_FILENAME = "decisions.jsonl"
+
+NO_ROUTER_CALLS = (
+    "(no router calls this run -- transitions.ROUTER_FALLBACK is {} by "
+    "design, so no shipped state has ever reached a genuine multi-edge "
+    "choice; see artifacts/reports/router-calls-surface.md)"
+)
+
+# Said on EVERY entry, not just in a header: a router call must never be
+# mistaken for a work iteration by someone who only opened one entry's
+# dialog rather than reading the panel's own caption.
+ROUTER_CALL_NOTE = (
+    "a router call decides which of a state's legal edges to take when "
+    "there is more than one; it consumes no iteration and no approach "
+    "(engine.loop.LoopSupervisor._ask_router never touches "
+    "iterations_used) and opens no iterations/NNNN/ directory of its own"
+)
+
+
+def router_call_entry(raw: dict, index: int) -> dict:
+    """One router decision, shaped for both surfaces from one
+    `decisions.jsonl` line (`raw`) -- `cost_bucket` supplies the same
+    `costDisplay`/`tokensDisplay` vocabulary every other usage surface
+    uses, so a router call's own spend reads identically to a hat's.
+    """
+    usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+    bucket = cost_bucket(usage, key="router")
+    return {
+        "index": index,
+        "ts": raw.get("ts"),
+        "state": raw.get("state"),
+        "vigilant": raw.get("vigilant"),
+        "candidateEdges": raw.get("candidateEdges") or [],
+        "chosenTarget": raw.get("chosenTarget"),
+        "chosenGuard": raw.get("chosenGuard"),
+        "usedRouter": raw.get("usedRouter"),
+        "usedFallback": raw.get("usedFallback"),
+        "fallbackGuard": raw.get("fallbackGuard"),
+        "attempts": raw.get("attempts"),
+        "model": raw.get("model"),
+        "transcripts": raw.get("transcripts") or [],
+        "tokens": bucket["tokens"],
+        "tokensDisplay": bucket["tokensDisplay"],
+        "costDisplay": bucket["costDisplay"],
+        "costSource": bucket["costSource"],
+        "chargesIteration": False,
+        "note": ROUTER_CALL_NOTE,
+    }
+
+
+def router_call_entries(run_root: Path) -> list[dict]:
+    """Every completed router decision this run recorded, oldest first, as
+    `router_call_entry` dicts -- the ONE reader `ralphctl router` and the
+    hub's router panel both use, mirroring `artifact_entries`'s role for
+    `artifacts/`.
+
+    Purely on-disk, like every other artifacts-derived surface: a live run
+    and one whose container is long gone read identically. A run that never
+    reached a router-ambiguous state (every shipped run, today) answers with
+    an empty list, which the caller pairs with `NO_ROUTER_CALLS`.
+    """
+    path = Path(run_root) / ARTIFACTS_DIR_NAME / "router" / ROUTER_DECISIONS_FILENAME
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    entries = []
+    for i, line in enumerate(lines, start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(raw, dict):
+            entries.append(router_call_entry(raw, i))
+    return entries
+
+
+def router_call_summary_lines(entry: dict) -> list[str]:
+    """One router call's header block, worded ONCE: `ralphctl router <run>
+    show <index>` prints these and the hub's dialog (once one exists) would
+    show the very same lines. Always ends with `ROUTER_CALL_NOTE` -- the
+    "never a work iteration" fact belongs on every single reading of an
+    entry, not only on the panel wrapping all of them.
+    """
+    if not isinstance(entry, dict):
+        return []
+    candidates = ", ".join(
+        f"{e.get('target')}({e.get('guard')})"
+        for e in entry.get("candidateEdges") or [] if isinstance(e, dict)
+    ) or "(none recorded)"
+    lines = [
+        f"router call:  #{entry.get('index')}",
+        f"state:         {entry.get('state')}",
+        f"candidates:    {candidates}",
+        f"chosen:        {entry.get('chosenTarget')} "
+        f"(guard={entry.get('chosenGuard')})",
+        f"fallback used: {bool(entry.get('usedFallback'))}"
+        + (f" (declared fallback guard={entry.get('fallbackGuard')})"
+           if entry.get("usedFallback") else ""),
+        f"attempts:      {entry.get('attempts')}",
+        f"model:         {entry.get('model') or '(unset -- pi default)'}",
+        f"tokens:        {entry.get('tokensDisplay')}",
+        f"cost:          {entry.get('costDisplay') or USAGE_NONE}",
+        "",
+        entry.get("note") or ROUTER_CALL_NOTE,
+    ]
+    return lines
+
+
+def format_router_calls_listing(entries: list[dict]) -> list[str]:
+    """The "what has this run's router decided" table as text lines, worded
+    ONCE: `ralphctl router <run>` prints these and the hub's router panel
+    labels its rows from the very same fields. An empty list yields only the
+    header -- the caller prints `NO_ROUTER_CALLS` instead."""
+    lines = [f"{'#':>3}  {'STATE':<28}{'CHOSEN':<20}{'FALLBACK':<10}"
+             f"{'ATTEMPTS':>9}  MODEL"]
+    for e in entries:
+        lines.append(
+            f"{e.get('index'):>3}  {str(e.get('state') or ''):<28}"
+            f"{str(e.get('chosenTarget') or ''):<20}"
+            f"{str(bool(e.get('usedFallback'))):<10}"
+            f"{e.get('attempts') or 0:>9}  {e.get('model') or '(unset)'}")
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # Task 025 (#18.4): the fault explanation.
 #
 # The engine already records everything needed to explain a fault -- the
@@ -4328,6 +4488,29 @@ class RunDir:
             with open(self.root / "events.jsonl", "a") as f:
                 f.write(line + "\n")
         return event
+
+    # -- router calls (task 022, P, #80) -----------------------------------
+    def record_router_decision(self, record: dict) -> None:
+        """Append one COMPLETED router decision to
+        `artifacts/router/decisions.jsonl` -- the ONE write path this file
+        ever gets, called exactly once by `LoopSupervisor._step_generic_hat`
+        right after `router.decide()` returns (never per `_ask_router`
+        attempt: a decision that took several attempts is still one line,
+        carrying its own `attempts` count).
+
+        Deliberately a plain append, not `self.emit()`: this is a second,
+        purpose-built stream living beside the router's own transcripts
+        (`artifacts/router/NNNN.jsonl`) rather than a line in
+        `events.jsonl`, mirroring how `artifacts/` already holds files no
+        `RunDir` method reads back except through their own dedicated
+        shaping (`state.artifact_entries`'s role for `state.
+        router_call_entries`, task 022).
+        """
+        router_dir = self.artifacts_dir / "router"
+        router_dir.mkdir(parents=True, exist_ok=True)
+        line = scrub_text(json.dumps({"ts": utcnow(), **record}))
+        with open(router_dir / ROUTER_DECISIONS_FILENAME, "a") as f:
+            f.write(line + "\n")
 
     # -- steering --------------------------------------------------------
     def add_steering(self, message: str, name: str | None = None) -> str:
