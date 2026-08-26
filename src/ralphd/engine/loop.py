@@ -1111,7 +1111,8 @@ class LoopSupervisor:
                                                  "startedAt": meta["startedAt"]})
 
         timeout = min(self.cfg.iteration_timeout_s,
-                      max(60, int(self.deadline - time.monotonic())))
+                      max(self.REFLECT_TAIL_TIMEOUT_S if phase == "reflect"
+                          else 60, int(self.deadline - time.monotonic())))
         # Task 001a: the startup-window watchdog applies to exactly the
         # phases the infra-retry wrapper protects -- a phase whose zero-
         # traffic hang nobody would retry should not be killed early
@@ -1741,6 +1742,24 @@ class LoopSupervisor:
     # runs; five minutes is enough to ride out the wobble that just killed it
     # without keeping a finished run's container alive for hours.
     REFLECT_OUTAGE_BUDGET_S = 300.0
+
+    # Task 008 (requirement C, #72): the reflect iteration's own per-attempt
+    # wall-clock floor, independent of self.deadline -- see
+    # _run_iteration_once's `timeout` computation. `finishing`/`reflect` is
+    # the run's own account of itself (PRD req 24) and it is the first thing
+    # a deadline that fires mid-run eats: once self.deadline is already in
+    # the past, the ordinary formula (`max(60, deadline - now)`) gives EVERY
+    # phase, including reflect, exactly the 60s floor -- nowhere near enough
+    # for a real post-mortem write (v0.9's iteration 185, `selfdev-
+    # v09-fsm-loop`, died this way). Reflect now gets at least this many
+    # seconds for its one attempt even when the deadline is long gone (still
+    # capped by cfg.iteration_timeout_s), which is a hard, fixed extension --
+    # not a moving target, since _run_reflection() runs this exactly once per
+    # process. Rejected alternatives (a reserved tail budget carved out of
+    # job_timeout_s up front; extending self.deadline itself the way
+    # _account_infra_wait does for infra waits) are written down in
+    # artifacts/reports/task-008-finishing-tail-budget.md.
+    REFLECT_TAIL_TIMEOUT_S = 600.0
 
     async def _run_reflection(self) -> None:
         """One extra 'reflect' iteration after the job has already reached a

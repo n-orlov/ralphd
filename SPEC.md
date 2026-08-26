@@ -875,6 +875,7 @@ could dodge every automated check by moving the bar after failing it.
 | startup (no-traffic) window | `infra_startup_timeout_s` | `150s` | how long an iteration may run with zero observed LLM traffic |
 | outage budget | `infra_outage_budget_s` | `4h` | cumulative backoff wait one outage episode may spend |
 | reflect outage budget | `REFLECT_OUTAGE_BUDGET_S` | `300s` | the same, for the post-terminal reflect iteration |
+| reflect's own timeout floor | `REFLECT_TAIL_TIMEOUT_S` | `600s` | requirement C (#72): a floor under reflect's ONE attempt, independent of how far past `job_timeout_s` the run already is -- see below |
 | instant-failure fail-fast | `INSTANT_FAILURE_MAX_DURATION_S`, `MAX_CONSECUTIVE_INSTANT_FAILURES` | `5.0s`, `3` | a run of identical sub-5s zero-work failures aborts the job |
 | stagnation guard | — | `3` | consecutive no-change worker iterations that abandon an approach |
 
@@ -899,10 +900,31 @@ The per-iteration timeout is clamped by what is left of the deadline:
 
 ```python
 timeout = min(self.cfg.iteration_timeout_s,
-              max(60, int(self.deadline - time.monotonic())))
+              max(self.REFLECT_TAIL_TIMEOUT_S if phase == "reflect" else 60,
+                  int(self.deadline - time.monotonic())))
 startup_timeout_s = (min(self.cfg.infra_startup_timeout_s, timeout)
                      if phase in self.INFRA_RETRY_PHASES else None)
 ```
+
+**`reflect`'s own attempt does not inherit the plain 60s floor once the job's
+deadline has already passed** (requirement C, #72). `reflect` (PRD req 24)
+runs strictly after `_run_job_core()` has already settled the job's fate, so
+by the time it gets its one attempt `self.deadline` is ordinarily already
+behind `time.monotonic()` -- and the plain formula floors every phase at
+60s regardless of how far past the deadline the run is. Sixty seconds is not
+enough for a real post-mortem write: `selfdev-v09-fsm-loop` lost its
+reflection entirely this way (iterations 183/184/185, a 2m01s window,
+`artifacts/reflection/FAILED.md` and nothing else). `REFLECT_TAIL_TIMEOUT_S`
+(600s) is the floor for reflect specifically instead of 60 -- still capped by
+`cfg.iteration_timeout_s`, and `_run_reflection()` runs this exactly once per
+process, so the worst-case extra wall time this adds to a run, ever, is
+`min(cfg.iteration_timeout_s, 600)` seconds. `job_timeout_s`'s own meaning
+("wall-clock limit for the whole job") and `self.deadline`/`deadlineAt` are
+unchanged by this -- only the one floor reflect's attempt is measured
+against moved. See `artifacts/reports/task-008-finishing-tail-budget.md`
+for the two rejected designs (a reserved tail budget carved out of
+`job_timeout_s` up front; extending `self.deadline` itself the way
+`_account_infra_wait` does for infra waits).
 
 The startup watchdog exists because a hang with *nothing* coming back — a DNS or
 gateway glitch the agent process blocks on internally — otherwise consumes the
