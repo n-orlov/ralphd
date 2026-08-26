@@ -856,8 +856,24 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   unchanged; a mutation test proves the reproduction fails against the old
   current-approach-only logic.
 - ⏳ **D. Complete the conformance ledger (#69).** Not yet landed.
-- ⏳ **E. Close SPEC.md's and docs/architecture.md's remaining gaps (#70).** Not
-  yet landed.
+- ✅ **E. Close SPEC.md's and docs/architecture.md's remaining gaps (#70).**
+  `grep -c router_model SPEC.md docs/architecture.md docs/api.md` was `0`/`0`/`0`
+  at planning, now `2`/`2`/`2`: a new router paragraph in SPEC.md §4.1, a new
+  "The router" section in `docs/architecture.md` after the generated
+  transition table, and a `model.routerModel` paragraph plus a
+  `routerTimeoutS`-row update in `docs/api.md` name `router_model`, its
+  timeout and how its cost is accounted (`usage.byPhase["router"]`). SPEC.md's
+  prompt-resolution paragraph (§6.4) and every `PUT /config/prompts/{name}`
+  row across SPEC.md/docs/api.md/docs/architecture.md now say that surface is
+  host-only under requirement A's `control_token` split (#62). A wider
+  re-check of SPEC.md against v0.9's shipped behaviour (not only #70's named
+  gaps) found and fixed three further stale claims predating this task: the
+  `scheduler.py` row still said `select_next_task` was "not yet wired" (wired
+  since task 116); §4.1's `worker` phases-table cell and §4.3 still described
+  the retired whole-plan-`COMPLETE`-only mechanism instead of task 116's
+  per-task JSON contract; the task-status mini-FSM paragraph called that same
+  cutover future work when task 116 had already landed it.
+  `docs/architecture.md`'s "as shipped in" line moves `v0.8.0` -> `v0.9.0`.
 - ✅ **F. `host_like_pytest.sh` stops disarming the isolation it depends on
   (#73, #74).** F1 (#73): `RALPHD_RUN_ID` is preserved through the `RALPHD_*`
   scrub (or minted fresh when absent), so the docker tier's per-run tag is

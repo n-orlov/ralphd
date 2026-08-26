@@ -244,7 +244,7 @@ def test_every_other_requirement_is_honestly_pending():
     bullet check was amended once task 113 actually closed the issues."""
     block = milestone_block(roadmap_text(), declared_series())
     assert block is not None
-    for letter in "DEGHM":
+    for letter in "DGHM":
         bullet = _bullet(block, letter)
         assert bullet.startswith("- \u23f3"), (
             f"requirement {letter} is marked shipped, but no task has landed it "
