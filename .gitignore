@@ -7,3 +7,6 @@ build/
 .pytest_cache/
 .ruff_cache/
 .playwright-cli/
+
+# scratch dirs left by docker e2e test fixtures if teardown is interrupted
+.docker-e2e-tmp-*
