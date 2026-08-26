@@ -28,6 +28,7 @@ from .loop import LoopSupervisor
 from .redact import refresh_redaction_map, scrub_text
 from .skills import (
     InvalidSkillTar,
+    ambient_home,
     api_skills_dir,
     clear_tombstone,
     deleted_dir,
@@ -494,7 +495,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         except InvalidSkillTar as exc:
             raise problem(422, "invalid skill archive", str(exc)) from exc
         clear_tombstone(name)
-        place_skills(CONFIG_DIR)
+        place_skills(CONFIG_DIR, home=ambient_home())
         run.emit("log", message=f"skill added via API: {name}")
         return Response(status_code=204)
 
@@ -508,7 +509,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         ddir = deleted_dir()
         ddir.mkdir(parents=True, exist_ok=True)
         (ddir / name).touch()
-        place_skills(CONFIG_DIR)
+        place_skills(CONFIG_DIR, home=ambient_home())
         run.emit("log", message=f"skill removed via API: {name}")
         return Response(status_code=204)
 

@@ -25,7 +25,7 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from .config import OVERLAY_DIR
+from .config import CONFIG_DIR, OVERLAY_DIR
 
 log = logging.getLogger("ralphd.skills")
 
@@ -74,6 +74,16 @@ def extract_skill_tar(body: bytes, dest: Path) -> None:
 
 def _home() -> Path:
     return Path(os.environ.get("HOME") or os.path.expanduser("~"))
+
+
+def ambient_home() -> Path:
+    """The engine process's own real home (from $HOME, falling back to
+    `os.path.expanduser`). Exists so call sites of `place_skills()` resolve
+    the home they mean to pass *explicitly*, at the call site, instead of
+    relying on an implicit fallback inside `place_skills()` itself (#83,
+    task 002) -- the value is identical to the old default, but now every
+    caller states in its own source that this is the home it intends."""
+    return _home()
 
 
 def api_skills_dir() -> Path:
@@ -147,12 +157,32 @@ def list_skills(config_dir: Path) -> list[dict]:
     return out
 
 
-def place_skills(config_dir: Path, home: Path | None = None) -> list[str]:
+def place_skills(config_dir: Path, *, home: Path) -> list[str]:
     """Rebuild `~/.pi/agent/skills/` from the mounted + api sources (api
     wins on name collision; tombstoned names are omitted). Returns the
     placed names, for logging by the caller (skill *names* only, never
-    contents -- skills aren't secret, but keep the same discipline)."""
-    home = home or _home()
+    contents -- skills aren't secret, but keep the same discipline).
+
+    Task 002 (#83 class closure): this function used to default a missing
+    `home` to `_home()` (real ambient $HOME) and never checked `config_dir`
+    at all, so a caller that forgot `home=` -- as engine/api.py's two PUT/
+    DELETE handlers did -- silently rebuilt the *real* $HOME's
+    `~/.pi/agent/skills/` from whatever (usually empty, in a throwaway test
+    config_dir) sources that caller's `config_dir` happened to have,
+    wiping out anything a human or another process had placed there (#83).
+    `home` is now a *required* keyword-only argument -- a caller that omits
+    it gets a loud `TypeError` before any filesystem write happens, never a
+    silent fallback to ambient $HOME. `config_dir` is also checked against
+    the engine's own `CONFIG_DIR`: a caller that (by bug or by a future
+    call site added elsewhere) passes some other directory gets a loud
+    `ValueError` instead of a placement built from the wrong source tree.
+    Both checks run before any write to `home`, so refusal never touches
+    the caller's real $HOME.
+    """
+    if config_dir != CONFIG_DIR:
+        raise ValueError(
+            f"place_skills: config_dir must be the engine's own CONFIG_DIR "
+            f"({CONFIG_DIR!r}), got {config_dir!r}")
     target = _pi_skills_dir(home)
     if target.exists():
         for existing in target.iterdir():

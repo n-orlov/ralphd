@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 from test_e2e import EngineProc
 
+from ralphd.engine import skills
+
 
 @pytest.fixture
 def skills_engine(tmp_path):
@@ -166,3 +168,46 @@ def test_put_empty_body_rejected(skills_engine, tmp_path):
     e.wait_api()
     st, _ = _put(e.port, "/config/skills/empty", b"")
     assert st == 422
+
+
+def test_home_isolation_is_an_enforced_invariant_not_a_convention(tmp_path):
+    """Every test above passes `stub_env={"HOME": ...}` to isolate the
+    child engine's `~/.pi/agent/skills/` from the real ambient $HOME --
+    but until task 002 that was purely a *convention* this test module
+    followed: nothing in `place_skills()` itself would have complained if
+    a call site (this one's own `engine/api.py`, or a future one) forgot
+    it and fell back to ambient $HOME (#83). This test asserts the
+    invariant directly, at the function boundary skills_engine's helpers
+    only exercise indirectly through the API: `place_skills()` refuses to
+    run at all without an explicit `home=`, and refuses a `config_dir`
+    that isn't the engine's own CONFIG_DIR -- in both cases before
+    touching any filesystem, proven by a decoy symlink under a fake home
+    that survives the refusal untouched. See
+    tests/test_skills_placement_requires_home.py for the full coverage;
+    this is the pointer from this module to that enforced invariant."""
+    fake_home = tmp_path / "fakehome-isolation-check"
+    skills_dir = fake_home / ".pi" / "agent" / "skills"
+    skills_dir.mkdir(parents=True)
+    source = fake_home / "decoy-source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# decoy\n")
+    decoy = skills_dir / "decoy"
+    decoy.symlink_to(source, target_is_directory=True)
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+
+    with pytest.raises(TypeError):
+        skills.place_skills(config_dir)  # no home= -- must not fall back
+
+    foreign_config_dir = tmp_path / "foreign-config"
+    foreign_config_dir.mkdir()
+    with pytest.raises(ValueError, match="CONFIG_DIR"):
+        skills.place_skills(foreign_config_dir, home=fake_home)
+
+    assert decoy.is_symlink() and decoy.exists(), (
+        "place_skills() must refuse both bad calls before touching the "
+        "fake home at all -- the decoy symlink must survive untouched, "
+        "proving this suite's stub_env HOME overrides are backed by an "
+        "enforced invariant, not merely a followed convention"
+    )
