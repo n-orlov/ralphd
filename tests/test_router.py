@@ -255,18 +255,18 @@ def test_router_module_has_no_second_schema_validator():
 # mechanism").
 # ---------------------------------------------------------------------------
 
-def test_router_model_default_is_none_and_falls_back_to_fast_then_strong():
+def test_router_model_default_is_none_and_falls_back_to_model():
+    """Task 006 retired the fast tier `router` used to borrow from
+    (`fast_model`) -- the router now falls straight through to `model` when
+    `router_model` is unset, exactly like every other unconfigured hat."""
     from ralphd.engine.config import JobConfig
     cfg = JobConfig()
     assert cfg.router_model is None
     assert cfg.model_for("router") is None  # nothing configured at all
     cfg2 = JobConfig(model="strong-ref")
     assert cfg2.model_for("router") == "strong-ref"
-    cfg3 = JobConfig(model="strong-ref", fast_model="fast-ref")
-    assert cfg3.model_for("router") == "fast-ref"
-    cfg4 = JobConfig(model="strong-ref", fast_model="fast-ref",
-                      router_model="router-ref")
-    assert cfg4.model_for("router") == "router-ref"
+    cfg3 = JobConfig(model="strong-ref", router_model="router-ref")
+    assert cfg3.model_for("router") == "router-ref"
 
 
 def test_router_model_override_via_model_overrides_wins_over_router_model():

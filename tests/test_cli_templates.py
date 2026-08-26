@@ -45,7 +45,7 @@ def test_template_supplies_job_defaults(ctl):
     tdir = _template_dir(ctl, "quick")
     (tdir / "job.yaml").write_text(
         "iterations: 7\nmax_approaches: 2\nvigilant: true\non_complete: exit\n"
-        "model_strategy: cost-optimized\n"
+        "thinking: high\n"
     )
     res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
                   "--run-id", "tpl-defaults", "--template", "quick")
@@ -55,7 +55,7 @@ def test_template_supplies_job_defaults(ctl):
     assert job["max_approaches"] == 2
     assert job["vigilant"] is True
     assert job["on_complete"] == "exit"
-    assert job["model_strategy"] == "cost-optimized"
+    assert job["thinking"] == "high"
 
 
 def test_explicit_flag_overrides_template_value(ctl):

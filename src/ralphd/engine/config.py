@@ -166,22 +166,76 @@ def list_prompts() -> list[dict]:
     return [{"name": n, "source": prompt_source(n)} for n in PROMPT_NAMES]
 
 
-# Task 044 (#53): the strategy a job runs when nobody chose one, stated
-# EXACTLY ONCE. `balanced` ships instead of `quality-first` because it is the
-# only preset that spends the strong model where the reasoning is (planning,
-# review, reflect) and the fast one where the work is mechanical, so the
-# out-of-the-box run is affordable without being obviously worse; a host that
-# wants the old behaviour states `model_strategy: quality-first` once
-# (`ralphctl config set model_strategy quality-first`, task 043).
-#
-# Deliberately NOT the same constant as `model_for`'s unknown-name fallback
-# (which stays `quality-first`): "what ships" and "what an unrecognised name
-# degrades to" are two different decisions -- the fallback must be the
-# most-capable preset, because a typo must never quietly *downgrade* a phase's
-# model, while the shipped default may be the cheap compromise. Collapsing them
-# into one name would mean a later default flip silently retargeted the
-# fallback too.
-DEFAULT_MODEL_STRATEGY = "balanced"
+# ---------------------------------------------------------------------------
+# Task 006 (#60 pillar 4, requirement A cleanup): MIGRATION-ONLY. Tasks 043/044
+# gave every job a `model_strategy` (a name into `_LEGACY_STRATEGY_TIERS`
+# below) plus an optional `fast_model` second ref; task 005 replaced that
+# whole mechanism with the per-hat `models`/`model_overrides` table
+# `model_for` reads directly. Neither name is a live field or a live
+# resolution rung any more -- `_migrate_legacy_model_config` below is the
+# ONLY place either name is read, and it runs exactly once, at `load()` time,
+# to translate an old job.yaml into the new table so an existing run keeps
+# behaving identically instead of the keys silently landing in `extra` and
+# doing nothing. Nothing downstream of that call ever sees `model_strategy`
+# or `fast_model` again.
+_LEGACY_DEFAULT_MODEL_STRATEGY = "balanced"
+
+# The preset table itself, verbatim from the retired `JobConfig.STRATEGY_TIERS`
+# class attribute -- kept ONLY so the migration above can reproduce exactly
+# the same phase->tier choice an old job.yaml used to get live. Never
+# consulted by `model_for`.
+_LEGACY_STRATEGY_TIERS = {
+    "quality-first": {"planning": "strong", "worker": "strong",
+                      "review": "strong", "verify": "strong",
+                      "reflect": "strong"},
+    "cost-optimized": {"planning": "strong", "worker": "fast",
+                       "review": "fast", "verify": "fast",
+                       "reflect": "fast"},
+    "balanced": {"planning": "strong", "worker": "fast",
+                 "review": "strong", "verify": "fast",
+                 "reflect": "strong"},
+}
+
+# The names `_LEGACY_STRATEGY_TIERS` recognises -- used only to decide whether
+# a `model_strategy` value degrades to the migration's own "unrecognised name"
+# fallback (`quality-first`, matching the retired live behaviour exactly).
+_LEGACY_MODEL_STRATEGIES = tuple(_LEGACY_STRATEGY_TIERS)
+
+
+def _migrate_legacy_model_config(raw: dict) -> dict:
+    """Task 006: fold a job.yaml's legacy `model_strategy`/`fast_model` keys
+    into the per-hat `models` table `model_for` actually reads, deterministically
+    and exactly once, so an old job.yaml (or one hand-written / carried over
+    from a template written before this task) keeps resolving to the exact
+    same model per phase it always did -- never a silent drop into `extra`.
+
+    Runs on the raw dict `load()` just parsed, before the known/extra split,
+    and returns a new dict with both legacy keys removed and `models` filled
+    in for any of the five strategy-tiered hats an explicit `models`/
+    `model_overrides` entry did not already claim (those always win).
+    """
+    if "model_strategy" not in raw and "fast_model" not in raw:
+        return raw
+    raw = dict(raw)
+    strategy = raw.pop("model_strategy", _LEGACY_DEFAULT_MODEL_STRATEGY)
+    fast_model = raw.pop("fast_model", None)
+    model = raw.get("model")
+    tiers = _LEGACY_STRATEGY_TIERS.get(
+        strategy, _LEGACY_STRATEGY_TIERS["quality-first"])
+    translated = {hat: (fast_model or model if tiers.get(hat) == "fast" else model)
+                  for hat in ("planning", "worker", "verify", "review", "reflect")}
+    explicit = dict(raw.get("models") or {})
+    explicit.update(raw.get("model_overrides") or {})
+    merged = {**translated, **explicit}
+    merged = {k: v for k, v in merged.items() if v is not None}
+    log.warning(
+        "job.yaml's `model_strategy`/`fast_model` keys are retired (task "
+        "006) -- translated deterministically into an equivalent `models:` "
+        "table naming every hat: %s. Update job.yaml to spell this directly "
+        "as `models:` (or `model_overrides:`).", merged)
+    raw["models"] = merged
+    return raw
+# ---------------------------------------------------------------------------
 
 
 # Task 005 (#60 pillar 4, requirement A): the per-hat model table's own two
@@ -228,10 +282,12 @@ class JobConfig:
     reflect: bool = False  # run one extra 'reflect' iteration after terminal state
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
-    # model tiers: any pi "provider/model" ref; phase → tier via strategy
-    model: str | None = DEFAULT_HAT_MODEL_REF  # strong tier (pi default model when None)
-    fast_model: str | None = None     # fast tier (falls back to model)
-    model_strategy: str = DEFAULT_MODEL_STRATEGY
+    # any pi "provider/model" ref; the plain fallback every hat resolves to
+    # when neither `model_overrides`/`models` nor (for `router`) `router_model`
+    # names anything for it. `fast_model`/`model_strategy` (a phase->tier
+    # strategy table) are RETIRED (task 006) -- see `_migrate_legacy_model_config`
+    # above for the one place a job.yaml carrying either key is still honoured.
+    model: str | None = DEFAULT_HAT_MODEL_REF  # pi's own default model when None
     # Task 005 (#60 pillar 4, requirement A): `model_overrides` is the
     # RETAINED name for the per-hat table and stays THE mechanism `model_for`
     # consults first -- `models` (below) is accepted as its alias for at
@@ -334,20 +390,6 @@ class JobConfig:
     price_strategy: str = DEFAULT_PRICE_STRATEGY
     extra: dict = field(default_factory=dict)
 
-    # "reflect" (post-job self-reflection, PRD req 24) mirrors "review"'s tier
-    # in every strategy -- it's the same kind of post-hoc analysis role.
-    STRATEGY_TIERS = {
-        "quality-first": {"planning": "strong", "worker": "strong",
-                          "review": "strong", "verify": "strong",
-                          "reflect": "strong"},
-        "cost-optimized": {"planning": "strong", "worker": "fast",
-                           "review": "fast", "verify": "fast",
-                           "reflect": "fast"},
-        "balanced": {"planning": "strong", "worker": "fast",
-                     "review": "strong", "verify": "fast",
-                     "reflect": "strong"},
-    }
-
     def __post_init__(self) -> None:
         # Normalise here, not only in `load`, so a JobConfig built directly
         # (tests, the API, future callers) can never carry an unknown
@@ -371,6 +413,10 @@ class JobConfig:
         raw = {}
         if path.exists():
             raw = yaml.safe_load(path.read_text()) or {}
+        # Task 006: translate any legacy `model_strategy`/`fast_model` keys
+        # into `models` BEFORE the known/extra split below, so they land as
+        # a real per-hat override rather than silently in `extra`.
+        raw = _migrate_legacy_model_config(raw)
         known = {f for f in cls.__dataclass_fields__ if f != "extra"}
         kwargs = {k: v for k, v in raw.items() if k in known}
         cfg = cls(**kwargs, extra={k: v for k, v in raw.items() if k not in known})
@@ -444,13 +490,11 @@ class JobConfig:
                 "retryMax": self.contract_retry_max,
             },
             "model": {
-                "strategy": self.model_strategy,
                 "model": self.model,
-                "fastModel": self.fast_model,
                 # Task 018 (requirement E): the router's own model key,
-                # surfaced next to the tiers it borrows a fallback from --
-                # `model_for("router")` resolves this, then fastModel, then
-                # model, unless `overrides["router"]` is set (checked first).
+                # surfaced next to the per-hat table it borrows a fallback
+                # from -- `model_for("router")` resolves this, then `model`,
+                # unless `overrides["router"]` is set (checked first).
                 "routerModel": self.router_model,
                 "overrides": dict(self.model_overrides),
                 "thinking": self.thinking,
@@ -474,41 +518,33 @@ class JobConfig:
         }
 
     def model_for(self, phase: str) -> str | None:
-        """Resolve the pi model ref for a phase; None = pi's own default."""
+        """Resolve the pi model ref for a phase; None = pi's own default.
+
+        Task 006 retired the strategy-tiered rung (`STRATEGY_TIERS`/
+        `model_strategy`/`fast_model`) entirely: the only rungs left are the
+        per-hat table and the bare `model` field. An old job.yaml that still
+        names a strategy never reaches here with one -- `load()` already
+        translated it into `model_overrides` via `_migrate_legacy_model_config`.
+        """
         if override := self.model_overrides.get(phase):
             return override
         # Task 005 (#60 pillar 4, requirement A): a hat name that is not one
         # of the six `MODEL_HATS` -- a typo, not a real role -- degrades via
         # `UNRECOGNISED_HAT_FALLBACK` ("planning"'s own configured entry),
-        # never via the fast/mechanical tier below. Falls through to the
-        # bare `model` field only when even that borrowed entry is unset, so
-        # a table with nothing configured at all still behaves like today
-        # (None = pi's own default).
+        # never via a second mechanism. Falls through to the bare `model`
+        # field only when even that borrowed entry is unset, so a table with
+        # nothing configured at all still behaves like today (None = pi's
+        # own default).
         if phase not in MODEL_HATS:
             return (self.model_overrides.get(UNRECOGNISED_HAT_FALLBACK)
                     or self.model)
-        # Task 018 (requirement E): the router is not a strategy-tiered
-        # phase (it has no per-strategy row in STRATEGY_TIERS -- deliberately,
-        # Non-goals rules out a config rewrite for it) -- its own
-        # `router_model` knob, then the fast tier, then the strong one.
+        # Task 018 (requirement E): the router's own `router_model` knob,
+        # then the plain `model` field -- no implicit fast tier without an
+        # explicit `model_overrides`/`models` entry (task 006).
         if phase == "router":
-            return self.router_model or self.fast_model or self.model
-        # An unrecognised name resolves as `quality-first` -- the most capable
-        # preset, NOT DEFAULT_MODEL_STRATEGY (task 044/#53): a typo must never
-        # silently downgrade a phase to the fast tier, and the shipped default
-        # must be free to be the cheap compromise. Keep these two apart.
-        tiers = self.STRATEGY_TIERS.get(self.model_strategy,
-                                        self.STRATEGY_TIERS["quality-first"])
-        tier = tiers.get(phase, "strong")
-        if tier == "fast":
-            return self.fast_model or self.model
+            return self.router_model or self.model
+        # Every other known hat with no per-hat entry falls through to the
+        # bare `model` field -- there is no second, strategy-driven rung any
+        # more (task 006).
         return self.model
 
-
-# Task 043 (#52): the strategy names as one tuple, derived from the presets
-# `model_for` actually resolves, so `ralphctl`'s `--model-strategy` choices and
-# `ralphctl config set model_strategy`'s validation cannot drift from them.
-# Deliberately NOT a default: which strategy ships is JobConfig's own
-# `model_strategy` field, stated once (see DEFAULT_PRICE_STRATEGY's comment for
-# the same discipline applied to a cost knob).
-MODEL_STRATEGIES = tuple(JobConfig.STRATEGY_TIERS)

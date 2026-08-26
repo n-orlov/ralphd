@@ -73,9 +73,7 @@ ralphctl start --prd <file|-> [options]
 | `--max-approaches <n>` | 3 | review-loop approach limit |
 | `--vigilant` | off | per-task verification |
 | `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state). That one attempt gets its own timeout floor (`REFLECT_TAIL_TIMEOUT_S`, 600s, still capped by `--iteration-timeout`) instead of the plain 60s floor every other phase gets once `--timeout` has already elapsed -- requirement C (#72): reflect is the run's own post-mortem and a deadline that has already ended the job must not starve the one attempt left to write it down. See [SPEC.md](../SPEC.md) §4.5 |
-| `--model <id>` | profile default | default model (pi model ID); falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:` |
-| `--fast-model <id>` | profile default | model for phases a `cost-optimized`/`balanced` strategy routes to the cheap tier — `balanced` being the default, that is `worker` and `verify` unless you say otherwise; unset means those phases use `--model` too; same fallback chain as `--model` (template, then the registry's `fast_model`, then the profile) |
-| `--model-strategy <s>` | balanced | `quality-first\|cost-optimized\|balanced` — the three presets `JobConfig.STRATEGY_TIERS` defines (anything else is a usage error): which phase gets `--model` and which gets `--fast-model`. The shipped default is `balanced` (strong model for planning, review and reflect; fast for worker and verify), so an unset `--fast-model` simply falls back to `--model` and nothing changes. Falls back to the `--template`'s value, then the registry's `model_strategy` (`ralphctl config`); an LLM profile cannot carry it. A true per-phase override (`model_overrides`, keys `planning\|worker\|review\|verify\|reflect\|router`) is a `job.yaml` key only: no `start` flag sets it. `router` (task 018, requirement E) is `engine.router`'s own model for a genuinely ambiguous transition -- checked first, then the dedicated `router_model` key, then `fast_model`, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`) |
+| `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. Per-hat overrides are a `job.yaml`-only key (`models`/`model_overrides`, keys `planning\|worker\|review\|verify\|reflect\|router`); no `start` flag sets them. `router` (task 018, requirement E) is `engine.router`'s own model for a genuinely ambiguous transition -- checked first, then the dedicated `router_model` key, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
 | `--thinking <level>` | — | pi thinking level; falls back to the `--template`'s value, then the registry's `thinking` (`ralphctl config`) |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
@@ -283,8 +281,8 @@ templates/<name>/
 ```
 
 `job.yaml` may set any of: `iterations`, `max_approaches`, `vigilant`,
-`reflect`, `on_complete`, `on_complete_cmd`, `timeout`, `iteration_timeout`, `model_strategy`,
-`llm`, `model`, `fast_model`, `thinking`, `skills` (a list of directory names
+`reflect`, `on_complete`, `on_complete_cmd`, `timeout`, `iteration_timeout`,
+`llm`, `model`, `thinking`, `skills` (a list of directory names
 relative to the template dir), `creds` (a directory name relative to the
 template dir), and `prd` (a filename relative to the template dir, default
 `prd.md`). Every one of these has a corresponding `start` flag; **an explicit
@@ -2156,19 +2154,17 @@ Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
 (`true`/`false` — validated on `set` and stored as a real boolean; the
 registry-wide default for `start --auto-resume`), `price_strategy`
 (`none`/`aws` — validated on `set`; the registry-wide default for
-`start --price-strategy`), and the four keys that decide which models a job
-runs (#52): `model` and `fast_model` (any pi `provider/model-id` string),
-`model_strategy` (one of `JobConfig.STRATEGY_TIERS`' presets — validated on
-`set`, so a typo exits `2` rather than silently resolving to the shipped
-strategy) and `thinking` (any string `pi --thinking` accepts).
+`start --price-strategy`), and the two keys that decide which models a job
+runs (#52): `model` (any pi `provider/model-id` string, used by any hat with
+no per-hat override) and `thinking` (any string `pi --thinking` accepts).
+`model_strategy`/`fast_model` are retired (task 006): `config set` refuses
+both with exit `2` naming the job.yaml `models:`/`model_overrides:`
+replacement, never a silent no-op.
 
-For `model`, `fast_model` and `price_strategy` a **named LLM profile** can
+For `model` and `price_strategy` a **named LLM profile** can
 state a value too (see [llm-profiles.md](llm-profiles.md)); a registry-wide
-value beats it, and neither `model_strategy` nor `thinking` can be carried by a
-profile at all. That is the point of having all four here: a profile answers
-*where do I route and with what credentials*, while `model_strategy` answers
-*how much am I willing to spend on which phase* — a cost policy rather than a
-routing fact.
+value beats it: a profile answers *where do I route and with what
+credentials*.
 
 - `get` prints `<key>: <value>`, or `<key>: (unset)` if the key has never
   been `set` — this is not an error (exit `0` either way).
@@ -2183,7 +2179,7 @@ routing fact.
 `ralphctl start` layers these in as the **registry-wide fallback** for the
 same-named flags (`--image`, `--base-image`, `--dockerfile`, `--on-complete`,
 `--network`, `--auto-resume`,
-`--price-strategy`, `--model`, `--fast-model`, `--model-strategy`,
+`--price-strategy`, `--model`,
 `--thinking`)
 and for `--llm`
 (via `default_llm_profile`), between an explicit flag/`--template` value and

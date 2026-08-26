@@ -36,8 +36,7 @@ from typing import Self
 import yaml
 
 from .. import __version__
-from ..engine.config import (DEFAULT_MODEL_STRATEGY, MODEL_STRATEGIES,
-                             MUTATING_METHODS, PRICE_STRATEGIES)
+from ..engine.config import MUTATING_METHODS, PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -1310,10 +1309,11 @@ _TEMPLATE_SCALAR_FIELDS = {
     "iterations": 25, "max_approaches": 3, "vigilant": False,
     "reflect": False, "on_complete": "exit", "on_complete_cmd": None, "timeout": 480,
     "iteration_timeout": 45, "llm": "host",
-    # default lives in engine/config.DEFAULT_MODEL_STRATEGY alone (task 044) --
-    # never a second literal here
-    "model_strategy": DEFAULT_MODEL_STRATEGY,
-    "model": None, "fast_model": None, "thinking": None,
+    # Task 006 (#60 pillar 4 cleanup): `model_strategy`/`fast_model` are
+    # RETIRED (see `cmd_config`'s rejection for the config-key half, and
+    # `engine/config._migrate_legacy_model_config` for the job.yaml half) --
+    # neither name is a `start` flag/template scalar any more.
+    "model": None, "thinking": None,
     # Task 010 (#14): None here means "nobody on the host decided" -- the
     # profile may then supply one, and if nothing does the key is omitted
     # from job.yaml so the engine's own default (`none`) applies. The default
@@ -1337,20 +1337,17 @@ _TEMPLATE_SCALAR_FIELDS = {
 # `_resolve_image_supply` below -- under the same key names, at the same three
 # levels -- rather than filled in field by field.
 #
-# Task 043 (#52): `model`, `fast_model`, `model_strategy` and `thinking` are
-# here too. A named LLM profile can already carry `model`/`fast_model`, but a
-# profile answers *where do I route and with what credentials* while
-# `model_strategy` answers *how much am I willing to spend on which phase* --
-# a cost policy, not a routing fact -- and a profile cannot carry
-# `model_strategy`/`thinking` at all. All four belong at the registry level,
-# symmetrically, rather than two in the profile and two nowhere. As with
-# `price_strategy`, a registry-wide value therefore beats the profile's.
+# Task 043 (#52): `model` and `thinking` are here too. A named LLM profile can
+# already carry `model`, but a profile answers *where do I route and with what
+# credentials*, which is a routing fact rather than a registry-wide default,
+# so a registry-wide value still beats the profile's. Task 006 retired
+# `fast_model`/`model_strategy` at this level too (see `cmd_config`'s
+# rejection below) -- neither is a registry key any more.
 _REGISTRY_CONFIG_FIELD_KEYS = {"on_complete": "on_complete",
                                "llm": "default_llm_profile", "network": "network",
                                "auto_resume": "auto_resume",
                                "price_strategy": "price_strategy",
-                               "model": "model", "fast_model": "fast_model",
-                               "model_strategy": "model_strategy",
+                               "model": "model",
                                "thinking": "thinking"}
 
 
@@ -1449,6 +1446,20 @@ def _apply_template(args) -> Path | None:
 
 def cmd_start(args):
     _apply_template(args)
+    # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
+    # retired -- refuse explicitly, naming the replacement, rather than
+    # silently dropping the flag's value (a no-op) or letting it land
+    # unexplained. `_apply_template` never fills these from a template/
+    # registry value any more (dropped from `_TEMPLATE_SCALAR_FIELDS`/
+    # `_REGISTRY_CONFIG_FIELD_KEYS`), so only an explicit CLI flag reaches
+    # this check.
+    if args.fast_model is not None or args.model_strategy is not None:
+        flag = "--fast-model" if args.fast_model is not None else "--model-strategy"
+        die(2, f"{flag} is removed (task 006): per-hat models are now a "
+                "job.yaml `models:` (or `model_overrides:`) table, e.g.\n"
+                "  models:\n    worker: prov/fast-model\n    verify: prov/fast-model\n"
+                "naming any of: planning, worker, verify, review, reflect, router "
+                "-- an unnamed hat falls back to `model`.")
     if args.prd is None:
         die(2, "--prd is required (or use --template with a prd.md skeleton)")
     run_id = args.run_id or gen_run_id()
@@ -1494,7 +1505,7 @@ def cmd_start(args):
     os.chmod(ctf, 0o600)
 
     # Named LLM profile (docs/llm-profiles.md): resolved once, here, before
-    # anything else touches it -- job.yaml's model/fast_model defaults and
+    # anything else touches it -- job.yaml's `model` default and
     # the later env/mounts/pi wiring both read from this single resolution
     # so a `${cmd:...}` reference is never shelled out twice.
     llm_profile = None
@@ -1513,8 +1524,12 @@ def cmd_start(args):
         "on_complete_cmd": args.on_complete_cmd,
         "reflect": args.reflect,
         "model": args.model or (llm_profile.get("model") if llm_profile else None),
-        "fast_model": args.fast_model or (llm_profile.get("fast_model") if llm_profile else None),
-        "model_strategy": args.model_strategy,
+        # Task 006 (#60 pillar 4 cleanup): `fast_model`/`model_strategy` are
+        # retired job.yaml keys -- a named LLM profile may still declare its
+        # own `fast_model` (docs/llm-profiles.md's schema, unchanged), but
+        # `start` no longer forwards it into job.yaml; per-hat overrides are
+        # `models:`/`model_overrides:` in job.yaml directly (not a `start`
+        # flag).
         "thinking": args.thinking,
         "iteration_timeout_s": args.iteration_timeout * 60,
         "job_timeout_s": args.timeout * 60,
@@ -5119,16 +5134,28 @@ _CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
                 "default_llm_profile": None, "network": None,
                 "auto_resume": ("true", "false"),
                 "price_strategy": PRICE_STRATEGIES,
-                # Task 043 (#52): the four keys that decide which models a job
-                # runs. `model_strategy` is validated against the presets
-                # `JobConfig.model_for` resolves, so a typo exits 2 instead of
-                # silently falling back to the shipped strategy; `model`,
-                # `fast_model` and `thinking` are free-form provider/pi strings,
-                # like `image`.
-                "model": None, "fast_model": None,
-                "model_strategy": MODEL_STRATEGIES, "thinking": None}
+                # Task 043 (#52): `model`/`thinking` are free-form
+                # provider/pi strings, like `image`. Task 006 (#60 pillar 4
+                # cleanup) retired the other two of the original four keys
+                # (`fast_model`, `model_strategy`) -- see
+                # `_RETIRED_CONFIG_KEYS` below, checked first so both name
+                # the replacement instead of the generic unknown-key message.
+                "model": None, "thinking": None}
 # keys stored as real booleans in `<registry>/config.yaml` (task 026)
 _CONFIG_BOOL_KEYS = {"auto_resume"}
+
+_RETIRED_CONFIG_KEYS = {
+    "model_strategy": (
+        "model_strategy is removed (task 006): per-hat models are now a "
+        "job.yaml models: (or model_overrides:) table naming any of "
+        "planning, worker, verify, review, reflect, router -- set that key "
+        "directly in job.yaml or a --template's job.yaml."),
+    "fast_model": (
+        "fast_model is removed (task 006): per-hat models are now a "
+        "job.yaml models: (or model_overrides:) table naming any of "
+        "planning, worker, verify, review, reflect, router -- set that key "
+        "directly in job.yaml or a --template's job.yaml."),
+}
 
 
 def cmd_config(args):
@@ -5136,9 +5163,11 @@ def cmd_config(args):
     `image`, `base_image`, `dockerfile` (the three image supply points, ranked
     as one unit by `_resolve_image_supply`), `on_complete`,
     `default_llm_profile`, `network`, `auto_resume`, `price_strategy`,
-    `model`, `fast_model`, `model_strategy`, `thinking`. `start`
+    `model`, `thinking`. `start`
     layers these in between a `--template`'s value and the hardcoded fallback
     (see `_apply_template`); `doctor` reads `default_llm_profile` directly."""
+    if args.key in _RETIRED_CONFIG_KEYS:
+        die(2, _RETIRED_CONFIG_KEYS[args.key])
     if args.key not in _CONFIG_KEYS:
         die(2, f"unknown config key: {args.key} (expected one of "
                 f"{', '.join(sorted(_CONFIG_KEYS))})")
@@ -5738,9 +5767,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "reaches a terminal state, proposing prompt/skill "
                         "improvements to artifacts/reflection/")
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
-    s.add_argument("--fast-model")
-    s.add_argument("--model-strategy", default=None,
-                   choices=list(MODEL_STRATEGIES))
+    # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
+    # RETIRED -- the phase->tier strategy table they drove (`STRATEGY_TIERS`)
+    # is gone (task 005's per-hat `models:`/`model_overrides:` job.yaml table
+    # replaced it). Kept as accepted-but-suppressed flags ONLY so `cmd_start`
+    # can refuse them with a message naming the replacement (see below),
+    # rather than argparse's generic "unrecognized arguments" or -- worse --
+    # silently accepting and doing nothing with them.
+    s.add_argument("--fast-model", default=None, help=argparse.SUPPRESS)
+    s.add_argument("--model-strategy", default=None, help=argparse.SUPPRESS)
     s.add_argument("--thinking", help="pi thinking level")
     s.add_argument("--price-strategy", default=None, choices=list(PRICE_STRATEGIES),
                    help="derive a cost for routes the provider does not price "

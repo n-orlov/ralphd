@@ -1,7 +1,7 @@
 """Black-box test: `GET /config` -- effective job config, redacted (PRD
 req 10).
 
-Proves the response surfaces budgets, flags, model strategy, prompt
+Proves the response surfaces budgets, flags, the per-hat model table, prompt
 sources, and skills/creds *names* (with skill origin), while never leaking
 credential file contents or LLM env values even when both are configured.
 """
@@ -27,7 +27,7 @@ def config_engine(tmp_path):
     def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
         defaults = {"run_id": "config-api-e2e", "iterations": 3,
                     "max_approaches": 1, "on_complete": "idle",
-                    "vigilant": True, "model_strategy": "balanced"}
+                    "vigilant": True, "models": {"worker": "prov/fast-x"}}
         e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
@@ -90,7 +90,7 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
     status_code, doc = e.api("GET", "/config")
     assert status_code == 200
 
-    # Budgets / flags / model strategy.
+    # Budgets / flags / model overrides.
     assert doc["budgets"]["iterations"] == 3
     assert doc["budgets"]["maxApproaches"] == 1
     # Task 006 (#5): the infra-resilience knobs are part of the budgets
@@ -102,7 +102,7 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
     assert doc["budgets"]["infraRetryMax"] is None
     assert doc["flags"]["vigilant"] is True
     assert doc["flags"]["onComplete"] == "idle"
-    assert doc["model"]["strategy"] == "balanced"
+    assert doc["model"]["overrides"]["worker"] == "prov/fast-x"
 
     # Prompt sources: worker is now 'api' after the PUT above; others builtin.
     prompts = {p["name"]: p["source"] for p in doc["prompts"]}

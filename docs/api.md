@@ -265,7 +265,8 @@ neither key; `GET /status` reports explicit `null`s, never a missing key and
 never the live config's ref guessed in.
 
 The value is the **latest** observation, which is what "which model is this run
-using" means for a run whose phases may use different tiers (`fast_model`).
+using" means for a run whose hats may use different models (the per-hat
+`models`/`model_overrides` table).
 Per-iteration ids stay in `iterations/NNNN/meta.json`, where `model` is the ref
 that was requested (possibly `null`) and `modelResolved`/`modelRaw` are what
 actually answered.
@@ -732,7 +733,7 @@ contents, no LLM env values):
               "routerTimeoutS": 60.0},
   "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false},
   "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
-  "model": {"strategy": "balanced", "model": null, "fastModel": null, "routerModel": null, "overrides": {}, "thinking": null},
+  "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
   "priceTables": {"names": [], "answers": "neither", "tables": []},  // which table may price this run, in order
@@ -745,8 +746,8 @@ contents, no LLM env values):
 
 `model.routerModel` (`job.yaml` key `router_model`, env `RALPHD_ROUTER_MODEL`)
 is the router's own model key (task 018, requirement E, #60 pillar 2): checked
-after `model.overrides.router` and before falling back to `fastModel` then
-`model` — see `routerTimeoutS` below for the router's latency budget and
+after `model.overrides.router` and before falling back to `model` directly
+— see `routerTimeoutS` below for the router's latency budget and
 `usage.byPhase.router` for how its cost is accounted, folded in alongside the
 five hat phases without ever counting as a work iteration.
 

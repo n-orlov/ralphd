@@ -639,8 +639,7 @@ def test_the_host_layout_tree_check_would_catch_the_drifted_comment():
     assert _tree_config_keys_from(dropped) != keys
     # ...and so does an invented one, so the comment cannot be "made true" by
     # listing a key `config set` would refuse.
-    invented = section.replace("model_strategy, thinking",
-                              "model_strategy, thinking, api_token", 1)
+    invented = section.replace("price_strategy, model,", "price_strategy, model, api_token,", 1)
     assert invented != section
     assert _tree_config_keys_from(invented) != keys
 

@@ -14,7 +14,9 @@ A profile is a YAML file in `~/.ralphd/llm-profiles/<name>.yaml`:
 # ~/.ralphd/llm-profiles/example.yaml
 description: what this points at
 model: provider/model-id            # default model for jobs using this profile
-fast_model: provider/cheap-model-id # optional: "fast" tier for cost strategies
+fast_model: provider/cheap-model-id # profile's own second model ref (task 006:
+                                    # no longer forwarded into a started job's
+                                    # job.yaml)
 price_strategy: aws                 # optional: none|aws — built-in rate table for
                                     # routes this gateway does not price itself
 
@@ -43,8 +45,10 @@ Resolution rules:
 - `${env:…}`, `${file:…}`, `${cmd:…}` are resolved **on the host by ralphctl at
   container start** — secrets travel as container env / tmpfs files, never through
   the run dir or image.
-- `model`/`fast_model` map onto the job's model-strategy tiers unless overridden by
-  `--model*` flags.
+- `model` becomes the started job's plain `model` default unless overridden by
+  `--model`/a template/the registry. `fast_model` is a profile-only value now
+  (task 006 retired job.yaml's own `fast_model` key) — `ralphctl llm show`
+  still surfaces it, but `start` no longer copies it into a job's job.yaml.
 - `price_strategy` (v0.6, optional) declares which built-in rate table may derive a
   cost for routes this endpoint bills without quoting a price — `aws` for an
   AIGW/Bedrock-style gateway (it bills Bedrock list price, so ralphd's built-in

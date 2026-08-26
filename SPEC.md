@@ -126,7 +126,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down instead records `reflect: {ok: null, attempted, skipped}` — no attempt, no tombstone (§8.4). | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
 | **R5** | **"Done" is a claim; only verification is a verdict.** The worker's `<promise>COMPLETE</promise>` gates entry to review and nothing else; the job succeeds only on the reviewer's own `{"verdict": "verified"}` contract report, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach, and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
 | **R6** | **Secrets never reach disk or a transcript.** Credentials arrive as `<name>.env` files, are placed at `~/.creds/*.env` (mode `0600`) by the engine itself, and are never auto-exported into the agent's environment; only file *names* ever reach the run dir, the persisted job config, or a log line. On top of the prompt rule, redaction is **mechanical**: known secret values are scrubbed from `output.jsonl` at write time, from `events.jsonl` at emit time, and again as `GET /logs` serves. The redaction set is memory-only and no route returns it. | Otherwise one `cat` of a cred file, or one `docker inspect` of the engine container, writes a live token into host-visible history permanently — which prompt guidance alone demonstrably does not prevent. Persisting the redaction map to enable a second pass would put every secret on disk next to the transcript it protects, so that is forbidden too. |
-| **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, `--model-strategy cost-optimized` optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
+| **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, a cheap per-hat models table optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
 | **R8** | **The engine cannot be killed by the agent it supervises.** The job container carries `ralphd.role=job` alongside `ralphd.run=<run-id>`, siblings carry `ralphd.role=sibling`, and the container is told its own name via `RALPHD_SELF_CONTAINER_ID`. Every documented cleanup command — prompt, skill example, docs — is the two-filter, sibling-only form. | Otherwise the idiom ralphd itself teaches deletes the job container mid-iteration: that iteration's work and transcript are lost and the run dir is left non-terminal, which is exactly how a run becomes a zombie that `status` reports as healthy and still-running. |
 | **R9** | **A job is resumable from its own run directory.** A fresh `ralphd-engine` over an existing run dir seeds `iterations_used` from the highest *completed* iteration, resumes the recorded approach, skips planning, and treats a topped-up `iterations` as remaining budget. `resume` reproduces the original `docker run` wiring from files (`llm-wiring.json`, `env-wiring.json`, `host.json`), not from the resuming shell. Concurrency is bounded by an exclusive `flock` on `<run-dir>/.lock`; an on-disk `schemaVersion` newer than the build refuses to run. | Otherwise recovery re-plans from scratch, or — worse — resumes into a credential-less container and fails instantly on every iteration because the `-e` flags only ever existed in the shell that typed `start`. Two engines over one run dir would interleave writes into `status.json` and `events.jsonl`. |
 | **R10** | **The CLI's `--json` output is a stable machine interface.** Every command supports it, the schema is stable, human text goes to stderr on that path, and exit codes are documented (`0` success · `1` error · `2` usage · `3` unknown run · `4` API unreachable · `5` invalid in current state · `130` follow interrupted). Followers reconcile against live state: a terminal-state event ends a stream only when it is the log's last event *and* the engine is not live. | Otherwise the documented agent completion-wait (`ralphctl watch <id> --json \| jq …`) returns a *historical* `aborted` from before a resume and exits `0` while the job is still running — failing silently, successfully, and precisely after a crash recovery, which is when supervision matters most. |
@@ -408,8 +408,8 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 ├── config.yaml                  # registry-wide defaults (`ralphctl config`, §6.2):
 │                                #   image, base_image, dockerfile, on_complete,
 │                                #   default_llm_profile, network, auto_resume,
-│                                #   price_strategy, model, fast_model,
-│                                #   model_strategy, thinking
+│                                #   price_strategy, model,
+│                                #   thinking
 │                                # plus the nested `pricing:` map, which
 │                                #   `config set` cannot write (§8.6)
 ├── llm-profiles/<name>.yaml     # named LLM profiles (env/mounts/pi fragments)
@@ -535,7 +535,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/prompts/task-verify.md` | Vigilant-mode per-task verification against `successCriteria`, reporting through the `verify` response contract (task 118) instead of a `<task-verified>id</task-verified>` sentinel. |
 | `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else, reporting through the `reflect` response contract (task 121) instead of a bare `<promise>REFLECTED</promise>` sentinel. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
-| `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); phase→model resolution via `STRATEGY_TIERS`. |
+| `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); per-hat model resolution (`model_for`, `MODEL_HATS`) and the retired-knob migration (`_migrate_legacy_model_config`, task 006). |
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
 | `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, grace review, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
 | `src/ralphd/engine/transitions.py` | The declared FSM table (§4, task 008/014): states, legal transitions, guard-predicate names and per-hat entries as one data structure, with vigilant and non-vigilant as two variants of it (`VIGILANT_DELTA`), plus `TransitionExecutor` — the one code path that walks the table and refuses an illegal move — and the router's declared per-state fallback (`ROUTER_FALLBACK`). |
@@ -618,20 +618,25 @@ own container is never removed) and `## Credentials` listing the `*.env` file
 steering comes last (§4.6). The rendered prompt is written to
 `iterations/NNNN/prompt.md`, so every iteration's exact input is recoverable.
 
-`JobConfig.model_for(phase)` resolves each phase's model: an explicit
-per-phase override (`model_overrides`), else the phase's tier under the
-configured strategy. `None` means "whatever `pi` defaults to".
+`JobConfig.model_for(phase)` resolves each hat's model: an explicit
+per-hat override (`model_overrides`/`models`), else the plain `model` field.
+`None` means "whatever `pi` defaults to". An unrecognised hat name degrades
+to `planning`'s own configured entry (`UNRECOGNISED_HAT_FALLBACK`), never to
+some cheaper choice — a typo must never quietly downgrade a hat.
 
-| strategy | planning | worker | review | verify | reflect |
-|---|---|---|---|---|---|
-| `quality-first` | strong | strong | strong | strong | strong |
-| `cost-optimized` | strong | fast | fast | fast | fast |
-| `balanced` (default) | strong | fast | strong | fast | strong |
-
-The strong tier is `model`, the fast tier is `fast_model` falling back to
-`model`. `reflect` mirrors `review` in every strategy — the same post-hoc
-analysis role. The resolved reference is recorded per iteration (`meta.json`'s
-`model`, the `iteration.start` event), so a run's model mix is auditable.
+Task 006 retired the earlier `model_strategy`/`fast_model` phase→tier preset
+table entirely (`quality-first`/`cost-optimized`/`balanced`, keyed by
+`fast_model` falling back to `model`) — there is no implicit "fast" tier any
+more without an explicit `models`/`model_overrides` entry naming it. A
+job.yaml still carrying either retired key is translated deterministically,
+at load time, into an equivalent `models:` table naming every hat
+(`engine.config._migrate_legacy_model_config`), so an old run keeps
+resolving to the models it always did; the two CLI surfaces
+(`ralphctl start --model-strategy`/`--fast-model`, `ralphctl config set
+model_strategy`/`fast_model`) are refused outright, naming the `models:`
+replacement. `reflect` has its own table entry like any other hat. The
+resolved reference is recorded per iteration (`meta.json`'s `model`, the
+`iteration.start` event), so a run's model mix is auditable.
 
 **The router is not a sixth phase (task 018, requirement E, #60 pillar 2).**
 `_step_generic_hat` only ever calls `engine.router.decide()` when
@@ -640,9 +645,10 @@ current state — deterministic-first: a state with ≤1 legal edge (most states
 most of the time) never routes at all. When it does, `model_for("router")`
 resolves the model: `model_overrides["router"]` first if set, else the
 dedicated `router_model` config key (`JobConfig.router_model`, env
-`RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`), else `fast_model`, else
-`model` — `router` carries no row of its own in the strategy table above,
-deliberately (a one-question classification never needs a per-strategy tier).
+`RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`), else `model` directly
+— `router` carries no strategy-tier row (the mechanism it would have had a
+row in is gone), deliberately (a one-question classification never needs a
+per-strategy tier).
 The call is a single JSON question validated against `router.ROUTER_SCHEMA`
 and the table's own legal edges, re-prompted up to `contract_retry_max` times,
 bounded by `router_timeout_s` (`RALPHD_ROUTER_TIMEOUT_S`, default `60.0`,
@@ -1698,9 +1704,10 @@ max_approaches: 40              # review may reject and restart this many times
 vigilant: true                  # verify every completed task before the job can pass
 on_complete: "exit"             # tear the container down at a terminal state
 reflect: true                   # one extra `reflect` iteration after the verdict
-model: "amazon-bedrock/eu.anthropic.claude-opus-5"          # strong tier
-fast_model: "amazon-bedrock/eu.anthropic.claude-sonnet-5"   # fast tier
-model_strategy: "balanced"      # strong for planning + review, fast elsewhere
+model: "amazon-bedrock/eu.anthropic.claude-opus-5"          # plain default
+models:                         # per-hat overrides (task 005); "model_overrides" is
+  worker: "amazon-bedrock/eu.anthropic.claude-sonnet-5"     # an accepted alias
+  verify: "amazon-bedrock/eu.anthropic.claude-sonnet-5"
 thinking: "high"                # passed to pi as --thinking
 iteration_timeout_s: 3600
 job_timeout_s: 86400
@@ -1721,10 +1728,8 @@ Every field:
 | `reflect` | bool | `false` | run exactly one extra `reflect` iteration after the verdict, writing a report and an optional prompt/skill diff to `artifacts/reflection/`; outside the budget gate, so it runs even on an exhausted budget |
 | `job_timeout_s` | int | `28800` (8h) | wall-clock limit for the whole job |
 | `iteration_timeout_s` | int | `2700` (45m) | wall-clock limit for one iteration |
-| `model` | string \| null | `null` | strong-tier pi model ref (`provider/model-id`); `null` means pi's own default |
-| `fast_model` | string \| null | `null` | fast-tier ref; falls back to `model` when unset |
-| `model_strategy` | string | `balanced` | which tier each phase gets (table below). The shipped default is `engine/config.DEFAULT_MODEL_STRATEGY` (`balanced`) — stated once, and deliberately not the same decision as the fallback: an *unrecognised* value silently resolves as `quality-first`, the most capable preset, so a typo can never quietly downgrade a phase to the fast tier |
-| `model_overrides` | map phase→ref | `{}` | per-phase model, beating the strategy; keys are `planning`, `worker`, `review`, `verify`, `reflect`. `job.yaml`-only — no `start` flag sets it |
+| `model` | string \| null | `null` | plain default pi model ref (`provider/model-id`) every hat falls back to when it has no per-hat entry; `null` means pi's own default |
+| `model_overrides` / `models` | map hat→ref | `{}` | per-hat model, beating `model`; keys are `planning`, `worker`, `review`, `verify`, `reflect`, `router` (`MODEL_HATS`). `models` is an accepted alias, merged into `model_overrides` once at load (the latter wins on a shared key). `job.yaml`-only — no `start` flag sets it. Task 006 retired the `model_strategy`/`fast_model` keys that used to feed a phase→tier preset table (`quality-first`/`cost-optimized`/`balanced`); a job.yaml still carrying either is translated deterministically into this table at load time (`engine.config._migrate_legacy_model_config`), never silently dropped |
 | `thinking` | string \| null | `null` | pi `--thinking` level, e.g. `medium`, `high` |
 | `api_token` | string \| null | `null` | bearer token the API requires; `RALPHD_API_TOKEN` (how `start --api-token` delivers it) overrides |
 | `infra_startup_timeout_s` | float | `150.0` | how long a phase may run with **zero** parseable pi events before the engine kills it as an infra fault instead of waiting out `iteration_timeout_s` |
@@ -1735,14 +1740,9 @@ Every field:
 | `pricing` | map | `{}` | host-side rate table, consulted only when the provider quoted no price (§7.3) |
 | *(anything else)* | — | — | unknown keys are preserved on `JobConfig.extra`, never rejected, and never surfaced by `GET /config` (they may contain operator-supplied secret-shaped values) |
 
-Strategy tiers (`JobConfig.STRATEGY_TIERS`); `reflect` deliberately mirrors
-`review`, being the same kind of post-hoc analysis:
-
-| strategy | planning | worker | review | verify | reflect |
-|---|---|---|---|---|---|
-| `quality-first` | strong | strong | strong | strong | strong |
-| `cost-optimized` | strong | fast | fast | fast | fast |
-| `balanced` (default) | strong | fast | strong | fast | strong |
+Task 006 retired the earlier per-strategy tier table (`JobConfig.STRATEGY_TIERS`)
+entirely — see §4.1's "model resolution" paragraphs above for the current
+per-hat mechanism and the migration that keeps an old job.yaml working.
 
 Seven fields also take an env override at engine load, so a run (or a test) can be
 retuned without editing `job.yaml`: `RALPHD_API_TOKEN`,
@@ -1755,23 +1755,18 @@ seconds), `RALPHD_INFRA_RETRY_BACKOFF_MAX_S`, `RALPHD_INFRA_RETRY_MAX`,
 
 1. an explicit flag on `ralphctl start`;
 2. the `--template`'s `job.yaml` value (§6.7);
-3. the registry default in `<registry>/config.yaml` — only for the twelve keys
+3. the registry default in `<registry>/config.yaml` — only for the ten keys
    that have one (`ralphctl config set`): the three image supply keys `image`,
    `base_image` and `dockerfile`, plus `on_complete`, `network`, `auto_resume`,
-   `default_llm_profile` (the fallback for `--llm`), `price_strategy`, and the
-   four that decide which models a job runs — `model`, `fast_model`,
-   `model_strategy` and `thinking` (#52). A named LLM profile may itself carry
-   `model`/`fast_model`/`price_strategy`, and a registry-wide value beats it:
-   a profile answers *where do I route*, while `model_strategy` is a cost
-   policy, and a profile can carry neither it nor `thinking`;
+   `default_llm_profile` (the fallback for `--llm`), `price_strategy`, `model`
+   and `thinking` (#52). A named LLM profile may itself carry `model`/
+   `price_strategy`, and a registry-wide value beats it: a profile answers
+   *where do I route*;
 4. the hardcoded default in `ralphctl` (`_TEMPLATE_SCALAR_FIELDS`).
 
 The winner is written into `job.yaml`, and **only non-null keys are written** — an
 absent key means the engine's own `JobConfig` default applies, so every default
-lives in `engine/config.py` alone and is never duplicated host-side:
-`model_strategy` is the only one of the four model keys with a non-null rung-4
-value, so `ralphctl` *imports* `engine/config.DEFAULT_MODEL_STRATEGY` —
-`balanced` (#53) — instead of re-typing the name. Inside the
+lives in `engine/config.py` alone and is never duplicated host-side. Inside the
 container, `job.yaml` loses to the `RALPHD_*` overrides above and to nothing else.
 Two edits happen after the fact: `ralphctl resume --iterations +N` rewrites
 `job.yaml` on the host before the new container starts, while `ralphctl budget
@@ -1968,13 +1963,16 @@ templates/<name>/
 `start --template <name>` fills in every flag the caller left unset. The template's
 `job.yaml` may set `iterations`, `max_approaches`, `vigilant`, `reflect`,
 `on_complete`, `on_complete_cmd`, `timeout` and `iteration_timeout` (both in
-**minutes**, defaults `480` and `45`), `model_strategy`, `llm`, `model`,
-`fast_model`, `thinking`, `price_strategy`, `network` and `auto_resume`, plus the
-three image supply keys `image`, `base_image` and `dockerfile` (settled as one
+**minutes**, defaults `480` and `45`), `llm`, `model`,
+`thinking`, `price_strategy`, `network` and `auto_resume`, plus the
+ three image supply keys `image`, `base_image` and `dockerfile` (settled as one
 unit, §3.2), plus three
 path-valued keys resolved relative to the template directory: `skills` (a list of
 directory names), `creds` (one directory name) and `prd` (a filename, default
-`prd.md`).
+`prd.md`). Task 006 retired `model_strategy`/`fast_model` from this list — a
+template's own `job.yaml` may still literally carry either (they translate at
+engine load time like any other job.yaml, §4.1), but `start` no longer copies
+them down field-by-field.
 
 Every one of those has a corresponding `start` flag, and the flag always wins
 (§6.2's chain). `--skills` and `--creds` override **wholesale**, not by merge — a
@@ -2002,8 +2000,10 @@ the run dir, an event, a transcript, or the image.
 
 ```yaml
 description: what this points at
-model: provider/model-id             # strong tier for jobs using this profile
-fast_model: provider/cheap-model-id  # fast tier under the cost strategies
+model: provider/model-id             # default model for jobs using this profile
+fast_model: provider/cheap-model-id  # profile's own second model ref (task 006:
+                                      # no longer forwarded into job.yaml by
+                                      # `start` -- see the key table below)
 env:                                 # env vars set in the container
   SOME_API_KEY: "literal-value"
   OTHER_KEY: ${env:HOST_VAR}              # from the host env at start time
@@ -2023,8 +2023,8 @@ pi:                                  # pi provider config for this container
 | key | type | meaning |
 |---|---|---|
 | `description` | string | free text, shown by `ralphctl llm show` |
-| `model` | string | default strong-tier model ref for a job started with this profile; an explicit `--model` beats it, and so does a template/registry value (#52) |
-| `fast_model` | string | default fast-tier ref; `--fast-model` and a template/registry value beat it |
+| `model` | string | default model ref for a job started with this profile; an explicit `--model` beats it, and so does a template/registry value (#52) |
+| `fast_model` | string | the profile's own second model ref; carried through by `ralphctl llm show`/`resolve_profile()` but, since task 006 retired job.yaml's `fast_model` key, no longer forwarded into a started job's job.yaml |
 | `price_strategy` | string | which built-in rate table may derive a cost for this profile's routes (§8.6); one of `PRICE_STRATEGIES`, validated at resolve time so a typo is a `ProfileError` rather than a silent `none`. `--price-strategy` and a template/registry value beat it |
 | `env` | mapping | env vars for the container. Entries resolve top to bottom and each one joins the resolution environment, so a later entry — and `mounts`/`pi` — may reference an earlier one |
 | `mounts` | list | `host:container[:ro]` specs added to `docker run`; the host side is `~`-expanded |
@@ -2065,7 +2065,7 @@ Two names always work with no file at all, and neither can fail to resolve.
 3. forwards the ten standard credential env vars listed in §6.6, when set;
 4. mounts `~/.aws` read-only if it exists.
 
-`host` sets no `model`/`fast_model`, so pi's own default applies unless `--model`
+`host` sets no `model`, so pi's own default applies unless `--model`
 says otherwise. Anything beyond step 3 needs an explicit `--forward-env`, and a
 recurring set of those flags is the signal to promote them into a named profile.
 
@@ -3235,9 +3235,7 @@ returns immediately.
 | `--max-approaches N` | `3` | distinct approaches before the job gives up |
 | `--vigilant` | off | stricter review posture |
 | `--reflect` | off | one extra post-terminal `reflect` iteration into `artifacts/reflection/` |
-| `--model REF` | unset | `pi` model ref for the main phases |
-| `--fast-model REF` | unset | model for cheap/auxiliary work |
-| `--model-strategy S` | `balanced` | one of `quality-first`, `cost-optimized`, `balanced` |
+| `--model REF` | unset | `pi` model ref used by any hat with no per-hat override |
 | `--thinking LEVEL` | unset | `pi` thinking level |
 | `--price-strategy S` | `none` | derive a cost for routes the provider does not price (or prices with an implausible zero): `aws` uses the built-in Bedrock rate table (§8.6) |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |
@@ -3262,6 +3260,12 @@ returns immediately.
 | `--api-token VALUE\|auto` | none | bearer token for the run's API; `auto` generates one |
 | `--no-detach` | detached | follow the event stream to completion in the foreground |
 
+`--fast-model` and `--model-strategy` are retired (task 006): both are still
+accepted by the parser (hidden from `--help`) so `cmd_start` can refuse them
+with exit `2` and a message naming the replacement (a job.yaml `models:`/
+`model_overrides:` table, §4.1) rather than silently doing nothing with the
+value.
+
 Timeouts are integers in **minutes**; there is no duration-string syntax.
 `--infra-outage-budget` is the one exception, in seconds, because it is a
 retry budget rather than a work budget and is tuned against how long a
@@ -3272,7 +3276,7 @@ explicit CLI flag, then the `--template`'s `job.yaml`, then the registry-wide
 default in `<registry>/config.yaml` (`ralphctl config set`), then the
 hardcoded default in the table above. Only `image`, `base_image`, `dockerfile`,
 `on_complete`, `default_llm_profile` (feeding `--llm`), `network`, `auto_resume`,
-`price_strategy`, `model`, `fast_model`, `model_strategy` and `thinking` — twelve
+`price_strategy`, `model` and `thinking` — ten
 keys — have a registry-wide layer; the rest skip straight from
 template to hardcoded default. Every flag defaults to `None` in the parser
 rather than to its real value, so "not given" stays distinguishable from

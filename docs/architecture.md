@@ -200,9 +200,10 @@ answer that never validates falls back to the state's own declared choice
 edge the table does not list. The router's own model is a dedicated config
 key, `router_model` (env `RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`,
 surfaced as `GET /config`'s `model.routerModel`) — checked after
-`model_overrides["router"]` and before falling back to `fast_model` then
-`model`; `router` carries no row of its own in the model-strategy table
-(a one-question classification never needs a per-strategy tier). Every call
+`model_overrides["router"]` and before falling back to `model` directly;
+`router` carries no strategy-tier row (task 006 retired the tiered mechanism
+entirely) -- a one-question classification never needs anything beyond its
+own key or the plain default. Every call
 is its own transcript under `artifacts/router/NNNN.jsonl` (a plain counter,
 not an iteration slot: `LoopSupervisor._ask_router()` never increments
 `iterations_used` or writes a `meta.json`), and its usage folds into
@@ -570,21 +571,28 @@ budget exhausts) is unaffected: `_maybe_grace_review()` returns
 immediately without touching anything, and the job fails exactly as
 before this feature.
 
-### Model strategy
+### Model resolution
 
-Each phase resolves its model independently: per-phase override → strategy preset →
-job default. The presets are `JobConfig.STRATEGY_TIERS`, in full — which phase
-draws the strong model and which the fast one:
+Each hat resolves its model independently: per-hat override (`models:`/
+`model_overrides:`, keyed by `planning`, `worker`, `verify`, `review`,
+`reflect`, `router`) → job default (`model`, `None` = pi's own default). An
+unrecognised hat name degrades to `planning`'s own configured entry
+(`UNRECOGNISED_HAT_FALLBACK`), never to some cheaper tier — a typo must never
+quietly downgrade a phase. `router` additionally has its own dedicated
+`router_model` key, checked before `model_overrides["router"]`'s sibling rung.
 
-| preset | planning | worker | review | verify | reflect |
-|--------|----------|--------|--------|--------|---------|
-| `quality-first` | strong | strong | strong | strong | strong |
-| `cost-optimized` | strong | fast | fast | fast | fast |
-| `balanced` (default) | strong | fast | strong | fast | strong |
+Task 006 retired the earlier `model_strategy`/`fast_model` phase→tier
+preset table (`quality-first`/`cost-optimized`/`balanced`) entirely — there
+is no implicit "fast" tier any more without an explicit `models`/`model_overrides` entry naming it. A job.yaml still carrying either
+retired key is translated deterministically into an equivalent `models:`
+table at load time (`engine.config._migrate_legacy_model_config`), so an old
+run keeps resolving to the same models it always did; `ralphctl config set
+model_strategy`/`fast_model` and `ralphctl start --model-strategy`/
+`--fast-model` are refused outright, naming the `models:` replacement.
 
-"Strong" and "fast" tiers are just two model IDs in job config — any model
-pi can reach is valid in either slot. The engine sets the model per-iteration via
-pi's model selection flag/env on the subprocess.
+Every model ref is just a pi "provider/model-id" string in job config — any
+model pi can reach is valid in any hat's slot. The engine sets the model
+per-iteration via pi's model selection flag/env on the subprocess.
 
 ### Self-reflection phase (PRD req 24)
 
@@ -593,7 +601,7 @@ job's normal loop (`LoopSupervisor._run_job_core()`) reaches a terminal state
 (`succeeded`/`failed`/`aborted`), the engine runs exactly one extra `reflect`
 iteration (`LoopSupervisor._run_reflection()`), using its own builtin prompt
 (`src/ralphd/prompts/reflect.md`, phase name `reflect`, model resolved per the
-job's model strategy exactly like any other phase). This iteration is *not* part
+job's per-hat model table exactly like any other hat). This iteration is *not* part
 of the normal budget accounting gate (`budget_left()`); it always runs once, even
 if the iteration budget was already exhausted when the job reached its terminal
 state.

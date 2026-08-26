@@ -86,7 +86,7 @@ import pytest
 
 from ralphd import API_VERSION, __version__
 from ralphd.engine.api import create_app, problem
-from ralphd.engine.config import JobConfig
+from ralphd.engine.config import MODEL_HATS, JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
 
@@ -447,25 +447,27 @@ def _choice_problems(text: str, choices: dict[str, set[str]]) -> list[str]:
 
 def test_every_documented_value_list_is_the_parsers_own_choice_set():
     choices = _parser_choices()
-    assert "--model-strategy" in choices and "--on-complete" in choices
+    assert "--price-strategy" in choices and "--on-complete" in choices
     problems = _choice_problems(CLI_DOC.read_text(), choices)
     assert not problems, (
         "docs/cli.md documents flag values argparse would reject (or omits "
         f"ones it accepts): {problems}")
 
 
-def test_the_choice_set_check_would_catch_the_invented_model_strategy():
+def test_the_choice_set_check_would_catch_an_invented_price_strategy():
+    """Task 006 retired --model-strategy (the flag this check used to be
+    pinned against) along with the STRATEGY_TIERS table it validated --
+    --price-strategy is the other enumerated `start` flag with a doc-table
+    row, so the mechanism is re-pinned against it instead of going untested.
+    """
     choices = _parser_choices()
-    old = ("| `--model-strategy <s>` | quality-first | "
-           "`quality-first\\|cost-optimized\\|balanced\\|custom` \u2014 which phase "
-           "gets `--model` |")
+    old = ("| `--price-strategy S` | none | "
+           "`none" + chr(92) + "|aws" + chr(92) + "|invented` " + chr(8212) +
+           " derive a cost for unpriced routes |")
     assert _choice_problems(old, choices)
-    assert "custom" not in choices["--model-strategy"]
-    # ...and `custom` is not a preset either: it would silently resolve as
-    # quality-first, which is why the doc could not be quietly "made true".
-    assert "custom" not in JobConfig.STRATEGY_TIERS
+    assert "invented" not in choices["--price-strategy"]
     # the check is not vacuous: the corrected row passes
-    assert not _choice_problems(old.replace("\\|custom", ""), choices)
+    assert not _choice_problems(old.replace(chr(92) + "|invented", ""), choices)
 
 
 # ---- `runs --state` filters on every state a run dir can record -----------
@@ -686,39 +688,24 @@ def test_the_prompt_checks_would_catch_the_old_claim():
     assert "reflect.md" in shipped and "reflect.md" not in documented
 
 
-# ---- the model-strategy table is STRATEGY_TIERS ---------------------------
+# ---- the model-resolution section names the retired knobs' replacement ----
 
-def _documented_strategy_table(text: str) -> dict[str, dict[str, str]]:
-    section = _section(text, "### Model strategy")
-    header = None
-    table: dict[str, dict[str, str]] = {}
-    for line in section.splitlines():
-        if not line.startswith("|"):
-            continue
-        cells = [c.strip(" `") for c in line.strip("|").split("|")]
-        if header is None:
-            header = cells[1:]
-            continue
-        if set("".join(cells)) <= set("-: "):
-            continue
-        preset = cells[0].split(" ")[0].strip(" `")
-        table[preset] = dict(zip(header, cells[1:]))
-    return table
+def test_the_model_resolution_section_names_every_hat_and_no_retired_knob():
+    """Task 006 retired `STRATEGY_TIERS`/`model_strategy`/`fast_model`
+    entirely -- docs/architecture.md's section must no longer describe that
+    table, and must instead name every hat `MODEL_HATS` lists."""
+    section = _section(ARCH_DOC.read_text(), "### Model resolution")
+    assert "STRATEGY_TIERS" not in section
+    for hat in MODEL_HATS:
+        assert hat in section, f"{hat!r} is not named in docs/architecture.md's Model resolution section"
 
 
-def test_the_documented_model_strategy_presets_are_strategy_tiers():
-    assert _documented_strategy_table(ARCH_DOC.read_text()) == \
-        JobConfig.STRATEGY_TIERS, (
-        "docs/architecture.md's preset table is not JobConfig.STRATEGY_TIERS")
-
-
-def test_the_strategy_table_check_would_catch_the_old_prose():
-    old = ("### Model strategy\n\nPresets: `quality-first` (default; one "
+def test_the_model_resolution_check_would_catch_the_old_strategy_table():
+    old = ("### Model resolution\n\nPresets: `quality-first` (default; one "
            "strong model everywhere), `cost-optimized` (strong model for "
            "planning only), `balanced` (strong for planning + review).\n")
-    assert _documented_strategy_table(old) != JobConfig.STRATEGY_TIERS
-    # the prose was wrong about `balanced`, not just vague: reflect is strong
-    assert JobConfig.STRATEGY_TIERS["balanced"]["reflect"] == "strong"
+    section = _section(old, "### Model resolution")
+    assert not all(hat in section for hat in MODEL_HATS)
 
 
 # ---- the hub: the bundle ships, and the endpoint list is complete ---------

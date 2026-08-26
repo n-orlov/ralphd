@@ -212,10 +212,13 @@ def test_start_llm_named_profile_wires_env_mounts_pi(ctl):
     mode = oct(models_json.stat().st_mode)[-3:]
     assert mode == "600"
 
-    # job.yaml picked up the profile's model/fast_model (no --model flag)
+    # job.yaml picked up the profile's model (no --model flag). Task 006
+    # retired job.yaml's `fast_model` key -- the profile may still declare
+    # its own `fast_model` (see the profile doc above), but `start` no
+    # longer forwards it into job.yaml.
     job_yaml = (ctl.config_dir("tst-acme") / "job.yaml").read_text()
     assert 'model: "acme/big-model"' in job_yaml
-    assert 'fast_model: "acme/small-model"' in job_yaml
+    assert "fast_model" not in job_yaml
 
 
 def test_start_llm_explicit_model_flag_overrides_profile(ctl):

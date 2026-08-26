@@ -109,6 +109,11 @@ def test_reflect_absent_runs_no_extra_iteration(engine_factory):
 
 
 def test_reflect_model_resolved_per_strategy(engine_factory):
+    """Task 006: `model_strategy`/`fast_model` are retired live fields --
+    this job.yaml still carries both (the pre-006 shape), so this doubles as
+    the job.yaml-migration test: `engine.config._migrate_legacy_model_config`
+    must translate them into an equivalent `models:` table on load, or
+    `reflect`'s resolved model below would not be `fast-model-y` any more."""
     e = engine_factory(
         job={"reflect": True, "iterations": 6, "on_complete": "exit",
             "model": "strong-model-x", "fast_model": "fast-model-y",
