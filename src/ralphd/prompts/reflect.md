@@ -31,9 +31,30 @@ outside that directory.
    `artifacts/reflection/suggestions.diff`. This is a proposal for a human or
    operator to review and apply later — do NOT apply it yourself.
 
-## Finishing
+## Reporting your outcome
 
-When you are done writing to `artifacts/reflection/`, end your reply with this
-exact line:
+`artifacts/reflection/` is still the deliverable — the report (and the
+optional diff) are what an operator or a future run actually reads. The
+harness also reads a validated claim alongside those files, never in place
+of them: **report your outcome through the contract — this is the only way
+your claim reaches the harness.** End your reply's last non-blank line with
+exactly one JSON object:
 
-<promise>REFLECTED</promise>
+```json
+{"report_written": true, "suggestions_written": true}
+```
+
+- `report_written`: `true` only if you actually wrote
+  `artifacts/reflection/report.md` this iteration.
+- `suggestions_written`: whether you also wrote
+  `artifacts/reflection/suggestions.diff` (a genuine proposal is optional —
+  report `false` honestly if you had nothing concrete to propose).
+- If `report_written` is `false`, add a `notes` field explaining why (e.g. an
+  endpoint error cut you off before you could write anything) — a `false`
+  claim with no explanation is refused as malformed, the same way a
+  reviewer's `rejected` verdict with no `reason` is.
+
+The file check on disk still runs regardless of what you claim here — this
+contract is checked in addition to it, never instead: a claim of
+`report_written: true` with no `report.md` on disk, or vice versa, is
+recorded as a failed reflection either way.

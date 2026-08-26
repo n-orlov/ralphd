@@ -48,6 +48,12 @@ REPO = Path(__file__).resolve().parents[1]
 STALE = ("# Reflection failed\n\n- error: Connection error.\n"
          "- terminal state: aborted (verdict unverified)\n")
 
+# Task 121 (#60 pillar 3, fact 9): a well-formed `reflect` contract claiming
+# success -- every fixture below that expects `_record_reflect_outcome`/
+# `_run_reflection` to read as OK now needs this alongside the report file
+# on disk, since a validated claim is checked in addition to the file.
+_OK_CONTRACT = json.dumps({"report_written": True, "suggestions_written": False})
+
 
 # --------------------------------------------------------------------------
 # the engine, in process
@@ -96,6 +102,7 @@ class _FakeReflect:
         self.calls.append(phase)
         if self.write_report:
             _write_report(self.sup)
+            return IterationResult(exit_code=0, final_text=_OK_CONTRACT)
         return IterationResult(exit_code=0)
 
 
@@ -104,7 +111,7 @@ def test_a_successful_reflect_removes_an_earlier_attempts_tombstone(tmp_path):
     stale = _write_tombstone(sup)
     _write_report(sup)
 
-    sup._record_reflect_outcome(IterationResult(exit_code=0))
+    sup._record_reflect_outcome(IterationResult(exit_code=0, final_text=_OK_CONTRACT))
 
     assert not stale.exists(), \
         "a report on disk beside a file saying there is none"
@@ -124,7 +131,7 @@ def test_the_reflect_failed_alias_disappears_with_the_file(tmp_path):
     before = {e["key"] for e in artifact_entries(sup.run.root)}
     assert "reflect-failed" in before, before
 
-    sup._record_reflect_outcome(IterationResult(exit_code=0))
+    sup._record_reflect_outcome(IterationResult(exit_code=0, final_text=_OK_CONTRACT))
 
     after = {e["key"] for e in artifact_entries(sup.run.root)}
     assert "reflect-failed" not in after, after
@@ -193,7 +200,7 @@ def test_an_unremovable_tombstone_does_not_break_a_good_post_mortem(tmp_path):
     _write_report(sup)
     os.chmod(outdir, 0o500)
     try:
-        sup._record_reflect_outcome(IterationResult(exit_code=0))
+        sup._record_reflect_outcome(IterationResult(exit_code=0, final_text=_OK_CONTRACT))
     finally:
         os.chmod(outdir, 0o700)
 

@@ -900,8 +900,14 @@ elif "Role: Reflector" in prompt:
         tool_call, thinking_text = emit_rich_preamble(
             tool_name="write", tool_args={"path": "artifacts/reflection/report.md"},
             thinking_text="Summarizing what worked and what could improve next run.")
-    emit_final("reflection complete\n<promise>REFLECTED</promise>",
-                tool_call=tool_call, thinking_text=thinking_text)
+    # Task 121 (#60 pillar 3, fact 9): report through the `reflect` contract
+    # instead of the bare <promise>REFLECTED</promise> sentinel (never
+    # scored by the engine anyway) -- the harness now reads this payload
+    # ON TOP OF the report.md file-presence check.
+    emit_final(
+        "reflection complete\n"
+        + json.dumps({"report_written": True, "suggestions_written": True}),
+        tool_call=tool_call, thinking_text=thinking_text)
 
 else:
     emit_final("unrecognized phase prompt")

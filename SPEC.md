@@ -533,7 +533,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/prompts/worker.md` | Worker phase: the one-task-per-iteration rule with its reasons, the task pick rule, credential handling, and the sibling-cleanup prohibition. |
 | `src/ralphd/prompts/review.md` | Review phase: independently re-check every PRD requirement, re-verify criteria flagged as edited after a validation failure, report `{"verdict": "verified"}` or `{"verdict": "rejected", ...}` and write findings on rejection. Never fix anything. |
 | `src/ralphd/prompts/task-verify.md` | Vigilant-mode per-task verification against `successCriteria`, reporting through the `verify` response contract (task 118) instead of a `<task-verified>id</task-verified>` sentinel. |
-| `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
+| `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else, reporting through the `reflect` response contract (task 121) instead of a bare `<promise>REFLECTED</promise>` sentinel. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
 | `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); phase→model resolution via `STRATEGY_TIERS`. |
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
@@ -588,7 +588,7 @@ An iteration runs exactly one phase. There are five.
 | `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | exactly one task advanced to `completed`, `notes.md` refreshed; `<promise>COMPLETE</promise>` when every task is done |
 | `verify` | `task-verify.md` | one task's `id`/`title`/`successCriteria` | `{"task_id": {id}, "verdict": "verified"}`, or `{"task_id": {id}, "verdict": "rejected", "reason": ...}` -- the harness applies `validated`/`validation-failed`/`failed` and copies `reason` onto that task's `validationNotes` (task 118) |
 | `review` | `review.md` | PRD (composite when present), `tasks.json`, workspace | `{"verdict": "verified"}`, or `{"verdict": "rejected", "reason": ..., "findings_path": "review-findings.md"}` with `review-findings.md` listing every unmet requirement -- the harness applies `succeeded`/`verified` or archives the approach from this payload (task 119) |
-| `reflect` | `reflect.md` | the finished run's own records | `artifacts/reflection/report.md`, optionally `suggestions.diff` |
+| `reflect` | `reflect.md` | the finished run's own records | `artifacts/reflection/report.md`, optionally `suggestions.diff`, plus `{"report_written": ..., "suggestions_written": ...}` (harness applies the `ok`/`error` verdict from this payload and the file check together, task 121) |
 
 `planning` runs once per approach, then the `worker` loop (with `verify`
 iterations interleaved in vigilant mode, §4.4), then `review` once the worker
@@ -697,9 +697,13 @@ only for the "mentioned but did not end with it" operator diagnostic (task
 046, #55) that runs for every iteration regardless of phase -- review's own
 decision reads the JSON contract exclusively. Each honoured COMPLETE/
 contract report emits a `signal` event. A `VERIFIED` signal is refused while
-operator steering is still unconsumed (§4.6). The reflect prompt ends on
-`<promise>REFLECTED</promise>`, which the engine does not score: the report on
-disk is the deliverable (`_reflect_failure()`).
+operator steering is still unconsumed (§4.6). The reflect prompt no longer ends on a bare sentinel; its own `reflect`
+contract claim (`{"report_written": ..., "suggestions_written": ...,
+"notes": ...}`, `transitions.HAT_SCHEMAS["reflect"]`) is read by
+`_reflect_verdict()` and checked ON TOP OF, never instead of,
+`artifacts/reflection/report.md`'s own file-presence check -- both a
+missing file and an absent/malformed/`report_written: false` contract are
+recorded as a failed reflection (`_reflect_failure()`, task 121).
 
 **A promise counts only as the last line, and only when the plan agrees.** Two
 rules, one string-level and one semantic, and the second is the load-bearing one.

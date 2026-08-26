@@ -83,7 +83,9 @@ def test_a_value_outside_the_enum_is_reported():
 
 def test_an_unexpected_field_is_reported_not_silently_dropped():
     errors = contracts.validate_payload(
-        "reflect", {"outcome": "succeeded", "typo_field": "oops"}
+        "reflect",
+        {"report_written": True, "suggestions_written": True,
+         "typo_field": "oops"},
     )
     assert any("typo_field" in e for e in errors)
 
@@ -99,7 +101,7 @@ def test_a_valid_payload_for_every_hat_validates_clean():
         "worker": {"verdict": "complete", "task_id": "001"},
         "verify": {"task_id": "001", "verdict": "verified"},
         "review": {"verdict": "verified"},
-        "reflect": {"outcome": "succeeded"},
+        "reflect": {"report_written": True, "suggestions_written": True},
     }
     for hat, payload in samples.items():
         assert contracts.validate_payload(hat, payload) == [], (hat, payload)

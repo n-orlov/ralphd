@@ -26,8 +26,13 @@ from pathlib import Path
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "src" / "ralphd" / "prompts"
 
-# the step that writes the task plan; the fact-check must come before it
-TASK_BREAKDOWN_ANCHOR = "3. Write the task state file"
+# the step that writes the task plan; the fact-check must come before it.
+# Task 120 (#60 pillar 3) retooled step 3 to draft a file-borne
+# plan-proposal.json instead of writing tasks.json directly (the harness
+# ingests and applies it) -- this anchor names that current step's text,
+# not the pre-cutover wording; retarget it again if step 3's own text ever
+# changes shape.
+TASK_BREAKDOWN_ANCHOR = "3. Draft your plan as a file named `plan-proposal.json`"
 
 
 def _planning_text() -> str:

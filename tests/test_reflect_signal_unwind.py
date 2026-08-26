@@ -74,6 +74,10 @@ class _FakeReflect:
             outdir = self.sup.run.artifacts_dir / "reflection"
             outdir.mkdir(parents=True, exist_ok=True)
             (outdir / "report.md").write_text("# stub report\n")
+            return IterationResult(
+                exit_code=0,
+                final_text=json.dumps({"report_written": True,
+                                        "suggestions_written": False}))
         return IterationResult(exit_code=0)
 
 

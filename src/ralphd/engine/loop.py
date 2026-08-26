@@ -1776,6 +1776,35 @@ class LoopSupervisor:
     # nothing"), not a log line, so it may only exist while it is true.
     REFLECT_TOMBSTONE = "FAILED.md"
 
+    def _reflect_verdict(self, result: IterationResult) -> tuple[dict | None, list[str]]:
+        """Task 121 (#60 pillar 3, fact 9): parse the reflect hat's final
+        line as a `reflect` contract payload (`{"report_written": ...,
+        "suggestions_written": ..., "notes": ...}`,
+        `transitions.HAT_SCHEMAS["reflect"]`) -- `reflect.md` no longer ends
+        its reply with the bare `<promise>REFLECTED</promise>` sentinel
+        (never scored by the engine to begin with); `_reflect_failure()`
+        below reads this payload ON TOP OF, never instead of, the existing
+        `artifacts/reflection/report.md` file-presence check -- a validated
+        claim is now required in addition to the file actually being there,
+        mirroring `_review_verdict`'s split between schema validation
+        (`contracts.validate_payload`) and the semantic sibling check
+        (`transitions.reflect_report_errors`).
+        """
+        try:
+            parsed = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            payload = parsed
+            contract_errors = (contracts.validate_payload("reflect", payload)
+                                or transitions.reflect_report_errors(payload))
+        else:
+            payload = None
+            contract_errors = [
+                "response: no parseable 'reflect' contract payload "
+                "(absent or malformed output)"]
+        return payload, contract_errors
+
     def _reflect_failure(self, result: IterationResult | None) -> str | None:
         """The reflect iteration's failure text, or None if it succeeded.
 
@@ -1787,6 +1816,16 @@ class LoopSupervisor:
         leaves the same empty artifacts/reflection/ as a broken endpoint.
         The one thing that is *not* reported as a reflect failure is the
         promise line: the report on disk is the deliverable.
+
+        Task 121 adds a second, independent requirement layered on top of
+        the file check above, never replacing it: the reflect hat's own
+        `reflect` contract payload (`_reflect_verdict`) must also validate
+        and must claim `report_written: true`. A report that exists on disk
+        but comes with no valid contract (or with the contract itself
+        claiming it was not written) is still a reflect failure -- the
+        validated claim, not the file's mere existence, is now the thing
+        the harness trusts, exactly the move task 116/118/119 already made
+        for worker/verify/review.
         """
         if result is None:
             return "the reflect iteration did not run to completion"
@@ -1803,6 +1842,14 @@ class LoopSupervisor:
         if not report.exists():
             return (f"the reflect iteration wrote no artifacts/reflection/"
                     f"{self.REFLECT_REPORT}")
+        payload, contract_errors = self._reflect_verdict(result)
+        if contract_errors:
+            return ("the reflect iteration's outcome contract was invalid: "
+                    + "; ".join(contract_errors))
+        if payload.get("report_written") is not True:
+            return ("the reflect iteration's own contract claims "
+                    f"report_written is not true even though "
+                    f"{self.REFLECT_REPORT} exists on disk")
         return None
 
     def _record_reflect_outcome(self, result: IterationResult | None) -> None:

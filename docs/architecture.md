@@ -578,6 +578,18 @@ the reflect iteration runs and are never touched by it; the engine does reset
 iteration finishes (it's transiently set to `"reflect"` while it runs, the same
 as every other phase), so a terminal job never appears to still be mid-phase.
 
+Task 121 replaced the phase's bare `<promise>REFLECTED</promise>` sentinel
+(never scored by the engine) with a `reflect` response contract
+(`{"report_written": ..., "suggestions_written": ..., "notes": ...}`,
+`transitions.HAT_SCHEMAS["reflect"]`): `LoopSupervisor._reflect_verdict()`
+parses the reply's last non-blank line as JSON and validates it
+(`contracts.validate_payload` plus `transitions.reflect_report_errors`, which
+requires a non-empty `notes` on a `report_written: false` claim), and
+`_reflect_failure()` treats a missing/malformed contract or a
+`report_written: false` claim as a reflect failure ON TOP OF, never instead
+of, the pre-existing check that `artifacts/reflection/report.md` actually
+exists on disk.
+
 With `reflect` absent/`false` (the default), no extra iteration runs at all —
 `run_job()` is a no-op wrapper around the same core loop as before this feature.
 
