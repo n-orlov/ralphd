@@ -184,6 +184,39 @@ def list_prompts() -> list[dict]:
 DEFAULT_MODEL_STRATEGY = "balanced"
 
 
+# Task 005 (#60 pillar 4, requirement A): the per-hat model table's own two
+# constants, preserving the exact split `DEFAULT_MODEL_STRATEGY`'s comment
+# above states for strategy names -- "what ships" and "what an unrecognised
+# name degrades to" stay two separate decisions here too, for the identical
+# reason: a typo in a hat name must never quietly make a run cheaper, even
+# though the shipped default is free to be the cheap/absent choice.
+#
+# All six hats `model_for` resolves: the five `STATE_HAT` roles
+# (transitions.py) plus the router, which is not state-tiered but still gets
+# a per-hat table entry (`router_model`/`models["router"]`).
+MODEL_HATS: tuple[str, ...] = (
+    "planning", "worker", "verify", "review", "reflect", "router")
+
+# "What ships": the ref a KNOWN hat resolves to when neither the per-hat
+# table (`models:`/`model_overrides:`) nor the bare `model` field configures
+# anything for it -- i.e. what a job that configures nothing at all gets.
+# `None` means "pi's own default model", exactly like the bare `model` field's
+# `None` already means today; this is also `model`'s own field default below,
+# so the two can never drift apart the way a second hardcoded literal would.
+DEFAULT_HAT_MODEL_REF: str | None = None
+
+# "What an unrecognised name degrades to": kept as its OWN constant, never
+# collapsed into `DEFAULT_HAT_MODEL_REF` above, for the same reason
+# `DEFAULT_MODEL_STRATEGY`'s comment gives for strategy names -- collapsing
+# them would mean a future default flip silently retargets the anti-downgrade
+# fallback too. Names the hat whose own configured entry `model_for` borrows
+# for an unrecognised hat name: `planning` (never `worker`/`verify`/`router`),
+# because every preset and every per-hat table seen so far reserves the
+# strongest model for the planner -- so a typo can degrade AT WORST to "as
+# capable as the planner", never to the cheap/mechanical tier.
+UNRECOGNISED_HAT_FALLBACK = "planning"
+
+
 @dataclass
 class JobConfig:
     run_id: str = "unnamed-run"
@@ -196,10 +229,25 @@ class JobConfig:
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
     # model tiers: any pi "provider/model" ref; phase → tier via strategy
-    model: str | None = None          # strong tier (pi default model when None)
+    model: str | None = DEFAULT_HAT_MODEL_REF  # strong tier (pi default model when None)
     fast_model: str | None = None     # fast tier (falls back to model)
     model_strategy: str = DEFAULT_MODEL_STRATEGY
+    # Task 005 (#60 pillar 4, requirement A): `model_overrides` is the
+    # RETAINED name for the per-hat table and stays THE mechanism `model_for`
+    # consults first -- `models` (below) is accepted as its alias for at
+    # least this release (merged into this dict in `__post_init__`, never
+    # silently dropped) so a job.yaml can spell either `model_overrides:` or
+    # `models:` and land in the exact same table. Covers all six
+    # `MODEL_HATS` (phase/hat name → model ref); an absent entry falls
+    # through to `model_for`'s other rungs, never to a second copy of this
+    # dict.
     model_overrides: dict = field(default_factory=dict)  # phase → model ref
+    # The new canonical spelling from #60 pillar 4's own `models:` example.
+    # Kept as a SEPARATE field (not just a `model_overrides` rename) so
+    # `JobConfig.load()`'s existing `raw key in known-fields` filter picks it
+    # up for free from a `models:` job.yaml key with zero extra parsing code,
+    # then `__post_init__` folds it into `model_overrides` once, in one place.
+    models: dict = field(default_factory=dict)  # alias for model_overrides
     thinking: str | None = None       # pi --thinking level
     api_token: str | None = None
     # Task 004 (#62 candidate 1, requirement A): a second, mandatory-by-
@@ -306,6 +354,16 @@ class JobConfig:
         # strategy that a downstream `== "aws"` check would silently treat as
         # "not aws" with no warning.
         self.price_strategy = normalize_price_strategy(self.price_strategy)
+        # Task 005: fold the `models:` alias into `model_overrides` -- the one
+        # table `model_for` actually reads -- exactly once, here, so a
+        # JobConfig built directly (tests, the API) behaves identically to
+        # one loaded from job.yaml. `model_overrides` wins on a key both name,
+        # since it is the pre-existing, more specific escape hatch; `models`
+        # only fills in keys `model_overrides` left unset.
+        if self.models:
+            merged = dict(self.models)
+            merged.update(self.model_overrides)
+            self.model_overrides = merged
 
     @classmethod
     def load(cls, path: Path | None = None) -> JobConfig:
@@ -419,6 +477,16 @@ class JobConfig:
         """Resolve the pi model ref for a phase; None = pi's own default."""
         if override := self.model_overrides.get(phase):
             return override
+        # Task 005 (#60 pillar 4, requirement A): a hat name that is not one
+        # of the six `MODEL_HATS` -- a typo, not a real role -- degrades via
+        # `UNRECOGNISED_HAT_FALLBACK` ("planning"'s own configured entry),
+        # never via the fast/mechanical tier below. Falls through to the
+        # bare `model` field only when even that borrowed entry is unset, so
+        # a table with nothing configured at all still behaves like today
+        # (None = pi's own default).
+        if phase not in MODEL_HATS:
+            return (self.model_overrides.get(UNRECOGNISED_HAT_FALLBACK)
+                    or self.model)
         # Task 018 (requirement E): the router is not a strategy-tiered
         # phase (it has no per-strategy row in STRATEGY_TIERS -- deliberately,
         # Non-goals rules out a config rewrite for it) -- its own
