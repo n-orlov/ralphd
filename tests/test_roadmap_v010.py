@@ -244,7 +244,7 @@ def test_every_other_requirement_is_honestly_pending():
     bullet check was amended once task 113 actually closed the issues."""
     block = milestone_block(roadmap_text(), declared_series())
     assert block is not None
-    for letter in "CDEFGHM":
+    for letter in "DEFGHM":
         bullet = _bullet(block, letter)
         assert bullet.startswith("- \u23f3"), (
             f"requirement {letter} is marked shipped, but no task has landed it "
@@ -254,10 +254,10 @@ def test_every_other_requirement_is_honestly_pending():
 
 def test_the_pending_check_catches_a_prematurely_shipped_bullet():
     block = milestone_block(roadmap_text(), SERIES)
-    bullet = _bullet(block, "C")
-    assert bullet.startswith("- \u23f3"), "fixture assumption: C is pending"
+    bullet = _bullet(block, "D")
+    assert bullet.startswith("- \u23f3"), "fixture assumption: D is pending"
     mutated = block.replace(bullet, bullet.replace("- \u23f3", "- \u2705", 1))
-    assert _bullet(mutated, "C").startswith("- \u2705")
+    assert _bullet(mutated, "D").startswith("- \u2705")
 
 
 # ------------------------------------------- what the wave delivered is not deferred

@@ -810,8 +810,27 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   notes state the matching Outcome-cell phrasing for such a run
   (`the terminal verdict is a deadline artifact (#NN)`), enforced by
   `tests/test_docs_prd_index.py`.
-- ⏳ **C. The finishing tail gets time it cannot be robbed of (#72).** Not yet
-  landed.
+- ✅ **C. The finishing tail gets time it cannot be robbed of (#72).**
+  `reflect` (PRD req 24) runs strictly after the job's fate is already
+  settled, so by the time it gets its one attempt `self.deadline` is
+  ordinarily already behind `time.monotonic()` -- and the per-iteration
+  timeout formula every phase shared (`min(iteration_timeout_s, max(60,
+  deadline - now))`) floored reflect at 60s regardless of how far past the
+  deadline the run already was, nowhere near enough for a real post-mortem
+  write (`selfdev-v09-fsm-loop` iterations 183/184/185, a 2m01s window,
+  `artifacts/reflection/FAILED.md` and nothing else). Of the PRD's three
+  options -- a reserved tail budget carved out of `job_timeout_s`; extending
+  `self.deadline` itself the way `_account_infra_wait` extends it for infra
+  waits; an independent bound for reflect -- the third was chosen:
+  `LoopSupervisor.REFLECT_TAIL_TIMEOUT_S` (600s, still capped by
+  `cfg.iteration_timeout_s`) replaces the plain 60s floor for `phase ==
+  "reflect"` only, in `_run_iteration_once`'s own timeout computation; every
+  other phase's arithmetic, `self.deadline`, `deadlineAt` and
+  `job_timeout_s`'s documented meaning are untouched, and
+  `_run_reflection()`'s one-attempt-per-process contract bounds the total
+  extra wall time this can ever cost a run to `min(iteration_timeout_s,
+  600)` seconds. The two rejected designs are written down in
+  `artifacts/reports/task-008-finishing-tail-budget.md`.
 - ✅ **J. A resumed run dir does not lose an approach's verifications (#75).**
   `RunDir.migrate_legacy_vigilant_verified()` used to match the legacy
   `vigilant-verified.json` sidecar's approach-namespaced entries
