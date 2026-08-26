@@ -2271,6 +2271,23 @@ class LoopSupervisor:
         below, is unrelated: it re-prompts the ROUTER, not the hat, about
         which edge to take, and every one of ITS attempts is a plain
         `_ask_router` call -- never a work iteration.)
+
+        Task 004 (requirement A, #72): the hat's own iteration can be cut
+        short by the ENGINE (`_iteration_cut_short_by_engine` -- SIGINT,
+        the iteration timeout, the startup watchdog, or an abnormal exit)
+        exactly like review's before task 003's fix, and with no per-state
+        `*_interrupted` edge declared in the table for a hypothetical hat
+        (that would defeat the whole "no edit to the transition executor"
+        promise this method exists to keep) the ONLY generic-safe response
+        is to retry the SAME hat call in place -- never advance, never
+        touch `self._advance()` at all, same as `worker`'s undeclared
+        `no_verdict_yet` self-loop -- while budget/wall clock remain, and,
+        once they do not, end the run via the ordinary tail WITHOUT ever
+        setting `self._abort_reason`: an engine-side cutoff must not read
+        as "the hat violated its contract" (which is what happened before
+        this fix -- an absent/malformed payload from an interrupted
+        attempt fell straight into the `errors` branch below and aborted
+        the run over a contract violation nobody committed).
         """
         hat = transitions.STATE_HAT.get(state)
         if not hat:
@@ -2279,7 +2296,19 @@ class LoopSupervisor:
         approach = self._approach
         await self._gate()
         self.run.emit("phase", phase=state, approach=approach)
-        result = await self.run_iteration(state, prompt_name=hat)
+        while True:
+            result = await self.run_iteration(state, prompt_name=hat)
+            if not self._iteration_cut_short_by_engine(result):
+                break
+            if not self.budget_left():
+                self._terminal_reason_note = (
+                    f"{state!r} ({hat!r} hat) was repeatedly cut short by "
+                    "the engine with no budget or wall clock left to ask "
+                    "again; no contract payload was ever judged, so this "
+                    "is not read as a contract violation (requirement A, "
+                    "#72)")
+                return ("tail",)
+            await self._gate()
         try:
             payload = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
@@ -2560,6 +2589,23 @@ class LoopSupervisor:
         task 120 split the "get one resolved attempt" concern (this method)
         from the "is the attempt's payload a valid plan proposal" concern
         (`plan_ingestion.enforce_plan_ingestion`, now the caller).
+
+        Task 004 (requirement A, #72): the SAME carve-out extends to an
+        attempt the ENGINE itself cut short
+        (`_iteration_cut_short_by_engine` -- SIGINT, the iteration
+        timeout, the startup watchdog, or an abnormal exit) -- exactly the
+        review-interrupted shape task 003 fixed for `_step_review`, but
+        `_instant_failure_signature` deliberately returns `None` for that
+        shape ("not instant / not this shape", loop.py's own comment on
+        it) so it was falling through UNCAUGHT: a planning attempt the
+        engine interrupted was handed to `respond()` and from there to
+        `plan_ingestion.enforce_plan_ingestion` as an ordinary attempt,
+        burning one of its `contract_retry_max` retries on something the
+        model never got a fair shot at -- enough consecutive interrupts
+        exhausts that budget and costs the WHOLE approach via the
+        `empty_plan` edge, for a reason that was never the plan's own
+        fault. Retried in place here instead, for as long as budget
+        remains, before ever reaching `respond()`.
         """
         while True:
             await self._gate()
@@ -2567,6 +2613,9 @@ class LoopSupervisor:
             if self._check_instant_failure(presult, self.iterations_used):
                 return None  # abort_reason set; budget_left() now False
             if self._instant_failure_streak and self.budget_left():
+                continue
+            if (self._iteration_cut_short_by_engine(presult)
+                    and self.budget_left()):
                 continue
             return presult
 
@@ -3208,15 +3257,38 @@ class LoopSupervisor:
         return verified, payload, contract_errors
 
     @staticmethod
+    def _iteration_cut_short_by_engine(result: IterationResult) -> bool:
+        """Task 004 (requirement A, #72): True iff `result` shows an
+        iteration was cut short by the ENGINE -- SIGINT (`interrupted`),
+        the full `iteration_timeout_s` or the startup-window watchdog
+        (`timed_out`/`no_traffic_timeout`), or an abnormal process exit
+        (`exit_code` neither 0 nor None -- the same "never even reached a
+        verdict" shape `_verify_no_verdict` and the reflect path's own
+        failure check already use) -- rather than an ordinary iteration
+        that ran to completion and simply replied with something its
+        caller cannot parse.
+
+        Extracted from `_review_interrupted` (task 003, #72's original
+        fix for `_step_review`) so the SAME discrimination -- an engine-
+        side cutoff is not a judged outcome -- is available, byte-for-byte
+        identical, to every other hat-driving path task 004's audit found
+        making the same mistake: `_step_generic_hat`'s hat retry and
+        `_one_planning_attempt`'s planning retry. `_review_interrupted`
+        below is now a thin, name-preserving wrapper (its own callers, and
+        the mutation test that monkeypatches it by name, are unaffected).
+        """
+        return bool(result.interrupted or result.timed_out
+                    or result.no_traffic_timeout
+                    or result.exit_code not in (0, None))
+
+    @staticmethod
     def _review_interrupted(result: IterationResult) -> bool:
         """Requirement A (#72): True iff `result` shows the review
-        iteration itself was cut short by the ENGINE -- SIGINT
-        (`interrupted`), the full `iteration_timeout_s` or the
-        startup-window watchdog (`timed_out`/`no_traffic_timeout`), or an
-        abnormal process exit (`exit_code` neither 0 nor None -- the same
-        "never even reached a verdict" shape `_verify_no_verdict` and the
-        reflect path's own failure check already use) -- rather than an
-        ordinary iteration that ran to completion and simply replied with
+        iteration itself was cut short by the ENGINE -- see
+        `_iteration_cut_short_by_engine`, which this delegates to
+        entirely (same predicate, shared now with `_step_generic_hat` and
+        `_one_planning_attempt`, task 004) -- rather than an ordinary
+        iteration that ran to completion and simply replied with
         something `_review_verdict` cannot parse.
 
         This is the ONLY thing that may route a review iteration onto the
@@ -3227,9 +3299,7 @@ class LoopSupervisor:
         default -- that contract-payload semantics are unchanged by this
         method's existence (a test pins it).
         """
-        return bool(result.interrupted or result.timed_out
-                    or result.no_traffic_timeout
-                    or result.exit_code not in (0, None))
+        return LoopSupervisor._iteration_cut_short_by_engine(result)
 
     async def _run_review_iteration(self, approach: int) -> IterationResult | None:
         """One review iteration, self-looping in place on the

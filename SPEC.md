@@ -688,6 +688,26 @@ approach counter does not move. This closes the incident recorded at
 `selfdev-v09-fsm-loop` iteration 183, where the clock cutting a review
 attempt short was scored as review's own judgement.
 
+**The same discrimination covers every other hat-driving path (v0.10 task
+004, #72).** `_iteration_cut_short_by_engine()` is the predicate
+`_review_interrupted()` now delegates to, factored out so the identical
+engine-side-cutoff test applies wherever a hat attempt or a planning
+attempt can be cut short: `_step_generic_hat()`'s per-state retry (any
+hat wired through the generic table executor, not only `review`) self-loops
+in place while budget/wall clock remain and, once they do not, ends via
+the ordinary tail with no `_abort_reason` set — an engine-side cutoff
+never reads as a contract violation over a payload nobody produced.
+`_one_planning_attempt()` gets the same carve-out `instant_failure_streak`
+already had: an interrupted planning attempt is retried in place rather
+than handed to `plan_ingestion.enforce_plan_ingestion` as an ordinary
+attempt, which would otherwise burn one of that method's finite
+contract retries on something the model never got a fair shot at. Two
+paths already had the right shape and needed no fix: `_step_worker`'s
+stagnation counter already excludes `result.interrupted` explicitly, and
+the reflect path (`_reflect_failure`/`_record_reflect_outcome`) cannot
+rewrite the run's own `state`/`verdict` regardless of whether the
+reflection attempt itself was cut short.
+
 ### 4.3 Sentinels and completion
 
 One exact string carries an agent claim scanned from the final assistant
