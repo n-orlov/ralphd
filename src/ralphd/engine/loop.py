@@ -192,6 +192,14 @@ class LoopSupervisor:
         # keeps its existing meaning (aborted == an actual abort/infra
         # condition set _abort_reason); this is purely informational text.
         self._terminal_reason_note: str | None = None
+        # Requirement B (#72): the deadline-beat-verdict marker computed by
+        # `_deadline_beat_verdict_patch()`, stashed here ONLY by the one
+        # call site (`_review_unjudged_at_budget_end`) that actually knows
+        # review never rendered a judgement this approach -- see that
+        # method's docstring for why this must not be recomputed generically
+        # at the shared terminal-write call site the way
+        # `_unconsumed_steering_patch()` is. Empty for every other tail exit.
+        self._deadline_beat_verdict_extra: dict = {}
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -1608,6 +1616,29 @@ class LoopSupervisor:
         self._promote_finishing_state()
         return state
 
+    def _finish_tail_unverified(self) -> str:
+        """The ordinary `("tail",)`-exit terminal write from
+        `_run_job_core`'s dispatch loop -- factored out to a single named
+        method (task 006, requirement B, #72) so a test can drive exactly
+        this write from a hand-built fixture (`self._abort_reason`,
+        `self._terminal_reason_note`, `self._deadline_beat_verdict_extra`,
+        tasks.json, events.jsonl) instead of only through a full scripted
+        `_run_job_core()` run. Behaviour is unchanged from before this
+        extraction: `state` is `aborted` iff `self._abort_reason` is set,
+        else `failed`; `verdict` is always `unverified` here -- this path
+        can never grant `verified` (a second test pins that) -- `reason`
+        prefers the abort reason over the free-text terminal note, and
+        both status.json patches (`_unconsumed_steering_patch`,
+        `_deadline_beat_verdict_extra`) are applied every time, each a
+        no-op unless its own condition actually holds.
+        """
+        final_state = "aborted" if self._abort_reason else "failed"
+        self._finish(final_state, "unverified",
+                    reason=self._abort_reason or self._terminal_reason_note,
+                    **self._unconsumed_steering_patch(),
+                    **self._deadline_beat_verdict_extra)
+        return final_state
+
     def _finish(self, state: str, verdict: str, **fields) -> str:
         """THE terminal-outcome write (task 012, #56) -- every place
         `_run_job_core` decides the job's fate calls this instead of writing
@@ -2194,11 +2225,7 @@ class LoopSupervisor:
                 _, target, guard = outcome
                 step = self._advance(step, target, guard)
 
-            final_state = "aborted" if self._abort_reason else "failed"
-            self._finish(final_state, "unverified",
-                        reason=self._abort_reason or self._terminal_reason_note,
-                        **self._unconsumed_steering_patch())
-            return final_state
+            return self._finish_tail_unverified()
         except Exception as exc:  # engine bug — record, don't vanish
             # Deliberately still `Exception`, not BaseException: the
             # per-iteration containment boundary in _run_iteration_once
@@ -3338,6 +3365,18 @@ class LoopSupervisor:
         approach must not be archived, no `review rejected approach N`
         log line is emitted, and no composite PRD is written for a
         successor approach that will never run.
+
+        Requirement B (#72): this is ALSO the one call site that stashes
+        `_deadline_beat_verdict_patch()`'s result for the shared terminal
+        write (`_run_job_core`'s tail exit) to include -- see that
+        method's docstring for the marker's shape and, more importantly,
+        for why it must be computed HERE and nowhere more generic: this is
+        the one place in the whole dispatch loop that positively knows
+        review never rendered a judgement THIS approach, as opposed to
+        having rendered one that was rejected (which leaves an
+        indistinguishable trace on disk -- same completed tasks, same past
+        COMPLETE signal -- once `_archive_approach` has copied today's
+        tasks.json into `approaches/NN/` without resetting it).
         """
         self._advance("review", "finishing", "review_unjudged_at_budget_end")
         self._terminal_reason_note = (
@@ -3345,7 +3384,68 @@ class LoopSupervisor:
             "no budget or wall clock left to ask again; no verdict was "
             "ever scored, so the approach was not archived and no "
             "rejection was recorded (requirement A, #72)")
+        self._deadline_beat_verdict_extra = self._deadline_beat_verdict_patch()
         return ("tail",)
+
+    def _deadline_beat_verdict_patch(self) -> dict:
+        """status.json patch (requirement B, #72) for the ONE terminal
+        write that must not read as "the work failed" when it wasn't: a
+        run where every task is done and the worker's own `COMPLETE` was
+        already honoured, and the ONLY thing missing is a review verdict
+        because the deadline took the last review attempt before it could
+        speak.
+
+        Chosen design, out of the three the PRD offers (rejected two
+        recorded in `artifacts/reports/task-006-deadline-beat-verdict-
+        design.md`): keep `state: failed` / `verdict: unverified` exactly
+        as `_run_job_core`'s tail exit already writes them --
+        `verdict: verified` stays grantable by the review hat alone, the
+        operator's one non-negotiable ruling -- and add a dedicated,
+        structured field instead of asking a human to parse the free-text
+        `reason` string. Modelled on `_unconsumed_steering_patch`'s own
+        precedent: name the thing that was stranded, loudly, in a field a
+        script can check without a human reading prose.
+
+        Empty (the common, correct-for-every-OTHER-tail-exit case) unless
+        BOTH:
+          * every task in the record is done -- `_outstanding_for_
+            completion` empty, the identical check `_step_worker`'s own
+            `honoured_complete` uses to decide whether a COMPLETE claim was
+            earned; and
+          * an actual `signal` event recording `signal: "COMPLETE"` exists
+            in this run's `events.jsonl` -- so a plan that merely happens
+            to read all-done at this exact snapshot (for some unrelated
+            reason) is not mistaken for one whose COMPLETE was ever
+            honoured.
+
+        Deliberately NOT wired in unconditionally at the shared tail-exit
+        `_finish()` call the way `_unconsumed_steering_patch()` is: those
+        two conditions, on their own, are also true of a run whose LAST
+        approach really was reviewed and genuinely REJECTED (`rejected_
+        no_approach_left`) -- `_archive_approach` copies tasks.json into
+        `approaches/NN/` without resetting anything on the live copy, and
+        the COMPLETE signal that made the worker hand off to review in the
+        first place is still sitting in the event log. Calling this
+        method from that path would misreport a real rejection as "the
+        clock beat the verdict". It is therefore called from exactly one
+        place, `_review_unjudged_at_budget_end`, which is the only call
+        site that positively knows review itself never rendered a verdict.
+        """
+        tasks_doc = self.run.read_tasks()
+        if self._outstanding_for_completion(tasks_doc):
+            return {}
+        complete_events = [
+            ev for ev in state.read_events(self.run.root, types={"signal"})
+            if ev.get("signal") == "COMPLETE"
+        ]
+        if not complete_events:
+            return {}
+        return {
+            "deadlineBeatVerdict": {
+                "deadline": utc_from_epoch(self._deadline_epoch),
+                "completeHonouredAt": complete_events[-1].get("ts"),
+            }
+        }
 
     async def _step_review(self) -> tuple:
         """The `review` state. Guards: `review_interrupted` (self-loop,

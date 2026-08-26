@@ -787,8 +787,22 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   the behaviour. A named regression test reproduces `selfdev-v09-fsm-loop`
   iteration 183 exactly, and a paired mutation test proves the discrimination
   actually matters.
-- ⏳ **B. A run that has earned `COMPLETE` does not lose it to the clock (#72).**
-  Not yet landed.
+- ✅ **B. A run that has earned `COMPLETE` does not lose it to the clock (#72).**
+  Requirement A stops the approach being burned; this is the terminal-record
+  half. `LoopSupervisor._deadline_beat_verdict_patch()` adds a
+  `deadlineBeatVerdict` status.json field (`{deadline, completeHonouredAt}`)
+  to the terminal write IFF every task in the record is done AND a
+  `signal: "COMPLETE"` event was actually recorded -- computed from exactly
+  one call site, `_review_unjudged_at_budget_end` (never unconditionally at
+  the shared tail exit: a genuinely REJECTED last approach leaves the
+  identical trace on disk and must not be misreported). `state`/`verdict`
+  stay `failed`/`unverified` -- the operator's ruling that `verdict: verified`
+  stays the review hat's alone to grant is unchanged -- the marker exists so
+  a human or a script can tell "the clock beat the verdict" from "the work
+  failed" without parsing free-text `reason`, the same precedent
+  `_unconsumed_steering_patch` already set. Two rejected designs (a distinct
+  `verdict` value; a distinct terminal `state`) are recorded in
+  `artifacts/reports/task-006-deadline-beat-verdict-design.md`.
 - ⏳ **C. The finishing tail gets time it cannot be robbed of (#72).** Not yet
   landed.
 - ✅ **J. A resumed run dir does not lose an approach's verifications (#75).**

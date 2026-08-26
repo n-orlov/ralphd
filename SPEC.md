@@ -708,6 +708,30 @@ the reflect path (`_reflect_failure`/`_record_reflect_outcome`) cannot
 rewrite the run's own `state`/`verdict` regardless of whether the
 reflection attempt itself was cut short.
 
+**A run that has earned `COMPLETE` does not lose it to the clock (v0.10
+requirement B, #72).** `review_unjudged_at_budget_end` (just above) stops
+the approach being burned; this is about the terminal record that follows.
+`LoopSupervisor._deadline_beat_verdict_patch()` adds a `deadlineBeatVerdict`
+status.json field -- `{"deadline": ..., "completeHonouredAt": ...}` -- to
+exactly that write, IFF every task in the record is done
+(`_outstanding_for_completion` empty, the same check `_step_worker`'s
+`honoured_complete` uses) AND a `signal: "COMPLETE"` event was actually
+recorded in `events.jsonl`. `state`/`verdict` stay `failed`/`unverified` --
+the operator's ruling is that `verdict: verified` stays something only the
+review hat can grant -- the marker exists so a human or a script can tell
+"the clock beat the verdict" from "the work failed" without parsing the
+free-text `reason`, the same precedent `_unconsumed_steering_patch` already
+set for stranded steering. Computed from exactly one call site
+(`_review_unjudged_at_budget_end`, stashed on
+`self._deadline_beat_verdict_extra`), never unconditionally at the shared
+tail exit (`_finish_tail_unverified()`) the way `_unconsumed_steering_patch`
+is: a genuinely REJECTED last approach leaves the identical trace on disk
+(completed tasks, a past COMPLETE signal, since `_archive_approach` copies
+rather than resets) and must not be reported as an un-rendered verdict. Two
+rejected designs (a distinct `verdict` value; a distinct terminal `state`)
+are recorded, with reasoning, in
+`artifacts/reports/task-006-deadline-beat-verdict-design.md`.
+
 ### 4.3 Sentinels and completion
 
 One exact string carries an agent claim scanned from the final assistant
@@ -1066,6 +1090,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
 | `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
+| `deadlineBeatVerdict` | object \| absent | present only on a `failed`/`unverified` terminal write where every task was done, `COMPLETE` was already honoured, and review never rendered a verdict because the deadline took the last attempt (v0.10 requirement B, #72): `{deadline, completeHonouredAt}`, naming the wall-clock deadline and the `ts` of the honoured `COMPLETE` event -- see §4.2 |
 | `onComplete` | string | `exit` \| `idle` |
 | `usage` | object | token and cost totals, plus `byPhase` and `byApproach` buckets |
 | `createdAt` | string | UTC ISO-8601, first status write |
