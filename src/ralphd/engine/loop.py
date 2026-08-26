@@ -2910,6 +2910,7 @@ class LoopSupervisor:
                             f.write("\n" + "\n".join(lines) + "\n")
                         self._blocked_notes_written.update(new_ids)
             claimed_from = None
+            claimed_from_tier: str | None = None
             if isinstance(selected, dict) and selected.get("status") in (
                     "pending", "validation-failed"):
                 old_status = selected.get("status")
@@ -2917,6 +2918,20 @@ class LoopSupervisor:
                 for t in tasks_before.get("tasks", []):
                     if t.get("id") == assigned_id:
                         t["status"] = "in-progress"
+                        if old_status == "validation-failed":
+                            # Task 014 (requirement G): a validation-failed
+                            # RE-ENTRY bumps the task's effective tier one
+                            # step, capped at `hard` -- the harness's own
+                            # response to the retry, never a hat's. Record
+                            # the pre-escalation tier so an infra-fault
+                            # rollback just below can give the bump back
+                            # too, the same way it gives the claim back:
+                            # nothing was actually attempted at the new
+                            # rung, so nothing should look escalated.
+                            claimed_from_tier = state.task_effective_tier(t)
+                            state.escalate_task_effective_tier(t)
+                        else:
+                            state.claim_task_effective_tier(t)
                         break
                 self.run.write_tasks(tasks_before)
                 self._emit_task_status(assigned_id, old_status, "in-progress")
@@ -2949,6 +2964,11 @@ class LoopSupervisor:
                 for t in tasks_after.get("tasks", []):
                     if t.get("id") == assigned_id and t.get("status") == "in-progress":
                         t["status"] = claimed_from
+                        if claimed_from_tier is not None:
+                            # Give the tier bump back too, same reasoning
+                            # as the status rollback just above: an infra
+                            # fault attempted nothing at the new rung.
+                            t[state.TASK_EFFECTIVE_TIER_FIELD] = claimed_from_tier
                         self.run.write_tasks(tasks_after)
                         self._emit_task_status(assigned_id, "in-progress", claimed_from)
                         break
@@ -4190,6 +4210,16 @@ class LoopSupervisor:
                             "reason", "").strip() or (
                             "Verifier ran to completion and reported "
                             "verdict: \"rejected\" with no reason given.")
+                    # Task 014 (#61's stagnation input): this validation
+                    # failure landed while the task's effective tier was
+                    # already at `tiers.TOP_TIER` -- there is nowhere left
+                    # to escalate to on the next retry, so that fact is
+                    # recorded on the record itself, before this task's
+                    # NEXT re-entry ever tries (and no-ops) an escalation.
+                    if state.mark_tier_ladder_exhausted_if_at_top(t):
+                        self.run.emit(
+                            "signal", signal="tierLadderExhausted",
+                            taskId=tid, tier=state.task_effective_tier(t))
                 if attempts >= VALIDATION_ATTEMPT_LIMIT:
                     # Task 024 (#33): the engine forcing `failed` here means
                     # ONE thing -- the validation rounds are used up -- and it

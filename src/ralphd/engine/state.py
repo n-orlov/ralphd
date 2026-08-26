@@ -25,6 +25,7 @@ from ..log_merge import (
 from . import privsep
 from .faults import explain_fault, matched_signature
 from .redact import redact_job_yaml, scrub_text
+from . import tiers
 
 log = logging.getLogger("ralphd.state")
 
@@ -1765,6 +1766,131 @@ def task_blocks_completion(task: dict) -> bool:
         return True
     return task.get("status", "pending") not in (
         TASK_COMPLETION_STATUSES + ("awaiting-validation",))
+
+
+# ---------------------------------------------------------------------------
+# Task 014 (#68 half 2, requirements E/G): the effective-tier ladder as
+# HARNESS STATE on the task record itself.
+#
+# `tier` (task 013) is the planner-annotated BASELINE -- set once, at plan
+# ingestion, and never touched again. `effectiveTier` is the harness-owned
+# rung a task's next dispatch actually resolves at (task 016's business);
+# it starts equal to the baseline and is bumped ONE step, capped at `hard`
+# (`tiers.escalate_tier`, decision 6/G), each time a task RE-ENTERS
+# `in-progress` from `validation-failed` -- i.e. each validation-failed
+# retry, not each iteration. There is no de-escalation path anywhere in
+# this module (requirement G): once a task's `effectiveTier` reaches
+# `tiers.TOP_TIER` it can never move again, whatever a later success or
+# failure cycle does to its status.
+#
+# Both fields live ONLY on the harness-owned tasks.json record, written
+# ONLY by the functions below and their call site in `engine.loop`'s worker
+# loop -- never by a hat's own reported payload (`HAT_SCHEMAS["worker"]` has
+# no `tier`/`effectiveTier` property at all, and `additionalProperties:
+# False` refuses one that tries; even if a payload smuggled one in, nothing
+# in `_apply_reported_task_status`/`_apply_worker_completion_report` ever
+# reads or copies it -- the functions below are the only writers).
+TASK_EFFECTIVE_TIER_FIELD = "effectiveTier"
+
+# Task 014: a task that fails validation while its effective tier is
+# ALREADY at `tiers.TOP_TIER` has nowhere left to escalate to -- this is a
+# distinct, queryable fact from the ordinary validation-failed retry (it is
+# #61's stagnation input: "this task has spent its whole tier ladder and
+# still failed"), recorded on the task record under this field name rather
+# than inferred by a reader re-deriving "was it already at hard" from
+# `effectiveTier` alone -- the same "engine writes the label, the field is
+# additive" discipline `failureKind`/`TASK_FAILURE_VALIDATION_EXHAUSTED`
+# already uses above.
+TASK_TIER_LADDER_EXHAUSTED_FIELD = "tierLadderExhausted"
+
+
+def task_baseline_tier(task: dict) -> str:
+    """This task's planner-annotated baseline tier (task 013's `tier`
+    field), normalised to one of `tiers.TIERS` -- a missing or otherwise
+    unrecognised value (a plan ingested before task 013, or a hand-edited
+    record) reads as `tiers.DEFAULT_TIER`, the same degrade-to-`normal`
+    rule ingestion itself already applies (`plan_ingestion.
+    normalize_task_tiers`), so a reader never has to special-case a legacy
+    record."""
+    if not isinstance(task, dict):
+        return tiers.DEFAULT_TIER
+    tier = task.get("tier")
+    return tier if tiers.is_tier(tier) else tiers.DEFAULT_TIER
+
+
+def task_effective_tier(task: dict) -> str:
+    """This task's CURRENT effective tier: the persisted `effectiveTier`
+    if the record carries a recognised one, else the baseline tier (a task
+    that has never been claimed, or was claimed before this field existed,
+    has not escalated at all -- its effective tier IS its baseline).
+
+    Read-only and pure: never writes anything, never invents a value that
+    is not already implied by the record it was handed -- the mirror of
+    `task_baseline_tier` just above, one rung up the fallback chain.
+    """
+    if not isinstance(task, dict):
+        return tiers.DEFAULT_TIER
+    effective = task.get(TASK_EFFECTIVE_TIER_FIELD)
+    if tiers.is_tier(effective):
+        return effective
+    return task_baseline_tier(task)
+
+
+def claim_task_effective_tier(task: dict) -> str:
+    """Persist `effectiveTier` on a task claimed for the FIRST time (a
+    `pending` -> `in-progress` move): equal to its baseline tier, written
+    explicitly rather than left implicit, so `effectiveTier` is present on
+    the record from the very first claim onward. A task already carrying a
+    recognised `effectiveTier` is left byte-for-byte alone -- this is not
+    an escalation, and it must never move an already-escalated task
+    backward to its baseline (requirement G: no de-escalation path, full
+    stop). Mutates `task` in place and returns the (possibly unchanged)
+    tier.
+    """
+    current = task.get(TASK_EFFECTIVE_TIER_FIELD)
+    if tiers.is_tier(current):
+        return current
+    baseline = task_baseline_tier(task)
+    task[TASK_EFFECTIVE_TIER_FIELD] = baseline
+    return baseline
+
+
+def escalate_task_effective_tier(task: dict) -> str:
+    """Bump `task`'s effective tier ONE step, capped at `tiers.TOP_TIER`
+    (`tiers.escalate_tier`, decision 6/G) -- the harness's OWN response to a
+    `validation-failed` re-entry, called exactly once per re-claim (the
+    `validation-failed` -> `in-progress` move in `engine.loop`'s worker
+    loop), never per iteration and never from anything a hat reports.
+    Mutates `task` in place and returns the new (or, at `hard`, unchanged)
+    tier -- there is no way to call this and end up BELOW where the task
+    already stood, which is what makes "no de-escalation path" true by
+    construction rather than by a caller's discipline.
+    """
+    new_tier = tiers.escalate_tier(task_effective_tier(task))
+    task[TASK_EFFECTIVE_TIER_FIELD] = new_tier
+    return new_tier
+
+
+def mark_tier_ladder_exhausted_if_at_top(task: dict) -> bool:
+    """Task 014: called at the moment a validation verdict comes back
+    negative for `task` -- BEFORE any escalation is attempted for the NEXT
+    retry. If this task's current effective tier is already `tiers.
+    TOP_TIER`, there is nowhere left on the ladder to escalate to on the
+    next re-entry, so that fact is recorded on the record itself
+    (`TASK_TIER_LADDER_EXHAUSTED_FIELD`), once it becomes true, and stays
+    true afterward (never cleared -- exhaustion, once real, does not
+    un-happen). Returns whether the task was (already, or newly) at the
+    ladder's top -- the caller (`engine.loop._verify_task`) uses this to
+    decide whether to also emit an event, without re-deriving the same
+    tier comparison itself.
+    """
+    if not isinstance(task, dict):
+        return False
+    at_top = task_effective_tier(task) == tiers.TOP_TIER
+    if at_top:
+        task[TASK_TIER_LADDER_EXHAUSTED_FIELD] = True
+    return bool(at_top or task.get(TASK_TIER_LADDER_EXHAUSTED_FIELD))
+
 
 # Task 025 (#33): how the two meanings are COUNTED, and how they are SPELLED.
 #
