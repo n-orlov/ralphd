@@ -19,7 +19,7 @@ from .creds import place_creds
 from .loop import LoopSupervisor
 from .privsep import agent_child_kwargs, separate_engine_identity
 from .redact import refresh_redaction_map
-from .skills import ambient_home, place_skills
+from .skills import ambient_home, place_skills, verify_placement_and_report
 from .state import CURRENT_SCHEMA_VERSION, RunDir, RunDirLocked, SchemaVersionTooNew, utcnow
 
 log = logging.getLogger("ralphd")
@@ -183,7 +183,9 @@ async def amain() -> int:
     workspace = Path(os.environ.get("RALPHD_WORKSPACE_DIR", str(WORKSPACE_DIR)))
     workspace.mkdir(parents=True, exist_ok=True)
     place_creds(CONFIG_DIR)
-    place_skills(CONFIG_DIR, home=ambient_home())
+    _skills_home = ambient_home()
+    place_skills(CONFIG_DIR, home=_skills_home)
+    verify_placement_and_report(run, CONFIG_DIR, _skills_home)
     # Build the in-memory-only secret-redaction set (task 060) now that
     # creds are placed -- covers both process/LLM env and placed cred file
     # values from the very first iteration onward.

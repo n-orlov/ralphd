@@ -29,6 +29,7 @@ from .faults import classify_fault
 from .llm import current_env
 from .pricing import resolve_pricing
 from .runner import IterationResult, PiRunner, last_nonblank_line
+from .skills import ambient_home, verify_placement_and_report
 from .state import (
     TASK_FAILURE_VALIDATION_EXHAUSTED,
     TERMINATION_CLASS_OPERATOR,
@@ -1031,6 +1032,21 @@ class LoopSupervisor:
             # arrived from outside vs. this engine giving up on its own).
             operator_abort_recorded=self._operator_abort_recorded)
 
+    def _verify_skills_placement(self) -> None:
+        """Task 003 (#83 detection): a placement that was verified once at
+        startup can still vanish mid-run -- exactly what steer 002/003
+        found still happening in this very container, from a source
+        (another engine's startup clearing the same ambient `$HOME`) that
+        a check run only at THIS engine's own startup can never see.
+        Called at the end of every iteration, for every hat, the same
+        boundary `_reinject_standing_rules` already uses -- so a mid-run
+        loss surfaces within one iteration of happening, without an
+        operator having to notice a silent Telegram channel or go look.
+        Never raises past this call (see `verify_placement_and_report`'s
+        own docstring): one bad check must cost nothing more than itself.
+        """
+        verify_placement_and_report(self.run, CONFIG_DIR, ambient_home())
+
     def _reinject_standing_rules(self) -> None:
         """Task 107 (#60 pillar 3): make the notes' `## Standing rules`
         block survive an agent's own notes.md rewrite by CONSTRUCTION,
@@ -1287,6 +1303,7 @@ class LoopSupervisor:
         # as a worker's, and this is the one point every phase already
         # passes through on its way back to `_run_job_core`.
         self._reinject_standing_rules()
+        self._verify_skills_placement()
         return result
 
     @staticmethod

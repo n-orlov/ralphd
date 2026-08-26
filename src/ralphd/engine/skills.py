@@ -157,6 +157,77 @@ def list_skills(config_dir: Path) -> list[dict]:
     return out
 
 
+def verify_placement(config_dir: Path, home: Path) -> tuple[list[str], list[str]]:
+    """Read-only check of what `place_skills()` last claimed to have done
+    (task 003, #83 detection): recompute the same expected name set
+    `place_skills()` would place right now (mounted + api, minus
+    tombstones) and check each one still resolves at
+    `_pi_skills_dir(home)/<name>` -- a symlink that exists and whose
+    target is a readable directory.
+
+    Returns `(verified, lost)`, both sorted name lists. `lost` is exactly
+    the names whose placement did NOT resolve -- deleted out from under
+    the engine, replaced with something that is not a symlink, or
+    pointing at a source that no longer exists or isn't readable. Never
+    raises for an ordinary missing/broken link; a genuinely surprising
+    OSError while `stat`-ing one entry counts that one entry as lost
+    rather than aborting the whole check, so one bad name never hides
+    the rest of the picture.
+
+    Deliberately independent of `place_skills()`'s own accounting (no
+    shared "last placed" state) so a caller can call this as often as it
+    likes, from a fresh process even, and get the same answer -- "lost"
+    means the filesystem disagrees with what the sources say should be
+    there right now, not "disagrees with some remembered snapshot".
+    """
+    mounted, api = _sources(config_dir)
+    deleted = _deleted_names()
+    expected = sorted((set(mounted) | set(api)) - deleted)
+    target = _pi_skills_dir(home)
+    verified: list[str] = []
+    lost: list[str] = []
+    for name in expected:
+        link = target / name
+        try:
+            ok = link.is_symlink() and link.is_dir()
+        except OSError:
+            ok = False
+        (verified if ok else lost).append(name)
+    return verified, lost
+
+
+def verify_placement_and_report(run, config_dir: Path, home: Path) -> None:
+    """`verify_placement()` plus the run-event half of #83's detection
+    requirement (task 003): a placement that resolves gets a
+    `skills.placement.verified` run EVENT (not just an INFO log line) so
+    "the check ran and saw nothing wrong" is itself a fact in
+    events.jsonl, not merely the absence of a complaint; a placement that
+    doesn't resolve gets a `skills.placement.lost` run event, loud enough
+    to grep out of events.jsonl instead of scrolling a log file for it.
+
+    `run` is anything with an `.emit(type_, **data)` method shaped like
+    `state.RunDir.emit` -- callers pass the real RunDir; tests can pass a
+    stand-in that just records calls.
+
+    Never raises: called both right after `place_skills()` and again at
+    every iteration boundary (`LoopSupervisor._run_iteration_once`), so a
+    bug in the check itself must not cost an iteration or take down the
+    loop -- that would just be a second way to lose the same signal #83
+    already showed can go unnoticed.
+    """
+    try:
+        verified, lost = verify_placement(config_dir, home)
+    except Exception as exc:  # pragma: no cover -- defensive, see docstring
+        log.error("skills placement verification itself failed: %r", exc)
+        return
+    if verified:
+        run.emit("skills.placement.verified", names=verified)
+    if lost:
+        log.error("skills placement lost (expected but not resolving): %s",
+                  ", ".join(lost))
+        run.emit("skills.placement.lost", names=lost)
+
+
 def place_skills(config_dir: Path, *, home: Path) -> list[str]:
     """Rebuild `~/.pi/agent/skills/` from the mounted + api sources (api
     wins on name collision; tombstoned names are omitted). Returns the

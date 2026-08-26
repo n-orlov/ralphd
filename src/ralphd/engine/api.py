@@ -37,6 +37,7 @@ from .skills import (
     list_skills,
     place_skills,
     tar_dir,
+    verify_placement_and_report,
 )
 from .state import (
     STEERING_GLOB,
@@ -495,7 +496,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         except InvalidSkillTar as exc:
             raise problem(422, "invalid skill archive", str(exc)) from exc
         clear_tombstone(name)
-        place_skills(CONFIG_DIR, home=ambient_home())
+        _home = ambient_home()
+        place_skills(CONFIG_DIR, home=_home)
+        verify_placement_and_report(run, CONFIG_DIR, _home)
         run.emit("log", message=f"skill added via API: {name}")
         return Response(status_code=204)
 
@@ -509,7 +512,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         ddir = deleted_dir()
         ddir.mkdir(parents=True, exist_ok=True)
         (ddir / name).touch()
-        place_skills(CONFIG_DIR, home=ambient_home())
+        _home = ambient_home()
+        place_skills(CONFIG_DIR, home=_home)
+        verify_placement_and_report(run, CONFIG_DIR, _home)
         run.emit("log", message=f"skill removed via API: {name}")
         return Response(status_code=204)
 
