@@ -641,3 +641,35 @@ class JobConfig:
             return HatBundle(model=model, effort=override)
         return HatBundle(model=model, thinking=override)
 
+    def provisioning_table(self) -> list[dict]:
+        """Task 010 (#79, PRD requirement O): the resolved hat -> model
+        mapping every surface (hub header, `ralphctl status`, `status
+        --json`) renders from -- one row per `MODEL_HATS` entry, in that
+        tuple's order, each resolved through `bundle_for` -- the SAME
+        method `loop.py`'s dispatch call site already uses
+        (`self.cfg.bundle_for(phase)`), never a second resolution path.
+
+        Deliberately structured, not worded: this is `model_for`'s actual
+        answer per hat, never the raw `models:`/`model_overrides:`/
+        `thinking_overrides:` knobs those answers were built from (the
+        distinction #79 asked for) -- `state.format_provisioning_lines`
+        turns each row into the one display string both `ralphctl status`
+        and the hub render unchanged.
+
+        Each row: `{"hat": str, "model": str | None, "thinking": str |
+        None, "effort": str | None}` -- `model` is `None` for a hat that
+        resolves to pi's own default (never a made-up string), and
+        `thinking`/`effort` are mutually exclusive, the same discipline
+        `HatBundle` itself enforces.
+        """
+        rows = []
+        for hat in MODEL_HATS:
+            bundle = self.bundle_for(hat)
+            rows.append({
+                "hat": hat,
+                "model": bundle.model,
+                "thinking": bundle.thinking,
+                "effort": bundle.effort,
+            })
+        return rows
+

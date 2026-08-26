@@ -56,6 +56,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from ..engine.config import JobConfig
 from ..engine.state import (
     NO_ARTIFACTS,
     NONTERMINAL_STATES,
@@ -81,6 +82,7 @@ from ..engine.state import (
     format_cost,
     format_iteration_log_header,
     format_local_time,
+    format_provisioning_lines,
     format_run_document_size,
     iteration_detail,
     iteration_summary_lines,
@@ -922,6 +924,39 @@ def _with_cost_display(doc: dict) -> dict:
     return {**doc, "usage": out_usage}
 
 
+def _with_provisioning(doc: dict, cfg_path: Path) -> dict:
+    """Task 010 (#79, PRD requirement O): attach the resolved hat -> model
+    mapping to a status doc server-side, the same discipline
+    `_with_approach_display`/`_with_cost_display` use for their own fields --
+    except the raw material is not on the status doc itself (a live engine's
+    `/status` answer carries no `models:` table) but this run's own
+    `job.yaml`, so it is loaded HERE, from the host's copy
+    (`ui_server._config_dir`, the same path `cli.main.config_root` spells),
+    never from anything a proxied payload could forge.
+
+    `provisioning` is `JobConfig.provisioning_table()`'s structured rows
+    (`ralphctl status --json`'s own `provisioning` key, so the two surfaces
+    describe the identical mapping); `provisioningLines` is
+    `state.format_provisioning_lines` over those SAME rows -- the exact
+    strings `ralphctl status`'s plain-text output prints, rendered by the
+    hub as-is (`renderSummary`, `app.js`), never re-worded in JS.
+
+    A run with no job.yaml on disk yet (or an unreadable one) gets an empty
+    table rather than raising -- the same "absent, not a crash" discipline
+    `_with_local_times` gives a doc with no timestamps.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    table: list[dict] = []
+    if cfg_path.is_file():
+        try:
+            table = JobConfig.load(cfg_path).provisioning_table()
+        except Exception:
+            table = []
+    return {**doc, "provisioning": table,
+            "provisioningLines": format_provisioning_lines(table)}
+
+
 def _with_approach_display(doc: dict) -> dict:
     """Task 008 (#16): attach the rendered approach counter (`2/3`) to a status
     doc server-side, by the same one shared formatter `ralphctl status`/`runs`
@@ -1079,7 +1114,9 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # of the status doc -- and `status` may be a live payload from another
         # process, which must not be able to claim it.
         **deletion_fields(recorded_status),
-        "status": _with_approach_display(_with_cost_display(_with_local_times(status))),
+        "status": _with_provisioning(
+            _with_approach_display(_with_cost_display(_with_local_times(status))),
+            _config_dir(reg, run_id) / "job.yaml"),
         "tasks": tasks,
         "iterations": iterations,
     }

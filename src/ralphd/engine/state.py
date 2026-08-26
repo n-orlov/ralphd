@@ -125,6 +125,51 @@ def format_approach(approach, max_approaches) -> str:
     return f"{approach}/{max_approaches}"
 
 
+# Column width for the hat name in `format_provisioning_lines` below --
+# widest of today's six `MODEL_HATS` names ("planning") plus one space, so a
+# shorter hat's model ref still lines up in `ralphctl status`'s block. Not
+# derived from the live table on purpose: a stable width means the block
+# does not jitter run to run depending on which hats are configured.
+_PROVISIONING_HAT_WIDTH = 9
+
+
+def format_provisioning_lines(table: list[dict]) -> list[str]:
+    """Task 010 (#79, PRD requirement O): the ONE shared formatter for the
+    resolved hat -> model mapping -- `JobConfig.provisioning_table()`'s
+    structured rows, worded exactly once here and rendered UNCHANGED by
+    both `ralphctl status` (plain text) and the hub's run-header card
+    (`renderSummary` in app.js, the same `startedAtLocal`/`endedAtLocal`
+    discipline task 048 established: Python words the fact, the browser
+    only puts the string in a text node).
+
+    One line per row, `<hat>  <model ref>` plus a `(thinking: ...)` or
+    `(effort: ...)` suffix when that hat's bundle carries one -- never
+    both, the same mutual exclusion `HatBundle`/`bundle_for` enforce, so
+    this function never has to guess which one to print. A hat resolving
+    to pi's own default (no configured ref) reads `pi default`, never the
+    Python `None` an f-string would otherwise print, and never the
+    retired `strategy: balanced`-style wording task 006 deleted.
+
+    Deliberately independent of whether any iteration has run: the table
+    comes from job.yaml alone (`JobConfig.provisioning_table`), so this
+    reads the same the instant a run is created as it does after its
+    hundredth iteration.
+    """
+    lines = []
+    for row in table:
+        if not isinstance(row, dict):
+            continue
+        hat = str(row.get("hat", ""))
+        model = row.get("model") or "pi default"
+        suffix = ""
+        if row.get("thinking"):
+            suffix = f"  (thinking: {row['thinking']})"
+        elif row.get("effort"):
+            suffix = f"  (effort: {row['effort']})"
+        lines.append(f"{hat:<{_PROVISIONING_HAT_WIDTH}} {model}{suffix}")
+    return lines
+
+
 def model_ids(provider, model) -> tuple[str | None, str | None]:
     """`(resolved id, raw gateway id)` for one assistant message -- task 012 (#14).
 

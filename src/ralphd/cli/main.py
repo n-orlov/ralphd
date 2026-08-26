@@ -36,7 +36,12 @@ from typing import Self
 import yaml
 
 from .. import __version__
-from ..engine.config import MODEL_HATS, MUTATING_METHODS, PRICE_STRATEGIES
+from ..engine.config import (
+    MODEL_HATS,
+    MUTATING_METHODS,
+    PRICE_STRATEGIES,
+    JobConfig,
+)
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -71,6 +76,7 @@ from ..engine.state import (
     format_iteration_log_header,
     format_last_tool_call,
     format_local_time,
+    format_provisioning_lines,
     format_run_document_listing,
     format_task_counts,
     format_task_status,
@@ -2801,6 +2807,19 @@ def cmd_status(args):
             status["tasks"] = plan.counts
     status["live"] = live
 
+    # Task 010 (#79, PRD requirement O): the resolved hat -> model mapping,
+    # computed from THIS run's own job.yaml on disk -- available whether or
+    # not the run is live, and before any iteration has run, unlike the
+    # per-iteration `model`/`modelRaw` fields above which only exist once
+    # something has actually dispatched. Same `JobConfig.provisioning_table`
+    # + `state.format_provisioning_lines` pair the hub's `run_detail` calls
+    # (`ui_server._with_provisioning`), so the two surfaces cannot drift.
+    _cfg_path = config_root(args.run_id) / "job.yaml"
+    _provisioning = (JobConfig.load(_cfg_path).provisioning_table()
+                     if _cfg_path.is_file() else [])
+    status["provisioning"] = _provisioning
+    status["provisioningLines"] = format_provisioning_lines(_provisioning)
+
     # Task 036 (#20 H4): which image this run is running. A live `GET /status`
     # already answers it (the engine reads the same host.json), so this only
     # fills keys the answer did not carry -- the on-disk path, and a live run
@@ -2931,6 +2950,16 @@ def cmd_status(args):
         if status.get("modelRaw"):
             model_line += f"  (gateway id: {status.get('modelRaw')})"
         lines.append(model_line)
+    # Task 010 (#79, PRD requirement O): the resolved hat -> model mapping
+    # (`provisioningLines`, computed above from job.yaml through the ONE
+    # shared `state.format_provisioning_lines` formatter) -- printed
+    # unconditionally, unlike the per-iteration `model:` line above, because
+    # it is known from job.yaml alone and reads the same before iteration 1
+    # as it does at iteration 100.
+    if status.get("provisioningLines"):
+        lines.append("provisioning:")
+        for prov_line in status["provisioningLines"]:
+            lines.append(f"  {prov_line}")
     # Task 036 (#20 H4): and which job image it is running it on -- the
     # reference plus the daemon's short id for the image the container actually
     # got, so "is this the engine I think it is?" and "what will a resume run?"
