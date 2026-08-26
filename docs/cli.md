@@ -73,7 +73,8 @@ ralphctl start --prd <file|-> [options]
 | `--max-approaches <n>` | 3 | review-loop approach limit |
 | `--vigilant` | off | per-task verification |
 | `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state). That one attempt gets its own timeout floor (`REFLECT_TAIL_TIMEOUT_S`, 600s, still capped by `--iteration-timeout`) instead of the plain 60s floor every other phase gets once `--timeout` has already elapsed -- requirement C (#72): reflect is the run's own post-mortem and a deadline that has already ended the job must not starve the one attempt left to write it down. See [SPEC.md](../SPEC.md) §4.5 |
-| `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. Per-hat overrides are a `job.yaml`-only key (`models`/`model_overrides`, keys `planning\|worker\|review\|verify\|reflect\|router`); no `start` flag sets them. `router` (task 018, requirement E) is `engine.router`'s own model for a genuinely ambiguous transition -- checked first, then the dedicated `router_model` key, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
+| `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. `router` (task 018, requirement E) is `engine.router`'s own model for a genuinely ambiguous transition -- checked first, then the dedicated `router_model` key, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
+| `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
 | `--thinking <level>` | — | pi thinking level; falls back to the `--template`'s value, then the registry's `thinking` (`ralphctl config`) |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
@@ -2161,6 +2162,20 @@ no per-hat override) and `thinking` (any string `pi --thinking` accepts).
 both with exit `2` naming the job.yaml `models:`/`model_overrides:`
 replacement, never a silent no-op.
 
+The per-hat table itself (task 008) is **not** a `config set` key -- it is a
+table, not a scalar, so (like `pricing:` below) it is edited directly as a
+nested `models:` (or `model_overrides:`) mapping in `<registry>/config.yaml`:
+
+```yaml
+models:
+  planning: amazon-bedrock/eu.anthropic.claude-opus-5
+  worker:   amazon-bedrock/eu.anthropic.claude-sonnet-5
+```
+
+`ralphctl start` merges this in as the registry-wide fallback for `--model-for`
+(see above): explicit `--model-for` flag > `--template`'s own `models:` key >
+this registry `models:` key, merged key by key rather than replaced whole.
+
 For `model` and `price_strategy` a **named LLM profile** can
 state a value too (see [llm-profiles.md](llm-profiles.md)); a registry-wide
 value beats it: a profile answers *where do I route and with what
@@ -2191,6 +2206,20 @@ that for the three image keys there is no hardcoded final fallback on `start`:
 with nothing set anywhere, `start` builds `ralphd:<hash>` from source instead of
 selecting a tag, and the three are ranked *as one unit* rather than key by key
 (see "The job image").
+
+#### Per-hat model table (`models:`/`model_overrides:`, task 008)
+
+Unlike the scalar keys above, the per-hat table is not one `--flag`/`config
+set`/hardcoded-default ladder: it is a table that **merges key by key**
+across three levels (a hat one level names and a lower level does not still
+survives) rather than one level replacing the last outright --
+`--model-for HAT=REF` (`start`, repeatable) > a `--template`'s own `job.yaml`
+`models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/
+`model_overrides:` key (edited directly, like `pricing:` below -- there is
+no scalar `config set` for a table) > absent, i.e. each hat falls through to
+`model_for`'s other rungs (the bare `model` field, then pi's own default).
+See `--model-for` above and "`ralphctl config get/set`" above for both
+settable levels.
 
 #### Optional host-side pricing map (`pricing:`)
 

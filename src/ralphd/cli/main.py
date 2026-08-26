@@ -36,7 +36,7 @@ from typing import Self
 import yaml
 
 from .. import __version__
-from ..engine.config import MUTATING_METHODS, PRICE_STRATEGIES
+from ..engine.config import MODEL_HATS, MUTATING_METHODS, PRICE_STRATEGIES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -1349,6 +1349,59 @@ _REGISTRY_CONFIG_FIELD_KEYS = {"on_complete": "on_complete",
                                "price_strategy": "price_strategy",
                                "model": "model",
                                "thinking": "thinking"}
+# Task 008 (#60 pillar 4, requirement A): the per-hat `models`/
+# `model_overrides` table is the table-aware equivalent of the two maps
+# above -- it cannot be one more entry in either because a table MERGES
+# across levels (registry < template < explicit `--model-for` flags) where
+# every field above REPLACES. See `_resolve_model_table`.
+
+
+def _table_from(d: dict) -> dict:
+    """Merge a dict's own `models`/`model_overrides` keys the same way
+    `JobConfig.__post_init__` does: `model_overrides` wins on any key both
+    name. `d` is a raw parsed YAML mapping (a template's `job.yaml`, or
+    `<registry>/config.yaml`), never a JobConfig."""
+    merged = dict(d.get("models") or {})
+    merged.update(d.get("model_overrides") or {})
+    return merged
+
+
+def _resolve_model_table(args, cfg: dict, reg_cfg: dict) -> dict:
+    """Task 008 (#60 pillar 4, requirement A): the per-hat `models`/
+    `model_overrides` table, reachable from the same three levels the
+    scalar `model`/`thinking` knobs already are (`_TEMPLATE_SCALAR_FIELDS`/
+    `_REGISTRY_CONFIG_FIELD_KEYS`), except a *table* has to MERGE key by
+    key rather than replace-whole: setting `--model-for worker=...` must
+    not blank out a `verify` entry a template or the registry already
+    supplied for a different hat.
+
+    Order, weakest to strongest:
+
+    1. `<registry>/config.yaml`'s own `models:`/`model_overrides:` key -- a
+       nested mapping, read directly off the parsed YAML like `pricing:`
+       is (there is no scalar `ralphctl config set` for a table).
+    2. the `--template`'s `job.yaml` `models:`/`model_overrides:` key.
+    3. one or more explicit `--model-for HAT=REF` flags on this command,
+       applied last (so they win per-hat over both levels above) and in
+       argv order (last one for a repeated hat wins).
+
+    A named LLM profile has no per-hat table of its own yet (only the
+    single `model:` scalar, docs/llm-profiles.md) -- so that rung, which
+    would sit between level 1 and the hardcoded default (absent = engine's
+    own per-hat default, `model_for`), is presently always empty for this
+    table rather than skipped; a future profile schema could add one at
+    that exact position without another resolver.
+    """
+    table = _table_from(reg_cfg)
+    table.update(_table_from(cfg))
+    for spec in args.model_for or []:
+        hat, sep, ref = spec.partition("=")
+        if not sep or not hat.strip() or not ref.strip():
+            die(2, f"--model-for {spec!r} must be HAT=REF, e.g. worker=prov/model-id "
+                    f"(known hats: {', '.join(MODEL_HATS)}; an unrecognised name still "
+                    f"resolves via the anti-downgrade rule, see docs/cli.md)")
+        table[hat.strip()] = ref.strip()
+    return table
 
 
 def _resolve_image_supply(args, cfg: dict, reg_cfg: dict) -> None:
@@ -1423,6 +1476,12 @@ def _apply_template(args) -> Path | None:
     # below fills fields independently, which is exactly wrong for three keys
     # that contradict each other.
     _resolve_image_supply(args, cfg, reg_cfg)
+    # Task 008 (#60 pillar 4, requirement A): the per-hat `models`/
+    # `model_overrides` table -- a fourth thing `_TEMPLATE_SCALAR_FIELDS`'s
+    # loop below cannot handle field-by-field because it MERGES across
+    # levels instead of one level replacing the last. `args.model_overrides`
+    # is not an argparse field; `cmd_start` reads it from here.
+    args.model_overrides = _resolve_model_table(args, cfg, reg_cfg)
     for key, hard_default in _TEMPLATE_SCALAR_FIELDS.items():
         if getattr(args, key) is None:
             reg_key = _REGISTRY_CONFIG_FIELD_KEYS.get(key)
@@ -1530,6 +1589,12 @@ def cmd_start(args):
         # `start` no longer forwards it into job.yaml; per-hat overrides are
         # `models:`/`model_overrides:` in job.yaml directly (not a `start`
         # flag).
+        # Task 008: the resolved per-hat table (explicit `--model-for`
+        # flags merged over the template's and the registry's own
+        # `models:`/`model_overrides:` key, see `_resolve_model_table`) --
+        # omitted entirely when empty so an unconfigured run's job.yaml
+        # carries no table at all, exactly like `model`/`thinking` above.
+        "models": args.model_overrides or None,
         "thinking": args.thinking,
         "iteration_timeout_s": args.iteration_timeout * 60,
         "job_timeout_s": args.timeout * 60,
@@ -5767,6 +5832,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "reaches a terminal state, proposing prompt/skill "
                         "improvements to artifacts/reflection/")
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
+    s.add_argument("--model-for", action="append", metavar="HAT=REF",
+                   help="per-hat model override (repeatable), e.g. "
+                        "--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5 "
+                        f"(known hats: {', '.join(MODEL_HATS)}); merges into the "
+                        "job's models: table over the --template's and the "
+                        "registry's own models:/model_overrides: key -- see docs/cli.md")
     # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
     # RETIRED -- the phase->tier strategy table they drove (`STRATEGY_TIERS`)
     # is gone (task 005's per-hat `models:`/`model_overrides:` job.yaml table
