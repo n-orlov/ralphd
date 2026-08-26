@@ -1167,7 +1167,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
 | `deadlineBeatVerdict` | object \| absent | present only on a `failed`/`unverified` terminal write where every task was done, `COMPLETE` was already honoured, and review never rendered a verdict because the deadline took the last attempt (v0.10 requirement B, #72): `{deadline, completeHonouredAt}`, naming the wall-clock deadline and the `ts` of the honoured `COMPLETE` event -- see §4.2 |
 | `onComplete` | string | `exit` \| `idle` |
-| `usage` | object | token and cost totals, plus `byPhase` and `byApproach` buckets |
+| `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` |
 | `endedAt` | string | this **episode**'s terminal write, reset when the next episode enters `running` (see "Ending fields are episode-scoped" below), so it can never predate `startedAt` and a terminal run's value is exactly what its final episode wrote |
@@ -3899,10 +3899,12 @@ dir themselves and a live proxy would only add a way to disagree.
 - **Summary card** — state, verdict, phase, approach as `2/3`, iterations,
   duration, and an explicit provenance row: `live: yes (proxied from container)`
   or `no (on-disk snapshot)`.
-- **Usage panel** — total tokens and cost, plus the `byPhase` and `byApproach`
-  breakdowns when present. The cost cell opens a **cost dialog**: the same
-  per-phase and per-approach breakdown `ralphctl cost` prints, with quoted,
-  derived and unavailable money each labelled as such (§8.6).
+- **Usage panel** — total tokens and cost, plus the `byPhase`, `byApproach`
+  and `byTier` breakdowns when present (the tier bucket also carries
+  `iterations`, a plain per-tier iteration count). The cost cell opens a
+  **cost dialog**: the same per-phase/per-approach/per-tier breakdown
+  `ralphctl cost` prints, with quoted, derived and unavailable money each
+  labelled as such (§8.6).
 - **Task table** — one row per task, each clickable and keyboard-reachable
   (`role="button"`, `tabindex=0`, Enter and Space), opening that task's detail
   in a modal `<dialog>`: `status`, `priority`, `dependsOn` when set,

@@ -917,7 +917,7 @@ def _with_cost_display(doc: dict) -> dict:
         return {**bucket, "costDisplay": display} if display is not None else dict(bucket)
 
     out_usage = rendered(usage)
-    for key in ("byPhase", "byApproach"):
+    for key in ("byPhase", "byApproach", "byTier"):
         buckets = usage.get(key)
         if isinstance(buckets, dict):
             out_usage[key] = {k: rendered(v) for k, v in buckets.items()}

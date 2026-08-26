@@ -3494,7 +3494,7 @@ COST_LEGEND_SOURCES = (COST_SOURCE_DERIVED, COST_SOURCE_PARTIAL,
 # a hand-edited status.json cannot smuggle in a display string its own numbers
 # do not support (`ITERATION_DERIVED_KEYS`' rule, same reason).
 COST_BUCKET_DERIVED_KEYS = ("key", "tokens", "tokensDisplay", "tokensTotalDisplay",
-                            "costDisplay", "costSource", "byPhase", "byApproach")
+                            "costDisplay", "costSource", "byPhase", "byApproach", "byTier")
 
 
 def _token_total(usage: dict | None) -> int | None:
@@ -3580,10 +3580,12 @@ def cost_bucket(usage: dict | None, key: str = COST_TOTAL_KEY) -> dict:
     return out
 
 
-def _cost_buckets(raw, numeric_keys: bool = False) -> list[dict]:
-    """`byPhase`/`byApproach` as an ordered list of shaped buckets. Phase order
-    is the engine's own insertion order; approaches are sorted numerically
-    (`"10"` after `"2"`), falling back to string order for junk keys."""
+def _cost_buckets(raw, numeric_keys: bool = False, tier_keys: bool = False) -> list[dict]:
+    """`byPhase`/`byApproach`/`byTier` as an ordered list of shaped buckets.
+    Phase order is the engine's own insertion order; approaches are sorted
+    numerically (`"10"` after `"2"`); tiers sort by the declared ladder order
+    (`tiers.TIERS`: trivial < normal < hard), falling back to string order for
+    an unrecognised key (task 017, #68 half 2)."""
     if not isinstance(raw, dict):
         return []
     keys = list(raw)
@@ -3593,6 +3595,10 @@ def _cost_buckets(raw, numeric_keys: bool = False) -> list[dict]:
                 return (0, int(k), "")
             except (TypeError, ValueError):
                 return (1, 0, str(k))
+        keys.sort(key=sort_key)
+    elif tier_keys:
+        def sort_key(k):
+            return (0, tiers.tier_rank(k)) if tiers.is_tier(k) else (1, 0)
         keys.sort(key=sort_key)
     return [cost_bucket(raw.get(k), str(k)) for k in keys]
 
@@ -3618,7 +3624,8 @@ def cost_breakdown(run_root: Path) -> dict:
     total = cost_bucket(usage)
     by_phase = _cost_buckets(usage.get("byPhase"))
     by_approach = _cost_buckets(usage.get("byApproach"), numeric_keys=True)
-    buckets = [total, *by_phase, *by_approach]
+    by_tier = _cost_buckets(usage.get("byTier"), tier_keys=True)
+    buckets = [total, *by_phase, *by_approach, *by_tier]
     notices = []
     # Task 049's anomaly is worded ONCE (COST_ZERO_QUOTE_NOTICE) and named here
     # whenever any bucket carries it -- a breakdown full of `unavailable` rows
@@ -3628,10 +3635,11 @@ def cost_breakdown(run_root: Path) -> dict:
         notices.append(COST_ZERO_QUOTE_NOTICE)
     out = {
         "hasUsage": bool(total["tokens"] or total["costDisplay"]
-                         or by_phase or by_approach),
+                         or by_phase or by_approach or by_tier),
         "total": total,
         "byPhase": by_phase,
         "byApproach": by_approach,
+        "byTier": by_tier,
         "notices": notices,
         "costDisplay": total["costDisplay"],
         "costStatus": cost_status(usage),
@@ -3646,7 +3654,7 @@ def cost_breakdown(run_root: Path) -> dict:
 
 def _raw_buckets(usage: dict) -> list[dict]:
     out = []
-    for key in ("byPhase", "byApproach"):
+    for key in ("byPhase", "byApproach", "byTier"):
         raw = usage.get(key)
         if isinstance(raw, dict):
             out.extend(v for v in raw.values() if isinstance(v, dict))
@@ -3693,7 +3701,8 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
             model += f"  (gateway id: {bd['modelRaw']})"
         lines.append(model)
     lines.extend(f"!! {n}" for n in (bd.get("notices") or []))
-    for label, key in (("by phase:", "byPhase"), ("by approach:", "byApproach")):
+    for label, key in (("by phase:", "byPhase"), ("by approach:", "byApproach"),
+                       ("by tier:", "byTier")):
         buckets = bd.get(key) or []
         if buckets:
             lines.append(label)

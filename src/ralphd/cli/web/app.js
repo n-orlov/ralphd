@@ -1536,22 +1536,28 @@ function renderUsage(el, usage, runId) {
     grid.appendChild(card);
   }
   el.appendChild(grid);
-  for (const [label, key] of [["by phase", "byPhase"], ["by approach", "byApproach"]]) {
+  for (const [label, key] of [["by phase", "byPhase"], ["by approach", "byApproach"], ["by tier", "byTier"]]) {
     const bucket = usage[key];
     if (!bucket || Object.keys(bucket).length === 0) continue;
     el.appendChild(h("h3", { class: "muted" }, [label]));
+    // Task 017 (#68 half 2): the tier table gains an `iterations` column --
+    // per-tier spend alone does not answer "how many iterations bought
+    // that", and `iterations` is a plain counter `loop._accumulate_usage`
+    // keeps only on `byTier` buckets (never on byPhase/byApproach).
+    const cols = key === "byTier" ? ["tokens", "cost", "iterations"] : ["tokens", "cost"];
     const table = h("table", {}, [h("thead", {}, [h("tr", {}, [
-      h("th", {}, [key === "byPhase" ? "phase" : "approach"]),
-      h("th", {}, ["tokens"]),
-      h("th", {}, ["cost"]),
+      h("th", {}, [key === "byPhase" ? "phase" : key === "byApproach" ? "approach" : "tier"]),
+      ...cols.map((c) => h("th", {}, [c])),
     ])])]);
     const tbody = h("tbody", {});
     for (const [k, v] of Object.entries(bucket)) {
-      tbody.appendChild(h("tr", {}, [
+      const cells = [
         h("td", {}, [k]),
         h("td", {}, [String(v.totalTokens ?? "")]),
         h("td", {}, [v.costDisplay ?? (v.costUSD != null ? "$" + Number(v.costUSD).toFixed(4) : "")]),
-      ]));
+      ];
+      if (cols.includes("iterations")) cells.push(h("td", {}, [String(v.iterations ?? "")]));
+      tbody.appendChild(h("tr", {}, cells));
     }
     table.appendChild(tbody);
     el.appendChild(table);

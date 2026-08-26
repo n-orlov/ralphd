@@ -137,6 +137,10 @@ The one-call summary. Response:
     },
     "byApproach": {
       "1": {"input": 812345, "output": 90123, "totalTokens": 902468, "costUSD": 14.20}
+    },
+    "byTier": {
+      "normal": {"input": 812345, "output": 90123, "totalTokens": 902468,
+                 "costUSD": 14.20, "iterations": 6}
     }
   }
 }
@@ -169,16 +173,24 @@ loop at the next iteration boundary without changing `state` or `phase` (see
 `POST /pause` below). The full `status.json` field table is SPEC §5.
 
 `usage.byPhase` breaks the same running totals down by iteration phase
-(`planning`/`worker`/`verify`/`review`) and `usage.byApproach` by approach
-number (as a string key, since JSON object keys are always strings) — both
-are accumulated alongside the top-level totals on every iteration, so for
-any token/cost field `sum(byPhase[*][field]) == sum(byApproach[*][field])
-== usage[field]`. A phase/approach only appears once at least one iteration
-for it has ended.
+(`planning`/`worker`/`verify`/`review`), `usage.byApproach` by approach
+number (as a string key, since JSON object keys are always strings), and
+`usage.byTier` (task 017, #68 half 2) by the task-annotated provisioning tier
+(`trivial`/`normal`/`hard`) that dispatch actually resolved for that
+iteration (only ever the task-scoped hats, worker and per-task verify --
+planning/reflect/the run-level review always dispatch at their own fixed
+rung and are never split out here). All three are accumulated alongside the
+top-level totals on every iteration through the same `_merge_usage`
+accumulator (no separate pricing path), so for any token/cost field
+`sum(byPhase[*][field]) == sum(byApproach[*][field]) == sum(byTier[*][field])
+== usage[field]`. A phase/approach/tier only appears once at least one
+iteration for it has ended. `byTier` buckets carry one extra field no other
+bucket does, `iterations`: a plain per-tier count of how many iterations
+landed in that bucket, never merged as a token/cost field.
 
 The cost fields carry the same unknown/partial honesty as an individual
 iteration's (`GET /iterations` below). A bucket — the top-level total *and*
-every `byPhase`/`byApproach` entry — describes how it mixes priced and
+every `byPhase`/`byApproach`/`byTier` entry — describes how it mixes priced and
 unpriced iterations with an optional `costStatus`:
 
 | shape | meaning |
@@ -200,7 +212,7 @@ usage panel) does so through the single formatter
 `engine/state.format_cost`, which renders `unknown` as `unavailable` and
 `partial` as `$<priced subtotal>+ (partial, rest unavailable)`. The hub gets
 that string server-side as `usage.costDisplay` (plus `costDisplay` on each
-`byPhase`/`byApproach` bucket) alongside the untouched raw fields.
+`byPhase`/`byApproach`/`byTier` bucket) alongside the untouched raw fields.
 
 #### Derived cost (optional host-side pricing map)
 

@@ -1298,7 +1298,8 @@ class LoopSupervisor:
                     steeringConsumed=consumed_now,
                     usage=result.usage)
         atomic_write_json(itdir / "meta.json", meta)
-        self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"))
+        self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"),
+                               tier=effective_tier)
         self.run.emit("iteration.end", number=n, phase=phase,
                       exitCode=result.exit_code, interrupted=result.interrupted,
                       sawComplete=result.saw_complete, sawVerified=result.saw_verified,
@@ -1435,19 +1436,33 @@ class LoopSupervisor:
         return bucket
 
     def _accumulate_usage(self, usage: dict, phase: str | None = None,
-                           approach: int | None = None) -> None:
+                           approach: int | None = None,
+                           tier: str | None = None) -> None:
         status = self.run.read_status()
         total = status.get("usage", {})
         by_phase = total.get("byPhase", {})
         by_approach = total.get("byApproach", {})
+        by_tier = total.get("byTier", {})
         self._merge_usage(total, usage)
         if phase:
             by_phase[phase] = self._merge_usage(by_phase.get(phase, {}), usage)
         if approach is not None:
             key = str(approach)
             by_approach[key] = self._merge_usage(by_approach.get(key, {}), usage)
+        if tier:
+            # Task 017 (#68 half 2): a per-tier spend/iteration-count bucket,
+            # the third breakdown alongside byPhase/byApproach -- same
+            # `_merge_usage` accumulator (no new pricing path), plus
+            # `iterations` (a plain counter `_merge_usage` never touches,
+            # since it is never present on an incoming per-iteration `usage`
+            # dict) so a tier's spend and how many iterations produced it
+            # are both readable from the one bucket.
+            bucket = self._merge_usage(by_tier.get(tier, {}), usage)
+            bucket["iterations"] = bucket.get("iterations", 0) + 1
+            by_tier[tier] = bucket
         total["byPhase"] = by_phase
         total["byApproach"] = by_approach
+        total["byTier"] = by_tier
         self.run.update_status(usage=total)
 
     def _emit_task_changes(self) -> None:

@@ -1245,10 +1245,13 @@ much of this figure is actually known" meant reading JSON by hand.
 - **`model:`** is the id recorded in run state (task 012), with the raw gateway
   id in brackets when it differs — i.e. the id the rate table was asked about.
   Omitted entirely for a run that never observed one.
-- **`by phase:` / `by approach:`** are the run's own buckets: phases in the
-  engine's order, approaches numerically (`10` after `2`). A bucket that
-  recorded nothing renders `(none)` — never `$0.00`, which would read like a
-  phase that ran for free.
+- **`by phase:` / `by approach:` / `by tier:`** are the run's own buckets:
+  phases in the engine's order, approaches numerically (`10` after `2`),
+  tiers in ladder order (`trivial` < `normal` < `hard`, task 017, #68 half
+  2). The tier bucket also carries an `iterations` count (how many
+  iterations dispatched at that tier), the one field no other bucket has.
+  A bucket that recorded nothing renders `(none)` — never `$0.00`, which
+  would read like a phase that ran for free.
 - **`!!` notices** name the anomaly behind a wall of `unavailable`: a provider
   that quoted `$0` for billable tokens (task 049) is reported as unpriced, and
   the notice points at `artifacts/reports/pricing-anomaly.md` — the same
@@ -1264,9 +1267,10 @@ much of this figure is actually known" meant reading JSON by hand.
 - **Unknown is not zero.** A run that recorded no usage at all prints `(no
   usage recorded)` rather than a table of zeros, and is **not** an error.
 - `--json` carries the raw numbers plus the rendered strings: `total` and the
-  `byPhase`/`byApproach` **lists** (each entry = that bucket's own counters plus
-  `key`, `tokens`, `tokensDisplay`, `tokensTotalDisplay`, `costDisplay`,
-  `costSource`), `costDisplay`/`costStatus`/`costSource` for the run,
+  `byPhase`/`byApproach`/`byTier` **lists** (each entry = that bucket's own
+  counters plus `key`, `tokens`, `tokensDisplay`, `tokensTotalDisplay`,
+  `costDisplay`, `costSource`; `byTier` entries additionally carry
+  `iterations`), `costDisplay`/`costStatus`/`costSource` for the run,
   `model`/`modelRaw`, `sources`, `notices`, `hasUsage`, plus `summaryLines` and
   `text` (the human block, verbatim, minus the `run:` line).
 - Exit codes: `0` · `3` run not found. Pinned by
