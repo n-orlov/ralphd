@@ -958,6 +958,35 @@ the general fix: it would additionally let the engine distinguish "stop this one
 iteration" from "the container is being torn down", which the uid boundary does
 not address. It is not needed to stop the signal.
 
+### The task record, root-owned under the same boundary (task 105, #60 requirement D)
+
+`RunDir.write_tasks()` (`engine/state.py`, the sole authorized writer, task
+013) routes its atomic write through `privsep.write_root_owned_json()` rather
+than calling `atomic_write_json` itself. Under the uid boundary above
+(`privsep.separated()` true) the engine's real and saved uid are already `0`;
+`privsep.root_for_write()` raises the *effective* uid back to `0` for exactly
+the duration of that one write (`setresuid(0, 0, 0)` ... write ... `setresuid(0,
+agent_uid, 0)`, the restore in a `finally` so a write that raises cannot leave
+the engine's effective uid at root), then `chmod`s the file `0644`. The result:
+`tasks.json` is owned by root, mode `0644` -- readable by the agent uid (so
+`GET /tasks`/`ralphctl tasks` and every iteration's own read of the plan are
+unaffected) but not writable by it. **Hand-editing a live run's task record
+from inside a job container is no longer available**; `ralphctl steer` is the
+channel an operator uses instead, and every other file the engine writes stays
+owned by the agent uid exactly as the section above describes -- this is the
+one deliberate exception, not a second ownership model.
+
+Without the boundary (`separated()` false -- the whole test suite, `docker run
+--user 1000`, an unprivileged engine) `root_for_write()` is a no-op, the write
+lands owned by the agent uid exactly as every other file does, and the engine
+logs exactly one warning per process the first time it happens -- the same
+degrade-don't-fail discipline every other function in `privsep.py` already
+follows, not a second code path. `tests/test_engine_uid_docker.py`'s
+`test_a_worker_iteration_cannot_kill_the_engine` proves the root-owned shape in
+a real container (ownership, mode, and a `docker exec --user 1000:1000` write
+attempt refused with `Permission denied`); `tests/test_engine_uid_boundary.py`
+covers the degrade and the elevate/restore bracketing at the fast-lane tier.
+
 ### Run-dir schema version (PRD req 18)
 
 `status.json` carries a `schemaVersion` integer, stamped by the engine on every

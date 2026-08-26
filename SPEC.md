@@ -545,7 +545,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/contract_enforcement.py` | The re-prompt loop around `contracts.validate_payload` (task 010): malformed JSON, an absent payload, and valid JSON of the wrong shape are all ordinary cases here, re-prompted with the specific validation error up to `contract_retry_max` times, logged loudly to `events.jsonl`, and scored as one agent-fault iteration if the hat never recovers. |
 | `src/ralphd/engine/plan_ingestion.py` | Ingests the planner's file-borne `plan-proposal.json` as untrusted input (task 011): schema validation, then semantic lint (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate `successCriteria`, a task gated on this run's own terminal state), then apply — initialising every task to `pending` regardless of what the planner wrote for `status`. |
 | `src/ralphd/engine/runner.py` | `PiRunner.run()` + `IterationResult`: spawn one `pi` process, pump and scrub its NDJSON into `output.jsonl`, parse events and usage, scan for the exact sentinels, enforce the iteration timeout and the startup-window watchdog, and kill the process group on every exit path. |
-| `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. |
+| `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. `root_for_write()`/`write_root_owned_json()` (task 105, #60 requirement D) reuse the same boundary the other direction: momentarily raise the engine's own effective uid back to root to write `tasks.json` root-owned, restoring it before returning. |
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
 | `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, or `None`, with `_INFRA_TEXT_PATTERNS` as the single reviewable signature table (one commented line per family) and the `aborted`/operator carve-out. No engine state. |
 | `src/ralphd/engine/pricing.py` | `PricingMap`: the optional host-side per-million-token rate table with gateway alias globs and declared-free patterns, used *only* when the provider quoted no usable price, producing a cost marked derived and never merged into `costUSD`. `PricingChain` layers the operator map over a built-in table so exactly one of them prices any message, and `resolve_pricing()` builds whichever of the two `price_strategy` asks for (§8.6). |
@@ -4476,6 +4476,27 @@ first file is written, before the API listens.
   no-op that logs one warning, leaving the pre-v0.7 arrangement rather than
   refusing to start. `privsep.separated()` reads the live process credentials, not a
   startup flag, so nothing can report a boundary the kernel is not enforcing.
+
+**The task record is root-owned under the same boundary (task 105, #60
+requirement D).** `RunDir.write_tasks()` — the sole authorized writer of
+`tasks.json` (§3.5, task 013) — routes its atomic write through
+`privsep.write_root_owned_json()`, which uses `privsep.root_for_write()` to
+raise the engine's own *effective* uid back to `0` for exactly the duration of
+that one write (`setresuid(0, 0, 0)` … write … `setresuid(0, agent_uid, 0)`,
+restored in a `finally` so a write that raises never leaves the effective uid
+at root) and then `chmod`s the file `0644`. Under the boundary `tasks.json`
+ends up owned by root, readable by the agent uid but not writable by it —
+**hand-editing a live run's task record from inside a job container is no
+longer available**; `ralphctl steer` is the channel an operator uses instead.
+Every other file the engine writes stays owned by the agent uid exactly as
+above; this is the one deliberate exception. Without the boundary
+(`separated()` false) the write degrades to an ordinary agent-owned write with
+one warning per process, the same discipline as every other privsep function —
+never a second code path. Proved in a real container by
+`tests/test_engine_uid_docker.py` (ownership, mode `0644`, and a `docker exec
+--user 1000:1000` write attempt refused with `Permission denied`); the
+degrade and the elevate/restore bracketing are covered at the fast-lane tier
+by `tests/test_engine_uid_boundary.py`.
 
 **An operator ruling review must honour, unforgeable from inside (#26).**
 Review trusts nothing the run itself produced — `tasks.json`, commit

@@ -58,10 +58,14 @@ which of the two is in force, so no caller has to re-derive it from
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import os
 import pwd
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterator
 
 log = logging.getLogger("ralphd.privsep")
 
@@ -191,3 +195,81 @@ def agent_child_kwargs() -> dict:
     agent = agent_identity()
     assert agent is not None  # separated() is False without one
     return {"user": agent.uid, "group": agent.gid}
+
+
+# --------------------------------------------------------------------------
+# Task 105 (#60 requirement D): the authoritative task record, root-owned.
+#
+# `agent_child_kwargs()` above is one-directional -- it drops a *child*
+# process (`pi`) all the way to the agent uid so an iteration can never climb
+# back to root. The task record needs the opposite move made safely: the
+# engine itself (already living at effective uid = agent, per
+# `separate_engine_identity()`) has to write one specific file as *root* so
+# that no process running at the agent uid -- including the very iteration
+# whose status the file records -- can open it for writing afterwards. The
+# engine's real and saved uid are already 0 (that is what `separated()`
+# means), so raising the effective uid back to 0 for the duration of one
+# write and dropping it again needs no privilege it does not already hold;
+# there is no window in which an *iteration* gains anything, because the
+# raise and the drop happen entirely inside the engine's own process, never
+# crossing a fork.
+
+_write_root_owned_json_warned = False
+
+
+@contextlib.contextmanager
+def root_for_write() -> Iterator[bool]:
+    """Momentarily raise the engine's effective uid back to root, then drop
+    it back to the agent's, for exactly the duration of one write.
+
+    Yields `True` when the raise (and the guaranteed restore in `finally`)
+    actually happened, `False` when there is no boundary to raise into
+    (`separated()` is `False` -- an unprivileged engine, or no agent account)
+    -- callers use the yielded flag to decide whether to log the documented
+    degrade, never to skip the write itself: the file still gets written
+    either way, just not root-owned when there was never a boundary raising
+    it above the agent's own uid in the first place.
+    """
+    if not separated():
+        yield False
+        return
+    agent = agent_identity()
+    assert agent is not None  # separated() is False without one
+    os.setresuid(0, 0, 0)
+    try:
+        yield True
+    finally:
+        os.setresuid(0, agent.uid, 0)
+
+
+def write_root_owned_json(path: Path, obj: Any) -> None:
+    """Atomically write `obj` as JSON to `path`, root-owned when the uid
+    boundary is in force -- this is the one write task 105 asks to be
+    unreachable by the agent uid, so that hand-editing a live run's task
+    record from inside a job container is no longer possible; `ralphctl
+    steer` (a host-side channel) is the replacement for anything an operator
+    used to do by hand-editing `tasks.json`.
+
+    Degrades to an ordinary agent-owned write, with exactly one warning
+    logged per process (never a second code path, never a hard failure), when
+    there is no boundary to raise into (`privsep.separated()` is `False` --
+    the test suite's own unprivileged engine, or `docker run --user 1000`
+    with no root start). Self-contained (its own tmp-write + rename, not a
+    call back into `engine.state.atomic_write_json`) so this module keeps no
+    import edge onto `engine.state` -- the uid boundary is meant to be
+    reasoned about on its own.
+    """
+    global _write_root_owned_json_warned
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    text = json.dumps(obj, indent=2) + "\n"
+    with root_for_write() as elevated:
+        if not elevated and not _write_root_owned_json_warned:
+            log.warning(
+                "no uid boundary: %s is being written owned by the agent's "
+                "own uid, not root (#60) -- this is the documented degrade "
+                "(privsep.separated() is False here), not a second code path",
+                path)
+            _write_root_owned_json_warned = True
+        tmp.write_text(text)
+        os.replace(tmp, path)
+        os.chmod(path, 0o644)

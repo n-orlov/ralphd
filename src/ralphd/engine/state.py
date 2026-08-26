@@ -22,6 +22,7 @@ from ..log_merge import (
     iteration_numbers,
     iteration_output_path,
 )
+from . import privsep
 from .faults import explain_fault, matched_signature
 from .redact import redact_job_yaml, scrub_text
 
@@ -3564,8 +3565,19 @@ class RunDir:
         included, outside this exact method) ever again calls a
         write-shaped function with `tasks_file` as its target -- with a
         planted-second-writer mutation case proving the audit actually
-        catches one."""
-        atomic_write_json(self.tasks_file, data)
+        catches one.
+
+        Task 105 (#60 requirement D): the actual write is
+        `privsep.write_root_owned_json`, not `atomic_write_json` directly --
+        under the uid boundary (`privsep.separated()`) the file lands
+        root-owned, unreachable for writing by the agent uid that every
+        iteration runs as; without the boundary the same call degrades to an
+        ordinary agent-owned write with one warning per process. Either way
+        this remains the sole writer and the AST audit above is unaffected,
+        since the write it's watching for is inside `privsep`, targeting a
+        parameter named `path`, not `tasks_file`.
+        """
+        privsep.write_root_owned_json(self.tasks_file, data)
 
     def read_tasks(self) -> dict:
         """The tasks.json payload, via the hardened read path (task 002/#15):

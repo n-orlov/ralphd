@@ -30,6 +30,7 @@ no such account and always runs.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import pwd
 import subprocess
@@ -398,6 +399,99 @@ def test_the_docker_tier_overlay_does_not_re_add_the_agent_user():
     """The stub overlay is built ON TOP of the real image; a trailing
     `USER agent` there would silently disable the property under test."""
     assert "\nUSER agent" not in STUB_OVERLAY
+
+
+# --- task 105: the authoritative task record, root-owned ------------------
+
+def test_root_for_write_is_a_noop_when_unseparated(monkeypatch):
+    """No boundary to raise into: the context manager yields False and never
+    touches setresuid at all (there's nothing to raise or restore)."""
+    monkeypatch.setattr(privsep, "separated", lambda: False)
+    calls: list[tuple] = []
+    monkeypatch.setattr(privsep.os, "setresuid",
+                        lambda r, e, s: calls.append((r, e, s)))
+    with privsep.root_for_write() as elevated:
+        assert elevated is False
+    assert calls == []
+
+
+def test_root_for_write_raises_and_restores_when_separated(monkeypatch):
+    monkeypatch.setattr(privsep, "separated", lambda: True)
+    monkeypatch.setattr(privsep, "agent_identity",
+                        lambda: privsep.AgentIdentity("agent", 1000, 1000))
+    calls: list[tuple] = []
+    monkeypatch.setattr(privsep.os, "setresuid",
+                        lambda r, e, s: calls.append((r, e, s)))
+    with privsep.root_for_write() as elevated:
+        assert elevated is True
+        assert calls == [(0, 0, 0)]  # raised to root before the write
+    assert calls == [(0, 0, 0), (0, 1000, 0)]  # and dropped back after
+
+
+def test_root_for_write_restores_even_if_the_write_raises(monkeypatch):
+    """The restore is in `finally` -- a write that blows up must not leave
+    the engine's effective uid at root."""
+    monkeypatch.setattr(privsep, "separated", lambda: True)
+    monkeypatch.setattr(privsep, "agent_identity",
+                        lambda: privsep.AgentIdentity("agent", 1000, 1000))
+    calls: list[tuple] = []
+    monkeypatch.setattr(privsep.os, "setresuid",
+                        lambda r, e, s: calls.append((r, e, s)))
+    with pytest.raises(RuntimeError):
+        with privsep.root_for_write():
+            raise RuntimeError("boom")
+    assert calls == [(0, 0, 0), (0, 1000, 0)]
+
+
+def test_write_root_owned_json_writes_the_real_content_either_way(tmp_path, monkeypatch):
+    monkeypatch.setattr(privsep, "separated", lambda: False)
+    target = tmp_path / "tasks.json"
+    privsep.write_root_owned_json(target, {"tasks": [{"id": "1"}]})
+    assert json.loads(target.read_text()) == {"tasks": [{"id": "1"}]}
+    assert not target.with_suffix(".json.tmp").exists()  # no tmp litter
+
+
+def test_write_root_owned_json_chmods_0644(tmp_path, monkeypatch):
+    monkeypatch.setattr(privsep, "separated", lambda: False)
+    target = tmp_path / "tasks.json"
+    privsep.write_root_owned_json(target, {"tasks": []})
+    assert (target.stat().st_mode & 0o777) == 0o644
+
+
+def test_write_root_owned_json_warns_exactly_once_per_process_when_unseparated(
+        tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(privsep, "separated", lambda: False)
+    monkeypatch.setattr(privsep, "_write_root_owned_json_warned", False)
+    target = tmp_path / "tasks.json"
+    with caplog.at_level("WARNING"):
+        privsep.write_root_owned_json(target, {"tasks": []})
+        privsep.write_root_owned_json(target, {"tasks": [1]})
+        privsep.write_root_owned_json(target, {"tasks": [1, 2]})
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                and "no uid boundary" in r.getMessage()]
+    assert len(warnings) == 1, warnings  # degrade logs once, not per call
+    assert json.loads(target.read_text()) == {"tasks": [1, 2]}  # every write landed
+
+
+def test_write_root_owned_json_raises_to_root_for_the_write_when_separated(
+        tmp_path, monkeypatch):
+    """The write itself happens while the effective uid is really 0 -- proven
+    here by asserting the elevate/restore calls bracket the write, using the
+    same fake-setresuid technique as the boundary tests above (this module
+    cannot actually become root to prove file ownership; that property is
+    `tests/test_engine_uid_docker.py`'s job, in a real container)."""
+    monkeypatch.setattr(privsep, "separated", lambda: True)
+    monkeypatch.setattr(privsep, "agent_identity",
+                        lambda: privsep.AgentIdentity("agent", 1000, 1000))
+    order: list[str] = []
+    monkeypatch.setattr(privsep.os, "setresuid",
+                        lambda r, e, s: order.append(f"setresuid({r},{e},{s})"))
+    target = tmp_path / "tasks.json"
+    real_replace = privsep.os.replace
+    monkeypatch.setattr(privsep.os, "replace",
+                        lambda a, b: (order.append("write"), real_replace(a, b)))
+    privsep.write_root_owned_json(target, {"tasks": []})
+    assert order == ["setresuid(0,0,0)", "write", "setresuid(0,1000,0)"]
     assert "#48" in STUB_OVERLAY
 
 

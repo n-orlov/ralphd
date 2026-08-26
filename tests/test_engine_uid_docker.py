@@ -21,9 +21,15 @@ and only all three together mean the boundary is real:
    from uid 1000 -- so the attempts genuinely happened and were genuinely
    blocked, rather than silently matching nothing;
 3. the engine's own credentials in the container are the documented shape
-   (`Uid: 0 1000 0 1000` -- real/saved root, effective agent), and every file
-   it wrote into the bind-mounted run dir is still owned by uid 1000, which is
-   the ownership half of the contract this route exists to preserve.
+   (`Uid: 0 1000 0 1000` -- real/saved root, effective agent); every file it
+   wrote into the bind-mounted run dir is still owned by uid 1000 EXCEPT
+   `tasks.json`, which task 105 (#60 requirement D) deliberately makes
+   root-owned -- the ownership half of the contract this route exists to
+   preserve, updated for the one file no iteration may write directly any
+   more (`ralphctl steer` is the replacement channel). A fourth check proves
+   that exception is real: an attempt to write `tasks.json` from inside the
+   container, as uid 1000 (the exact uid every iteration runs as), is
+   refused with `Permission denied`.
 
 Environment wrinkles (bind-mount path translation, API reachability from
 inside this job container) and the cleanup discipline are exactly those of
@@ -140,18 +146,44 @@ def test_a_worker_iteration_cannot_kill_the_engine(ctl):
                    f"attack itself did not happen: {record}")
     assert all(a["errno"] == 1 for a in kills), record  # EPERM, every one
 
-    # 3. the documented credential shape, and unchanged file ownership
+    # 3. the documented credential shape, and unchanged file ownership --
+    # except tasks.json, which task 105 (#60 requirement D) makes root-owned
+    # on purpose: it is the one file no iteration may write directly any
+    # more, `ralphctl steer` being the replacement channel.
     creds = _engine_creds(container)
     assert creds["uid"] == [0, 1000, 0, 1000], creds  # real, effective, saved, fs
     assert creds["gid"] == [0, 1000, 0, 1000], creds
     assert "uid boundary active" in _container_log(container)
-    for name in ("status.json", "events.jsonl", "tasks.json"):
+    for name in ("status.json", "events.jsonl"):
         path = rdir / name
         assert path.is_file(), name
         assert path.stat().st_uid == 1000, (
             f"{name} is owned by uid {path.stat().st_uid}: the engine's "
             "effective uid must stay the agent's so the host user still owns "
             "its own run dir")
+    tasks_path = rdir / "tasks.json"
+    assert tasks_path.is_file()
+    assert tasks_path.stat().st_uid == 0, (
+        f"tasks.json is owned by uid {tasks_path.stat().st_uid}, not root -- "
+        "task 105's whole point is that the agent uid can no longer write "
+        "its own task record")
+    assert (tasks_path.stat().st_mode & 0o777) == 0o644, oct(tasks_path.stat().st_mode)
+
+    # 4. the agent uid genuinely cannot write it: attempted from inside the
+    # same container, as the same uid every iteration runs as (`--user
+    # 1000:1000`, not asserted from the host, where ownership alone would
+    # prove nothing about the container's own permission check).
+    denied = subprocess.run(
+        [REAL_DOCKER, "exec", "--user", "1000:1000", container, "sh", "-c",
+         "echo '{\"tasks\": []}' > /run/ralphd/tasks.json; echo RC=$?"],
+        capture_output=True, text=True, timeout=15)
+    assert denied.returncode == 0, denied.stderr  # docker exec itself worked
+    assert "RC=0" not in denied.stdout, denied.stdout  # the shell write failed
+    combined = denied.stdout + denied.stderr
+    assert "Permission denied" in combined, combined
+    # and the file on disk is untouched -- the attempted write produced no
+    # partial content, truncation, or ownership change
+    assert json.loads(tasks_path.read_text()) == tasks_doc
 
 
 def test_the_engine_can_still_stop_its_own_iteration(ctl):
