@@ -71,6 +71,79 @@ def test_cited_line_contains_cited_symbol(path, line, substring):
         f"  actual: {actual!r}")
 
 
+def _guard_table_text(text: str | None = None) -> str:
+    """Only the two guard tables (before the appendix), same slice
+    `_node_ids()` already restricts itself to."""
+    src = text if text is not None else _ledger_text()
+    return src.split("## Citation substrings")[0]
+
+
+GUARD_ROW_RE = re.compile(r'^\|\s*(\d+)\s*\|.*\|\s*$', re.MULTILINE)
+
+
+def _new_expression_cells(text: str | None = None) -> list[tuple[str, str]]:
+    """`(guard number, New-expression cell)` for every guard row in either
+    table -- the New expression is always the LAST `|`-delimited cell.
+    Relies on no guard-row cell ever containing a literal `|` (true today:
+    every cell is prose/backtick-quoted code, never a raw pipe).
+    """
+    table_text = _guard_table_text(text)
+    out = []
+    for line in table_text.splitlines():
+        m = GUARD_ROW_RE.match(line)
+        if not m:
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        out.append((m.group(1), cells[-1]))
+    return out
+
+
+def _new_expression_todo_rows(text: str | None = None) -> list[str]:
+    return [num for num, cell in _new_expression_cells(text) if cell == "TODO"]
+
+
+def test_no_new_expression_todo_cells():
+    """Task 012 (requirement D, #69): the ledger is evidence or it is
+    decoration -- a `New expression` cell still reading `TODO` proves
+    nothing, whatever the rest of the row says."""
+    cells = _new_expression_cells()
+    assert cells, "no guard rows parsed -- table format drifted"
+    todo_rows = _new_expression_todo_rows()
+    assert not todo_rows, (
+        f"guard rows with an unfilled New expression cell: {todo_rows}")
+
+
+def test_mutation_a_todo_new_expression_cell_is_caught():
+    """Proves `test_no_new_expression_todo_cells` is not vacuously green --
+    mutate one real, filled row's New-expression cell back to the literal
+    `TODO` marker (in memory only, the file on disk is untouched) and
+    check the SAME parsing helper the real test uses reports it."""
+    text = _ledger_text()
+    filled = [n for n, c in _new_expression_cells(text) if c != "TODO"]
+    assert filled, "no filled new-expression cells available to mutate"
+    target = filled[0]
+
+    lines = text.splitlines()
+    mutated_lines = []
+    hit = False
+    for line in lines:
+        if not hit and GUARD_ROW_RE.match(line) and \
+                GUARD_ROW_RE.match(line).group(1) == target:
+            prefix = line.rstrip()
+            assert prefix.endswith("|")
+            prefix_no_last_cell = prefix.rsplit("|", 2)[0]
+            mutated_lines.append(prefix_no_last_cell + "| TODO |")
+            hit = True
+        else:
+            mutated_lines.append(line)
+    assert hit, f"could not locate guard {target}'s row to mutate"
+    mutated_text = "\n".join(mutated_lines)
+
+    assert target in _new_expression_todo_rows(mutated_text), (
+        "mutating a real row's New expression to TODO was not detected -- "
+        "the check is not discriminating")
+
+
 def test_every_row_has_at_least_one_citation():
     # Every guard number 1..23 appears at least once in the citation
     # appendix OR is explicitly marked n/a (guard 20's mechanism lives
