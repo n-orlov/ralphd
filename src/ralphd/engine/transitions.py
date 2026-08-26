@@ -150,6 +150,23 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("replan", "rejected_approach_left"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
+        # requirement A, #72: the review iteration itself got cut short
+        # (IterationResult.interrupted, fact 9) rather than replying with
+        # a scored verdict -- that is not a rejection, so this edge stays in
+        # `review` and asks again, the same shape as `planning`'s
+        # `instant_failure_streak` and `worker`'s `no_verdict_yet`
+        # self-loops: it must not archive the approach, must not emit a
+        # `review rejected` event, and must not advance the approach
+        # counter.
+        T("review", "review_interrupted"),
+        # requirement A, #72: the interrupted-review case above, but there
+        # is no wall clock or retry budget left to ask again. This still
+        # must not read as a rejection -- no approach archive, no `review
+        # rejected` event, no composite PRD for a successor approach that
+        # will never run -- it only ends the run via the ordinary
+        # non-terminal `finishing` gate, distinct from `rejected_no_
+        # approach_left`'s target even though both land on `finishing`.
+        T("finishing", "review_unjudged_at_budget_end"),
     ),
     "replan": (
         # ledger guard NEW (requirement I, #61): a repeated STRUCTURAL

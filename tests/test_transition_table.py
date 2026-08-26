@@ -141,11 +141,41 @@ def test_verify_to_worker_both_directions():
         assert edge.target == "worker"
 
 
-def test_review_to_worker_replan_or_finishing():
+def test_review_to_worker_replan_finishing_or_review():
+    # requirement A, #72: `review_interrupted` self-loops back to `review`,
+    # `review_unjudged_at_budget_end` lands on `finishing` (already a
+    # target via `rejected_no_approach_left`) -- so `review` joins the
+    # target set alongside the four pre-existing targets.
     targets = {edge.target for edge in tr.successors("review", vigilant=True)}
-    assert targets == {"worker", "replan", "finishing"}
+    assert targets == {"worker", "replan", "finishing", "review"}
     targets_plain = {edge.target for edge in tr.successors("review", vigilant=False)}
-    assert targets_plain == {"worker", "replan", "finishing"}
+    assert targets_plain == {"worker", "replan", "finishing", "review"}
+
+
+def test_review_interrupted_edges_declared_in_both_variants_requirement_a_72():
+    """Requirement A (#72): the two new interrupted-review edges must be
+    named in `guard_names("review", vigilant)` for BOTH variants, and the
+    four pre-existing guard names/targets must be byte-for-byte unchanged.
+    """
+    pre_existing = {
+        "steering_pending_at_verified": "worker",
+        "verified": "finishing",
+        "rejected_approach_left": "replan",
+        "rejected_no_approach_left": "finishing",
+    }
+    for vigilant in (True, False):
+        guards = tr.guard_names("review", vigilant=vigilant)
+        assert "review_interrupted" in guards
+        assert "review_unjudged_at_budget_end" in guards
+        by_guard = {edge.guard: edge.target for edge in tr.successors("review", vigilant=vigilant)}
+        for guard, target in pre_existing.items():
+            assert guard in by_guard, f"{guard} missing for vigilant={vigilant}"
+            assert by_guard[guard] == target, (
+                f"{guard} target changed for vigilant={vigilant}")
+        # the new edges' own meanings: interrupted stays in review, budget
+        # exhaustion at the same interrupted condition ends in finishing.
+        assert by_guard["review_interrupted"] == "review"
+        assert by_guard["review_unjudged_at_budget_end"] == "finishing"
 
 
 def test_approach_boundary_is_a_transition_with_a_guard():
