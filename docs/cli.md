@@ -1836,6 +1836,42 @@ size:      844 bytes
   same size cells — an artifact cannot be described as missing in one surface
   and empty in the other.
 
+### `ralphctl router <run-id> [ls|show <index>]`
+
+This run's own router calls (task 022, P, #80) -- the harness's per-state
+fallback question, asked ONLY when a state's next legal edge is not decidable
+from disk alone (`transitions.ROUTER_FALLBACK` is `{}` by design, so every
+shipped run today answers with none):
+
+```
+ralphctl router <run-id>                  # same as `ls`
+ralphctl router <run-id> ls                # every recorded decision: state, chosen edge, fallback used, attempts, model
+ralphctl router <run-id> show 1            # one decision's full header block
+```
+
+- **Purely on-disk, like `ralphctl artifacts`**: `state.router_call_entries`
+  reads `artifacts/router/decisions.jsonl`, the engine's own append-only write
+  (`RunDir.record_router_decision`), so a live run and one whose container is
+  long gone read identically.
+- **Never a work iteration.** Every entry carries `chargesIteration: false`
+  and the note `state.ROUTER_CALL_NOTE` says explicitly that a router call
+  consumes no iteration and no approach and opens no `iterations/NNNN/`
+  directory of its own -- `ls`/`show` print that same note, so nobody reading
+  either surface mistakes a router decision for a worker attempt.
+  `show`'s header also lists the candidate edges, the chosen target and
+  guard, whether the declared fallback was used, attempts, model, and the
+  same `tokensDisplay`/`costDisplay` vocabulary every other usage surface
+  uses (`cost_bucket`).
+- `--json ls` prints `{runId, routerCalls: [...]}`; `--json show <index>`
+  prints `{runId, ...entry}`. Exit codes: `0` · `1` no router call at that
+  index · `2` a non-numeric index · run-not-found per the shared `_require_run`
+  gate.
+- The listing and the header block are worded ONCE, by
+  `ralphd.engine.state.format_router_calls_listing` / `router_call_summary_lines`,
+  so the hub's router panel (`GET /api/runs/<id>/router`, below) and this verb
+  show the very same lines -- a decision cannot be described one way on the CLI
+  and another in the browser.
+
 ### `ralphctl suggestions <run-id> [show|apply] [--target DIR] [--only PATH] [--yes] [--ignore-conflicts]`
 
 A finished run's reflect phase may leave `artifacts/reflection/suggestions.diff`:
@@ -2939,6 +2975,19 @@ JSON endpoints served under `/api/`:
   On-disk only, with no `live` flag (status.json is the engine's own atomic
   write), like the fault/iteration/document/artifact endpoints. `404` for an
   unknown run id.
+- `GET /api/runs/<id>/router` — this run's own router calls (task 022, P,
+  #80), for the hub's router panel behind a native `<details>`/`<summary>`
+  disclosure: `{runId, routerCalls: [...]}`, byte-for-byte
+  `state.router_call_entries` read straight off `artifacts/router/
+  decisions.jsonl` — the very entries `ralphctl router <run> ls` prints,
+  each carrying `chargesIteration: false` and `note` (`state.
+  ROUTER_CALL_NOTE`) so the panel cannot present a router decision as a work
+  iteration. On-disk only, like the fault/cost/iteration endpoints — a run
+  whose container is gone still answers from `artifacts/router/`. A run that
+  never reached a router-ambiguous state (every shipped run, today —
+  `transitions.ROUTER_FALLBACK` is `{}` by design) answers `routerCalls: []`,
+  which `app.js` renders as the same `state.NO_ROUTER_CALLS` sentence
+  `ralphctl router` prints. `404` for an unknown run id.
 - `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, in three
   distinctly LABELLED regions matching the on-disk layout (task 020, issue
   #18.1, restructured by #81): outcome (`meta.json`) FIRST, then input

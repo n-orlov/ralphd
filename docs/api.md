@@ -745,7 +745,8 @@ contents, no LLM env values):
               "routerTimeoutS": 60.0},
   "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false},
   "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
-  "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null},
+  "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null,
+             "thinkingOverrides": {}},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
   "priceTables": {"names": [], "answers": "neither", "tables": []},  // which table may price this run, in order
@@ -762,6 +763,18 @@ after `model.overrides.router` and before falling back to `model` directly
 — see `routerTimeoutS` below for the router's latency budget and
 `usage.byPhase.router` for how its cost is accounted, folded in alongside the
 five hat phases without ever counting as a work iteration.
+
+`model.overrides` (`model_overrides:`/`models:` in `job.yaml`) is the per-hat
+model table keyed by `planning`/`worker`/`review`/`verify`/`reflect`/`router`
+(`MODEL_HATS`); `model.thinking` is every hat's default `pi --thinking`
+level and `model.thinkingOverrides` (`thinking_overrides:`) is the same
+per-hat table for thinking/reasoning settings — task 007's own field, kept
+separate from `model.overrides` because a model ref and its thinking setting
+are two independent axes, not one merged table. Each entry is either a plain
+`pi --thinking` string or a provider-shaped `{"thinking": ...}` /
+`{"effort": ...}` object; `engine.tiers.resolve_bundle` and
+`JobConfig.bundle_for` are the one place both tables are read together into
+a hat's `(model, thinking)` bundle (§3.5, §4).
 
 The infra-fault (LLM endpoint/network outage) budgets, all settable in
 `job.yaml` and via env:

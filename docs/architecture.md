@@ -580,6 +580,12 @@ unrecognised hat name degrades to `planning`'s own configured entry
 (`UNRECOGNISED_HAT_FALLBACK`), never to some cheaper tier — a typo must never
 quietly downgrade a phase. `router` additionally has its own dedicated
 `router_model` key, checked before `model_overrides["router"]`'s sibling rung.
+Each hat's `(model, thinking)` PAIR — never just the model — is what
+`JobConfig.bundle_for(hat)` (task 007) actually returns: `thinking_overrides:`
+is the same per-hat table for `pi --thinking`/reasoning settings, kept as a
+separate field from `model_overrides` rather than folded into it, because a
+model ref and its thinking setting are two independent axes that can be set
+independently.
 
 Task 006 retired the earlier `model_strategy`/`fast_model` phase→tier
 preset table (`quality-first`/`cost-optimized`/`balanced`) entirely — there
@@ -593,6 +599,51 @@ model_strategy`/`fast_model` and `ralphctl start --model-strategy`/
 Every model ref is just a pi "provider/model-id" string in job config — any
 model pi can reach is valid in any hat's slot. The engine sets the model
 per-iteration via pi's model selection flag/env on the subprocess.
+
+### Tiered provisioning (task 012, #68 half 2)
+
+The per-hat bundle above is one CELL of a wider matrix: task 012 gives every
+hat its own ladder of exactly three ordinal tiers, `trivial < normal < hard`
+(`engine/tiers.py`) — not a configurable count, and each hat's ladder is its
+own (no relationship assumed between one hat's `hard` rung and another's).
+`tiers.default_host_map(cfg)` widens `JobConfig.bundle_for`'s existing
+per-hat table into the `{hat: {tier: HatBundle}}` matrix by handing every
+rung of a hat's ladder that hat's single already-resolved bundle, so a
+job.yaml naming only `model`/`model_overrides` collapses cleanly: tiering is
+a no-op, never an error, with no special-case branch.
+
+**The resolver is a pure function applied at dispatch, never a transition-
+table entry.** `tiers.resolve_bundle(hat, effective_tier, host_map) ->
+HatBundle` does no I/O, touches no clock, and never reads `JobConfig` itself
+(`default_host_map` is the one place that happens, once, by delegating to
+`bundle_for`, so there is exactly one model-resolution pathway, not two).
+`transitions.TABLE` stays untouched by any of this — the table is about
+*what happens next*; provisioning is *how*, resolved at the single dispatch
+call site in `loop.py`'s `run_iteration()` (task 016), which passes in
+whichever tier applies for that call: a task-scoped call (worker, per-task
+verify) reads the in-hand task's effective tier; every hat with no task in
+hand (planning, reflect, the router's own call) keeps its static half-1 role
+at `tiers.DEFAULT_TIER`; the run-ending verification that decides the run's
+own verdict always provisions at `tiers.TOP_TIER`, unconditionally — the exit
+gate is never economised.
+
+**A task's tier moves only up, and only on validation-failed.** Task 013
+lets the planner annotate an optional `tier` per task at ingestion time
+(defaulted to `normal` when missing/unrecognised, with a warning — never
+rejecting the plan); `tasks.json`'s engine-written `effectiveTier` is claimed
+equal to that baseline on first claim and escalated exactly one rung
+(`tiers.escalate_tier`, capped at `hard`) per `validation-failed` re-claim
+(task 014) — there is no de-escalation path, true by construction: no
+function that touches `effectiveTier` ever moves it down. A task already at
+`hard` that fails validation again is marked `tierLadderExhausted` instead,
+feeding the stagnation guard. Per-task verify then provisions one rung BELOW
+the work it is checking (`tiers.step_down_tier`, floored at `trivial`, task
+015) — checking is cheaper than doing, never cheaper than the ladder's own
+floor. Spend and iteration counts are broken down by tier the same way they
+already are by phase and approach (`usage.byTier`, task 017), and the
+highest `effectiveTier` any task currently carries is published on the hub/
+`ralphctl runs` row (task 019) so escalation is visible without opening a
+task's own detail.
 
 ### Self-reflection phase (PRD req 24)
 

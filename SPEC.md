@@ -542,6 +542,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
 | `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, grace review, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
 | `src/ralphd/engine/transitions.py` | The declared FSM table (§4, task 008/014): states, legal transitions, guard-predicate names and per-hat entries as one data structure, with vigilant and non-vigilant as two variants of it (`VIGILANT_DELTA`), plus `TransitionExecutor` — the one code path that walks the table and refuses an illegal move — and the router's declared per-state fallback (`ROUTER_FALLBACK`). |
+| `src/ralphd/engine/tiers.py` | Task 012 (#68 half 2, requirements E/J): the three-tier vocabulary (`trivial < normal < hard`) with `escalate_tier`/`step_down_tier` as the only ordering moves, and `resolve_bundle` — the pure `(hat, effective_tier, host_map) -> HatBundle` resolver, no I/O, no clock, never touching `transitions.TABLE`. `default_host_map` is the one place a `JobConfig` is consulted, delegating to `JobConfig.bundle_for` rather than opening a second model-resolution pathway. Applied at the single dispatch call site in `loop.py` (task 016), never inside the transition table itself. |
 | `src/ralphd/engine/scheduler.py` | Task 115 (#60, requirement C/F): the pure task-selection algorithm (`select_next_task()`) -- validation-failed first, then in-progress, then the `dependsOn`/`priority`-aware pending scheduler, else `None` -- mirroring `worker.md`'s documented pick rule. Wired into `loop.py`'s `_step_worker` (task 116): the harness runs it and writes the pre-spawn `in-progress` claim itself, before the worker subprocess ever starts (§4.1). |
 | `src/ralphd/engine/router.py` | The harness's single constrained question for a state whose next legal edge is not decidable from disk alone (task 018): deterministic-first (never asks for a state with ≤1 legal edge), one JSON question validated against the table and a schema, bounded by a timeout, falling back to the table's declared choice rather than ever accepting an illegal transition. |
 | `src/ralphd/engine/contracts.py` | The one validator every hat response contract goes through (task 009, fact 16/#65): per-hat JSON schema declared beside its table entry, `validate_payload()`/`validate_against()` as the sole check, so there is exactly one re-derivation of "does this payload match its schema" in the whole codebase. |
@@ -1079,6 +1080,102 @@ auto-resume. The residual: a raw `docker stop` by an operator who bypassed
 `ralphctl` is indistinguishable from a self-inflicted signal and is therefore
 resumable.
 
+### 4.7 Tiered provisioning
+
+Task 005/007 gave each hat its own `(model, thinking)` pair -- `model_overrides`/
+`models` plus `thinking_overrides` in `job.yaml`, resolved by `JobConfig.
+bundle_for(hat)`. Task 012 (#68 half 2) widens that single per-hat bundle into a
+per-hat **ladder** of three, so a task can provision above or below its plan's
+default without a second model-resolution pathway existing anywhere.
+
+**The vocabulary is exactly three ordinal tiers** (`engine/tiers.py`):
+`trivial < normal < hard`. Not configurable in count or name -- "tune the tier
+count" is an explicit non-goal. Every hat (`planning`, `worker`, `review`,
+`verify`, `reflect`, `router`) has its OWN three-rung ladder; nothing assumes a
+relationship between one hat's `hard` rung and another's.
+
+**The hat x tier matrix** is built, not hand-configured: `tiers.
+default_host_map(cfg)` widens `JobConfig.bundle_for`'s existing per-hat table
+into `{hat: {tier: HatBundle}}` by giving every one of a hat's three rungs that
+hat's single already-resolved bundle. A job.yaml naming only `model`/
+`model_overrides` therefore collapses cleanly: every rung of every hat's ladder
+names the same bundle, and tiering is a no-op rather than an error, with no
+special-case branch. An operator who wants a REAL per-(hat, tier) override
+table has no `job.yaml` surface yet -- `default_host_map` is the only builder
+shipped; a hand-specified host map exists only in tests.
+
+**The resolver is a pure function, not a transition-table entry.**
+`tiers.resolve_bundle(hat, effective_tier, host_map) -> HatBundle` does no I/O,
+touches no clock, and never reads `JobConfig` itself (only `default_host_map`,
+the map's builder, does that, once, by delegating to `bundle_for` rather than
+opening a second pathway). Fallback mirrors `model_for`'s own anti-downgrade
+rule: an exact `(hat, tier)` rung wins; a hat missing that rung borrows
+`planning`'s ladder at the SAME tier (never the cheap tier); a map missing even
+that answers with pi's own default. `transitions.TABLE` is deliberately
+untouched by any of this (`test_transition_table_carries_no_provisioning_
+policy`) -- the table stays about *what happens next*; provisioning is *how*,
+applied at the single dispatch call site in `loop.py`'s `run_iteration()`
+(task 016), never inside the FSM itself.
+
+**A task carries a tier, plan ingestion is the only place it is set.** Task 013
+adds an optional `tier` key beside `priority` in the planner's proposal;
+`plan_ingestion.normalize_task_tiers` defaults a missing or unrecognised value
+to `tiers.DEFAULT_TIER` (`normal`) and warns rather than rejecting the plan --
+an old, tier-naive proposal ingests exactly as it always did. A plan where
+every task is annotated `hard` also warns: a uniformly maximal tier defeats the
+point of tiering. `tasks.json`'s persisted `effectiveTier` (§5.3) is a SEPARATE,
+harness-owned field from the planner's own `tier`: `state.
+claim_task_effective_tier` sets it, equal to the baseline, on a task's first
+`pending` -> `in-progress` claim; no hat's response contract has a `tier`/
+`effectiveTier` property (`additionalProperties: false` refuses one that tries),
+so only the harness ever writes it.
+
+**Escalation moves one rung per validation-failed retry, never down.** Task 014:
+every `validation-failed` -> `in-progress` re-claim calls `state.
+escalate_task_effective_tier`, `tiers.escalate_tier`'s `+1`-capped-at-`hard`
+move -- a task already at `hard` stays at `hard`. There is no de-escalation
+path at all (requirement G), which is true by construction rather than by
+caller discipline: the only functions that write `effectiveTier` either claim
+the baseline once or move it up. The moment a validation verdict comes back
+negative for a task already at `hard`, `state.
+mark_tier_ladder_exhausted_if_at_top` records `tierLadderExhausted: true` on
+the record -- a distinct, queryable fact ('this task has spent its whole tier
+ladder and still failed') feeding the stagnation guard, and once true it never
+clears. An infra-fault re-entry that had already escalated the tier hands the
+pre-escalation tier back (the same refund reasoning as an infra-retry's
+iteration refund) rather than charging the task for an attempt that never ran.
+
+**Verify provisions one rung below the work it checks; the run-ending verify
+never economises.** Task 015 (decision 7/8): a per-task verify/review dispatch
+runs at `state.task_verify_tier(task)` -- `tiers.step_down_tier` applied to the
+task's CURRENT effective tier (post-escalation), floored at `trivial`. The
+run-ending verification that decides whether the run itself goes terminal
+(`_review_verdict`/`_maybe_grace_review`) always provisions at `tiers.TOP_TIER`
+(`state.run_level_verify_tier()`) regardless of any task's tier -- there is no
+task in hand to read one from, and the exit gate is never a bottom-rung rubber
+stamp. Every hat with no task in hand at all -- `planning`, `reflect`, and the
+router's own call -- keeps its static half-1 role: `tiers.DEFAULT_TIER`,
+unaffected by any task's tier in the plan.
+
+**Spend is broken down by tier too.** Task 017 folds the tier a dispatch
+provisioned at into `usage.byTier` (§8.6, §9.3) alongside the existing
+`byPhase`/`byApproach` buckets, each entry also carrying a plain `iterations`
+count -- so a run's cost can be read "how much did escalating this task cost"
+as directly as "how much did the review phase cost". `taskEffectiveTier` (task
+019, the highest `effectiveTier` any task in the plan currently carries) is
+published on the hub/`ralphctl runs` row precisely because the fact that
+escalation happened at all is otherwise invisible outside a task's own detail
+view.
+
+Model-resolution history: task 006 retired the earlier `model_strategy`/
+`fast_model` phase->tier PRESET table (`quality-first`/`cost-optimized`/
+`balanced`) that predates this mechanism entirely -- see §6.2 and §7.2 for that
+migration. The two are unrelated other than by name: the retired presets chose
+a model per PHASE from a fixed three-name vocabulary; this tier system chooses
+a `(model, thinking)` BUNDLE per `(hat, tier)` cell from whatever the job's own
+`job.yaml` configures, with the effective tier itself moving under a task's own
+validation history.
+
 ## 5. Data model
 
 Everything about a run lives in two host directories: `~/.ralphd/runs/<run-id>/`
@@ -1293,6 +1390,9 @@ its own bookkeeping fields to it.
 | `tasks[].failureKind` | string | engine-written on a `failed` task: `validation-exhausted` \| `requirement-unmet` (below) |
 | `tasks[].criteriaFingerprint` | string | engine-written sha256 of `successCriteria` |
 | `tasks[].criteriaEditedAfterValidationFailure` | bool | engine-written, sticky (§4.4) |
+| `tasks[].tier` | string | optional, planner-annotated (task 013): one of `trivial`\|`normal`\|`hard` (§4.7); a missing or unrecognised value is normalised to `normal` at ingestion time, once, with a warning -- never left for a reader to default |
+| `tasks[].effectiveTier` | string | engine-written (§4.7): this task's CURRENT tier, claimed equal to `tier` on first claim, escalated one rung per `validation-failed` re-claim, never de-escalated; absent on a task never yet claimed |
+| `tasks[].tierLadderExhausted` | bool | engine-written, sticky (§4.7): set the moment a validation verdict comes back negative while `effectiveTier` is already `hard` -- there is nowhere left to escalate to |
 
 The worker picks the first `validation-failed` task, else the first
 `in-progress` one, else the first `pending` task whose `dependsOn` are all
@@ -1734,6 +1834,7 @@ Every field:
 | `model` | string \| null | `null` | plain default pi model ref (`provider/model-id`) every hat falls back to when it has no per-hat entry; `null` means pi's own default |
 | `model_overrides` / `models` | map hat→ref | `{}` | per-hat model, beating `model`; keys are `planning`, `worker`, `review`, `verify`, `reflect`, `router` (`MODEL_HATS`). `models` is an accepted alias, merged into `model_overrides` once at load (the latter wins on a shared key). `job.yaml`-only — no `start` flag sets it. Task 006 retired the `model_strategy`/`fast_model` keys that used to feed a phase→tier preset table (`quality-first`/`cost-optimized`/`balanced`); a job.yaml still carrying either is translated deterministically into this table at load time (`engine.config._migrate_legacy_model_config`), never silently dropped |
 | `thinking` | string \| null | `null` | pi `--thinking` level, e.g. `medium`, `high` |
+| `thinking_overrides` | map hat→setting | `{}` | per-hat thinking/reasoning table (task 007, §4.7), same key vocabulary as `model_overrides` but never merged into it -- a model ref and its thinking setting are two independent axes. Each entry is either a plain `pi --thinking` string (the same vocabulary `thinking` speaks) or a provider-shaped object (`{thinking: ...}`/`{effort: ...}`); read together with `model_overrides` by `JobConfig.bundle_for`/`tiers.resolve_bundle` into a hat's `(model, thinking)` bundle. `job.yaml`-only |
 | `api_token` | string \| null | `null` | bearer token the API requires; `RALPHD_API_TOKEN` (how `start --api-token` delivers it) overrides |
 | `infra_startup_timeout_s` | float | `150.0` | how long a phase may run with **zero** parseable pi events before the engine kills it as an infra fault instead of waiting out `iteration_timeout_s` |
 | `infra_retry_backoff_s` | list[float] | `[2, 5, 15, 30, 60, 120, 300]` | sleep before each retry of the same phase after an infra-classified failure; the last value repeats. Fast at the start on purpose — a 30-second gateway blip should cost seconds, not minutes |
@@ -3929,6 +4030,16 @@ dir themselves and a live proxy would only add a way to disagree.
   opens holding an `<img>` whose `src` is the raw byte route, and everything
   else (opaque binary, e.g. a tarball) is reported as such rather than
   mangled. `app.js` carries no client-side extension list of its own.
+- **Router calls panel** — behind a native `<details>`/`<summary>` disclosure
+  (task 022, P, #80), this run's own router decisions: `GET /api/runs/<id>/
+  router` → `{runId, routerCalls: [...]}`, the very entries `ralphctl router
+  <run> ls` prints, each labelled `chargesIteration: false` so a router call
+  is never mistaken for a work iteration -- the router decides which of a
+  state's legal edges to take when more than one is legal (§4, §9.4); it opens
+  no `iterations/NNNN/` directory of its own and spends no approach. A run
+  that never reached a router-ambiguous state (every shipped run, today --
+  `transitions.ROUTER_FALLBACK` is `{}` by design) shows the panel's own
+  empty-state sentence instead of nothing.
 - **Approach history panel** — every previous approach `_archive_approach`
   copied into `approaches/NN/` before the loop started the next one, most
   recent last, each row its own archived task counts (never the live plan's)
