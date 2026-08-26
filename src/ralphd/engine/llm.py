@@ -39,6 +39,81 @@ def pi_agent_dir(home: Path | None = None) -> Path:
     return (home or _home()) / ".pi" / "agent"
 
 
+class UnroutableHatModel(RuntimeError):
+    """Raised by `check_hat_routes` (task 009, PRD requirement D, #60
+    pillar 4) when a configured hat's model ref names a provider this
+    profile's own `~/.pi/agent/models.json` does not declare. The message
+    already names the hat, the offending ref, and the provider keys that
+    ARE available -- callers (main.py's startup path) need no further
+    formatting, just `str(exc)`.
+    """
+
+
+def provider_keys(home: Path | None = None) -> list[str]:
+    """The provider keys this profile's own pi config declares --
+    `~/.pi/agent/models.json`'s top-level `providers` object -- read
+    locally from disk, never by calling a gateway (requirement D:
+    "Reaching the gateway to enumerate models at startup is not
+    required"). `[]` when the file is absent, unparsable, or carries no
+    `providers` object -- `check_hat_routes` treats that as "nothing
+    declared yet", never as "nothing is ever routable" (see its own
+    docstring for why).
+    """
+    models_path = pi_agent_dir(home) / "models.json"
+    if not models_path.exists():
+        return []
+    try:
+        doc = json.loads(models_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    providers = doc.get("providers") if isinstance(doc, dict) else None
+    return sorted(providers) if isinstance(providers, dict) else []
+
+
+def _provider_key(ref: str) -> str:
+    """The provider half of a pi `provider/model` ref -- the text before
+    the first `/`, or the whole ref when it carries none (an obviously
+    unroutable shape either way, so still worth naming in the error)."""
+    return ref.split("/", 1)[0]
+
+
+def check_hat_routes(cfg, home: Path | None = None) -> None:
+    """Task 009 (PRD requirement D, #60 pillar 4): before iteration 1,
+    resolve every `config.MODEL_HATS` entry's ref (`cfg.model_for(hat)`)
+    and check its provider key against `provider_keys()` -- read from this
+    profile's own `~/.pi/agent/models.json`, never a live gateway call, so
+    this check adds no network dependency to `start`. Raises
+    `UnroutableHatModel` naming the FIRST hat (in `MODEL_HATS` order)
+    whose ref names an undeclared provider, the ref itself, and the
+    provider keys that ARE available -- so a typo in one hat's ref
+    surfaces at start, not three hours in on that hat's first dispatch.
+
+    A `None` ref (`model_for`'s own documented "pi's own default model"
+    sentinel) is never checked -- there is no explicit ref to resolve. An
+    EMPTY `provider_keys()` (no `models.json`, or one with no `providers`
+    object at all) is treated as "this profile hasn't declared anything
+    yet" and skips the whole check, rather than failing every explicit ref
+    in a dev container or test fixture that never placed a models.json at
+    all -- a real `start` always places one (docs/llm-profiles.md's `host`
+    profile at minimum copies the host's own), so a real per-hat table
+    never hits this branch.
+    """
+    available = provider_keys(home)
+    if not available:
+        return
+    from .config import MODEL_HATS
+    for hat in MODEL_HATS:
+        ref = cfg.model_for(hat)
+        if not ref:
+            continue
+        key = _provider_key(ref)
+        if key not in available:
+            raise UnroutableHatModel(
+                f"hat {hat!r} is configured with model {ref!r}, whose "
+                f"provider {key!r} is not one of the providers this "
+                f"profile declares ({', '.join(available)})")
+
+
 def current_env() -> dict[str, str]:
     """The env overrides from the last `PUT /config/llm`, if any (`{}`
     otherwise). Read fresh every call so a mid-run rotation is picked up by

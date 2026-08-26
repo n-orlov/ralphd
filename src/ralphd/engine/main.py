@@ -16,6 +16,7 @@ from .. import __version__
 from .api import create_app
 from .config import CONFIG_DIR, RUN_DIR, WORKSPACE_DIR, JobConfig
 from .creds import place_creds
+from .llm import UnroutableHatModel, check_hat_routes
 from .loop import LoopSupervisor
 from .privsep import agent_child_kwargs, separate_engine_identity
 from .redact import refresh_redaction_map
@@ -43,6 +44,11 @@ EXIT_RUN_DIR_LOCKED = 3
 # Distinct, documented exit code for "this run dir's recorded schemaVersion
 # is newer than this engine build knows how to run against" (PRD req 18).
 EXIT_SCHEMA_TOO_NEW = 4
+
+# Distinct, documented exit code for "a configured hat's model has no route
+# in this profile" (task 009, PRD requirement D, #60 pillar 4) -- fails at
+# start, before iteration 1, never at dispatch.
+EXIT_UNROUTABLE_HAT_MODEL = 5
 
 
 def _version() -> str:
@@ -198,6 +204,21 @@ async def amain() -> int:
         else:
             log.error("no PRD at %s or %s", run.prd_file, prd_src)
             return 2
+
+    # Task 009 (PRD requirement D, #60 pillar 4): fail fast, before
+    # iteration 1, when a configured hat's model has no route in this
+    # profile -- reads `~/.pi/agent/models.json` (the same ambient home
+    # place_skills() just used) locally; no gateway call, so this never
+    # makes `start` depend on network health. A typo in one hat's ref must
+    # surface here, not three hours in on that hat's first dispatch.
+    try:
+        check_hat_routes(cfg, home=_skills_home)
+    except UnroutableHatModel as exc:
+        print(f"ralphd-engine: {exc}", file=sys.stderr)
+        log.error("%s", exc)
+        run.emit("log", level="error", message=str(exc))
+        lock_fh.close()
+        return EXIT_UNROUTABLE_HAT_MODEL
 
     # Task 017 (requirement... reconstruct FSM position from disk on
     # resume): every process start used to write `state="starting"`

@@ -264,7 +264,10 @@ succeeded, `1` job did not succeed, `2` no PRD at `/run/ralphd/prd.md` or
 `/config/prd.md`, `3` `EXIT_RUN_DIR_LOCKED` (another live engine holds
 `<run-dir>/.lock`), `4` `EXIT_SCHEMA_TOO_NEW`. `SIGTERM`/`SIGINT` to the engine abort
 the job and let the process wind down through the normal terminal path rather than
-dying mid-write.
+dying mid-write. Task 009 (PRD v0.11 requirement D) adds one more: `5`
+`EXIT_UNROUTABLE_HAT_MODEL` — a configured hat's model ref names a provider
+the profile's own `~/.pi/agent/models.json` does not declare, checked before
+iteration 1 (`engine/llm.py:check_hat_routes`), never via a live gateway call.
 
 The API is FastAPI on `:7777` in the same process as the loop. It reads state files
 and writes only to the steering inbox, the config overlay, and the supervisor's

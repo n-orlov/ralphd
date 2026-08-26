@@ -1053,6 +1053,18 @@ creation, no PRD copy, no `status.json`/`tasks.json` write):
   schema version (`1`), so "upgrading" an older run dir is just this stamp;
   the check exists so a future on-disk shape change has a documented,
   enforced upgrade/refusal point to hang real migration logic off.
+
+**Model-route validation.** Before iteration 1, every `MODEL_HATS` entry's
+resolved ref is checked against the profile's own declared providers (task
+009, PRD v0.11 requirement D): `engine/llm.py:check_hat_routes` reads
+`~/.pi/agent/models.json` locally (never a live gateway call) and, on the
+first hat whose ref names an undeclared provider, prints a diagnostic naming
+the hat, the offending ref, and the provider keys that ARE available, then
+exits **`5`** (`EXIT_UNROUTABLE_HAT_MODEL` in `engine/main.py`) before
+`LoopSupervisor.run_job()` is ever scheduled — a typo in one hat's ref
+surfaces at start, not three hours in on that hat's first dispatch. An
+empty/absent `models.json` skips the check entirely ("nothing declared yet",
+not "nothing is routable").
 - **Recorded version equal to current** → no-op, same stamp is rewritten.
 
 ### Engine resume-from-existing-state (PRD req 16, engine side)
