@@ -20,6 +20,18 @@ other thing — the marker is gone and every cell is a settled figure read from
 that run's final `status.json`, which is why the marker is what the checks in
 `tests/test_docs_prd_index.py` key on.
 
+A row whose Outcome cell reads **failed** / unverified but whose note reports
+every planned task `completed` (and, where the plan reached review, verified)
+is not reporting a judgement on the work — it is the shape `status.json`'s
+`deadlineBeatVerdict` field names (task 006, #72): the run's own deadline took
+the last review attempt before review ever rendered a verdict, after every
+task was already done and the worker's own `COMPLETE` had already been
+honoured. Such a row's Outcome cell states the phrase **`the terminal verdict
+is a deadline artifact (#NN)`**, citing the issue the defect was filed under,
+so the distinction reads from the table itself rather than depending on the
+prose note beside it. `tests/test_docs_prd_index.py` enforces the exact
+phrasing on every row whose run recorded the marker.
+
 | Run | File | Outcome | Iterations | Tokens | Cost |
 |---|---|---|---|---|---|
 | `selfdev-vigilant-4` | [selfdev-vigilant-4.md](selfdev-vigilant-4.md) | succeeded / verified | 13 | 2.1M | $3.39 |

@@ -3545,6 +3545,15 @@ Additional lines appear only when they have something to say, which keeps a
 healthy run's output short:
 
 - `reason:` — the terminal state's explanation, wrapped across lines.
+- `deadline:` (task 007, #72) — shown only when `status.json` carries the
+  `deadlineBeatVerdict` marker (task 006, above): every task was completed,
+  the worker's own `COMPLETE` was already honoured, and the deadline took
+  the last review attempt before it could ever render a verdict. `state`/
+  `verdict` above still read the ordinary `failed`/`unverified` — that ruling
+  stays the review hat's alone to grant — so without this line the run reads
+  on screen exactly like an ordinary failure; it names both timestamps the
+  marker carries and says outright that the ending is not a judgement on
+  the work. `--json` carries `deadlineBeatVerdict` itself through untouched.
 - `degraded:` — the run is sitting out an infra outage: attempt number, phase,
   a ticking countdown to `nextAttemptAt`, the episode's wait against the outage
   budget, and the underlying `error`. A degraded run *between* two waits (the

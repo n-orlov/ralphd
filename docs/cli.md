@@ -564,6 +564,31 @@ Human output also renders (task 003):
   summary card (mirroring the `.steering-warning` banner above), so an
   operator watching a run through the hub sees why it failed without
   fetching `--json`.
+- `deadline:` (task 007, #72) -- shown only when `status.json` carries the
+  `deadlineBeatVerdict` marker task 006 added: every task in the run's plan
+  was completed, the worker's own `COMPLETE` was already honoured, and the
+  wall-clock deadline took the last review attempt before review ever
+  rendered a verdict. `state`/`verdict` above still read the ordinary
+  `failed` / `unverified` -- `verdict: verified` stays grantable by the
+  review hat alone, this line does not change that ruling -- so without it
+  this run is indistinguishable on screen from an ordinary failure. It
+  names both timestamps the marker carries and says outright that the
+  ending is not a judgement on the work:
+
+  ```
+  deadline:  the clock beat the verdict, not the work (#72): every task was
+             completed and COMPLETE was honoured at 2026-08-26T06:53:15Z, but
+             the deadline (2026-08-26T06:53:21Z) took the last review attempt
+             before it could ever render one -- this is not a failure
+             judgement.
+  ```
+
+  `--json` carries the same `deadlineBeatVerdict: {deadline,
+  completeHonouredAt}` object through untouched (SPEC.md §4.2/§10.4). Absent
+  entirely for every other terminal shape, including an ordinary failed run
+  and a genuinely rejected last approach that happens to look similar on
+  disk (see `LoopSupervisor._deadline_beat_verdict_patch()`'s own docstring
+  for why that one is deliberately excluded).
 - `termination:` (task 015, #46) -- shown only for a run a **signal** ended with
   no operator abort behind it, i.e. `status.json`'s `termination.class` is
   `self-inflicted`:

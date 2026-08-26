@@ -2412,6 +2412,41 @@ def _format_reason_lines(reason) -> list[str]:
     return lines
 
 
+def _format_deadline_beat_verdict_lines(deadline_beat_verdict) -> list[str]:
+    """Task 007 (#72): the `deadline:` line for the one terminal write task
+    006's `_deadline_beat_verdict_patch()` produces -- every task in the
+    record was completed, the worker's own `COMPLETE` was already honoured,
+    and the deadline took the last review attempt before it could ever
+    render a verdict. `state`/`verdict` above still print the ordinary
+    `failed` / `unverified` (that ruling stays the review hat's alone to
+    grant -- this task does not touch it), so without a line naming the
+    marker this run reads on screen exactly like any other failure. This is
+    the line that tells a human reader apart: it names the deadline, the
+    moment `COMPLETE` was honoured, and says in so many words that the
+    ending is not a judgement on the work.
+
+    Nothing at all unless status.json actually carries the
+    `deadlineBeatVerdict` object -- absent for every other terminal shape,
+    including an ordinary failed run and a genuinely rejected approach that
+    happens to look similar on disk (task 006's own docstring names why that
+    one is deliberately excluded upstream).
+    """
+    if not deadline_beat_verdict or not isinstance(deadline_beat_verdict, dict):
+        return []
+    deadline = deadline_beat_verdict.get("deadline")
+    honoured = deadline_beat_verdict.get("completeHonouredAt")
+    text = (
+        "the clock beat the verdict, not the work (#72): every task was "
+        f"completed and COMPLETE was honoured at {honoured}, but the "
+        f"deadline ({deadline}) took the last review attempt before it "
+        "could ever render one -- this is not a failure judgement."
+    )
+    wrapped = textwrap.wrap(text, width=76) or [text]
+    lines = [f"deadline:  {wrapped[0]}"]
+    lines.extend(f"           {extra}" for extra in wrapped[1:])
+    return lines
+
+
 def _format_termination_lines(termination) -> list[str]:
     """Task 015 (#46): the `termination:` line(s) for a run a signal ended with
     no operator behind it -- the class, and the last tool call before the
@@ -2845,6 +2880,12 @@ def cmd_status(args):
     # `reason` (set by the engine on terminal failed/aborted states, or the
     # engine-error path) -- previously only visible via --json.
     lines.extend(_format_reason_lines(status.get("reason")))
+    # Task 007 (#72): ... and when the reason the record reads failed is that
+    # the deadline beat the verdict rather than the work having failed, a
+    # `deadline:` line names the marker task 006 added -- otherwise this run
+    # is indistinguishable on screen from an ordinary failure.
+    lines.extend(_format_deadline_beat_verdict_lines(
+        status.get("deadlineBeatVerdict")))
     # Task 015 (#46): ... and when a signal nobody claimed ended the run, the
     # class and the evidence, because `reason: signal 15` on its own told an
     # operator nothing they could act on.

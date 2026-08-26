@@ -98,3 +98,66 @@ def test_status_shows_ended_once_the_finishing_window_is_over(ctl: Ctl):
     assert "ended:     " in res.stdout, res.stdout
     lines = [ln for ln in res.stdout.splitlines() if ln.startswith("duration:")]
     assert "(total)" in lines[0], lines[0]
+
+
+# --------------------------------------------------------------------------
+# task 007 (#72): a human reading `ralphctl status` for a run where the
+# clock beat the verdict must be able to tell it apart from an ordinary
+# failed run -- both share the exact same `state: failed` / `verdict:
+# unverified` cells, so the distinction has to live somewhere else on
+# screen. This drives the full CLI, not just the formatting helper, so it
+# also proves the field reaches the human view from a real status.json.
+# --------------------------------------------------------------------------
+
+_DEADLINE_BEAT_VERDICT_MARKER = {
+    "deadline": "2026-08-26T06:53:21Z",
+    "completeHonouredAt": "2026-08-26T06:53:15Z",
+}
+
+
+def test_status_names_the_deadline_beat_verdict_marker_for_a_human_reader(
+        ctl: Ctl):
+    run_id = "tst-deadline-beat-verdict"
+    _seed_status(ctl, run_id, state="failed", verdict="unverified",
+                 reason="review was repeatedly interrupted with no budget "
+                        "or wall clock left to ask again",
+                 currentIteration=None, pendingTerminalState=None,
+                 deadlineBeatVerdict=_DEADLINE_BEAT_VERDICT_MARKER)
+    res = ctl.run("status", run_id)
+    assert res.returncode == 0, res.stderr
+    assert "state:     failed" in res.stdout, res.stdout
+    assert "verdict:   unverified" in res.stdout, res.stdout
+    assert "deadline:  " in res.stdout, res.stdout
+    assert "2026-08-26T06:53:21Z" in res.stdout
+    assert "2026-08-26T06:53:15Z" in res.stdout
+    assert "not a failure judgement" in res.stdout.lower()
+    # --json carries the marker through untouched, for a machine consumer.
+    res_json = ctl.run("--json", "status", run_id)
+    assert (json.loads(res_json.stdout)["deadlineBeatVerdict"]
+            == _DEADLINE_BEAT_VERDICT_MARKER)
+
+
+def test_status_ordinary_failed_run_prints_no_deadline_line(ctl: Ctl):
+    """The counterpart: a run that failed for an ordinary reason (no
+    `deadlineBeatVerdict` in its status.json at all) prints nothing new --
+    the two runs' human output must actually differ, not merely differ in
+    theory."""
+    ordinary_id = "tst-ordinary-failed"
+    _seed_status(ctl, ordinary_id, state="failed", verdict="unverified",
+                 reason="budget exhausted with tasks still pending",
+                 currentIteration=None, pendingTerminalState=None)
+    ordinary = ctl.run("status", ordinary_id)
+    assert ordinary.returncode == 0, ordinary.stderr
+    assert "deadline:" not in ordinary.stdout, ordinary.stdout
+
+    marked_id = "tst-deadline-beat-verdict-2"
+    _seed_status(ctl, marked_id, state="failed", verdict="unverified",
+                 reason="budget exhausted with tasks still pending",
+                 currentIteration=None, pendingTerminalState=None,
+                 deadlineBeatVerdict=_DEADLINE_BEAT_VERDICT_MARKER)
+    marked = ctl.run("status", marked_id)
+    assert marked.returncode == 0, marked.stderr
+    assert "deadline:" in marked.stdout, marked.stdout
+    # Same state/verdict/reason cells, different output overall -- exactly
+    # the distinction a human reader needs and the plain cells cannot give.
+    assert ordinary.stdout != marked.stdout

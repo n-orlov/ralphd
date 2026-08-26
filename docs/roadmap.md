@@ -803,6 +803,13 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   `_unconsumed_steering_patch` already set. Two rejected designs (a distinct
   `verdict` value; a distinct terminal `state`) are recorded in
   `artifacts/reports/task-006-deadline-beat-verdict-design.md`.
+  `ralphctl status` (human and `--json`) surfaces the marker as a
+  `deadline:` line (task 007) so an operator reading a terminal `failed` /
+  `unverified` run can tell this shape apart from an ordinary failure
+  without reading `--json` by hand; `docs/prds/README.md`'s row-convention
+  notes state the matching Outcome-cell phrasing for such a run
+  (`the terminal verdict is a deadline artifact (#NN)`), enforced by
+  `tests/test_docs_prd_index.py`.
 - ⏳ **C. The finishing tail gets time it cannot be robbed of (#72).** Not yet
   landed.
 - ✅ **J. A resumed run dir does not lose an approach's verifications (#75).**

@@ -539,3 +539,55 @@ def test_a_note_inventing_an_automated_check_is_caught():
         "A dedicated check here catches this class of error")
     lowered = " ".join(_v07_note(text).lower().split())
     assert "no automated check" not in lowered
+
+
+# --------------------------------------------------------------------------
+# task 007 (#72): a row whose run recorded `status.json`'s `deadlineBeatVerdict`
+# marker (task 006) states the convention phrase in its Outcome cell, citing
+# the tracking issue -- the whole point being that the distinction reads from
+# the table itself, not only from the prose note beside it.
+# --------------------------------------------------------------------------
+
+DEADLINE_ARTIFACT_PHRASE = re.compile(
+    r"the terminal verdict is a deadline artifact \(#\d+\)")
+
+# The one run in the table today whose engine actually hit this shape (#72
+# itself).
+V09_RUN_ID = "selfdev-v09-fsm-loop"
+
+
+def test_the_index_says_what_a_deadline_artifact_outcome_means():
+    """The convention paragraph itself: the intro has to spell out that a
+    `failed`/unverified row whose note reports every planned task done is not
+    a judgement on the work, and name the exact phrase such a row's Outcome
+    cell must carry."""
+    intro = " ".join(_index_text().split("| Run | File |")[0].lower().split())
+    for phrase in ("deadlinebeatverdict", "not reporting a judgement",
+                   "the terminal verdict", "is a deadline artifact"):
+        assert phrase in intro, f"the index no longer explains {phrase!r}"
+
+
+def test_an_index_that_stops_explaining_the_deadline_artifact_is_caught():
+    text = _index_text().replace(
+        "is a deadline artifact (#NN)", "had trouble finishing on time")
+    intro = " ".join(text.split("| Run | File |")[0].lower().split())
+    assert "is a deadline artifact" not in intro
+
+
+def test_the_v09_row_states_the_deadline_artifact_convention():
+    rows = _rows(_index_text())
+    assert V09_RUN_ID in rows, f"docs/prds/README.md has no row for {V09_RUN_ID}"
+    outcome = rows[V09_RUN_ID][1]
+    assert DEADLINE_ARTIFACT_PHRASE.search(outcome), (
+        f"{V09_RUN_ID}'s Outcome cell {outcome!r} does not state the "
+        "deadline-artifact convention")
+    assert "#72" in outcome
+
+
+def test_a_row_hiding_the_deadline_artifact_is_caught():
+    text = _index_text().replace(
+        "; the terminal verdict is a deadline artifact (#72)", "")
+    rows = _rows(text)
+    outcome = rows[V09_RUN_ID][1]
+    assert not DEADLINE_ARTIFACT_PHRASE.search(outcome)
+
