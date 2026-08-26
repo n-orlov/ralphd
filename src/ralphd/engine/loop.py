@@ -3207,20 +3207,98 @@ class LoopSupervisor:
         verified = not contract_errors and payload.get("verdict") == "verified"
         return verified, payload, contract_errors
 
+    @staticmethod
+    def _review_interrupted(result: IterationResult) -> bool:
+        """Requirement A (#72): True iff `result` shows the review
+        iteration itself was cut short by the ENGINE -- SIGINT
+        (`interrupted`), the full `iteration_timeout_s` or the
+        startup-window watchdog (`timed_out`/`no_traffic_timeout`), or an
+        abnormal process exit (`exit_code` neither 0 nor None -- the same
+        "never even reached a verdict" shape `_verify_no_verdict` and the
+        reflect path's own failure check already use) -- rather than an
+        ordinary iteration that ran to completion and simply replied with
+        something `_review_verdict` cannot parse.
+
+        This is the ONLY thing that may route a review iteration onto the
+        `review_interrupted` / `review_unjudged_at_budget_end` edges
+        instead of an ordinary rejected verdict. An absent or malformed
+        payload from an iteration that DID run to completion must still
+        fall through to `_review_verdict`'s existing "not verified"
+        default -- that contract-payload semantics are unchanged by this
+        method's existence (a test pins it).
+        """
+        return bool(result.interrupted or result.timed_out
+                    or result.no_traffic_timeout
+                    or result.exit_code not in (0, None))
+
+    async def _run_review_iteration(self, approach: int) -> IterationResult | None:
+        """One review iteration, self-looping in place on the
+        `review_interrupted` guard (requirement A, #72) while the engine
+        itself keeps cutting the attempt short and there is still budget
+        and wall clock left to ask again -- the same self-loop shape as
+        `_one_planning_attempt`'s inner retry and `worker`'s
+        `no_verdict_yet`: an in-place retry is not a state CHANGE, so
+        nothing here is visible to `_run_job_core`'s dispatch loop, and the
+        approach counter is never touched.
+
+        Returns the settled `IterationResult` the moment one attempt
+        actually runs to completion -- whatever it then says, however
+        malformed; that is `_review_verdict`'s business, not this
+        method's -- or `None` once budget/wall clock runs out while still
+        interrupted, in which case the caller must land on
+        `review_unjudged_at_budget_end`, never on an ordinary rejected
+        verdict: no approach archive, no `review rejected` event, no
+        composite PRD.
+        """
+        while True:
+            result = await self.run_iteration(
+                "review", extra=self._review_extra_context())
+            if not self._review_interrupted(result):
+                return result
+            self._advance("review", "review", "review_interrupted")
+            if not self.budget_left():
+                return None
+            await self._gate()
+
+    def _review_unjudged_at_budget_end(self, approach: int) -> tuple:
+        """Requirement A (#72): budget/wall clock ran out while review
+        itself kept getting interrupted -- advance straight to `finishing`
+        on the `review_unjudged_at_budget_end` edge, never the ordinary
+        `rejected_*` edges: no verdict was ever actually scored, so the
+        approach must not be archived, no `review rejected approach N`
+        log line is emitted, and no composite PRD is written for a
+        successor approach that will never run.
+        """
+        self._advance("review", "finishing", "review_unjudged_at_budget_end")
+        self._terminal_reason_note = (
+            f"review (approach {approach}) was repeatedly interrupted with "
+            "no budget or wall clock left to ask again; no verdict was "
+            "ever scored, so the approach was not archived and no "
+            "rejection was recorded (requirement A, #72)")
+        return ("tail",)
+
     async def _step_review(self) -> tuple:
-        """The `review` state. Guards: `steering_pending_at_verified`
-        (-> worker, looped in place exactly like the pre-cutover code --
-        the dispatch loop above never sees this as a state change, because
-        the review phase itself decides when it is done retrying);
-        `verified` (-> finishing, i.e. `("done", "succeeded")`);
-        `rejected_approach_left` (-> replan); `rejected_no_approach_left`
-        (-> finishing, i.e. `("tail",)`).
+        """The `review` state. Guards: `review_interrupted` (self-loop,
+        stays inside `_run_review_iteration`'s own `while True` exactly
+        like `planning`'s `instant_failure_streak` and `worker`'s
+        `no_verdict_yet` -- requirement A, #72: the iteration itself was
+        cut short by the engine, not an ordinary rejected verdict, so it
+        must not cost the approach); `review_unjudged_at_budget_end`
+        (-> finishing, i.e. `("tail",)`, when budget/wall clock ran out
+        while still interrupted -- see `_review_unjudged_at_budget_end`);
+        `steering_pending_at_verified` (-> worker, looped in place exactly
+        like the pre-cutover code -- the dispatch loop above never sees
+        this as a state change, because the review phase itself decides
+        when it is done retrying); `verified` (-> finishing, i.e.
+        `("done", "succeeded")`); `rejected_approach_left` (-> replan);
+        `rejected_no_approach_left` (-> finishing, i.e. `("tail",)`).
         """
         approach = self._approach
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach)
-        result = await self.run_iteration(
-            "review", extra=self._review_extra_context())
+        result = await self._run_review_iteration(approach)
+        if result is None:
+            return self._review_unjudged_at_budget_end(approach)
         verified, _payload, _errors = self._review_verdict(result)
         while verified and self.run.pending_steering():
             # Refuse to let a VERIFIED verdict make the run terminal while
@@ -3248,8 +3326,9 @@ class LoopSupervisor:
                 break
             await self._gate()
             self.run.emit("phase", phase="review", approach=approach)
-            result = await self.run_iteration(
-                "review", extra=self._review_extra_context())
+            result = await self._run_review_iteration(approach)
+            if result is None:
+                return self._review_unjudged_at_budget_end(approach)
             verified, _payload, _errors = self._review_verdict(result)
         if verified and not self.run.pending_steering():
             self._advance("review", "finishing", "verified")

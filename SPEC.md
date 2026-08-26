@@ -655,6 +655,7 @@ may start over, not how much work it may do.
 | `planning` produced no tasks | no | no |
 | three consecutive worker iterations changed nothing (stagnation guard) | yes | no |
 | `review` rejected it | yes | yes |
+| `review` itself was cut short by the engine, with no budget/wall clock left to re-ask (`review_unjudged_at_budget_end`, v0.10 requirement A, #72) | no | no |
 
 Archiving is `_archive_approach()`: copy `tasks.json`, `notes.md` and
 `review-findings.md` into `approaches/NN/`. The next approach starts from a
@@ -670,6 +671,22 @@ approach. `state.prd_path()` is the single decision of which file *is* the run's
 PRD — the composite when it exists, the original otherwise — shared by the
 prompt builder and every PRD reader, so the next approach plans against the
 accumulated history rather than the original text alone.
+
+**An interrupted review is not a rejection (v0.10 requirement A, #72).**
+`LoopSupervisor._review_interrupted()` reads the `IterationResult` itself --
+`interrupted`, `timed_out`, `no_traffic_timeout`, or a non-`0`/non-`None`
+`exit_code` -- to tell "the engine cut this attempt short" apart from "the
+iteration ran to completion and replied with nothing `_review_verdict` could
+parse"; only the former is exempt from the ordinary rejected-verdict path.
+With budget and wall clock left, `_run_review_iteration()` self-loops in
+place on the `review_interrupted` edge and re-asks at no cost to the
+approach — the same shape as `planning`'s `instant_failure_streak` and
+`worker`'s `no_verdict_yet`. With none left, `_step_review` advances straight
+to `finishing` on `review_unjudged_at_budget_end` (see the table above): no
+archive, no `review rejected approach N` log line, no composite PRD, and the
+approach counter does not move. This closes the incident recorded at
+`selfdev-v09-fsm-loop` iteration 183, where the clock cutting a review
+attempt short was scored as review's own judgement.
 
 ### 4.3 Sentinels and completion
 

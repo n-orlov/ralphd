@@ -770,7 +770,23 @@ the legacy vigilant-sidecar migration losing a whole approach's verifications.
 Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
 `N` or `O`.
 
-- ⏳ **A. An interrupted review is not a rejection (#72).** Not yet landed.
+- ✅ **A. An interrupted review is not a rejection (#72).** `_step_review` now
+  discriminates the engine's own cutoff (`interrupted`/`timed_out`/
+  `no_traffic_timeout`/a non-`0`/non-`None` exit code -- `LoopSupervisor.
+  _review_interrupted`) from an ordinary iteration that ran to completion and
+  merely replied with nothing parseable. With budget and wall clock left it
+  self-loops in place (`_run_review_iteration`, the same shape as `planning`'s
+  `instant_failure_streak` and `worker`'s `no_verdict_yet`) and re-asks at no
+  cost to the approach; with none left it advances straight to `finishing` on
+  the new `review_unjudged_at_budget_end` edge (`_review_unjudged_at_budget_end`)
+  without archiving the approach, without a `review rejected approach N` log
+  line, and without writing a composite PRD. `_review_verdict`'s existing
+  semantics for a completed iteration with an absent/malformed payload are
+  unchanged. `transitions.TABLE`'s two new edges (`review_interrupted`,
+  `review_unjudged_at_budget_end`) were declared in task 002; this task wires
+  the behaviour. A named regression test reproduces `selfdev-v09-fsm-loop`
+  iteration 183 exactly, and a paired mutation test proves the discrimination
+  actually matters.
 - ⏳ **B. A run that has earned `COMPLETE` does not lose it to the clock (#72).**
   Not yet landed.
 - ⏳ **C. The finishing tail gets time it cannot be robbed of (#72).** Not yet
