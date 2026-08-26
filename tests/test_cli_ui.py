@@ -89,8 +89,12 @@ def ui(tmp_path):
 
     def make(registry, env: dict | None = None):
         s = UiServer(registry, env=env)
-        s.wait_ready()
         servers.append(s)
+        try:
+            s.wait_ready()
+        except Exception:
+            s.stop()
+            raise
         return s
 
     yield make

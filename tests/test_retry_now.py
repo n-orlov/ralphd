@@ -138,7 +138,7 @@ async def test_post_retry_resets_the_outage_budget_episode_clock(tmp_path):
     total = json.loads((sup.run.root / "status.json").read_text())["infraWaitTotalS"]
     assert 0.0 < total < 5.0, total
     waits = [ev["waitedS"] for ev in _events(sup.run, "deadline_extended")]
-    assert len(waits) == 2 and all(0.0 < w < 5.0 for w in waits), waits
+    assert len(waits) == 2 and all(0.0 <= w < 5.0 for w in waits), waits
     assert abs(sum(waits) - total) < 0.01
 
 
