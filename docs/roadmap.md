@@ -618,6 +618,143 @@ environment-independent.
   v0.8's own task 043) was the first instance; these are the second, third and
   fourth. A suite figure is a claim about an environment, so it now names one
 
+## v0.9 — the loop's rules become data, and only the harness writes state
+
+Full PRD:
+[`docs/prds/v0.9-declarative-loop.md`](prds/v0.9-declarative-loop.md).
+v0.8 decided whether a run can be trusted at the moment a human touches it; this
+wave made the machine itself readable — the transition space becomes a declared
+table, and the authority for task state moves from the agent to the harness.
+Requirement letters below are the PRD's; it does not use J, K or N. The run that
+landed it (`selfdev-v09-fsm-loop`) reached its deadline mid-review with 20 of its
+23 tasks completed **and verified** and three deliberately skipped, so this block
+names what did not land as plainly as what did.
+
+Phase 1 — the boundary every later claim rests on:
+
+- ✅ **A. An iteration cannot reach its own supervisor's control plane (#62).**
+  v0.7's #48 closed the signal half (real and saved uid `0`, so no `pkill`
+  reaches the engine); this closes the HTTP half. The surface is split so an
+  iteration's environment reaches only the observation routes, and every mutating
+  route — `/abort`, `/interrupt`, `/pause`, `/resume`, `/retry`, `/shutdown`,
+  `PATCH /config/budget` and every `PUT`/`DELETE` under `/config` — is asserted
+  refused **per route**, so a route later added to the wrong listener fails the
+  check instead of passing by omission, with a docker-tier twin proving it in a
+  real sibling container; the shape was chosen and argued in
+  `artifacts/reports/requirement-a-boundary-design.md`, and `--api-token`'s
+  documented purpose is corrected: it is a network control and was never a
+  container boundary. **Not finished:** `SPEC.md`'s prompt-resolution prose and
+  its `PUT /config/prompts/{name}` row still describe that surface as freely
+  API-writable rather than host-only — a doc-only gap, filed and left open as
+  **#70**
+
+Phase 2 — the machine becomes data:
+
+- ✅ **B. The transition space is a declared table the engine executes (#60
+  pillar 2).** `src/ralphd/engine/transitions.py` holds `TABLE` as data over
+  `ALL_STATES`, with vigilant and non-vigilant as two variants of one table
+  (`VIGILANT_DELTA`) rather than two implicit paths through one function;
+  `loop.py`'s imperative core is replaced by `_step_*` dispatch through an
+  executor that refuses a transition the table does not declare; and
+  `docs/architecture.md` carries the table *rendered from the code* by
+  `scripts/render_transition_table.py`, with a drift test rather than a
+  hand-maintained copy
+- ✅ **C. A hat reports; the harness writes (#60 pillar 1).**
+  `src/ralphd/engine/contracts.py` declares `HAT_SCHEMAS` for all five hats and
+  validates every payload against it; `contract_enforcement.py` and
+  `plan_ingestion.py` turn a planning answer into the task record that the
+  harness itself writes. `planning.md`, `worker.md`, `task-verify.md`,
+  `review.md` and `reflect.md` all moved from "write the state file" to "report
+  through your contract", pinned by a cross-prompt check that fails any prompt
+  still instructing an agent to edit `tasks.json`, and the standing-rules block
+  is harness-pinned rather than trusted to survive a rewrite
+- ✅ **D. Task state is unwritable by the agent where the kernel can say so (#60
+  pillar 1).** `engine/privsep.py` gains `root_for_write()` /
+  `write_root_owned_json()`, `RunDir.write_tasks()` is the sole writer and goes
+  through it, and a docker-tier test proves the agent uid really takes
+  `EACCES`/`EPERM` on the real file inside a real sibling container. The
+  regression the obvious fix invites is covered too: `ralphctl
+  rm`/`repair`/`tasks`, the hub reader and `DELETE /api/runs/<id>` are all proven
+  still operable — and still able to delete the run dir — against a root-owned
+  record
+- ✅ **E. Transitions are deterministic first, and the router answers one question
+  (#60 pillar 2).** `engine/router.py` is consulted only where the table declares
+  a routed edge, answers against `ROUTER_SCHEMA`, has its own `router_model`,
+  retry and timeout config keys, falls back deterministically
+  (`ROUTER_FALLBACK`), and its cost is accounted as its own phase. **Not
+  finished:** `SPEC.md`, `docs/architecture.md` and `docs/api.md` still never
+  name `router_model` — the other half of **#70**
+- ✅ **F. Task status is a mini-FSM the harness advances at transitions (#60
+  pillar 3).** `awaiting-validation` and `validated` join the status vocabulary,
+  every value has a declared edge behind it (`TASK_STATUS_TABLE`), the
+  `vigilant-verified.json` sidecar is folded into the task record itself, a dead
+  dependency is derived rather than guessed, and the 0.25 s `tasks.json` poll is
+  retired — with `artifacts/reports/poll-retirement.md` recording what carries
+  liveness in its place
+- ⏳ **G. Nothing the last eight waves learned is lost in the rewrite.** The half
+  that landed: `artifacts/reports/conformance-ledger.md` exists with a row per
+  incident-derived guard, and its `LoopSupervisor`-importing module count is
+  drift-tested against the code rather than retyped. The half that did not: 25 of
+  its rows still read `TODO` in the "new expression" column, and it carries no
+  before/after collected-test-count section. Task 108 was **skipped** under the
+  run's deadline rule and the remaining design filed as **#69** — the one
+  requirement this wave leaves substantively incomplete rather than doc-gapped
+
+Phase 3 — the two incidents that bought this wave:
+
+- ✅ **H. A correct refusal is not stagnation, and an impossible task is caught at
+  plan time (#63).** A worker can report `unsatisfiable` with a reason through
+  its contract; the harness records it, which makes it a *state change* and
+  therefore progress rather than silence, and the table routes to a targeted
+  replan of that one task while keeping the approach. A genuinely silent hat — no
+  report, no state change — still fails the approach after three, pinned in the
+  same suite so this cannot become an escape hatch from the stagnation guard.
+  The plan-time lint rejects a task gated on the run's own terminal state,
+  fixtured on v0.8 task 042's real text: the regression it exists for
+- ✅ **I. A structural wall stops costing every remaining approach (#61).** An
+  approach's blocker signature is persisted to `status.json`
+  (`blockerSignatures`), so it survives the approach boundary — nothing did
+  before — and a successor that stagnates on a *matching* signature ends the run
+  terminally with the blocker text in `reason` instead of consuming a third
+  approach, while a *different* wall keeps every remaining approach. Both
+  directions are driven against the real engine binary, and the pre-existing
+  infra-outage degraded path is untouched. Operator steering then found the
+  adjacent defect and it was fixed forward rather than filed: a bare aborted
+  stream is now classified by *shape* rather than by a duration bound, and an
+  interrupted iteration no longer counts toward the stagnation window, because an
+  interrupted iteration did no work
+
+Phase 4 — close the loop:
+
+- ✅ **L. Close this wave's issues, from inside the run.** All four issues this
+  wave owns — #61, #62, #63 and #66 — closed over the GitHub REST API, 4 in all,
+  no hedged closures: a comment generated from that issue's own
+  `artifacts/reports/issue-traceability.md` section posted before the state
+  change, closed, then re-read with a fresh `GET`; every comment, status and
+  resulting state recorded in `artifacts/reports/issue-closure.md`'s v0.9
+  section. Left open deliberately: **#60**, which is five pillars where this wave
+  lands three plus the boundary — it carries a comment naming, pillar by pillar,
+  what landed and what did not, and waits for the next wave
+- ✅ **M. Your predecessor's row, and this wave's (fact 12).**
+  `docs/prds/README.md` carries `selfdev-v08-auditable`'s settled row —
+  `succeeded` / `verified`, 119 iterations, 249.6M tokens, ~$105.23 derived, the
+  `+` snapshot markers gone — with prose recording that its approach 1 completed
+  42 of 43 tasks and that the 43rd was #63's impossible task; and this wave's own
+  PRD is committed byte-identical to the job's `prd.md`, with its own index row,
+  early. That row is now settled by the same rule, the run having ended
+- ✅ **O. Docs, SPEC, the roadmap and the version bump.** `SPEC.md` gained the
+  transition table and its two variants, the response-contract vocabulary, the
+  task-status lifecycle, who owns task state and what that means for
+  hand-editing, the router and its cost accounting, and requirement A's boundary;
+  `docs/architecture.md` gained the rendered table and the liveness story after
+  the poll retired; `docs/api.md` and `docs/cli.md` followed the boundary. This
+  block and the `0.9.0` bump land **last, and by operator hand**: task 110 was
+  `skipped` under the run's deadline rule — deferred by the clock, not by
+  decision — and filed as **#71**, which the commit carrying this block closes.
+  `docs/architecture.md`'s own "as shipped in" status line deliberately stays a
+  wave behind until #70's corrections land, rather than claiming a currency the
+  run itself denies
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
