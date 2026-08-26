@@ -162,6 +162,64 @@ fronts. Key rotation mid-run: re-resolve the profile on the host (`ralphctl
 llm show gateway` prints it redacted) and push the fresh key with
 `PUT /config/llm`.
 
+### Worked cross-family example: one gateway, two model families, one bearer token
+
+`pi.providers` is a map, so nothing above is limited to one provider per profile.
+This ships as `examples/llm-profiles/aigw-cross-family.yaml` and is the profile
+#60 pillar 4's "multi-provider auth stays a one-profile-per-run model" claim rests
+on: it was verified against a live AIGW-style gateway that fronts a Bedrock-shaped
+Anthropic route (`api: bedrock-converse-stream`) and an OpenAI-shaped route
+(`api: openai-responses`) behind the **same bearer token** (see
+`docs/prds/v0.11-a-model-per-hat.md`, "The gateway question is already answered —
+cross-family is routable today").
+
+```yaml
+# examples/llm-profiles/aigw-cross-family.yaml
+description: one gateway fronting a Bedrock-shaped Anthropic route and an OpenAI-shaped route, one bearer token
+model: amazon-bedrock/eu.anthropic.claude-opus-5
+env:
+  AIGW_BEARER_TOKEN: ${env:AIGW_BEARER_TOKEN}
+pi:
+  providers:
+    amazon-bedrock:
+      baseUrl: https://aigw.example.com/api/bedrock
+      api: bedrock-converse-stream
+      apiKey: ${env:AIGW_BEARER_TOKEN}
+      models:
+        - id: eu.anthropic.claude-opus-5
+        - id: eu.anthropic.claude-sonnet-5
+    aigw-openai:
+      baseUrl: https://aigw.example.com/api/openai/v1
+      api: openai-responses
+      apiKey: ${env:AIGW_BEARER_TOKEN}
+      models:
+        - id: openai.gpt-5.6-sol
+        - id: openai.gpt-5.6-luna
+        - id: openai.gpt-5.6-terra
+```
+
+Both `pi.providers` entries resolve their `apiKey` from the exact same `env:`
+entry: reaching a second model family through this ONE profile needed no
+profile-format change, no second `--llm` on `start`, and no extra auth
+plumbing — it is a `pi.providers` map with a second key, same as any other
+multi-model profile. **Multi-provider auth stays one profile per run.**
+
+With that one profile started (`--llm aigw-cross-family`), the per-hat table
+(`docs/cli.md`, "Per-hat model table") can now configure an Anthropic planner
+and worker verified by a model from the *other* family entirely — #60 pillar
+4's own acceptance configuration:
+
+```yaml
+# job.yaml (or --model-for HAT=REF / a --template / <registry>/config.yaml)
+models:
+  planning: amazon-bedrock/eu.anthropic.claude-opus-5
+  worker:   amazon-bedrock/eu.anthropic.claude-sonnet-5
+  verify:   aigw-openai/openai.gpt-5.6-terra     # cross-family inspector
+```
+
+Every ref on the right resolves through the single `aigw-cross-family` profile
+above — no second profile, no second bearer token, no per-provider auth wiring.
+
 ## Mid-run rotation
 
 `PUT /config/llm` replaces the container's LLM env

@@ -41,6 +41,13 @@ def test_both_example_files_exist():
     assert (EXAMPLES_DIR / "gateway.yaml").is_file()
 
 
+def test_cross_family_example_file_exists():
+    # Task 024 (#60 pillar 4 requirement N): the worked cross-family example
+    # (one profile, two `pi.providers` families, one bearer token) docs/
+    # llm-profiles.md now walks through.
+    assert (EXAMPLES_DIR / "aigw-cross-family.yaml").is_file()
+
+
 def test_bedrock_example_matches_docs_shape():
     doc = yaml.safe_load((EXAMPLES_DIR / "bedrock.yaml").read_text())
     assert doc["model"] == "amazon-bedrock/anthropic.claude-opus-5"
@@ -62,6 +69,44 @@ def test_gateway_example_matches_docs_shape():
     assert pi["apiKey"] == "${env:GW_API_KEY}"
     ids = [m["id"] for m in pi["models"]]
     assert ids == ["big-model", "small-model"]
+
+
+def test_cross_family_example_matches_docs_shape():
+    doc = yaml.safe_load((EXAMPLES_DIR / "aigw-cross-family.yaml").read_text())
+    assert doc["model"] == "amazon-bedrock/eu.anthropic.claude-opus-5"
+    assert doc["env"]["AIGW_BEARER_TOKEN"] == "${env:AIGW_BEARER_TOKEN}"
+    providers = doc["pi"]["providers"]
+    bedrock = providers["amazon-bedrock"]
+    assert bedrock["api"] == "bedrock-converse-stream"
+    assert bedrock["apiKey"] == "${env:AIGW_BEARER_TOKEN}"
+    bedrock_ids = [m["id"] for m in bedrock["models"]]
+    assert bedrock_ids == ["eu.anthropic.claude-opus-5", "eu.anthropic.claude-sonnet-5"]
+    openai = providers["aigw-openai"]
+    assert openai["api"] == "openai-responses"
+    # Both providers resolve their key from the SAME env var: one bearer
+    # token reaches both model families (#60 pillar 4's one-profile-per-run
+    # claim), never a second secret for the second provider.
+    assert openai["apiKey"] == "${env:AIGW_BEARER_TOKEN}"
+    openai_ids = [m["id"] for m in openai["models"]]
+    assert openai_ids == [
+        "openai.gpt-5.6-sol", "openai.gpt-5.6-luna", "openai.gpt-5.6-terra",
+    ]
+
+
+def test_cross_family_example_resolves_given_placeholder_env(tmp_path, monkeypatch):
+    reg = _registry_with(tmp_path, ["aigw-cross-family.yaml"])
+    monkeypatch.setenv("AIGW_BEARER_TOKEN", "placeholder-bearer-token")
+    resolved = llm_profiles.resolve_profile("aigw-cross-family", reg)
+    assert resolved["env"] == {"AIGW_BEARER_TOKEN": "placeholder-bearer-token"}
+    assert resolved["model"] == "amazon-bedrock/eu.anthropic.claude-opus-5"
+    providers = resolved["pi"]["providers"]
+    # Same resolved secret value reached both providers from the one `env:`
+    # entry -- proves the one-bearer-token-two-families claim end to end,
+    # not just in the unresolved YAML.
+    assert providers["amazon-bedrock"]["apiKey"] == "placeholder-bearer-token"
+    assert providers["aigw-openai"]["apiKey"] == "placeholder-bearer-token"
+    assert providers["amazon-bedrock"]["api"] == "bedrock-converse-stream"
+    assert providers["aigw-openai"]["api"] == "openai-responses"
 
 
 def test_bedrock_example_resolves_given_placeholder_env(tmp_path, monkeypatch):
@@ -107,7 +152,7 @@ def test_gateway_example_resolves_given_stubbed_cmd_and_placeholder_env(tmp_path
     assert [m["id"] for m in pi["models"]] == ["big-model", "small-model"]
 
 
-@pytest.mark.parametrize("fn", ["bedrock.yaml", "gateway.yaml"])
+@pytest.mark.parametrize("fn", ["bedrock.yaml", "gateway.yaml", "aigw-cross-family.yaml"])
 def test_example_has_no_real_endpoints_or_org_specific_values(fn):
     text = (EXAMPLES_DIR / fn).read_text()
     lower = text.lower()

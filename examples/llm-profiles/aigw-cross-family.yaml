@@ -1,0 +1,49 @@
+# examples/llm-profiles/aigw-cross-family.yaml
+#
+# One AI gateway, two model families, one bearer token. This is the shape
+# #60 pillar 4's "multi-provider auth stays a one-profile-per-run model"
+# claim rests on: `pi.providers` is a map, so a Bedrock-shaped Anthropic
+# route and an OpenAI-shaped route can live in the SAME profile under the
+# SAME `${env:AIGW_BEARER_TOKEN}` -- reaching a second model family needs no
+# profile-format change, no second `--llm`, and no extra auth plumbing.
+# Copy this file to ~/.ralphd/llm-profiles/aigw-cross-family.yaml (or any
+# other name) and use `--llm aigw-cross-family` on `ralphctl start`.
+#
+# Verified against a live AIGW-style gateway while writing this profile's
+# PRD (docs/prds/v0.11-a-model-per-hat.md, "The gateway question is already
+# answered — cross-family is routable today"): both provider keys below
+# answered with the one bearer token.
+description: one gateway fronting a Bedrock-shaped Anthropic route and an OpenAI-shaped route, one bearer token
+model: amazon-bedrock/eu.anthropic.claude-opus-5
+env:
+  AIGW_BEARER_TOKEN: ${env:AIGW_BEARER_TOKEN}
+pi:
+  providers:
+    amazon-bedrock:
+      baseUrl: https://aigw.example.com/api/bedrock
+      api: bedrock-converse-stream
+      apiKey: ${env:AIGW_BEARER_TOKEN}
+      models:
+        - id: eu.anthropic.claude-opus-5
+        - id: eu.anthropic.claude-sonnet-5
+    aigw-openai:
+      baseUrl: https://aigw.example.com/api/openai/v1
+      api: openai-responses
+      apiKey: ${env:AIGW_BEARER_TOKEN}
+      models:
+        - id: openai.gpt-5.6-sol
+        - id: openai.gpt-5.6-luna
+        - id: openai.gpt-5.6-terra
+
+# The per-hat worked example this profile exists to make possible (#60
+# pillar 4 requirement A's acceptance configuration: an Anthropic planner
+# and worker, verified by a different model family entirely). This table is
+# NOT part of the profile format -- it lands in the RUN's job.yaml via
+# `ralphctl start --model-for HAT=REF` (repeatable), a `--template`, or
+# `<registry>/config.yaml` (see docs/cli.md, "Per-hat model table"), and
+# every ref below resolves through the ONE profile above:
+#
+# models:
+#   planning: amazon-bedrock/eu.anthropic.claude-opus-5
+#   worker:   amazon-bedrock/eu.anthropic.claude-sonnet-5
+#   verify:   aigw-openai/openai.gpt-5.6-terra     # cross-family inspector
