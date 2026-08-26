@@ -31,7 +31,7 @@ that run's final `status.json`, which is why the marker is what the checks in
 | `selfdev-v06-release` | [v0.6-first-release.md](v0.6-first-release.md) | succeeded / verified — 54 of 55 tasks completed, 1 skipped | 145 | 332.1M | unavailable |
 | `selfdev-v07-unattended` | [v0.7-trustworthy-unattended.md](v0.7-trustworthy-unattended.md) | aborted / unverified — 46 of 47 tasks completed | 138 | 278.1M | ~$323.62 derived |
 | `selfdev-v08-auditable` | [v0.8-auditable-interruptible.md](v0.8-auditable-interruptible.md) | succeeded / verified — approach 1: 42 of 43 tasks completed (archived `approaches/01`); approach 2: 8 of 8 tasks completed | 119 | 249.6M | ~$105.23 derived |
-| `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | still running / 18+ of 23 tasks completed (3 skipped-with-issue, 1 pending, 1 in-progress) | 120+ | 474.2M+ | ~$174.26+ derived |
+| `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | **failed** / unverified — 20 of 23 tasks completed and verified, 3 skipped-with-issue; the terminal verdict is a deadline artifact (#72) | 126 | 482.6M | ~$179.71 derived |
 
 Notes worth keeping with the documents:
 
@@ -138,11 +138,37 @@ Notes worth keeping with the documents:
   finished work. The outcome cell's task tally is approach 2's own plan, not
   approach 1's; the iteration/token/cost cells are the run's cumulative
   totals across both approaches, read from this run's own final `status.json`.
-- **`v0.9-declarative-loop.md`'s row is a live snapshot** — the `+` marker is
-  on because a run cannot count the iterations that go on to document and
-  verify it. This is `selfdev-v08-auditable`'s heir: it inherits that run's
-  guards and, per requirement M, wrote the settled row above from that run's
-  own final record rather than leaving it as the snapshot it landed with.
+- **`v0.9-declarative-loop.md`'s row is now that run's settled record**, not
+  the live snapshot it wore while it was writing it: the run ended `failed` /
+  `unverified` at `2026-08-26T06:56:55Z`, 126 iterations charged against its
+  budget (185 raw iteration slots the log holds — the 59-slot gap is attempts
+  classified infrastructure faults, retried and refunded rather than charged,
+  `iterationsUsed`, the same #32 mechanism v0.6's, v0.7's and v0.8's rows
+  explained, and 1002s of wall clock went on waiting those outages out),
+  482.6M tokens, and a `derived` cost of ~$179.71: the gateway reported
+  `costUSD: 0` beside those billed tokens, which the shipped classifier calls
+  unknown (#14, v0.6), and the host-side AWS Bedrock price table derives
+  ≈ $179.71 from the same recorded counters — an estimate at that table's
+  rates, not money any provider quoted. It ended on approach 4 of a possible 8
+  (`usage.byApproach`: 1 $0.95, 2 $91.92, 3 $85.72, 4 $1.11 — approach 2
+  carried the wave).
+  **The terminal `failed` / `unverified` is an artifact of the deadline, not a
+  judgement on the work (#72).** All 20 of the plan's 23 tasks that completed
+  were also *verified*; the other three (108, 109, 110) are `skipped` under the
+  run's own deadline rule and each was filed rather than dropped — #69 (G's
+  conformance-ledger table left incomplete), #70 (A's and E's doc-only gaps),
+  #71 (this wave's own roadmap block and version bump). The run reached
+  COMPLETE and entered review; `deadlineAt` fired 3m34s into that review
+  iteration, and the engine read the interrupted iteration's missing verdict as
+  a substantive rejection — archiving approach 3, replanning into approach 4,
+  which the same deadline ended at once. That is #72, filed after the fact; the
+  row states the engine's own terminal words because rewriting them would hide
+  the defect, exactly as with v0.6's inflated iteration cell. This is
+  `selfdev-v08-auditable`'s heir: it inherits that run's guards and, per
+  requirement M, wrote the settled row above from that run's own final record
+  rather than leaving it as the snapshot it landed with — this row is that
+  courtesy returned by hand, alongside requirement O's roadmap block and
+  `0.9.0` bump (`8ec5eee`).
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
