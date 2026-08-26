@@ -148,9 +148,12 @@ def test_task_status_labels_render_awaiting_validation_and_validated():
     counts = {"total": 2, "completed": 0, "awaitingValidation": 1, "validated": 1}
     rendered = state.format_task_counts(counts)
     assert "1 awaiting-validation" in rendered
-    # `validated` has no hyphen to spell out -- TASK_STATUS_LABELS need not
-    # (and does not) carry an entry for it; it renders as the raw word.
-    assert "1 validated" in rendered
+    # Task 018 (#77/#78): `validated` is one of `TASK_COMPLETION_STATUSES`,
+    # so it is folded into the leading `x/2 completed` numerator rather than
+    # said again in the parenthesised remainder -- printing both would make
+    # the parenthesised counts stop adding up to `total`.
+    assert rendered == "1/2 completed (1 awaiting-validation)"
+    assert "1 validated" not in rendered
 
 
 def test_format_task_status_renders_the_two_new_statuses_bare():

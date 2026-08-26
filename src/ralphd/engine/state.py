@@ -2257,11 +2257,16 @@ def format_task_counts(counts: dict) -> str:
     if not counts:
         return NO_TASKS
     total = counts.get("total", 0)
-    completed = counts.get("completed", 0)
+    # Task 018 (#77/#78): the leading number is the SAME numerator
+    # `format_task_fraction` uses -- every `TASK_COMPLETION_STATUSES` key
+    # (`completed`, `validated`, `skipped`), not just the literal
+    # `completed` -- so a fully-validated vigilant plan reads `17/17
+    # completed`, not `0/17 completed (17 validated)`.
+    completed = sum(counts.get(key, 0) for key in TASK_COMPLETION_STATUSES)
     kinds_known = _failed_kinds_known(counts)
     others = []
     for key, value in counts.items():
-        if key in ("total", "completed") or not value:
+        if key in ("total",) or key in TASK_COMPLETION_STATUSES or not value:
             continue
         # Task 025 (#33): with the kinds known, `failed` is said twice over by
         # its own sub-counts -- printing both would make the parenthesised
@@ -2287,7 +2292,12 @@ def format_task_fraction(counts: dict) -> str:
     """
     try:
         total = int(counts.get("total") or 0)
-        completed = int(counts.get("completed") or 0)
+        # Task 018 (#77/#78): numerator is every `TASK_COMPLETION_STATUSES`
+        # key summed, not just `completed` -- a fully-validated vigilant
+        # plan (all `validated`, none literally `completed`) must read
+        # `17/17`, not `0/17`.
+        completed = sum(
+            int(counts.get(key) or 0) for key in TASK_COMPLETION_STATUSES)
     except (TypeError, ValueError, AttributeError):
         return ""
     if total <= 0:

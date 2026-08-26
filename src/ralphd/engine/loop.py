@@ -3708,11 +3708,17 @@ class LoopSupervisor:
 
     def _all_tasks_completed(self) -> bool:
         """True iff tasks.json exists, is non-empty, and every task's
-        `status` is `completed`. Task 002's grace-review gate: an empty or
-        missing tasks list (e.g. planning never ran/produced nothing) must
-        never be treated as "all done"."""
+        `status` is a vigilant-or-not TERMINAL-completion status
+        (`state.TASK_COMPLETION_STATUSES` -- `completed`, `validated` or
+        `skipped`), not just the literal `completed`. Task 002's grace-review
+        gate: an empty or missing tasks list (e.g. planning never ran/
+        produced nothing) must never be treated as "all done". Task 018
+        (#77/#78): without this, a vigilant run whose plan is entirely
+        `validated` could never reach this gate at all -- `completed` is a
+        status only the non-vigilant table ever assigns."""
         tasks = self.run.read_tasks().get("tasks") or []
-        return bool(tasks) and all(t.get("status") == "completed" for t in tasks)
+        return bool(tasks) and all(
+            t.get("status") in state.TASK_COMPLETION_STATUSES for t in tasks)
 
     async def _maybe_grace_review(self, approach: int) -> bool:
         """Task 002: invariant -- a job whose tasks are ALL completed by the
