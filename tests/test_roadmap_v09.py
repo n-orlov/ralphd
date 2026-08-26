@@ -1,38 +1,33 @@
-"""v0.9 requirement O (#71): `docs/roadmap.md`'s v0.9 block and the bump.
+"""Task 001 (v0.10 requirement I): `docs/roadmap.md`'s v0.9 block and the bump.
 
-`tests/test_roadmap_v08.py`'s module for the *current* release, until the next
-wave retargets it the same way this one retargeted v0.8's: pin that module's
-`SERIES` to `(0, 8)` and move the "declared version has a block" half here.
-Two things established by earlier waves stay true:
+Retargeted by v0.10's requirement I, exactly the way v0.9's own requirement O
+retargeted `tests/test_roadmap_v08.py` when v0.9 became current: v0.9 is no
+longer the declared release, so `SERIES` here is **pinned** to `(0, 9)` rather
+than read from `pyproject.toml`, and the "declared version has a block" half
+moved to `tests/test_roadmap_v010.py`. `declared_version()` / `declared_series()`
+stay, used only to assert this block is a *past* milestone -- if they were
+still used to select the block, every check below would grade v0.10's block
+against v0.9's PRD. One thing established by earlier waves stays true here, and
+one moved:
 
-* the roadmap's last milestone and `pyproject.toml`'s declared version are the
-  same fact, so the block for the declared version must exist, must record
-  shipped work, and nothing may claim a milestone *after* it;
-* a block may not claim a wave landed while omitting requirements of that wave.
-  The requirement letters and issue numbers are parsed out of the PRD the block
-  is about (`docs/prds/v0.9-declarative-loop.md`), never retyped here. This
-  PRD's letters run `A-I`, then `L`, `M` and `O` -- it uses neither `J` and `K`
-  (its own "the harness you will measure with" note says why there is no J) nor
-  `N`, so the regex is widened to `A-O` and the parse itself is pinned below.
+* (moved) the roadmap's last milestone and the released version are the same
+  fact, so the block for `pyproject.toml`'s declared version must exist, must
+  record shipped work, and nothing may claim a milestone *after* it. That is
+  `tests/test_roadmap_v010.py`'s business now; the "nothing after" half is
+  filtered out of the two checks here that would otherwise fail on v0.10's own
+  block simply for existing;
+* a block may not claim a wave landed while omitting requirements of that
+  wave. The requirement letters and issue numbers are parsed out of the PRD
+  the block is about (`docs/prds/v0.9-declarative-loop.md`), never retyped
+  here. This PRD's letters run `A-I`, then `L`, `M` and `O` -- it uses neither
+  `J` and `K` (its own "the harness you will measure with" note says why
+  there is no J) nor `N`, so the regex is widened to `A-O` and the parse
+  itself is pinned below.
 
-Where v0.7's and v0.8's modules ended with a `WAVE_VERBS` check, this one does
-not: **v0.9 added no `ralphctl` verb** (requirement A moved the control plane
-without needing one -- `build_parser()`'s choices are unchanged from the
-pre-launch sha). The code-derived half is the engine vocabulary the wave
-introduced instead -- the declared table and its two variants, the per-hat
-contract schemas, the router's model key, the two new task statuses, the
-worker's refusal verdict and the cross-approach blocker signature -- each read
-off the shipped code and then demanded of the block, so the block cannot become
-prose nobody re-reads.
-
-Requirement L (closing this wave's issues from inside the run) is cross-checked
-against the receipt task 113 wrote (`artifacts/reports/issue-closure.md`'s v0.9
-section): the issues the bullet claims closed, the total, and the one it names
-as deliberately left open are all that record's own sets, parsed, never retyped
-here -- so the roadmap cannot claim a closure GitHub does not have. Unlike
-v0.8's wave, this one *does* leave an issue open inside its own scope (#60, five
-pillars of which this wave lands three plus the boundary), so the shape is
-v0.7's requirement Q rather than v0.8's requirement N.
+Everything else in this module -- the coverage check, the vocabulary read off
+the shipped code, and requirement L's cross-check against the closure receipts
+-- is v0.9's own already-landed work and is unaffected by v0.10 existing: it
+stays exactly as task 113 left it.
 
 Every check is paired with a test that mutates the *real* roadmap text into
 wording it replaced (or a wrong version), so a check that stops discriminating
@@ -57,8 +52,8 @@ CLOSURE_WAVE_HEADING = "# Issue closure record — ralphd v0.9"
 
 DEFERRED_HEADING = "## Later / explicitly deferred"
 
-# The milestone this wave ships. Derived, not pinned: this module is about the
-# *declared* version's block, per the docstring above.
+# The milestone this module is about. Pinned, not derived: v0.9 is history now
+# (see the module docstring). `test_roadmap_v010.py` is the current release's.
 SERIES = (0, 9)
 
 
@@ -130,51 +125,51 @@ def _version_block_problems(text: str, series: tuple[int, int]) -> list[str]:
     return problems
 
 
-def test_the_declared_version_is_this_wave_and_both_literals_agree():
-    """The bump half of requirement O: 0.9.0 in `pyproject.toml` and in
-    `src/ralphd/__init__.py` (`test_packaging_metadata.py` owns the general
-    rule; this pins the number this block claims)."""
-    assert declared_series() == SERIES, (
-        f"docs/roadmap.md's v0.9 block is the current milestone, but "
-        f"pyproject.toml declares {declared_version()!r}")
+def _own_block_problems(text: str) -> list[str]:
+    """`_version_block_problems` minus the "nothing after this milestone" half.
+
+    v0.10 exists now, so that half reports `[(0, 10)]` for v0.9 unconditionally
+    and would swamp the two checks that are about *this* block's own content.
+    The "nothing after the declared version" rule is not weakened, only
+    relocated: `tests/test_roadmap_v010.py` enforces it for the declared
+    version, which is the only version it was ever a rule about.
+    """
+    return [p for p in _version_block_problems(text, SERIES)
+            if "milestone blocks after" not in p]
+
+
+def test_the_roadmap_has_a_block_for_this_milestone():
+    """v0.9 shipped, so `## v0.9` must exist and record shipped work. The
+    *declared* version's block is `test_roadmap_v010.py`'s business."""
+    assert not _own_block_problems(roadmap_text())
+
+
+def test_v09_is_a_past_milestone_of_the_declared_version():
+    """The pin above is only honest while 0.9 is behind the release: if the
+    version ever went back to 0.9.x, this module would be the current one
+    again and would have to enforce the no-later-blocks half itself. The two
+    literals are also still checked to agree, since
+    `test_packaging_metadata.py`'s rule and this pin only line up while they
+    do."""
+    assert declared_series() > SERIES, (
+        f"pyproject declares {declared_series()}, so v0.9 is not history: this "
+        "module's SERIES pin (v0.10 requirement I) needs revisiting")
     m = re.search(r'^__version__ = "([^"]+)"', INIT.read_text(), re.MULTILINE)
     assert m and m.group(1) == declared_version()
-
-
-def test_the_roadmap_has_a_block_for_the_declared_version():
-    """The released version and the roadmap's own last milestone are the same
-    thing: 0.9.0 ships v0.9, so `## v0.9` must exist and record shipped work."""
-    assert not _version_block_problems(roadmap_text(), declared_series())
 
 
 def test_the_version_block_check_catches_a_missing_or_unshipped_block():
     text, series = roadmap_text(), SERIES
     heading = f"## v{series[0]}.{series[1]}"
     assert heading in text, "fixture assumption: the block is there to remove"
-    # the pre-#71 roadmap: no block for the version pyproject declares
-    assert _version_block_problems(text.replace(heading, "## Not a milestone"), series)
+    # the pre-#71 roadmap: no block for v0.9 at all
+    assert _own_block_problems(text.replace(heading, "## Not a milestone"))
     # a block that only *plans* the release records nothing shipped
     block = milestone_block(text, series)
-    assert _version_block_problems(text.replace(block, block.replace("✅", "⏳")), series)
-    # a version the roadmap has already moved past (v0.8, with v0.9 after it)
+    assert _own_block_problems(text.replace(block, block.replace("✅", "⏳")))
+    # a version the roadmap has already moved past (v0.8, with v0.9 after it) --
+    # this one is the unfiltered check, since it is exactly what it reports
     assert _version_block_problems(text, (series[0], series[1] - 1))
-
-
-def test_the_pre_v09_section_is_not_read_as_a_milestone_after_the_declared_one():
-    """`## After v0.8 — ...` sits between the v0.8 and v0.9 blocks and is
-    deliberately *not* a milestone heading: it does not start `## v`, so it
-    cannot trip the "nothing after the declared version" half above. It also
-    stays inside the v0.8 block's parsed body, where it belongs -- those three
-    defects are v0.8's claims being corrected, not v0.9's work, and a v0.9
-    coverage check satisfied by v0.8-era text would be exactly the hazard
-    `milestone_block`'s deferred-split already guards against."""
-    text = roadmap_text()
-    assert "## After v0.8" in text, "fixture assumption: the section is there"
-    heads = [(int(a), int(b)) for a, b in
-             re.findall(r"^## v(\d+)\.(\d+)\b", text, re.MULTILINE)]
-    assert max(heads) == SERIES, heads
-    assert "## After v0.8" in (milestone_block(text, (0, 8)) or "")
-    assert "## After v0.8" not in (milestone_block(text, SERIES) or "")
 
 
 # --------------------------------------------------- the block covers the wave
@@ -207,7 +202,7 @@ def test_the_prd_headings_parse_at_all():
 
 
 def test_every_prd_requirement_is_accounted_for_in_the_v09_block():
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
     assert not _coverage_problems(block)
 
@@ -222,7 +217,7 @@ def test_the_block_cites_every_issue_this_wave_names():
     """Every issue this wave's PRD names by letter has to be citable straight
     off the block -- the whole point of the block as an issue -> requirement
     index."""
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     for issues in prd_requirements().values():
         for n in issues:
             assert f"#{n}" in block, f"the v0.9 block does not cite #{n}"
@@ -233,7 +228,7 @@ def test_the_block_names_the_two_gaps_it_left_ticketed():
     to name what did *not* land. #70 (SPEC/docs wording for requirements A and
     E) and #69 (the conformance ledger's own guard rows) are both open, and both
     are named in the block beside the requirement they belong to."""
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert "#70" in block and "#69" in block
     # ...and requirement G is the one marked unfinished rather than shipped.
     g = [p for p in re.split(r"\n(?=- )", block) if "**G." in p]
@@ -295,7 +290,7 @@ def _vocabulary_problems(block: str) -> list[str]:
 
 
 def test_the_block_names_the_vocabulary_the_wave_added():
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
     assert not _vocabulary_problems(block)
 
@@ -325,7 +320,7 @@ def test_the_wave_really_added_no_cli_verb_so_there_is_no_verb_to_demand():
     choices = set(next(iter(verbs.values())).choices)
     # v0.8's own verb is the newest one in the parser.
     assert "amend" in choices
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert not re.search(r"`ralphctl \w+` (?:verb|is new|now)", block or ""), (
         "the v0.9 block advertises a new verb; add WAVE_VERBS and check it "
         "against build_parser() the way test_roadmap_v08.py does")
@@ -431,7 +426,7 @@ def test_the_v09_closure_record_parses_at_all():
 def test_requirement_l_is_shipped_and_says_what_the_receipts_say():
     """Task 113: the bullet may only claim what the closure record shows, and
     the claim is that record's own set rather than a retyped one."""
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
     assert not _requirement_l_problems(block)
 

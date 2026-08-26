@@ -755,6 +755,47 @@ Phase 4 — close the loop:
   wave behind until #70's corrections land, rather than claiming a currency the
   run itself denies
 
+## v0.10 — the clock is not a verdict
+
+Full PRD:
+[`docs/prds/v0.10-clock-is-not-a-verdict.md`](prds/v0.10-clock-is-not-a-verdict.md).
+`selfdev-v09-fsm-loop` finished its work — 20 of 23 tasks completed and
+verified, `COMPLETE` honoured, every commit pushed — and the job deadline fired
+mid-review, 3m34s later. The harness read the interrupted review's silence as a
+rejection and landed the run `failed`/`unverified` anyway: an absence of
+judgement was scored as a judgement against. This wave fixes that, plus the
+rest of v0.9's own ticketed debt (the conformance ledger, two doc gaps, a test
+script that disarms its own isolation) and one more defect the repair uncovered:
+the legacy vigilant-sidecar migration losing a whole approach's verifications.
+Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
+`N` or `O`.
+
+- ⏳ **A. An interrupted review is not a rejection (#72).** Not yet landed.
+- ⏳ **B. A run that has earned `COMPLETE` does not lose it to the clock (#72).**
+  Not yet landed.
+- ⏳ **C. The finishing tail gets time it cannot be robbed of (#72).** Not yet
+  landed.
+- ⏳ **J. A resumed run dir does not lose an approach's verifications (#75).**
+  Not yet landed.
+- ⏳ **D. Complete the conformance ledger (#69).** Not yet landed.
+- ⏳ **E. Close SPEC.md's and docs/architecture.md's remaining gaps (#70).** Not
+  yet landed.
+- ⏳ **F. `host_like_pytest.sh` stops disarming the isolation it depends on
+  (#73, #74).** Not yet landed.
+- ⏳ **G. Nothing the last nine waves learned is lost.** Not yet landed.
+- ⏳ **H. Close this wave's issues, from inside the run.** Not yet landed; #69,
+  #70, #72, #73, #74 and #75 remain open.
+- ✅ **I. Docs, SPEC, the roadmap and the version bump.** Land this one early
+  rather than last — the lesson v0.9's own requirement O paid for, deferred to
+  the tail and lost to the clock. `pyproject.toml` and
+  `src/ralphd/__init__.py` both declare `0.10.0`; `tests/test_roadmap_v09.py`
+  is pinned to `SERIES = (0, 9)` the same way it once pinned
+  `tests/test_roadmap_v08.py`, and `tests/test_roadmap_v010.py` carries the
+  current-release checks forward. Every other requirement in this block is
+  honestly marked ⏳ as of this commit — this bullet does not claim more than
+  its own requirement shipped
+- ⏳ **M. Your predecessor's row, and this wave's.** Not yet landed.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
