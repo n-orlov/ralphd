@@ -550,31 +550,69 @@ function openTaskDialog(t, doc) {
 
 // ------------------------------------------------- iteration detail (#18.1)
 
-// Task 020 (#18.1): a timeline row used to be a dead summary -- phase, model,
-// duration -- and "why did iteration 47 end like that, and what did the agent
-// actually do in it" meant leaving the hub for `ralphctl iteration`/the run
-// dir. Clicking a row now opens that iteration's own story in THE single
-// `openTextDialog`.
+// Task 020 (#18.1, restructured into labelled regions by #81): a timeline
+// row used to be a dead summary -- phase, model, duration -- and "why did
+// iteration 47 end like that, and what did the agent actually do in it"
+// meant leaving the hub for `ralphctl iteration`/the run dir. Clicking a row
+// now opens that iteration's own story as three distinctly LABELLED
+// regions, matching the on-disk layout: outcome (`meta.json`), input
+// (`prompt.md`), logs (`output.jsonl`) -- with OUTCOME FIRST, so an
+// iteration that ended `exitCode: -2, interrupted: true` is readable
+// without scrolling past the transcript.
 //
-// Every string in the dialog was formatted in Python by
-// `state.iteration_summary_lines` + the shared `log_render` renderer and
-// arrives as one `text` blob (ui_server.iteration_view), so the hub cannot
-// word an exit reason, a duration or a token count differently from `ralphctl
-// iteration`, and the transcript is rendered by the same code as the log tail.
+// Every string in each region was formatted in Python -- `outcomeText` is
+// `state.iteration_summary_lines` joined, `promptText` is
+// `state.read_iteration_prompt`, `logsText` is the shared `log_render`
+// renderer's output behind `state.format_iteration_log_header` -- all three
+// arriving in `ui_server.iteration_view`'s payload, the SAME shaping
+// `ralphctl iteration` prints (`state.iteration_detail_text`). app.js only
+// puts each field into its own text node: it cannot word an exit reason, a
+// duration or a token count differently from the CLI, and the transcript is
+// rendered by the same code as the log tail.
 // The endpoint is purely on-disk, so this works for a dead run with no
 // container -- hence no live/snapshot note here (unlike the PRD dialog).
 function iterationTitle(runId, number) {
   return "Iteration #" + String(number) + " — " + String(runId);
 }
 
+// The three region labels, in outcome-first display order. A STRUCTURAL
+// label (which file backs which region), not a derived fact like an exit
+// reason or a cost -- unlike those, it can never drift between `ralphctl
+// iteration` and the hub, so spelling it once here is safe; the words
+// themselves (outcome/input/logs) are `state.ITERATION_REGION_OUTCOME/
+// INPUT/LOGS`'s own vocabulary, task 020's (#81).
+const ITERATION_REGIONS = [
+  { key: "outcome", label: "Outcome (meta.json)", field: "outcomeText" },
+  { key: "input", label: "Input (prompt.md)", field: "promptText" },
+  { key: "logs", label: "Logs (output.jsonl)", field: "logsText" },
+];
+
+function iterationRegion(key, label, text) {
+  return h("section", { class: "iteration-region",
+                        id: "iteration-region-" + key,
+                        "data-iteration-region": key }, [
+    h("h4", { class: "iteration-region-label" }, [label]),
+    h("pre", { class: "dialog-body" }, [String(text == null ? "" : text)]),
+  ]);
+}
+
 async function openIterationDialog(runId, number) {
   const path = `/api/runs/${encodeURIComponent(runId)}/iterations/` +
     encodeURIComponent(String(number));
   const { ok, body } = await getJSON(path);
-  const text = (ok && body && typeof body.text === "string" && body.text)
-    ? body.text
-    : "(failed to load iteration " + String(number) + ")";
-  return openTextDialog(iterationTitle(runId, number), text, null);
+  if (!ok || !body) {
+    return openTextDialog(iterationTitle(runId, number),
+      "(failed to load iteration " + String(number) + ")", null);
+  }
+  const dlg = h("dialog", { id: "text-dialog",
+                           class: "text-dialog iteration-dialog" }, [
+    h("h3", { class: "dialog-title" }, [iterationTitle(runId, number)]),
+    ...ITERATION_REGIONS.map(r => iterationRegion(r.key, r.label, body[r.field])),
+    h("form", { method: "dialog", class: "dialog-close" }, [
+      h("button", { type: "submit" }, ["close"]),
+    ]),
+  ]);
+  return showDialog(dlg);
 }
 
 // --------------------------------------------------- state documents (#18.2)

@@ -17,10 +17,13 @@ from typing import Any, TextIO
 
 from ..log_merge import (
     ITERATION_ATTEMPTS_DIR,
+    OUTPUT_FILENAME,
+    PROMPT_FILENAME,
     iteration_attempt_dirs,
     iteration_dir,
     iteration_numbers,
     iteration_output_path,
+    iteration_prompt_path,
 )
 from . import privsep
 from .faults import explain_fault, matched_signature
@@ -1112,7 +1115,7 @@ TOKEN_LABELS = (("input", "in"), ("output", "out"),
 ITERATION_DERIVED_KEYS = (
     "hasMeta", "startedAtLocal", "endedAtLocal", "durationS", "durationDisplay",
     "durationLabel", "exitReason", "costDisplay", "costStatus", "tokensDisplay",
-    "hasTranscript", "transcriptBytes",
+    "hasTranscript", "transcriptBytes", "hasPrompt", "promptBytes",
 )
 
 # Whether a duration is final or still growing (`ralphctl status`' own words).
@@ -1124,6 +1127,19 @@ DURATION_ELAPSED = "elapsed"
 # row of `None`s would look like recorded facts.
 ITERATION_NO_META_NOTICE = ("!! no readable meta.json for this iteration "
                             "(nothing known but the transcript)")
+
+# Task 020 (#81): the "input" region's one wording for an iteration dir that
+# never got a `prompt.md` (or whose file is blank) -- the `NO_TRANSCRIPT`/
+# `RUN_DOCUMENT_ABSENT` discipline applied a third time, so the region reads
+# like an explained absence rather than a blank box.
+ITERATION_NO_PROMPT_NOTICE = "(no prompt.md recorded for this iteration)"
+
+# Task 020 (#81): the three on-disk faces of one iteration, labelled the SAME
+# one word everywhere (`ralphctl iteration`, the hub's dialog and their shared
+# tests) so a region cannot be named differently on the two surfaces.
+ITERATION_REGION_OUTCOME = "outcome"
+ITERATION_REGION_INPUT = "input"
+ITERATION_REGION_LOGS = "logs"
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -1377,8 +1393,81 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
         size = 0
     detail["transcriptBytes"] = size
     detail["hasTranscript"] = size > 0
+    # Task 020 (#81): the "input" region's own header-only facts (paralleling
+    # `hasTranscript`/`transcriptBytes` just above) -- a stat, never a read, so
+    # a caller that only wants the timeline row does not pay for it.
+    try:
+        psize = iteration_prompt_path(run_root, number).stat().st_size
+    except OSError:
+        psize = 0
+    detail["promptBytes"] = psize
+    detail["hasPrompt"] = psize > 0
     detail["archivedAttempts"] = len(iteration_attempt_dirs(run_root, number))
     return detail
+
+
+def read_iteration_prompt(run_root: Path, number: int) -> str:
+    """One iteration's own prompt as sent to the agent -- task 020's (#81)
+    "input" region.
+
+    Read directly, unlike the transcript: `prompt.md` is plain markdown the
+    ENGINE writes once at the start of the iteration
+    (`engine.loop._run_iteration_once`), not a JSONL stream, so none of
+    `log_merge`/`log_render`'s shaping applies -- this is the ONE place that
+    reads it back, the `iteration_prompt_path` name-owning discipline applied
+    to the read side too.
+
+    An iteration dir with no `prompt.md` (or a blank one) answers with
+    `ITERATION_NO_PROMPT_NOTICE` -- the `NO_TRANSCRIPT`/`RUN_DOCUMENT_ABSENT`
+    discipline applied a third time, so the region says *why* it is empty
+    instead of looking broken.
+    """
+    path = iteration_prompt_path(Path(run_root), number)
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return ITERATION_NO_PROMPT_NOTICE
+    return text if text.strip() else ITERATION_NO_PROMPT_NOTICE
+
+
+def format_iteration_region_header(region: str, filename: str) -> str:
+    """The separator line above one of the three region bodies (task 020,
+    #81) -- `format_iteration_log_header`'s role, generalized to all three
+    regions and worded the SAME everywhere: `ralphctl iteration`, the hub's
+    dialog and their shared tests never invent a second spelling of these
+    words."""
+    return f"=== {region} ({filename}) ==="
+
+
+def iteration_detail_text(detail: dict, *, prompt_text: str | None,
+                          log_lines: list[str] | None) -> list[str]:
+    """The complete, LABELLED story of one iteration as text lines (task 020,
+    #81): outcome (`meta.json`) FIRST -- so an iteration that ended
+    `exitCode: -2, interrupted: true` is readable without scrolling past the
+    transcript -- then input (its prompt) then logs (its transcript).
+
+    `ralphctl iteration` and the hub's dialog (`ui_server.iteration_view`)
+    both build their printed/rendered text by calling this ONE function on the
+    SAME inputs (`iteration_summary_lines(detail)` for the outcome body,
+    `read_iteration_prompt` for the input body, the shared `log_render`
+    output for the logs body), so a region cannot be labelled, ordered or
+    worded differently on the two surfaces.
+
+    `log_lines` is None (not an empty list) exactly when the caller asked for
+    no transcript (`ralphctl iteration --no-log`, `?log=0`) -- the logs
+    region is then OMITTED entirely, the `iteration_view`/`cmd_iteration`
+    rule already applied to the bare `log` key.
+    """
+    lines = [format_iteration_region_header(ITERATION_REGION_OUTCOME, "meta.json"),
+             *iteration_summary_lines(detail), "",
+             format_iteration_region_header(ITERATION_REGION_INPUT, PROMPT_FILENAME),
+             *(prompt_text or ITERATION_NO_PROMPT_NOTICE).splitlines()]
+    if log_lines is not None:
+        lines += ["",
+                  format_iteration_region_header(ITERATION_REGION_LOGS, OUTPUT_FILENAME),
+                  format_iteration_log_header(len(log_lines)),
+                  *log_lines]
+    return lines
 
 
 # ---------------------------------------------------------------------------

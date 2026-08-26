@@ -85,8 +85,10 @@ from ..engine.state import (
     format_provisioning_lines,
     format_run_document_size,
     iteration_detail,
+    iteration_detail_text,
     iteration_summary_lines,
     prd_path,
+    read_iteration_prompt,
     read_tasks_doc,
     run_document,
     run_document_summary_lines,
@@ -457,47 +459,62 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
 def iteration_view(reg: Path, run_id: str, number: int, *,
                    log: bool = True) -> dict | None:
     """One iteration's whole story for the hub's iteration dialog (task 020,
-    #18.1), or None when the run dir holds no such iteration (caller -> 404).
+    #18.1, restructured into labelled regions by #81), or None when the run
+    dir holds no such iteration (caller -> 404).
 
     The payload is `engine.state.iteration_detail` -- the ONE shaping of
     `iterations/NNNN/meta.json`, shared with `ralphctl iteration` (task 019) --
-    plus that iteration's transcript rendered by the SAME server-side renderer
-    the log tail uses (`rendered_log_lines`' `log_render.render_to_lines`), and
-    `text`: the complete dialog body, i.e. `state.iteration_summary_lines`
-    followed by `state.format_iteration_log_header` and the rendered lines.
+    plus:
+
+      `promptText`   this iteration's own `prompt.md`, the "input" region
+                     (`state.read_iteration_prompt`),
+      `outcomeText`  the "outcome" region's body, unlabelled
+                     (`"\n".join(summaryLines)`, `state.iteration_summary_lines`,
+                     unchanged since #18.1),
+      `log`/`logsText` that iteration's transcript, rendered by the SAME
+                     server-side renderer the log tail uses
+                     (`log_render.render_to_lines`) -- the "logs" region, as a
+                     list of lines and as one labelled string respectively,
+      `summaryLines` the same lines `outcomeText` joins, kept for callers
+                     that already read it (task 019),
+      `text`         the complete dialog body, all three regions LABELLED and
+                     in outcome-first order (`state.iteration_detail_text`).
 
     So every string the browser shows was formatted in Python by the same
     functions `ralphctl iteration` prints (the `costDisplay`/`startedAtLocal`
-    discipline, applied to a block of text): app.js only puts `text` into a
-    text node.
+    discipline, applied to a block of text): app.js only puts these fields
+    into text nodes, never re-wording or re-ordering them.
 
     Deliberately NO live-API branch, unlike the log tail / PRD / steering
-    endpoints: `meta.json` and the transcript are written by the engine itself
-    into the run dir, so the on-disk copy is authoritative even while the
-    container is alive (see `state.iteration_detail`) -- there is nothing to
-    fall back FROM, hence no `live` flag and no snapshot notice to render.
-    An empty render still answers with `log_merge.NO_TRANSCRIPT` rather than
-    `[]`, so the dialog says *why* it shows no log.
+    endpoints: `meta.json`, `prompt.md` and the transcript are written by the
+    engine itself into the run dir, so the on-disk copy is authoritative even
+    while the container is alive (see `state.iteration_detail`) -- there is
+    nothing to fall back FROM, hence no `live` flag and no snapshot notice to
+    render. An empty render still answers with `log_merge.NO_TRANSCRIPT`
+    rather than `[]`, so the dialog says *why* it shows no log.
     """
     run_dir = reg / "runs" / run_id
     detail = iteration_detail(run_dir, number)
     if detail is None:
         return None
     summary = iteration_summary_lines(detail)
-    body = list(summary)
+    prompt_text = read_iteration_prompt(run_dir, number)
     lines: list[str] | None = None
     if log:
         raw = "".join(iteration_lines(run_dir, number))
         lines = render_to_lines(raw, tty=False, state=new_render_state()) \
             or [NO_TRANSCRIPT]
-        body += [format_iteration_log_header(len(lines)), *lines]
+    body = iteration_detail_text(detail, prompt_text=prompt_text, log_lines=lines)
     out = {"runId": run_id, **detail, "summaryLines": summary,
-           "text": "\n".join(body)}
-    # `log` is absent (not empty) when the caller asked for no transcript --
-    # an empty list would claim the iteration produced none (`ralphctl
-    # iteration --no-log`'s own rule).
+           "outcomeText": "\n".join(summary),
+           "promptText": prompt_text, "text": "\n".join(body)}
+    # `log`/`logsText` are absent (not empty) when the caller asked for no
+    # transcript -- an empty list/string would claim the iteration produced
+    # none (`ralphctl iteration --no-log`'s own rule, applied to both).
     if lines is not None:
         out["log"] = lines
+        out["logsText"] = "\n".join([format_iteration_log_header(len(lines)),
+                                     *lines])
     return out
 
 

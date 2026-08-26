@@ -73,7 +73,6 @@ from ..engine.state import (
     format_duration,
     format_image,
     format_image_id,
-    format_iteration_log_header,
     format_last_tool_call,
     format_local_time,
     format_provisioning_lines,
@@ -84,8 +83,9 @@ from ..engine.state import (
     image_record_from,
     is_operator_termination,
     iteration_detail,
-    iteration_summary_lines,
+    iteration_detail_text,
     parse_utc,
+    read_iteration_prompt,
     read_operator_termination,
     read_tasks_doc,
     record_operator_termination,
@@ -3429,16 +3429,17 @@ def _iteration_span(numbers: list[int]) -> str:
 
 
 def cmd_iteration(args):
-    """One iteration's own story: phase, model, timestamps, duration, exit
-    reason, that iteration's tokens and cost, and its full transcript
-    (task 019, #18.1 -- the hub's iteration dialog, task 020, renders the same
-    shaped payload).
+    """One iteration's own story, in three LABELLED regions (task 020, #81):
+    outcome (`meta.json`) FIRST -- phase, model, timestamps, duration, exit
+    reason, tokens and cost -- then input (`prompt.md`) then logs (the full
+    transcript). The hub's iteration dialog renders
+    the very same `state.iteration_detail_text` block (task 020, #18.1/#81).
 
-    Purely on-disk: `iterations/NNNN/meta.json` and that iteration's
-    transcript are written
-    by the engine into the run dir, so this works identically for a running job
-    and for one whose container is long gone -- there is nothing to fall back
-    from, hence no `--live`-style notice (see `state.iteration_detail`).
+    Purely on-disk: `iterations/NNNN/meta.json`, `prompt.md` and that
+    iteration's transcript are written by the engine into the run dir, so
+    this works identically for a running job and for one whose container is
+    long gone -- there is nothing to fall back from, hence no `--live`-style
+    notice (see `state.iteration_detail`).
     """
     _require_run(args.run_id)
     root = run_root(args.run_id)
@@ -3454,9 +3455,10 @@ def cmd_iteration(args):
         # events differently; `--json` never gets ANSI (tty=False).
         raw = _snapshot_raw_text(args.run_id, args.number, 0)
         log_lines = _pretty_log_lines(raw, tty and not args.json, 0)
+    prompt_text = read_iteration_prompt(root, args.number)
 
     if args.json:
-        doc = {"runId": args.run_id, **detail}
+        doc = {"runId": args.run_id, **detail, "promptText": prompt_text}
         # `log` is absent (not empty) with --no-log: an empty list would claim
         # the iteration produced no transcript.
         if log_lines is not None:
@@ -3465,16 +3467,13 @@ def cmd_iteration(args):
         return
 
     it_line = f"run:       {args.run_id}"
-    # Task 020 (#18.1): the header block is worded ONCE, in
-    # `state.iteration_summary_lines`, and shown verbatim by the hub's
+    # Task 020/#81: the labelled three-region block is worded ONCE, in
+    # `state.iteration_detail_text`, and shown verbatim by the hub's
     # iteration dialog too -- only this `run:` line (the id the operator
     # typed) belongs to the CLI.
-    lines = [it_line] + iteration_summary_lines(detail)
+    lines = [it_line] + iteration_detail_text(
+        detail, prompt_text=prompt_text, log_lines=log_lines)
     print("\n".join(lines))
-    if log_lines is not None:
-        print(format_iteration_log_header(len(log_lines)))
-        for line in log_lines:
-            print(line)
 
 
 def cmd_fault(args):

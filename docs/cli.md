@@ -1006,6 +1006,7 @@ ralphctl iteration <run-id> <n> [--no-log]
 ```
 $ ralphctl iteration brisk-otter-1408 2
 run:       brisk-otter-1408
+=== outcome (meta.json) ===
 iteration: 2  phase worker  approach 1
 started:   2026-09-02 10:00:00 +0200
 ended:     2026-09-02 10:17:51 +0200
@@ -1015,10 +1016,23 @@ model:     amazon-bedrock/eu.anthropic.claude-opus-5  (gateway id: eu.anthropic.
 tokens:    180,661 total (in 18, out 2,118, cache read 136,849, cache write 41,676)
 cost:      $0.4231
 steering:  001-focus.md
+
+=== input (prompt.md) ===
+…
+
+=== logs (output.jsonl) ===
 --- log (169 lines) ---
 …
 ```
 
+- **Task 020 (#81): three distinctly LABELLED regions, outcome FIRST** --
+  `=== outcome (meta.json) ===`, `=== input (prompt.md) ===`,
+  `=== logs (output.jsonl) ===` -- so an iteration that ended `exitCode: -2,
+  interrupted: true` is readable without scrolling past the transcript. The
+  hub's iteration dialog renders the identical three regions from the same
+  server-side shaping (`state.iteration_detail_text`), so a fact cannot be
+  labelled, ordered or worded differently on the two surfaces
+  (`tests/test_hub_iteration_dialog.py`).
 - **`exit:` is the one-line verdict**, ranked from the raw signals the engine
   records (they overlap — a timed-out iteration also has an exit code): `still
   running` · `interrupted (a signal ended the iteration)` · `no-traffic
@@ -1030,11 +1044,15 @@ steering:  001-focus.md
   instead of it. One definition (`engine.state.format_exit_reason`), shared with
   the hub's iteration dialog.
 - **Purely on-disk, no container needed and no snapshot notice.**
-  `iterations/NNNN/meta.json` is written by the engine itself, atomically, at
-  the start and the end of every iteration, so the run dir is authoritative for
-  a running job and for one whose container is long gone alike. `duration:`
+  `iterations/NNNN/meta.json`, `prompt.md` and the transcript are written by
+  the engine itself, atomically, at the start and the end of every iteration,
+  so the run dir is authoritative for a running job and for one whose
+  container is long gone alike. `duration:`
   therefore says `(elapsed)` instead of `(total)` for an iteration still in
   flight.
+- **The `input` region is that iteration's own `prompt.md`**, read verbatim;
+  an iteration dir that never got one (or whose file is blank) prints `(no
+  prompt.md recorded for this iteration)` instead of a blank region.
 - **Unknown is not zero.** An iteration dir whose `meta.json` is absent or
   truncated (a crash mid-write) prints `!! no readable meta.json for this
   iteration` and `exit: unknown` — not a row of `None`s and not a clean exit —
@@ -1074,19 +1092,23 @@ steering:  001-focus.md
   plus the derived fields the human view shows: `exitReason`, `durationS`,
   `durationDisplay`, `durationLabel`, `startedAtLocal`/`endedAtLocal`,
   `tokensDisplay`, `costDisplay`, `costStatus`, `hasMeta`, `hasTranscript`,
-  `transcriptBytes`, `archivedAttempts`, and `log` (the rendered lines, never ANSI). With
+  `transcriptBytes`, `hasPrompt`, `promptBytes`, `promptText` (the "input"
+  region's raw `prompt.md` body), `archivedAttempts`, and `log` (the
+  rendered lines, never ANSI). With
   `--no-log` the `log` key is **absent** rather than empty — an empty list
   would claim the iteration produced no transcript.
 - Exit codes: `0` · `3` run not found · `1` no such iteration in that run,
   naming the ones on disk (`run X has no iteration 47 (iterations on disk:
   1..12)`), the same code the live `logs --iteration` path returns for the
   engine's 404. Pinned by `tests/test_cli_iteration_detail.py`.
-- The header block below the `run:` line is worded ONCE, by
-  `ralphd.engine.state.iteration_summary_lines`, and the hub's iteration
+- The three region bodies are worded ONCE, by
+  `ralphd.engine.state.iteration_detail_text` (the outcome region is
+  `iteration_summary_lines`, the input region is `read_iteration_prompt`, the
+  logs region is the shared `log_render` output), and the hub's iteration
   dialog (task 020, `GET /api/runs/<id>/iterations/<n>`) shows those very
-  lines — asserted line-for-line by
+  regions — asserted line-for-line by
   `tests/test_hub_iteration_dialog.py`, so the two surfaces cannot grow two
-  vocabularies for the same `meta.json`.
+  vocabularies for the same `meta.json`/`prompt.md`.
 
 ### `ralphctl fault <run-id>`
 
@@ -2917,27 +2939,39 @@ JSON endpoints served under `/api/`:
   On-disk only, with no `live` flag (status.json is the engine's own atomic
   write), like the fault/iteration/document/artifact endpoints. `404` for an
   unknown run id.
-- `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, for the
-  hub's iteration dialog (task 020, issue #18.1): the exact dict `ralphctl
+- `GET /api/runs/<id>/iterations/<n>` — one iteration's whole story, in three
+  distinctly LABELLED regions matching the on-disk layout (task 020, issue
+  #18.1, restructured by #81): outcome (`meta.json`) FIRST, then input
+  (`prompt.md`), then logs (`output.jsonl`) — the exact dict `ralphctl
   iteration` prints from (`ralphd.engine.state.iteration_detail` — `number`,
   `phase`, `approach`, `hasMeta`, `startedAt`/`endedAt` plus their `*Local`
   renderings, `durationS`/`durationDisplay`/`durationLabel`, `exitReason`,
   `tokensDisplay`, `costDisplay`/`costStatus`, `hasTranscript`/
-  `transcriptBytes` and everything else `meta.json` records) plus `runId`,
-  `summaryLines` (that header block as labelled text lines, worded once by
-  `state.iteration_summary_lines`), `log` (the transcript rendered by the same
-  `log_render` pass the log tail above uses) and `text` — the complete dialog
-  body, i.e. `summaryLines` + the `--- log (N lines) ---` separator + `log`.
+  `transcriptBytes`, `hasPrompt`/`promptBytes` and everything else
+  `meta.json` records) plus `runId`,
+  `summaryLines` (the outcome region's body as labelled text lines, worded
+  once by `state.iteration_summary_lines`), `outcomeText` (those same lines
+  joined — exactly what `ralphctl iteration`'s outcome region prints, so a
+  test can diff the two surfaces for zero drift), `promptText` (the input
+  region's raw `prompt.md` body, `state.read_iteration_prompt` — the one
+  wording for an iteration that never got one is `(no prompt.md recorded for
+  this iteration)`), `log` (the transcript rendered by the same `log_render`
+  pass the log tail above uses), `logsText` (that same transcript with its
+  `--- log (N lines) ---` separator, as one string) and `text` — the complete
+  dialog body, all three regions labelled and in outcome-first order
+  (`state.iteration_detail_text`).
   So every string the browser shows was formatted in Python, and the hub
   cannot word an exit reason, duration or token count differently from
   `ralphctl iteration <run> <n>`.
   Unlike the log tail, the PRD and the steering history, this endpoint is
-  **on-disk only and has no `live` flag**: `iterations/NNNN/meta.json` and the
+  **on-disk only and has no `live` flag**: `iterations/NNNN/meta.json`,
+  `prompt.md` and the
   per-iteration transcript are the engine's own atomic writes into the run
   dir, so there is nothing better a live container could say and nothing to
   fall back *from* (the same reasoning as `ralphctl iteration`'s missing
-  snapshot notice). `?log=0` omits the transcript — the `log` key is then
-  *absent*, never an empty list, exactly like `ralphctl iteration --no-log`.
+  snapshot notice). `?log=0` omits the transcript — the `log`/`logsText` keys
+  are then
+  *absent*, never an empty list/string, exactly like `ralphctl iteration --no-log`.
   An iteration with no transcript answers with the single `(no transcript
   yet)` line, and an unknown run id, an unknown iteration number or a
   non-numeric one all answer `404` with a naming `error`.
@@ -3136,14 +3170,20 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   The **iteration timeline** rows are clickable and keyboard-reachable
   (`tabindex=0`, Enter/Space, `.timeline-clickable[role=button]`,
   `data-iteration="<n>"`) and open that iteration's own story in the **same
-  single `<dialog>`** (task 020, issue #18.1): phase and approach, the
-  absolute start/end instants, the duration (labelled `total` or `elapsed`),
-  the exit reason (`clean exit`, `exit 7`, `error (exit N): …`, `iteration
+  single `<dialog>`** as three distinctly LABELLED regions matching the
+  on-disk layout (task 020, issue #18.1, restructured by #81), **outcome
+  FIRST**: `#iteration-region-outcome` — phase and approach, the absolute
+  start/end instants, the duration (labelled `total` or `elapsed`), the exit
+  reason (`clean exit`, `exit 7`, `error (exit N): …`, `iteration
   timeout`, `no-traffic timeout`, `interrupted (a signal ended the
   iteration)`, with an
   `[infra fault]` marker when the attempt was refunded), the model pi actually
   used, that iteration's tokens and cost, the steering it consumed, the task it
-  verified — and then its full transcript. The whole body is the `text` string
+  verified; then `#iteration-region-input` — that iteration's own `prompt.md`,
+  verbatim; then `#iteration-region-logs` — its full transcript. Outcome
+  leading means `exitCode: -2, interrupted: true` is readable without
+  scrolling past the transcript. Each region's body is one of the `outcomeText`/
+  `promptText`/`logsText` strings
   `GET /api/runs/<id>/iterations/<n>` formatted (see above), inserted as text
   nodes only, so a transcript full of `<` survives as text and the hub says
   exactly what `ralphctl iteration <run> <n>` says. The endpoint is on-disk

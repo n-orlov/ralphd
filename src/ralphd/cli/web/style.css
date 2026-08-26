@@ -287,6 +287,21 @@ footer.autorefresh {
 
 .text-dialog .dialog-close { margin-top: 0.6rem; }
 
+/* Task 020 (#81): the iteration dialog's three labelled regions -- outcome
+   FIRST, then input, then logs -- each its own small scrollable box so a
+   long transcript cannot push the outcome facts (exitCode/interrupted/
+   duration/model/tokens) below the fold. */
+.iteration-dialog .iteration-region { margin: 0 0 0.7rem; }
+.iteration-dialog .iteration-region-label {
+  margin: 0 0 0.2rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.iteration-dialog .dialog-body { max-height: 26vh; }
+
 /* Task 025 (#54): a previewable image's artifact dialog holds an <img>
    instead of the <pre> text body -- capped so a large screenshot never
    forces the dialog past the same max-height/max-width the text body uses. */

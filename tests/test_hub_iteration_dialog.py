@@ -43,9 +43,11 @@ from ralphd.engine.state import (
     EXIT_REASON_CLEAN,
     EXIT_REASON_RUNNING,
     ITERATION_NO_META_NOTICE,
+    ITERATION_NO_PROMPT_NOTICE,
     USAGE_NONE,
     format_iteration_log_header,
     iteration_detail,
+    iteration_detail_text,
     iteration_summary_lines,
 )
 from ralphd.log_merge import NO_TRANSCRIPT
@@ -122,8 +124,13 @@ def test_view_is_the_shared_detail_plus_the_shared_wording(tmp_path):
     assert view["runId"] == "run-iter"
     # ...and the rendered block is the ONE shared wording, not a hub copy
     assert view["summaryLines"] == iteration_summary_lines(detail)
-    assert view["text"].split("\n")[:len(view["summaryLines"])] == view["summaryLines"]
-    assert format_iteration_log_header(len(view["log"])) in view["text"].split("\n")
+    # outcome FIRST, labelled, and leading on the summary block verbatim
+    text_lines = view["text"].split("\n")
+    assert text_lines[0] == "=== outcome (meta.json) ==="
+    assert text_lines[1:1 + len(view["summaryLines"])] == view["summaryLines"]
+    assert "=== input (prompt.md) ===" in text_lines
+    assert "=== logs (output.jsonl) ===" in text_lines
+    assert format_iteration_log_header(len(view["log"])) in text_lines
     assert any("hello from the agent" in line for line in view["log"])
     assert view["text"].endswith(view["log"][-1])
 
@@ -152,10 +159,13 @@ def test_log_false_omits_the_key_entirely(tmp_path):
     registry, run_dir = _run(tmp_path)
     _write_iteration(run_dir, 1, _meta(1), texts=["x"])
     view = iteration_view(registry, "run-iter", 1, log=False)
+    detail = iteration_detail(run_dir, 1)
     # absent, not empty: an empty list would claim the iteration wrote nothing
     assert "log" not in view
     assert format_iteration_log_header(0) not in view["text"]
-    assert view["text"] == "\n".join(view["summaryLines"])
+    assert "=== logs (output.jsonl) ===" not in view["text"]
+    assert view["text"] == "\n".join(iteration_detail_text(
+        detail, prompt_text=view["promptText"], log_lines=None))
 
 
 def test_no_transcript_says_so_instead_of_an_empty_log(tmp_path):
@@ -219,6 +229,73 @@ def test_hub_text_is_exactly_what_ralphctl_iteration_prints(tmp_path):
     assert printed[1:] == view["text"].split("\n")
     assert "steering:  001-cost.md" in view["text"]
     assert "verified:  task 019 -> passed" in view["text"]
+
+
+def test_hub_outcome_text_equals_ralphctl_outcome_region(tmp_path):
+    """Task 020 (#81): the hub's outcome region is not a second wording of
+    `meta.json` -- it is `state.iteration_summary_lines`, the SAME function
+    `ralphctl iteration`'s outcome region prints, so a test can diff the two
+    surfaces for the same fixture iteration and find zero drift.
+
+    Also pins the three region anchors/labels and the outcome-FIRST order --
+    `exitCode: -2, interrupted: true` must be readable at the very top,
+    before the transcript.
+    """
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 5, _meta(5, exitCode=-2, interrupted=True,
+                                       error=None),
+                     texts=["the agent's last words"])
+
+    res = _ctl(registry, "iteration", "run-iter", "5")
+    assert res.returncode == 0, res.stderr
+    printed_lines = res.stdout.rstrip("\n").split("\n")
+
+    view = iteration_view(registry, "run-iter", 5)
+    detail = iteration_detail(run_dir, 5)
+    outcome_text = "\n".join(iteration_summary_lines(detail))
+    assert view["outcomeText"] == outcome_text
+
+    # the CLI's outcome region (between its two labels) is exactly the hub's
+    outcome_start = printed_lines.index("=== outcome (meta.json) ===") + 1
+    outcome_end = printed_lines.index("=== input (prompt.md) ===") - 1
+    cli_outcome_text = "\n".join(printed_lines[outcome_start:outcome_end])
+    assert cli_outcome_text == outcome_text
+    assert outcome_text == "\n".join(view["summaryLines"])
+    assert "exit:      interrupted (a signal ended the iteration)" in outcome_text
+
+    # all three region labels/anchors, outcome FIRST
+    text_lines = view["text"].split("\n")
+    assert text_lines.index("=== outcome (meta.json) ===") == 0
+    assert (text_lines.index("=== outcome (meta.json) ===") <
+           text_lines.index("=== input (prompt.md) ===") <
+           text_lines.index("=== logs (output.jsonl) ==="))
+    assert "the agent's last words" in view["text"]
+    # readable without scrolling past the transcript: the outcome fact is in
+    # the first line-count-worth of the block, well before the log region
+    assert text_lines.index("exit:      interrupted (a signal ended the iteration)") < \
+        text_lines.index("=== logs (output.jsonl) ===")
+
+
+def test_hub_input_region_serves_the_prompt(tmp_path):
+    """The "input" region (#81) is `prompt.md`, read verbatim -- a run whose
+    iteration never wrote one gets the one absence wording, not a blank box.
+    """
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 1, _meta(1), texts=["x"])
+    (run_dir / "iterations" / "0001" / "prompt.md").write_text(
+        "# worker prompt\ndo the next task\n")
+
+    view = iteration_view(registry, "run-iter", 1)
+    assert view["promptText"] == "# worker prompt\ndo the next task\n"
+    assert "do the next task" in view["text"]
+    assert view["hasPrompt"] is True and view["promptBytes"] > 0
+
+    # ...and a second iteration with no prompt.md at all
+    _write_iteration(run_dir, 2, _meta(2), texts=["y"])
+    view2 = iteration_view(registry, "run-iter", 2)
+    assert view2["promptText"] == ITERATION_NO_PROMPT_NOTICE
+    assert ITERATION_NO_PROMPT_NOTICE in view2["text"]
+    assert view2["hasPrompt"] is False and view2["promptBytes"] == 0
 
 
 # ------------------------------------------------------------ black-box tier
@@ -289,8 +366,29 @@ def test_app_js_uses_the_endpoint_and_the_shared_dialog():
     src = STATIC_APP_JS.read_text()
     assert "/iterations/" in src
     assert "openIterationDialog" in src
-    # the dialog body is the server's `text`; no client-side re-wording of the
-    # exit reason / duration / token vocabulary
-    assert "body.text" in src
+    # the three regions are each the server's own field, put into a text
+    # node; no client-side re-wording of the exit reason / duration / token
+    # vocabulary, and no client-side re-derivation of any of the three facts
+    assert "outcomeText" in src
+    assert "promptText" in src
+    assert "logsText" in src
     for word in ("clean exit", "still running", "total (in", "--- log ("):
         assert word not in src, word
+
+
+def test_app_js_labels_all_three_regions_outcome_first():
+    """Task 020 (#81): the three region anchors/labels app.js renders, in
+    outcome-first order -- pinned in source so the ordering cannot regress
+    silently even before a browser ever loads the page."""
+    src = STATIC_APP_JS.read_text()
+    assert "iteration-region-" in src
+    for label in ("Outcome (meta.json)", "Input (prompt.md)",
+                  "Logs (output.jsonl)"):
+        assert label in src, label
+    outcome_at = src.index('"outcome"')
+    input_at = src.index('"input"', outcome_at)
+    logs_at = src.index('"logs"', input_at)
+    regions_list_at = src.index("ITERATION_REGIONS")
+    # the ORDER an operator sees is the ORDER `ITERATION_REGIONS` is built in
+    # (mapped straight into the dialog's children, outcome first).
+    assert regions_list_at < outcome_at < input_at < logs_at

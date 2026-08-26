@@ -1763,17 +1763,20 @@ _TIMELINE_CLICKABLE = "document.querySelectorAll('.timeline-clickable[role=\"but
 
 
 def test_timeline_row_opens_the_iteration_dialog(tmp_path, pw):
-    """Task 020 (#18.1): clicking a timeline row opens THAT iteration's own
-    story -- phase, timestamps, duration, exit reason, tokens, cost and its
-    full log -- in the single shared text dialog.
+    """Task 020 (#18.1, restructured into labelled regions by #81): clicking a
+    timeline row opens THAT iteration's own story as three distinctly
+    LABELLED regions matching the on-disk layout -- outcome (`meta.json`)
+    FIRST, then input (`prompt.md`), then logs (`output.jsonl`) -- so an
+    iteration that ended with a non-zero exit is readable without scrolling
+    past the transcript.
 
     Everything asserted here is a string Python formatted (`ui_server.
-    iteration_view` -> `state.iteration_summary_lines` + the shared
-    `log_render`), so the hub cannot word an exit reason or a cost differently
-    from `ralphctl iteration`; the fixture has no container at all, since the
-    endpoint is on-disk by design. Also pins the rendering discipline (a
-    transcript containing markup stays TEXT) and that the dialog does not
-    stack across the 4s `load()` rebuild behind it.
+    iteration_view` -> `state.iteration_summary_lines`/`read_iteration_prompt`
+    + the shared `log_render`), so the hub cannot word an exit reason or a
+    cost differently from `ralphctl iteration`; the fixture has no container
+    at all, since the endpoint is on-disk by design. Also pins the rendering
+    discipline (a transcript containing markup stays TEXT) and that the
+    dialog does not stack across the 4s `load()` rebuild behind it.
     """
     from ralphd.cli.ui_server import iteration_view
     from ralphd.engine.state import EXIT_REASON_CLEAN, format_local_time
@@ -1796,10 +1799,13 @@ def test_timeline_row_opens_the_iteration_dialog(tmp_path, pw):
     texts = {1: "planning transcript line",
              # markup in the transcript must survive as text, like a PRD body
              2: "worker said <b>done</b> and <script>alert(1)</script>"}
+    prompts = {1: "# planning prompt\ndo the planning",
+              2: "# worker prompt\ndo the work"}
     for n, meta in metas.items():
         d = run_dir / "iterations" / f"{n:04d}"
         d.mkdir(parents=True)
         (d / "meta.json").write_text(json.dumps(meta))
+        (d / "prompt.md").write_text(prompts[n])
         (d / "output.jsonl").write_text(json.dumps(
             {"type": "message_end",
              "message": {"content": [{"type": "text", "text": texts[n]}]}}) + "\n")
@@ -1827,13 +1833,48 @@ def test_timeline_row_opens_the_iteration_dialog(tmp_path, pw):
         assert "180,661 total (in 18, out 2,118)" in body, body
         assert "$0.4231" in body, body
         assert "worker said <b>done</b> and <script>alert(1)</script>" in body, body
-        # ...and only THIS iteration's log
+        assert "do the work" in body, body       # the input region's prompt.md
+        # ...and only THIS iteration's log/prompt
         assert "planning transcript line" not in body, body
-        # every line came from the server's own `text`, verbatim
-        raw = pw.eval_js("document.querySelector('.text-dialog .dialog-body')"
-                         ".textContent")
-        dialog_body = json.loads(raw) if raw.startswith('"') else raw
-        assert dialog_body == iteration_view(registry, "run-iter-dialog", 2)["text"]
+        assert "do the planning" not in body, body
+
+        # -- three distinctly LABELLED regions, outcome FIRST --------------
+        region_ids = pw.eval_js(
+            "[...document.querySelectorAll('.text-dialog .iteration-region')]"
+            ".map(e => e.id).join(',')")
+        assert region_ids.strip('"') == (
+            "iteration-region-outcome,iteration-region-input,"
+            "iteration-region-logs")
+        labels = pw.eval_js(
+            "[...document.querySelectorAll('.text-dialog .iteration-region-label')]"
+            ".map(e => e.textContent).join('|')")
+        assert labels.strip('"') == (
+            "Outcome (meta.json)|Input (prompt.md)|Logs (output.jsonl)")
+        # the outcome fact is readable at the TOP, before the transcript --
+        # its region comes first in document order, not just in the string
+        outcome_before_logs = pw.eval_js(
+            "document.querySelector('#iteration-region-outcome')"
+            ".compareDocumentPosition(document.querySelector('#iteration-region-logs'))"
+            " & Node.DOCUMENT_POSITION_FOLLOWING")
+        assert int(outcome_before_logs) != 0
+
+        # every region's own text came from the server's own field, verbatim
+        view = iteration_view(registry, "run-iter-dialog", 2)
+        outcome_text = pw.eval_js(
+            "document.querySelector('#iteration-region-outcome .dialog-body')"
+            ".textContent")
+        input_text = pw.eval_js(
+            "document.querySelector('#iteration-region-input .dialog-body')"
+            ".textContent")
+        logs_text = pw.eval_js(
+            "document.querySelector('#iteration-region-logs .dialog-body')"
+            ".textContent")
+        assert (json.loads(outcome_text) if outcome_text.startswith('"')
+               else outcome_text) == view["outcomeText"]
+        assert (json.loads(input_text) if input_text.startswith('"')
+               else input_text) == view["promptText"]
+        assert (json.loads(logs_text) if logs_text.startswith('"')
+               else logs_text) == view["logsText"]
         # text nodes only: nothing in the transcript was parsed as markup
         assert int(pw.eval_js(
             "document.querySelectorAll('.text-dialog script, .text-dialog b').length")) == 0

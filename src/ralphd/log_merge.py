@@ -38,6 +38,13 @@ BOUNDARY_TYPE = "ralphd.iteration"
 # the same wording on every surface).
 NO_TRANSCRIPT = "(no transcript yet)"
 
+# The two per-iteration file names, spelled ONCE (task 020's #81 grep guard,
+# tests/test_log_merge.py, pins `output.jsonl` to this module and its four
+# allowed readers -- a second literal elsewhere would be a second place that
+# could drift if the name ever changed).
+OUTPUT_FILENAME = "output.jsonl"
+PROMPT_FILENAME = "prompt.md"
+
 
 # The run dir's per-iteration layout, spelled in ONE place: `<run>/iterations/
 # NNNN/` holding `prompt.md`, `output.jsonl` and `meta.json`. Every reader of a
@@ -86,7 +93,16 @@ def iteration_output_path(run_root: Path, number: int) -> Path:
     tests/test_log_merge.py), so readers that only need its size or existence
     -- `engine.state.iteration_detail`'s `hasTranscript`/`transcriptBytes` --
     ask here instead of spelling the name a second time."""
-    return iteration_dir(run_root, number) / "output.jsonl"
+    return iteration_dir(run_root, number) / OUTPUT_FILENAME
+
+
+def iteration_prompt_path(run_root: Path, number: int) -> Path:
+    """Where iteration `number`'s prompt lives -- the `iteration_output_path`
+    role for the "input" region of task 020's iteration detail (#81):
+    `engine.state.iteration_detail`'s `hasPrompt`/`promptBytes` and
+    `read_iteration_prompt` ask here instead of spelling the name a second
+    time. Written once by `engine.loop._run_iteration_once`, never rewritten."""
+    return iteration_dir(run_root, number) / PROMPT_FILENAME
 
 
 def iteration_numbers(run_root: Path) -> list[int]:
