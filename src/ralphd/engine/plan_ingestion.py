@@ -67,6 +67,7 @@ from ralphd.engine.contract_enforcement import (
     RespondFn,
     parse_response,
 )
+from ralphd.engine.tiers import DEFAULT_TIER, TOP_TIER, is_tier
 
 # A task field carrying exactly this text is the unfilled placeholder from
 # `prompts/planning.md`'s own schema example -- copy-pasted rather than
@@ -79,12 +80,18 @@ BOILERPLATE_SUCCESS_CRITERIA = (
 # Fields a proposal's task is allowed to carry through to the harness's own
 # tasks.json verbatim. Deliberately excludes "status" -- see the module
 # docstring's step 3.
+# Task 013 (requirement F): `tier` is passed through beside `priority`.
+# Ingestion is the ONLY place a task's `tier` is ever set or normalised --
+# nothing else in the harness may annotate it -- so a missing/unrecognised
+# tier is defaulted here (`normalize_task_tiers` below), never left for a
+# later stage to invent a value for.
 _TASK_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "id",
     "title",
     "successCriteria",
     "dependsOn",
     "priority",
+    "tier",
 )
 
 
@@ -323,24 +330,74 @@ def lint_own_terminal_state(payload: dict) -> list[str]:
     return errors
 
 
-def _parse_proposal(text: str | None) -> tuple[dict | None, list[str]]:
-    """Turn the raw text of `plan-proposal.json` into `(payload, errors)`,
-    running steps 2 and 3 in order. Mirrors
+def normalize_task_tiers(payload: dict) -> list[str]:
+    """Requirement F, task 013: normalise every task's optional `tier`
+    annotation IN PLACE and return a list of WARNING strings -- a channel
+    entirely distinct from `validate_proposal_shape`'s / `lint_proposal`'s
+    error lists. Nothing here ever rejects a proposal.
+
+    - A task with no `tier` key, or a `tier` that is not one of
+      `tiers.TIERS`, is defaulted to `tiers.DEFAULT_TIER` ("normal") and
+      earns one warning naming the task and the default applied. This is
+      also what keeps an old, tier-naive proposal ingesting exactly as it
+      always did -- `ingest_proposal` itself never invents a `tier` key on
+      its own (a task that arrives here with no `tier` at all, i.e. this
+      function was never run over it, still passes through with no `tier`
+      key at all -- see that function's own docstring); this function is
+      the ONLY place a missing/unrecognised annotation is ever turned into
+      an explicit value.
+    - A plan whose every task ends up at `tiers.TOP_TIER` ("hard") is a
+      degenerate distribution -- annotating everything as the most
+      expensive tier defeats the point of tiering at all -- and earns
+      exactly one additional warning for the whole plan, not one per task.
+    """
+    warnings: list[str] = []
+    tasks = [t for t in payload.get("tasks", []) if isinstance(t, dict)]
+    for t in tasks:
+        tier = t.get("tier")
+        if tier is None:
+            warnings.append(
+                f"task {t.get('id')!r}: no tier annotated; defaulted to "
+                f"{DEFAULT_TIER!r}"
+            )
+            t["tier"] = DEFAULT_TIER
+        elif not is_tier(tier):
+            warnings.append(
+                f"task {t.get('id')!r}: unrecognised tier {tier!r}; "
+                f"defaulted to {DEFAULT_TIER!r}"
+            )
+            t["tier"] = DEFAULT_TIER
+    if tasks and all(t.get("tier") == TOP_TIER for t in tasks):
+        warnings.append(
+            "plan: every task is annotated tier 'hard' -- a degenerate "
+            "distribution that defeats the point of tiering (every task "
+            "costs as much as the most expensive one)"
+        )
+    return warnings
+
+
+def _parse_proposal(text: str | None) -> tuple[dict | None, list[str], list[str]]:
+    """Turn the raw text of `plan-proposal.json` into
+    `(payload, errors, warnings)`, running steps 2 and 3 in order, then
+    tier normalisation (task 013). Mirrors
     `contract_enforcement.parse_response`'s three-shapes shape, for the
-    file channel instead of the inline one."""
+    file channel instead of the inline one. `warnings` is always `[]`
+    whenever `errors` is non-empty -- warnings are only ever produced for
+    an already-accepted proposal."""
     if text is None or not text.strip():
-        return None, ["proposal: no plan-proposal.json produced (absent)"]
+        return None, ["proposal: no plan-proposal.json produced (absent)"], []
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        return None, [f"proposal: malformed JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"]
+        return None, [f"proposal: malformed JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"], []
     shape_errors = validate_proposal_shape(payload)
     if shape_errors:
-        return None, shape_errors
+        return None, shape_errors, []
     lint_errors = lint_proposal(payload) + lint_own_terminal_state(payload)
     if lint_errors:
-        return None, lint_errors
-    return payload, []
+        return None, lint_errors, []
+    warnings = normalize_task_tiers(payload)
+    return payload, [], warnings
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +443,12 @@ class PlanIngestionResult:
     # field or ingestion failed -- the same "absent means nothing to pin"
     # reading `RunDir.read_standing_rules()` already uses.
     standing_rules: str = ""
+    # Task 013 (requirement F): tier-normalisation warnings for THIS
+    # attempt's proposal -- a channel distinct from `errors`. Always `[]`
+    # when `ok` is `False` (warnings are only ever produced for an
+    # already-accepted proposal; see `_parse_proposal`'s own docstring).
+    # Never causes a re-prompt.
+    warnings: list[str] = field(default_factory=list)
 
 
 def file_reader(base_dir: Path | str) -> Callable[[str], str | None]:
@@ -432,12 +495,13 @@ def enforce_plan_ingestion(
             errors = pointer_errors
         else:
             proposal_text = read_proposal(pointer["proposal_path"])
-            proposal, errors = _parse_proposal(proposal_text)
+            proposal, errors, warnings = _parse_proposal(proposal_text)
             if not errors:
                 return PlanIngestionResult(
                     ok=True, tasks_doc=ingest_proposal(proposal),
                     attempts=attempt + 1, agent_fault=False, errors=[],
                     standing_rules=pointer.get("standing_rules") or "",
+                    warnings=warnings,
                 )
         if state is not None:
             state.emit(EVENT_VIOLATION, hat="planning", attempt=attempt + 1,

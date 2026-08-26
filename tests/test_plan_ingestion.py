@@ -276,7 +276,7 @@ def test_own_terminal_state_lint_is_wired_into_proposal_parsing(tmp_path):
     alongside `lint_proposal`, not instead of it -- a proposal can fail on
     both lints at once and both errors surface."""
     payload = {"tasks": [_basic_task("042", successCriteria=pi.TASK_042_SUCCESS_CRITERIA)]}
-    _, errors = pi._parse_proposal(json.dumps(payload))
+    _, errors, _ = pi._parse_proposal(json.dumps(payload))
     assert any("terminal state" in e for e in errors)
 
 
@@ -320,6 +320,75 @@ def test_ingest_carries_goal_and_scope_through():
     doc = pi.ingest_proposal(payload)
     assert doc["goal"] == "ship it"
     assert doc["scope"]["level"] == "single-repo"
+
+
+# ---------------------------------------------------------------------------
+# normalize_task_tiers -- task 013, requirement F: warnings never reject
+# ---------------------------------------------------------------------------
+
+def test_a_recognised_tier_passes_through_verbatim_with_no_warning():
+    payload = {"tasks": [_basic_task("001", tier="hard"), _basic_task("002", tier="trivial")]}
+    warnings = pi.normalize_task_tiers(payload)
+    assert warnings == []
+    assert payload["tasks"][0]["tier"] == "hard"
+    assert payload["tasks"][1]["tier"] == "trivial"
+
+
+def test_a_missing_tier_defaults_to_normal_with_one_warning():
+    payload = {"tasks": [_basic_task("001")]}
+    warnings = pi.normalize_task_tiers(payload)
+    assert len(warnings) == 1
+    assert "001" in warnings[0] and "normal" in warnings[0]
+    assert payload["tasks"][0]["tier"] == "normal"
+
+
+def test_an_unrecognised_tier_defaults_to_normal_with_one_warning():
+    payload = {"tasks": [_basic_task("001", tier="urgent")]}
+    warnings = pi.normalize_task_tiers(payload)
+    assert len(warnings) == 1
+    assert "001" in warnings[0] and "urgent" in warnings[0] and "normal" in warnings[0]
+    assert payload["tasks"][0]["tier"] == "normal"
+
+
+def test_a_plan_of_all_hard_tasks_emits_one_degenerate_distribution_warning():
+    payload = {"tasks": [
+        _basic_task("001", tier="hard"),
+        _basic_task("002", tier="hard"),
+        _basic_task("003", tier="hard"),
+    ]}
+    warnings = pi.normalize_task_tiers(payload)
+    degenerate = [w for w in warnings if "degenerate" in w]
+    assert len(degenerate) == 1
+    assert all(t["tier"] == "hard" for t in payload["tasks"])
+
+
+def test_a_mixed_tier_plan_does_not_trip_the_degenerate_warning():
+    payload = {"tasks": [
+        _basic_task("001", tier="hard"),
+        _basic_task("002", tier="trivial"),
+    ]}
+    warnings = pi.normalize_task_tiers(payload)
+    assert not any("degenerate" in w for w in warnings)
+
+
+def test_an_old_proposal_with_no_tier_anywhere_ingests_unchanged():
+    """`ingest_proposal` itself never invents a `tier` key -- a proposal
+    that never went through `normalize_task_tiers` (the pre-013 shape)
+    ingests exactly as it always did, with no `tier` key at all."""
+    payload = {"tasks": [_basic_task("001", dependsOn=["000"], priority=1)]}
+    doc = pi.ingest_proposal(payload)
+    assert doc["tasks"][0] == {
+        "id": "001", "title": "do thing 001",
+        "successCriteria": "thing 001 is verifiably done",
+        "dependsOn": ["000"], "priority": 1, "status": "pending",
+    }
+    assert "tier" not in doc["tasks"][0]
+
+
+def test_ingest_preserves_a_planner_annotated_tier_verbatim():
+    payload = {"tasks": [_basic_task("001", tier="hard")]}
+    doc = pi.ingest_proposal(payload)
+    assert doc["tasks"][0]["tier"] == "hard"
 
 
 # ---------------------------------------------------------------------------
@@ -519,3 +588,71 @@ def test_file_reader_reads_a_real_file(tmp_path):
     _write(tmp_path, "plan-proposal.json", {"tasks": []})
     reader = pi.file_reader(tmp_path)
     assert json.loads(reader("plan-proposal.json"))["tasks"] == []
+
+
+# ---------------------------------------------------------------------------
+# enforce_plan_ingestion x tier warnings -- warnings never reject (task 013)
+# ---------------------------------------------------------------------------
+
+def test_a_missing_tier_proposal_is_still_accepted_with_a_warning(tmp_path):
+    _write(tmp_path, "plan-proposal.json", {"tasks": [_basic_task("001")]})
+
+    def respond(attempt, prior_errors):
+        return _pointer("plan-proposal.json")
+
+    result = pi.enforce_plan_ingestion(
+        respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
+    )
+    assert result.ok
+    assert result.errors == []
+    assert any("normal" in w for w in result.warnings)
+    assert result.tasks_doc["tasks"][0]["tier"] == "normal"
+
+
+def test_an_all_hard_proposal_is_still_accepted_with_one_degenerate_warning(tmp_path):
+    _write(tmp_path, "plan-proposal.json", {"tasks": [
+        _basic_task("001", tier="hard"), _basic_task("002", tier="hard"),
+    ]})
+
+    def respond(attempt, prior_errors):
+        return _pointer("plan-proposal.json")
+
+    result = pi.enforce_plan_ingestion(
+        respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
+    )
+    assert result.ok
+    assert result.errors == []
+    degenerate = [w for w in result.warnings if "degenerate" in w]
+    assert len(degenerate) == 1
+    assert all(t["tier"] == "hard" for t in result.tasks_doc["tasks"])
+
+
+def test_an_old_no_tier_proposal_still_ingests_unchanged_via_the_full_loop(tmp_path):
+    """A pre-013 proposal that never mentions `tier` anywhere still reaches
+    `ok=True` with the same ids/status/dependsOn/priority as before -- the
+    only difference is a warning and a defaulted `tier`, never a rejection."""
+    _write(tmp_path, "plan-proposal.json",
+           {"tasks": [_basic_task("001", dependsOn=[], priority=3)]})
+
+    def respond(attempt, prior_errors):
+        return _pointer("plan-proposal.json")
+
+    result = pi.enforce_plan_ingestion(
+        respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
+    )
+    assert result.ok
+    assert result.attempts == 1
+    task = result.tasks_doc["tasks"][0]
+    assert task["id"] == "001"
+    assert task["status"] == "pending"
+    assert task["priority"] == 3
+    assert task["tier"] == "normal"  # defaulted, not absent, once through the loop
+
+
+def test_tier_warnings_are_a_channel_distinct_from_shape_errors(tmp_path):
+    """A missing/unrecognised tier never shows up in
+    `validate_proposal_shape`'s error list -- it is a warning-only concern,
+    checked directly against that function rather than through the loop."""
+    payload = {"tasks": [_basic_task("001", tier="urgent")]}
+    assert pi.validate_proposal_shape(payload) == []
+    assert pi.lint_proposal(payload) == []
