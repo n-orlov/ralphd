@@ -99,7 +99,7 @@ def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):
     with the backoff wait replaced so nothing sleeps."""
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None):
         calls.append(phase)
         # what the real _run_iteration_once does: take the next number and
         # publish the CHARGED count (loop.py's `n - self._infra_refunded`)
@@ -139,7 +139,7 @@ async def test_a_grace_review_refund_is_recorded_in_status(tmp_path):
     run = _seed_run(tmp_path, finished=3)
     sup = _supervisor(run, iterations=3)
 
-    async def fake_review(phase, extra="", prompt_name=None):
+    async def fake_review(phase, extra="", prompt_name=None, tier=None):
         assert phase == "review"
         sup.iterations_used += 1
         r = IterationResult(exit_code=0)

@@ -46,7 +46,7 @@ def _sampling_attempts(sup, results):
     waits: list[float] = []
     mid_wait: list[dict] = []
 
-    async def fake_once(phase, extra="", prompt_name=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None):
         calls.append(phase)
         return results[min(len(calls) - 1, len(results) - 1)]
 
@@ -117,7 +117,7 @@ async def test_between_two_backoffs_infra_wait_is_null_but_health_degraded(
                       infra_outage_budget_s=100.0)
     seen: list[tuple[str, object]] = []
 
-    async def fake_once(phase, extra="", prompt_name=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None):
         s = _status(sup)
         seen.append((s.get("health", "ok"), s.get("infraWait")))
         return _infra_result() if len(seen) < 3 else _ok_result()

@@ -172,7 +172,7 @@ async def test_a_signal_killed_iteration_is_not_retried_as_an_outage(tmp_path):
     sup = _supervisor(tmp_path)
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None):
         calls.append(phase)
         return _signal_result()
 

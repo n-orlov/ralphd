@@ -231,7 +231,7 @@ async def test_the_wrapper_retries_and_refunds_the_early_aborted(tmp_path):
     sup = _supervisor(tmp_path)
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None):
         calls.append(phase)
         return _aborted_after_traffic(EARLY)
 
@@ -256,7 +256,7 @@ async def test_a_late_aborted_after_traffic_is_now_also_retried(tmp_path):
     sup = _supervisor(tmp_path)
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None):
         calls.append(phase)
         return _aborted_after_traffic(LATE)
 

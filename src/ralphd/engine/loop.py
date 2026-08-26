@@ -17,6 +17,7 @@ from . import plan_ingestion
 from . import router
 from . import scheduler
 from . import state
+from . import tiers
 from . import transitions
 from .config import (
     CONFIG_DIR,
@@ -701,10 +702,23 @@ class LoopSupervisor:
     INFRA_RETRY_PHASES = ("planning", "worker", "review", "verify", "reflect")
 
     async def run_iteration(self, phase: str, extra: str = "",
-                             prompt_name: str | None = None):
+                             prompt_name: str | None = None,
+                             tier: str | None = None):
+        """Task 016 (#68 half 2, requirement I/J): `tier` is the effective
+        tier THIS dispatch provisions at -- the in-hand task's effective
+        tier for a task-scoped call (worker, per-task verify), one of the
+        two run-level constants (`state.run_level_verify_tier()`,
+        `tiers.DEFAULT_TIER`) for every hat with no task in hand (planning,
+        reflect, run-level review, and a worker call made with no task
+        selected at all). An unrecognised or omitted `tier` degrades to
+        `tiers.DEFAULT_TIER` in `_run_iteration_once` itself, never here --
+        this method is pure pass-through, so the infra-retry wrapper
+        re-tries the SAME tier on every attempt of the same phase/
+        iteration.
+        """
         if phase not in self.INFRA_RETRY_PHASES:
-            return await self._run_iteration_once(phase, extra, prompt_name)
-        return await self._run_iteration_with_infra_retry(phase, extra, prompt_name)
+            return await self._run_iteration_once(phase, extra, prompt_name, tier)
+        return await self._run_iteration_with_infra_retry(phase, extra, prompt_name, tier)
 
     # Task 001a: escalating backoff defaults live on JobConfig
     # (cfg.infra_retry_backoff_s / cfg.infra_retry_backoff_max_s /
@@ -716,7 +730,8 @@ class LoopSupervisor:
     # (episode clock, see __init__), NOT an attempt count. cfg.infra_retry_max
     # is a back-compat cap honoured only when explicitly configured.
     async def _run_iteration_with_infra_retry(self, phase: str, extra: str,
-                                              prompt_name: str | None):
+                                              prompt_name: str | None,
+                                              tier: str | None = None):
         """Runs `phase` via _run_iteration_once(), retrying THE SAME
         phase/iteration with escalating backoff whenever the result
         classifies as an infra fault (broken LLM endpoint/provider/network
@@ -771,7 +786,7 @@ class LoopSupervisor:
         retry_max = self.cfg.infra_retry_max  # None == no explicit attempt cap
         budget = self._outage_budget_for(phase)
         while True:
-            result = await self._run_iteration_once(phase, extra, prompt_name)
+            result = await self._run_iteration_once(phase, extra, prompt_name, tier)
             fault = self._classify_result(result)
             if fault != "infra":
                 # The agent reached the model -- a success, or a genuine work
@@ -1075,7 +1090,8 @@ class LoopSupervisor:
             state.atomic_write(self.run.notes_file, updated)
 
     async def _run_iteration_once(self, phase: str, extra: str = "",
-                                  prompt_name: str | None = None):
+                                  prompt_name: str | None = None,
+                                  tier: str | None = None):
         n = self.iterations_used + 1
         # Task 003 (#11): a POST /interrupt shields only the iteration it
         # actually interrupted -- re-arm for this attempt (an abort, which
@@ -1094,13 +1110,30 @@ class LoopSupervisor:
         # Neither seed may read `attempts/` as an iteration: they are records of
         # one, not extra ones.
         itdir = self.run.begin_iteration_dir(n)
-        # Task 007 (PRD requirement C): the (model, thinking) bundle,
-        # replacing the separate `model_for`/`cfg.thinking` reads below --
-        # `bundle.model` is unchanged from `model_for(phase)`, and
+        # Task 007 (PRD requirement C): the (model, thinking) bundle --
         # `bundle.thinking`/`bundle.effort` are what actually reaches
         # `runner.PiRunner.run` now, instead of the single global
         # `cfg.thinking` every hat used to share.
-        bundle = self.cfg.bundle_for(phase)
+        #
+        # Task 016 (#68 half 2, requirement J): THE single dispatch call
+        # site every phase's model is chosen at -- `tiers.resolve_bundle`
+        # applied to the effective tier the caller handed in (defaulted to
+        # `tiers.DEFAULT_TIER` here, never above, so an omitted/unrecognised
+        # `tier` argument degrades exactly like an unannotated task does,
+        # rather than crashing this dispatch). `tiers.default_host_map`
+        # widens `self.cfg`'s existing per-hat table (task 007's
+        # `bundle_for`, still the only place a `JobConfig` is read for this)
+        # into the hat x tier host map the resolver indexes -- there is no
+        # OTHER call to `resolve_bundle`/`default_host_map` anywhere in this
+        # module, and no second model-resolution pathway beside this one
+        # plus the router's own tiny, uncounted `self.cfg.model_for("router")`
+        # call in `_ask_router` (task 018) -- the router is not task-scoped
+        # and is never tiered (requirement I names planning/reflect/
+        # run-level review as the non-task hats; the router is the fourth,
+        # pre-existing one, untouched by this task).
+        effective_tier = tier if tiers.is_tier(tier) else tiers.DEFAULT_TIER
+        host_map = tiers.default_host_map(self.cfg)
+        bundle = tiers.resolve_bundle(phase, effective_tier, host_map)
         model = bundle.model
         pending = (self.run.pending_steering()
                    if phase in STEERING_ACTIONABLE_PHASES else [])
@@ -1828,7 +1861,10 @@ class LoopSupervisor:
         result: IterationResult | None = None
         try:
             await self._reflect_pre_attempt_wait()
-            result = await self.run_iteration("reflect")
+            # Task 016 (requirement I): reflect has no task in hand -- its
+            # ladder's designated tier is `tiers.DEFAULT_TIER`, unaffected
+            # by any task's tier in the plan.
+            result = await self.run_iteration("reflect", tier=tiers.DEFAULT_TIER)
         finally:
             self._end_reflect_retry_window(window)
             self.run.update_status(phase=None)
@@ -2368,7 +2404,13 @@ class LoopSupervisor:
         await self._gate()
         self.run.emit("phase", phase=state, approach=approach)
         while True:
-            result = await self.run_iteration(state, prompt_name=hat)
+            # Task 016 (requirement I): a generic hat (planning/worker/
+            # verify/review/reflect all have their own dedicated call
+            # sites; a hypothetical future hat lands here) is never
+            # task-scoped by construction -- its ladder's designated tier
+            # is `tiers.DEFAULT_TIER`.
+            result = await self.run_iteration(state, prompt_name=hat,
+                                              tier=tiers.DEFAULT_TIER)
             if not self._iteration_cut_short_by_engine(result):
                 break
             if not self.budget_left():
@@ -2680,7 +2722,11 @@ class LoopSupervisor:
         """
         while True:
             await self._gate()
-            presult = await self.run_iteration("planning", extra=extra)
+            # Task 016 (requirement I): planning has no task in hand -- its
+            # ladder's designated tier is `tiers.DEFAULT_TIER`, unaffected
+            # by any task's tier in the plan.
+            presult = await self.run_iteration("planning", extra=extra,
+                                               tier=tiers.DEFAULT_TIER)
             if self._check_instant_failure(presult, self.iterations_used):
                 return None  # abort_reason set; budget_left() now False
             if self._instant_failure_streak and self.budget_left():
@@ -2937,7 +2983,14 @@ class LoopSupervisor:
                 self._emit_task_status(assigned_id, old_status, "in-progress")
             before = json.dumps(tasks_before, sort_keys=True)
             extra = self._worker_assignment_extra(selected)
-            result = await self.run_iteration("worker", extra=extra)
+            # Task 016 (requirement I/J): the in-hand task's EFFECTIVE tier
+            # (post-escalation) drives this dispatch's model; a pass with
+            # nothing actionable to assign (`selected` is not a task dict)
+            # has no task tier to read and degrades to `tiers.DEFAULT_TIER`,
+            # same as any other non-task dispatch.
+            worker_tier = (state.task_effective_tier(selected)
+                          if isinstance(selected, dict) else tiers.DEFAULT_TIER)
+            result = await self.run_iteration("worker", extra=extra, tier=worker_tier)
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)
@@ -3412,8 +3465,13 @@ class LoopSupervisor:
         composite PRD.
         """
         while True:
+            # Task 016 (requirement I/decision 8): the run-ending review
+            # always provisions at verify's top tier, regardless of any
+            # task's tier -- `state.run_level_verify_tier()` takes no task
+            # argument on purpose.
             result = await self.run_iteration(
-                "review", extra=self._review_extra_context())
+                "review", extra=self._review_extra_context(),
+                tier=state.run_level_verify_tier())
             if not self._review_interrupted(result):
                 return result
             self._advance("review", "review", "review_interrupted")
@@ -3555,7 +3613,11 @@ class LoopSupervisor:
                 break
             await self._gate()
             self.run.emit("phase", phase="worker", approach=approach)
-            await self.run_iteration("worker")
+            # Task 016 (requirement I): this worker call has no task in
+            # hand either (it exists only to consume pending steering
+            # before a VERIFIED verdict is allowed to stand) -- same
+            # non-task default as planning/reflect.
+            await self.run_iteration("worker", tier=tiers.DEFAULT_TIER)
             if not self.budget_left():
                 break
             await self._gate()
@@ -3676,8 +3738,11 @@ class LoopSupervisor:
             "(task 002)"))
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach)
+        # Task 016 (requirement I/decision 8): the grace review is still
+        # the run-ending review -- verify's top tier, unconditionally.
         result = await self.run_iteration(
-            "review", extra=self._review_extra_context())
+            "review", extra=self._review_extra_context(),
+            tier=state.run_level_verify_tier())
         # Off-budget: this attempt must never count against the job's
         # iteration budget (same mechanism, and since task 023/#32 the same
         # persistence, as the infra-retry refund).
@@ -4069,8 +4134,14 @@ class LoopSupervisor:
         contract_errors: list[str] = []
         error_retries = 0
         while self.budget_left():
+            # Task 016 (requirement H/J): per-task verify runs one rung
+            # down from the task's CURRENT effective tier -- `state.
+            # task_verify_tier`, never `run_level_verify_tier` (that is the
+            # run-ending pass in `_step_review`/`_maybe_grace_review`, a
+            # separate dispatch from this per-task one).
             result = await self.run_iteration("verify", extra=extra,
-                                               prompt_name="task-verify")
+                                               prompt_name="task-verify",
+                                               tier=state.task_verify_tier(task))
             verify_iter_n = self.iterations_used  # captured after run_iteration increments it
 
             try:
