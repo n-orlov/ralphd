@@ -9,7 +9,13 @@
 #
 #   - every RALPHD_* environment variable unset (discovered dynamically from
 #     the current environment, not a fixed list, so a future one added
-#     anywhere is covered automatically);
+#     anywhere is covered automatically) *except* RALPHD_RUN_ID, which is
+#     deliberately preserved unchanged if inherited, or minted fresh and
+#     unique if not. Scrubbing RALPHD_RUN_ID away collapses the docker
+#     tier's per-run tag isolation (`ralphd:test-<RALPHD_RUN_ID>`, see
+#     tests/test_docker_sibling_e2e.py) to the shared fallback
+#     `ralphd:test-local-dev` -- exactly the collision the docker tier's
+#     tag-per-run scheme exists to prevent (F1, #73);
 #   - a decoy top-level `tests` package placed on PYTHONPATH *ahead* of this
 #     repository (the #50 shadowing scenario -- see tests_package_pin.py and
 #     tests/test_tests_conftest_resolution.py for the mechanism this must
@@ -55,9 +61,20 @@ PYEOF
 CLEAN_HOME="$SCRATCH/home"
 mkdir -p "$CLEAN_HOME"
 
+# F1 (#73): capture (or mint) RALPHD_RUN_ID *before* scrubbing RALPHD_* vars,
+# and re-inject it below -- never let it fall through to the docker tier's
+# own "local-dev" fallback, which is shared across every invocation that
+# lacks it and therefore unsafe to collide on. PID + nanosecond clock keeps
+# repeated invocations on the same host apart even within the same second.
+HOST_LIKE_RUN_ID="${RALPHD_RUN_ID:-}"
+if [ -z "$HOST_LIKE_RUN_ID" ]; then
+  HOST_LIKE_RUN_ID="host-like-$$-$(date +%s%N)"
+fi
+
 unset_args=()
 while IFS='=' read -r name _; do
   case "$name" in
+    RALPHD_RUN_ID) ;; # preserved deliberately, see above (F1, #73)
     RALPHD_*) unset_args+=("-u" "$name") ;;
   esac
 done < <(env)
@@ -94,5 +111,6 @@ fi
 exec env \
   "${unset_args[@]}" \
   HOME="$CLEAN_HOME" \
+  RALPHD_RUN_ID="$HOST_LIKE_RUN_ID" \
   PYTHONPATH="$DECOY_ROOT${PYTHONPATH:+:${PYTHONPATH}}" \
   "$PY" -m pytest -q -p tests_package_pin "$@"
