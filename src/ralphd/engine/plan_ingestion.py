@@ -268,20 +268,39 @@ _PRECONDITION_CUES: tuple[str, ...] = (
     "require", "cannot", "can not", "can only", "only once", "after",
 )
 
+# #76: the two cue sets above used to be matched independently over the
+# *whole* criteria string, so any criterion whose subject is terminal-state
+# behaviour tripped the guard as soon as one of twelve extremely common
+# precondition words appeared *anywhere else* in it -- a criterion long
+# enough to be useful (~1000-1400 chars) essentially guarantees one. That is
+# what rejected `selfdev-v010-not-a-verdict`'s satisfiable task 006 attempt 2
+# twice: it named terminal-state vocabulary as its *subject*, not as a
+# precondition of its own completion. Scope the match to one clause -- a
+# terminal cue and a precondition cue only trip the guard when they occur in
+# the same sentence/clause, not merely the same criterion.
+_CLAUSE_SPLIT_RE = re.compile(r"[.!?;]+")
+
 
 def _depends_on_own_terminal_state(criteria: str) -> bool:
     """True if `criteria` gates the task's own completion on this run
     having already reached a terminal state -- the #63 trap. A criterion
     that merely mentions "status" or a terminal state as a *fact about the
     system* (not a precondition of this task's own success) is not flagged;
-    both directions have their own test in `tests/test_plan_ingestion.py`."""
+    both directions have their own test in `tests/test_plan_ingestion.py`.
+    The `_OWN_TERMINAL_STATE_CUES`/`_PRECONDITION_CUES` pair only trips the
+    guard when both occur inside the SAME clause (#76) -- a criterion that
+    merely discusses terminal-state behaviour in one sentence and uses an
+    unrelated precondition word in another is not flagged."""
     lowered = criteria.lower()
     if _LEAVES_RUNNING_RE.search(lowered):
         return True
-    has_terminal_cue = any(cue in lowered for cue in _OWN_TERMINAL_STATE_CUES)
-    if not has_terminal_cue:
-        return False
-    return any(cue in lowered for cue in _PRECONDITION_CUES)
+    for clause in _CLAUSE_SPLIT_RE.split(lowered):
+        has_terminal_cue = any(cue in clause for cue in _OWN_TERMINAL_STATE_CUES)
+        if not has_terminal_cue:
+            continue
+        if any(cue in clause for cue in _PRECONDITION_CUES):
+            return True
+    return False
 
 
 def lint_own_terminal_state(payload: dict) -> list[str]:

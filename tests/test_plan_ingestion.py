@@ -253,6 +253,24 @@ def test_a_criterion_that_merely_mentions_status_is_accepted():
     assert pi.lint_own_terminal_state(payload) == []
 
 
+def test_v010_attempt2_subject_matter_criteria_is_accepted():
+    """#76: the whole-string match rejected `selfdev-v010-not-a-verdict`'s
+    satisfiable task 006 attempt 2 twice, because the criteria's *subject*
+    is terminal-state behaviour, not a precondition on it -- the terminal
+    cue and the precondition word land in different sentences/clauses. The
+    quoted sentence and both differing phrases below are verbatim from
+    issue #76's own body (its table of attempt-2-vs-attempt-3 wording)."""
+    criteria = (
+        "Verification is entirely by tests over fixtures built inside the "
+        "test (a temp run dir plus a synthetic task record and "
+        "IterationResult), never by inspecting /run/ralphd. A test asserts "
+        "the record settles into a distinct terminal state. A separate "
+        "test asserts the deadline fired before review returned a verdict."
+    )
+    payload = {"tasks": [_basic_task("006", successCriteria=criteria)]}
+    assert pi.lint_own_terminal_state(payload) == []
+
+
 def test_own_terminal_state_lint_is_wired_into_proposal_parsing(tmp_path):
     """`_parse_proposal` (ingestion's step 3) runs `lint_own_terminal_state`
     alongside `lint_proposal`, not instead of it -- a proposal can fail on
