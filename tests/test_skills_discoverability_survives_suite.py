@@ -114,6 +114,65 @@ def _run_pytest_subset(home: Path, modules: list[str]) -> subprocess.CompletedPr
     )
 
 
+def test_skill_placed_in_operator_home_survives_a_real_subset_from_task_002s_attributed_list(tmp_path):
+    """Task 004 (#83): task 002's wipewatch attribution named ten fast-tier
+    node ids that call `amain()` *in-process* (no child spawn) against
+    whatever `HOME` the pytest PROCESS itself has. Task 003 closed that
+    door with an autouse fixture,
+    `tests/conftest.py::_isolate_ambient_home_in_process`, that isolates
+    every test's own `HOME` to a throwaway directory by default. This test
+    proves that fix holds for a real pytest subprocess run drawn straight
+    from task 002's own attributed list, not just a single isolated call:
+    place a skill under an operator-like `$HOME`, run a subset --
+    `tests/test_engine_budget_seed.py` and
+    `tests/test_status_max_approaches.py`, both named in task 002's list and
+    both calling `amain()` directly with no `HOME` override of their own --
+    inside a pytest subprocess whose own environment names that same
+    `$HOME` (via `_run_pytest_subset`), then re-checks the skill is still
+    discoverable by the agent's own rule afterward.
+
+    Reverting task 003's isolation with this exact one-line mutation to
+    `tests/conftest.py::_isolate_ambient_home_in_process` --
+
+        -    monkeypatch.setenv("HOME", str(isolated))
+        +    return
+
+    -- makes this node fail: with the fixture reduced to a no-op, the
+    subprocess's own tests inherit the outer subprocess's `HOME` (the
+    operator-like home this test set up), `amain()` reads it via
+    `ambient_home()`, and `place_skills()`'s clear-then-fill wipes the
+    planted skill directory. See
+    `artifacts/reports/task-009-before-after-mutation-evidence.md`'s
+    section D for the recorded failing node id and both pass/fail counts.
+    """
+    operator_home = tmp_path / "operator-home"
+    skill_dir = operator_home / ".pi" / "agent" / "skills" / "operator-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# operator-skill\n\nPlaced by the operator, not by place_skills().\n")
+
+    assert _discoverable_skill_names(operator_home) == {"operator-skill"}, (
+        "sanity: the skill just planted must be discoverable before the "
+        "suite subset runs at all"
+    )
+
+    subset = [
+        "tests/test_engine_budget_seed.py",
+        "tests/test_status_max_approaches.py",
+    ]
+    res = _run_pytest_subset(operator_home, subset)
+    assert res.returncode == 0, (
+        f"suite subset failed (this is a real regression, not a fixture "
+        f"issue):\n{res.stdout}\n{res.stderr}"
+    )
+
+    assert _discoverable_skill_names(operator_home) == {"operator-skill"}, (
+        "the skill placed in the operator-like $HOME before this subset "
+        "ran must still be discoverable afterward -- if this fails, task "
+        "003's in-process HOME isolation has regressed"
+    )
+
+
 def test_discoverability_check_is_not_vacuous_without_a_placement(tmp_path):
     """Sanity clause the task's success criteria asks for directly: if
     nothing was ever placed, the check must not spuriously report a
