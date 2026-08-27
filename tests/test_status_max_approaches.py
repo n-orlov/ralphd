@@ -105,6 +105,7 @@ async def test_the_first_status_write_already_carries_the_denominator(
     `run_job` -- i.e. the moment before the loop's own status write."""
     from ralphd.engine import config as config_mod
     from ralphd.engine import main as main_mod
+    from ralphd.engine import skills as skills_mod
 
     cfg_dir, run_dir, ws = tmp_path / "cfg", tmp_path / "run", tmp_path / "ws"
     for d in (cfg_dir, run_dir, ws):
@@ -114,6 +115,13 @@ async def test_the_first_status_write_already_carries_the_denominator(
         "run_id: startup-write\nmax_approaches: 5\non_complete: exit\n")
     monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg_dir)
     monkeypatch.setattr(main_mod, "CONFIG_DIR", cfg_dir)
+    # Task 026: `skills.py` imports its own `CONFIG_DIR` name at module load
+    # (`from .config import CONFIG_DIR`), a separate binding from
+    # `config_mod.CONFIG_DIR` -- task 002's `place_skills` now refuses a
+    # `config_dir` that isn't ITS OWN `CONFIG_DIR` (#83 class closure), so
+    # this binding needs patching too or `amain()` aborts before ever
+    # reaching the status write this test exists to check.
+    monkeypatch.setattr(skills_mod, "CONFIG_DIR", cfg_dir)
     monkeypatch.setenv("RALPHD_RUN_DIR", str(run_dir))
     monkeypatch.setenv("RALPHD_WORKSPACE_DIR", str(ws))
     monkeypatch.setenv("RALPHD_PORT", str(_free_port()))

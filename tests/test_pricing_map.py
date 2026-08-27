@@ -348,10 +348,19 @@ def test_start_without_a_registry_pricing_map_writes_no_pricing_key(ctl: Ctl):
     ("aigw-openai/gpt-5", True),     # alias -> openai/gpt-5 rates
     ("google/gemini-3", False),      # no rate anywhere -> still unknown
 ])
-def test_unpriced_run_with_a_pricing_map(engine_factory, model, expect_derived):
+def test_unpriced_run_with_a_pricing_map(engine_factory, model, expect_derived, tmp_path):
+    # Task 026: isolated HOME -- see test_cost_zero_quote.py's identical
+    # comment; "google/gemini-3" names no provider this container's real
+    # ambient models.json declares, so check_hat_routes (task 009) would
+    # abort the process at start for that case without this override. An
+    # empty (no models.json) HOME makes the route check skip for BOTH
+    # parametrized models, including the real-provider-shaped one.
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
     e = engine_factory(job={"on_complete": "exit", "iterations": 6,
                             "model": model, "pricing": MAP},
-                       stub_env={"STUB_UNPRICED_COUNT": "99"})
+                       stub_env={"STUB_UNPRICED_COUNT": "99",
+                                 "HOME": str(fake_home)})
     assert e.proc.wait(timeout=60) == 0
 
     metas = [json.loads(p.read_text())

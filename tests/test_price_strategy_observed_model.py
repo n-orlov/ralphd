@@ -231,8 +231,14 @@ def test_an_unpinned_engine_run_reports_derived_money(observed_engine):
     assert rendered.startswith("~$") and rendered.endswith("derived")
 
 
-def test_an_engine_run_pinning_an_unknown_ref_stays_unavailable(observed_engine):
-    e = observed_engine({"model": UNKNOWN_REF})
+def test_an_engine_run_pinning_an_unknown_ref_stays_unavailable(observed_engine, tmp_path):
+    # Task 026: isolated HOME -- see test_cost_zero_quote.py's identical
+    # comment; "mystery" names no provider this container's real ambient
+    # models.json declares, so check_hat_routes (task 009) would abort the
+    # process at start without this override.
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
+    e = observed_engine({"model": UNKNOWN_REF}, stub_env={"HOME": str(fake_home)})
     assert e.proc.wait(timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     # the observed id is recorded (task 012) but deliberately NOT priced

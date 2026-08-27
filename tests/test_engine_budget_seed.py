@@ -49,6 +49,7 @@ async def _run_amain_capturing_cfg(tmp_path, monkeypatch, *, job_iterations,
                                    status_iterations_budget):
     from ralphd.engine import config as config_mod
     from ralphd.engine import main as main_mod
+    from ralphd.engine import skills as skills_mod
 
     cfg_dir, run_dir, ws = tmp_path / "cfg", tmp_path / "run", tmp_path / "ws"
     for d in (cfg_dir, run_dir, ws):
@@ -63,6 +64,11 @@ async def _run_amain_capturing_cfg(tmp_path, monkeypatch, *, job_iterations,
 
     monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg_dir)
     monkeypatch.setattr(main_mod, "CONFIG_DIR", cfg_dir)
+    # Task 026: see test_status_max_approaches.py's identical comment --
+    # `skills.py` binds its own `CONFIG_DIR` at import time, separate from
+    # `config_mod.CONFIG_DIR`; task 002's `place_skills` refuses any other
+    # `config_dir`, so this needs patching too.
+    monkeypatch.setattr(skills_mod, "CONFIG_DIR", cfg_dir)
     monkeypatch.setenv("RALPHD_RUN_DIR", str(run_dir))
     monkeypatch.setenv("RALPHD_WORKSPACE_DIR", str(ws))
     monkeypatch.setenv("RALPHD_PORT", str(_free_port()))

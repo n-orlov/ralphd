@@ -421,10 +421,20 @@ def test_a_zero_quoting_run_records_unknown_cost_end_to_end(engine_factory):
     assert COST_ZERO_QUOTE_NOTICE in e.proc.stdout.read()
 
 
-def test_a_zero_quoting_run_with_a_free_declaration_stays_zero(engine_factory):
+def test_a_zero_quoting_run_with_a_free_declaration_stays_zero(engine_factory, tmp_path):
+    # Task 026: an isolated HOME, not the ambient one -- `check_hat_routes`
+    # (task 009) reads `~/.pi/agent/models.json` from whatever HOME the
+    # engine inherits, and this container's own ambient HOME has a REAL,
+    # populated one for the live agent; a bare ref like "ollama/llama-4"
+    # names no provider it declares, so without this override the process
+    # aborts at start with EXIT_UNROUTABLE_HAT_MODEL(5) here and only here --
+    # a clean dev host has no ambient models.json and never hits this.
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
     e = engine_factory(job={"on_complete": "exit", "iterations": 6,
                             "model": "ollama/llama-4", "pricing": _FREE_MAP},
-                       stub_env={"STUB_ZERO_COST_COUNT": "99"})
+                       stub_env={"STUB_ZERO_COST_COUNT": "99",
+                                 "HOME": str(fake_home)})
     assert e.proc.wait(timeout=60) == 0
 
     metas = [json.loads(p.read_text())

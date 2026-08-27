@@ -181,9 +181,16 @@ def test_an_unpinned_run_records_the_model_pi_chose(model_engine):
     assert status["modelRaw"] == "stub-model-1"
 
 
-def test_a_run_whose_provider_reports_a_full_ref_records_no_raw_id(model_engine):
+def test_a_run_whose_provider_reports_a_full_ref_records_no_raw_id(model_engine, tmp_path):
+    # Task 026: isolated HOME -- see test_cost_zero_quote.py's identical
+    # comment; "stubby" names no provider this container's real ambient
+    # models.json declares, so check_hat_routes (task 009) would abort the
+    # process at start without this override.
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
     e = model_engine({"model": "stubby/stub-model-1"},
-                     stub_env={"STUB_MODEL": "stubby/stub-model-1"})
+                     stub_env={"STUB_MODEL": "stubby/stub-model-1",
+                               "HOME": str(fake_home)})
     assert e.proc.wait(timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["model"] == "stubby/stub-model-1"

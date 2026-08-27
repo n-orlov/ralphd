@@ -108,17 +108,25 @@ def test_reflect_absent_runs_no_extra_iteration(engine_factory):
     assert not (e.run_dir / "artifacts" / "reflection").exists()
 
 
-def test_reflect_model_resolved_per_strategy(engine_factory):
+def test_reflect_model_resolved_per_strategy(engine_factory, tmp_path):
     """Task 006: `model_strategy`/`fast_model` are retired live fields --
     this job.yaml still carries both (the pre-006 shape), so this doubles as
     the job.yaml-migration test: `engine.config._migrate_legacy_model_config`
     must translate them into an equivalent `models:` table on load, or
-    `reflect`'s resolved model below would not be `fast-model-y` any more."""
+    `reflect`'s resolved model below would not be `fast-model-y` any more.
+
+    Task 026: isolated HOME -- see test_cost_zero_quote.py's identical
+    comment; "strong-model-x"/"fast-model-y" name no provider this
+    container's real ambient models.json declares, so check_hat_routes
+    (task 009) would abort the process at start without this override.
+    """
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
     e = engine_factory(
         job={"reflect": True, "iterations": 6, "on_complete": "exit",
             "model": "strong-model-x", "fast_model": "fast-model-y",
             "model_strategy": "cost-optimized"},
-        stub_env={"STUB_TASKS": "1"})
+        stub_env={"STUB_TASKS": "1", "HOME": str(fake_home)})
     assert e.proc.wait(timeout=30) == 0
     iters = sorted((e.run_dir / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
