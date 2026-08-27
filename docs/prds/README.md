@@ -46,7 +46,7 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | **failed** / unverified — 20 of 23 tasks completed and verified, 3 skipped-with-issue; the terminal verdict is a deadline artifact (#72) | 126 | 482.6M | ~$179.71 derived |
 | `selfdev-v010-not-a-verdict` | [v0.10-clock-is-not-a-verdict.md](v0.10-clock-is-not-a-verdict.md) | succeeded / verified — approach 1: 17 of 17 tasks validated, then rejected by review for under-evidenced closure (archived `approaches/01`); approach 2: 4 of 4 tasks validated. The reflect iteration was interrupted at the deadline | 57 | 124.8M | ~$54.38 derived |
 | `selfdev-v011-model-per-hat` | [v0.11-a-model-per-hat.md](v0.11-a-model-per-hat.md) | succeeded / verified — approach 1: 30 of 30 tasks validated, then rejected by review (a report-only commit left the suite red at the shipped sha, and requirement E's hat x tier matrix had no host-side surface; archived `approaches/01`); approach 2: 16 of 16 tasks validated | 104 | 262.5M | ~$116.07 derived |
-| `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | not started | — | — | — |
+| `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | running / 22 of 24 tasks validated, 1 in progress, 1 pending | 55 | 89.6M | ~$37.70 derived |
 
 Notes worth keeping with the documents:
 
