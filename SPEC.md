@@ -558,7 +558,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/redact.py` | The mechanical secret scrubber: build the value set from env vars and placed cred files, rebuild it after any creds/llm mutation, keep it in memory only, and expose `scrub_text` to the three write/serve points. Enforces the ≥8-character floor. |
 | `src/ralphd/engine/creds.py` | `place_creds()`: `/config/creds` (plus overlay and tombstones) → `~/.creds/*.env` at `0600`, conventional extras (`gitconfig`, `git-credentials`, `netrc`, `ssh/`), and the one-shot `setup.sh` escape hatch. Logs names, never contents. |
 | `src/ralphd/engine/skills.py` | `place_skills()`: rebuild `~/.pi/agent/skills/` from scratch (symlinks) out of mounted skills, API-origin overlay skills that win over same-named mounted ones, and tombstones — cheap enough to re-run after every mutation, so skill CRUD needs no restart. |
-| `src/ralphd/engine/llm.py` | The mid-run LLM path: `PUT /config/llm` writes the env-override set to the overlay (read fresh each iteration) and deep-merges a `models.json` fragment into the file `pi` itself reads, so a rotated key applies to the next invocation. |
+| `src/ralphd/engine/llm.py` | The mid-run LLM path: `PUT /config/llm` writes the env-override set to the overlay (read fresh each iteration) and deep-merges a `models.json` fragment into the file `pi` itself reads, so a rotated key applies to the next invocation. `provider_keys()`/`check_hat_routes()` (§3.1) take `home` as a required keyword-only argument — no ambient `$HOME` fallback — so a caller that omits it gets a `TypeError` before either ever reads a filesystem path. |
 | `src/ralphd/cli/main.py` | `ralphctl`: every subcommand, the `docker run` assembly for `start`/`resume`, the registry and its defaults, templates, run-id generation, the API client, `--json` output and exit codes, `logs`/`watch` streaming and `tail`-style argv preprocessing, `doctor`/`doctor --fix`/`repair`, the auto-resume opt-in and its crash-loop guard, and `AUTO_RESUME_DEFAULT` as the single default literal. |
 | `src/ralphd/cli/log_render.py` | The shared NDJSON→lines pretty renderer: iteration/phase headers, streamed assistant text, tool calls as one-liners, thinking collapsed to a single marker per block, per-iteration usage/cost footers, errors highlighted. `tty=False` yields plain text with no ANSI and no `\r`. Lives here, not in `main.py`, because the hub must import it without a cycle. |
 | `src/ralphd/cli/image.py` | The job image, declaratively and docker-free: which files are inputs (`IMAGE_INPUTS`), how they hash to a tag, the packaged-inputs fallback for an install with no checkout (`PACKAGED_FILES`), and the text of the generated derived recipe (§3.2). Runs no builds — `cli/main.py` does that. |
@@ -4470,14 +4470,20 @@ nor the commit history contains a `gh issue close`, which is the process claim
 the report makes about itself.
 
 The *generic* half of that — every 7-to-40-hex sha resolves via `git cat-file`,
-every repo-relative path exists, every `::node_id` after such a path is a real
-`def`/`async def` in that file — is not one report's privilege: it lives in
-`tests/report_claims.py` and `tests/test_report_claims.py` applies it to every
-`*.md` the reports directory holds, discovered by glob, so a report added later
-is re-read from the day it lands. Two conventions keep that parser honest about
-what it cannot check: a path that belongs to somebody else's tree (the
-sibling-toolchain recipe's `ci/Dockerfile`) is left outside the repo's own
-top-level directories, and a run-dir artifact is written `<run-dir>/artifacts/…`
+every repo-relative path is **tracked by git** (membership in one `git
+ls-files` snapshot, not merely present on disk — a directory the browser tier
+generates but never commits used to pass just by existing), every `::node_id`
+after such a path is a real `def`/`async def` in that file — is not one
+report's privilege: it lives in `tests/report_claims.py` and
+`tests/test_report_claims.py` applies it to every `*.md` the reports directory
+holds, discovered by glob, so a report added later is re-read from the day it
+lands. An untracked-but-present path and a genuinely missing one fail with two
+different, distinguishable messages — "generated, not committed" versus
+"deleted or renamed" — so the fix is obvious from the failure text alone. Two
+further conventions keep that parser honest about what it cannot check: a path
+that belongs to somebody else's tree (the sibling-toolchain recipe's
+`ci/Dockerfile`) is left outside the repo's own top-level directories, and a
+run-dir artifact is written `<run-dir>/artifacts/…`
 rather than as a checkout-relative path.
 
 So the failure modes that make a report actively harmful — a commit that never
@@ -4557,8 +4563,21 @@ CLI — places them at container startup:
 | — | — | an executable `creds/setup.sh` is run once with `HOME` set, for anything the above cannot express |
 
 Placement happens in `engine/creds.py`, inside the one process that already
-promises never to leak values, and it logs credential *names* only. The
-inventory reaches the agent the same way: every phase prompt gets a
+promises never to leak values, and it logs credential *names* only.
+**`place_creds()`, like `place_skills()` and `check_hat_routes()`/`provider_keys()`
+(#83 class), takes `home` as a required keyword-only argument with no ambient
+`$HOME` fallback** — a caller that omits it gets a loud `TypeError` before any
+filesystem write, never a silent rebuild of the real ambient `$HOME`'s cred
+files; every production call site (`engine/main.py`'s startup, `engine/api.py`'s
+creds/llm `PUT`/`DELETE` handlers) already has `skills.ambient_home()` on hand
+and passes it explicitly. The mid-run LLM path's `apply_llm()` takes the same
+required `home`. The handful of ambient-`$HOME` reads that genuinely are
+correct as ambient — the CLI's own host-operator trust boundary, `skills.
+ambient_home()`'s own sanctioned entry point, and a few more — are enumerated
+with a one-line reason each in `src/ralphd/ambient_home_allowlist.py`, and
+`tests/test_ambient_home_allowlist_guard.py` fails the suite the moment a new,
+unlisted ambient read appears or a listed one goes stale. The inventory
+reaches the agent the same way: every phase prompt gets a
 `## Credentials` section listing `~/.creds/<name>.env` file names with values
 withheld, plus the sourcing rule (`set -a; . ~/.creds/<name>.env; set +a`).
 Nothing is auto-exported into the agent's environment. Runtime CRUD
