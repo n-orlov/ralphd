@@ -936,6 +936,84 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   convention `docs/prds/README.md`'s own notes describe for a non-terminal
   run.
 
+## v0.12 — green on a real host
+
+Full PRD:
+[`docs/prds/v0.12-green-on-a-real-host.md`](prds/v0.12-green-on-a-real-host.md).
+`pyproject.toml` and `src/ralphd/__init__.py` still said `0.10.0` at launch:
+v0.11 (`docs/prds/v0.11-a-model-per-hat.md`, the per-hat/per-tier model work)
+shipped its features on `main` but never bumped the version or gained a
+roadmap block of its own, so this wave carries **`0.10.0` -> `0.12.0` in one
+step** rather than implying a v0.11 release that never happened. v0.12 itself
+closes one defect shape that appeared in three places across the suite --
+code that reads the ambient `$HOME`, tests that inherit it, and guards whose
+answer depends on the filesystem they happen to run against -- proven at
+`129e677` (v0.11's last commit) by seven failures and two red guards on an
+ordinary developer host that never showed up in a job container or in
+`scripts/host_like_pytest.sh`'s own empty-`$HOME` run. Requirement letters
+below are the PRD's own, `A`-`H`.
+
+- ✅ **A. The test harness isolates `HOME` by default (#83, #85, #84).**
+  `EngineProc` (`tests/test_e2e.py`) and `LiveRun` (`tests/conftest.py`) now
+  spawn every child engine into an isolated `HOME` unless a call site opts in
+  explicitly, through one greppable spelling
+  (`77d8980`). `tests/test_skills_placement_ambient_home_loss.py` -- the #83
+  reproducer -- was inverted into a regression test asserting the loss
+  **cannot** happen, its docstring still documenting the mechanism it used to
+  reproduce (`b9fc1c6`; this is the wave's one licensed test-weakening
+  inversion, and the commit message says so). The discoverability-survives-
+  suite proof was widened to every module that used to inherit the ambient
+  home (`cbe7975`), and `e9bb54d` records the exact 46-module ambient-`$HOME`
+  baseline this requirement replaces.
+- ✅ **B. `check_hat_routes`/`provider_keys` refuse a home they were not given
+  (#85).** Both now take an explicit home rather than reading `$HOME`
+  themselves, with the documented empty-provider skip unchanged (`a40b027`).
+  Closed with evidence in `artifacts/reports/task-005-issue-85-closure.md`
+  (`d064259`).
+- ✅ **C. No ambient-`$HOME` read is left, and a new one cannot land quietly.**
+  Every remaining ambient-`$HOME` read under `src/ralphd/` is either threaded
+  through explicitly (`place_creds`/`apply_llm`) or landed on a reasoned
+  allowlist (`5a96910`), and a guard fails the suite the moment a new read is
+  added without being listed or a listed one goes stale (`b3e2298`).
+- ✅ **D. A third layout, one that can actually fail (#84).** A host-user-base
+  editable install plus a populated, hostile `$HOME` joins the job-container
+  and `host_like_pytest.sh` layouts (`0aa20fd`), before/after mutation
+  evidence proves the new layout fails against a deliberate mutation of A/B/C
+  and passes with them (`219fb21`), and no e2e/live module can spawn a child
+  engine without an isolated or explicitly ambient home (`e70cfb2`). Closed
+  with evidence in `artifacts/reports/task-011-issue-84-closure.md`
+  (`f941df5`).
+- ✅ **E. #83's disposition, stated in full.** `artifacts/reports/task-017-issue-83-closure.md`
+  names 001-003 and 006-010's shas plus the reproducer-turned-regression-test,
+  repeats the field record this issue was filed against (153 watchdog
+  restores across 355 polls; three hand-observed losses, two silent for over
+  2h30m), and argues closure on the grounds that A-D together make the loss
+  impossible now rather than merely less likely. **#83 is CLOSED**
+  (`6dbb5a0`, confirmed by a fresh `GET` after the `PATCH`).
+- ✅ **F. A report may only cite paths the repository actually contains (#86).**
+  `tests/report_claims.py`'s path check now asks `git ls-files` whether a
+  cited path is tracked, not merely whether it `.exists()` on the machine
+  that happens to be checking -- with two distinguishable messages for
+  "generated, not committed" versus "deleted or renamed" (`6f1055b`). Closed
+  with evidence in `artifacts/reports/task-013-issue-86-closure.md`
+  (`33c9b36`, corrected to quote GitHub's comment byte-for-byte in `bdd7456`).
+- ✅ **G. A reflect that cannot parse itself is a degraded reflection, not a
+  failed job (#87).** `_reflect_failure()` now returns a `(error, faultClass)`
+  pair split into `REFLECT_FAULT_DEGRADED`/`REFLECT_FAULT_FATAL` spellings,
+  neither of which touches the run's already-settled `state`/`verdict`/
+  `reason` (`e2868fd`). Closed with evidence in
+  `artifacts/reports/task-015-issue-87-closure.md` (`1f19927`).
+- ⏳ **H. The version, the roadmap and the closure.** `SPEC.md` and the
+  conformance ledger record A/D/F/G's new contracts (`ac3e14c`). This bullet
+  itself: `pyproject.toml` and `src/ralphd/__init__.py` both now declare
+  `0.12.0`, this `## v0.12` block lands, `tests/test_roadmap_v010.py` is
+  retargeted to the past-milestone shape `tests/test_roadmap_v09.py` already
+  uses, and #85/#84/#86/#87/#83 are all closed (A-E above) -- #88
+  (`ralphctl skill install`) stays untouched, per the PRD's own exclusion.
+  Still pending as of this bullet: settling this run's row in
+  `docs/prds/README.md` from a fresh `status.json` read, and the closing
+  operator report walking A-H. Both flip this bullet to ✅ when they land.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7

@@ -1,27 +1,29 @@
-"""v0.10 requirement I (#part of docs/prds/v0.10-clock-is-not-a-verdict.md):
+"""v0.10 requirement I (docs/prds/v0.10-clock-is-not-a-verdict.md):
 `docs/roadmap.md`'s v0.10 block and the version bump.
 
-`tests/test_roadmap_v09.py`'s module for the *current* release, until the next
-wave retargets it the same way this one retargeted v0.9's: pin that module's
-`SERIES` to `(0, 9)` and move the "declared version has a block" half here.
-Two things established by earlier waves stay true:
+Retargeted by v0.12's requirement H, exactly the way v0.10's own requirement I
+retargeted `tests/test_roadmap_v09.py` when v0.10 became current: v0.10 is no
+longer the declared release (v0.11 shipped its features without a bump, and
+v0.12 carries `0.10.0` -> `0.12.0` in one step), so `SERIES` here is
+**pinned** to `(0, 10)` rather than read from `pyproject.toml`, and the
+"declared version has a block" half moves to `tests/test_roadmap_v012.py`.
+`declared_version()` / `declared_series()` stay, used only to assert this
+block is a *past* milestone -- if they were still used to select the block,
+every check below would grade v0.12's block against v0.10's PRD.
 
-* the roadmap's last milestone and `pyproject.toml`'s declared version are the
-  same fact, so the block for the declared version must exist, must record
-  shipped work, and nothing may claim a milestone *after* it;
+Two things established by earlier waves stay true here:
+
+* the roadmap's last milestone and the released version are the same fact,
+  so the block for `pyproject.toml`'s declared version must exist, must
+  record shipped work, and nothing may claim a milestone *after* it. That is
+  `tests/test_roadmap_v012.py`'s business now; the "nothing after" half is
+  filtered out of the two checks here that would otherwise fail on v0.12's
+  own block simply for existing;
 * a block may not claim a wave landed while omitting requirements of that
   wave. The requirement letters and issue numbers are parsed out of the PRD
   the block is about (`docs/prds/v0.10-clock-is-not-a-verdict.md`), never
-  retyped here.
-
-Unlike every module before it, this one is written **before** the wave it
-describes has (mostly) landed: v0.10's own PRD asks for requirement I to ship
-first rather than last (the mistake v0.9's own requirement O made), so at the
-sha this module is committed at, only requirement I itself is shipped and
-every other requirement's bullet honestly reads pending (`\u23f3`). The coverage
-checks below only demand that every requirement letter and issue is *named* in
-the block -- not that every one is marked shipped -- which is exactly the shape
-`tests/test_roadmap_v09.py` used for its own then-unfinished requirement G.
+  retyped here. This PRD uses `A`-`J` and `M`, skipping `K`, `L`, `N` and `O`,
+  so the regex is widened to `A-O` and the parse itself is pinned below.
 
 Every check is paired with a test that mutates the *real* roadmap text into
 wording it replaced (or a wrong version), so a check that stops discriminating
@@ -42,8 +44,9 @@ INIT = REPO_ROOT / "src" / "ralphd" / "__init__.py"
 
 DEFERRED_HEADING = "## Later / explicitly deferred"
 
-# The milestone this wave ships. Derived, not pinned: this module is about the
-# *declared* version's block, per the docstring above.
+# The milestone this module is about. Pinned, not derived: v0.10 is history
+# now (see the module docstring). `test_roadmap_v012.py` is the current
+# release's.
 SERIES = (0, 10)
 
 
@@ -116,44 +119,52 @@ def _version_block_problems(text: str, series: tuple[int, int]) -> list[str]:
     return problems
 
 
-def test_the_declared_version_is_this_wave_and_both_literals_agree():
-    """The bump half of requirement I: 0.10.0 in `pyproject.toml` and in
-    `src/ralphd/__init__.py` (`test_packaging_metadata.py` owns the general
-    rule; this pins the number this block claims)."""
-    assert declared_series() == SERIES, (
-        f"docs/roadmap.md's v0.10 block is the current milestone, but "
-        f"pyproject.toml declares {declared_version()!r}")
+def _own_block_problems(text: str) -> list[str]:
+    """`_version_block_problems` minus the "nothing after this milestone" half.
+
+    v0.12 exists now, so that half reports `[(0, 12)]` for v0.10
+    unconditionally and would swamp the two checks that are about *this*
+    block's own content. The "nothing after the declared version" rule is
+    not weakened, only relocated: `tests/test_roadmap_v012.py` enforces it
+    for the declared version, which is the only version it was ever a rule
+    about.
+    """
+    return [p for p in _version_block_problems(text, SERIES)
+            if "milestone blocks after" not in p]
+
+
+def test_the_roadmap_has_a_block_for_this_milestone():
+    """v0.10 shipped, so `## v0.10` must exist and record shipped work. The
+    *declared* version's block is `test_roadmap_v012.py`'s business."""
+    assert not _own_block_problems(roadmap_text())
+
+
+def test_v010_is_a_past_milestone_of_the_declared_version():
+    """The pin above is only honest while 0.10 is behind the release: if the
+    version ever went back to 0.10.x, this module would be the current one
+    again and would have to enforce the no-later-blocks half itself. The two
+    literals are also still checked to agree, since
+    `test_packaging_metadata.py`'s rule and this pin only line up while they
+    do."""
+    assert declared_series() > SERIES, (
+        f"pyproject declares {declared_series()}, so v0.10 is not history: this "
+        "module's SERIES pin (v0.12 requirement H) needs revisiting")
     m = re.search(r'^__version__ = "([^"]+)"', INIT.read_text(), re.MULTILINE)
     assert m and m.group(1) == declared_version()
-
-
-def test_the_roadmap_has_a_block_for_the_declared_version():
-    """The released version and the roadmap's own last milestone are the same
-    thing: 0.10.0 ships v0.10, so `## v0.10` must exist and record shipped
-    work."""
-    assert not _version_block_problems(roadmap_text(), declared_series())
 
 
 def test_the_version_block_check_catches_a_missing_or_unshipped_block():
     text, series = roadmap_text(), SERIES
     heading = f"## v{series[0]}.{series[1]}"
     assert heading in text, "fixture assumption: the block is there to remove"
-    # no block at all for the version pyproject declares
-    assert _version_block_problems(text.replace(heading, "## Not a milestone"), series)
+    # the pre-v0.10 roadmap: no block for v0.10 at all
+    assert _own_block_problems(text.replace(heading, "## Not a milestone"))
     # a block that only *plans* the release records nothing shipped
     block = milestone_block(text, series)
-    assert _version_block_problems(text.replace(block, block.replace("\u2705", "\u23f3")), series)
-    # a version the roadmap has already moved past (v0.9, with v0.10 after it)
+    assert _own_block_problems(text.replace(block, block.replace("\u2705", "\u23f3")))
+    # a version the roadmap has already moved past (v0.9, with v0.10 after it) --
+    # this one is the unfiltered check, since it is exactly what it reports
     assert _version_block_problems(text, (series[0], series[1] - 1))
-
-
-def test_the_v09_section_is_not_read_as_a_milestone_after_the_declared_one():
-    text = roadmap_text()
-    heads = [(int(a), int(b)) for a, b in
-             re.findall(r"^## v(\d+)\.(\d+)\b", text, re.MULTILINE)]
-    assert max(heads) == SERIES, heads
-    assert "## v0.9" in (milestone_block(text, (0, 9)) or "")
-    assert "## v0.9" not in (milestone_block(text, SERIES) or "")
 
 
 # --------------------------------------------------- the block covers the wave
@@ -189,7 +200,7 @@ def test_the_prd_headings_parse_at_all():
 
 
 def test_every_prd_requirement_is_accounted_for_in_the_v010_block():
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
     assert not _coverage_problems(block)
 
@@ -204,13 +215,13 @@ def test_the_block_cites_every_issue_this_wave_names():
     """Every issue this wave's PRD names by letter has to be citable straight
     off the block -- the whole point of the block as an issue -> requirement
     index."""
-    block = milestone_block(roadmap_text(), declared_series())
+    block = milestone_block(roadmap_text(), SERIES)
     for issues in prd_requirements().values():
         for n in issues:
             assert f"#{n}" in block, f"the v0.10 block does not cite #{n}"
 
 
-# --------------------------------------------- only requirement I is shipped yet
+# --------------------------------------------- every requirement shipped, with a sha
 
 
 def _bullet(block: str, letter: str) -> str:
@@ -219,37 +230,18 @@ def _bullet(block: str, letter: str) -> str:
     return bullets[0]
 
 
-def test_requirement_i_is_marked_shipped():
-    """Task 001 ships requirement I itself (the block, the bump, the
-    retargeted test modules) -- landed early per the PRD's own instruction,
-    unlike v0.9's requirement O, which the clock caught at the tail."""
-    block = milestone_block(roadmap_text(), declared_series())
-    assert block is not None
-    assert _bullet(block, "I").startswith("- \u2705")
-
-
-def test_the_shipped_check_catches_a_block_that_stops_claiming_i():
-    block = milestone_block(roadmap_text(), SERIES)
-    bullet = _bullet(block, "I")
-    mutated = block.replace(bullet, bullet.replace("- \u2705", "- \u23f3", 1))
-    assert not _bullet(mutated, "I").startswith("- \u2705")
-
-
 def test_every_shipped_requirement_names_a_real_commit():
-    """D, G, H and M flipped to shipped once tasks 012/015/016 and the
-    untouched-regression-module property (G) landed; this replaces the
-    original pre-landing pending check (which pinned `DGHM` as still
-    `\u23f3`) now that requirement I's own promise -- update this test
-    alongside the roadmap bullet the moment a requirement ships -- has been
-    kept for all four. Each bullet must still read as substantive prose, not
-    a bare flip: it names at least one real commit sha."""
-    block = milestone_block(roadmap_text(), declared_series())
+    """Unlike v0.10's own then-unfinished module (which pinned `DGHM` as
+    still pending because the block was written before the wave landed),
+    v0.10 finished within its own run: every requirement bullet reads shipped
+    and names at least one real commit sha, not a bare flip."""
+    block = milestone_block(roadmap_text(), SERIES)
     assert block is not None
-    shas = {"D": "f40d053", "G": None, "H": "75b1dd8", "M": "7b4a9b5"}
+    shas = {"D": "f40d053", "G": None, "H": "75b1dd8", "I": None, "M": "7b4a9b5"}
     for letter, sha in shas.items():
         bullet = _bullet(block, letter)
         assert bullet.startswith("- \u2705"), (
-            f"requirement {letter} is marked pending, but it has landed -- "
+            f"requirement {letter} is marked pending, but v0.10 shipped it -- "
             "flip the roadmap bullet alongside this test")
         if sha is not None:
             assert sha in bullet, (
@@ -258,15 +250,14 @@ def test_every_shipped_requirement_names_a_real_commit():
 
 
 def test_the_shipped_requirement_check_catches_a_regressed_bullet():
-    """Mutation pair for the check above, in the direction the block no
-    longer allows: flipping a now-shipped bullet back to pending must still
-    be caught, the same way the pre-landing module caught the opposite
-    direction."""
+    """Mutation pair for the check above: flipping a shipped bullet back to
+    pending must be caught."""
     block = milestone_block(roadmap_text(), SERIES)
     bullet = _bullet(block, "D")
     assert bullet.startswith("- \u2705"), "fixture assumption: D is shipped"
     mutated = block.replace(bullet, bullet.replace("- \u2705", "- \u23f3", 1))
     assert not _bullet(mutated, "D").startswith("- \u2705")
+
 
 
 # ------------------------------------------- what the wave delivered is not deferred
