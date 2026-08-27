@@ -1668,9 +1668,11 @@ def cmd_start(args):
         # Task 006 (#60 pillar 4 cleanup): `fast_model`/`model_strategy` are
         # retired job.yaml keys -- a named LLM profile may still declare its
         # own `fast_model` (docs/llm-profiles.md's schema, unchanged), but
-        # `start` no longer forwards it into job.yaml; per-hat overrides are
-        # `models:`/`model_overrides:` in job.yaml directly (not a `start`
-        # flag).
+        # `start` no longer forwards it into job.yaml; per-hat overrides live
+        # in the `models:`/`model_overrides:` job.yaml table, reachable from
+        # `start` via the repeatable `--model-for HAT=REF` flag (task 008,
+        # see `_resolve_model_table` below) as well as by hand-editing
+        # job.yaml directly.
         # Task 008: the resolved per-hat table (explicit `--model-for`
         # flags merged over the template's and the registry's own
         # `models:`/`model_overrides:` key, see `_resolve_model_table`) --

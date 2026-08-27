@@ -419,3 +419,33 @@ def test_a_detail_command_honours_the_global_json_flag(dead_run, verb, extra):
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)  # raises if 10.6's claim is false
     assert isinstance(payload, (dict, list)) and payload
+
+
+# --------------------------------------------------------------------------
+# 6.2 job.yaml table: the `model_overrides`/`models` row must name the real
+# `start` flag that reaches it, not claim the table is job.yaml-only
+# (review finding 3, task 007). This is the guard the task asked for: it
+# fails if the row and the shipped `--model-for` flag disagree again.
+# --------------------------------------------------------------------------
+
+def _model_overrides_row() -> str:
+    section = _spec_section("### 6.2")
+    for row in _table_rows(section):
+        if row and row[0] == "`model_overrides` / `models`":
+            return " | ".join(row)
+    raise AssertionError("SPEC.md 6.2 no longer has a model_overrides/models row")
+
+
+def test_the_model_overrides_row_names_the_real_start_flag():
+    row = _model_overrides_row()
+    assert "--model-for" in row, row
+    assert "--model-for" in _start_flags(), "start dropped --model-for"
+    assert "no `start` flag sets it" not in row, row
+    assert "job.yaml`-only" not in row, row
+
+
+def test_the_model_overrides_row_check_would_catch_the_stale_claim():
+    stale = ("| `model_overrides` / `models` | map hat\u2192ref | `{}` | "
+             "per-hat model. `job.yaml`-only \u2014 no `start` flag sets it. |")
+    assert "no `start` flag sets it" in stale
+    assert "--model-for" not in stale
