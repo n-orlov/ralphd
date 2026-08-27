@@ -402,10 +402,14 @@ def test_every_flag_documented_in_cli_md_exists_in_the_parser():
         f"(docs/cli.md:{'; docs/cli.md:'.join(problems)})")
 
 
-@pytest.mark.parametrize("relpath", ["README.md", "docs/tutorial.md"])
+@pytest.mark.parametrize("relpath", ["README.md", "docs/tutorial.md",
+                                    "skills/ralphd/SKILL.md"])
 def test_every_flag_in_the_other_command_teaching_docs_exists(relpath):
     """The reference is not the only place someone copy-pastes a command
-    from."""
+    from. `skills/ralphd/SKILL.md` is the sharpest case: an *agent* reads it
+    and runs what it says without a human eye in between, so a flag that
+    rotted out of the parser becomes a failed operation rather than a
+    puzzled reader."""
     problems = _flag_problems((REPO_ROOT / relpath).read_text())
     assert not problems, f"{relpath} documents flags ralphctl rejects: {problems}"
 
