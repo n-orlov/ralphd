@@ -983,13 +983,28 @@ below are the PRD's own, `A`-`H`.
   engine without an isolated or explicitly ambient home (`e70cfb2`). Closed
   with evidence in `artifacts/reports/task-011-issue-84-closure.md`
   (`f941df5`).
-- ✅ **E. #83's disposition, stated in full.** `artifacts/reports/task-017-issue-83-closure.md`
-  names 001-003 and 006-010's shas plus the reproducer-turned-regression-test,
-  repeats the field record this issue was filed against (153 watchdog
-  restores across 355 polls; three hand-observed losses, two silent for over
-  2h30m), and argues closure on the grounds that A-D together make the loss
-  impossible now rather than merely less likely. **#83 is CLOSED**
-  (`6dbb5a0`, confirmed by a fresh `GET` after the `PATCH`).
+- ✅ **E. #83's disposition, stated in full (#83).** A first close (`6dbb5a0`,
+  before this block existed) argued A-D together made the loss impossible;
+  reopening it (`b67f195`, task 001) withdrew exactly that claim, because a
+  planning-time measurement at pre-fix `f0ed156` found a **wider** in-process
+  `amain()` survivor -- a fast-tier run that explicitly excluded both
+  originally-attributed modules still lost the placed skill. Task 002
+  (`f0e077c`, corrected `c934a7b`) enumerated the losing nodes; the fix
+  landed as an autouse in-process `HOME`-isolation fixture in
+  `tests/conftest.py` (`4c5e0fc`, task 003), a regression test that fails
+  when that fixture is reverted (`9bef045`, task 004), and a static guard
+  against a second ambient-read spelling (`807aba4`, task 005) -- then
+  proven at full-suite scale under a hostile, populated `$HOME`: the whole
+  fast tier (`78e32bd`, task 006, 4062 nodes) and the developer-host layout
+  (`74262b1`, task 008, 4113 nodes) both show the placed skill intact
+  afterward. #83's final disposition, per task 009
+  (`artifacts/reports/task-009-issue-83-disposition.md`, `293c80f`): closed a
+  second time via a fresh GitHub comment (id 5443779978) and
+  `PATCH .../issues/83`, live-confirmed `state: closed`. This closes the
+  in-process `HOME`-leak mechanism the issue tracked -- it is not a claim
+  that no test can ever touch the ambient `$HOME` (a test may still opt out
+  via the single greppable `AMBIENT_HOME` marker) or that no unrelated
+  mechanism could ever reintroduce a similar loss.
 - ✅ **F. A report may only cite paths the repository actually contains (#86).**
   `tests/report_claims.py`'s path check now asks `git ls-files` whether a
   cited path is tracked, not merely whether it `.exists()` on the machine
@@ -1003,16 +1018,19 @@ below are the PRD's own, `A`-`H`.
   neither of which touches the run's already-settled `state`/`verdict`/
   `reason` (`e2868fd`). Closed with evidence in
   `artifacts/reports/task-015-issue-87-closure.md` (`1f19927`).
-- ⏳ **H. The version, the roadmap and the closure.** `SPEC.md` and the
-  conformance ledger record A/D/F/G's new contracts (`ac3e14c`). This bullet
-  itself: `pyproject.toml` and `src/ralphd/__init__.py` both now declare
-  `0.12.0`, this `## v0.12` block lands, `tests/test_roadmap_v010.py` is
-  retargeted to the past-milestone shape `tests/test_roadmap_v09.py` already
-  uses, and #85/#84/#86/#87/#83 are all closed (A-E above) -- #88
+- **H. The version, the roadmap and the closure.** `SPEC.md` and the
+  conformance ledger record A/D/F/G's new contracts (`ac3e14c`). Landed:
+  `pyproject.toml` and `src/ralphd/__init__.py` both declare `0.12.0`
+  (`82f219e`), this `## v0.12` block exists in the established shape
+  (`82f219e`, repaired for E's actual history by this entry), and
+  `tests/test_roadmap_v010.py` was retargeted to the past-milestone shape
+  `tests/test_roadmap_v09.py` already uses (`f4e58c4`, `82f219e`) --
+  #85/#84/#86/#87/#83 are all closed (A-E above), #88
   (`ralphctl skill install`) stays untouched, per the PRD's own exclusion.
-  Still pending as of this bullet: settling this run's row in
+  Not yet landed as of this entry: settling this run's row in
   `docs/prds/README.md` from a fresh `status.json` read, and the closing
-  operator report walking A-H. Both flip this bullet to ✅ when they land.
+  operator report walking the repaired A-H -- both tracked as this run's
+  own remaining tasks and not claimed here.
 
 ## Later / explicitly deferred
 
