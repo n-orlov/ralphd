@@ -98,26 +98,119 @@ def step_down_tier(tier: str) -> str:
 HostMap = Mapping[str, Mapping[str, HatBundle]]
 
 
+def _bundle_from_leaf(leaf: object, fallback: HatBundle) -> HatBundle:
+    """Task 002: turn one `model_tiers[hat][tier]` leaf into a `HatBundle`,
+    inheriting from `fallback` (that hat's plain `bundle_for` answer)
+    whatever the leaf does not spell out explicitly, so a tier rung that
+    only wants to swap the model does not have to also repeat the hat's
+    ordinary thinking setting, and vice versa.
+
+    - a plain string names the model ref only; thinking/effort are
+      inherited from `fallback` unchanged.
+    - a provider-shaped mapping may name `model` (defaulting to
+      `fallback.model` when omitted -- a rung that only wants to change
+      the thinking/effort setting need not repeat the model ref) and
+      EITHER `thinking` OR `effort` (never both, mirroring `HatBundle`'s
+      own discipline); a mapping naming neither inherits `fallback`'s
+      thinking/effort too, exactly like the plain-string case.
+    - anything else (a leaf that is neither a string nor a mapping) is
+      malformed and degrades to `fallback` unchanged, never to a made-up
+      value.
+    """
+    if isinstance(leaf, str):
+        return HatBundle(model=leaf, thinking=fallback.thinking,
+                          effort=fallback.effort)
+    if isinstance(leaf, Mapping):
+        model = leaf.get("model", fallback.model)
+        if "thinking" in leaf or "effort" in leaf:
+            return HatBundle(model=model, thinking=leaf.get("thinking"),
+                              effort=leaf.get("effort"))
+        return HatBundle(model=model, thinking=fallback.thinking,
+                          effort=fallback.effort)
+    return fallback
+
+
+def _apply_tier_table(ladder: dict[str, HatBundle], tier_table: Mapping,
+                       fallback: HatBundle) -> None:
+    """Task 002: write `tier_table`'s leaves into `ladder` in place, one
+    rung at a time. A `tier_table` key that is not one of the three
+    declared `TIERS` is a typo, not a fourth rung -- it is folded onto
+    `TOP_TIER` ("hard"), never onto a cheaper rung, so a mis-spelled tier
+    name never silently degrades that leaf's intended capability down to
+    `bundle_for`'s plain default the way dropping it would."""
+    for tier_key, leaf in tier_table.items():
+        tier = tier_key if tier_key in _TIER_RANK else TOP_TIER
+        ladder[tier] = _bundle_from_leaf(leaf, fallback)
+
+
 def default_host_map(cfg: JobConfig) -> dict[str, dict[str, HatBundle]]:
     """Widen task 005/007's per-hat table (`JobConfig.bundle_for`, one
     bundle per hat) into a hat x tier host map, by giving every one of a
-    hat's three rungs that hat's single half-1 bundle.
+    hat's three rungs that hat's single half-1 bundle, THEN layering
+    task 002's own `cfg.model_tiers` job.yaml table on top of that base for
+    whichever rungs it actually configures.
 
     This is the ONE place in this module a `JobConfig` is read, and it
     reads it through the existing, already-tested `bundle_for` -- never a
     second model-resolution pathway (requirement J's "one call site, not a
     new pathway" applies just as much to how the map is BUILT as to where
-    it is later consulted).
+    it is later consulted). `model_tiers` is read nowhere else.
 
     This is also exactly what makes a one-model configuration collapse
     cleanly (requirement E's "defaultability... survives the widening"):
-    with nothing configured beyond the bare `model` field, every hat's
+    with nothing configured beyond the bare `model` field (and no
+    `model_tiers` table at all -- the default, empty dict), every hat's
     `bundle_for` already returns that same model, so every rung of every
     hat's ladder ends up naming it too -- tiering becomes a no-op rather
     than an error, with no special-case branch anywhere in this function.
+
+    `model_tiers` anti-downgrade (task 002 criterion c): this function
+    never lets an unrecognised hat or tier KEY in the configured table
+    quietly vanish into a cheaper rung than what IS configured.
+
+    - a `model_tiers` key spelled exactly like one of `MODEL_HATS` always
+      wins for that hat, applied first (below), so a correctly-spelled
+      hat's own table is never overridden by anything that follows.
+    - a `model_tiers` key that is NOT one of `MODEL_HATS` (a typo) folds
+      its (tier-normalised) leaves into `UNRECOGNISED_HAT_FALLBACK`
+      ("planning")'s own ladder -- the exact same borrowed-ladder reasoning
+      `model_for`/`resolve_bundle` already use for an unrecognised hat NAME
+      at lookup time (task 005) -- but only into rungs the correctly-
+      spelled `planning` entry (if any) left unset, so a real planning
+      config always wins over a stray typo'd one rather than being
+      overwritten by it.
+    - within either pass, an unrecognised TIER key inside a hat's own
+      sub-table folds onto `TOP_TIER` (see `_apply_tier_table`), never onto
+      `trivial`/`normal`.
     """
-    return {hat: {tier: cfg.bundle_for(hat) for tier in TIERS}
-            for hat in MODEL_HATS}
+    host_map: dict[str, dict[str, HatBundle]] = {
+        hat: {tier: cfg.bundle_for(hat) for tier in TIERS} for hat in MODEL_HATS
+    }
+    raw_table = cfg.model_tiers if isinstance(cfg.model_tiers, Mapping) else {}
+
+    # Pass 1: hats spelled exactly like a `MODEL_HATS` member -- these
+    # always win, including over anything a typo'd hat key (pass 2) might
+    # otherwise want to leak into the same hat.
+    for hat, tier_table in raw_table.items():
+        if hat in MODEL_HATS and isinstance(tier_table, Mapping):
+            _apply_tier_table(host_map[hat], tier_table, cfg.bundle_for(hat))
+
+    # Pass 2: everything left -- an unrecognised hat key -- borrows
+    # `UNRECOGNISED_HAT_FALLBACK`'s ladder, filling only the rungs pass 1
+    # (a correctly-spelled `planning` entry, if configured) left untouched.
+    fallback_hat = UNRECOGNISED_HAT_FALLBACK
+    fallback_default = cfg.bundle_for(fallback_hat)
+    protected_tiers = set(raw_table.get(fallback_hat) or {}) & set(_TIER_RANK)
+    for hat, tier_table in raw_table.items():
+        if hat in MODEL_HATS or not isinstance(tier_table, Mapping):
+            continue
+        for tier_key, leaf in tier_table.items():
+            tier = tier_key if tier_key in _TIER_RANK else TOP_TIER
+            if tier in protected_tiers:
+                continue
+            host_map[fallback_hat][tier] = _bundle_from_leaf(leaf, fallback_default)
+
+    return host_map
 
 
 def resolve_bundle(hat: str, tier: str, host_map: HostMap) -> HatBundle:

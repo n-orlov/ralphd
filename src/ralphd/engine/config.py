@@ -358,6 +358,23 @@ class JobConfig:
     # effort knob instead of a level word that means nothing to it. See
     # `bundle_for` for the resolution order.
     thinking_overrides: dict = field(default_factory=dict)
+    # Task 002 (#68 half 2, review finding 2): the hat x tier host map's OWN
+    # job.yaml configuration surface -- a per-(hat, tier) table, one leaf per
+    # rung a job.yaml wants to name explicitly. Shape: `{hat: {tier: leaf}}`
+    # where `hat`/`tier` are meant to be `MODEL_HATS`/`tiers.TIERS` members
+    # (an unrecognised spelling of either is NOT rejected here -- see
+    # `engine/tiers.default_host_map`, the one builder that reads this field,
+    # for the anti-downgrade rule an unrecognised key degrades through) and
+    # `leaf` is either a plain model ref string, or a provider-shaped mapping
+    # naming `model`/`thinking`/`effort` explicitly -- the same shape family
+    # `thinking_overrides` already speaks, widened with an optional `model`
+    # key since a tier rung usually exists to name a DIFFERENT model, not
+    # just a different thinking level. A hat/tier this table leaves unset
+    # falls through to `bundle_for`'s existing half-1 answer for that hat --
+    # nothing here is a second model-resolution pathway; `default_host_map`
+    # is still the only place a `JobConfig` is read for this and `bundle_for`
+    # is still the only method it calls to do so.
+    model_tiers: dict = field(default_factory=dict)  # hat -> tier -> leaf
     api_token: str | None = None
     # Task 004 (#62 candidate 1, requirement A): a second, mandatory-by-
     # default secret gating *only* the mutating half of the API (see this
