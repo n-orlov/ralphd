@@ -5,6 +5,43 @@
 const REFRESH_MS = 4000;
 let refreshTimer = null;
 
+// -- where the hub is mounted --------------------------------------------
+//
+// Every request below is written as a root-absolute path (`/api/runs/...`),
+// which is what `ui_server.py` routes on -- but the hub is often reached
+// through a reverse proxy that mounts it under a path prefix and strips
+// that prefix before proxying. `tailscale serve --set-path=/ralph` does
+// exactly that, and forwards no header naming the prefix (only
+// `X-Forwarded-{For,Host,Proto}`), so the *server* cannot know it is
+// mounted at all. The *client* can: `document.currentScript.src` is the
+// absolute URL the browser resolved `<script src="app.js">` to, so its
+// directory is the mount root -- `/` when the hub is served at the root,
+// `/ralph/` behind the mount above. `HUB_MOUNT` is that directory minus
+// its trailing slash, i.e. `""` at the root, where `hubURL()` is then the
+// identity and every request goes out byte-identical to before.
+//
+// One constraint this cannot lift: the document URL has to end in `/`.
+// `https://host/ralph` resolves `app.js` and `style.css` against `/`, so
+// neither loads and there is no client left to correct anything --
+// `https://host/ralph/` is the canonical form (docs/cli.md, `ralphctl ui`).
+const HUB_MOUNT = (function () {
+  const src = document.currentScript && document.currentScript.src;
+  if (!src) return "";
+  try {
+    return new URL(src, document.baseURI).pathname.replace(/\/[^/]*$/, "");
+  } catch (e) {
+    return "";
+  }
+})();
+
+// Test-only instrumentation (never read by the app), like
+// `window.__hubRefreshLoopCount` below: the prefix the bundle resolved.
+window.__hubMount = () => HUB_MOUNT;
+
+function hubURL(path) {
+  return HUB_MOUNT + String(path);
+}
+
 // Task 016 (#27): `router()` is synchronous and does not await the async
 // view renderer it kicks off (`renderRunList`/`renderRunDetail`), so a
 // second navigation landing inside the first render's `await load()` used
@@ -57,7 +94,7 @@ function h(tag, attrs, children) {
 }
 
 async function getJSON(path) {
-  const resp = await fetch(path, { cache: "no-store" });
+  const resp = await fetch(hubURL(path), { cache: "no-store" });
   const body = await resp.json().catch(() => ({}));
   return { ok: resp.ok, status: resp.status, body };
 }
@@ -361,7 +398,7 @@ function deleteConfirmText(runId) {
 }
 
 async function requestRunDeletion(runId) {
-  const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}`,
+  const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}`),
                            { method: "DELETE" });
   const body = await resp.json().catch(() => ({}));
   return { ok: resp.ok, status: resp.status, body };
@@ -740,8 +777,8 @@ const ARTIFACT_KIND_IMAGE = "image";
 function artifactRawPath(runId, name) {
   // The raw byte route (task 023): the ONLY place a `<img src>` can point --
   // the JSON dialog route below never carries bytes, only text.
-  return `/api/runs/${encodeURIComponent(runId)}/artifacts-raw/` +
-    encodeURIComponent(name);
+  return hubURL(`/api/runs/${encodeURIComponent(runId)}/artifacts-raw/` +
+    encodeURIComponent(name));
 }
 
 function openImageArtifactDialog(runId, a, name) {
@@ -1336,7 +1373,7 @@ async function renderRunDetail(runId, myGen) {
     if (name) body.name = name;
     if (now) body.now = true;
     try {
-      const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}/steer`, {
+      const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/steer`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1657,7 +1694,7 @@ function renderRetryNow(box, runId, live, wait) {
     button.disabled = true;
     statusEl.textContent = " retrying…";
     try {
-      const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}/retry`, {
+      const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/retry`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });

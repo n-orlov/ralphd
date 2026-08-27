@@ -239,7 +239,7 @@ HUB_SERVER = REPO_ROOT / "src" / "ralphd" / "cli" / "ui_server.py"
 FOREIGN_PROGRAMS = (
     "docker", "podman", "pi", "pipx", "uvx", "uv", "pip", "python", "python3",
     "pytest", "git", "curl", "xargs", "tar", "ssh", "sudo", "systemctl",
-    "ralphd-engine", "tools/refresh_bedrock_rates.py",
+    "tailscale", "ralphd-engine", "tools/refresh_bedrock_rates.py",
 )
 FLAG_RE = re.compile(r"--[A-Za-z][A-Za-z0-9-]*")
 # Flags of other programs that the docs also mention *bare*, with no command

@@ -2690,6 +2690,24 @@ same package) that reads `~/.ralphd/runs/*` and proxies each run's *live*
 container API when reachable. `--port` defaults to a free ephemeral port;
 prints `serving hub at http://<bind>:<port>` on startup. Ctrl-C to stop.
 
+**Behind a reverse proxy, under a path prefix.** The hub can be mounted at a
+sub-path of another origin — `tailscale serve --bg --set-path=/ralph
+http://127.0.0.1:8420` publishes it as `https://<host>.<tailnet>.ts.net/ralph`
+— and needs no configuration to do it. Such a proxy strips the prefix before
+proxying (the server sees `/api/runs` for a request to `/ralph/api/runs`) and
+forwards no header naming it, so nothing server-side could know the prefix
+even in principle: `index.html` therefore loads its two assets relatively, and
+`app.js` recovers the prefix from `document.currentScript.src` (`HUB_MOUNT`)
+and prepends it to every request it makes. At the root the prefix is `""` and
+every request is byte-identical to an unproxied one.
+
+One constraint the client cannot lift: **the URL must end in a slash.**
+`https://host/ralph/` works; `https://host/ralph` makes the browser resolve
+`app.js` and `style.css` against `/`, so neither loads and there is no client
+left to correct anything. Link the trailing-slash form.
+`tests/test_hub_path_prefix.py` holds both halves, and drives a real Chromium
+against a real prefix-stripping proxy.
+
 Every response — the static bundle, every JSON route below and the raw
 artifact byte route — carries a `Content-Security-Policy` header (task 024,
 issue #54; constant `ui_server.HUB_CSP`), sent from the two shared response

@@ -3970,6 +3970,17 @@ run's detail URL still loads the app shell (routing is client-side via
 return a plain-text "static hub bundle not installed in this build" rather
 than crashing the server.
 
+**The bundle is mount-agnostic.** A reverse proxy may publish the hub under a
+path prefix (`tailscale serve --set-path=/ralph`); such a proxy strips the
+prefix before proxying and forwards no header naming it, so the server cannot
+know it is mounted and does not try. `index.html` references its two assets
+relatively, and `app.js` derives `HUB_MOUNT` from
+`document.currentScript.src` and prepends it to every request — `""` at the
+root, so an unproxied hub issues exactly the requests it always did. The
+document URL must end in `/`, since `/ralph` resolves the bundle's own assets
+above the mount; `tests/test_hub_path_prefix.py` fixes both halves and the
+trailing-slash rule.
+
 ### 11.2 Run list
 
 The default view (`#/`) is a table of every run under the registry, refreshed
