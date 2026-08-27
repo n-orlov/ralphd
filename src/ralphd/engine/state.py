@@ -138,39 +138,65 @@ _PROVISIONING_HAT_WIDTH = 9
 
 
 def format_provisioning_lines(table: list[dict]) -> list[str]:
-    """Task 010 (#79, PRD requirement O): the ONE shared formatter for the
-    resolved hat -> model mapping -- `JobConfig.provisioning_table()`'s
-    structured rows, worded exactly once here and rendered UNCHANGED by
-    both `ralphctl status` (plain text) and the hub's run-header card
-    (`renderSummary` in app.js, the same `startedAtLocal`/`endedAtLocal`
-    discipline task 048 established: Python words the fact, the browser
-    only puts the string in a text node).
+    """Task 010 (#79, PRD requirement O), widened by task 006 (#68) to the
+    full hat x tier matrix: the ONE shared formatter for the resolved hat ->
+    model mapping -- `JobConfig.provisioning_table()`'s structured rows,
+    worded exactly once here and rendered UNCHANGED by both `ralphctl
+    status` (plain text) and the hub's run-header card (`renderSummary` in
+    app.js, the same `startedAtLocal`/`endedAtLocal` discipline task 048
+    established: Python words the fact, the browser only puts the string
+    in a text node).
 
-    One line per row, `<hat>  <model ref>` plus a `(thinking: ...)` or
-    `(effort: ...)` suffix when that hat's bundle carries one -- never
-    both, the same mutual exclusion `HatBundle`/`bundle_for` enforce, so
-    this function never has to guess which one to print. A hat resolving
-    to pi's own default (no configured ref) reads `pi default`, never the
-    Python `None` an f-string would otherwise print, and never the
-    retired `strategy: balanced`-style wording task 006 deleted.
+    A collapsed (single-rung) row -- `provisioning_table`'s form for a
+    one-model configuration, or any hat with no configured `model_tiers`
+    rung -- renders exactly as task 010 shipped: one line, `<hat>  <model
+    ref>` plus a `(thinking: ...)` or `(effort: ...)` suffix when that
+    hat's bundle carries one -- never both, the same mutual exclusion
+    `HatBundle`/`bundle_for` enforce, so this function never has to guess
+    which one to print.
+
+    A widened row (a `"rungs"` list -- at least one tier's bundle differs
+    from the others) instead renders one line PER TIER, labelled
+    `<hat>.<tier>` (e.g. `worker.hard`) so a distinct rung is visibly tied
+    to both its hat and the tier that configured it, never collapsed back
+    down to a single ambiguous line. Same suffix discipline per line.
+
+    Either way, a hat resolving to pi's own default (no configured ref)
+    reads `pi default`, never the Python `None` an f-string would
+    otherwise print, and never the retired `strategy: balanced`-style
+    wording the ORIGINAL task 006 (#60) deleted.
 
     Deliberately independent of whether any iteration has run: the table
     comes from job.yaml alone (`JobConfig.provisioning_table`), so this
     reads the same the instant a run is created as it does after its
     hundredth iteration.
     """
+    def _bundle_suffix(bundle_row: dict) -> str:
+        if bundle_row.get("thinking"):
+            return f"  (thinking: {bundle_row['thinking']})"
+        if bundle_row.get("effort"):
+            return f"  (effort: {bundle_row['effort']})"
+        return ""
+
     lines = []
     for row in table:
         if not isinstance(row, dict):
             continue
         hat = str(row.get("hat", ""))
+        rungs = row.get("rungs")
+        if isinstance(rungs, list) and rungs:
+            for rung in rungs:
+                if not isinstance(rung, dict):
+                    continue
+                tier = str(rung.get("tier", ""))
+                label = f"{hat}.{tier}"
+                model = rung.get("model") or "pi default"
+                lines.append(f"{label:<{_PROVISIONING_HAT_WIDTH}} {model}"
+                             f"{_bundle_suffix(rung)}")
+            continue
         model = row.get("model") or "pi default"
-        suffix = ""
-        if row.get("thinking"):
-            suffix = f"  (thinking: {row['thinking']})"
-        elif row.get("effort"):
-            suffix = f"  (effort: {row['effort']})"
-        lines.append(f"{hat:<{_PROVISIONING_HAT_WIDTH}} {model}{suffix}")
+        lines.append(f"{hat:<{_PROVISIONING_HAT_WIDTH}} {model}"
+                     f"{_bundle_suffix(row)}")
     return lines
 
 

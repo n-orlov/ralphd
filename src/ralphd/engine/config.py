@@ -659,34 +659,84 @@ class JobConfig:
         return HatBundle(model=model, thinking=override)
 
     def provisioning_table(self) -> list[dict]:
-        """Task 010 (#79, PRD requirement O): the resolved hat -> model
-        mapping every surface (hub header, `ralphctl status`, `status
-        --json`) renders from -- one row per `MODEL_HATS` entry, in that
-        tuple's order, each resolved through `bundle_for` -- the SAME
-        method `loop.py`'s dispatch call site already uses
-        (`self.cfg.bundle_for(phase)`), never a second resolution path.
+        """Task 010 (#79, PRD requirement O), widened by task 006 (#68): the
+        resolved hat -> model mapping every surface (hub header, `ralphctl
+        status`, `status --json`) renders from -- one row per `MODEL_HATS`
+        entry, in that tuple's order, each row now resolved through EVERY
+        one of that hat's three tiers, never just the one `bundle_for`
+        would collapse a configured `model_tiers` rung down to and hide
+        from every surface that renders this table.
 
-        Deliberately structured, not worded: this is `model_for`'s actual
-        answer per hat, never the raw `models:`/`model_overrides:`/
-        `thinking_overrides:` knobs those answers were built from (the
-        distinction #79 asked for) -- `state.format_provisioning_lines`
-        turns each row into the one display string both `ralphctl status`
-        and the hub render unchanged.
+        Deliberately does NOT call `tiers.default_host_map`/`resolve_
+        bundle`: `tests/test_tier_dispatch.py::
+        test_resolver_has_exactly_one_call_site_in_src` pins those two to
+        `loop.py`'s dispatch call site alone (task 003), the same
+        constraint task 005 already respected for `engine/llm.py`'s route
+        check by mirroring `_bundle_from_leaf`'s per-leaf resolution
+        rather than calling it through `default_host_map`. This method
+        follows the identical precedent: it reuses `tiers._bundle_from_
+        leaf`/`tiers._apply_tier_table` directly (private helpers the
+        guard does not name) to widen `bundle_for(hat)`'s single bundle
+        into that hat's own three-tier ladder using ONLY a correctly-
+        spelled `MODEL_HATS` key in `self.model_tiers` (`default_host_
+        map`'s own "pass 1") -- the typo'd-hat-key borrowing its "pass 2"
+        additionally performs is a rare edge case this display-only table
+        deliberately leaves unrendered rather than duplicating that
+        second pass here too.
 
-        Each row: `{"hat": str, "model": str | None, "thinking": str |
-        None, "effort": str | None}` -- `model` is `None` for a hat that
-        resolves to pi's own default (never a made-up string), and
-        `thinking`/`effort` are mutually exclusive, the same discipline
-        `HatBundle` itself enforces.
+        `tiers` is imported here, lazily, rather than at module level:
+        `tiers.py` itself imports `JobConfig`/`HatBundle` from this module,
+        so a top-level `import ralphd.engine.tiers` here would be circular.
+
+        Deliberately structured, not worded: this is each hat's actual
+        per-tier answer, never the raw `models:`/`model_overrides:`/
+        `thinking_overrides:`/`model_tiers:` knobs those answers were
+        built from (the distinction #79 asked for) --
+        `state.format_provisioning_lines` turns each row into the display
+        string(s) both `ralphctl status` and the hub render unchanged.
+
+        A hat whose three tiers all resolve to the SAME bundle (a
+        one-model configuration, or any hat with no `model_tiers` entry --
+        `default_host_map`'s own no-op-widening guarantee, task 002)
+        collapses to the single-rung form task 010 shipped: `{"hat": str,
+        "model": str | None, "thinking": str | None, "effort": str |
+        None}`. A hat with at least one tier's bundle DIFFERENT from the
+        others (a configured `model_tiers` rung) instead carries a
+        `"rungs"` list, one entry per `tiers.TIERS`, each `{"tier": str,
+        "model": str | None, "thinking": str | None, "effort": str |
+        None}` -- so a caller can always tell, from the row's own shape,
+        whether this hat has one rung or three, without re-resolving
+        anything itself. `thinking`/`effort` stay mutually exclusive on
+        every bundle, the same discipline `HatBundle` itself enforces.
         """
+        from ralphd.engine import tiers as _tiers
+
+        raw_table = self.model_tiers if isinstance(self.model_tiers, dict) else {}
         rows = []
         for hat in MODEL_HATS:
-            bundle = self.bundle_for(hat)
-            rows.append({
-                "hat": hat,
-                "model": bundle.model,
-                "thinking": bundle.thinking,
-                "effort": bundle.effort,
-            })
+            fallback = self.bundle_for(hat)
+            ladder = {tier: fallback for tier in _tiers.TIERS}
+            tier_table = raw_table.get(hat)
+            if isinstance(tier_table, dict):
+                _tiers._apply_tier_table(ladder, tier_table, fallback)
+            bundles = {tier: ladder[tier] for tier in _tiers.TIERS}
+            distinct = set(bundles.values())
+            if len(distinct) == 1:
+                bundle = next(iter(distinct))
+                rows.append({
+                    "hat": hat,
+                    "model": bundle.model,
+                    "thinking": bundle.thinking,
+                    "effort": bundle.effort,
+                })
+            else:
+                rows.append({
+                    "hat": hat,
+                    "rungs": [
+                        {"tier": tier, "model": bundle.model,
+                         "thinking": bundle.thinking, "effort": bundle.effort}
+                        for tier, bundle in bundles.items()
+                    ],
+                })
         return rows
 

@@ -71,6 +71,72 @@ def test_format_provisioning_lines_has_no_strategy_wording_and_no_none():
     assert "pi default" in joined  # unconfigured hats, worded honestly
 
 
+def test_provisioning_table_collapses_a_one_model_configuration(tmp_path=None):
+    """Task 006 (#68): with no `model_tiers` table at all, every hat's
+    three tiers resolve to the SAME `bundle_for` answer -- `default_host_
+    map`'s own no-op-widening guarantee (task 002) -- so `provisioning_
+    table` collapses every row back down to task 010's original
+    single-rung shape (`{"hat", "model", "thinking", "effort"}`), never a
+    `"rungs"` list, for a one-model configuration."""
+    cfg = JobConfig(model_overrides={
+        "planning": PLANNER, "worker": WORKER, "verify": VERIFIER})
+    table = cfg.provisioning_table()
+    assert all("rungs" not in row for row in table)
+    assert all(set(row) == {"hat", "model", "thinking", "effort"} for row in table)
+    lines = format_provisioning_lines(table)
+    assert any(line.startswith("worker ") for line in lines)
+    assert not any("." in line.split()[0] for line in lines)
+
+
+def _write_job_yaml_with_worker_hard_tier(config_dir: Path) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "job.yaml").write_text(
+        "models: " + json.dumps({"worker": WORKER}) + "\n"
+        "model_tiers: " + json.dumps({"worker": {"hard": VERIFIER}}) + "\n")
+
+
+def test_the_two_surfaces_agree_on_a_distinct_worker_hard_rung(tmp_path):
+    """Task 006 (#68): a job.yaml that configures a distinct `worker.hard`
+    rung (different from `worker`'s other two tiers) makes BOTH the hub's
+    `run_detail` payload and `ralphctl status`'s plain text carry that
+    third rung, and both derive it from the identical
+    `provisioning_table`/`format_provisioning_lines` pair -- no second
+    formatter anywhere."""
+    ctl = Ctl(tmp_path)
+    run_id = "hat-status-tiers"
+    _write_dead_run(ctl.registry, run_id, iterationsUsed=0, iterationsBudget=25)
+    cdir = ctl.registry / "configs" / run_id
+    _write_job_yaml_with_worker_hard_tier(cdir)
+
+    # Surface 1: the hub's run-detail payload.
+    detail = run_detail(ctl.registry, run_id)
+    assert detail is not None
+    hub_table = detail["status"]["provisioning"]
+    hub_lines = detail["status"]["provisioningLines"]
+    by_hat = {row["hat"]: row for row in hub_table}
+    worker_row = by_hat["worker"]
+    assert "rungs" in worker_row
+    by_tier = {rung["tier"]: rung["model"] for rung in worker_row["rungs"]}
+    assert by_tier["trivial"] == WORKER
+    assert by_tier["normal"] == WORKER
+    assert by_tier["hard"] == VERIFIER
+    assert "worker.hard" in "\n".join(hub_lines)
+
+    # Surface 2: `ralphctl status` plain text -- the hub's exact strings.
+    text_res = ctl.run("status", run_id)
+    assert text_res.returncode == 0, text_res.stderr
+    for line in hub_lines:
+        assert line in text_res.stdout
+
+    # Surface 3: `ralphctl status --json` -- the hub's exact structured
+    # data, unchanged -- proving all three come from the SAME function.
+    json_res = ctl.run("--json", "status", run_id)
+    assert json_res.returncode == 0, json_res.stderr
+    doc = json.loads(json_res.stdout)
+    assert doc["provisioning"] == hub_table
+    assert doc["provisioningLines"] == hub_lines
+
+
 def test_the_three_surfaces_agree_before_any_iteration_has_run(tmp_path):
     ctl = Ctl(tmp_path)
     run_id = "hat-status-surfaces"
