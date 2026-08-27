@@ -345,12 +345,19 @@ def test_the_supervisor_hands_the_resolved_chain_to_the_runner(tmp_path):
 @pytest.fixture
 def price_engine(tmp_path):
     procs: list[EngineProc] = []
+    # Isolated HOME, for the reason spelled out in test_model_id_recorded.py's
+    # `model_engine`: every engine here runs on `GATEWAY_MODEL`, and
+    # `check_hat_routes` would abort it at start (exit 5) on any host whose
+    # own `$HOME/.pi/agent/models.json` declares no `amazon-bedrock` provider.
+    fixture_home = tmp_path / "fixture-home"
+    fixture_home.mkdir()
 
     def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
         defaults = {"run_id": "price-derive-e2e", "iterations": 6,
                     "max_approaches": 1, "on_complete": "exit",
                     "model": GATEWAY_MODEL}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        env = {"HOME": str(fixture_home), **(stub_env or {})}
+        e = EngineProc(tmp_path, {**defaults, **(job or {})}, env)
         procs.append(e)
         return e
 

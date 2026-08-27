@@ -136,11 +136,25 @@ def test_a_later_message_without_a_model_does_not_erase_an_observation():
 @pytest.fixture
 def model_engine(tmp_path):
     procs: list[EngineProc] = []
+    # Isolated HOME for every engine in this module, not just the one test
+    # that asked for it below: `check_hat_routes` (task 009, #60) reads the
+    # provider keys out of `$HOME/.pi/agent/models.json` and aborts the
+    # process at start (exit 5) when a configured hat's model names a
+    # provider that file does not declare. `GATEWAY_MODEL` is an
+    # `amazon-bedrock/...` ref, so inheriting the ambient HOME makes these
+    # tests pass or fail on whether the machine running them happens to
+    # have a Bedrock-declaring pi profile -- green in the job container,
+    # red on a developer host whose own profile routes elsewhere. An empty
+    # HOME has no models.json at all, which the check documents as "this
+    # profile hasn't declared anything yet" and skips.
+    fixture_home = tmp_path / "fixture-home"
+    fixture_home.mkdir()
 
     def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
         defaults = {"run_id": "model-id-e2e", "iterations": 6,
                     "max_approaches": 1, "on_complete": "exit"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        env = {"HOME": str(fixture_home), **(stub_env or {})}
+        e = EngineProc(tmp_path, {**defaults, **(job or {})}, env)
         procs.append(e)
         return e
 

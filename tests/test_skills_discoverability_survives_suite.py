@@ -38,6 +38,7 @@ import sys
 from pathlib import Path
 
 from test_e2e import EngineProc
+from tests.conftest import with_ralphd_importable
 
 REPO = Path(__file__).parent.parent
 
@@ -68,7 +69,14 @@ def _discoverable_skill_names(home: Path) -> set[str]:
 
 
 def _run_pytest_subset(home: Path, modules: list[str]) -> subprocess.CompletedProcess:
-    env = {**os.environ, "HOME": str(home)}
+    # `with_ralphd_importable` for the same reason EngineProc uses it (#67):
+    # overriding HOME moves *user* site-packages, so on a `pip install --user
+    # -e .` layout the child pytest cannot import `ralphd` at all and every
+    # module in the subset fails to collect -- a fixture failure that this
+    # test's own assertion would then report as "a real regression". A
+    # container with a system-wide install never sees it, which is why the
+    # in-container sweeps this test shipped with were green.
+    env = with_ralphd_importable({**os.environ, "HOME": str(home)})
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", *modules],
         cwd=str(REPO), capture_output=True, text=True, env=env, timeout=180,
