@@ -2117,3 +2117,61 @@ reach the model (a 0.3s Bedrock 502 with tokens billed) is handed straight
 back to the phase's own bounded error retry, and any iteration that reaches
 the model resets the streak — so the fail-fast path can only fire on a run
 of genuinely identical, work-free failures.
+
+## 11. Test environments that model a real developer host (v0.12, #84)
+
+Every suite run this project has ever recorded green ran either in this job
+image or in a container. Two scripts under `scripts/` deliberately construct
+an environment able to *fail* the way a plain developer checkout can, so
+"the suite is green" means the same thing everywhere it is asserted.
+
+### `scripts/host_like_pytest.sh` — environment shape
+
+Models a developer host's **environment variables and import-path
+shadowing**, from inside this same job container: every `RALPHD_*`
+environment variable unset except `RALPHD_RUN_ID` (preserved, or minted
+fresh — see the script's own header, F1/#73), a regular-package `tests`
+decoy planted ahead of this repository on `PYTHONPATH` (F2/#74, #64, #50),
+and a fresh, empty `$HOME`. The docker tier is filtered out (`-m "not
+docker"`) rather than run nested, since this container always has a real,
+working docker socket bind-mounted in — there is no clean self-skip to fall
+into. `tests/test_host_like_pytest_script.py` proves the mechanism by
+running a throwaway probe module through it and reading the properties back
+from inside the subprocess.
+
+This script's `$HOME` being fresh and *empty* is itself a blind spot:
+`check_hat_routes` (§5, `engine/llm.py`) documents an empty provider list as
+"this profile hasn't declared anything yet" and skips its whole check, so a
+host_like_pytest.sh run is silent about the ambient-`$HOME`-read class §5
+and `tests/test_ambient_home_allowlist_guard.py` close (#83, #85).
+
+### `scripts/host_like_dev_layout.sh` — install layout and dotfiles
+
+A **sibling** script, not a mode of the one above (see its own header for
+the full reasoning: different lifecycle, different failure surface — a
+mutating `pip install --user -e .` step every host_like_pytest.sh invocation
+should not have to pay for). It models the two pieces host_like_pytest.sh's
+environment-only shape cannot reach:
+
+- **A user-base editable install.** `PYTHONUSERBASE` is computed from the
+  new, scratch `$HOME` once (`site.getuserbase()` evaluated under that
+  `$HOME`, portable across platforms whose default derivation differs) and
+  threaded explicitly through both the `pip install --user -e ".[dev]"` call
+  and the pytest invocation that follows — so `ralphd`'s import path
+  genuinely moves when `$HOME` moves, the way it does on a real `--user -e
+  .` developer machine and never does in this container's own system-wide
+  install (`container/Dockerfile:42`). Requires a non-venv interpreter (a
+  virtualenv disables user-site packages outright); the script refuses to
+  run under one rather than silently proving nothing.
+- **A populated, hostile `$HOME`.** Before the install, a
+  `~/.pi/agent/models.json` declaring a provider no test fixture in this
+  repository uses, and a skill placed under `~/.pi/agent/skills/<name>/` the
+  way `ralphctl start --skills` mounts one. After the pytest run, the script
+  re-reads that skill's `SKILL.md` and reports on stdout whether it
+  survived — the #83 class is exactly a suite run silently deleting it.
+
+`tests/test_host_like_dev_layout_script.py` proves the mechanism the same
+way `tests/test_host_like_pytest_script.py` does for the environment-only
+script: a probe module executed through the script, its assertions read
+back from inside that subprocess, plus a check that the post-run survival
+report actually appears.
