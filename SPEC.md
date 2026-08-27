@@ -3342,6 +3342,7 @@ returns immediately.
 | `--reflect` | off | one extra post-terminal `reflect` iteration into `artifacts/reflection/` |
 | `--model REF` | unset | `pi` model ref used by any hat with no per-hat override |
 | `--model-for HAT=REF` | none | per-hat model override (repeatable), e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`; merges into the job's `models:` table over the `--template`'s and the registry's own `models:`/`model_overrides:` key -- see docs/cli.md |
+| `--model-for-tier HAT:TIER=REF` | none | per-hat-per-tier model override (task 004, #68), repeatable, e.g. `--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5`; merges rung by rung (hat AND tier) into the job's `model_tiers:` table (§4.1) over the `--template`'s and the registry's own `model_tiers:` key -- see docs/cli.md |
 | `--fast-model` (retired) | n/a | accepted-but-hidden (`argparse.SUPPRESS`); `cmd_start` refuses it with exit `2` naming the replacement (`models:`/`model_overrides:`, §4.1) rather than silently doing nothing |
 | `--model-strategy` (retired) | n/a | same shape as `--fast-model` above -- accepted-but-hidden, refused with exit `2` naming the replacement |
 | `--thinking LEVEL` | unset | `pi` thinking level |

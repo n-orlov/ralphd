@@ -42,6 +42,7 @@ from ..engine.config import (
     PRICE_STRATEGIES,
     JobConfig,
 )
+from ..engine.tiers import TIERS
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -1376,6 +1377,70 @@ def _table_from(d: dict) -> dict:
     return merged
 
 
+def _tier_table_from(d: dict) -> dict:
+    """Task 004: a dict's own `model_tiers` key (JobConfig's single field of
+    that name -- unlike `models`/`model_overrides` there is no second name
+    to merge here), shallow-copied at both the hat and tier level so the
+    caller's own merge (`_merge_tier_tables`) never mutates the source
+    dict it was read from."""
+    raw = d.get("model_tiers") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {hat: dict(tiers) for hat, tiers in raw.items() if isinstance(tiers, dict)}
+
+
+def _merge_tier_tables(base: dict, overlay: dict) -> dict:
+    """Task 004: merge two hat -> tier -> leaf tables key by key at BOTH
+    levels -- `overlay` wins per (hat, tier) rung, but a rung `overlay`
+    never mentions (for a hat it does mention, or a hat it never mentions
+    at all) survives from `base` untouched. This is the tier-table
+    equivalent of `_table_from`'s per-hat merge above, one level deeper."""
+    merged = {hat: dict(tiers) for hat, tiers in base.items()}
+    for hat, tiers in overlay.items():
+        if not isinstance(tiers, dict):
+            continue
+        existing = dict(merged.get(hat) or {})
+        existing.update(tiers)
+        merged[hat] = existing
+    return merged
+
+
+def _resolve_model_tiers_table(args, cfg: dict, reg_cfg: dict) -> dict:
+    """Task 004 (#68): the hat x tier `model_tiers` table (task 002's
+    JobConfig field), reachable from `ralphctl start` the same shape task
+    008 gave the flat per-hat `models`/`model_overrides` table
+    (`_resolve_model_table` above), except every level's merge happens at
+    BOTH the hat key and the tier key (`_merge_tier_tables`), never
+    replace-whole at either.
+
+    Order, weakest to strongest:
+
+    1. `<registry>/config.yaml`'s own `model_tiers:` key.
+    2. the `--template`'s `job.yaml` `model_tiers:` key.
+    3. one or more explicit `--model-for-tier HAT:TIER=REF` flags on this
+       command, applied last (so they win per (hat, tier) rung over both
+       levels above) and in argv order (last one for a repeated rung
+       wins).
+
+    A named LLM profile has no tier table of its own yet either (same gap
+    `_resolve_model_table` already documents for the flat table) -- that
+    rung is presently always empty for this table too.
+    """
+    table = _tier_table_from(reg_cfg)
+    table = _merge_tier_tables(table, _tier_table_from(cfg))
+    flag_table: dict = {}
+    for spec in args.model_for_tier or []:
+        hat_tier, sep, ref = spec.partition("=")
+        hat, csep, tier = hat_tier.partition(":")
+        if not sep or not csep or not hat.strip() or not tier.strip() or not ref.strip():
+            die(2, f"--model-for-tier {spec!r} must be HAT:TIER=REF, e.g. "
+                    f"worker:hard=prov/model-id (known hats: {', '.join(MODEL_HATS)}; "
+                    f"known tiers: {', '.join(TIERS)}; an unrecognised hat or tier "
+                    "name still resolves via the anti-downgrade rule, see docs/cli.md)")
+        flag_table.setdefault(hat.strip(), {})[tier.strip()] = ref.strip()
+    return _merge_tier_tables(table, flag_table)
+
+
 def _resolve_model_table(args, cfg: dict, reg_cfg: dict) -> dict:
     """Task 008 (#60 pillar 4, requirement A): the per-hat `models`/
     `model_overrides` table, reachable from the same three levels the
@@ -1492,6 +1557,13 @@ def _apply_template(args) -> Path | None:
     # levels instead of one level replacing the last. `args.model_overrides`
     # is not an argparse field; `cmd_start` reads it from here.
     args.model_overrides = _resolve_model_table(args, cfg, reg_cfg)
+    # Task 004 (#68): the hat x tier `model_tiers:` table -- same reason
+    # this cannot be one more `_TEMPLATE_SCALAR_FIELDS` entry as
+    # `args.model_overrides` above: it merges across levels at two key
+    # levels (hat AND tier) rather than one level replacing the last.
+    # `args.model_tiers` is not an argparse field; `cmd_start` reads it
+    # from here.
+    args.model_tiers = _resolve_model_tiers_table(args, cfg, reg_cfg)
     for key, hard_default in _TEMPLATE_SCALAR_FIELDS.items():
         if getattr(args, key) is None:
             reg_key = _REGISTRY_CONFIG_FIELD_KEYS.get(key)
@@ -1605,6 +1677,12 @@ def cmd_start(args):
         # omitted entirely when empty so an unconfigured run's job.yaml
         # carries no table at all, exactly like `model`/`thinking` above.
         "models": args.model_overrides or None,
+        # Task 004 (#68): the resolved hat x tier table (explicit
+        # `--model-for-tier` flags merged over the template's and the
+        # registry's own `model_tiers:` key, see
+        # `_resolve_model_tiers_table`) -- omitted entirely when empty,
+        # exactly like `models` above.
+        "model_tiers": args.model_tiers or None,
         "thinking": args.thinking,
         "iteration_timeout_s": args.iteration_timeout * 60,
         "job_timeout_s": args.timeout * 60,
@@ -5908,6 +5986,13 @@ def build_parser() -> argparse.ArgumentParser:
                         f"(known hats: {', '.join(MODEL_HATS)}); merges into the "
                         "job's models: table over the --template's and the "
                         "registry's own models:/model_overrides: key -- see docs/cli.md")
+    s.add_argument("--model-for-tier", action="append", metavar="HAT:TIER=REF",
+                   help="per-hat-per-tier model override (repeatable), e.g. "
+                        "--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5 "
+                        f"(known hats: {', '.join(MODEL_HATS)}; known tiers: "
+                        f"{', '.join(TIERS)}); merges into the job's model_tiers: "
+                        "table over the --template's and the registry's own "
+                        "model_tiers: key -- see docs/cli.md")
     # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
     # RETIRED -- the phase->tier strategy table they drove (`STRATEGY_TIERS`)
     # is gone (task 005's per-hat `models:`/`model_overrides:` job.yaml table
