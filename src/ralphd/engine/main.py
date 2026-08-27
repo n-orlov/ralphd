@@ -188,14 +188,18 @@ async def amain() -> int:
 
     workspace = Path(os.environ.get("RALPHD_WORKSPACE_DIR", str(WORKSPACE_DIR)))
     workspace.mkdir(parents=True, exist_ok=True)
-    place_creds(CONFIG_DIR)
+    # Task 006 (#83 class): resolve the engine's own ambient home ONCE,
+    # explicitly, and thread it through every startup call that used to
+    # default it internally (place_creds, refresh_redaction_map) -- the
+    # same discipline place_skills()/check_hat_routes() already have.
     _skills_home = ambient_home()
+    place_creds(CONFIG_DIR, home=_skills_home)
     place_skills(CONFIG_DIR, home=_skills_home)
     verify_placement_and_report(run, CONFIG_DIR, _skills_home)
     # Build the in-memory-only secret-redaction set (task 060) now that
     # creds are placed -- covers both process/LLM env and placed cred file
     # values from the very first iteration onward.
-    refresh_redaction_map()
+    refresh_redaction_map(home=_skills_home)
 
     if not run.prd_file.exists():
         prd_src = CONFIG_DIR / "prd.md"

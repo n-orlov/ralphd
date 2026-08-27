@@ -531,6 +531,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | path | responsibility |
 |---|---|
 | `src/ralphd/__init__.py` | `__version__` and `API_VERSION` — nothing else. |
+| `src/ralphd/ambient_home_allowlist.py` | Task 006 (#83 class, requirement C): the reasoned allowlist of every ambient-`$HOME` read left under `src/ralphd/` after every read that could take its home from its caller was moved to do so — one entry per surviving `Path.home()`/`os.environ["HOME"]`/`os.path.expanduser("~")` occurrence, path plus a one-line reason the ambient home is genuinely correct there. |
 | `src/ralphd/log_merge.py` | The one implementation of "a run's transcript": `iterations/NNNN/output.jsonl` in order, wrapped in synthesized `ralphd.iteration` boundary lines. Imported by the engine's `GET /logs` snapshot path *and* by host-side readers straight off the run dir, so both emit byte-identical lines. Scrubbing is an injected callback, never assumed. |
 | `src/ralphd/prompts/planning.md` | Planning phase: read the PRD, draft a file-borne `plan-proposal.json`, report a pointer plus the notes' `## Standing rules` block content through the `planning` contract (§4.2, §5.1), decide scope and optional `dependsOn`/`priority`. |
 | `src/ralphd/prompts/worker.md` | Worker phase: the one-task-per-iteration rule with its reasons, the task pick rule, credential handling, and the sibling-cleanup prohibition. |

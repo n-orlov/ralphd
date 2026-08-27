@@ -23,10 +23,6 @@ log = logging.getLogger("ralphd.creds")
 EXTRA_NAMES = ("gitconfig", "git-credentials", "netrc")
 
 
-def _home() -> Path:
-    return Path(os.environ.get("HOME") or os.path.expanduser("~"))
-
-
 def api_creds_dir() -> Path:
     """Container-local writable overlay location for runtime `PUT
     /config/creds/{name}` bodies -- mirrors skills.api_skills_dir(). Never
@@ -108,7 +104,7 @@ def _extra_source(config_dir: Path, name: str) -> Path | None:
     return None
 
 
-def place_creds(config_dir: Path, home: Path | None = None) -> list[str]:
+def place_creds(config_dir: Path, *, home: Path) -> list[str]:
     """Place effective `*.env` creds at `$HOME/.creds/<name>.env` (0600)
     plus recognized extras (gitconfig, git-credentials, netrc, ssh/,
     setup.sh). Mounted (`<config_dir>/creds`) and api-added (runtime `PUT
@@ -118,8 +114,15 @@ def place_creds(config_dir: Path, home: Path | None = None) -> list[str]:
     removes the file, not just stops re-adding it) -- safe/cheap, mirrors
     skills.place_skills(). Returns the list of placed cred *names* (never
     values) for logging by the caller.
+
+    `home` is required and keyword-only (task 006, #83 class, same refusal
+    `place_skills()` already enforces): this used to default a missing
+    `home` to the process's own ambient `$HOME`, which every real call site
+    (`engine/main.py`'s startup, `engine/api.py`'s creds PUT/DELETE
+    handlers) already has available as `skills.ambient_home()` -- passing
+    it explicitly means a caller that forgets it gets a loud `TypeError`
+    instead of a silent, unreviewed fallback.
     """
-    home = home or _home()
     placed: list[str] = []
 
     dest_creds = home / ".creds"

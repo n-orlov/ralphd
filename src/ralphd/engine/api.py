@@ -540,8 +540,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
         clear_creds_tombstone(name)
-        place_creds(CONFIG_DIR)
-        refresh_redaction_map()
+        place_creds(CONFIG_DIR, home=ambient_home())
+        refresh_redaction_map(home=ambient_home())
         run.emit("log", message=f"credential added via API: {name}")
         return Response(status_code=204)
 
@@ -555,8 +555,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         ddir = creds_deleted_dir()
         ddir.mkdir(parents=True, exist_ok=True)
         (ddir / f"{name}.env").touch()
-        place_creds(CONFIG_DIR)
-        refresh_redaction_map()
+        place_creds(CONFIG_DIR, home=ambient_home())
+        refresh_redaction_map(home=ambient_home())
         run.emit("log", message=f"credential removed via API: {name}")
         return Response(status_code=204)
 
@@ -579,8 +579,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             raise problem(422, "invalid env", "env must be an object of KEY: value")
         if pi_fragment is not None and not isinstance(pi_fragment, dict):
             raise problem(422, "invalid pi fragment", "pi must be an object")
-        apply_llm(env, pi_fragment)
-        refresh_redaction_map()
+        apply_llm(env, pi_fragment, home=ambient_home())
+        refresh_redaction_map(home=ambient_home())
         run.emit("log", message="LLM config replaced via API")
         return Response(status_code=204)
 

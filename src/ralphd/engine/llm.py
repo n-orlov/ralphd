@@ -27,16 +27,22 @@ from pathlib import Path
 from .config import OVERLAY_DIR
 
 
-def _home() -> Path:
-    return Path(os.environ.get("HOME") or os.path.expanduser("~"))
-
-
 def _env_path() -> Path:
     return OVERLAY_DIR / "llm" / "env.json"
 
 
-def pi_agent_dir(home: Path | None = None) -> Path:
-    return (home or _home()) / ".pi" / "agent"
+def pi_agent_dir(home: Path) -> Path:
+    """`<home>/.pi/agent` -- pi's own config directory. `home` is required
+    (task 006, #83 class): this used to default a missing `home` to the
+    process's own ambient `$HOME`, which is exactly right for the one real
+    caller that has a home to give it (`apply_llm`, the engine's own
+    mid-run `PUT /config/llm` handler) but gave a silent, unreviewed
+    fallback to every OTHER caller instead of a loud error -- the same
+    failure shape `place_skills()` (task 002) and `provider_keys()`/
+    `check_hat_routes()` (task 004) already closed. `apply_llm` now takes
+    `home` from ITS caller (`engine/api.py`'s `put_llm`, via
+    `skills.ambient_home()`) and passes it through here explicitly."""
+    return home / ".pi" / "agent"
 
 
 class UnroutableHatModel(RuntimeError):
@@ -203,7 +209,7 @@ def _deep_merge(dest: dict, fragment: dict) -> dict:
     return dest
 
 
-def apply_llm(env: dict | None, pi_fragment: dict | None) -> None:
+def apply_llm(env: dict | None, pi_fragment: dict | None, *, home: Path) -> None:
     """Apply a `PUT /config/llm` body.
 
     `env` (when not `None`) *replaces* the whole env-override set (matches
@@ -216,6 +222,11 @@ def apply_llm(env: dict | None, pi_fragment: dict | None) -> None:
     Values never land anywhere host-visible: `env.json` lives under the
     container-local overlay, and `models.json` lives under `$HOME`, neither
     of which is the run dir or `/config`.
+
+    `home` is required and keyword-only (task 006): the caller (`engine/
+    api.py`'s `put_llm`) already computes `skills.ambient_home()` for this
+    same reason `place_skills`/`place_creds` do, so this function states
+    where its home comes from instead of resolving `$HOME` again itself.
     """
     if env is not None:
         env_path = _env_path()
@@ -224,7 +235,7 @@ def apply_llm(env: dict | None, pi_fragment: dict | None) -> None:
         os.chmod(env_path, 0o600)
 
     if pi_fragment:
-        agent_dir = pi_agent_dir()
+        agent_dir = pi_agent_dir(home)
         agent_dir.mkdir(parents=True, exist_ok=True)
         models_path = agent_dir / "models.json"
         doc = {}
