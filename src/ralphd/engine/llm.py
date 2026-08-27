@@ -49,7 +49,7 @@ class UnroutableHatModel(RuntimeError):
     """
 
 
-def provider_keys(home: Path | None = None) -> list[str]:
+def provider_keys(*, home: Path) -> list[str]:
     """The provider keys this profile's own pi config declares --
     `~/.pi/agent/models.json`'s top-level `providers` object -- read
     locally from disk, never by calling a gateway (requirement D:
@@ -58,6 +58,13 @@ def provider_keys(home: Path | None = None) -> list[str]:
     `providers` object -- `check_hat_routes` treats that as "nothing
     declared yet", never as "nothing is ever routable" (see its own
     docstring for why).
+
+    `home` is required and keyword-only -- no ambient `$HOME` fallback --
+    so a caller that omits it gets a `TypeError` before any filesystem
+    read, the same refusal `place_skills()` already enforces (task 002,
+    #83) for the same reason: silently rebuilding a caller's home from
+    the process's own ambient environment is exactly the failure mode
+    that lost a placed skill.
     """
     models_path = pi_agent_dir(home) / "models.json"
     if not models_path.exists():
@@ -98,7 +105,7 @@ def _tier_leaf_ref(leaf: object, fallback_ref: str | None) -> str | None:
     return fallback_ref
 
 
-def check_hat_routes(cfg, home: Path | None = None) -> None:
+def check_hat_routes(cfg, *, home: Path) -> None:
     """Task 009 (PRD requirement D, #60 pillar 4), widened by task 005
     (#68) to every configured tier rung, not just each hat's plain
     `model_for` answer: before iteration 1, resolve every
@@ -134,8 +141,12 @@ def check_hat_routes(cfg, home: Path | None = None) -> None:
     covered, at the cost of a second call site into a function this
     module deliberately leaves to `loop.py` alone (see `_tier_leaf_ref`
     above).
+
+    `home` is required and keyword-only -- no ambient `$HOME` fallback --
+    same refusal as `provider_keys()` itself (a caller that omits it gets
+    a `TypeError` before `provider_keys()` ever reads a filesystem path).
     """
-    available = provider_keys(home)
+    available = provider_keys(home=home)
     if not available:
         return
     from .config import MODEL_HATS
