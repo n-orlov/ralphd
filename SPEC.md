@@ -1101,8 +1101,21 @@ hat's single already-resolved bundle. A job.yaml naming only `model`/
 `model_overrides` therefore collapses cleanly: every rung of every hat's ladder
 names the same bundle, and tiering is a no-op rather than an error, with no
 special-case branch. An operator who wants a REAL per-(hat, tier) override
-table has no `job.yaml` surface yet -- `default_host_map` is the only builder
-shipped; a hand-specified host map exists only in tests.
+names it in job.yaml's `model_tiers` table (§6.2) -- one leaf per rung, keyed
+`{hat: {tier: leaf}}` -- or reaches that same table from `start` with the
+repeatable `--model-for-tier HAT:TIER=REF` flag (§10.2), which merges rung by
+rung over the `--template`'s and the registry's own `model_tiers:` key.
+`default_host_map` is still the ONE place that resolves it into the map
+`resolve_bundle` actually looks up (task 016's single dispatch call site).
+Two display/validation-only readers of the same table exist beside it and
+both are pinned OFF that call site by the same guard
+(`test_resolver_has_exactly_one_call_site_in_src`): `JobConfig.
+provisioning_table` (§6.2) reuses `tiers._apply_tier_table`/`_bundle_from_
+leaf` directly (private helpers the guard does not name), and `engine/
+llm.py`'s startup route check (§3.1) mirrors the same per-leaf model-ref
+logic in its own dedicated helper rather than calling either function --
+neither is a second RESOLUTION algorithm, both defer to `bundle_for` for
+any rung `model_tiers` leaves unset.
 
 **The resolver is a pure function, not a transition-table entry.**
 `tiers.resolve_bundle(hat, effective_tier, host_map) -> HatBundle` does no I/O,
@@ -1835,6 +1848,7 @@ Every field:
 | `model_overrides` / `models` | map hat→ref | `{}` | per-hat model, beating `model`; keys are `planning`, `worker`, `review`, `verify`, `reflect`, `router` (`MODEL_HATS`). `models` is an accepted alias, merged into `model_overrides` once at load (the latter wins on a shared key). Settable in `job.yaml` directly, or from `start` with the repeatable `--model-for HAT=REF` flag (§10.2), which merges into this table over the `--template`'s and the registry's own `models:`/`model_overrides:` key. Task 006 retired the `model_strategy`/`fast_model` keys that used to feed a phase→tier preset table (`quality-first`/`cost-optimized`/`balanced`); a job.yaml still carrying either is translated deterministically into this table at load time (`engine.config._migrate_legacy_model_config`), never silently dropped |
 | `thinking` | string \| null | `null` | pi `--thinking` level, e.g. `medium`, `high` |
 | `thinking_overrides` | map hat→setting | `{}` | per-hat thinking/reasoning table (task 007, §4.7), same key vocabulary as `model_overrides` but never merged into it -- a model ref and its thinking setting are two independent axes. Each entry is either a plain `pi --thinking` string (the same vocabulary `thinking` speaks) or a provider-shaped object (`{thinking: ...}`/`{effort: ...}`); read together with `model_overrides` by `JobConfig.bundle_for`/`tiers.resolve_bundle` into a hat's `(model, thinking)` bundle. `job.yaml`-only |
+| `model_tiers` | map hat→tier→leaf | `{}` | the hat x tier host map's own job.yaml surface (task 002, §4.7): one leaf per `(hat, tier)` rung a job.yaml wants to name explicitly, `hat`/`tier` drawn from `MODEL_HATS`/`tiers.TIERS` (`trivial\|normal\|hard`) and `leaf` shaped like a `model_overrides` entry widened with an optional `model` key (`{model: ..., thinking: ...}`/`{model: ..., effort: ...}`, or a plain ref string). A rung this table leaves unset falls through to `bundle_for`'s already-resolved bundle for that hat, so a job.yaml naming only `model`/`models` still collapses every rung to the same bundle -- see §4.7. Settable in `job.yaml` directly, or from `start` with the repeatable `--model-for-tier HAT:TIER=REF` flag (task 004, §10.2), which merges rung by rung into this table over the `--template`'s and the registry's own `model_tiers:` key |
 | `api_token` | string \| null | `null` | bearer token the API requires; `RALPHD_API_TOKEN` (how `start --api-token` delivers it) overrides |
 | `infra_startup_timeout_s` | float | `150.0` | how long a phase may run with **zero** parseable pi events before the engine kills it as an infra fault instead of waiting out `iteration_timeout_s` |
 | `infra_retry_backoff_s` | list[float] | `[2, 5, 15, 30, 60, 120, 300]` | sleep before each retry of the same phase after an infra-classified failure; the last value repeats. Fast at the start on purpose — a 30-second gateway blip should cost seconds, not minutes |
@@ -1847,6 +1861,18 @@ Every field:
 Task 006 retired the earlier per-strategy tier table (`JobConfig.STRATEGY_TIERS`)
 entirely — see §4.1's "model resolution" paragraphs above for the current
 per-hat mechanism and the migration that keeps an old job.yaml working.
+
+**`model_tiers` sits beside `model_overrides`/`models`, one axis over.** Where
+`model_overrides` names one `(model, thinking)` bundle per hat, `model_tiers`
+names one bundle per `(hat, tier)` rung — the job.yaml surface for the pure
+`tiers.resolve_bundle(hat, effective_tier, host_map) -> HatBundle` resolver
+described in §4.7 to actually read something a job author wrote, rather than
+only ever seeing every rung collapsed to `bundle_for`'s single per-hat answer.
+The two tables are independent the same way `model_overrides` and
+`thinking_overrides` are: a `model_tiers` leaf can rename a hat's `model`, its
+`thinking`/`effort`, or both, but a hat with no `model_tiers` entry at all is
+unaffected — it still resolves through `model_overrides`/`model` exactly as it
+did before task 008.
 
 Seven fields also take an env override at engine load, so a run (or a test) can be
 retuned without editing `job.yaml`: `RALPHD_API_TOKEN`,

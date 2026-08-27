@@ -75,6 +75,7 @@ ralphctl start --prd <file|-> [options]
 | `--reflect` | off | run one extra `reflect` iteration after the job reaches a terminal state, writing a report + suggested prompt/skill diff to `artifacts/reflection/` (never touches the workspace or run state). That one attempt gets its own timeout floor (`REFLECT_TAIL_TIMEOUT_S`, 600s, still capped by `--iteration-timeout`) instead of the plain 60s floor every other phase gets once `--timeout` has already elapsed -- requirement C (#72): reflect is the run's own post-mortem and a deadline that has already ended the job must not starve the one attempt left to write it down. See [SPEC.md](../SPEC.md) §4.5 |
 | `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. `router` (task 018, requirement E) is `engine.router`'s own model for a genuinely ambiguous transition -- checked first, then the dedicated `router_model` key, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
 | `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
+| `--model-for-tier HAT:TIER=REF` | — | per-(hat, tier) rung override (task 002/004, #68), repeatable — e.g. `--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5`. `TIER` is one of the three declared tiers, `trivial\|normal\|hard` (`tiers.TIERS`); `HAT` is the same `MODEL_HATS` vocabulary `--model-for` uses. Merges rung by rung — hat AND tier both have to match for one flag to overwrite another — into the run's `job.yaml` `model_tiers:` table, over the `--template`'s and `<registry>/config.yaml`'s own `model_tiers:` key, the identical three-level order `--model-for` merges `models:` across; see "Per-(hat, tier) override table" below. A hat/tier this flag never names falls through to that hat's plain `--model-for`/`models:` answer (`bundle_for`), not to some cheaper tier — there is no second per-hat table this could conflict with. A malformed value (no `:` before the `=`, or no `=` at all) exits `2` naming the expected `HAT:TIER=REF` shape |
 | `--thinking <level>` | — | pi thinking level; falls back to the `--template`'s value, then the registry's `thinking` (`ralphctl config`) |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
@@ -2281,6 +2282,40 @@ survives) rather than one level replacing the last outright --
 no scalar `config set` for a table) > absent, i.e. each hat falls through to
 `model_for`'s other rungs (the bare `model` field, then pi's own default).
 See `--model-for` above and "`ralphctl config get/set`" above for both
+settable levels.
+
+#### Per-(hat, tier) override table (`model_tiers:`, task 002)
+
+One axis over from the per-hat table: `model_tiers:` names one bundle per
+`(hat, tier)` rung instead of one bundle per hat, so a `worker` task escalated
+to `hard` can provision a different model than that same hat's `trivial`/
+`normal` rungs -- see [SPEC.md](../SPEC.md) §4.7 for the resolver
+(`tiers.resolve_bundle`) this table feeds. Same merge discipline as `models:`,
+one level over: `--model-for-tier HAT:TIER=REF` (`start`, repeatable) > a
+`--template`'s own `job.yaml` `model_tiers:` key > `<registry>/config.yaml`'s
+own `model_tiers:` key (edited directly, like `pricing:` below) > absent,
+i.e. that rung falls through to `models:`/`model_overrides:`'s plain per-hat
+answer, never to some other tier's rung. A `job.yaml` naming only `model`/
+`models:` needs no `model_tiers:` entry at all -- every rung of every hat's
+ladder collapses to that one bundle, and `ralphctl status`/`status --json`
+render the collapsed single-rung row exactly as they did before this table
+existed; a hat with at least one configured rung instead renders one line per
+tier, labelled `<hat>.<tier>` (`state.format_provisioning_lines`, the one
+formatter `ralphctl status`/`status --json`/the hub all call). A leaf
+is either a plain model ref string or a mapping naming `model`/`thinking`/
+`effort` explicitly, the same shape family `thinking_overrides:` speaks:
+
+```yaml
+# job.yaml (or --model-for-tier HAT:TIER=REF / a --template / <registry>/config.yaml)
+model_tiers:
+  worker:
+    hard: amazon-bedrock/eu.anthropic.claude-opus-5   # escalated rung only
+  verify:
+    trivial: {model: aigw-openai/openai.gpt-5.6-sol, effort: low}
+    hard:    {model: aigw-openai/openai.gpt-5.6-terra, effort: high}
+```
+
+See `--model-for-tier` above and "`ralphctl config get/set`" above for both
 settable levels.
 
 #### Optional host-side pricing map (`pricing:`)

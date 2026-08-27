@@ -220,6 +220,32 @@ models:
 Every ref on the right resolves through the single `aigw-cross-family` profile
 above — no second profile, no second bearer token, no per-provider auth wiring.
 
+The same profile also answers the per-*tier* question (`docs/cli.md`,
+"Per-(hat, tier) override table", [SPEC.md](../SPEC.md) §4.7): a `worker`
+task that escalates to `hard` provisions a *different* Anthropic rung than its
+`trivial`/`normal` work, while `verify` climbs a whole ladder in the *other*
+family — one gateway, one bearer token, still no second profile:
+
+```yaml
+# job.yaml (or --model-for-tier HAT:TIER=REF / a --template / <registry>/config.yaml)
+model_tiers:
+  worker:                                            # trivial/normal stay on models.worker above
+    hard: amazon-bedrock/eu.anthropic.claude-opus-5  # escalated rung only -- bigger Anthropic model
+  verify:                                            # a full OpenAI-family ladder, cheapest to priciest
+    trivial: {model: aigw-openai/openai.gpt-5.6-sol,   effort: low}
+    normal:  {model: aigw-openai/openai.gpt-5.6-luna,  effort: medium}
+    hard:    {model: aigw-openai/openai.gpt-5.6-terra, effort: high}
+```
+
+`worker`'s `trivial`/`normal` rungs are left unset, so they fall through to
+`models.worker` above unchanged (`amazon-bedrock/eu.anthropic.claude-sonnet-5`)
+— only the escalated `hard` rung actually differs. `verify`'s three rungs all
+come from the OpenAI-shaped route on the *same* gateway, keyed by the same
+`AIGW_BEARER_TOKEN`, resolved by the same `tiers.resolve_bundle`
+(`(hat, effective_tier, host_map) -> HatBundle`) that resolves every other
+hat's ladder — a cross-family worker/verify split at the plain per-hat level
+and a cross-family ladder at the per-tier level cost the same one profile.
+
 ## Mid-run rotation
 
 `PUT /config/llm` replaces the container's LLM env
