@@ -46,7 +46,7 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | **failed** / unverified — 20 of 23 tasks completed and verified, 3 skipped-with-issue; the terminal verdict is a deadline artifact (#72) | 126 | 482.6M | ~$179.71 derived |
 | `selfdev-v010-not-a-verdict` | [v0.10-clock-is-not-a-verdict.md](v0.10-clock-is-not-a-verdict.md) | succeeded / verified — approach 1: 17 of 17 tasks validated, then rejected by review for under-evidenced closure (archived `approaches/01`); approach 2: 4 of 4 tasks validated. The reflect iteration was interrupted at the deadline | 57 | 124.8M | ~$54.38 derived |
 | `selfdev-v011-model-per-hat` | [v0.11-a-model-per-hat.md](v0.11-a-model-per-hat.md) | succeeded / verified — approach 1: 30 of 30 tasks validated, then rejected by review (a report-only commit left the suite red at the shipped sha, and requirement E's hat x tier matrix had no host-side surface; archived `approaches/01`); approach 2: 16 of 16 tasks validated | 104 | 262.5M | ~$116.07 derived |
-| `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | running / 22 of 24 tasks validated, 1 in progress, 1 pending | 55 | 89.6M | ~$37.70 derived |
+| `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | running / approach 1: 24 of 24 tasks validated, then rejected by review (#83 closed on a false "loss is now impossible" claim while a wider in-process survivor reproduced at HEAD, and the new dev-layout tier was not green at the shipped sha; archived `approaches/01`); approach 2: 11 of 12 tasks validated, 1 in progress | 87 | 123.6M | ~$60.91 derived |
 
 Notes worth keeping with the documents:
 
@@ -184,6 +184,29 @@ Notes worth keeping with the documents:
   rather than leaving it as the snapshot it landed with — this row is that
   courtesy returned by hand, alongside requirement O's roadmap block and
   `0.9.0` bump (`8ec5eee`).
+- **`selfdev-v012-green-on-a-real-host`'s row is a live snapshot of a run still
+  in progress** (`state: running`, no `verdict` yet), read fresh from
+  `/run/ralphd/status.json` and `/run/ralphd/tasks.json` at
+  `2026-08-27T19:09:19Z`: `iterationsUsed: 87`, `usage.totalTokens: 123557962`
+  (123.6M), `usage.costDerivedUSD: 60.905272` (`costStatus: derived`, so
+  `engine.state.format_cost` renders `~$60.91 derived`), and a fresh tally of
+  that moment's `tasks.json` — 11 tasks `validated`, 1 `in-progress`, 12 total.
+  Approach 1 ran the wave's entire 24-task plan to `validated` on every task,
+  but review rejected it (`approaches/01/review-findings.md`, blocking): #83 was
+  closed on a closing comment asserting "the loss is now impossible" while the
+  review's own reproduction (`HOME=/tmp/... pytest tests/test_engine_budget_seed.py`)
+  wiped a placed skill at the shipped sha, and the new dev-layout tier was not
+  green there either. Approach 2 (this repair pass, archived nowhere because it
+  is the run's current approach) reopened and re-fixed #83 (tasks 001-009,
+  closed again on live evidence, comment `5443779978`), repaired
+  `docs/roadmap.md`'s `## v0.12` block to match (task 010), and rewrote
+  `artifacts/reports/v0.12-closing-report.md` to the reopened-refixed-reclosed
+  truth (task 011); 11 of its 12 tasks are `validated`, the 12th (this row's own
+  settle-the-index task) still `in-progress` at the moment of this read. This
+  row carries no `+` snapshot marker per this task's own success criteria, even
+  though the run has not reached a terminal `state` — a later task will need to
+  resettle it once the run actually ends, the same way v0.10's and v0.11's rows
+  were resettled after their own approach histories closed out.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
