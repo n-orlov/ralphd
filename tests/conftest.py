@@ -229,6 +229,45 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+# --- default HOME isolation for spawned engines (#83) ---------------------
+# `place_skills()` (engine/skills.py) and `check_hat_routes()` (llm.py) both
+# read/rebuild state under `$HOME` unconditionally when no `home=` override
+# reaches them, and a child engine's env used to default to the ambient
+# `$HOME` of whatever process is running pytest -- so a test that forgot to
+# pass a HOME override in `stub_env` could clobber a human's real
+# `~/.pi/agent/skills/` (tests/test_skills_placement_ambient_home_loss.py).
+#
+# The fix is symmetric with the run/config/workspace dirs already built here:
+# a per-instance directory inside the test's own tmp tree, used unless the
+# caller opts in to the real ambient HOME. There is exactly ONE opt-in
+# spelling, `AMBIENT_HOME`, passed as `stub_env={"HOME": AMBIENT_HOME}` --
+# never a second one (e.g. copying `os.environ["HOME"]` by hand), so every
+# call site that genuinely needs the operator's own HOME is greppable by
+# that one name and nothing else silently reproduces the old default.
+AMBIENT_HOME = "<<ralphd-tests: inherit the real ambient $HOME (opt-in)>>"
+
+
+def _resolved_home_env(default_home: Path, stub_env: dict | None) -> dict:
+    """`stub_env` with `HOME` resolved for a spawned engine/ralphctl child.
+
+    - `stub_env["HOME"] == AMBIENT_HOME` (the one opt-in): swapped for the
+      real, ambient `$HOME` of the process running pytest.
+    - `stub_env` already names an explicit `HOME` (any other value, e.g. the
+      ~19 modules that isolate their own fixture home for creds/skills/
+      prompts/llm coverage): left exactly as given.
+    - neither: `default_home` is created (parents ok, idempotent) and used --
+      the new default, isolating this instance from the ambient `$HOME`
+      without the caller having to ask.
+    """
+    stub_env = dict(stub_env or {})
+    if stub_env.get("HOME") == AMBIENT_HOME:
+        stub_env["HOME"] = os.environ["HOME"]
+    elif "HOME" not in stub_env:
+        default_home.mkdir(parents=True, exist_ok=True)
+        stub_env["HOME"] = str(default_home)
+    return stub_env
+
+
 class LiveRun:
     """A real ralphd-engine, wired so `ralphctl` (pointed at `registry`)
     can talk to it as if a container had been started normally."""
@@ -239,6 +278,7 @@ class LiveRun:
         self.run_dir = self.registry / "runs" / run_id
         self.config_dir = self.registry / "configs" / run_id
         self.workspace = tmp / "ws" / run_id
+        self.home = tmp / "home" / run_id
         for d in (self.run_dir, self.config_dir, self.workspace):
             d.mkdir(parents=True, exist_ok=True)
         (self.config_dir / "prd.md").write_text("# CLI logs test PRD\n\nDo the thing.\n")
@@ -266,7 +306,7 @@ class LiveRun:
             "RALPHD_CONFIG_DIR": str(self.config_dir),
             "RALPHD_WORKSPACE_DIR": str(self.workspace),
             "RALPHD_PORT": str(self.port),
-            **(stub_env or {}),
+            **_resolved_home_env(self.home, stub_env),
         })
         self.proc = subprocess.Popen([str(RALPHD_ENGINE)], env=env,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

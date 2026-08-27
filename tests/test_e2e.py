@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHD_ENGINE, with_ralphd_importable
+from tests.conftest import RALPHD_ENGINE, _resolved_home_env, with_ralphd_importable
 
 REPO = Path(__file__).parent.parent
 STUB_PI = REPO / "tests" / "stub-pi"
@@ -38,6 +38,7 @@ class EngineProc:
         self.run_dir = tmp / "run"
         self.config_dir = tmp / "config"
         self.workspace = tmp / "ws"
+        self.home = tmp / "home"
         for d in (self.run_dir, self.config_dir, self.workspace):
             d.mkdir(parents=True, exist_ok=True)
         (self.config_dir / "prd.md").write_text("# E2E test PRD\n\nDo the thing.\n")
@@ -74,7 +75,7 @@ class EngineProc:
             "RALPHD_CONFIG_DIR": str(self.config_dir),
             "RALPHD_WORKSPACE_DIR": str(self.workspace),
             "RALPHD_PORT": str(self.port),
-            **(stub_env or {}),
+            **_resolved_home_env(self.home, stub_env),
         })
         self.proc = subprocess.Popen(
             [str(RALPHD_ENGINE)], env=env,
