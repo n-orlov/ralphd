@@ -13,21 +13,36 @@ sees, rather than re-asserting `ralphd.engine.skills.verify_placement`'s
 own opinion of itself.
 
 Scope, honestly stated (see `artifacts/reports/skills-placement-rootcause.md`
-for the full record): this proves discoverability survives for the
-representative subset of the e2e/live suite that task 001 identified as
-*already* isolating its own `$HOME` (via `stub_env={"HOME": ...}` or
-`monkeypatch.setenv`) -- i.e. the class of module #83's fix (task 002's
-explicit-`home=` contract) actually protects. It deliberately does *not*
-cover the still-open residual gap task 001 also identified and reproduced
-(`tests/test_skills_placement_ambient_home_loss.py`): an e2e/live module
-that spawns a child engine *without* overriding `HOME` in `stub_env`
-inherits whatever `$HOME` the outer pytest process has, and that child's
-ordinary, correct-for-itself startup call still wipes it. Fixing that
-class (defaulting `EngineProc`/`LiveRun`'s env construction to an isolated
-`HOME` unless a test opts into ambient inheritance) is a harness-level
-change with dozens of call sites and would flip the very assertion task
-001's own reproducer makes -- out of scope for this task; #83 stays open
-because of it.
+for the full record): this proves discoverability survives for two
+representative subsets of the e2e/live suite --
+
+1. `SAFE_SUITE_SUBSET`: modules task 001 identified as *already* isolating
+   their own `$HOME` (via `stub_env={"HOME": ...}` or
+   `monkeypatch.setenv`) -- the class module #83's task 002 fix
+   (`place_skills()`'s explicit-`home=` contract) protects directly.
+2. `PREVIOUSLY_AMBIENT_SUBSET`: two modules (`test_iteration_env_strip.py`,
+   `test_stagnation_signature.py`) drawn from the exact 46-module
+   ambient-HOME-inheriting set task 001's own rootcause report named --
+   modules that construct `EngineProc`/`LiveRun` and name no `"HOME"` of
+   their own, so before task 001 they inherited whatever `$HOME` the outer
+   pytest process had and their child engine's ordinary startup wiped it.
+   Task 001 (`tests/conftest.py`'s `_resolved_home_env`) now defaults every
+   such child's `HOME` to an isolated per-instance directory instead of the
+   ambient one, unless a test opts in with `stub_env={"HOME": AMBIENT_HOME}`
+   -- neither module here does, so both now run their child engine against
+   an isolated `HOME` that is not `ambient_home` at all, and `place_skills`'
+   clear-then-fill has nothing of `ambient_home`'s to touch.
+
+Together these two subsets hold the *whole* class task 001's rootcause
+report identified: every e2e/live module that spawns a child engine either
+already isolated its own `HOME` (subset 1) or now gets an isolated `HOME`
+by default (subset 2, task 001's fix). The residual gap this docstring
+used to describe here -- an e2e/live module inheriting ambient `HOME` and
+its child's startup wiping a real skill placed there -- no longer exists
+for either subset; `tests/test_skills_placement_ambient_home_loss.py` (task
+002) is the unit-level regression test for exactly this mechanism, and this
+module is the suite-level demonstration that it holds for real pytest
+subsets, not just a single isolated call.
 """
 
 from __future__ import annotations
@@ -52,6 +67,22 @@ SAFE_SUITE_SUBSET = [
     "tests/test_skills_api.py",
     "tests/test_skills_placement_requires_home.py",
     "tests/test_cli_skills_crud.py",
+]
+
+# Two modules drawn from the exact 46-module ambient-HOME-inheriting set
+# named in `artifacts/reports/task-001-home-isolation.md` (the command
+# there -- `grep -rln "EngineProc\|LiveRun\|engine_factory\|live_run"
+# tests/*.py` minus any file already naming `"HOME"` -- lists exactly 46
+# files, both of these among them): they construct `EngineProc`/`LiveRun`
+# and name no `"HOME"` of their own, so before task 001 they inherited
+# whatever `$HOME` the outer pytest process had. Task 001's
+# `_resolved_home_env` now defaults their child engine's `HOME` to an
+# isolated per-instance directory instead, so running them with the outer
+# process's own `HOME` pointed at `ambient_home` (below) no longer lets
+# their child engine's startup touch `ambient_home` at all.
+PREVIOUSLY_AMBIENT_SUBSET = [
+    "tests/test_iteration_env_strip.py",
+    "tests/test_stagnation_signature.py",
 ]
 
 
@@ -140,4 +171,51 @@ def test_skill_placed_at_engine_startup_is_still_discoverable_after_a_real_suite
     assert _discoverable_skill_names(ambient_home) == {"manual-skill"}, (
         "the skill placed at engine startup must still be discoverable "
         "after this repo's own test suite subset ran in the same HOME"
+    )
+
+
+def test_skill_placed_at_engine_startup_is_still_discoverable_after_previously_ambient_modules_run_in_the_same_home(
+    tmp_path,
+):
+    """Same shape as the test above, but the suite subset (step 3) is drawn
+    from `PREVIOUSLY_AMBIENT_SUBSET` -- modules that, before task 001, spawn
+    a child engine with no `stub_env` HOME override at all and so inherited
+    whatever `HOME` the outer pytest process had. Here the *outer* pytest
+    subprocess itself is given `HOME=ambient_home` (via `_run_pytest_subset`)
+    to reproduce exactly that inheritance path; task 001's default isolation
+    (`tests/conftest.py::_resolved_home_env`) means each module's own child
+    engine no longer picks up `ambient_home` regardless, so `place_skills`'
+    clear-then-fill has nothing of `ambient_home`'s left to touch."""
+    ambient_home = tmp_path / "ambient-home"
+    ambient_home.mkdir()
+
+    engine_root = tmp_path / "engine"
+    mounted_skill = engine_root / "config" / "skills" / "manual-skill"
+    mounted_skill.mkdir(parents=True)
+    (mounted_skill / "SKILL.md").write_text("# manual-skill\n\nStands in for a "
+                                            "human-placed/mounted skill.\n")
+
+    e = EngineProc(engine_root,
+                   {"run_id": "job-container-repro-2", "iterations": 1,
+                    "max_approaches": 1, "on_complete": "idle"},
+                   stub_env={"HOME": str(ambient_home)})
+    try:
+        e.wait_api(timeout=30)
+        assert _discoverable_skill_names(ambient_home) == {"manual-skill"}, (
+            "the skill placed at this simulated engine's startup must be "
+            "discoverable under the container's HOME before the suite runs"
+        )
+    finally:
+        e.stop()
+
+    res = _run_pytest_subset(ambient_home, PREVIOUSLY_AMBIENT_SUBSET)
+    assert res.returncode == 0, (
+        f"suite subset failed (this is a real regression, not a fixture "
+        f"issue):\n{res.stdout}\n{res.stderr}"
+    )
+
+    assert _discoverable_skill_names(ambient_home) == {"manual-skill"}, (
+        "the skill placed at engine startup must still be discoverable "
+        "after this previously-ambient-inheriting suite subset ran with "
+        "the outer process's own HOME pointed at the same directory"
     )
