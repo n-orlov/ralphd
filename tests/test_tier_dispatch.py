@@ -75,18 +75,23 @@ class _Agent:
     line's JSON contract payload when the caller under test needs one
     (worker/verify); with neither set, a bare non-JSON success is enough
     (planning/reflect/review never parse a payload inside the methods this
-    module drives directly)."""
+    module drives directly). Every call's kwargs (`model`/`thinking`/
+    `effort`/...) are recorded in order in `self.calls`, so task 003's
+    "did the CONFIGURED rung's ref actually reach the runner call" tests
+    below can inspect them without a second spy on `resolve_bundle`."""
 
     def __init__(self, task_id: str | None = None, verdict: str | None = None,
                  hat: str | None = None):
         self.task_id = task_id
         self.verdict = verdict
         self.hat = hat
+        self.calls: list[dict] = []
 
     def interrupt(self):
         return False
 
     async def run(self, prompt, transcript, **kw):
+        self.calls.append(kw)
         r = IterationResult(exit_code=0)
         if self.task_id and self.verdict:
             payload = {"task_id": self.task_id, "verdict": self.verdict}
@@ -265,3 +270,49 @@ def test_steering_injected_task_escalates_through_the_same_code_as_an_annotated_
         assert worker_calls == [("worker", "hard")], (task["id"], calls)
         assert (run.read_tasks()["tasks"][0][state.TASK_EFFECTIVE_TIER_FIELD]
                 == "hard")
+
+
+# ---------------------------------------------------------------------------
+# 5. Task 003: a CONFIGURED rung's ref (job.yaml `model_tiers`) actually
+#    reaches the runner call at the one dispatch site -- proved on the
+#    `sup.runner` seam, never by re-reading `default_host_map`/
+#    `resolve_bundle`'s own unit tests (those only prove the pure host-map
+#    merge; this proves the merged map is the one loop.py's dispatch site
+#    actually builds and hands to the real subprocess call).
+# ---------------------------------------------------------------------------
+
+def test_configured_hard_rung_ref_reaches_the_runner_call_when_tier_is_hard(tmp_path):
+    model_tiers = {"worker": {"hard": {"model": "hard-only-ref",
+                                       "thinking": "high"}}}
+    sup, run = _make_sup(tmp_path, [
+        {"id": "001", "title": "t", "status": "pending",
+         "successCriteria": "c", "tier": "hard"},
+    ], model_tiers=model_tiers)
+    agent = _Agent(task_id="001", verdict="complete")
+    sup.runner = agent
+    asyncio.run(sup._step_worker())
+
+    worker_call = agent.calls[-1]
+    assert worker_call["model"] == "hard-only-ref"
+    assert worker_call["thinking"] == "high"
+    assert worker_call["effort"] is None
+
+
+def test_configured_normal_rung_ref_reaches_the_runner_call_when_tier_is_normal(tmp_path):
+    model_tiers = {"worker": {"hard": {"model": "hard-only-ref", "thinking": "high"},
+                               "normal": {"model": "normal-only-ref", "effort": "medium"}}}
+    sup, run = _make_sup(tmp_path, [
+        {"id": "001", "title": "t", "status": "pending",
+         "successCriteria": "c", "tier": "normal"},
+    ], model_tiers=model_tiers)
+    agent = _Agent(task_id="001", verdict="complete")
+    sup.runner = agent
+    asyncio.run(sup._step_worker())
+
+    worker_call = agent.calls[-1]
+    assert worker_call["model"] == "normal-only-ref"
+    assert worker_call["effort"] == "medium"
+    assert worker_call["thinking"] is None
+    # the hard-only rung's ref never leaks onto the normal dispatch
+    assert worker_call["model"] != "hard-only-ref"
+
