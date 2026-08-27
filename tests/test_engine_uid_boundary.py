@@ -507,9 +507,14 @@ def test_an_unprivileged_engine_runs_and_records_that_it_has_no_boundary(tmp_pat
     run_dir, config_dir = tmp_path / "run", tmp_path / "config"
     run_dir.mkdir()
     config_dir.mkdir()
+    # task 010: this boots the real engine (place_creds/place_skills run
+    # against `home` before the missing-PRD exit), so it must not inherit
+    # this pytest process's own ambient $HOME -- an isolated one, same shape
+    # as EngineProc/LiveRun's default.
     env = {**os.environ, "RALPHD_RUN_DIR": str(run_dir),
            "RALPHD_CONFIG_DIR": str(config_dir),
-           "RALPHD_WORKSPACE_DIR": str(tmp_path / "ws")}
+           "RALPHD_WORKSPACE_DIR": str(tmp_path / "ws"),
+           "HOME": str(tmp_path / "home")}
     res = subprocess.run([str(RALPHD_ENGINE)], env=env, capture_output=True,
                          text=True, timeout=60)
     assert res.returncode == 2, res.stdout + res.stderr  # "no PRD", not a crash
@@ -523,8 +528,12 @@ def test_version_and_help_still_touch_nothing(tmp_path):
     """--version exits inside parse_args, before the drop: still no side
     effects of any kind (SPEC 13.4's first self-protection bullet)."""
     engine = str(RALPHD_ENGINE)
+    # task 010: isolated HOME on principle (see the sibling test above) even
+    # though --version exits before parse_args() hands off to anything that
+    # would read it.
+    env = {**os.environ, "HOME": str(tmp_path / "home")}
     res = subprocess.run([engine, "--version"], capture_output=True, text=True,
-                         timeout=30, cwd=tmp_path)
+                         timeout=30, cwd=tmp_path, env=env)
     assert res.returncode == 0
     assert "no uid boundary" not in (res.stdout + res.stderr)
     assert list(tmp_path.iterdir()) == []

@@ -988,6 +988,12 @@ def test_engine_help_version_pristine_and_exit_zero(tmp_path, flag):
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("RALPHD_")}
     env["PATH"] = f"{RALPHD_ENGINE.parent}:{os.environ['PATH']}"
+    # task 010: --help/--version exit inside argparse, before any HOME-
+    # touching code runs (engine/main.py's own comment on this), but this
+    # spawn is still isolated from the real ambient $HOME on principle --
+    # never rely on "this particular flag happens to be safe" surviving a
+    # future refactor.
+    env["HOME"] = str(tmp_path / "home")
 
     proc = subprocess.run(
         [str(RALPHD_ENGINE), flag], cwd=workdir, env=env,
