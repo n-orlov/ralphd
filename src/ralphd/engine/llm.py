@@ -77,16 +77,44 @@ def _provider_key(ref: str) -> str:
     return ref.split("/", 1)[0]
 
 
+def _tier_leaf_ref(leaf: object, fallback_ref: str | None) -> str | None:
+    """Task 005 (#68): the model half of one `model_tiers[hat][tier]`
+    leaf, mirroring `tiers._bundle_from_leaf`'s own model-field resolution
+    (a plain string names the ref outright; a mapping may name `model`
+    explicitly and otherwise inherits the hat's plain answer; anything
+    else inherits unchanged) -- deliberately NOT calling into
+    `tiers.default_host_map`/`resolve_bundle` themselves, so this
+    read-only startup sanity check stays outside those two functions' own
+    guarded "exactly one call site" invariant
+    (`tests/test_tier_dispatch.py::test_resolver_has_exactly_one_call_site_
+    in_src`), which is about the live DISPATCH pathway (`loop.py`), never
+    this validation pass. Thinking/effort are irrelevant to routability so
+    this helper, unlike `_bundle_from_leaf`, resolves the model ref alone.
+    """
+    if isinstance(leaf, str):
+        return leaf
+    if isinstance(leaf, dict):
+        return leaf.get("model", fallback_ref)
+    return fallback_ref
+
+
 def check_hat_routes(cfg, home: Path | None = None) -> None:
-    """Task 009 (PRD requirement D, #60 pillar 4): before iteration 1,
-    resolve every `config.MODEL_HATS` entry's ref (`cfg.model_for(hat)`)
-    and check its provider key against `provider_keys()` -- read from this
-    profile's own `~/.pi/agent/models.json`, never a live gateway call, so
-    this check adds no network dependency to `start`. Raises
-    `UnroutableHatModel` naming the FIRST hat (in `MODEL_HATS` order)
-    whose ref names an undeclared provider, the ref itself, and the
-    provider keys that ARE available -- so a typo in one hat's ref
-    surfaces at start, not three hours in on that hat's first dispatch.
+    """Task 009 (PRD requirement D, #60 pillar 4), widened by task 005
+    (#68) to every configured tier rung, not just each hat's plain
+    `model_for` answer: before iteration 1, resolve every
+    `config.MODEL_HATS` entry's plain ref (`cfg.model_for(hat)`, unchanged
+    from task 009) AND every explicit `cfg.model_tiers[hat][tier]` rung a
+    job.yaml/CLI actually configured, and check each ref's provider key
+    against `provider_keys()` -- read from this profile's own
+    `~/.pi/agent/models.json`, never a live gateway call, so this check
+    adds no network dependency to `start`. Raises `UnroutableHatModel`
+    naming the FIRST such rung (plain per-hat refs first in `MODEL_HATS`
+    order, then each hat's own tier table in job.yaml's declared order)
+    whose ref names an undeclared provider -- the hat, the tier (omitted
+    for a plain per-hat ref, which has no tier of its own), the ref
+    itself, and the provider keys that ARE available -- so a typo in one
+    hat's `model_tiers` table surfaces at start, not three hours in on
+    that hat's first dispatch at that tier.
 
     A `None` ref (`model_for`'s own documented "pi's own default model"
     sentinel) is never checked -- there is no explicit ref to resolve. An
@@ -97,6 +125,15 @@ def check_hat_routes(cfg, home: Path | None = None) -> None:
     all -- a real `start` always places one (docs/llm-profiles.md's `host`
     profile at minimum copies the host's own), so a real per-hat table
     never hits this branch.
+
+    Only rungs a job.yaml/CLI ACTUALLY named in `model_tiers` are walked
+    here -- an unconfigured tier already repeats the exact same ref the
+    plain per-hat loop below just checked, so re-deriving `tiers.
+    default_host_map`'s full widened ladder (every hat's every tier,
+    including ones nothing configured) would only recheck refs already
+    covered, at the cost of a second call site into a function this
+    module deliberately leaves to `loop.py` alone (see `_tier_leaf_ref`
+    above).
     """
     available = provider_keys(home)
     if not available:
@@ -112,6 +149,24 @@ def check_hat_routes(cfg, home: Path | None = None) -> None:
                 f"hat {hat!r} is configured with model {ref!r}, whose "
                 f"provider {key!r} is not one of the providers this "
                 f"profile declares ({', '.join(available)})")
+
+    raw_table = cfg.model_tiers if isinstance(cfg.model_tiers, dict) else {}
+    for hat in MODEL_HATS:
+        tier_table = raw_table.get(hat)
+        if not isinstance(tier_table, dict):
+            continue
+        fallback_ref = cfg.model_for(hat)
+        for tier, leaf in tier_table.items():
+            ref = _tier_leaf_ref(leaf, fallback_ref)
+            if not ref:
+                continue
+            key = _provider_key(ref)
+            if key not in available:
+                raise UnroutableHatModel(
+                    f"hat {hat!r} tier {tier!r} is configured with model "
+                    f"{ref!r}, whose provider {key!r} is not one of the "
+                    f"providers this profile declares "
+                    f"({', '.join(available)})")
 
 
 def current_env() -> dict[str, str]:

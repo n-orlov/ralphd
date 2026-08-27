@@ -122,6 +122,58 @@ async def test_unroutable_hat_model_aborts_before_iteration_1(
 
 
 @pytest.mark.asyncio
+async def test_unroutable_tier_rung_aborts_with_exact_message(
+        tmp_path, monkeypatch):
+    """Task 005 (#68): a typo'd `model_tiers` rung -- not just a bare
+    per-hat `models:` entry -- must be caught before iteration 1, and the
+    error must name the hat, the tier, the offending ref, and the
+    provider keys that ARE available, in exactly this wording."""
+    rc, run_dir, run_job_calls, main_mod = await _run_amain(
+        tmp_path, monkeypatch,
+        models_yaml_block=(
+            f"models:\n  verify: {GOOD_VERIFY_REF}\n"
+            f"model_tiers:\n  verify:\n    hard: {BAD_REF}\n"),
+        providers={GOOD_PROVIDER: {"baseUrl": "https://example.invalid"}})
+
+    assert rc == main_mod.EXIT_UNROUTABLE_HAT_MODEL
+    assert run_job_calls == []
+
+    logs = [e for e in _events(run_dir)
+            if e["type"] == "log" and e.get("level") == "error"]
+    assert logs, _events(run_dir)
+    message = logs[-1]["message"]
+    assert message == (
+        f"hat 'verify' tier 'hard' is configured with model {BAD_REF!r}, "
+        f"whose provider 'bogus-provider' is not one of the providers "
+        f"this profile declares ({GOOD_PROVIDER})")
+
+    status_path = run_dir / "status.json"
+    if status_path.exists():
+        assert json.loads(status_path.read_text()).get("state") != "running"
+
+
+@pytest.mark.asyncio
+async def test_routable_tier_rung_does_not_raise(tmp_path, monkeypatch):
+    """Task 005 (#68): a `model_tiers` rung whose ref IS routable must not
+    trip the check, even alongside a bare per-hat `models:` entry -- the
+    widened check must not turn a previously-fine table into a failure."""
+    rc, run_dir, run_job_calls, main_mod = await _run_amain(
+        tmp_path, monkeypatch,
+        models_yaml_block=(
+            f"models:\n  verify: {GOOD_VERIFY_REF}\n"
+            f"model_tiers:\n  verify:\n"
+            f"    hard: {GOOD_PROVIDER}/verify-hard-model\n"),
+        providers={GOOD_PROVIDER: {"baseUrl": "https://example.invalid"}})
+
+    assert rc == 0
+    assert run_job_calls == ["hat-route-check"]
+
+    logs = [e for e in _events(run_dir)
+            if e["type"] == "log" and e.get("level") == "error"]
+    assert logs == []
+
+
+@pytest.mark.asyncio
 async def test_fully_routable_table_starts_normally_no_network_call(
         tmp_path, monkeypatch):
     def _boom(*a, **k):
