@@ -1935,6 +1935,36 @@ class LoopSupervisor:
     # nothing"), not a log line, so it may only exist while it is true.
     REFLECT_TOMBSTONE = "FAILED.md"
 
+    # Task 014 (#87): the two spellings a reflect failure can carry, decided
+    # once here and used nowhere else. #87's own incident (a deadline-fired
+    # reflect returning an unparseable contract payload) is a DEGRADED
+    # reflection: the iteration ran to a clean exit and left an untrustworthy
+    # or missing deliverable (no report, an invalid/unparseable contract, or
+    # a contract that itself disclaims report_written). FATAL is reserved for
+    # the other shape -- the iteration itself never produced a trustworthy
+    # attempt at all (it did not run to completion, was interrupted, timed
+    # out, errored, or exited nonzero).
+    #
+    # Both are recorded exactly the same way today (`reflect: {ok: false,
+    # error, errorClass}`, never touching `state`/`verdict`/`reason` -- see
+    # `_record_reflect_outcome` and `_finish`/`_promote_finishing_state`,
+    # ledger guards 19/22): this task's decision is that a reflect failure
+    # never fails the run, of EITHER class, full stop -- the FSM promotes
+    # `self._pending_terminal`, settled by `_finish()` strictly before
+    # `_run_reflection()` is even called, and nothing reflect does is
+    # consulted by `_promote_finishing_state()`. `REFLECT_FAULT_FATAL` exists
+    # so that if a *future* change ever wants to let some reflect failure
+    # fail a run, it has to say so under this name -- never by quietly
+    # reusing `REFLECT_FAULT_DEGRADED`, which every existing status.json/CLI/
+    # hub consumer already reads as "the job is unaffected". No code path
+    # produces `REFLECT_FAULT_FATAL` today in a way that changes the job's
+    # outcome; tests/test_reflect_deadline_boundary.py pins the split (both
+    # spellings occur, for different underlying result shapes, and neither
+    # ever touches state/verdict) and the fact that the two are not spelled
+    # identically.
+    REFLECT_FAULT_DEGRADED = "degraded"
+    REFLECT_FAULT_FATAL = "fatal"
+
     def _reflect_verdict(self, result: IterationResult) -> tuple[dict | None, list[str]]:
         """Task 121 (#60 pillar 3, fact 9): parse the reflect hat's final
         line as a `reflect` contract payload (`{"report_written": ...,
@@ -1964,8 +1994,11 @@ class LoopSupervisor:
                 "(absent or malformed output)"]
         return payload, contract_errors
 
-    def _reflect_failure(self, result: IterationResult | None) -> str | None:
-        """The reflect iteration's failure text, or None if it succeeded.
+    def _reflect_failure(
+        self, result: IterationResult | None
+    ) -> tuple[str | None, str | None]:
+        """The reflect iteration's failure text and fault class, or
+        ``(None, None)`` if it succeeded.
 
         Task 019 (#5). Deliberately *not* classify_fault(): this is not about
         whose fault it was (the retry wrapper already spent its budget on
@@ -1985,31 +2018,47 @@ class LoopSupervisor:
         validated claim, not the file's mere existence, is now the thing
         the harness trusts, exactly the move task 116/118/119 already made
         for worker/verify/review.
+
+        Task 014 (#87) adds the fault-class half: every branch below that
+        fires because the ITERATION ITSELF never produced a trustworthy
+        attempt (no result, interrupted, timed out, an in-band error, a
+        nonzero exit) returns `REFLECT_FAULT_FATAL`; every branch that fires
+        because the iteration ran cleanly but the DELIVERABLE is missing or
+        invalid (no report file, an unparseable/invalid contract, or a
+        contract that disclaims `report_written`) returns
+        `REFLECT_FAULT_DEGRADED` -- the exact shape of #87's own incident.
+        Neither class changes what `_record_reflect_outcome` does with the
+        result: see `REFLECT_FAULT_FATAL`'s own comment for why.
         """
         if result is None:
-            return "the reflect iteration did not run to completion"
+            return ("the reflect iteration did not run to completion",
+                    self.REFLECT_FAULT_FATAL)
         error = (result.error_message or "").strip()
         if result.interrupted:
-            return error or "the reflect iteration was interrupted"
+            return (error or "the reflect iteration was interrupted",
+                    self.REFLECT_FAULT_FATAL)
         if result.timed_out or result.no_traffic_timeout:
-            return error or "the reflect iteration timed out"
+            return (error or "the reflect iteration timed out",
+                    self.REFLECT_FAULT_FATAL)
         if error:
-            return error
+            return error, self.REFLECT_FAULT_FATAL
         if result.exit_code not in (0, None):
-            return f"the reflect agent exited {result.exit_code}"
+            return (f"the reflect agent exited {result.exit_code}",
+                    self.REFLECT_FAULT_FATAL)
         report = self.run.artifacts_dir / "reflection" / self.REFLECT_REPORT
         if not report.exists():
             return (f"the reflect iteration wrote no artifacts/reflection/"
-                    f"{self.REFLECT_REPORT}")
+                    f"{self.REFLECT_REPORT}", self.REFLECT_FAULT_DEGRADED)
         payload, contract_errors = self._reflect_verdict(result)
         if contract_errors:
             return ("the reflect iteration's outcome contract was invalid: "
-                    + "; ".join(contract_errors))
+                    + "; ".join(contract_errors), self.REFLECT_FAULT_DEGRADED)
         if payload.get("report_written") is not True:
             return ("the reflect iteration's own contract claims "
                     f"report_written is not true even though "
-                    f"{self.REFLECT_REPORT} exists on disk")
-        return None
+                    f"{self.REFLECT_REPORT} exists on disk",
+                    self.REFLECT_FAULT_DEGRADED)
+        return None, None
 
     def _record_reflect_outcome(self, result: IterationResult | None) -> None:
         """Records the reflect phase's verdict in the run state (task 019, #5):
@@ -2028,17 +2077,30 @@ class LoopSupervisor:
         claiming `terminal state: aborted (verdict unverified)` beside a
         perfectly good report -- and with `reflect-failed` offered as an
         artifact alias next to it.
+
+        Task 014 (#87): `error` alone no longer says everything -- `_reflect_
+        failure` also returns a fault class (`REFLECT_FAULT_FATAL` /
+        `REFLECT_FAULT_DEGRADED`), recorded as `reflect.errorClass` and named
+        in FAILED.md, so a reader can tell #87's own shape (a clean reflect
+        that left no valid deliverable -- DEGRADED) from the reflect process
+        itself breaking (FATAL) without the two ever being spelled the same
+        way. `errorClass` is omitted entirely on success, so the exact-match
+        `reflect == {"ok": True, "error": None, "endedAt": ...}` shape every
+        existing consumer already checks is unchanged.
         """
-        error = self._reflect_failure(result)
-        self.run.update_status(reflect={"ok": error is None, "error": error,
-                                        "endedAt": utcnow()})
+        error, fault_class = self._reflect_failure(result)
+        reflect_fields = {"ok": error is None, "error": error,
+                          "endedAt": utcnow()}
+        if fault_class is not None:
+            reflect_fields["errorClass"] = fault_class
+        self.run.update_status(reflect=reflect_fields)
         if error is None:
             log.info("reflect iteration wrote artifacts/reflection/%s",
                      self.REFLECT_REPORT)
             self._clear_reflect_tombstone()
             self.run.emit("reflect_done", ok=True)
             return
-        log.warning("reflect iteration failed: %s", error)
+        log.warning("reflect iteration failed (%s): %s", fault_class, error)
         outdir = self.run.artifacts_dir / "reflection"
         outdir.mkdir(parents=True, exist_ok=True)
         status = self.run.read_status()
@@ -2047,19 +2109,26 @@ class LoopSupervisor:
         # outcome -- `pendingTerminalState` (or, if that is somehow absent,
         # `state` itself) is the value this tombstone means to report.
         reported_state = status.get("pendingTerminalState") or status.get("state")
+        class_note = ("the reflect iteration itself never finished cleanly"
+                      if fault_class == self.REFLECT_FAULT_FATAL else
+                      "the reflect iteration ran cleanly but left no valid "
+                      "deliverable -- issue #87's own shape")
         (outdir / self.REFLECT_TOMBSTONE).write_text(
             "# Reflection failed\n\n"
             f"The post-terminal `reflect` iteration did not produce a report.\n\n"
             f"- error: {error}\n"
+            f"- class: {fault_class} ({class_note})\n"
             f"- when: {utcnow()}\n"
             f"- run: {self.cfg.run_id}\n"
             f"- terminal state: {reported_state} "
             f"(verdict {status.get('verdict')})\n\n"
-            "The job's own terminal state above is unaffected by this failure.\n"
+            "The job's own terminal state above is unaffected by this failure,\n"
+            "of either class: a reflect failure never changes state, verdict\n"
+            "or reason -- see _record_reflect_outcome/_finish in loop.py.\n"
             "See the last `reflect` iteration under `iterations/` for the\n"
             "transcript, and `infra_wait`/`infra_retry` events for the retries\n"
             "that were already spent on it.\n")
-        self.run.emit("reflect_done", ok=False, error=error)
+        self.run.emit("reflect_done", ok=False, error=error, errorClass=fault_class)
 
     def _clear_reflect_tombstone(self) -> bool:
         """Removes a stale artifacts/reflection/FAILED.md, returning whether

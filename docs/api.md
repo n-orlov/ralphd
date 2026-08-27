@@ -354,13 +354,25 @@ finished. Then:
 
 ```json
 "reflect": {"ok": false, "error": "Connection error.",
-            "endedAt": "2026-08-18T09:31:20Z"}
+            "errorClass": "fatal", "endedAt": "2026-08-18T09:31:20Z"}
 ```
 
 `ok: true` means `artifacts/reflection/report.md` exists; otherwise `error`
 carries the agent's error text (or `the reflect iteration wrote no
 artifacts/reflection/report.md` when it exited cleanly having written
 nothing) and `artifacts/reflection/FAILED.md` names the same error on disk.
+`errorClass` (present only on a failure) is one of two spellings that are
+deliberately never the same word (task 014, #87): `"degraded"` when the
+iteration ran to a clean exit but left no valid deliverable (no report, an
+unparseable/invalid contract, or a contract disclaiming `report_written`) --
+issue #87's own incident, a deadline-fired reflect returning an unparseable
+contract payload -- and `"fatal"` when the iteration itself never produced a
+trustworthy attempt (never ran to completion, interrupted, timed out, an
+in-band error, a nonzero exit). Neither class changes `state`/`verdict`/
+`reason` below: no reflect failure of either class can fail a run, by
+construction (`_finish()`/`_promote_finishing_state()`, `loop.py`) --
+`"fatal"` is reserved so a future change that ever wants a reflect failure to
+be able to fail a run cannot do so by quietly reusing `"degraded"`.
 A successful attempt **removes** any `FAILED.md` an earlier attempt (of an
 earlier episode) left behind, emitting `reflect_tombstone_cleared`, so a
 fail → resume → succeed run never advertises a reflection failure it does not
@@ -630,7 +642,7 @@ then follows. Event types:
 | `infra_recovered` | an iteration reached the model again: `health: "ok"`, `infraWaitTotalS` — the outage episode is over and `infraWait` is back to `null` |
 | `infra_retry_now` | an operator woke a backoff wait via `POST /retry`: phase, attempt, error, `source: "operator"` |
 | `reflect_infra_delay` | the job ended on an infra-shaped failure, so the post-terminal `reflect` iteration waits before its first attempt instead of firing into the same dead endpoint: `delayS`, `error`, `budgetS` (reflect's own, capped, outage budget). Followed by an ordinary `infra_wait` with `attempt: 0` |
-| `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error` when it failed (same verdict as status.json's `reflect`) |
+| `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error`/`errorClass` when it failed (same verdict as status.json's `reflect`) |
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
 | `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |

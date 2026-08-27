@@ -4392,12 +4392,34 @@ an operator or script to read.
 **A reflect failure is recorded, never swallowed.** From the outside, "reflect ran
 and produced nothing" and "`reflect` was never enabled" look identical — an empty
 `artifacts/reflection/` and a terminal run. So the engine leaves an explicit
-verdict either way: `status.json` gains `reflect: {ok, error, endedAt}` (`null`
-while reflect is disabled or has not ended); a `reflect_done` event carries `ok`
-and, on failure, `error`; and on failure `artifacts/reflection/FAILED.md` names
-the error, the timestamp, the run id and the job's own terminal state, and points
-at the last `reflect` iteration's transcript and the `infra_wait`/`infra_retry`
-events already spent on it.
+verdict either way: `status.json` gains `reflect: {ok, error, endedAt}`, plus
+`errorClass` on a failure (`null` while reflect is disabled or has not ended); a
+`reflect_done` event carries `ok` and, on failure, `error`/`errorClass`; and on
+failure `artifacts/reflection/FAILED.md` names the error, the fault class, the
+timestamp, the run id and the job's own terminal state, and points at the last
+`reflect` iteration's transcript and the `infra_wait`/`infra_retry` events
+already spent on it.
+
+**Two failure spellings, never one (task 014, #87).** #87's own incident — the
+deadline fired mid-run, the reflect iteration returned no parseable contract
+payload, and that window's `state`/`verdict` still came out `failed`/`unverified`
+for a run whose work had actually held up — is a **degraded** reflection: the
+iteration ran to a clean exit and left an untrustworthy or missing deliverable
+(no `report.md`, an invalid/unparseable contract, or a contract that itself
+disclaims `report_written`). `_reflect_failure()` (`loop.py`) returns
+`REFLECT_FAULT_DEGRADED` for exactly that shape. Everything else — the iteration
+never ran to completion, was interrupted, timed out, carried an in-band error, or
+exited nonzero — is **fatal**, `REFLECT_FAULT_FATAL`: the iteration itself never
+produced a trustworthy attempt at all. The two are never spelled the same way,
+and neither one is wired to change the job's outcome: this task's decision is
+that NO reflect failure, of either class, can fail a run — `_finish()` already
+settled `state`/`verdict`/`reason` into `self._pending_terminal` strictly before
+`_run_reflection()` is ever called, and `_promote_finishing_state()` promotes
+only that recorded value, never anything reflect wrote. `REFLECT_FAULT_FATAL`
+exists so a future change that decides a reflect failure SHOULD be able to fail
+a run has a name to key off of that could never be confused with
+`REFLECT_FAULT_DEGRADED`, which every existing `status.json`/CLI/hub consumer
+already reads as "the job is unaffected".
 
 The failure test is deliberately *not* `classify_fault()` — whose fault it was is
 a question the retry wrapper already answered. The question here is only whether
