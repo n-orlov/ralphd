@@ -14,12 +14,15 @@ later is covered without touching this file.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import pytest
+import report_claims as report_claims_module
 from report_claims import (
     REPO_ROOT,
     REPORTS_DIR,
+    Claim,
     ReportClaims,
     RetiredClaim,
     commit_problems,
@@ -149,6 +152,99 @@ def test_a_node_family_wildcard_needs_a_real_match() -> None:
     assert defines_test(source, "test_retry_proxy_*")
     assert not defines_test(source, "test_retry_nope_*")
     assert not defines_test(source, "test_retry_proxy_forwards_the_token_and_more")
+
+
+def test_path_problems_takes_at_most_one_git_ls_files_snapshot(monkeypatch) -> None:
+    """F: membership is checked against one `git ls-files` snapshot, not a
+    subprocess call per claim -- even across many claims in one report."""
+    monkeypatch.setattr(report_claims_module, "_TRACKED_PATHS", None)
+    real_run = report_claims_module.subprocess.run
+    calls = []
+
+    def counting_run(*args, **kwargs):
+        calls.append(args)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(report_claims_module.subprocess, "run", counting_run)
+    many_claims = ReportClaims(
+        report=REPORTS_DIR / "conformance-ledger.md",
+        shas=[],
+        paths=[Claim("tests/report_claims.py", line=i) for i in range(1, 21)],
+        nodes=[],
+        retired=[],
+    )
+    problems = path_problems(many_claims)
+    assert not problems, problems
+    assert len(calls) == 1, f"expected exactly one git ls-files call, got {len(calls)}"
+    # A second, independent call must reuse the snapshot -- still one total.
+    more_claims = ReportClaims(
+        report=REPORTS_DIR / "conformance-ledger.md",
+        shas=[],
+        paths=[Claim("tests/test_report_claims.py", line=1)],
+        nodes=[],
+        retired=[],
+    )
+    assert not path_problems(more_claims)
+    assert len(calls) == 1
+
+
+def test_untracked_generated_path_fails_with_the_untracked_message() -> None:
+    """F: `artifacts/screenshots/hub/` is a directory the browser tier
+    creates but git never tracks -- v0.11's task-027 report cited it and
+    passed only in the job's own workspace. `.exists()` must no longer be
+    enough; the failure must say the path is generated, not committed."""
+    generated = REPO_ROOT / "artifacts" / "screenshots" / "hub"
+    assert "artifacts/screenshots/hub" not in report_claims_module._tracked_paths()
+    generated.mkdir(parents=True, exist_ok=True)
+    try:
+        claims = ReportClaims(
+            report=REPORTS_DIR / "conformance-ledger.md",
+            shas=[],
+            paths=[Claim("artifacts/screenshots/hub/", line=1)],
+            nodes=[],
+            retired=[],
+        )
+        problems = path_problems(claims)
+        assert problems, "an untracked-but-present directory must be flagged"
+        assert "generated, not committed" in problems[0]
+    finally:
+        shutil.rmtree(REPO_ROOT / "artifacts" / "screenshots", ignore_errors=True)
+
+
+def test_the_same_absolute_run_dir_path_still_passes(tmp_path) -> None:
+    """F: an absolute run-dir citation of the same generated directory is
+    ignored by `PATH_RE` entirely, exactly as before -- it never becomes a
+    path claim, so it never becomes a path problem either."""
+    report = tmp_path / "fixture.md"
+    report.write_text(
+        "See `/run/ralphd/artifacts/screenshots/hub/` for the capture.\n"
+    )
+    claims = parse_claims(report)
+    assert claims.paths == []
+    assert not path_problems(claims)
+
+
+def test_tracked_but_missing_path_fails_with_the_other_message() -> None:
+    """F: a path that is neither tracked nor present on disk -- the shape of
+    a citation to something deleted or renamed after the report was
+    written -- gets the other message, distinguishable from the untracked
+    one above."""
+    claims = ReportClaims(
+        report=REPORTS_DIR / "conformance-ledger.md",
+        shas=[],
+        paths=[
+            Claim(
+                "tests/this_module_was_deleted_or_renamed_after_the_report.py",
+                line=1,
+            )
+        ],
+        nodes=[],
+        retired=[],
+    )
+    problems = path_problems(claims)
+    assert problems, "a gone-entirely path must be flagged"
+    assert "deleted or renamed" in problems[0]
+    assert "generated, not committed" not in problems[0]
 
 
 def test_the_v05_report_still_names_its_own_module() -> None:

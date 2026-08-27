@@ -15,15 +15,29 @@ The claim vocabulary the reports use, and how it is read:
 * A backticked 7-40 char hex token is a commit sha, and must resolve to a
   commit object in this repo.
 * A backticked path under one of `REPO_DIRS` is a repo-relative path and must
-  exist. Anything else in backticks is prose: `ci/Dockerfile` in the
-  sibling-toolchain recipe belongs to a *target* repo, and a run-dir artifact
-  is written `<run-dir>/artifacts/...` precisely so this parser does not read
-  it as a claim about the checkout.
+  be tracked by git (task 012, #86) -- one `git ls-files` snapshot per
+  process, not a subprocess per claim. Existence on disk is not membership:
+  a directory the browser tier creates but never commits
+  (`artifacts/screenshots/hub/`) used to pass this check just by being
+  there; it must fail now, with a message that says *why* it fails --
+  "generated, not committed" (still present but untracked) versus "deleted
+  or renamed" (tracked once and gone now, or never named at all) are kept
+  distinguishable so the fix is obvious from the message alone. Anything
+  else in backticks is prose: `ci/Dockerfile` in the sibling-toolchain
+  recipe belongs to a *target* repo, and a run-dir artifact is written
+  `<run-dir>/artifacts/...` precisely so this parser does not read it as a
+  claim about the checkout -- and stays that way, since `PATH_RE` only ever
+  matches a path that starts with one of `REPO_DIRS`, never a leading `/`.
 * `path::node` names a test; a following ``::node`` or ``\u2026::node`` (the
   report style for "another test in the same file") continues the most
   recent path that was *itself* named with a node id, across lines, since the
   reports continue one test file down the rows of a table while naming
-  unrelated files (`container/Dockerfile`) in the other column.
+  unrelated files (`container/Dockerfile`) in the other column. A bare path
+  under `tests/` named with *no* node, in running prose rather than a table
+  row, continues it too -- prose that moves on to a new test file usually
+  names it before the node ids that belong to it -- but a table row's own
+  bare mention of an unrelated file never does, since the next row's node
+  still has to continue the table's own test-file column.
 * A trailing `*` (`::test_retry_proxy_*`, standing for a family of tests) is
   a prefix: at least one test in the file must match it.
 * A trailing `!retired` on any of the three forms above marks a
@@ -143,6 +157,19 @@ def parse_claims(report: Path) -> ReportClaims:
                     retired.append(RetiredClaim(hit.group(1), None, lineno))
                 else:
                     paths.append(Claim(hit.group(1), lineno))
+                    # A bare path (no node) mentioned in running prose
+                    # introduces a new "current" *test* file for any bare
+                    # `::node` that follows, same as a path named *with* a
+                    # node would -- but only when the bare path is itself
+                    # under `tests/`: prose freely names an unrelated source
+                    # file in passing (`src/ralphd/cli/image.py`) while a
+                    # node id right after it still means the test file
+                    # established earlier, and a table row's other column
+                    # often names an unrelated file (`container/Dockerfile`)
+                    # too -- neither should steal `current` away from the
+                    # test file whose rows/paragraphs are still continuing.
+                    if hit.group(1).startswith("tests/") and not line.lstrip().startswith("|"):
+                        current = hit.group(1)
                 continue
             node = NODE_ONLY_RE.match(chunk)
             if node:
@@ -183,13 +210,64 @@ def commit_problems(claims: ReportClaims) -> list[str]:
     return problems
 
 
+_TRACKED_PATHS: set[str] | None = None
+
+
+def _tracked_paths() -> set[str]:
+    """One `git ls-files` snapshot per process, memoised.
+
+    A cited directory (`artifacts/screenshots/hub/`, with a trailing slash)
+    is not itself a row of `git ls-files` -- only the files under it are --
+    so membership is checked both as an exact path and as a prefix of some
+    tracked file.
+    """
+    global _TRACKED_PATHS
+    if _TRACKED_PATHS is None:
+        proc = subprocess.run(
+            ["git", "ls-files"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        _TRACKED_PATHS = set(proc.stdout.splitlines())
+    return _TRACKED_PATHS
+
+
+def _is_tracked(value: str, tracked: set[str]) -> bool:
+    if value in tracked:
+        return True
+    prefix = value if value.endswith("/") else value + "/"
+    return any(p.startswith(prefix) for p in tracked)
+
+
 def path_problems(claims: ReportClaims) -> list[str]:
-    """Every listed repo path must exist."""
-    return [
-        f"{claims.where(claim.line)}: listed path does not exist: {claim.value}"
-        for claim in claims.paths
-        if not (REPO_ROOT / claim.value).exists()
-    ]
+    """Every listed repo path must be tracked by git.
+
+    `.exists()` is not membership: a directory the browser tier creates
+    (`artifacts/screenshots/hub/`) exists in the job's own workspace but is
+    never committed, so it must fail here even though the filesystem check
+    used to let it through. The two ways a path can be wrong are kept
+    distinguishable: untracked (generated, never committed) versus tracked
+    but missing from disk (deleted or renamed after the report was written).
+    """
+    tracked = _tracked_paths()
+    problems = []
+    for claim in claims.paths:
+        if _is_tracked(claim.value, tracked):
+            continue
+        if (REPO_ROOT / claim.value).exists():
+            problems.append(
+                f"{claims.where(claim.line)}: listed path is generated, not "
+                f"committed \u2014 cite it absolutely if it is a run-dir "
+                f"path: {claim.value}"
+            )
+        else:
+            problems.append(
+                f"{claims.where(claim.line)}: listed path was deleted or "
+                f"renamed: {claim.value}"
+            )
+    return problems
 
 
 def defines_test(source: str, node: str) -> bool:
