@@ -177,6 +177,13 @@ def test_the_builder_carries_raw_counts_rendered_strings_and_the_contract(tmp_pa
         # red at task 101, unrelated to this wave's own worker/prompt work) --
         # 0 here too, because MID_PLAN has no dead-dependency subtree either.
         "tasksBlocked": 0,
+        # v011-model-per-hat task 019 (#77/#78) added these three alongside the
+        # completion-gate vocabulary fix: MID_PLAN has no `validated`/
+        # `awaitingValidation` task and no tier field set anywhere, so all
+        # three read as the empty/unset case -- 0, 0 and None respectively --
+        # while the rendered strings below stay byte-identical to before.
+        "tasksValidated": 0, "tasksAwaitingValidation": 0,
+        "taskEffectiveTier": None,
         "tasksDisplay": "5/7",
         "tasksSummary": "5/7 completed (1 in-progress, 1 validation-failed)",
         "tasksTrouble": ["1 validation-failed", "1 in-progress"],

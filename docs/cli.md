@@ -2271,7 +2271,7 @@ selecting a tag, and the three are ranked *as one unit* rather than key by key
 
 #### Per-hat model table (`models:`/`model_overrides:`, task 008)
 
-Unlike the scalar keys above, the per-hat table is not one `--flag`/`config
+Unlike the scalar keys above, the per-hat table is not one flag/`config
 set`/hardcoded-default ladder: it is a table that **merges key by key**
 across three levels (a hat one level names and a lower level does not still
 survives) rather than one level replacing the last outright --

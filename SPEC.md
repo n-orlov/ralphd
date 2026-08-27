@@ -3289,6 +3289,7 @@ subcommand is mandatory.
 | `rm <id>` | delete a run's registry dir (`--force` stops a leftover container first) |
 | `repair <id>` | diagnose (or, guarded, patch) an inconsistent run dir |
 | `artifacts <id> …` | `ls`/`pull` the run's artifacts straight off disk |
+| `router <id> [ls\|show] [N]` | this run's router calls: which legal edge the router picked for an ambiguous state, and its own cost/tokens -- never a work iteration |
 | `suggestions <id> …` | `show` a finished run's reflection diff and exactly what it would touch, and `apply` it to a checkout on an explicit `--yes`; a subset by file with `--only PATH`; refused while a live run is executing that tree, and while another run's diff also fits the same file (`--ignore-conflicts` picks this one) |
 | `doctor` | preflight the host, report strays and zombies, optionally recover |
 | `config get\|set` | registry-wide defaults in `<registry>/config.yaml` |
@@ -3340,6 +3341,9 @@ returns immediately.
 | `--vigilant` | off | stricter review posture |
 | `--reflect` | off | one extra post-terminal `reflect` iteration into `artifacts/reflection/` |
 | `--model REF` | unset | `pi` model ref used by any hat with no per-hat override |
+| `--model-for HAT=REF` | none | per-hat model override (repeatable), e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`; merges into the job's `models:` table over the `--template`'s and the registry's own `models:`/`model_overrides:` key -- see docs/cli.md |
+| `--fast-model` (retired) | n/a | accepted-but-hidden (`argparse.SUPPRESS`); `cmd_start` refuses it with exit `2` naming the replacement (`models:`/`model_overrides:`, §4.1) rather than silently doing nothing |
+| `--model-strategy` (retired) | n/a | same shape as `--fast-model` above -- accepted-but-hidden, refused with exit `2` naming the replacement |
 | `--thinking LEVEL` | unset | `pi` thinking level |
 | `--price-strategy S` | `none` | derive a cost for routes the provider does not price (or prices with an implausible zero): `aws` uses the built-in Bedrock rate table (§8.6) |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |
