@@ -221,6 +221,18 @@ def pytest_configure(config):
     problem = _startup_error(_INTERPRETER_DIR, os.environ)
     if problem:
         raise pytest.UsageError(problem)
+    # Task 003 (#83 family): the one opt-out from the autouse in-process HOME
+    # isolation fixture below (`_isolate_ambient_home_in_process`) -- reuses
+    # the exact `AMBIENT_HOME` spelling as a marker name so there is still
+    # only one greppable token for "inherit the real ambient $HOME", not a
+    # second one under a different name.
+    config.addinivalue_line(
+        "markers",
+        "AMBIENT_HOME: opt this test out of the autouse in-process HOME "
+        "isolation fixture, so it (and anything it calls in-process, e.g. "
+        "amain()) sees the real ambient $HOME -- the same opt-in spelling "
+        "as the AMBIENT_HOME sentinel used for spawned-child stub_env",
+    )
 
 
 def free_port() -> int:
@@ -266,6 +278,43 @@ def _resolved_home_env(default_home: Path, stub_env: dict | None) -> dict:
         default_home.mkdir(parents=True, exist_ok=True)
         stub_env["HOME"] = str(default_home)
     return stub_env
+
+
+# --- default HOME isolation for the pytest PROCESS itself (task 003) ------
+# `_resolved_home_env()` above only isolates a *spawned* child's HOME. It
+# does nothing for code that runs in-process during a test -- most notably
+# `engine/main.py`'s `amain()`, which several unit tests
+# (tests/test_engine_budget_seed.py, tests/test_status_max_approaches.py)
+# call directly, with no subprocess involved at all. `amain()` calls
+# `place_skills(CONFIG_DIR, home=ambient_home())`, and `ambient_home()`
+# reads `os.environ["HOME"]` -- the pytest PROCESS's own $HOME -- whenever
+# a test doesn't monkeypatch it away first. Before this fixture, a test with
+# no `monkeypatch.setenv("HOME", ...)` of its own ran `amain()` against
+# whatever real $HOME the operator running pytest actually has, and
+# `place_skills`'s clear-then-fill wiped that real `~/.pi/agent/skills/` --
+# the same #83 loss task 001/002 closed for spawned children, left open here
+# for in-process calls. Task 002's attribution named the culprits: all four
+# `tests/test_engine_budget_seed.py` nodes and
+# `tests/test_status_max_approaches.py::test_the_first_status_write_already_carries_the_denominator`.
+#
+# The fix is the same shape as `_resolved_home_env` above, applied to the
+# pytest process's own environment instead of a child's: isolate `HOME` to a
+# throwaway directory by default, for every test in this suite (autouse),
+# with exactly one opt-out -- reusing the `AMBIENT_HOME` name, this time as
+# a marker (registered in `pytest_configure` above) rather than a sentinel
+# value, so there is still only one greppable spelling of "inherit the real
+# ambient $HOME" and not a second one under a different name. A test that
+# overrides `HOME` itself afterwards (`monkeypatch.setenv("HOME", ...)`, as
+# tests/test_skills_placement_ambient_home_loss.py and
+# tests/test_skills_placement_requires_home.py already do) is unaffected
+# either way: its own later call still wins, because this fixture only ever
+# runs before the test body does.
+@pytest.fixture(autouse=True)
+def _isolate_ambient_home_in_process(request, monkeypatch, tmp_path_factory):
+    if request.node.get_closest_marker("AMBIENT_HOME"):
+        return
+    isolated = tmp_path_factory.mktemp("ambient-home-in-process")
+    monkeypatch.setenv("HOME", str(isolated))
 
 
 class LiveRun:
