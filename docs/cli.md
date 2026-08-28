@@ -1641,11 +1641,54 @@ iterationsBudget, job.yaml's iterations)` (task 010, #51), so a plain
 it adds to that same effective (seeded) number, never to job.yaml's alone
 (task 011).
 
+Task 004 (#94 (c), operator-added scope) adds three more flags, each
+independent and optional — any non-empty subset of the four (the bare
+positional plus these three) reaches the engine in ONE request:
+
+```console
+$ ralphctl budget my-run --approaches +1        # top up the approaches budget
+$ ralphctl budget my-run --timeout +3600        # push the job deadline out 1h
+$ ralphctl budget my-run --iteration-timeout 900  # absolute per-iteration cap
+$ ralphctl budget my-run +5 --approaches +1     # both in one request
+```
+
+`--approaches` maps to `maxApproaches` (refused with `5` if below the
+current approach), `--timeout` to `jobDeadlineEpochS` (refused with `5` if
+the resolved value is at or before now — `+N` extends the deadline by N
+seconds, an absolute value is a Unix epoch second), `--iteration-timeout` to
+`iterationTimeoutS` (seconds; applies to the *next* iteration, never one
+already running). Same `+N|N` grammar as `--iterations` for every one of
+them.
+
+**Persistence across a resume — one row per knob (#94 (d)):**
+
+| knob | flag | job.yaml key | across a plain `resume` (no flag) |
+| --- | --- | --- | --- |
+| iterations | `--iterations`/bare positional | `iterations` | **live**: persists across a resume — task 010/#51's startup seeding carries the top-up forward automatically |
+| approaches budget | `--approaches` | `max_approaches` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--approaches` |
+| job deadline | `--timeout` | `job_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--timeout` |
+| iteration timeout | `--iteration-timeout` | `iteration_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--iteration-timeout` |
+
+`iterations` is seeded from the LIVE-set value on every resume because the
+engine's own startup already reads `max(status.json's iterationsBudget,
+job.yaml's iterations)` (task 010/#51). The other three have no such
+seeding: they are read from `cfg.max_approaches`/`cfg.job_timeout_s`
+(indirectly, via `loop.deadline_epoch`, which `job_timeout_s` only seeds at
+*startup*)/`cfg.iteration_timeout_s` — i.e. from job.yaml — every time a
+container starts, live-set values included. A `budget --approaches +1` an
+operator applied mid-run is gone the moment that container is replaced by a
+plain `resume`; carrying it forward needs `resume --approaches +1` (or
+whatever absolute value) on that same resume, which writes job.yaml's
+`max_approaches` directly (see `ralphctl resume` below).
+
 Exit `0` applied · `5` the engine refused (resulting budget below
-`iterationsUsed`, or the job already finished — resume instead) · `1` the
-engine rejected the value (`422`) · `2` locally malformed spec · `3` unknown
+`iterationsUsed`/the current approach, a deadline at or before now, or the
+job already finished — resume instead) · `1` the engine rejected a value
+(`422`) · `2` locally malformed spec, or no knob given at all · `3` unknown
 run · `4` API unreachable. `--json` prints the engine's
-`{"iterations": 40, "previous": 25, "iterationsUsed": 17}`.
+`{"iterations": 40, "previous": 25, "iterationsUsed": 17}` (plus
+`maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS` and their
+`previous*` counterparts for whichever of the other three were included).
 
 ### `ralphctl abort <run-id> [--reason <text>]`
 
@@ -2214,6 +2257,35 @@ startup seeding (task 010, #51) would pick -- before the container starts (a
 bare integer, e.g. `--iterations 30`, sets it absolutely instead); omit it to
 just continue with whatever budget remains (a plain resume already carries a
 live `ralphctl budget` top-up forward without this flag).
+
+Task 004 (#94 (c)+(d), operator-added scope) adds three more `+N|N` flags,
+each independent and optional, written straight into job.yaml *before* the
+container starts, right next to `--iterations`'s write above:
+
+```console
+$ ralphctl resume my-run --approaches +1            # job.yaml max_approaches += 1
+$ ralphctl resume my-run --timeout +3600            # job.yaml job_timeout_s += 3600
+$ ralphctl resume my-run --iteration-timeout 900    # job.yaml iteration_timeout_s = 900
+```
+
+`--approaches` writes `max_approaches`, `--timeout` writes `job_timeout_s`,
+`--iteration-timeout` writes `iteration_timeout_s` -- the base a `+N` tops
+up is job.yaml's OWN current value for that key (never a live-engine
+value: unlike `iterations`, there is no status.json seeding for these
+three, by design -- see the budget table below).
+
+**None of the three persists from a live container the way `iterations`
+does (#94 (d)):** a live `ralphctl budget --approaches`/`--timeout`/
+`--iteration-timeout` change only ever lives in that container's own
+process (`PATCH /config/budget`'s `maxApproaches`/`iterationTimeoutS`/
+`jobDeadlineEpochS` are process-only, never seeded from status.json), so a
+PLAIN `resume` with none of these three flags REVERTS every one of them to
+whatever job.yaml already said -- this run's `start`-time value, or an
+earlier `resume --approaches`/`--timeout`/`--iteration-timeout` that itself
+passed a flag. Carrying a live change forward needs passing the same flag
+(with whatever value you want to keep) on the resume that follows it. See
+`ralphctl budget`'s section above for the full per-knob table.
+
 `--allow-docker`, `--image`, `--port`, `--api-bind`, `--network` (defaults
 to the network recorded at start time), `--no-detach` mirror
 `start`'s flags of the same name. `--image` on `resume` pins as always; with no

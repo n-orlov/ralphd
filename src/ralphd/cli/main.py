@@ -2072,19 +2072,53 @@ def _effective_budget_base(job: dict, rdir: Path) -> int:
     return job_budget
 
 
-def _apply_iterations_topup(job: dict, spec: str, base: int) -> None:
-    """`--iterations +N` bumps `base` (the *effective* budget -- see
-    `_effective_budget_base`, task 011) by N; a bare integer sets the
-    resulting job.yaml value absolutely (documented as `+N` but an absolute
-    value is harmless and occasionally convenient)."""
+def _resolve_topup_spec(flag: str, spec: str, base: int) -> int:
+    """Resolve a `+N|N` CLI spec against `base` -- the ONE grammar shared by
+    every resume-time budget knob: `--iterations` (task 011) and, task
+    004/#94 (c), `--approaches`/`--timeout`/`--iteration-timeout`. `+N` bumps
+    `base` by N; a bare integer sets the result absolutely (documented as
+    `+N` but an absolute value is harmless and occasionally convenient).
+    `flag` only names the flag in the error message."""
     spec = spec.strip()
     try:
         if spec.startswith("+"):
-            job["iterations"] = base + int(spec[1:])
-        else:
-            job["iterations"] = int(spec)
+            return base + int(spec[1:])
+        return int(spec)
     except ValueError:
-        die(2, f"--iterations: invalid value {spec!r} (expected e.g. +10 or 30)")
+        die(2, f"{flag}: invalid value {spec!r} (expected e.g. +10 or 30)")
+
+
+def _apply_iterations_topup(job: dict, spec: str, base: int) -> None:
+    """`--iterations +N` bumps `base` (the *effective* budget -- see
+    `_effective_budget_base`, task 011) by N; a bare integer sets the
+    resulting job.yaml value absolutely."""
+    job["iterations"] = _resolve_topup_spec("--iterations", spec, base)
+
+
+# Task 004 (#94 (c)+(d)): the three process-only knobs (a2's PATCH
+# /config/budget docstring and docs/cli.md's budget table state the same
+# decision) -- unlike `iterations`, a resume with none of these flags never
+# seeds job.yaml from a live-engine value that might have drifted (there is
+# no status.json field for them to seed from, on purpose): the base a `+N`
+# tops up is always job.yaml's OWN current value, falling back to the
+# engine's own JobConfig default when job.yaml has never carried the key.
+def _apply_approaches_topup(job: dict, spec: str) -> None:
+    current = job.get("max_approaches")
+    base = int(current) if current is not None else JobConfig().max_approaches
+    job["max_approaches"] = _resolve_topup_spec("--approaches", spec, base)
+
+
+def _apply_job_timeout_topup(job: dict, spec: str) -> None:
+    current = job.get("job_timeout_s")
+    base = int(current) if current is not None else JobConfig().job_timeout_s
+    job["job_timeout_s"] = _resolve_topup_spec("--timeout", spec, base)
+
+
+def _apply_iteration_timeout_topup(job: dict, spec: str) -> None:
+    current = job.get("iteration_timeout_s")
+    base = int(current) if current is not None else JobConfig().iteration_timeout_s
+    job["iteration_timeout_s"] = _resolve_topup_spec(
+        "--iteration-timeout", spec, base)
 
 
 def _resume_job_image(job: dict) -> dict:
@@ -2247,7 +2281,25 @@ def cmd_resume(args):
     re-planning; this only has to reproduce cmd_start's docker-run wiring
     for the same mounts (run dir, config dir, workspace-if-any) plus an
     optional `--iterations +N` budget top-up written into the existing
-    job.yaml before the container starts."""
+    job.yaml before the container starts.
+
+    Task 004 (#94 (c)+(d)): `--approaches`/`--timeout`/`--iteration-timeout`
+    take the same `+N|N` spec and land in job.yaml's `max_approaches`/
+    `job_timeout_s`/`iteration_timeout_s`, right next to `--iterations`'s
+    `iterations` write, above. The PERSISTENCE DECISION for all three
+    -- deliberately the opposite of `iterations` -- is: they are
+    PROCESS-ONLY while a container is live (`PATCH /config/budget`'s
+    `maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS` are never seeded
+    from status.json the way `iterations` is, see engine/api.py's
+    `patch_budget` docstring), so a plain `resume` with none of these three
+    flags REVERTS them to whatever job.yaml already said (this run's
+    `start`-time value, or an earlier `resume --approaches`/`--timeout`/
+    `--iteration-timeout` that DID pass a flag and so wrote job.yaml) --
+    never to whatever a live `ralphctl budget --approaches`/`--timeout`/
+    `--iteration-timeout` last set in the container that just exited. Only
+    passing the flag again here carries a live change forward. See
+    docs/cli.md's budget table for the same statement in operator-facing
+    form, one row per knob."""
     run_id = args.run_id
     _require_run(run_id)
     rdir = run_root(run_id)
@@ -2268,6 +2320,13 @@ def cmd_resume(args):
     if args.iterations:
         _apply_iterations_topup(job, args.iterations,
                                  _effective_budget_base(job, rdir))
+    if args.approaches:
+        _apply_approaches_topup(job, args.approaches)
+    if args.timeout:
+        _apply_job_timeout_topup(job, args.timeout)
+    if args.iteration_timeout:
+        _apply_iteration_timeout_topup(job, args.iteration_timeout)
+    if args.iterations or args.approaches or args.timeout or args.iteration_timeout:
         _write_job_yaml(job_path, job)
     prev_meta = host_meta(run_id)
     # `--image` on resume pins as always; with no flag, reproduce the image this
@@ -4307,32 +4366,81 @@ def cmd_retry(args):
 
 
 def cmd_budget(args):
-    """Task 046 (#3): change a *running* job's iteration budget in flight.
+    """Task 046 (#3): change a *running* job's iteration budget in flight;
+    task 004 (#94 (c)+(d)) extends this to the other three `PATCH
+    /config/budget` knobs task 003 added: `--approaches`
+    (`maxApproaches`), `--timeout` (`jobDeadlineEpochS`) and
+    `--iteration-timeout` (`iterationTimeoutS`).
 
-    Thin operator front-end for `PATCH /config/budget` (task 045), taking the
-    same spec syntax as `resume --iterations`: `+N` tops up by N, a bare `N`
-    sets the budget absolutely (so lowering is explicit -- a bare `-5` is an
-    absolute negative budget and is rejected, never read as a decrement).
+    Thin operator front-end for `PATCH /config/budget` (task 045/003), taking
+    the same spec syntax for all four knobs as `resume --iterations`/
+    `--approaches`/`--timeout`/`--iteration-timeout`: `+N` tops up by N, a
+    bare `N` sets the knob absolutely (so lowering is explicit -- a bare
+    `-5` is an absolute negative value and is rejected, never read as a
+    decrement). The positional `iterations` and the three flags are each
+    independent and optional; any non-empty subset reaches the engine in
+    ONE request (task 003's `patch_budget` accepts all four in one body).
+    The bare positional keeps meaning the iteration spec exactly as before
+    task 004 -- `ralphctl budget <run> +5` is unchanged.
 
     Only the shape is checked here; every semantic decision (below
-    `iterationsUsed`, job already finished) belongs to the engine, which owns
-    the live counters. Exit codes come from the shared api() helper, so they
-    match pause/unpause/retry/abort: 0 applied, 5 on the engine's 409
-    refusals, 1 on its 422 (invalid value), 3 unknown run, 4 API unreachable,
-    2 for a locally malformed spec (usage error, same as
+    `iterationsUsed`/the current approach, job already finished, a deadline
+    in the past) belongs to the engine, which owns the live counters. Exit
+    codes come from the shared api() helper, so they match
+    pause/unpause/retry/abort: 0 applied, 5 on the engine's 409 refusals, 1
+    on its 422 (invalid value), 3 unknown run, 4 API unreachable, 2 for a
+    locally malformed spec or an empty request (usage errors, same as
     `resume --iterations`).
 
-    The change is live-engine only: `/config/job.yaml` is a read-only mount,
-    so a *fresh container* needs `resume --iterations +N` instead.
+    The change is live-engine only: `/config/job.yaml` is a read-only
+    mount, so the engine cannot persist any of the four knobs there itself.
+    `iterations` still PERSISTS across a plain resume (task 010/#51's
+    startup seeding). Task 004/#94 (d)'s decision for the other three is the
+    opposite: they are PROCESS-ONLY and a plain `resume` with no
+    `--approaches`/`--timeout`/`--iteration-timeout` flag of its own
+    REVERTS them to job.yaml's own value -- see `cmd_resume`'s docstring and
+    docs/cli.md's budget table for the same statement in operator-facing
+    form.
     """
     _require_run(args.run_id)
-    spec = args.iterations.strip()
-    if not re.fullmatch(r"\+?-?\d+", spec):
-        die(2, f"budget: invalid value {spec!r} (expected e.g. +10 or 30)")
-    res = api(args.run_id, "PATCH", "/config/budget", {"iterations": spec})
-    out(args, res,
-        f"iteration budget: {res.get('previous')} -> {res.get('iterations')} "
-        f"({res.get('iterationsUsed')} used)")
+    body: dict[str, str] = {}
+    _FLAG_TO_API_KEY = {
+        "approaches": "maxApproaches",
+        "timeout": "jobDeadlineEpochS",
+        "iteration_timeout": "iterationTimeoutS",
+    }
+    if args.iterations is not None:
+        spec = args.iterations.strip()
+        if not re.fullmatch(r"\+?-?\d+", spec):
+            die(2, f"budget: invalid value {spec!r} (expected e.g. +10 or 30)")
+        body["iterations"] = spec
+    for attr, api_key in _FLAG_TO_API_KEY.items():
+        value = getattr(args, attr)
+        if value is None:
+            continue
+        flag = "--" + attr.replace("_", "-")
+        spec = value.strip()
+        if not re.fullmatch(r"\+?-?\d+", spec):
+            die(2, f"{flag}: invalid value {spec!r} (expected e.g. +10 or 30)")
+        body[api_key] = spec
+    if not body:
+        die(2, "budget: nothing to change -- pass an iteration spec, "
+               "--approaches, --timeout or --iteration-timeout")
+    res = api(args.run_id, "PATCH", "/config/budget", body)
+    lines = []
+    if "iterations" in res:
+        lines.append(f"iteration budget: {res.get('previous')} -> "
+                     f"{res.get('iterations')} ({res.get('iterationsUsed')} used)")
+    if "maxApproaches" in res:
+        lines.append(f"approaches budget: {res.get('previousMaxApproaches')} "
+                     f"-> {res.get('maxApproaches')}")
+    if "iterationTimeoutS" in res:
+        lines.append(f"iteration timeout: {res.get('previousIterationTimeoutS')}s "
+                     f"-> {res.get('iterationTimeoutS')}s")
+    if "jobDeadlineEpochS" in res:
+        lines.append(f"job deadline: {res.get('previousJobDeadlineEpochS')} -> "
+                     f"{res.get('jobDeadlineEpochS')} ({res.get('deadlineAt')})")
+    out(args, res, "\n".join(lines) if lines else json.dumps(res))
 
 
 def cmd_abort(args):
@@ -6112,6 +6220,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--iterations", metavar="+N",
                    help="budget top-up, e.g. +10 (adds to the existing "
                         "budget); a bare integer sets it absolutely")
+    s.add_argument("--approaches", metavar="+N|N", default=None,
+                   help="max-approaches top-up (+N) or absolute (N), "
+                        "written to job.yaml's `max_approaches` next to "
+                        "--iterations (#94 (c)); with no flag a resume "
+                        "REVERTS a live `budget --approaches` change back "
+                        "to job.yaml's own value (#94 (d), docs/cli.md's "
+                        "budget table)")
+    s.add_argument("--timeout", metavar="+N|N", default=None,
+                   help="job wall-clock timeout top-up/absolute in "
+                        "seconds, written to job.yaml's `job_timeout_s` "
+                        "next to --iterations (#94 (c)); with no flag a "
+                        "resume REVERTS a live `budget --timeout` change "
+                        "back to job.yaml's own value (#94 (d), "
+                        "docs/cli.md's budget table)")
+    s.add_argument("--iteration-timeout", metavar="+N|N", default=None,
+                   help="per-iteration timeout top-up/absolute in "
+                        "seconds, written to job.yaml's "
+                        "`iteration_timeout_s` next to --iterations "
+                        "(#94 (c)); with no flag a resume REVERTS a live "
+                        "`budget --iteration-timeout` change back to "
+                        "job.yaml's own value (#94 (d), docs/cli.md's "
+                        "budget table)")
     s.add_argument("--image", default=None,
                    help="pin the image this resume runs; defaults to replaying "
                         "the image recipe the run started with (its "
@@ -6252,12 +6382,33 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_retry)
 
     s = sub.add_parser("budget", help="change a running job's iteration "
-                       "budget in flight (+N tops up, N sets absolutely)")
+                       "budget (and, task 004/#94 (c), its approaches/"
+                       "timeout knobs) in flight (+N tops up, N sets "
+                       "absolutely)")
     s.add_argument("run_id")
-    s.add_argument("iterations", metavar="+N|N",
+    s.add_argument("iterations", metavar="+N|N", nargs="?", default=None,
                    help="budget top-up (+10) or absolute new budget (40); "
                         "persists across a resume -- "
-                        "`resume --iterations +N` only to add more")
+                        "`resume --iterations +N` only to add more. May be "
+                        "omitted if one of --approaches/--timeout/"
+                        "--iteration-timeout is given instead (any non-empty "
+                        "subset of the four is one request)")
+    s.add_argument("--approaches", metavar="+N|N", default=None,
+                   help="max-approaches budget top-up/absolute (#94 (c)); "
+                        "process-only -- reverts on a plain `resume` "
+                        "unless that resume itself passes `--approaches` "
+                        "(docs/cli.md's budget table)")
+    s.add_argument("--timeout", metavar="+N|N", default=None,
+                   help="job wall-clock deadline top-up in seconds (+N) or "
+                        "an absolute Unix epoch second (#94 (c)); "
+                        "process-only -- reverts on a plain `resume` "
+                        "unless that resume itself passes `--timeout` "
+                        "(docs/cli.md's budget table)")
+    s.add_argument("--iteration-timeout", metavar="+N|N", default=None,
+                   help="per-iteration timeout top-up/absolute in seconds "
+                        "(#94 (c)); process-only -- reverts on a plain "
+                        "`resume` unless that resume itself passes "
+                        "`--iteration-timeout` (docs/cli.md's budget table)")
     s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")
