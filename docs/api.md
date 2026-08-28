@@ -953,7 +953,7 @@ directly: there is no `ralphctl llm set` wrapper in v0.6 (docs/cli.md). `204`.
 
 ## Versioning
 
-`GET /version` → `{"ralphd": "0.12.0", "api": 1}` — the package version and the
+`GET /version` → `{"ralphd": "0.13.0", "api": 1}` — the package version and the
 API contract version (`ralphd.API_VERSION`), and nothing else: the engine does
 not report pi's version here (`GET /iterations` reports the model each iteration
 actually used, which is the version-shaped question operators ask). Breaking API
