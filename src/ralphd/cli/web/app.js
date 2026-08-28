@@ -2042,6 +2042,16 @@ function renderTimeline(el, iterations, runId) {
       h("span", {}, [String(it.model || "")]),
       it.error ? h("span", { class: "pill pill-failed" }, ["error"]) : null,
       h("span", { class: "dur" }, [dur]),
+      // Task 015 (#89, requirement I, hub half): the SAME cause sentence the
+      // iteration dialog's `cause:` line shows -- `it.causeText`, formatted
+      // once by `engine.state.iteration_detail` and carried verbatim in this
+      // very row's own `body.iterations` entry (`ui_server.run_detail`), so
+      // the timeline row and the dialog it opens cannot disagree about why a
+      // faulted iteration ended the way it did. Wraps onto its own line
+      // (`.timeline-item` is `flex-wrap: wrap`) rather than crowding the
+      // fixed-width columns above; absent entirely for an iteration that
+      // never recorded a fault.
+      it.causeText ? h("span", { class: "cause" }, ["cause: " + String(it.causeText)]) : null,
     ]);
     el.appendChild(row);
   }

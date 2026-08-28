@@ -154,6 +154,7 @@ tr.row-warning td { background: #fffaf0; }
 
 .timeline-item {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.6rem;
   align-items: baseline;
   padding: 0.25rem 0;
@@ -168,6 +169,11 @@ tr.row-warning td { background: #fffaf0; }
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .timeline-item .phase { font-weight: 600; width: 6rem; flex: none; }
 .timeline-item .dur { color: var(--muted); width: 4.5rem; flex: none; text-align: right; }
+/* task 015 (#89, requirement I, hub half): this iteration's own fault cause
+   -- the SAME sentence the iteration dialog's `cause:` line shows -- wraps
+   onto its own full-width line below the fixed columns above, since
+   `.timeline-item` is `flex-wrap: wrap`. */
+.timeline-item .cause { flex: 1 0 100%; color: var(--err); }
 /* task 020 (#18.1): a timeline row opens that iteration's detail dialog --
    same affordance treatment as a task row and a steering entry. */
 .timeline-clickable { cursor: pointer; }

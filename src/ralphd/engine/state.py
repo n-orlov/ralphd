@@ -1149,6 +1149,11 @@ ITERATION_DERIVED_KEYS = (
     # `iteration_detail`'s own note below for why a hand-edited/hostile
     # meta.json cannot smuggle a cause in by writing these directly.
     "reason", "signature", "notices",
+    # v0.13 task 015 (#89, requirement I, hub half): the ONE rendered cause
+    # sentence (`<faultClass> -- <reason>`), so the hub timeline row and the
+    # CLI/dialog's `cause:` line format the SAME string from the SAME
+    # `reason`/`faultClass` instead of each spelling the join themselves.
+    "causeText",
 )
 
 # Whether a duration is final or still growing (`ralphctl status`' own words).
@@ -1310,16 +1315,17 @@ def iteration_summary_lines(detail: dict) -> list[str]:
     ]
     # v0.13 task 014 (#89, requirement I): THIS iteration's own fault cause --
     # `reason` re-derived by `iteration_detail` through `faults.explain_fault`
-    # (task 013) -- worded `<faultClass> -- <reason>` so the sentence names
-    # WHAT the engine classified it as (`infra`/`work`/`signal`) alongside WHY,
-    # never a bare `error:` line that could be read as raw text with no
-    # verdict attached. `faultClass` is the engine's own recorded verdict
-    # (never the re-derivation); a disagreement between the two is said out
-    # loud via `notices` (`FAULT_VERDICT_DIVERGED_NOTICE`), the same wording
-    # `fault_summary_lines` uses for the run's last fault.
+    # (task 013) -- worded `<faultClass> -- <reason>` (task 015's `causeText`,
+    # the ONE join both this CLI/dialog line and the hub timeline row's cause
+    # span read) so the sentence names WHAT the engine classified it as
+    # (`infra`/`work`/`signal`) alongside WHY, never a bare `error:` line that
+    # could be read as raw text with no verdict attached. `faultClass` is the
+    # engine's own recorded verdict (never the re-derivation); a disagreement
+    # between the two is said out loud via `notices`
+    # (`FAULT_VERDICT_DIVERGED_NOTICE`), the same wording `fault_summary_lines`
+    # uses for the run's last fault.
     if detail.get("reason"):
-        fault_class = detail.get("faultClass") or EXIT_REASON_UNKNOWN
-        lines.append(f"cause:     {fault_class} -- {detail['reason']}")
+        lines.append(f"cause:     {detail.get('causeText')}")
         lines += list(detail.get("notices") or [])
     # The model pi actually used, with the raw gateway id only when it adds
     # information -- exactly `ralphctl status`' model line (task 012).
@@ -1505,6 +1511,14 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
                          disagreement is appended to `notices` instead
                          (`FAULT_VERDICT_DIVERGED_NOTICE`). Both are `None`
                          for an iteration that never recorded a fault.
+      `causeText`        the ONE rendered join of the two above --
+                         `f"{faultClass} -- {reason}"` -- or `None` when
+                         `reason` is `None` (v0.13 task 015, #89, requirement
+                         I, hub half). `iteration_summary_lines`' `cause:`
+                         line and the hub timeline row's cause span both read
+                         THIS field rather than each formatting the join
+                         themselves, so a faulted iteration cannot be worded
+                         two different ways across the CLI and the browser.
 
     The log lines are NOT part of this dict on purpose: rendering them is the
     job of `log_merge.iteration_lines` plus the shared renderer, and a caller
@@ -1577,6 +1591,7 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
     detail["reason"] = None
     detail["signature"] = None
     detail["notices"] = []
+    detail["causeText"] = None
     recorded_fault = detail.get("faultClass")
     if isinstance(recorded_fault, str) and recorded_fault:
         usage = detail.get("usage") if isinstance(detail.get("usage"), dict) else None
@@ -1594,6 +1609,9 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
         detail["signature"] = derived["signature"]
         if derived["faultClass"] != recorded_fault:
             detail["notices"].append(FAULT_VERDICT_DIVERGED_NOTICE)
+    if detail["reason"]:
+        fault_class = detail.get("faultClass") or EXIT_REASON_UNKNOWN
+        detail["causeText"] = f"{fault_class} -- {detail['reason']}"
     return detail
 
 

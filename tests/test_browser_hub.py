@@ -1930,6 +1930,84 @@ def test_timeline_row_opens_the_iteration_dialog(tmp_path, pw):
         server.stop()
 
 
+def test_timeline_row_and_dialog_show_the_same_cause_for_a_faulted_iteration(tmp_path, pw):
+    """Task 015 (#89, requirement I, hub half): a faulted iteration's cause
+    sentence -- `<faultClass> -- <reason>`, `engine.state.iteration_detail`'s
+    `causeText` -- is visible on the TIMELINE ROW itself, not only after
+    opening the dialog, and the two read the exact same string.
+
+    The fixture is task 013/014's own two-fault fixture (#89) -- iteration 2's
+    infra/DNS fault and iteration 5's later, unrelated work fault -- read
+    through the SAME `_base_meta` helper `tests/test_cli_iteration_detail.py`'s
+    `test_iteration_prints_its_own_cause_task014` asserts against via
+    `ralphctl iteration`, so the CLI assertion and this browser assertion agree
+    by construction rather than by two hand-written fixtures happening to
+    match. Iteration 1 (no fault) proves the row shows NO cause span at all --
+    the absence is itself part of the contract (`causeText: None`).
+    """
+    from ralphd.cli.ui_server import run_detail
+    from ralphd.engine.faults import FAULT_REASON_SIGNATURE, FAULT_REASON_WORK
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_cli_iteration_detail import DNS_ERROR, WORK_ERROR, _base_meta
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-cause-parity", state="failed",
+                              verdict="unverified")
+    metas = {
+        1: _base_meta(1, error=None, exitCode=0, faultClass=None,
+                     usage={"totalTokens": 30, "input": 10, "output": 20,
+                            "costUSD": 0.0125, "costPriced": True}),
+        2: _base_meta(2, error=DNS_ERROR, exitCode=0, faultClass="infra",
+                     usage=None),
+        5: _base_meta(5, error=WORK_ERROR, exitCode=1, faultClass="work",
+                     usage={"totalTokens": 4000, "input": 3000, "output": 1000}),
+    }
+    for n, meta in metas.items():
+        d = run_dir / "iterations" / f"{n:04d}"
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps(meta))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-cause-parity")
+        _wait_for_count_ge(pw, _TIMELINE_ITEMS, 3)
+
+        # -- the server's own payload: the timeline row and the dialog it
+        # opens are both built from THIS -- `run_detail`'s `iterations` list
+        # is `engine.state.iteration_detail` per number (task 015).
+        detail = run_detail(registry, "run-cause-parity")
+        by_number = {it["number"]: it for it in detail["iterations"]}
+        assert by_number[2]["causeText"] == f"infra -- {FAULT_REASON_SIGNATURE}"
+        assert by_number[5]["causeText"] == f"work -- {FAULT_REASON_WORK}"
+        assert by_number[1]["causeText"] is None
+
+        # -- the TIMELINE ROW itself names the cause, unopened -------------
+        row2 = pw.eval_js(
+            "document.querySelector('.timeline-item[data-iteration=\"2\"]')"
+            ".textContent")
+        assert f"infra -- {FAULT_REASON_SIGNATURE}" in row2, row2
+        row5 = pw.eval_js(
+            "document.querySelector('.timeline-item[data-iteration=\"5\"]')"
+            ".textContent")
+        assert f"work -- {FAULT_REASON_WORK}" in row5, row5
+        # the unfaulted iteration's row names no cause at all
+        row1 = pw.eval_js(
+            "document.querySelector('.timeline-item[data-iteration=\"1\"]')"
+            ".querySelectorAll('.cause').length")
+        assert int(row1) == 0
+        pw.screenshot(SCREENSHOTS_DIR / "24-timeline-cause.png")
+
+        # -- the DIALOG the row opens says the very same thing -------------
+        pw.click('.timeline-item[data-iteration="2"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "iteration: 2")
+        assert f"cause:     infra -- {FAULT_REASON_SIGNATURE}" in body, body
+    finally:
+        server.stop()
+
+
 _DOCUMENT_ITEMS = "document.querySelectorAll('.document-item').length"
 _DOCUMENT_BUTTONS = "document.querySelectorAll('button.document-item').length"
 _DOCUMENT_ROW_TEXT = (

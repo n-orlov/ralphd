@@ -101,7 +101,7 @@ from ..engine.state import (
     task_failure_kinds,
     tasks_read_notice,
 )
-from ..log_merge import NO_TRANSCRIPT, iteration_lines, merged_lines
+from ..log_merge import NO_TRANSCRIPT, iteration_lines, iteration_numbers, merged_lines
 from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
@@ -1134,13 +1134,21 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         tasks = _with_task_blocked_by(tasks)
     tasks = _with_tasks_read_label(tasks)
 
+    # v0.13 task 015 (#89, requirement I, hub half): each row is built from
+    # `engine.state.iteration_detail` -- the SAME shaping `iteration_view`
+    # (the dialog) and `ralphctl iteration` already use -- rather than a raw
+    # `meta.json` read through `_with_local_times`. Before this, the timeline
+    # row and the dialog it opens were built from two different reads of the
+    # same file: the dialog's `reason`/`faultClass` re-derivation (task 013)
+    # never reached the row at all, so a faulted iteration's cause could only
+    # be seen after opening it. Skipped exactly when `_read_json` used to
+    # return None -- an unreadable/missing meta.json -- so a dir the engine
+    # never finished writing still does not appear as a row of blanks.
     iterations = []
-    itroot = run_dir / "iterations"
-    if itroot.is_dir():
-        for d in sorted(itroot.iterdir()):
-            meta = _read_json(d / "meta.json")
-            if meta is not None:
-                iterations.append(_with_local_times(meta))
+    for number in iteration_numbers(run_dir):
+        detail = iteration_detail(run_dir, number)
+        if detail is not None and detail.get("hasMeta"):
+            iterations.append(detail)
 
     return {
         "runId": run_id,
