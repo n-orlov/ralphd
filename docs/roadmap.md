@@ -1137,9 +1137,9 @@ does.
   by review**: the guard re-verification and every sweep it cites ran
   RED, not green, because approach 1's own tasks 002 and 015 had each
   drifted a guard the sweeps never repaired
-  (`test_loop_has_exactly_two_subprocess_dispatch_sites` — a third
-  `runner.run(` site task 002 added at `d21c9b9` without updating the
-  count it asserted — and `test_no_unlisted_or_stale_ambient_home_reads`
+  (`test_loop_subprocess_dispatch_sites_are_owned_by_exactly_these_functions`
+  — a third `runner.run(` site task 002 added at `d21c9b9` without updating
+  the count it asserted — and `test_no_unlisted_or_stale_ambient_home_reads`
   — the allowlisted ambient-`$HOME` line numbers drifting under the
   wave's own `loop.py`/`ui_server.py` edits), and three operator steering
   directives went unactioned. Approach 2 repaired both wave-introduced
