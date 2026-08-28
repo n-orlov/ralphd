@@ -309,12 +309,25 @@ def _resolved_home_env(default_home: Path, stub_env: dict | None) -> dict:
 # tests/test_skills_placement_requires_home.py already do) is unaffected
 # either way: its own later call still wins, because this fixture only ever
 # runs before the test body does.
+#
+# task 018: the same fixture also pins PYTHONUSERBASE, to the exact
+# `_USER_BASE` value `with_ralphd_importable()` above already derived from
+# the real ambient HOME at import time -- one derivation, not a second one
+# computed here that could drift from it. Without this, an in-process test
+# that overrides HOME (this fixture, autouse) on a `pip install --user -e .`
+# layout un-installs the world for anything imported AFTER the override took
+# effect, the same #67 shape `with_ralphd_importable()` fixes for a spawned
+# child, just in-process instead. Skipped together with the HOME override,
+# under the same `AMBIENT_HOME` opt-out, for the same reason: a test that
+# asked to see the real ambient HOME gets the real ambient PYTHONUSERBASE
+# (i.e. none pinned here) too, not a second, different opt-out spelling.
 @pytest.fixture(autouse=True)
 def _isolate_ambient_home_in_process(request, monkeypatch, tmp_path_factory):
     if request.node.get_closest_marker("AMBIENT_HOME"):
         return
     isolated = tmp_path_factory.mktemp("ambient-home-in-process")
     monkeypatch.setenv("HOME", str(isolated))
+    monkeypatch.setenv("PYTHONUSERBASE", _USER_BASE)
 
 
 class LiveRun:

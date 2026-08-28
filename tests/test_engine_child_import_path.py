@@ -266,7 +266,17 @@ def test_the_engine_script_itself_runs_under_an_overridden_home():
 
     from tests.conftest import RALPHD_ENGINE
 
+    # task 018: the autouse in-process HOME isolation fixture
+    # (tests/conftest.py::_isolate_ambient_home_in_process) now pins
+    # PYTHONUSERBASE on os.environ for every test, including this one -- so
+    # `{**os.environ, "HOME": ...}` alone would already carry a working
+    # PYTHONUSERBASE and the mutation half below ("the same spawn without
+    # the helper must fail") would no longer fail: it would pass by
+    # accident, pinning nothing. PYTHONUSERBASE is stripped back out here so
+    # `fresh_home` is what an unfixed caller's env dict actually looked like
+    # before #67's fix existed, and the mutation pair stays armed.
     fresh_home = {**os.environ, "HOME": "/nonexistent-home-for-67"}
+    fresh_home.pop("PYTHONUSERBASE", None)
 
     def version(env):
         return subprocess.run([str(RALPHD_ENGINE), "--version"], env=env,
