@@ -20,10 +20,16 @@ one of many copies) applies here too: every violation is `emit()`ed to
 after the fact from the final outcome — so a run that dies mid-retry still
 leaves the violation on disk.
 
-Nothing in `_run_job_core` calls this yet. Task 014 is the executor
-cutover that decides where in the real iteration loop a hat's raw output
-reaches `enforce_contract`; this module only has to be correct and
-observable in isolation, exactly as `contracts.py` was for task 009.
+Wired in: `_run_job_core`'s dispatch loop (in `loop.py`) reaches
+`enforce_contract` at four call sites, one per hat's own step method --
+`_step_generic_hat`'s single schema-and-task_status call site
+(`loop.py:2561`, landed by v0.13 tasks 003 `2be8b86` and 004 `edbcb79`,
+which share one `enforce_contract` call) and `_step_worker`'s three
+verdict-refusal sites (`loop.py:3320` unsatisfiable, task 005 `1311548`;
+`loop.py:3378` complete, task 006 `8599b7b`; `loop.py:3445`
+schema-error, task 007 `aa0a7b1`). Every retry attempt after the first is
+answered by `LoopSupervisor._ask_contract_fix`'s uncharged re-ask channel
+(task 002), never a second retry loop of its own.
 """
 
 from __future__ import annotations

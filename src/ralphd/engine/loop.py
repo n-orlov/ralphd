@@ -2905,9 +2905,9 @@ class LoopSupervisor:
         hand the hat a second bite at doing MORE than fix its last
         response's shape.
 
-        Wired to nothing yet (task 002): no caller passes this to
-        `contract_enforcement.enforce_contract` as its `respond` yet --
-        that cutover is tasks 003-007, one refusal site at a time.
+        Wired in: `_step_generic_hat`'s schema/task_status site (tasks
+        003 `2be8b86`/004 `edbcb79`) and worker's 3 verdict sites (005
+        `1311548`, 006 `8599b7b`, 007 `aa0a7b1`) all pass this as `respond`.
         """
         contract_dir = self.run.artifacts_dir / "contract"
         contract_dir.mkdir(parents=True, exist_ok=True)
