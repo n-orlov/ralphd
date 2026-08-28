@@ -25,6 +25,7 @@ from ..log_merge import (
     iteration_output_path,
     iteration_prompt_path,
 )
+from . import contract_enforcement
 from . import privsep
 from .faults import explain_fault, matched_signature
 from .redact import redact_job_yaml, scrub_text
@@ -1142,6 +1143,7 @@ ITERATION_DERIVED_KEYS = (
     "hasMeta", "startedAtLocal", "endedAtLocal", "durationS", "durationDisplay",
     "durationLabel", "exitReason", "costDisplay", "costStatus", "tokensDisplay",
     "hasTranscript", "transcriptBytes", "hasPrompt", "promptBytes",
+    "contractFault",
 )
 
 # Whether a duration is final or still growing (`ralphctl status`' own words).
@@ -1338,7 +1340,100 @@ def iteration_summary_lines(detail: dict) -> list[str]:
                      f"{'attempt' if archived == 1 else 'attempts'} archived "
                      f"under {ITERATION_ATTEMPTS_DIR}/ (killed mid-iteration; "
                      f"prompt, transcript and meta.json kept)")
+    cf = detail.get("contractFault")
+    if cf:
+        # v0.13 task 012 (#92): the SAME sentence
+        # (`contract_enforcement.violation_message`) `LoopSupervisor` uses
+        # for `self._abort_reason`/`status.json`'s `reason` when the ladder
+        # never recovers before the run's own budget is gone -- shown here
+        # for THIS iteration whether it recovered (no agent fault) or not.
+        lines.append(f"contract:  {cf['text']}")
     return lines
+
+
+# v0.13 task 012 (#92, requirement G's second half): joining
+# `contract.violation`/`contract.agent_fault` events back to the specific
+# iteration they happened during, with no new persisted field.
+#
+# Why a join, not a stored field: `contract_enforcement.enforce_contract`'s
+# retry ladder runs from inside `LoopSupervisor._step_generic_hat`/`_step_
+# worker` AFTER `run_iteration()` has already returned and written that
+# iteration's own `meta.json`/`iteration.end` event -- every re-ask attempt
+# beyond the first is a deliberately UNCHARGED `_ask_contract_fix` call, not
+# a fresh `run_iteration()`, so it never gets an `iteration.start`/`end` of
+# its own. That means every `EVENT_VIOLATION`/`EVENT_AGENT_FAULT` event for
+# iteration N is emitted strictly AFTER `iteration.end number=N` and
+# strictly BEFORE the next `iteration.start` (any number) -- or before the
+# run's own end, for the last iteration ever taken. Bucketing events between
+# those two boundaries (by their monotonic `id`, not `ts`: two events can
+# share a timestamp) attributes a violation to its iteration without the
+# engine having to stamp one on -- the `ITERATION_DERIVED_KEYS` discipline
+# (derive it from what is already on disk, once) applied to requirement G's
+# own events.
+_CONTRACT_EVENT_TYPES = (contract_enforcement.EVENT_VIOLATION,
+                        contract_enforcement.EVENT_AGENT_FAULT)
+
+
+def contract_fault_for_iteration(run_root: Path, number: int) -> dict | None:
+    """The contract violation(s), if any, that happened during iteration
+    `number` -- read straight off `events.jsonl` (see the module note just
+    above for how the join works), or None when this iteration recorded
+    none at all.
+
+    Returns a dict:
+      `hat`         which hat broke its contract,
+      `errors`      the LAST attempt's own validation errors, verbatim,
+      `attempts`    the last violation's own 1-based attempt number,
+      `maxAttempts` the ladder's declared cap (`contract_retry_max + 1`),
+      `agentFault`  True iff the ladder never recovered for THIS iteration
+                    (an `EVENT_AGENT_FAULT` was emitted) -- False for an
+                    iteration that got a violation re-asked and corrected,
+      `text`        the one human sentence
+                    (`contract_enforcement.violation_message`), verbatim --
+                    the SAME function `LoopSupervisor` calls to build
+                    `self._abort_reason` (`status.json`'s `reason`,
+                    `ralphctl status`'s `reason:` line) when the ladder ends
+                    the run outright, so the two surfaces can never word the
+                    same fact two different ways.
+    """
+    events = read_events(run_root)
+    end_id = None
+    for ev in events:
+        if ev.get("type") == "iteration.end" and ev.get("number") == number:
+            eid = ev.get("id")
+            if isinstance(eid, int):
+                end_id = eid  # last match wins: a re-attempted slot's LATEST end
+    if end_id is None:
+        return None
+    next_start_id = None
+    for ev in events:
+        eid = ev.get("id")
+        if (isinstance(eid, int) and eid > end_id
+                and ev.get("type") == "iteration.start"):
+            next_start_id = eid
+            break
+    window = [ev for ev in events
+             if isinstance(ev.get("id"), int) and ev["id"] > end_id
+             and (next_start_id is None or ev["id"] < next_start_id)
+             and ev.get("type") in _CONTRACT_EVENT_TYPES]
+    if not window:
+        return None
+    last = window[-1]
+    hat = last.get("hat")
+    errors = list(last.get("errors") or [])
+    agent_fault = any(ev.get("type") == contract_enforcement.EVENT_AGENT_FAULT
+                      for ev in window)
+    violations = [ev for ev in window
+                 if ev.get("type") == contract_enforcement.EVENT_VIOLATION]
+    last_violation = violations[-1] if violations else None
+    return {
+        "hat": hat,
+        "errors": errors,
+        "attempts": (last_violation or {}).get("attempt"),
+        "maxAttempts": (last_violation or {}).get("maxAttempts"),
+        "agentFault": agent_fault,
+        "text": contract_enforcement.violation_message(hat, errors),
+    }
 
 
 def iteration_detail(run_root: Path, number: int) -> dict | None:
@@ -1376,7 +1471,11 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
       `archivedAttempts` how many EARLIER attempts at this same slot are
                          archived under `attempts/NN/` (task 019, #44) -- `0`
                          for the overwhelmingly common single-attempt
-                         iteration.
+                         iteration,
+      `contractFault`    the contract violation(s) this iteration itself
+                         recorded, if any (`contract_fault_for_iteration`,
+                         v0.13 task 012, #92) -- None for an iteration whose
+                         hat never broke its response contract at all.
 
     The log lines are NOT part of this dict on purpose: rendering them is the
     job of `log_merge.iteration_lines` plus the shared renderer, and a caller
@@ -1429,6 +1528,10 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
     detail["promptBytes"] = psize
     detail["hasPrompt"] = psize > 0
     detail["archivedAttempts"] = len(iteration_attempt_dirs(run_root, number))
+    # v0.13 task 012 (#92): the contract violation(s) this iteration itself
+    # recorded, if any -- joined from events.jsonl, never a new persisted
+    # field (see `contract_fault_for_iteration`'s own module note).
+    detail["contractFault"] = contract_fault_for_iteration(run_root, detail["number"])
     return detail
 
 

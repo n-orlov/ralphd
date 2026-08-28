@@ -563,7 +563,13 @@ Human output also renders (task 003):
   terminal `failed`/`aborted` runs as a `.run-reason` banner on the run
   summary card (mirroring the `.steering-warning` banner above), so an
   operator watching a run through the hub sees why it failed without
-  fetching `--json`.
+  fetching `--json`. Task 012 (#92): when the reason is a hat's contract
+  ladder running out (no budget left to re-ask again), the text is exactly
+  `'<hat>' contract violation: <errors>` -- the validator's own error(s),
+  joined verbatim -- built by the ONE shared sentence-builder
+  (`contract_enforcement.violation_message`) the engine itself writes
+  `status.json`'s `reason` from, so this line and `ralphctl iteration
+  <n>`'s `contract:` line below can never disagree about the wording.
 - `deadline:` (task 007, #72) -- shown only when `status.json` carries the
   `deadlineBeatVerdict` marker task 006 added: every task in the run's plan
   was completed, the worker's own `COMPLETE` was already honoured, and the
@@ -1084,6 +1090,29 @@ steering:  001-focus.md
   overwritten, and the line says how many are there so the crash is readable
   after the resume. `--json`'s `archivedAttempts` is the same count (`0`
   normally).
+- **`contract:`** (task 012, #92) appears only when this iteration's own
+  window in `events.jsonl` (between its `iteration.end` and the next
+  `iteration.start`, or the end of the log) holds a `contract.violation`/
+  `contract.agent_fault` event — a hat's payload was refused by
+  `enforce_contract` at least once during this iteration's slot, whether or
+  not a later re-ask within the same ladder went on to recover it:
+
+  ```
+  contract:  'worker' contract violation: $.task_id: expected string, got int
+  ```
+
+  The text is produced by the exact same shared sentence-builder
+  (`contract_enforcement.violation_message`) `status.json`'s `reason` line
+  is built from when the ladder never recovers and the run aborts on it —
+  so a recovered iteration and a run-ending one are never worded two
+  different ways for the same underlying validation error; only
+  `--json`'s `contractFault.agentFault` (below) tells them apart. Absent
+  entirely for an iteration whose hat never had a payload refused.
+  `--json` carries the full derivation as a `contractFault` object:
+  `hat`, `errors` (the validator's own list, verbatim), `attempts`,
+  `maxAttempts`, `agentFault` (`true` only if the ladder ran out inside
+  this iteration's window) and `text` (the same rendered sentence the
+  human `contract:` line prints) — or `null` when there was no violation.
 - The transcript is rendered by the same merge and renderer
   `logs --iteration n` uses, so the two commands cannot show the same events
   differently; an iteration that wrote none prints `(no transcript yet)`.
@@ -1094,7 +1123,8 @@ steering:  001-focus.md
   `durationDisplay`, `durationLabel`, `startedAtLocal`/`endedAtLocal`,
   `tokensDisplay`, `costDisplay`, `costStatus`, `hasMeta`, `hasTranscript`,
   `transcriptBytes`, `hasPrompt`, `promptBytes`, `promptText` (the "input"
-  region's raw `prompt.md` body), `archivedAttempts`, and `log` (the
+  region's raw `prompt.md` body), `archivedAttempts`, `contractFault`
+  (task 012, above) and `log` (the
   rendered lines, never ANSI). With
   `--no-log` the `log` key is **absent** rather than empty — an empty list
   would claim the iteration produced no transcript.

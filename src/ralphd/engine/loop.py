@@ -2592,8 +2592,14 @@ class LoopSupervisor:
             # (requirement D, unconditional: an engine-side cutoff is
             # NEVER read as a contract violation, budget or not).
             if not self.budget_left():
-                message = (f"{hat!r} contract violation: "
-                           + "; ".join(enforcement.errors))
+                # v0.13 task 012 (#92): the ONE shared derivation --
+                # `state.contract_fault_for_iteration` builds the very same
+                # text from `EVENT_VIOLATION`/`EVENT_AGENT_FAULT` events for
+                # `ralphctl iteration N`, so this run's own terminal
+                # `reason:` line and a per-iteration reconstruction can never
+                # spell the same fact two different ways.
+                message = contract_enforcement.violation_message(
+                    hat, enforcement.errors)
                 self.run.emit("log", level="error", message=message)
                 self._abort_reason = message
                 return ("tail",)

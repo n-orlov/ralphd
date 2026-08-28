@@ -92,6 +92,27 @@ def parse_response(
     return payload, []
 
 
+def violation_message(hat: str, errors: list[str]) -> str:
+    """The ONE human sentence for a hat that broke its response contract,
+    quoting the validation error(s) verbatim -- v0.13 task 012 (#92,
+    requirement G's second half): a hat that never recovers ends the run
+    with this exact text as `loop.py`'s `self._abort_reason` (and therefore
+    `status.json`'s `reason` field, `ralphctl status`'s `reason:` line), and
+    the SAME function builds the text `state.contract_fault_for_iteration`
+    reconstructs from `EVENT_VIOLATION`/`EVENT_AGENT_FAULT` events for
+    `ralphctl iteration N` -- one shared derivation, never two hand-kept
+    strings that happen to agree today and drift tomorrow.
+
+    Deliberately keeps the exact wording this repository already shipped
+    (`'worker' contract violation: $.task_id: expected string, got int`,
+    the PRD's own `deck-phase3g` example) rather than inventing new prose:
+    `tests/test_interrupt_not_substantive_outcome_task004.py` pins the
+    substring `"contract violation"` in `_abort_reason` and must keep
+    passing unmodified.
+    """
+    return f"{hat!r} contract violation: " + "; ".join(errors)
+
+
 @dataclass
 class ContractResult:
     """The outcome of `enforce_contract` for one hat invocation."""
