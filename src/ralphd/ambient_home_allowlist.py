@@ -87,7 +87,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/ui_server.py",
-        "line": "1279",
+        "line": "1287",
         "reason": ("`Handler.registry`'s class-level default. Every real server "
                    "binds a concrete registry via `make_handler_class(reg)` "
                    "(see its own docstring, \"Bound to a registry path via "
@@ -144,7 +144,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "engine/loop.py",
-        "line": "534",
+        "line": "542",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
