@@ -131,16 +131,59 @@ def test_resolver_has_exactly_one_call_site_in_src():
     assert [name for name, _ in host_map_calls] == ["loop.py"], host_map_calls
 
 
-def test_loop_has_exactly_two_subprocess_dispatch_sites():
-    """`runner.run(...)` -- the actual subprocess launch -- appears exactly
-    twice in loop.py: `_run_iteration_once` (the tiered dispatch call site)
-    and `_ask_router` (the router's own, pre-existing, untiered call). No
-    third pathway was introduced by this task."""
+_DEF_RE = __import__("re").compile(r"^    (?:async )?def (\w+)\(")
+
+_ALLOWED_DISPATCH_OWNERS = {
+    "_run_iteration_once",  # the tiered dispatch call site
+    "_ask_router",          # the router's own, pre-existing, untiered call
+    "_ask_contract_fix",    # task 002's contract-repair re-ask
+}
+
+
+def _owning_function(lines: list[str], lineno: int) -> str | None:
+    """Walk backwards from `lineno` (1-indexed) to the nearest enclosing
+    method definition at 4-space (class-body) indent."""
+    for i in range(lineno - 1, -1, -1):
+        m = _DEF_RE.match(lines[i])
+        if m:
+            return m.group(1)
+    return None
+
+
+def test_loop_subprocess_dispatch_sites_are_owned_by_exactly_these_functions():
+    """Task 002 (steer 002 item 2): `runner.run(...)` -- the actual
+    subprocess launch -- appears in loop.py ONLY inside the three named
+    owning functions. The old assertion here was a bare `len(hits) == 2`,
+    which only proved a *count*: a 4th call site inside some brand-new
+    function would have kept the count wrong (3 != 2) but a *swap* --
+    deleting one of the two known sites while adding two new ones
+    elsewhere -- would have sailed through unnoticed, and simply bumping
+    the literal to `== 3` (the naive fix for `_ask_contract_fix` landing)
+    would reopen exactly that hole for a would-be 4th site. Asserting the
+    SET of owning function names instead pins identity, not just
+    cardinality: any unlisted owner -- a stray new call site, or a call
+    site moved out of its named function -- fails by naming the offender.
+    """
     src = pathlib.Path(loop_module.__file__)
-    hits = [lineno for lineno, line in
-            enumerate(src.read_text().splitlines(), start=1)
+    lines = src.read_text().splitlines()
+    hits = [lineno for lineno, line in enumerate(lines, start=1)
             if "runner.run(" in line and not line.strip().startswith("#")]
-    assert len(hits) == 2, hits
+
+    owners = {lineno: _owning_function(lines, lineno) for lineno in hits}
+    owner_set = set(owners.values())
+
+    unexpected = owner_set - _ALLOWED_DISPATCH_OWNERS
+    assert not unexpected, (
+        f"runner.run( dispatched from unlisted function(s) {unexpected} "
+        f"(lines: {owners}); only {_ALLOWED_DISPATCH_OWNERS} may own a "
+        "subprocess-dispatch call site in loop.py"
+    )
+    missing = _ALLOWED_DISPATCH_OWNERS - owner_set
+    assert not missing, (
+        f"expected owning function(s) {missing} to each have a "
+        f"runner.run( call site, but found none (lines: {owners})"
+    )
+    assert owner_set == _ALLOWED_DISPATCH_OWNERS, owners
 
 
 # ---------------------------------------------------------------------------
