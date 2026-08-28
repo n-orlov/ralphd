@@ -1144,6 +1144,11 @@ ITERATION_DERIVED_KEYS = (
     "durationLabel", "exitReason", "costDisplay", "costStatus", "tokensDisplay",
     "hasTranscript", "transcriptBytes", "hasPrompt", "promptBytes",
     "contractFault",
+    # v0.13 task 013 (#89, requirement H): this iteration's own fault CAUSE,
+    # re-derived (never persisted) through `faults.explain_fault` -- see
+    # `iteration_detail`'s own note below for why a hand-edited/hostile
+    # meta.json cannot smuggle a cause in by writing these directly.
+    "reason", "signature", "notices",
 )
 
 # Whether a duration is final or still growing (`ralphctl status`' own words).
@@ -1476,6 +1481,17 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
                          recorded, if any (`contract_fault_for_iteration`,
                          v0.13 task 012, #92) -- None for an iteration whose
                          hat never broke its response contract at all.
+      `reason`/`signature`  THIS iteration's own fault cause, re-derived
+                         through `faults.explain_fault` from its OWN
+                         meta.json fields -- the same call `fault_explanation`
+                         makes for the run's LAST fault, now made per
+                         iteration (v0.13 task 013, #89) so an earlier fault's
+                         cause stays reachable once a later one happens.
+                         `faultClass` above is left exactly as recorded --
+                         never overwritten by this re-derivation; a
+                         disagreement is appended to `notices` instead
+                         (`FAULT_VERDICT_DIVERGED_NOTICE`). Both are `None`
+                         for an iteration that never recorded a fault.
 
     The log lines are NOT part of this dict on purpose: rendering them is the
     job of `log_merge.iteration_lines` plus the shared renderer, and a caller
@@ -1532,6 +1548,39 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
     # recorded, if any -- joined from events.jsonl, never a new persisted
     # field (see `contract_fault_for_iteration`'s own module note).
     detail["contractFault"] = contract_fault_for_iteration(run_root, detail["number"])
+    # v0.13 task 013 (#89, requirement H): re-derive THIS iteration's own
+    # fault cause -- `reason` + `signature` -- through the exact same
+    # `faults.explain_fault` call `fault_explanation` makes for the run's
+    # LAST fault. #89's own correction comment is the point: the cause was
+    # never missing from disk, only ever derived for the last faulted
+    # iteration -- so #2's cause became unreachable the moment #40 faulted,
+    # though #2's own meta still holds every input `explain_fault` needs.
+    # `faultClass` is left exactly as the engine recorded it above (never
+    # overwritten here); a disagreement is appended to `notices` instead of
+    # silently preferred, same as `fault_explanation`'s own
+    # `FAULT_VERDICT_DIVERGED_NOTICE`. Both `reason`/`signature`/`notices`
+    # are in `ITERATION_DERIVED_KEYS`, so a hand-edited/hostile meta.json
+    # cannot smuggle a fake cause in through the passthrough above.
+    detail["reason"] = None
+    detail["signature"] = None
+    detail["notices"] = []
+    recorded_fault = detail.get("faultClass")
+    if isinstance(recorded_fault, str) and recorded_fault:
+        usage = detail.get("usage") if isinstance(detail.get("usage"), dict) else None
+        derived = explain_fault(
+            error_text=str(detail.get("error") or ""),
+            exit_code=(detail.get("exitCode")
+                       if isinstance(detail.get("exitCode"), int)
+                       and not isinstance(detail.get("exitCode"), bool) else None),
+            interrupted=bool(detail.get("interrupted")),
+            timed_out=bool(detail.get("timedOut")),
+            no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
+            produced_traffic=bool(usage) or bool(detail.get("sawComplete")),
+        )
+        detail["reason"] = derived["reason"]
+        detail["signature"] = derived["signature"]
+        if derived["faultClass"] != recorded_fault:
+            detail["notices"].append(FAULT_VERDICT_DIVERGED_NOTICE)
     return detail
 
 
