@@ -3347,22 +3347,61 @@ class LoopSupervisor:
                     # `contract.violation`/`contract.agent_fault` events for
                     # the record.
                 elif verdict == "complete":
-                    report_errors = (
-                        schema_errors
-                        or transitions.worker_completion_report_errors(payload)
-                        or self._apply_worker_completion_report(
-                            payload, assigned_id))
-                    if report_errors:
-                        message = ("'worker' contract violation: "
-                                   + "; ".join(report_errors))
-                        self.run.emit("log", level="error", message=message)
-                        self._abort_reason = message
-                        return ("tail",)
-                    self._record_worker_iteration_verdict(
-                        worker_iter_n, "complete", assigned_id)
-                    tasks_after = self.run.read_tasks()
-                    stagnant = 0
-                    applied_this_iteration = True
+                    # v0.13 task 006 (#92 site 4): same shape as site 3
+                    # (task 005, unsatisfiable) -- a schema violation or an
+                    # illegal `_apply_worker_completion_report` (task_id
+                    # naming a DIFFERENT task than the one the harness
+                    # assigned, or no task assigned this iteration at all)
+                    # is no longer an immediate abort; it is carried back
+                    # to the SAME worker through `contract_enforcement.
+                    # enforce_contract`'s uncharged `_ask_contract_fix`
+                    # re-ask ladder, exactly like sites 1-3. Attempt 0
+                    # reuses THIS already-completed work iteration's own
+                    # final line -- no extra hat call, no double-charge.
+                    event_loop = asyncio.get_running_loop()
+
+                    def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                        if attempt == 0:
+                            return worker_final_text
+                        raw, _usage = asyncio.run_coroutine_threadsafe(
+                            self._ask_contract_fix("worker", prior_errors or []),
+                            event_loop).result()
+                        return last_nonblank_line(raw)
+
+                    enforcement = await asyncio.to_thread(
+                        contract_enforcement.enforce_contract,
+                        "worker", respond,
+                        max_retries=self.cfg.contract_retry_max,
+                        state=self.run,
+                        extra_validate=lambda p: (
+                            transitions.worker_completion_report_errors(p)
+                            or self._apply_worker_completion_report(
+                                p, assigned_id)),
+                    )
+                    if enforcement.ok:
+                        self._record_worker_iteration_verdict(
+                            worker_iter_n, "complete", assigned_id)
+                        tasks_after = self.run.read_tasks()
+                        stagnant = 0
+                        applied_this_iteration = True
+                    # Re-derived for `complete` (the open question tasks
+                    # 005/006's map left unresolved): `applied_this_
+                    # iteration` simply stays False on exhaustion --
+                    # nothing was actually applied to tasks.json, so the
+                    # grace-review/`_outstanding_for_completion` block
+                    # below (gated on `applied_this_iteration`) is
+                    # correctly skipped, same as it already is for a
+                    # `"no_verdict"` reply. No `_advance` call, no
+                    # `self._abort_reason`, no early `return` -- this pass
+                    # falls through to the SAME ordinary stagnation
+                    # bookkeeping further down that a genuine
+                    # `"no_verdict"` reply already takes, and this
+                    # method's own enclosing `while self.budget_left():`
+                    # loop still owns what happens once budget runs out,
+                    # exactly as task 005 reasoned for site 3.
+                    # `enforce_contract` already emitted the
+                    # `contract.violation`/`contract.agent_fault` events
+                    # for the record.
                 elif schema_errors:
                     message = ("'worker' contract violation: "
                                + "; ".join(schema_errors))

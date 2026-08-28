@@ -133,12 +133,32 @@ def test_no_task_status_change_while_worker_hat_executes(tmp_path):
 def test_harness_decision_wins_over_a_disagreeing_worker_payload_claim(tmp_path):
     """The scheduler assigns "001" (first in list order, no priority/deps).
     The fake agent's payload instead claims completion of "002" -- a task
-    it was never assigned. That claim must be refused as a contract
-    violation (never silently redirected onto "002"), and the record that
-    actually persists is the harness's OWN decision: "001" sits exactly
-    where the harness itself put it (`in-progress`, claimed before spawn),
-    "002" is untouched (still `pending`) -- the agent's word alone never
-    reaches disk."""
+    it was never assigned. Task 116's ORIGINAL claim, pinned here before
+    v0.13 task 006 (#92 site 4)'s cutover, was: `outcome == ("tail",)` and
+    `sup._abort_reason` mentioning "contract violation" -- a single
+    disagreeing claim was fatal on the FIRST offence, with no re-ask and no
+    ladder at all.
+
+    The NEW claim keeps the old one's real content -- the move is STILL
+    refused, and the record that actually persists is the harness's OWN
+    decision: "001" sits exactly where the harness itself put it
+    (`in-progress`, claimed before spawn), "002" is untouched (still
+    `pending`) -- and adds what the old assertion could not see: the
+    disagreement is carried back to the SAME worker verbatim on every
+    re-ask through `contract_enforcement.enforce_contract` (the EXACT SAME
+    ladder `_step_generic_hat`'s sites 1/2 and worker's own site 3 already
+    use), the ladder runs the FULL `contract_retry_max + 1` attempts each
+    pass (never fewer, never more), and an exhausted ladder is an
+    agent-fault continuation -- never an abort, no `_abort_reason`, no
+    "contract violation" log message. Because the disagreement never
+    resolves, tasks.json never moves on any pass, so it takes exactly one
+    pass to record every task's fresh `criteriaFingerprint` baseline (task
+    008's own first-sight bookkeeping, itself "progress" for the
+    stagnation counter even though nothing about the disagreement changed)
+    plus three more genuinely stagnant passes -- each still its own
+    exhausted ladder -- to trip the PRE-EXISTING `stagnation_exhausted`
+    guard, ending in `("advance", "replan", "stagnation_exhausted")`
+    rather than `("tail",)`."""
     sup, run = _make_sup(tmp_path, [
         {"id": "001", "title": "first task", "status": "pending",
          "successCriteria": "first done"},
@@ -147,23 +167,46 @@ def test_harness_decision_wins_over_a_disagreeing_worker_payload_claim(tmp_path)
     ])
 
     class _DisagreeingAgent:
+        def __init__(self):
+            self.calls = 0
+
         def interrupt(self):
             return False
 
         async def run(self, prompt, transcript, **kw):
+            self.calls += 1
             r = IterationResult(exit_code=0)
             r.final_text = json.dumps({"verdict": "complete", "task_id": "002"})
             r.duration_s = 0.01
             r.usage = {"input": 1, "output": 1, "totalTokens": 2}
             return r
 
-    sup.runner = _DisagreeingAgent()  # type: ignore[assignment]
+    agent = _DisagreeingAgent()
+    sup.runner = agent  # type: ignore[assignment]
+    sup._approach = 1  # a run's own approach bookkeeping, not this test's concern
     outcome = asyncio.run(sup._step_worker())
 
-    assert outcome == ("tail",)
-    assert sup._abort_reason and "contract violation" in sup._abort_reason
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
+    assert sup._abort_reason is None
     tasks = {t["id"]: t["status"] for t in run.read_tasks()["tasks"]}
     # the harness's own pre-spawn claim on "001" stands...
     assert tasks["001"] == "in-progress"
     # ...and the disagreeing claim about "002" never touched it.
     assert tasks["002"] == "pending"
+
+    events = state.read_events(run.root)
+    violation_events = [e for e in events if e.get("type") == "contract.violation"]
+    fault_events = [e for e in events if e.get("type") == "contract.agent_fault"]
+    # the first pass's own criteria-fingerprint bookkeeping (task 008)
+    # counts as progress and resets the counter once; the three
+    # genuinely stagnant passes after it, each running its own full
+    # ladder, are what trips the guard.
+    assert len(fault_events) == 4, "the ladder must exhaust once per pass"
+    assert len(violation_events) == 4 * (sup.cfg.contract_retry_max + 1)
+    assert all("is the one this iteration was assigned" in e["errors"][0]
+              for e in violation_events)
+    assert agent.calls == 4 * (sup.cfg.contract_retry_max + 1)
+
+    msgs = "\n".join(ev.get("message") or "" for ev in events
+                     if ev.get("type") == "log")
+    assert "contract violation" not in msgs

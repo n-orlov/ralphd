@@ -196,7 +196,27 @@ def test_two_validation_failed_reentries_escalate_twice_then_cap(tmp_path):
 def test_a_worker_payload_reporting_a_tier_cannot_change_it(tmp_path):
     """A hat's contract has no `tier`/`effectiveTier` property at all, and
     `additionalProperties: False` refuses one that tries -- proving the
-    field is genuinely harness-only, not merely unread."""
+    field is genuinely harness-only, not merely unread.
+
+    v0.13 task 006 (#92 site 4) strengthens this. The OLD claim, pinned
+    here before the cutover, was: `sup._abort_reason and "contract
+    violation" in sup._abort_reason` -- a single schema-violating payload
+    was fatal on the FIRST offence, with no re-ask and no ladder at all.
+
+    The NEW claim keeps the old one's real content -- the payload's
+    `tier`/`effectiveTier` still never reach the record, the claim's own
+    escalation stands untouched -- and adds what the old assertion could
+    not see: the schema error was carried back to the SAME worker
+    verbatim on every re-ask through `contract_enforcement.
+    enforce_contract` (the EXACT SAME ladder sites 1-3 already use), the
+    ladder ran the FULL `contract_retry_max + 1` attempts (never fewer,
+    never more), and the outcome is an agent-fault iteration that
+    continues per the table rather than aborting: no `_abort_reason`, no
+    "contract violation" log message. With this test's one-iteration
+    budget (`_make_sup`'s default) already spent by the single charged
+    attempt, the run ends via the ordinary budget-exhausted tail
+    (`outcome == ("tail",)`), not an abort.
+    """
     sup, run = _make_sup(tmp_path, [
         {"id": "001", "title": "t", "status": "validation-failed",
          "successCriteria": "c", "tier": "trivial",
@@ -204,10 +224,14 @@ def test_a_worker_payload_reporting_a_tier_cannot_change_it(tmp_path):
     ])
 
     class _SneakyAgent:
+        def __init__(self):
+            self.calls = 0
+
         def interrupt(self):
             return False
 
         async def run(self, prompt, transcript, **kw):
+            self.calls += 1
             r = IterationResult(exit_code=0)
             r.final_text = json.dumps({
                 "verdict": "complete", "task_id": "001",
@@ -216,18 +240,35 @@ def test_a_worker_payload_reporting_a_tier_cannot_change_it(tmp_path):
             r.usage = {"input": 1, "output": 1, "totalTokens": 2}
             return r
 
-    sup.runner = _SneakyAgent()  # type: ignore[assignment]
+    agent = _SneakyAgent()
+    sup.runner = agent  # type: ignore[assignment]
     outcome = asyncio.run(sup._step_worker())
 
-    # The unexpected fields make it a schema violation -- a contract
-    # violation, not a silent field grab.
     assert outcome == ("tail",)
-    assert sup._abort_reason and "contract violation" in sup._abort_reason
     t = run.read_tasks()["tasks"][0]
     # The claim's own escalation (trivial -> normal, applied by the harness
     # BEFORE the subprocess ran) stands; the payload's "hard" claim never
     # reached the record.
     assert t[state.TASK_EFFECTIVE_TIER_FIELD] == "normal"
+
+    # the errors were carried back on every re-ask: the ladder ran the
+    # FULL contract_retry_max + 1 attempts (never fewer, never more) --
+    # every call (the one charged `run_iteration` plus every uncharged
+    # `_ask_contract_fix` re-ask) lands on the SAME `_SneakyAgent.run`.
+    assert agent.calls == sup.cfg.contract_retry_max + 1
+
+    events = state.read_events(run.root)
+    violation_events = [e for e in events if e.get("type") == "contract.violation"]
+    fault_events = [e for e in events if e.get("type") == "contract.agent_fault"]
+    assert len(violation_events) == sup.cfg.contract_retry_max + 1
+    assert len(fault_events) == 1, "the ladder must be exhausted exactly once"
+    assert any("tier" in e for v in violation_events for e in v["errors"])
+
+    # agent-fault continuation, NEVER a contract-violation abort.
+    assert sup._abort_reason is None
+    msgs = "\n".join(ev.get("message") or "" for ev in events
+                     if ev.get("type") == "log")
+    assert "contract violation" not in msgs
 
 
 def test_infra_fault_rollback_gives_the_tier_bump_back_too(tmp_path):
