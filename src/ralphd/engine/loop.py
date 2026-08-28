@@ -3403,11 +3403,53 @@ class LoopSupervisor:
                     # `contract.violation`/`contract.agent_fault` events
                     # for the record.
                 elif schema_errors:
-                    message = ("'worker' contract violation: "
-                               + "; ".join(schema_errors))
-                    self.run.emit("log", level="error", message=message)
-                    self._abort_reason = message
-                    return ("tail",)
+                    # v0.13 task 007 (#92 site 5, the LAST cutover): a
+                    # `verdict` the schema itself rejects -- not
+                    # "unsatisfiable" or "complete" above, and not the
+                    # valid "no_verdict" either (an unknown enum value,
+                    # an unexpected extra field, ...) -- is no longer an
+                    # immediate abort; it goes through the exact same
+                    # `contract_enforcement.enforce_contract` re-ask
+                    # ladder as sites 1-4. Attempt 0 reuses THIS already-
+                    # completed work iteration's own final line -- no
+                    # extra hat call, no double-charge. No
+                    # `extra_validate` here: this branch's only failure
+                    # mode IS the schema check `enforce_contract`'s own
+                    # `parse_response` already performs -- unlike
+                    # "unsatisfiable"/"complete" there is no semantic
+                    # task-application layered on top of it, so there is
+                    # nothing further for this branch to apply even on a
+                    # successful repair: a corrected reply is treated
+                    # exactly like an ordinary "no_verdict" reply (nothing
+                    # to apply this iteration) rather than re-dispatched
+                    # into the unsatisfiable/complete branches above,
+                    # which this generic site has no way to re-enter
+                    # without a second retry loop (fact 16/#65).
+                    event_loop = asyncio.get_running_loop()
+
+                    def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                        if attempt == 0:
+                            return worker_final_text
+                        raw, _usage = asyncio.run_coroutine_threadsafe(
+                            self._ask_contract_fix("worker", prior_errors or []),
+                            event_loop).result()
+                        return last_nonblank_line(raw)
+
+                    enforcement = await asyncio.to_thread(
+                        contract_enforcement.enforce_contract,
+                        "worker", respond,
+                        max_retries=self.cfg.contract_retry_max,
+                        state=self.run,
+                    )
+                    # Whether `enforcement.ok` or the ladder exhausted: no
+                    # `_advance` call, no `self._abort_reason`, no early
+                    # `return` -- this falls through to the SAME ordinary
+                    # stagnation bookkeeping below that a genuine
+                    # "no_verdict" reply already takes, exactly as tasks
+                    # 005/006 reasoned for sites 3/4's own exhaustion path.
+                    # `enforce_contract` already emitted the
+                    # `contract.violation`/`contract.agent_fault` events
+                    # for the record.
                 # verdict == "no_verdict": nothing to apply this iteration.
 
             if self.cfg.vigilant:
