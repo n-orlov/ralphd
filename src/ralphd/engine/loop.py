@@ -3280,8 +3280,9 @@ class LoopSupervisor:
             # further down, unchanged) or a JSON object with no `verdict`
             # key at all leaves the rest of this method's existing
             # behaviour completely untouched.
+            worker_final_text = last_nonblank_line(result.final_text)
             try:
-                payload = json.loads(last_nonblank_line(result.final_text))
+                payload = json.loads(worker_final_text)
             except (json.JSONDecodeError, TypeError):
                 payload = None
             verdict = payload.get("verdict") if isinstance(payload, dict) else None
@@ -3289,27 +3290,62 @@ class LoopSupervisor:
             if verdict is not None:
                 schema_errors = contracts.validate_payload("worker", payload)
                 if verdict == "unsatisfiable":
-                    report_errors = (
-                        schema_errors
-                        or self._apply_unsatisfiable_report(payload))
-                    if report_errors:
-                        message = ("'worker' contract violation: "
-                                   + "; ".join(report_errors))
-                        self.run.emit("log", level="error", message=message)
-                        self._abort_reason = message
-                        return ("tail",)
-                    self._record_worker_iteration_verdict(
-                        worker_iter_n, "unsatisfiable", assigned_id)
-                    tasks_after = self.run.read_tasks()
-                    stagnant = 0
-                    if any(task_is_actionable(t)
-                           for t in tasks_after.get("tasks", [])):
-                        self._advance("worker", "worker",
-                                     "unsatisfiable_targeted_replan")
-                        continue
-                    verdict_ready = True
-                    guard_ready = "unsatisfiable_and_nothing_left"
-                    break
+                    # v0.13 task 005 (#92 site 3): a schema violation or an
+                    # illegal `_apply_unsatisfiable_report` (bad `task_id`,
+                    # missing/blank `reason`) is no longer an immediate
+                    # abort -- it is carried back to the SAME worker
+                    # through `contract_enforcement.enforce_contract`'s
+                    # uncharged `_ask_contract_fix` re-ask ladder, exactly
+                    # like `_step_generic_hat`'s sites 1/2 (tasks 003/004).
+                    # Attempt 0 reuses THIS already-completed work
+                    # iteration's own final line -- no extra hat call, no
+                    # double-charge.
+                    event_loop = asyncio.get_running_loop()
+
+                    def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                        if attempt == 0:
+                            return worker_final_text
+                        raw, _usage = asyncio.run_coroutine_threadsafe(
+                            self._ask_contract_fix("worker", prior_errors or []),
+                            event_loop).result()
+                        return last_nonblank_line(raw)
+
+                    enforcement = await asyncio.to_thread(
+                        contract_enforcement.enforce_contract,
+                        "worker", respond,
+                        max_retries=self.cfg.contract_retry_max,
+                        state=self.run,
+                        extra_validate=lambda p: self._apply_unsatisfiable_report(p),
+                    )
+                    if enforcement.ok:
+                        self._record_worker_iteration_verdict(
+                            worker_iter_n, "unsatisfiable", assigned_id)
+                        tasks_after = self.run.read_tasks()
+                        stagnant = 0
+                        if any(task_is_actionable(t)
+                               for t in tasks_after.get("tasks", [])):
+                            self._advance("worker", "worker",
+                                         "unsatisfiable_targeted_replan")
+                            continue
+                        verdict_ready = True
+                        guard_ready = "unsatisfiable_and_nothing_left"
+                        break
+                    # Task 005 (requirement C, qualified as task 003 settled
+                    # it -- but here the ladder's exhaustion is NEVER read
+                    # as the reason this run ends, budget or not, because
+                    # this method's own `while self.budget_left():` loop
+                    # already owns that decision independently a few lines
+                    # below, exactly as it already does for an ordinary
+                    # `"no_verdict"` reply): an exhausted ladder here takes
+                    # the declared `T("worker", "no_verdict_yet")` self-loop
+                    # -- no `_advance` call (undeclared/no-op, same as the
+                    # ordinary no-verdict path just below), no
+                    # `self._abort_reason`, no early `return`. It simply
+                    # falls through to this pass's ordinary stagnation
+                    # bookkeeping below, exactly as a genuine `"no_verdict"`
+                    # reply would -- `enforce_contract` already emitted the
+                    # `contract.violation`/`contract.agent_fault` events for
+                    # the record.
                 elif verdict == "complete":
                     report_errors = (
                         schema_errors

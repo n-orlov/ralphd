@@ -309,11 +309,31 @@ def test_nothing_left_actionable_routes_to_review_instead_of_stagnating(
     assert state in ("failed", "aborted")
 
 
-def test_a_report_with_no_reason_is_a_contract_violation_and_aborts_loudly(
+def test_a_report_with_no_reason_is_a_contract_violation_with_the_move_still_refused(
         tmp_path):
-    """Fact 19's hazard: a broken report must not silently take the move
-    anyway -- it ends the run loudly, exactly like any other hat contract
-    violation (`_step_generic_hat`'s own rule, task 009/010)."""
+    """v0.13 task 005 (#92 site 3) strengthens this. The OLD claim, pinned
+    here before the cutover, was: `assert state == "aborted"` -- a single
+    reported illegal move was fatal on the FIRST offence, with no re-ask
+    and no ladder at all, and the run ended loudly with a "contract
+    violation" log message.
+
+    The NEW claim keeps the old one's real content -- the illegal move is
+    still refused, the task record is still untouched -- and adds what the
+    old assertion could not see: the errors were carried back to the SAME
+    worker verbatim on each re-ask, the ladder ran the FULL
+    `contract_retry_max + 1` attempts through
+    `contract_enforcement.enforce_contract` (the report check as its
+    `extra_validate`) -- the EXACT SAME retry loop `_step_generic_hat`'s
+    sites 1/2 (tasks 003/004) already use for the OTHER four hats' own
+    schema/semantic refusals -- and the outcome is an agent-fault
+    iteration that continues per the table
+    (`T("worker", "no_verdict_yet")`) rather than aborting: `_step_worker`'s
+    own `while self.budget_left():` loop, not the ladder, decides when this
+    run ends, and it NEVER sets `self._abort_reason` for an exhausted
+    ladder -- with the run's own iteration budget already spent by the one
+    charged attempt below (`iterations=1`), the run ends `"failed"`
+    (unverified, no abort) via the ordinary tail, not `"aborted"`.
+    """
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
     bad = json.dumps({"verdict": "unsatisfiable", "task_id": TASK_1})
@@ -321,21 +341,49 @@ def test_a_report_with_no_reason_is_a_contract_violation_and_aborts_loudly(
     sup, state = _run_resumed(root, {
         "worker": [lambda s, p: _ok(f"no reason given\n{bad}")],
         "review": [_review_verified],
-    }, tasks)
+    }, tasks, iterations=2)  # _run_resumed seeds iterations_used=1 already
 
-    assert state == "aborted", sup.run.read_status()
+    # the move is still refused -- the task record is untouched, exactly
+    # like the old claim.
     task = sup.run.read_tasks()["tasks"][0]
     assert task["status"] == "in-progress", \
         "a contract violation must not silently take the move anyway"
+
+    # the errors were carried back on every re-ask: the ladder ran the
+    # FULL contract_retry_max + 1 attempts (never fewer, never more) --
+    # every call (the one charged `run_iteration` plus every uncharged
+    # `_ask_contract_fix` re-ask) lands on the SAME `_ScriptedAgent.run`,
+    # so this call count is the ladder's own attempt count directly.
+    assert sup.runner.calls["worker"] == sup.cfg.contract_retry_max + 1  # type: ignore[attr-defined]
+
+    events = _events(root)
+    violation_events = [ev for ev in events if ev.get("type") == "contract.violation"]
+    fault_events = [ev for ev in events if ev.get("type") == "contract.agent_fault"]
+    assert len(violation_events) == sup.cfg.contract_retry_max + 1
+    assert len(fault_events) == 1, "the ladder must be exhausted exactly once"
+    assert all("reason" in ev["errors"][0] for ev in violation_events)
+
+    # agent-fault continuation, NEVER a contract-violation abort: no
+    # `_abort_reason`, no "contract violation" log message, and the run
+    # ends `"failed"` (budget genuinely exhausted), not `"aborted"`.
+    assert sup._abort_reason is None
     msgs = _log_messages(root)
-    assert "contract violation" in msgs
-    assert "reason" in msgs
-    error_events = [ev for ev in _events(root)
-                    if ev.get("type") == "log" and ev.get("level") == "error"]
-    assert error_events, "the violation must be logged loudly the moment it happens"
+    assert "contract violation" not in msgs
+    assert state == "failed", sup.run.read_status()
 
 
-def test_an_unknown_task_id_is_also_a_contract_violation(tmp_path):
+def test_an_unknown_task_id_exhausts_the_ladder_and_still_refuses_the_move(
+        tmp_path):
+    """v0.13 task 005: same cutover as the no-reason case above -- an
+    unresolvable `task_id` is carried back through the SAME re-ask ladder
+    (`"not found"` on every `contract.violation` event, never a `log`
+    message the old pre-cutover assertion grepped) rather than aborting on
+    the first offence. With no budget ceiling here (`_run_resumed`'s
+    default `iterations=15`), the worker loop keeps self-looping on
+    `no_verdict_yet` every pass -- three genuinely stuck passes (each its
+    own full ladder) still trips the PRE-EXISTING `stagnation_exhausted`
+    guard exactly as a silent hat would (this task adds no escape hatch
+    from that), ending the run `"failed"`, never `"aborted"`."""
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
@@ -344,8 +392,16 @@ def test_an_unknown_task_id_is_also_a_contract_violation(tmp_path):
         "review": [_review_verified],
     }, tasks)
 
-    assert state == "aborted", sup.run.read_status()
-    assert "not found" in _log_messages(root)
+    assert state == "failed", sup.run.read_status()
+    assert sup._abort_reason is None
+    assert "contract violation" not in _log_messages(root)
+    events = _events(root)
+    violation_events = [ev for ev in events if ev.get("type") == "contract.violation"]
+    assert violation_events, "the violation must still be recorded, just not aborted over"
+    assert all("not found" in ev["errors"][0] for ev in violation_events)
+    task = sup.run.read_tasks()["tasks"][0]
+    assert task["status"] == "in-progress", \
+        "a contract violation must not silently take the move anyway"
 
 
 # -- the other direction: a genuinely silent hat still fails after three ---
