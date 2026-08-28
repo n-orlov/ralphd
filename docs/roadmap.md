@@ -1032,6 +1032,108 @@ below are the PRD's own, `A`-`H`.
   operator report walking the repaired A-H -- both tracked as this run's
   own remaining tasks and not claimed here.
 
+## v0.13 — a broken contract is a conversation
+
+Full PRD:
+[`docs/prds/v0.13-a-broken-contract-is-a-conversation.md`](prds/v0.13-a-broken-contract-is-a-conversation.md).
+`deck-phase3g` ended `aborted`/`unverified` on `'worker' contract violation:
+$.task_id: expected string, got int` after 14h 36m and ~$174.52 — the harness
+threw away 765 remaining iterations and 10 of 12 approaches over an unquoted
+JSON scalar, though the reported work was real and done. This wave finishes a
+cutover the code's own comments had been promising since v0.9 (#92): a hat
+that breaks its output contract is re-asked, precisely, about the payload
+alone, not executed against. It also gives a faulted iteration its own
+derived cause (#89), moves eight hand-repeated plan-building practices into
+the planner prompt (#90), and fixes a `--user`-layout regression that would
+otherwise make this wave's own final sweep a false green (#93). Requirement
+letters below are the PRD's own, `A`-`N`; the PRD splits `F` into two
+un-lettered sub-headings (`F1`, `F2`) rather than giving each its own letter,
+so this block folds them into one `F` bullet, the same way the coverage test
+does.
+
+- ✅ **A. All five `loop.py` contract sites go through `enforce_contract`
+  (#92).** The hat schema pass (`2be8b86`), the reported `task_status` move
+  (`edbcb79`), and all three worker verdict sites — `unsatisfiable`
+  (`1311548`), `complete` (`8599b7b`), any other verdict's schema errors
+  (`aa0a7b1`) — now share the one retry ladder, with the semantic checks
+  supplied as `extra_validate` closures and `contracts.validate_payload`
+  still the only `HAT_SCHEMAS` reader. Task 001 (`4e377ff`) recorded the
+  five-site cutover map and the re-ask design decision before any site
+  moved.
+- ✅ **B. The re-ask is a cheap re-ask, never a repeated work iteration
+  (#92).** The uncharged contract-fix channel (`d21c9b9`, wired to nothing
+  yet) is proven end to end against the real worker path (`b79b258`): a
+  malformed first payload followed by a corrected re-ask moves the task as
+  the correction said, `iterations_used` advances by exactly one, the re-ask
+  prompt carries the validation error and not the worker's task prompt, and
+  a transcript is left on disk.
+- ✅ **C. An exhausted ladder is an agent fault, and the run continues per
+  the table (#92).** `466151f` pins the invariant directly against
+  `deck-phase3g`'s own shape (approach 2/12, 765 iterations left): four
+  straight exhausted attempts leave `_abort_reason` unset and the run
+  advances on a `transitions.TABLE`-declared edge, never a special case in
+  the executor.
+- ✅ **D. An engine-side cutoff is still not a contract violation.**
+  `_iteration_cut_short_by_engine` is checked before the contract pass at
+  every cutover site; `tests/test_interrupt_not_substantive_outcome_task004.py`'s
+  three pinned assertions were not touched by this wave and still pass.
+- ✅ **E. The tests that pin the abort are strengthened, never deleted
+  (#92).** The five assertions in `test_worker_harness_owned_status.py`,
+  `test_unsatisfiable_criteria.py`, `test_hat_extensibility.py`,
+  `test_task_status_lifecycle.py` and `test_tier_escalation.py` were
+  strengthened in the same commits that cut over their own site
+  (`2be8b86`, `edbcb79`, `1311548`, `8599b7b`), each commit message stating
+  the old claim and why the new one is stronger; `test_task_status_lifecycle.py`'s
+  own docstring describing the retry loop is now true of shipped behaviour.
+- ✅ **F. The `deck-phase3g` regression survives, and the fix is not a
+  coercion (#92).** `ff869a4` replays `deck-phase3g`'s exact killing payload
+  (`{"verdict": "complete", "task_id": 104}`) end to end and shows the run
+  refused-then-repaired rather than aborted (F1). The same commit records
+  F2's decision: no scalar coercion was added — normalising one field
+  repairs one line, not the next violation — so the coercion-proof-violation
+  obligation F2 would otherwise attach does not apply here.
+- ✅ **G. The violation is recorded as an event, from the live path (#92).**
+  `contract.violation`/`contract.agent_fault` are emitted with hat, attempt,
+  maxAttempts and errors from the live path (`b384340`), then surfaced
+  through `ralphctl status`'s reason line and `ralphctl iteration N`
+  (`fcccaec`).
+- ✅ **H. The fault cause is derived per iteration, not only for the last
+  one (#89).** `iteration_detail` derives `reason`/`signature` for its own
+  iteration through the same `faults.explain_fault` call, both listed in
+  `ITERATION_DERIVED_KEYS`, with `faultClass` staying the recorded verdict
+  and any divergence reported rather than silently preferred (`2c2c31d`).
+- ✅ **I. Every iteration surface renders it (#89).** `ralphctl iteration N`
+  (`cd9e3f2`) and the hub's timeline row plus iteration dialog (`f8e5ebd`)
+  all render the cause from that one shared derivation.
+- ✅ **J. The plan-building practices move into the planner prompt (#90).**
+  All eight practices recent waves had to spell out by hand landed in
+  `src/ralphd/prompts/planning.md`, each naming the incident that taught it
+  (`ca9fa49`).
+- ✅ **K. What belongs in a lint instead, decided — and nothing added (#90).**
+  No lint was added for practice 5 (cited paths, unlintable at ingestion by
+  construction) or practice 7 (closure `dependsOn`, would need a schema
+  field that does not exist); the decision is recorded against #76's own
+  cautionary shape (`7b96ab5`). The lint machinery itself is the part cut —
+  both practices stay prose-only.
+- ✅ **L. The prompt change is live and safe (#90).** `planning.md`'s
+  existing docs/flag consistency guards still pass with the eight practices
+  in place, verified in the same pass as J (`ca9fa49`).
+- ✅ **M. The `--user` layout is green again, and the tier can see it
+  (#93).** The autouse in-process `HOME` fixture now also pins
+  `PYTHONUSERBASE` (`5506ff8`), and `scripts/host_like_dev_layout.sh` gained
+  a `PYTHONUSERBASE`-unset mode, shown by mutation evidence to fail against
+  the reverted fix and pass with it (`ba78cc2`).
+- ⏳ **N. The version, the roadmap and the closure.** `pyproject.toml` and
+  `src/ralphd/__init__.py` both declare `0.13.0` (`f07b965`); this `## v0.13`
+  block lands in the established shape in this same entry; #92, #89, #90 and
+  #93 are all closed with evidence comments (tasks 020-023), #88 and #91
+  left untouched per the PRD's own exclusion. Not yet landed as of this
+  entry: the fast/docker/browser tier sweeps and both dev-layout-mode
+  sweeps, the repository-guard re-verification at the true final sha,
+  settling this run's row in `docs/prds/README.md`, and the closing
+  operator report walking A-N — all tracked as this run's own remaining
+  tasks and not claimed here.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
