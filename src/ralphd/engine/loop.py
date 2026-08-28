@@ -1522,6 +1522,17 @@ class LoopSupervisor:
         against (task 045, #3)."""
         return self.iterations_used - self._infra_refunded
 
+    @property
+    def deadline_epoch(self) -> float:
+        """Read-only wall-clock twin of `self.deadline` (task 003, #94 (a)):
+        the same value `set_job_deadline` moves and publishes as
+        `deadlineAt`. `PATCH /config/budget`'s job-deadline knob resolves
+        its `+N`/absolute spec against this figure, the same way the
+        `iterations` knob resolves against `iterations_used_charged` above
+        -- a public accessor so api.py never has to reach for the
+        underscore-named `_deadline_epoch` attribute directly."""
+        return self._deadline_epoch
+
     def set_iteration_budget(self, value: int) -> None:
         """Task 045 (#3): change the iteration budget of a LIVE run.
 

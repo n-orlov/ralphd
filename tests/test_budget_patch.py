@@ -5,6 +5,15 @@ tests/test_retry_now.py) against a real LoopSupervisor, so the accept/reject
 matrix, the audit event and the "no restart needed" contract
 (`budget_left()` flips without touching the container) are all asserted
 against production code paths.
+
+Task 003 (#94 (a), operator-added scope): the same route also grew three
+more knobs -- `maxApproaches`, `iterationTimeoutS`, `jobDeadlineEpochS` --
+reusing `resolve_iterations_spec`'s own `"+N"`/absolute grammar. No new
+route; `tests/test_route_inventory.py` and `tests/test_control_plane_auth.py`
+keep covering it for free. The tests below the original `iterations` matrix
+exercise each new knob's relative/absolute forms, its 409 guard (where one
+exists -- `maxApproaches` below the current approach, a deadline in the
+past), and that combining knobs in one request applies all of them.
 """
 
 from __future__ import annotations
@@ -20,9 +29,10 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
 
 
-def _supervisor(tmp_path, iterations: int = 25, used: int = 0) -> LoopSupervisor:
+def _supervisor(tmp_path, iterations: int = 25, used: int = 0,
+                **cfg_kw) -> LoopSupervisor:
     run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(JobConfig(run_id="unit", iterations=iterations),
+    sup = LoopSupervisor(JobConfig(run_id="unit", iterations=iterations, **cfg_kw),
                          run, tmp_path)
     sup.iterations_used = used
     run.update_status(state="running", iterationsBudget=iterations,
@@ -172,3 +182,172 @@ async def test_409_on_a_finished_job(tmp_path):
     assert "resume" in detail["detail"]
     assert sup.cfg.iterations == 5
     assert not _events(sup.run, "budget_changed")
+
+
+# -- task 003 (#94 (a), operator-added scope): the three knobs the route did
+# not cover -- maxApproaches, iterationTimeoutS, jobDeadlineEpochS. Reuses
+# resolve_iterations_spec's own "+N"/absolute grammar, proven above for
+# `iterations`; these tests exercise the SAME grammar against the three new
+# fields, plus their two 409 guards (symmetric with `iterations`'s own
+# `api.py:441-446` refusal above). ---------------------------------------
+
+@pytest.mark.asyncio
+async def test_max_approaches_relative_topup_is_observed_at_next_read(tmp_path):
+    sup = _supervisor(tmp_path, max_approaches=3)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget", json={"maxApproaches": "+2"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"maxApproaches": 5, "previousMaxApproaches": 3}
+        config = (await client.get("/config")).json()
+        status = (await client.get("/status")).json()
+    assert sup.cfg.max_approaches == 5
+    assert config["budgets"]["maxApproaches"] == 5
+    assert status["maxApproaches"] == 5
+    events = _events(sup.run, "budget_changed")
+    assert events[-1]["field"] == "maxApproaches"
+    assert events[-1]["previous"] == 3 and events[-1]["maxApproaches"] == 5
+
+
+@pytest.mark.asyncio
+async def test_max_approaches_absolute_value_sets_it(tmp_path):
+    sup = _supervisor(tmp_path, max_approaches=3)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget", json={"maxApproaches": 9})
+        assert resp.status_code == 200, resp.text
+    assert sup.cfg.max_approaches == 9
+
+
+@pytest.mark.asyncio
+async def test_max_approaches_below_current_approach_is_refused_with_409(tmp_path):
+    sup = _supervisor(tmp_path, max_approaches=5)
+    sup.run.update_status(approach=4)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget", json={"maxApproaches": 2})
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["title"] == "max approaches below current approach"
+    assert "4" in detail["detail"]
+    assert sup.cfg.max_approaches == 5, "rejected requests change nothing"
+    assert not _events(sup.run, "budget_changed")
+
+
+@pytest.mark.asyncio
+async def test_max_approaches_equal_to_current_approach_is_allowed(tmp_path):
+    sup = _supervisor(tmp_path, max_approaches=5)
+    sup.run.update_status(approach=4)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget", json={"maxApproaches": 4})
+    assert resp.status_code == 200, resp.text
+    assert sup.cfg.max_approaches == 4
+
+
+@pytest.mark.asyncio
+async def test_iteration_timeout_relative_topup_is_observed_at_next_read(tmp_path):
+    sup = _supervisor(tmp_path, iteration_timeout_s=600)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget",
+                                  json={"iterationTimeoutS": "+300"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"iterationTimeoutS": 900,
+                               "previousIterationTimeoutS": 600}
+        config = (await client.get("/config")).json()
+    assert sup.cfg.iteration_timeout_s == 900
+    assert config["budgets"]["iterationTimeoutS"] == 900
+    events = _events(sup.run, "budget_changed")
+    assert events[-1]["field"] == "iterationTimeoutS"
+    assert events[-1]["iterationTimeoutS"] == 900
+
+
+@pytest.mark.asyncio
+async def test_iteration_timeout_absolute_value_sets_it(tmp_path):
+    sup = _supervisor(tmp_path, iteration_timeout_s=600)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget", json={"iterationTimeoutS": 120})
+        assert resp.status_code == 200, resp.text
+    assert sup.cfg.iteration_timeout_s == 120
+
+
+@pytest.mark.asyncio
+async def test_job_deadline_relative_topup_moves_both_clocks_and_republishes(tmp_path):
+    from ralphd.engine.state import utc_from_epoch
+
+    sup = _supervisor(tmp_path, job_timeout_s=3600)
+    before_mono = sup.deadline
+    before_epoch = sup.deadline_epoch
+
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget",
+                                  json={"jobDeadlineEpochS": "+900"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["jobDeadlineEpochS"] == pytest.approx(before_epoch + 900)
+        assert body["previousJobDeadlineEpochS"] == pytest.approx(before_epoch)
+        assert body["deadlineAt"] == utc_from_epoch(before_epoch + 900)
+        status = (await client.get("/status")).json()
+    assert sup.deadline_epoch == pytest.approx(before_epoch + 900)
+    assert sup.deadline == pytest.approx(before_mono + 900)
+    assert status["deadlineAt"] == utc_from_epoch(before_epoch + 900)
+    events = _events(sup.run, "budget_changed")
+    assert events[-1]["field"] == "jobDeadlineEpochS"
+    # loop.set_job_deadline's own "deadline_set" event fires too -- a
+    # different type than this API-level audit event, never conflated.
+    assert _events(sup.run, "deadline_set")
+
+
+@pytest.mark.asyncio
+async def test_job_deadline_absolute_value_sets_it(tmp_path):
+    sup = _supervisor(tmp_path, job_timeout_s=3600)
+    new_epoch = sup.deadline_epoch + 1800
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget",
+                                  json={"jobDeadlineEpochS": int(new_epoch)})
+        assert resp.status_code == 200, resp.text
+    assert sup.deadline_epoch == int(new_epoch)
+
+
+@pytest.mark.asyncio
+async def test_job_deadline_in_the_past_is_refused_with_409(tmp_path):
+    sup = _supervisor(tmp_path, job_timeout_s=3600)
+    past_epoch = int(sup.deadline_epoch - 10_000_000)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget",
+                                  json={"jobDeadlineEpochS": past_epoch})
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["title"] == "deadline in the past"
+    assert not _events(sup.run, "budget_changed")
+    assert not _events(sup.run, "deadline_set")
+
+
+@pytest.mark.asyncio
+async def test_a_request_with_only_a_new_knob_does_not_require_iterations(tmp_path):
+    """The empty-body 422 (\"iterations required\") is unchanged for a
+    request with NO recognised field at all, but a request naming only one
+    of the three new knobs must not be forced to also carry `iterations`."""
+    sup = _supervisor(tmp_path, iterations=25, max_approaches=3)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget", json={"maxApproaches": 4})
+    assert resp.status_code == 200, resp.text
+    assert sup.cfg.iterations == 25, "untouched -- only maxApproaches was asked for"
+    assert sup.cfg.max_approaches == 4
+
+
+@pytest.mark.asyncio
+async def test_multiple_knobs_in_one_request_all_apply(tmp_path):
+    sup = _supervisor(tmp_path, iterations=25, used=5, max_approaches=3,
+                      iteration_timeout_s=600)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget", json={
+            "iterations": "+5",
+            "maxApproaches": "+1",
+            "iterationTimeoutS": "+60",
+        })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["iterations"] == 30
+    assert body["maxApproaches"] == 4
+    assert body["iterationTimeoutS"] == 660
+    assert sup.cfg.iterations == 30
+    assert sup.cfg.max_approaches == 4
+    assert sup.cfg.iteration_timeout_s == 660
+

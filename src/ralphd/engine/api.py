@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import signal
+import time
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -45,6 +46,7 @@ from .state import (
     image_record,
     prd_path,
     steering_entries,
+    utc_from_epoch,
 )
 
 
@@ -57,7 +59,8 @@ class BudgetSpecError(ValueError):
     """An `iterations` spec that PATCH /config/budget must reject (422)."""
 
 
-def resolve_iterations_spec(spec: object, current: int) -> int:
+def resolve_iterations_spec(spec: object, current: int,
+                            label: str = "iteration budget") -> int:
     """Resolve `PATCH /config/budget`'s `iterations` spec against the run's
     current budget (task 045, #3).
 
@@ -70,6 +73,15 @@ def resolve_iterations_spec(spec: object, current: int) -> int:
     To *lower* a budget, pass the absolute value: a bare `-5` is read as the
     absolute budget -5 and rejected as negative, never as a decrement.
     Raises BudgetSpecError with an operator-readable message.
+
+    Task 003 (#94 (a), operator-added scope): the SAME grammar is reused,
+    unmodified, for `maxApproaches`, `iterationTimeoutS` and the job-deadline
+    knob -- `label` only customises the absolute-value error message so it
+    names the budget actually being set ("approaches budget", "iteration
+    timeout", "job deadline") instead of always saying "iteration budget"
+    for knobs that are not the iteration count. The parsing rules themselves
+    (relative-must-not-be-negative, absolute-must-be->=1) are identical for
+    every knob -- one syntax, four call sites.
     """
     if isinstance(spec, bool) or spec is None:
         raise BudgetSpecError("expected an integer or a \"+N\" string")
@@ -94,7 +106,7 @@ def resolve_iterations_spec(spec: object, current: int) -> int:
         return current + value
     if value < 1:
         raise BudgetSpecError(
-            f"absolute iteration budget must be a positive integer (got {value})")
+            f"absolute {label} must be a positive integer (got {value})")
     return value
 
 
@@ -405,47 +417,133 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
     # -- iteration budget top-up (PRD req 3 / issue #3) ---------------------
     @app.patch("/config/budget")
     async def patch_budget(body: dict | None = None):
-        """Raise (or lower) the iteration budget of a running job without
-        restarting the container: `{"iterations": "+10"}` tops up by 10,
-        `{"iterations": 40}` sets it absolutely. The new value is live at the
-        next iteration boundary (the loop reads cfg.iterations on every turn)
-        and immediately visible in `GET /status` (`iterationsBudget`) and
-        `GET /config` (`budgets.iterations`).
+        """Raise (or lower), in flight, any of four budgets of a running job
+        without restarting the container: `iterations` (PRD req 3 / issue
+        #3), and -- task 003, #94 (a), operator-added scope -- `maxApproaches`,
+        `iterationTimeoutS` and `jobDeadlineEpochS`. Every knob is independent
+        and optional; a request may carry any non-empty subset of the four in
+        one call. Every knob uses the SAME `resolve_iterations_spec` grammar:
+        `"+N"` tops up relative to the knob's own current value, a bare `N`
+        (int or numeric string) sets it absolutely.
 
-        It is a *live-engine* change to `/config/job.yaml` (read-only, so the
-        engine cannot rewrite it there) but it persists across a resume: the
-        new value lives in this engine process AND in status.json's
-        `iterationsBudget`, and a fresh container's own startup seeds
-        `cfg.iterations` from max(status.json's iterationsBudget, job.yaml's
-        iterations) (task 010, #51) -- so a later `resume <run-id>` with no
-        flags already carries this top-up forward. `resume --iterations +N`
-        is only needed to add *more* on top, and it now adds to that same
-        effective (seeded) number rather than to job.yaml's alone (task 011).
+        * `{"iterations": "+10"}` / `{"iterations": 40}` -- unchanged from
+          task 045: live at the next iteration boundary (the loop reads
+          `cfg.iterations` on every turn), visible in `GET /status`
+          (`iterationsBudget`) and `GET /config` (`budgets.iterations`), and
+          it persists across a resume the way task 010/#51 already describes.
+        * `{"maxApproaches": "+1"}` / `{"maxApproaches": 5}` -- applied via
+          `loop.set_max_approaches`; live at the next replan decision
+          (`loop.py`'s `if self._approach < self.cfg.max_approaches:` and its
+          post-review-rejection twin). Refused with 409 if the new value is
+          below the run's current approach.
+        * `{"iterationTimeoutS": "+300"}` / `{"iterationTimeoutS": 900}` --
+          applied via `loop.set_iteration_timeout`; the per-iteration ceiling
+          is read once PER ITERATION (`run_iteration`'s own
+          `timeout = min(self.cfg.iteration_timeout_s, ...)`), so a change
+          here applies to the NEXT iteration, never to one already running.
+        * `{"jobDeadlineEpochS": "+3600"}` / `{"jobDeadlineEpochS": 1234567890}`
+          -- resolved against `loop.deadline_epoch` (the same wall-clock
+          epoch `set_job_deadline` moves and republishes as `deadlineAt`), so
+          `"+N"` extends the run's remaining wall-clock time by N seconds and
+          an absolute value sets the deadline to that Unix epoch second.
+          Refused with 409 if the resolved value is at or before "now".
+
+        Task 003/#94 (d): none of the three new knobs is seeded from
+        status.json on a fresh container's startup the way `iterations` is
+        (task 010, #51) -- they are process-only. A `resume` with no budget
+        flags reverts `maxApproaches`/`iterationTimeoutS`/the deadline to
+        whatever `job.yaml` (or `ralphctl resume`'s own flags, task 004) say;
+        only `iterations` survives a resume with no flags. See docs/cli.md's
+        budget table for the same statement in operator-facing form.
         """
         if finished():
             raise problem(409, "job finished",
                          "the iteration budget no longer applies; bump it with "
                          "`ralphctl resume <run-id> --iterations +N`")
-        spec = (body or {}).get("iterations")
-        if spec is None:
+        body = body or {}
+        has_iterations = body.get("iterations") is not None
+        has_max_approaches = body.get("maxApproaches") is not None
+        has_iteration_timeout = body.get("iterationTimeoutS") is not None
+        has_deadline = body.get("jobDeadlineEpochS") is not None
+        if not (has_iterations or has_max_approaches or has_iteration_timeout
+                or has_deadline):
             raise problem(422, "iterations required",
                          'expected {"iterations": "+10"} or {"iterations": 40}')
-        try:
-            value = resolve_iterations_spec(spec, cfg.iterations)
-        except BudgetSpecError as exc:
-            raise problem(422, "invalid iterations", str(exc)) from exc
-        used = loop.iterations_used_charged
-        if value < used:
-            raise problem(409, "budget below iterations used",
-                         f"{value} is below the {used} iteration(s) already "
-                         "used; a budget can only be set to the current usage "
-                         "or above")
-        previous = cfg.iterations
-        loop.set_iteration_budget(value)
-        run.emit("budget_changed", field="iterations", previous=previous,
-                 iterations=value, delta=value - previous, iterationsUsed=used,
-                 source="api")
-        return {"iterations": value, "previous": previous, "iterationsUsed": used}
+
+        result: dict = {}
+
+        if has_iterations:
+            try:
+                value = resolve_iterations_spec(body["iterations"], cfg.iterations)
+            except BudgetSpecError as exc:
+                raise problem(422, "invalid iterations", str(exc)) from exc
+            used = loop.iterations_used_charged
+            if value < used:
+                raise problem(409, "budget below iterations used",
+                             f"{value} is below the {used} iteration(s) already "
+                             "used; a budget can only be set to the current usage "
+                             "or above")
+            previous = cfg.iterations
+            loop.set_iteration_budget(value)
+            run.emit("budget_changed", field="iterations", previous=previous,
+                     iterations=value, delta=value - previous,
+                     iterationsUsed=used, source="api")
+            result.update(iterations=value, previous=previous, iterationsUsed=used)
+
+        if has_max_approaches:
+            try:
+                value = resolve_iterations_spec(body["maxApproaches"],
+                                                cfg.max_approaches,
+                                                label="approaches budget")
+            except BudgetSpecError as exc:
+                raise problem(422, "invalid maxApproaches", str(exc)) from exc
+            current_approach = run.read_status().get("approach") or 1
+            if value < current_approach:
+                raise problem(409, "max approaches below current approach",
+                             f"{value} is below the current approach "
+                             f"{current_approach}; a max-approaches budget can "
+                             "only be set to the current approach or above")
+            previous = cfg.max_approaches
+            loop.set_max_approaches(value)
+            run.emit("budget_changed", field="maxApproaches", previous=previous,
+                     maxApproaches=value, delta=value - previous, source="api")
+            result.update(maxApproaches=value, previousMaxApproaches=previous)
+
+        if has_iteration_timeout:
+            try:
+                value = resolve_iterations_spec(body["iterationTimeoutS"],
+                                                cfg.iteration_timeout_s,
+                                                label="iteration timeout")
+            except BudgetSpecError as exc:
+                raise problem(422, "invalid iterationTimeoutS", str(exc)) from exc
+            previous = cfg.iteration_timeout_s
+            loop.set_iteration_timeout(value)
+            run.emit("budget_changed", field="iterationTimeoutS", previous=previous,
+                     iterationTimeoutS=value, delta=value - previous, source="api")
+            result.update(iterationTimeoutS=value,
+                          previousIterationTimeoutS=previous)
+
+        if has_deadline:
+            try:
+                value = resolve_iterations_spec(body["jobDeadlineEpochS"],
+                                                loop.deadline_epoch,
+                                                label="job deadline")
+            except BudgetSpecError as exc:
+                raise problem(422, "invalid jobDeadlineEpochS", str(exc)) from exc
+            now = time.time()
+            if value <= now:
+                raise problem(409, "deadline in the past",
+                             f"{value} is at or before the current time "
+                             f"({now}); a job deadline cannot be set in the past")
+            previous = loop.deadline_epoch
+            loop.set_job_deadline(value)
+            run.emit("budget_changed", field="jobDeadlineEpochS", previous=previous,
+                     jobDeadlineEpochS=value, delta=value - previous, source="api")
+            result.update(jobDeadlineEpochS=value,
+                          previousJobDeadlineEpochS=previous,
+                          deadlineAt=utc_from_epoch(value))
+
+        return result
 
     # -- prompts CRUD (PRD req 10) -----------------------------------------
     @app.get("/config/prompts")
