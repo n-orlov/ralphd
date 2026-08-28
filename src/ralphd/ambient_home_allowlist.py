@@ -64,7 +64,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4025",
+        "line": "4084",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -73,13 +73,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4029",
+        "line": "4088",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
-                   "-- same reasoning as line 4025."),
+                   "-- same reasoning as line 4084."),
     },
     {
         "path": "cli/main.py",
-        "line": "5665",
+        "line": "5774",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "

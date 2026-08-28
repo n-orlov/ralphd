@@ -5620,7 +5620,8 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
                  "gaveUp": False, "reason": None}
         _write_auto_resume_state(run_id, state)
         rargs = argparse.Namespace(
-            run_id=run_id, iterations=None, image=args.image, port=None,
+            run_id=run_id, iterations=None, approaches=None, timeout=None,
+            iteration_timeout=None, image=args.image, port=None,
             api_bind="127.0.0.1", network=None, allow_docker=False,
             detach=True, json=False)
         buf = io.StringIO()
