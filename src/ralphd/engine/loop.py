@@ -12,6 +12,7 @@ import shutil
 import time
 from pathlib import Path
 
+from . import contract_enforcement
 from . import contracts
 from . import plan_ingestion
 from . import router
@@ -2456,19 +2457,18 @@ class LoopSupervisor:
 
         The hat's response is validated against its declared schema via
         `contracts.validate_payload` (task 009's schema, the *only*
-        validator code path, fact 16/#65) -- a violation ends the run
-        rather than silently taking an edge anyway, so a broken trivial hat
-        fails exactly as loudly as a broken planning/worker/review one
-        would. (Full N-then-agent-fault re-prompting, task 010's policy, is
-        wired for the file-borne plan proposal (`plan_ingestion`) and unit
-        -tested in isolation (`contract_enforcement.enforce_contract`) but
-        not yet threaded into every inline hat's live iteration -- this
-        method covers its own hat with a single validation pass; widening
-        that to a retry loop for arbitrary inline hats is separate,
-        unstarted work, not claimed here. The router's OWN re-prompt loop,
-        below, is unrelated: it re-prompts the ROUTER, not the hat, about
-        which edge to take, and every one of ITS attempts is a plain
-        `_ask_router` call -- never a work iteration.)
+        validator code path, fact 16/#65), reached through
+        `contract_enforcement.enforce_contract`'s full N-then-agent-fault
+        re-prompt ladder (v0.13 task 003, #92) rather than a single pass-
+        or-abort check: a schema violation is carried back to the SAME hat,
+        verbatim, up to `contract_retry_max` extra times before the ladder
+        is exhausted -- and exhaustion is an agent-fault iteration that
+        retries this state in place (never `self._abort_reason`, never
+        `("tail",)` for that reason alone), not a silent edge taken anyway.
+        The router's OWN re-prompt loop, below, is unrelated: it re-prompts
+        the ROUTER, not the hat, about which edge to take, and every one of
+        ITS attempts is a plain `_ask_router` call -- never a work
+        iteration.)
 
         Task 004 (requirement A, #72): the hat's own iteration can be cut
         short by the ENGINE (`_iteration_cut_short_by_engine` -- SIGINT,
@@ -2502,28 +2502,83 @@ class LoopSupervisor:
             # is `tiers.DEFAULT_TIER`.
             result = await self.run_iteration(state, prompt_name=hat,
                                               tier=tiers.DEFAULT_TIER)
-            if not self._iteration_cut_short_by_engine(result):
+            if self._iteration_cut_short_by_engine(result):
+                if not self.budget_left():
+                    self._terminal_reason_note = (
+                        f"{state!r} ({hat!r} hat) was repeatedly cut short by "
+                        "the engine with no budget or wall clock left to ask "
+                        "again; no contract payload was ever judged, so this "
+                        "is not read as a contract violation (requirement A, "
+                        "#72)")
+                    return ("tail",)
+                await self._gate()
+                continue
+
+            # Task 003 (requirement A/C, #92): the hat's own schema pass is
+            # now enforced through `contract_enforcement.enforce_contract`'s
+            # re-prompt ladder instead of a single pass-or-abort check.
+            # Attempt 0 reuses THIS already-completed work iteration's own
+            # final line -- no extra hat call, no double-charge; every
+            # further attempt is an uncharged `_ask_contract_fix` re-ask
+            # that states the previous attempt's specific errors verbatim
+            # and asks for nothing but the corrected payload, never the
+            # hat's task prompt again. `enforce_contract`'s own retry loop
+            # is synchronous, so it runs off the event loop via
+            # `asyncio.to_thread`, exactly as `_step_planning` already
+            # bridges `enforce_plan_ingestion`'s identical shape
+            # (`asyncio.to_thread` + `run_coroutine_threadsafe`, this
+            # file's own precedent, not reinvented here).
+            first_attempt_text = last_nonblank_line(result.final_text)
+            event_loop = asyncio.get_running_loop()
+
+            def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                if attempt == 0:
+                    return first_attempt_text
+                raw, _usage = asyncio.run_coroutine_threadsafe(
+                    self._ask_contract_fix(hat, prior_errors or []),
+                    event_loop).result()
+                return last_nonblank_line(raw)
+
+            enforcement = await asyncio.to_thread(
+                contract_enforcement.enforce_contract,
+                hat, respond,
+                max_retries=self.cfg.contract_retry_max,
+                state=self.run,
+            )
+            if enforcement.ok:
+                payload = enforcement.payload
                 break
+            # Task 003 (requirement C): an exhausted ladder is an
+            # agent-fault iteration, never SOLELY a contract-violation
+            # abort -- requirement C's own invariant is qualified: "a
+            # contract violation may never be the SOLE reason a run ends
+            # WHILE AN APPROACH AND ITERATION BUDGET REMAIN." While budget
+            # remains, `_abort_reason` stays unset and this retries the
+            # SAME hat call in place, exactly as it already retries for an
+            # engine-side cutoff just above (no declared self-loop edge to
+            # take for a generic-dispatcher state, per task 001's cutover
+            # map -- the schema/semantic check happens before either the
+            # single-edge advance or the router is ever reached, so no
+            # edge's guard can be computed and the router has nothing to
+            # ask about yet).
+            #
+            # Once budget is ALSO gone at the moment the ladder gives up,
+            # ending here is no longer solely because of the violation --
+            # the run was ending regardless -- so the ending is allowed to
+            # name what the last attempt actually was (an unrepaired
+            # contract violation) rather than a generic budget-exhaustion
+            # note that would hide it. `tests/test_interrupt_not_
+            # substantive_outcome_task004.py`'s test 3 pins exactly this
+            # boundary, distinct from test 2's engine-side-cutoff case
+            # (requirement D, unconditional: an engine-side cutoff is
+            # NEVER read as a contract violation, budget or not).
             if not self.budget_left():
-                self._terminal_reason_note = (
-                    f"{state!r} ({hat!r} hat) was repeatedly cut short by "
-                    "the engine with no budget or wall clock left to ask "
-                    "again; no contract payload was ever judged, so this "
-                    "is not read as a contract violation (requirement A, "
-                    "#72)")
+                message = (f"{hat!r} contract violation: "
+                           + "; ".join(enforcement.errors))
+                self.run.emit("log", level="error", message=message)
+                self._abort_reason = message
                 return ("tail",)
             await self._gate()
-        try:
-            payload = json.loads(last_nonblank_line(result.final_text))
-        except (json.JSONDecodeError, TypeError):
-            errors = ["response: no parseable JSON payload (absent or malformed output)"]
-        else:
-            errors = contracts.validate_payload(hat, payload)
-        if errors:
-            message = f"{hat!r} contract violation: " + "; ".join(errors)
-            self.run.emit("log", level="error", message=message)
-            self._abort_reason = message
-            return ("tail",)
         if isinstance(payload, dict) and payload.get("task_id") and "task_status" in payload:
             # Task 019 (requirement F, #60 pillar 3): a hat's reported
             # `task_status` for a specific `task_id` is a proposed

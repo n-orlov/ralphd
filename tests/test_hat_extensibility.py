@@ -198,20 +198,101 @@ def test_a_registered_noop_hat_runs_end_to_end(tmp_path, registered_noop_hat):
     assert phase_events[0]["phase"] == NOOP_STATE
 
 
-def test_a_contract_violation_from_the_noop_hat_ends_the_run_loudly(
+def test_a_contract_violation_from_the_noop_hat_is_reasked_not_fatal(
         tmp_path, registered_noop_hat):
     """The generic fallback validates the hat's payload against its
     declared schema (task 009) exactly as any dedicated `_step_*` method
     would honour its own sentinel/verdict -- a hat that breaks its own
-    trivial contract does not get its edge anyway."""
+    trivial contract does not get its edge anyway.
+
+    v0.13 task 003 (#92) strengthens this. The OLD claim, pinned here
+    before the cutover, was just: `state in ("failed", "aborted")` and
+    `"contract violation" in status["reason"]` -- i.e. a SINGLE bad
+    payload ended the run outright, with the abort reason literally
+    quoting the schema error. That is `deck-phase3g`'s own shape (#92's
+    PRD): a broken contract was fatal on the first offence.
+
+    The NEW claim keeps the old one's real content -- the move is still
+    refused on every bad payload, the payload never gets its edge while
+    it stays wrong -- and adds what the old assertion could not see at
+    all: the specific error reached the hat verbatim on the re-ask, the
+    ladder ran the FULL `contract_retry_max + 1` attempts before giving up
+    on that one work iteration (never fewer, never more), that exhaustion
+    did NOT end the run (`self._abort_reason` stays unset, the SAME hat is
+    asked completely fresh instead), and the run went on to SUCCEED once
+    the hat's next attempt finally validated. That is strictly stronger:
+    everything the old assertion proved is still proved (the bad payload
+    never took its edge), plus the survival the old assertion could not
+    have distinguished from a crash.
+
+    A one-line mutation that reverts the task-003 cutover -- put back
+    `errors = contracts.validate_payload(hat, payload)` /
+    `self._abort_reason = message` / `return ("tail",)` in place of the
+    `enforce_contract` call in `_step_generic_hat` -- makes this test fail
+    on its very first new assertion (`state == "succeeded"`): the
+    reverted code sets `_abort_reason` on the FIRST bad payload and
+    returns `("tail",)` before the hat ever gets a second chance, so the
+    run ends `"aborted"` instead, and only ONE `contract.violation` event
+    is ever emitted instead of `attempts_per_ladder`.
+    """
+    RETRY_MAX = 1
+    attempts_per_ladder = RETRY_MAX + 1  # the first attempt plus 1 re-ask
+
     handlers = dict(_happy_handlers())
-    handlers[NOOP_STATE] = lambda sup, prompt=None: _ok(
-        "oops\n{\"unexpected_field\": true}")
+    calls: list[str] = []
+    call_count = [0]
+
+    def _bad_then_fixed(sup, prompt=None):
+        call_count[0] += 1
+        calls.append(prompt or "")
+        if call_count[0] <= attempts_per_ladder:
+            # every attempt of the FIRST work iteration's ladder is bad.
+            return _ok("oops\n{\"unexpected_field\": true}")
+        # the SECOND work iteration's hat call -- a completely fresh
+        # `run_iteration()` call, not a re-ask -- is schema-valid.
+        return _ok("(fixed)\n{}")
+
+    handlers[NOOP_STATE] = _bad_then_fixed
     root = tmp_path / "run-violation"
-    sup, state = _run(root, handlers, vigilant=False)
-    assert state in ("failed", "aborted")
-    status = sup.run.read_status()
-    assert "contract violation" in (status.get("reason") or "")
+    sup, state = _run(root, handlers, vigilant=False, iterations=5,
+                      contract_retry_max=RETRY_MAX)
+
+    # The run SURVIVED the violation outright -- it succeeded, exactly as
+    # the happy-path test above, proving a contract violation is never
+    # fatal on its own while budget remains.
+    assert state == "succeeded"
+    assert sup._abort_reason is None
+
+    from ralphd.engine.state import read_events
+    events = read_events(sup.run.root)
+    violation_events = [e for e in events if e.get("type") == "contract.violation"]
+    fault_events = [e for e in events if e.get("type") == "contract.agent_fault"]
+    assert len(violation_events) == attempts_per_ladder
+    assert len(fault_events) == 1
+    for ev in violation_events + fault_events:
+        assert ev["hat"] == NOOP_HAT
+    assert all(ev["maxAttempts"] == attempts_per_ladder for ev in violation_events)
+
+    # The ladder ran to the FULL contract_retry_max + 1 attempts on the
+    # FIRST work iteration (never fewer -- "asked once and gave up" --
+    # and never more -- a second, hidden retry loop double-charging
+    # attempts) before giving up on THAT attempt and asking the hat
+    # completely fresh: exactly `attempts_per_ladder` bad calls plus ONE
+    # fresh call that finally succeeded.
+    assert call_count[0] == attempts_per_ladder + 1
+    assert len(calls) == attempts_per_ladder + 1
+
+    # The errors reached the hat, verbatim, on the re-ask -- and the
+    # re-ask never repeats the noop hat's own task prompt (its fixture
+    # text below) or invites further workspace work: it is a constrained
+    # question about the payload only, never a second work turn.
+    assert "trivial no-op hat (task 015 fixture)" in calls[0]
+    for reask_prompt in calls[1:attempts_per_ladder]:
+        assert "unexpected field" in reask_prompt
+        assert "trivial no-op hat (task 015 fixture)" not in reask_prompt
+    # The call that finally succeeded is a REAL, fresh hat call again --
+    # the task prompt, not a re-ask.
+    assert "trivial no-op hat (task 015 fixture)" in calls[attempts_per_ladder]
 
 
 # ---------------------------------------------------------------------------
