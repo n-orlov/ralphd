@@ -655,6 +655,39 @@ def test_ralphctl_fault_explains_a_dead_runs_last_fault(tmp_path):
     assert r.stderr.strip() == ""
 
 
+# v0.13 task 014 (#89, requirement I): the per-ITERATION cause landed on
+# `ralphctl iteration` by editing the SHARED `iteration_summary_lines`, never
+# `fault_summary_lines` -- so `ralphctl fault`'s live view must go on printing
+# exactly the lines it printed before task 014, byte for byte. Pinned by
+# equality (not by "the new words are absent", which a copy-paste bug in the
+# wrong function could still pass) against the exact fixture the test above
+# uses.
+def test_ralphctl_fault_output_is_unchanged_by_task014(tmp_path):
+    registry, run_dir = _dead_run(tmp_path, state="failed",
+                                  infraWaitTotalS=210.0,
+                                  abortReason=("infra fault: worker iteration "
+                                               "failed throughout a 210s infra "
+                                               "outage"))
+    _write_iteration(run_dir, 3, _fault_meta(3))
+    _events_file(run_dir, [_retry(1, 30, 0), _retry(2, 60, 30),
+                           _retry(3, 120, 90, maxAttempts=3)])
+    r = _ctl(registry, "fault", "faulty")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == (
+        "run:       faulty\n"
+        "fault:     infra (iteration 3, phase worker)\n"
+        "because:   the error text matched a known infra signature\n"
+        "signature: dns -- the endpoint's name did not resolve "
+        '(pattern EAI_AGAIN, matched "EAI_AGAIN")\n'
+        "exit:      error (exit 0): request to https://aigw.internal/v1 "
+        "failed, reason: getaddrinfo EAI_AGAIN aigw.internal [infra fault]\n"
+        "ladder:    attempt 3 of 3, waits so far 30s, 1m, 2m\n"
+        "budget:    1m 30s of 4h spent waiting (3h 58m left); 3m 30s of "
+        "infra waits in this run\n"
+        "gave up:   infra fault: worker iteration failed throughout a 210s "
+        "infra outage\n")
+
+
 def test_ralphctl_fault_json_carries_the_shaping_and_the_text(tmp_path):
     registry, run_dir = _dead_run(tmp_path, state="running", health="degraded",
                                   infraWaitTotalS=90.0, infraWait=_wait())

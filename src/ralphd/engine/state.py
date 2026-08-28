@@ -1308,6 +1308,19 @@ def iteration_summary_lines(detail: dict) -> list[str]:
         f"duration:  {detail.get('durationDisplay')}  ({detail.get('durationLabel')})",
         f"exit:      {detail.get('exitReason')}",
     ]
+    # v0.13 task 014 (#89, requirement I): THIS iteration's own fault cause --
+    # `reason` re-derived by `iteration_detail` through `faults.explain_fault`
+    # (task 013) -- worded `<faultClass> -- <reason>` so the sentence names
+    # WHAT the engine classified it as (`infra`/`work`/`signal`) alongside WHY,
+    # never a bare `error:` line that could be read as raw text with no
+    # verdict attached. `faultClass` is the engine's own recorded verdict
+    # (never the re-derivation); a disagreement between the two is said out
+    # loud via `notices` (`FAULT_VERDICT_DIVERGED_NOTICE`), the same wording
+    # `fault_summary_lines` uses for the run's last fault.
+    if detail.get("reason"):
+        fault_class = detail.get("faultClass") or EXIT_REASON_UNKNOWN
+        lines.append(f"cause:     {fault_class} -- {detail['reason']}")
+        lines += list(detail.get("notices") or [])
     # The model pi actually used, with the raw gateway id only when it adds
     # information -- exactly `ralphctl status`' model line (task 012).
     model = detail.get("modelResolved") or detail.get("model")

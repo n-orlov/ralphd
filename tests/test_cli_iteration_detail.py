@@ -53,8 +53,12 @@ from ralphd.engine.state import (
     iteration_detail,
     utc_from_epoch,
 )
+from ralphd.engine.faults import FAULT_REASON_SIGNATURE, FAULT_REASON_WORK
 from ralphd.log_merge import NO_TRANSCRIPT, iteration_numbers
 from tests.conftest import RALPHCTL
+
+DNS_ERROR = "request to https://aigw.internal/v1 failed, reason: getaddrinfo EAI_AGAIN aigw.internal"
+WORK_ERROR = "Traceback (most recent call last):\n  ...\nAssertionError: task 5 criteria not met"
 
 ZERO_QUOTE_USAGE = {"input": 32, "output": 18320, "cacheRead": 438945,
                     "cacheWrite": 48331, "totalTokens": 505628,
@@ -407,6 +411,36 @@ def test_verify_iteration_shows_its_verdict(tmp_path):
     res = _ctl(registry, "iteration", "itdetail", "4", "--no-log")
     assert res.returncode == 0, res.stderr
     assert "verified:  task 007 -> fail" in res.stdout
+
+
+# ------------------------------------------ v0.13 task 014 (#89, requirement I)
+def test_iteration_prints_its_own_cause_task014(tmp_path):
+    """Task 013's own two-fault fixture (#89), read through the CLI: iteration
+    2's infra cause and iteration 5's later, unrelated work cause are each
+    named on their OWN `ralphctl iteration` output -- neither is lost nor
+    overwritten by the other, and neither reads as a bare `error:` line with
+    no verdict attached."""
+    registry, run_dir = _dead_run(tmp_path)
+    _write_iteration(run_dir, 2, _base_meta(
+        2, error=DNS_ERROR, exitCode=0, faultClass="infra", usage=None))
+    _write_iteration(run_dir, 5, _base_meta(
+        5, error=WORK_ERROR, exitCode=1, faultClass="work",
+        usage={"totalTokens": 4000, "input": 3000, "output": 1000}))
+
+    infra = _ctl(registry, "iteration", "itdetail", "2")
+    assert infra.returncode == 0, infra.stderr
+    assert f"cause:     infra -- {FAULT_REASON_SIGNATURE}" in infra.stdout
+    assert "cause:     error" not in infra.stdout
+    assert not any(line.strip() == "error:" or line.startswith("error:     ")
+                   for line in infra.stdout.splitlines()), infra.stdout
+
+    work = _ctl(registry, "iteration", "itdetail", "5")
+    assert work.returncode == 0, work.stderr
+    assert f"cause:     work -- {FAULT_REASON_WORK}" in work.stdout
+
+    # reading #5 did not overwrite #2's own cause
+    infra_again = _ctl(registry, "iteration", "itdetail", "2")
+    assert f"cause:     infra -- {FAULT_REASON_SIGNATURE}" in infra_again.stdout
 
 
 # ------------------------------------------------------------- real engine tier
