@@ -60,8 +60,9 @@
 # Usage: scripts/host_like_dev_layout.sh [pytest args...]
 #
 # Exit code is pytest's own, UNLESS the install/import-path setup itself
-# fails, in which case it is 2 (venv interpreter refused) or 3 (import did
-# not actually move with $HOME -- the setup did not take).
+# fails, in which case it is 2 (venv interpreter refused, or an invalid
+# HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE) or 3 (import did not actually
+# move with $HOME -- the setup did not take).
 #
 # Env overrides:
 #   PYTHON              interpreter to use instead of the bare `python3` on
@@ -72,6 +73,51 @@
 #                        own default `$HOME/.cache/pip` would never be
 #                        reused otherwise). Defaults to
 #                        /tmp/host-like-dev-layout-pip-cache.
+#   HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE
+#                        Task 019 (#93): which of two modes decides the
+#                        pytest *subprocess*'s import path. The install step
+#                        above always exports PYTHONUSERBASE explicitly (it
+#                        has to land packages at a known, reused location);
+#                        this only controls what the `pytest` invocation
+#                        itself sees.
+#
+#                          exported (default) -- PYTHONUSERBASE=$DEV_USERBASE
+#                          is exported to the pytest process, same as every
+#                          prior version of this script. This is the mode
+#                          that let task 008's own sweep go green without
+#                          ever noticing whether tests/conftest.py's autouse
+#                          HOME-isolation fixture pins PYTHONUSERBASE itself
+#                          (task 018, #67/#83): with this mode, the *outer*
+#                          pytest process already has the right value before
+#                          any fixture runs, so a fixture that pins nothing
+#                          is indistinguishable from one that pins correctly
+#                          -- os.environ's PYTHONUSERBASE never leaves the
+#                          correct value, fixture or no fixture.
+#
+#                          unset -- PYTHONUSERBASE is *not* set for the
+#                          pytest process at all (`env -u PYTHONUSERBASE`,
+#                          which strips it even if some ambient caller
+#                          exported one). The interpreter still resolves its
+#                          *own* startup user-site correctly, because
+#                          `site.getuserbase()` derives the same value from
+#                          $HOME alone when PYTHONUSERBASE is unset -- so
+#                          collection and ordinary imports are unaffected.
+#                          What changes is every test that overrides HOME
+#                          in-process and then spawns a child inheriting
+#                          `os.environ` as-is: with task 018's fixture fix
+#                          reverted, PYTHONUSERBASE is not in os.environ to
+#                          begin with, so nothing pins it, and a child that
+#                          inherits the fixture's *new*, isolated HOME with
+#                          no PYTHONUSERBASE resolves its own user-site
+#                          under that empty isolated dir -- the #67 defect,
+#                          reproduced in-process. This is the mode that
+#                          actually exercises whether the fixture's own pin
+#                          matters; "exported" cannot, by construction.
+#
+#                        See artifacts/reports/task-019-dev-layout-unset-mode.md
+#                        for the mutation evidence (fails without task 018's
+#                        fixture fix, passes with it) that only the `unset`
+#                        mode can produce.
 
 set -euo pipefail
 
@@ -88,6 +134,16 @@ if [ -n "${PYTHON:-}" ] && [ -x "${PYTHON:-}" ]; then
 else
   PY="$(command -v python3)"
 fi
+
+PYTHONUSERBASE_MODE="${HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE:-exported}"
+case "$PYTHONUSERBASE_MODE" in
+  exported|unset) ;;
+  *)
+    echo "host_like_dev_layout.sh: HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE" \
+         "must be 'exported' or 'unset', got '$PYTHONUSERBASE_MODE'" >&2
+    exit 2
+    ;;
+esac
 
 if ! "$PY" -c "import site,sys; sys.exit(0 if site.ENABLE_USER_SITE else 1)"; then
   echo "host_like_dev_layout.sh: '$PY' has user-site packages disabled (a" \
@@ -122,7 +178,20 @@ non-isolating \$HOME (the #83 class).
 MD
 
 # --- (a) PYTHONUSERBASE computed FROM the new $HOME, once -------------------
-DEV_USERBASE="$(HOME="$DEV_HOME" "$PY" -c 'import site; print(site.getuserbase())')"
+# `env -u PYTHONUSERBASE` here matters even in the default "exported" mode:
+# without it, a caller of THIS script that already has PYTHONUSERBASE set
+# ambiently (any nested invocation -- e.g. a test that shells out to this
+# script while running under this repo's own conftest.py autouse fixture,
+# task 018 -- or simply an operator's shell with one exported) would make
+# `site.getuserbase()` return that inherited value verbatim, ignoring
+# $DEV_HOME entirely (PYTHONUSERBASE always wins over HOME when set). That
+# silently derives DEV_USERBASE from the wrong home and is invisible in
+# "exported" mode (install and run both use the same, wrongly-derived
+# value, so they still agree) -- exactly the failure the `unset` mode
+# exists to expose (see tests/test_host_like_dev_layout_script.py, which
+# invokes this script from inside a pytest process where task 018's fixture
+# has already pinned an ambient PYTHONUSERBASE).
+DEV_USERBASE="$(env -u PYTHONUSERBASE HOME="$DEV_HOME" "$PY" -c 'import site; print(site.getuserbase())')"
 
 PIP_CACHE_DIR="${HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR:-/tmp/host-like-dev-layout-pip-cache}"
 mkdir -p "$PIP_CACHE_DIR"
@@ -150,10 +219,20 @@ case "$IMPORT_PATH" in
 esac
 
 # --- run the pytest smoke subset under the hostile, populated $HOME ---------
+# Mode decides whether the pytest *invocation itself* sees PYTHONUSERBASE.
+# The install above always needed it explicit; this is deliberately a
+# separate decision (see HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE above).
 cd "$REPO_ROOT"
 set +e
-HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
-  "$PY" -m pytest -q "$@"
+if [ "$PYTHONUSERBASE_MODE" = "unset" ]; then
+  echo "host_like_dev_layout.sh: PYTHONUSERBASE_MODE=unset -- running pytest" \
+       "with PYTHONUSERBASE unset; \$HOME alone decides the import path"
+  HOME="$DEV_HOME" PIP_CACHE_DIR="$PIP_CACHE_DIR" env -u PYTHONUSERBASE \
+    "$PY" -m pytest -q "$@"
+else
+  HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
+    "$PY" -m pytest -q "$@"
+fi
 STATUS=$?
 set -e
 
