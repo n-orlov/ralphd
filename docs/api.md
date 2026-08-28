@@ -808,6 +808,24 @@ against the budget — `retryMax + 1` total attempts, each failed one logged to
 `events.jsonl` (`contract.violation`) the moment it happens, with a final
 `contract.agent_fault` if none of them validate.
 
+Each of those re-prompts is itself the uncharged contract-repair channel,
+`LoopSupervisor._ask_contract_fix()` (task 001 requirement B, task 004) --
+built directly on `_ask_router`'s own precedent above, so it is uncounted the
+same way and for the same reason: no iteration slot, no `iterations_used`
+increment, no `meta.json` (`loop.py` never calls `_run_iteration_once` or
+touches `self.iterations_used` from inside it). It states the validation
+errors verbatim and asks ONLY for the corrected final payload, never the
+hat's own task prompt again. Each call gets its own transcript under
+`artifacts/contract/NNNN.jsonl` (a plain counter, `loop.py:2963-2966`, not an
+iteration directory), and its usage folds into `usage.byPhase["contract"]`
+(`loop.py:2982`) -- kept out of `"router"`'s bucket because the two
+uncharged channels answer structurally different questions (which edge to
+take, versus what the corrected payload is), so a run's cost stays
+auditable even for the calls that never cost an iteration. The re-ask runs
+on the offending hat's own model (`self.cfg.model_for(hat)`), never a fixed
+`"contract"` lookup, so the repair stays inside the tier that made the
+mistake.
+
 `creds` lists credential *names* only (no values, no sizes here — see
 `GET /config/creds` for that); `llmEnvKeys` lists the *names* of any env
 overrides set via `PUT /config/llm`, never their values.

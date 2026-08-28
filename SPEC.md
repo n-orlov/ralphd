@@ -668,6 +668,28 @@ directory) and its usage folds into `usage.byPhase["router"]` (§4.2) exactly
 like the five hat phases, so a run's model mix and cost are auditable even for
 the calls that never cost an iteration.
 
+**A contract re-ask is not an iteration either (task 001 requirement B, task
+004).** `LoopSupervisor._ask_contract_fix()` is the uncharged channel every
+`contract_enforcement.enforce_contract` retry ladder calls as its `respond`
+once a hat's response fails `contracts.validate_payload` or its semantic
+sibling check: it states the validation errors verbatim and asks ONLY for the
+corrected final payload, never the hat's own task prompt again, so a re-ask
+can fix a payload's shape but can never hand the hat a second bite at doing
+more workspace work. Built directly on `_ask_router`'s own precedent, it is
+uncounted the same way, by the same construction: no iteration slot, no
+`iterations_used` increment, no `meta.json` (`loop.py` never calls
+`_run_iteration_once` or touches `self.iterations_used` from inside it).
+Each call gets its own transcript under `artifacts/contract/NNNN.jsonl` (a
+plain counter, `loop.py:2963-2966`, not an iteration directory), and its
+usage folds into `usage.byPhase["contract"]` (§4.2, `loop.py:2982`) — kept
+out of `"router"`'s bucket because the two uncharged channels answer
+structurally different questions (which edge to take, versus what the
+corrected payload is) — so a run's cost is auditable even for the calls that
+never cost an iteration or a retry against `contract_retry_max`. The re-ask
+runs on the offending hat's own model (`self.cfg.model_for(hat)`, task 004),
+not a fixed `"contract"` lookup, so the repair stays inside the tier that
+made the mistake.
+
 ### 4.2 Iterations, approaches and the composite PRD
 
 An iteration is one agent subprocess and one directory, `iterations/NNNN/`

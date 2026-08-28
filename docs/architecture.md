@@ -210,6 +210,25 @@ not an iteration slot: `LoopSupervisor._ask_router()` never increments
 `usage.byPhase["router"]` so the cost of a call that is never charged as a
 work iteration is still visible, not hidden.
 
+A contract re-ask is the same shape, uncounted for the same reason.
+Every `contract_enforcement.enforce_contract` retry ladder (task 010) --
+the schema/task-status site in `_step_generic_hat` and the worker's own
+verdict sites -- passes `LoopSupervisor._ask_contract_fix()` as its
+`respond` once a hat's payload fails `contracts.validate_payload` or its
+semantic sibling check. It states the validation errors verbatim and asks
+ONLY for the corrected final payload, never the hat's own task prompt
+again, and it is built directly on `_ask_router`'s own precedent: no
+iteration slot, no `iterations_used` increment, no `meta.json` (`loop.py`
+never calls `_run_iteration_once` or touches `self.iterations_used` from
+inside it). Each call gets its own transcript under
+`artifacts/contract/NNNN.jsonl` (a plain counter, `loop.py:2963-2966`, not
+an iteration directory), and its usage folds into
+`usage.byPhase["contract"]` (`loop.py:2982`) -- kept separate from
+`"router"`'s bucket because the two uncharged channels answer structurally
+different questions. The re-ask runs on the offending hat's own model
+(`self.cfg.model_for(hat)`, task 004), never a fixed `"contract"` lookup,
+so the repair stays inside the tier that made the mistake.
+
 ### Phase prompts
 
 Prompt templates ship inside the installed package (`src/ralphd/prompts/`) —
