@@ -1574,6 +1574,42 @@ class LoopSupervisor:
         """
         self.cfg.iteration_timeout_s = value
 
+    def set_job_deadline(self, deadline_epoch: float) -> None:
+        """#94 (operator-added scope, steer 003), engine-side setter 3 of 3:
+        move the wall-clock end time of a LIVE run.
+
+        Unlike `max_approaches`/`iteration_timeout_s`, this budget has no
+        `cfg` field read on every turn -- `self.deadline` (monotonic,
+        constructed at `__init__` time) and its wall-clock twin
+        `self._deadline_epoch` ARE the entire live representation, the same
+        two attributes `_account_infra_wait` above already moves together
+        whenever an infra backoff eats into the run's clock. This setter
+        applies the same move for an operator-driven change: the delta
+        between the new `deadline_epoch` and the current
+        `self._deadline_epoch` is added to BOTH `self.deadline` (what
+        `budget_left()`'s `time.monotonic() < self.deadline` actually
+        compares against) and `self._deadline_epoch` itself, so the two can
+        never drift apart the way a change to only one of them would.
+
+        status.json's `deadlineAt` is rewritten here, exactly like
+        `set_iteration_budget` rewrites `iterationsBudget` -- it is
+        otherwise published only at run start and by `_account_infra_wait`,
+        never picked up automatically. The audit event is `deadline_set`,
+        deliberately a different event name (and `reason`) than
+        `_account_infra_wait`'s `deadline_extended`/"infra wait" pair, so an
+        operator-requested change is never mistaken for an automatic
+        infra-outage extension when read back from the event log. The
+        caller (api.py) owns validation (refusing a deadline set into the
+        past) -- this method performs the move unconditionally.
+        """
+        delta = deadline_epoch - self._deadline_epoch
+        self.deadline += delta
+        self._deadline_epoch = deadline_epoch
+        deadline_at = utc_from_epoch(self._deadline_epoch)
+        self.run.update_status(deadlineAt=deadline_at)
+        self.run.emit("deadline_set", deadlineAt=deadline_at,
+                      reason="operator set_job_deadline")
+
     def budget_left(self) -> bool:
         # Task 001a: iterations refunded after an infra-classified retry
         # (see _run_iteration_with_infra_retry) never count against the
