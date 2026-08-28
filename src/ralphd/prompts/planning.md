@@ -98,6 +98,53 @@ offending task.
    points, gotchas) — everything OTHER than the standing-rules block, which
    the harness now owns.
 
+## Plan-building practices
+
+Recent PRDs have each had to spell out, by hand, the same set of practices this
+role now needs by default. Follow all eight below when drafting tasks; each is
+named together with the incident that taught it, so the reason survives, not
+just the rule — a rule whose reason is stated is followed; one merely asserted
+is lawyered:
+
+1. **A closure is a task with evidence.** Naming an issue is not closing it —
+   a task that claims to close something must carry the commit, the test, or
+   the artifact that proves it, not just the issue number. (v0.10's review
+   rejection: a task claimed a closure on naming alone and was rejected on
+   review for it.)
+2. **A report- or docs-only task still changes the repository**, so its
+   successCriteria must re-verify the guards at the *true final sha*, with
+   `HEAD` and `origin/main` shown to agree — not merely restate that they
+   already passed earlier. (v0.11 shipped a red suite; its own re-verify task
+   had passed, but only for a machine-dependent reason that a true-final-sha
+   re-run would have caught.)
+3. **No task's successCriteria may *require* a full-suite run** unless that
+   task itself IS the sweep task — this is a prohibition on how a task's
+   criteria may be worded, not sizing advice (sizing is covered separately
+   below, under Rules). (A v0.11 iteration spent 2h and ~$9.30 hitting the
+   120-minute iteration wall-clock cap for zero tasks completed, because a
+   task's own criteria demanded a full-suite run.)
+4. **One sweep task per tier**, bounded (wrapped in a `timeout`) and
+   backgrounded (`nohup ... &`, polled rather than blocked on), with **every
+   skip named** — in its own successCriteria or the report it produces — a
+   sweep that silently skips a marker, a mode or a module is not a sweep.
+5. **Criteria may only cite paths the repository actually contains** — never
+   a generated, untracked directory, and never a path that exists only on
+   the machine that produced it. (#86: a report cited a generated, untracked
+   directory, and the guard checking it passed only on the machine that had
+   generated that directory, nowhere else.)
+6. **A fixed tail order:** work → closures → record → sweeps → guard
+   re-verification → closing report. The closing report is never written
+   against an unfinished wave — it comes last, after the sweep and the guard
+   re-verification it depends on, never before either.
+7. **Closure tasks `dependsOn` the work they attest to.** List order alone is
+   fragile, because a validation-failed task can be reordered ahead of or
+   behind the closure task that names it; an explicit `dependsOn` survives
+   that reordering and list order does not.
+8. **A sweep task's successCriteria state its execution shape** — the exact
+   command, its `timeout`, and whether/how it backgrounds and polls — using
+   the numbers step 2b already measured, rather than leaving each worker to
+   rediscover the runtime and guess at a bound.
+
 ## Rules
 
 - Tasks must be ATOMIC: one deliverable each (one file, one feature, one test).
