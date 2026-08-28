@@ -1127,12 +1127,37 @@ does.
   `src/ralphd/__init__.py` both declare `0.13.0` (`f07b965`); this `## v0.13`
   block lands in the established shape in this same entry; #92, #89, #90 and
   #93 are all closed with evidence comments (tasks 020-023), #88 and #91
-  left untouched per the PRD's own exclusion. Not yet landed as of this
-  entry: the fast/docker/browser tier sweeps and both dev-layout-mode
-  sweeps, the repository-guard re-verification at the true final sha,
-  settling this run's row in `docs/prds/README.md`, and the closing
-  operator report walking A-N — all tracked as this run's own remaining
-  tasks and not claimed here.
+  left untouched per the PRD's own exclusion. Approach 1 (33/33 tasks
+  `validated`) landed the fast/docker/browser tier sweeps (`afe3f0d`,
+  `5caf387`, `80a70e3`, tasks 026-028), both dev-layout-mode sweeps
+  (`ddfc598` exported, `8eadada` unset, tasks 029-030), the
+  repository-guard re-verification (`9820c66`, task 031), the
+  `docs/prds/README.md` row (`b6e82b4`, task 032) and the closing operator
+  report walking A-N (`5b5efee`, task 033) — but that sha was **rejected
+  by review**: the guard re-verification and every sweep it cites ran
+  RED, not green, because approach 1's own tasks 002 and 015 had each
+  drifted a guard the sweeps never repaired
+  (`test_loop_has_exactly_two_subprocess_dispatch_sites` — a third
+  `runner.run(` site task 002 added at `d21c9b9` without updating the
+  count it asserted — and `test_no_unlisted_or_stale_ambient_home_reads`
+  — the allowlisted ambient-`$HOME` line numbers drifting under the
+  wave's own `loop.py`/`ui_server.py` edits), and three operator steering
+  directives went unactioned. Approach 2 repaired both wave-introduced
+  guard regressions
+  by re-pinning the allowlist to the reads' current lines (`b0beb59`) and
+  strengthening the dispatch guard to assert the *set* of owning
+  functions rather than a bare count (`e2c3e01`), then re-ran every
+  sweep at the resulting green sha: fast tier (`a9236cf`, 4198
+  passed/1 skipped/0 failed/852.84s), docker tier (`dc91ac1`, 20
+  passed/0 failed/723.74s), browser tier (`d94fb2f`, 42 passed/0
+  failed/477.84s), dev-layout exported mode (`6fc51b8`, 4255 passed/1
+  skipped/20 deselected/0 failed/1324.70s) and dev-layout unset mode
+  (`5ac512b`, 4260 passed/1 skipped/20 deselected/0 failed/1301.49s) —
+  tasks 009-013. Not yet landed as of this entry: the repository-guard
+  re-verification at approach 2's own true final sha, re-settling this
+  run's row in `docs/prds/README.md` from a fresh `status.json` read, and
+  the closing operator report walking the repaired A-N — all tracked as
+  this run's own remaining tasks and not claimed here.
 
 ## Later / explicitly deferred
 
