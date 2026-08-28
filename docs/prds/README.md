@@ -46,7 +46,8 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v09-fsm-loop` | [v0.9-declarative-loop.md](v0.9-declarative-loop.md) | **failed** / unverified — 20 of 23 tasks completed and verified, 3 skipped-with-issue; the terminal verdict is a deadline artifact (#72) | 126 | 482.6M | ~$179.71 derived |
 | `selfdev-v010-not-a-verdict` | [v0.10-clock-is-not-a-verdict.md](v0.10-clock-is-not-a-verdict.md) | succeeded / verified — approach 1: 17 of 17 tasks validated, then rejected by review for under-evidenced closure (archived `approaches/01`); approach 2: 4 of 4 tasks validated. The reflect iteration was interrupted at the deadline | 57 | 124.8M | ~$54.38 derived |
 | `selfdev-v011-model-per-hat` | [v0.11-a-model-per-hat.md](v0.11-a-model-per-hat.md) | succeeded / verified — approach 1: 30 of 30 tasks validated, then rejected by review (a report-only commit left the suite red at the shipped sha, and requirement E's hat x tier matrix had no host-side surface; archived `approaches/01`); approach 2: 16 of 16 tasks validated | 104 | 262.5M | ~$116.07 derived |
-| `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | running / approach 1: 24 of 24 tasks validated, then rejected by review (#83 closed on a false "loss is now impossible" claim while a wider in-process survivor reproduced at HEAD, and the new dev-layout tier was not green at the shipped sha; archived `approaches/01`); approach 2: 11 of 12 tasks validated, 1 in progress | 87 | 123.6M | ~$60.91 derived |
+| `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | succeeded / verified — approach 1: 24 of 24 tasks validated, then rejected by review (#83 closed on a false "loss is now impossible" claim while a wider in-process survivor reproduced at HEAD, and the new dev-layout tier was not green at the shipped sha; archived `approaches/01`); approach 2: 12 of 12 tasks validated | 90 | 134.9M | ~$76.29 derived |
+| `selfdev-v013-a-broken-contract` | [v0.13-a-broken-contract-is-a-conversation.md](v0.13-a-broken-contract-is-a-conversation.md) | not started | — | — | — |
 
 Notes worth keeping with the documents:
 
@@ -184,7 +185,15 @@ Notes worth keeping with the documents:
   rather than leaving it as the snapshot it landed with — this row is that
   courtesy returned by hand, alongside requirement O's roadmap block and
   `0.9.0` bump (`8ec5eee`).
-- **`selfdev-v012-green-on-a-real-host`'s row is a live snapshot of a run still
+- **`selfdev-v012-green-on-a-real-host`'s row has now been resettled from that
+  run's own terminal record**, as the snapshot note below asked a later hand to
+  do: `state: succeeded`, `verdict: verified`, `endedAt 2026-08-27T20:40:29Z`,
+  `iterationsUsed: 90`, `usage.totalTokens: 134912736` (134.9M),
+  `usage.costDerivedUSD: 76.291202` (`costStatus: derived` → `~$76.29
+  derived`), and all 12 of approach 2's tasks `validated`. The paragraph that
+  follows is kept verbatim rather than edited away: it records what the row said
+  while the run was live, and why, which is the more useful history.
+- **`selfdev-v012-green-on-a-real-host`'s row was a live snapshot of a run still
   in progress** (`state: running`, no `verdict` yet), read fresh from
   `/run/ralphd/status.json` and `/run/ralphd/tasks.json` at
   `2026-08-27T19:09:19Z`: `iterationsUsed: 87`, `usage.totalTokens: 123557962`
