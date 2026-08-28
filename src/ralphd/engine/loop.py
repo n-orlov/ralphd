@@ -170,6 +170,13 @@ class LoopSupervisor:
         # `_ask_router`), so they get no `iterations/NNNN/` directory of
         # their own.
         self._router_calls = 0
+        # Task 002 (#60 pillar 3): sequence number for this process's own
+        # contract re-ask transcripts (`artifacts/contract/NNNN.jsonl`) --
+        # the same shape `self._router_calls` establishes for `_ask_router`,
+        # for the same reason: a contract re-ask is a plain counter, never
+        # an iteration slot. `_ask_contract_fix` never calls
+        # `_run_iteration_once` or touches `self.iterations_used`.
+        self._contract_calls = 0
         # Task 008 (#5): the *episode clock* driving infra retries. One
         # "episode" is one continuous outage: consecutive infra-classified
         # attempts with no iteration reaching the model in between. Retries
@@ -2790,6 +2797,56 @@ class LoopSupervisor:
             timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
         if result.usage:
             self._accumulate_usage(result.usage, phase="router")
+        return (result.final_text or ""), (result.usage or {})
+
+    async def _ask_contract_fix(self, hat: str, errors: list[str]) -> tuple[str, dict]:
+        """The contract-repair channel (task 001's requirement B decision,
+        task 002): one tiny, UNCOUNTED question, built directly on
+        `_ask_router`'s precedent immediately above -- no iteration slot,
+        no `iterations_used` increment, no `meta.json` (contrast
+        `_run_iteration_once`, which does all three for a real hat). This
+        method never calls `_run_iteration_once` or touches
+        `self.iterations_used` at all; that is true by construction, not by
+        a separate check.
+
+        Usage IS accounted, separately: `_accumulate_usage(..., phase=
+        "contract")` folds into `usage.byPhase["contract"]`, distinct from
+        `"router"` because the two channels answer structurally different
+        questions (which edge to take, versus what the corrected payload
+        is) -- merging them would hide which one a run actually spent its
+        uncharged-call budget on.
+
+        The prompt states `errors` verbatim and asks ONLY for the corrected
+        final payload -- it never re-issues `hat`'s own task prompt and
+        never invites further workspace work, so a caller cutting one of
+        the five refusal sites over to this channel cannot accidentally
+        hand the hat a second bite at doing MORE than fix its last
+        response's shape.
+
+        Wired to nothing yet (task 002): no caller passes this to
+        `contract_enforcement.enforce_contract` as its `respond` yet --
+        that cutover is tasks 003-007, one refusal site at a time.
+        """
+        contract_dir = self.run.artifacts_dir / "contract"
+        contract_dir.mkdir(parents=True, exist_ok=True)
+        self._contract_calls += 1
+        transcript = contract_dir / f"{self._contract_calls:04d}.jsonl"
+        prompt = (
+            f"Your previous response for the {hat!r} step did not satisfy "
+            "its required response contract:\n\n"
+            + "\n".join(f"- {e}" for e in errors)
+            + "\n\nReply with ONLY the corrected final JSON payload that "
+            "fixes every error listed above. Do not repeat or restate your "
+            "previous reasoning, do not perform any further workspace "
+            "work, and do not include anything other than the corrected "
+            "JSON object itself."
+        )
+        model = self.cfg.model_for("contract")
+        result = await self.runner.run(
+            prompt, transcript, model=model,
+            timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
+        if result.usage:
+            self._accumulate_usage(result.usage, phase="contract")
         return (result.final_text or ""), (result.usage or {})
 
     async def _one_planning_attempt(self, extra: str):
