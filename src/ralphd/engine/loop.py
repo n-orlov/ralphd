@@ -1536,6 +1536,44 @@ class LoopSupervisor:
         self.cfg.iterations = value
         self.run.update_status(iterationsBudget=value)
 
+    def set_max_approaches(self, value: int) -> None:
+        """#94 (operator-added scope, steer 003), engine-side setter 1 of 3:
+        change the max-approaches budget of a LIVE run, same shape as
+        `set_iteration_budget` immediately above.
+
+        `self.cfg.max_approaches` is read at the replan decision in two
+        places (`if self._approach < self.cfg.max_approaches:` and its
+        `if approach < self.cfg.max_approaches:` twin after a review
+        rejection) -- rebinding the field is the whole mechanism, exactly
+        like `iterations`/`budget_left()`. status.json's `maxApproaches` is
+        rewritten here too (it is otherwise published only once, at run
+        start -- see `_run_job_core`'s `update_status(...,
+        maxApproaches=self.cfg.max_approaches, ...)`) so `GET /status` can
+        never disagree with `GET /config`'s live `cfg.effective()` read.
+        The caller (api.py) owns validation (refusing a value below the
+        current approach) and the audit event.
+        """
+        self.cfg.max_approaches = value
+        self.run.update_status(maxApproaches=value)
+
+    def set_iteration_timeout(self, value: int) -> None:
+        """#94 (operator-added scope, steer 003), engine-side setter 2 of 3:
+        change the per-iteration timeout of a LIVE run.
+
+        `self.cfg.iteration_timeout_s` is read once PER ITERATION, inside
+        `run_iteration`'s own `timeout = min(self.cfg.iteration_timeout_s,
+        ...)` -- so a change here applies to the NEXT iteration this method
+        is called for, never to one already in flight (there is no running
+        subprocess call to retroactively shorten or lengthen). Unlike
+        `iterations`/`max_approaches`, status.json has no field of its own
+        for this budget today; `GET /config`'s live `cfg.effective()` read
+        (`budgets.iterationTimeoutS`) already reflects the change with no
+        extra write, the same way it always has for every other
+        `effective()` field. The caller (api.py) owns validation and the
+        audit event.
+        """
+        self.cfg.iteration_timeout_s = value
+
     def budget_left(self) -> bool:
         # Task 001a: iterations refunded after an infra-classified retry
         # (see _run_iteration_with_infra_retry) never count against the
