@@ -2539,11 +2539,30 @@ class LoopSupervisor:
                     event_loop).result()
                 return last_nonblank_line(raw)
 
+            def task_status_extra_validate(payload: dict) -> list[str]:
+                # Task 004 (requirement F, #92 site 2): a hat's reported
+                # `task_status` for a specific `task_id` is layered onto
+                # `enforce_contract`'s SAME retry ladder as a SEMANTIC
+                # check, exactly the shape `contract_enforcement.
+                # parse_response`'s `extra_validate` hook exists for (fact
+                # 16/#65 stays satisfied -- `contracts.validate_payload`
+                # is still the only schema validator; this is a second
+                # REASON the same loop can refuse an attempt, never a
+                # second retry loop). A payload that proposes no move at
+                # all (no `task_id`, or no `task_status` key present) is
+                # never in violation here -- the guard below is the same
+                # one the pre-task-004 call site checked before ever
+                # calling `_apply_reported_task_status`.
+                if payload.get("task_id") and "task_status" in payload:
+                    return self._apply_reported_task_status(payload)
+                return []
+
             enforcement = await asyncio.to_thread(
                 contract_enforcement.enforce_contract,
                 hat, respond,
                 max_retries=self.cfg.contract_retry_max,
                 state=self.run,
+                extra_validate=task_status_extra_validate,
             )
             if enforcement.ok:
                 payload = enforcement.payload
@@ -2579,21 +2598,23 @@ class LoopSupervisor:
                 self._abort_reason = message
                 return ("tail",)
             await self._gate()
-        if isinstance(payload, dict) and payload.get("task_id") and "task_status" in payload:
-            # Task 019 (requirement F, #60 pillar 3): a hat's reported
-            # `task_status` for a specific `task_id` is a proposed
-            # task-state CHANGE. This call happens strictly AFTER
-            # `run_iteration()` above returned -- the hat's own subprocess
-            # has already exited by the time any status lands on disk, so
-            # there is no window in which the record changes WHILE the hat
-            # executes (task 019's second acceptance test drives exactly
-            # this and samples the record throughout).
-            ts_errors = self._apply_reported_task_status(payload)
-            if ts_errors:
-                message = f"{hat!r} contract violation: " + "; ".join(ts_errors)
-                self.run.emit("log", level="error", message=message)
-                self._abort_reason = message
-                return ("tail",)
+        # Task 019 (requirement F, #60 pillar 3), cut over by v0.13 task 004
+        # (#92 site 2): a hat's reported `task_status` for a specific
+        # `task_id` is a proposed task-state CHANGE, applied by
+        # `task_status_extra_validate` above -- inside `enforce_contract`'s
+        # SAME retry ladder, as the `extra_validate` hook `parse_response`
+        # runs once a payload is already schema-valid. By the time
+        # `enforcement.ok` is True here, any legal move it proposed has
+        # already been written to disk (`_apply_reported_task_status`'s own
+        # write, task 013's sole writer) -- there is nothing left to apply
+        # a second time. This still happens strictly AFTER `run_iteration()`
+        # above returned -- the hat's own subprocess has already exited by
+        # the time any status lands on disk, so there is no window in which
+        # the record changes WHILE the hat executes (task 019's second
+        # acceptance test drives exactly this and samples the record
+        # throughout) -- and an illegal move is refused through the exact
+        # same ladder-then-agent-fault path a schema violation takes (task
+        # 003's budget-boundary rule just above), never a second retry loop.
         if len(edges) == 1:
             edge = edges[0]
             self._advance(state, edge.target, edge.guard)

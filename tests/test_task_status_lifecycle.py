@@ -388,6 +388,27 @@ def test_no_status_change_while_a_long_running_hat_executes(tmp_path, registered
 
 def test_an_illegal_reported_status_ends_the_run_as_a_contract_violation(
         tmp_path, registered_status_hat):
+    """v0.13 task 004 (#92 site 2) strengthens this. The OLD claim, pinned
+    here before the cutover, was just: the FIRST bad payload set
+    `sup._abort_reason` to a "contract violation" message and ended the run
+    outright -- a single reported illegal move was fatal on the first
+    offence, with no re-ask and no ladder at all.
+
+    The NEW claim keeps the old one's real content -- the illegal move is
+    still refused, the task record is still untouched -- and adds what the
+    old assertion could not see: the errors were carried back to the SAME
+    hat verbatim on each re-ask, the ladder ran the FULL
+    `contract_retry_max + 1` attempts (never fewer, never more) through
+    `contract_enforcement.enforce_contract` -- the EXACT SAME retry loop
+    task 010 built for a malformed/absent/wrong-shape payload, per this
+    module's own opening docstring claim -- and the outcome is an
+    agent-fault iteration that "continued per the table"
+    (`contract_enforcement`'s own docstring language): here, with the
+    run's own iteration budget already spent by the one charged attempt
+    below (`iterations=1`), "continuing per the table" is the ordinary
+    tail, the SAME budget-boundary rule v0.13 task 003 (#92) established
+    for a schema violation -- never a second mechanism.
+    """
     root = tmp_path / "run"
     root.mkdir(parents=True)
     run = RunDir(root=root)
@@ -398,17 +419,20 @@ def test_an_illegal_reported_status_ends_the_run_as_a_contract_violation(
         {"id": "001", "title": "do the thing", "status": "validated",
          "successCriteria": "the thing is done"},
     ]})
-    cfg = JobConfig(run_id="task019-status-illegal", iterations=5,
+    cfg = JobConfig(run_id="task019-status-illegal", iterations=1,
                     max_approaches=1, vigilant=True, on_complete="exit",
                     infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
                     infra_outage_budget_s=1000.0)
     sup = LoopSupervisor(cfg, run, root)
+
+    calls: list[str] = []
 
     class _FixedAgent:
         def interrupt(self):
             return False
 
         async def run(self, prompt, transcript, **kw):
+            calls.append(prompt or "")
             r = IterationResult(exit_code=0)
             r.final_text = json.dumps({"task_id": "001",
                                       "task_status": "awaiting-validation"})
@@ -419,8 +443,24 @@ def test_an_illegal_reported_status_ends_the_run_as_a_contract_violation(
     sup.runner = _FixedAgent()  # type: ignore[assignment]
     edges = (tr.T("planning", "task019_status_reported"),)
     outcome = asyncio.run(sup._step_generic_hat(STATUS_STATE, edges))
+
+    # The ladder ran the FULL contract_retry_max + 1 attempts before giving
+    # up: one charged `run_iteration()` call (attempt 0, reused as the
+    # ladder's first attempt, no EXTRA call of its own) plus
+    # `contract_retry_max` uncharged `_ask_contract_fix` re-asks, each
+    # landing here via `_FixedAgent.run` too -- `contract_retry_max + 1`
+    # calls to `_FixedAgent.run` in total.
+    assert len(calls) == cfg.contract_retry_max + 1
     assert outcome == ("tail",)
     assert sup._abort_reason and "contract violation" in sup._abort_reason
     # the task record itself is untouched -- an illegal move is refused,
     # never applied "just in case".
     assert run.read_tasks()["tasks"][0]["status"] == "validated"
+
+    from ralphd.engine.state import read_events
+    events = read_events(run.root)
+    violation_events = [e for e in events if e.get("type") == "contract.violation"]
+    fault_events = [e for e in events if e.get("type") == "contract.agent_fault"]
+    assert len(violation_events) == cfg.contract_retry_max + 1
+    assert len(fault_events) == 1
+    assert all("task_status" in ev["errors"][0] for ev in violation_events)
