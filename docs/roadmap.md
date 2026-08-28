@@ -1153,11 +1153,31 @@ does.
   failed/477.84s), dev-layout exported mode (`6fc51b8`, 4255 passed/1
   skipped/20 deselected/0 failed/1324.70s) and dev-layout unset mode
   (`5ac512b`, 4260 passed/1 skipped/20 deselected/0 failed/1301.49s) —
-  tasks 009-013. Not yet landed as of this entry: the repository-guard
-  re-verification at approach 2's own true final sha, re-settling this
-  run's row in `docs/prds/README.md` from a fresh `status.json` read, and
-  the closing operator report walking the repaired A-N — all tracked as
-  this run's own remaining tasks and not claimed here.
+  tasks 009-013 — but that sha was **rejected by review again**: task
+  015's own edit to this bullet (`2da0a67`) named a stale test identifier
+  in prose — the old name approach 2's own task 002 had already renamed to
+  `test_loop_subprocess_dispatch_sites_are_owned_by_exactly_these_functions`
+  at `e2c3e01` — and every sha from `2da0a67` onward, including the
+  shipped `5e26f3f`, carried it and made the fast tier RED
+  (`test_docs_consistency.py`'s backticked-identifier check, 1
+  failed/4237 passed/840.97s at `5e26f3f`), though none of approach 2's
+  own five sweeps (all taken before `2da0a67`) ever collected it. Approach
+  3 (this repair pass) fixed the stale identifier first (task 001,
+  `508f95b`), landed the three remaining #94 budget knobs the operator
+  had steered in during approach 2 and a same-wave auto-resume/allowlist
+  fix those knobs' own commit needed (tasks 002-004, `6497422`/`c2b54fe`/
+  `bdf2bb4`/`eb5dbcc`), then re-took all five tier records at the
+  resulting true final code sha (`eb5dbcc`): docker (`b8e15b9`, 20
+  passed/0 failed/889.08s), browser (`f9e442c`, 42 passed/0
+  failed/473.94s), dev-layout exported mode (`154d07e`, 4318 passed/1
+  skipped/20 deselected/0 failed/1337.40s), dev-layout unset mode
+  (`9610c78`, 4323 passed/1 skipped/20 deselected/0 failed/1355.48s) and
+  fast tier, run last (`c11c1f5`, 4286 passed/1 skipped/62 deselected/0
+  failed/856.29s) — tasks 005-009. The `docs/prds/README.md` row
+  resettle (task 010) has now landed too. Not yet landed as of this
+  entry: the repository-guard re-verification at approach 3's own true
+  final sha, and the closing operator report walking the repaired A-N —
+  both tracked as this run's own remaining tasks and not claimed here.
 
 ## Later / explicitly deferred
 

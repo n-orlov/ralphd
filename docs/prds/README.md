@@ -47,7 +47,7 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v010-not-a-verdict` | [v0.10-clock-is-not-a-verdict.md](v0.10-clock-is-not-a-verdict.md) | succeeded / verified — approach 1: 17 of 17 tasks validated, then rejected by review for under-evidenced closure (archived `approaches/01`); approach 2: 4 of 4 tasks validated. The reflect iteration was interrupted at the deadline | 57 | 124.8M | ~$54.38 derived |
 | `selfdev-v011-model-per-hat` | [v0.11-a-model-per-hat.md](v0.11-a-model-per-hat.md) | succeeded / verified — approach 1: 30 of 30 tasks validated, then rejected by review (a report-only commit left the suite red at the shipped sha, and requirement E's hat x tier matrix had no host-side surface; archived `approaches/01`); approach 2: 16 of 16 tasks validated | 104 | 262.5M | ~$116.07 derived |
 | `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | succeeded / verified — approach 1: 24 of 24 tasks validated, then rejected by review (#83 closed on a false "loss is now impossible" claim while a wider in-process survivor reproduced at HEAD, and the new dev-layout tier was not green at the shipped sha; archived `approaches/01`); approach 2: 12 of 12 tasks validated | 90 | 134.9M | ~$76.29 derived |
-| `selfdev-v013-a-broken-contract` | [v0.13-a-broken-contract-is-a-conversation.md](v0.13-a-broken-contract-is-a-conversation.md) | running / approach 1: 33 of 33 tasks validated, then rejected by review (the suite was RED at the shipped sha from two of the wave's own regressions, three operator steering directives to fix or decide them were never actioned, and the shipped evidence misattributed both failures as pre-existing; archived `approaches/01`); approach 2: 15 of 18 tasks validated, 1 in progress, 2 pending | 107 | 154.9M | ~$68.40 derived |
+| `selfdev-v013-a-broken-contract` | [v0.13-a-broken-contract-is-a-conversation.md](v0.13-a-broken-contract-is-a-conversation.md) | running / approach 1: 33 of 33 tasks validated, then rejected by review (the suite was RED at the shipped sha from two of the wave's own regressions, three operator steering directives to fix or decide them were never actioned, and the shipped evidence misattributed both failures as pre-existing; archived `approaches/01`); approach 2: 18 of 18 tasks validated, then rejected by review (a docs-only commit correcting the roadmap N bullet reintroduced a stale test identifier the same wave had already renamed, making the fast tier RED at the shipped sha; archived `approaches/02`); approach 3: 9 of 12 tasks validated, 1 in progress, 2 pending | 133 | 186.7M | ~$86.79 derived |
 
 Notes worth keeping with the documents:
 
@@ -216,14 +216,13 @@ Notes worth keeping with the documents:
   though the run has not reached a terminal `state` — a later task will need to
   resettle it once the run actually ends, the same way v0.10's and v0.11's rows
   were resettled after their own approach histories closed out.
-- **`selfdev-v013-a-broken-contract`'s row has been resettled once already,
-  mid-run** (task 016), from a snapshot taken while approach 1 was still active
-  and unreviewed to one that reflects the review rejection and the follow-on
-  repair pass, read fresh from `/run/ralphd/status.json` and
-  `/run/ralphd/tasks.json` at `2026-08-28T18:24:22Z`: `state: running`, no
-  `verdict` yet, `approach: 2`, `iteration: 111`, `iterationsUsed: 107`,
-  `usage.totalTokens: 154855349` (154.9M), `usage.costDerivedUSD: 68.400793`
-  (`costStatus: derived`, so `engine.state.format_cost` renders `~$68.40
+- **`selfdev-v013-a-broken-contract`'s row has been resettled twice now,
+  mid-run** — once at task 016 (approach 2, since superseded) and again at
+  task 010 (approach 3, this resettle), read fresh from
+  `/run/ralphd/status.json` and `/run/ralphd/tasks.json`: `state: running`,
+  no `verdict` yet, `approach: 3`, `iteration: 137`, `iterationsUsed: 133`,
+  `usage.totalTokens: 186676679` (186.7M), `usage.costDerivedUSD: 86.789897`
+  (`costStatus: derived`, so `engine.state.format_cost` renders `~$86.79
   derived`). Approach 1 ran the wave's entire 33-task plan to `validated` on
   every task, but review rejected it (`/run/ralphd/approaches/01/review-
   findings.md`, blocking): the suite was RED at the shipped sha from two of
@@ -231,18 +230,23 @@ Notes worth keeping with the documents:
   did not allow for, and a stale ambient-`$HOME` allowlist pin), three
   operator steering directives asking for those fixes and a model decision
   were never actioned, and the shipped evidence artifacts misattributed both
-  failures as "pre-existing". Approach 2 (this repair pass) has re-pinned
-  both guards as *stronger* guards (tasks 001-002), decided and documented
-  the contract re-ask model (tasks 004-005), filed the two remaining
-  findings as issues #96 and #97 (tasks 006-007), corrected the false
-  "pre-existing" attribution in the shipped sweep evidence (task 008),
-  re-swept all five tiers at the true final sha (tasks 009-013), posted the
-  green-suite evidence on the already-closed #92/#93 (task 014), and
-  corrected `docs/roadmap.md`'s v0.13 N bullet (task 015); a fresh tally of
-  `tasks.json` at this same read — 15 tasks `validated`, 1 `in-progress`
-  (this row-settling task, 016, itself), 2 `pending` (017 the guard
-  re-verification, 018 the closing operator report), 18 total. This row
-  still carries no `+` snapshot marker on any cell, per this task's own
+  failures as "pre-existing". Approach 2 ran its own full 18-task plan to
+  `validated` on every task too, but review rejected it again
+  (`/run/ralphd/approaches/02/review-findings.md`, blocking): one of
+  approach 2's own docs-only commits, correcting `docs/roadmap.md`'s v0.13 N
+  bullet, named a test identifier the same wave's task 002 had already
+  renamed away, and that stale name made the fast tier RED at every sha from
+  that commit onward, including the shipped one — none of approach 2's own
+  sweeps caught it because all five were taken before the stale name landed.
+  Approach 3 (this repair pass) fixed the stale identifier first (task 001),
+  landed the three remaining #94 budget knobs the operator had steered in
+  during approach 2 plus a same-wave fix those knobs' own commit needed
+  (tasks 002-004), re-took all five tier records at the resulting true final
+  code sha (tasks 005-009), and resettled this row (task 010, itself); a
+  fresh tally of `tasks.json` at this same read — 9 tasks `validated`, 1
+  `in-progress` (this row-settling task, 010, itself), 2 `pending` (011 the
+  closing operator report, 012 the guard re-verification), 12 total. This
+  row still carries no `+` snapshot marker on any cell, per this task's own
   success criteria — the run has still not reached a terminal `state`, so a
   later task (or a fresh commit once this run ends) will need to resettle it
   again once `status.json` actually reaches a terminal state, the same way
