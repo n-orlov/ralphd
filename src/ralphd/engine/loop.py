@@ -2908,6 +2908,19 @@ class LoopSupervisor:
         Wired in: `_step_generic_hat`'s schema/task_status site (tasks
         003 `2be8b86`/004 `edbcb79`) and worker's 3 verdict sites (005
         `1311548`, 006 `8599b7b`, 007 `aa0a7b1`) all pass this as `respond`.
+
+        Model decision (task 004, steer 002 item 3, option (a)): the re-ask
+        runs on `hat`'s OWN model -- `self.cfg.model_for(hat)`, never a
+        fixed "contract" lookup. Before this task it resolved
+        `self.cfg.model_for("contract")`; `"contract"` is not a `MODEL_HATS`
+        member, so `config.py`'s `UNRECOGNISED_HAT_FALLBACK` ("planning")
+        silently repaired every hat's payload with PLANNING's model
+        regardless of which hat produced the violation -- a `sonnet` worker's
+        malformed verdict fixed by `opus`, undesigned and undocumented.
+        `model_for(hat)` keeps the repair inside the tier that made the
+        mistake: cheaper, symmetric, and a hat's own `--model-for`/`models:`
+        entry now governs the repair of its own output. Pinned by
+        `tests/test_contract_reask_model_task004.py`.
         """
         contract_dir = self.run.artifacts_dir / "contract"
         contract_dir.mkdir(parents=True, exist_ok=True)
@@ -2923,7 +2936,7 @@ class LoopSupervisor:
             "work, and do not include anything other than the corrected "
             "JSON object itself."
         )
-        model = self.cfg.model_for("contract")
+        model = self.cfg.model_for(hat)
         result = await self.runner.run(
             prompt, transcript, model=model,
             timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
