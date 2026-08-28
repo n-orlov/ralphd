@@ -47,7 +47,7 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v010-not-a-verdict` | [v0.10-clock-is-not-a-verdict.md](v0.10-clock-is-not-a-verdict.md) | succeeded / verified — approach 1: 17 of 17 tasks validated, then rejected by review for under-evidenced closure (archived `approaches/01`); approach 2: 4 of 4 tasks validated. The reflect iteration was interrupted at the deadline | 57 | 124.8M | ~$54.38 derived |
 | `selfdev-v011-model-per-hat` | [v0.11-a-model-per-hat.md](v0.11-a-model-per-hat.md) | succeeded / verified — approach 1: 30 of 30 tasks validated, then rejected by review (a report-only commit left the suite red at the shipped sha, and requirement E's hat x tier matrix had no host-side surface; archived `approaches/01`); approach 2: 16 of 16 tasks validated | 104 | 262.5M | ~$116.07 derived |
 | `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | succeeded / verified — approach 1: 24 of 24 tasks validated, then rejected by review (#83 closed on a false "loss is now impossible" claim while a wider in-process survivor reproduced at HEAD, and the new dev-layout tier was not green at the shipped sha; archived `approaches/01`); approach 2: 12 of 12 tasks validated | 90 | 134.9M | ~$76.29 derived |
-| `selfdev-v013-a-broken-contract` | [v0.13-a-broken-contract-is-a-conversation.md](v0.13-a-broken-contract-is-a-conversation.md) | running / approach 1: 31 of 33 tasks validated, 1 in progress, 1 pending | 69 | 113.0M | ~$47.89 derived |
+| `selfdev-v013-a-broken-contract` | [v0.13-a-broken-contract-is-a-conversation.md](v0.13-a-broken-contract-is-a-conversation.md) | running / approach 1: 33 of 33 tasks validated, then rejected by review (the suite was RED at the shipped sha from two of the wave's own regressions, three operator steering directives to fix or decide them were never actioned, and the shipped evidence misattributed both failures as pre-existing; archived `approaches/01`); approach 2: 15 of 18 tasks validated, 1 in progress, 2 pending | 107 | 154.9M | ~$68.40 derived |
 
 Notes worth keeping with the documents:
 
@@ -216,23 +216,38 @@ Notes worth keeping with the documents:
   though the run has not reached a terminal `state` — a later task will need to
   resettle it once the run actually ends, the same way v0.10's and v0.11's rows
   were resettled after their own approach histories closed out.
-- **`selfdev-v013-a-broken-contract`'s row is a live snapshot of a run still in
-  progress** (`state: running`, no `verdict` yet), read fresh from
-  `/run/ralphd/status.json` and `/run/ralphd/tasks.json` at
-  `2026-08-28T15:01:08Z`: `iteration: 72`, `iterationsUsed: 69`,
-  `usage.totalTokens: 112995954` (113.0M), `usage.costDerivedUSD: 47.893976`
-  (`costStatus: derived`, so `engine.state.format_cost` renders `~$47.89
-  derived`), and a fresh tally of that moment's `tasks.json` — 31 tasks
-  `validated`, 1 `in-progress` (this row-settling task, 032, itself), 1
-  `pending` (033, the closing report), 33 total; on approach 1 of a possible
-  8 — it has not replanned. This row carries no `+` snapshot marker on any
-  cell, per this task's own success criteria (and this PRD's own N
-  requirement) — even though the run has not reached a terminal `state`, the
-  same gap v0.12's row once carried against this file's own convention. A
-  later task (or a fresh commit once this run ends) will need to resettle
-  it once the run's own `status.json` actually reaches a terminal state, the
-  same way v0.10's, v0.11's and v0.12's rows were resettled after their own
-  histories closed out.
+- **`selfdev-v013-a-broken-contract`'s row has been resettled once already,
+  mid-run** (task 016), from a snapshot taken while approach 1 was still active
+  and unreviewed to one that reflects the review rejection and the follow-on
+  repair pass, read fresh from `/run/ralphd/status.json` and
+  `/run/ralphd/tasks.json` at `2026-08-28T18:24:22Z`: `state: running`, no
+  `verdict` yet, `approach: 2`, `iteration: 111`, `iterationsUsed: 107`,
+  `usage.totalTokens: 154855349` (154.9M), `usage.costDerivedUSD: 68.400793`
+  (`costStatus: derived`, so `engine.state.format_cost` renders `~$68.40
+  derived`). Approach 1 ran the wave's entire 33-task plan to `validated` on
+  every task, but review rejected it (`/run/ralphd/approaches/01/review-
+  findings.md`, blocking): the suite was RED at the shipped sha from two of
+  the wave's own regressions (a third `runner.run(` dispatch site the guard
+  did not allow for, and a stale ambient-`$HOME` allowlist pin), three
+  operator steering directives asking for those fixes and a model decision
+  were never actioned, and the shipped evidence artifacts misattributed both
+  failures as "pre-existing". Approach 2 (this repair pass) has re-pinned
+  both guards as *stronger* guards (tasks 001-002), decided and documented
+  the contract re-ask model (tasks 004-005), filed the two remaining
+  findings as issues #96 and #97 (tasks 006-007), corrected the false
+  "pre-existing" attribution in the shipped sweep evidence (task 008),
+  re-swept all five tiers at the true final sha (tasks 009-013), posted the
+  green-suite evidence on the already-closed #92/#93 (task 014), and
+  corrected `docs/roadmap.md`'s v0.13 N bullet (task 015); a fresh tally of
+  `tasks.json` at this same read — 15 tasks `validated`, 1 `in-progress`
+  (this row-settling task, 016, itself), 2 `pending` (017 the guard
+  re-verification, 018 the closing operator report), 18 total. This row
+  still carries no `+` snapshot marker on any cell, per this task's own
+  success criteria — the run has still not reached a terminal `state`, so a
+  later task (or a fresh commit once this run ends) will need to resettle it
+  again once `status.json` actually reaches a terminal state, the same way
+  v0.10's, v0.11's and v0.12's rows were resettled after their own histories
+  closed out.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
