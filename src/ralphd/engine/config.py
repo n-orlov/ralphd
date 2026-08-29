@@ -360,6 +360,18 @@ class JobConfig:
     # (`plan_review_revision_bound_reached`). Reset to 0 at the start of
     # every approach (`LoopSupervisor._record_plan_review_revision`).
     peer_plan_review_max_revisions: int = 2
+    # Task 021 (PRD requirement N, #102): an explicit NUMBER -- the maximum
+    # count of NEW tasks a worker's optional `proposed_tasks` split
+    # (`transitions.HAT_SCHEMAS["worker"]`) may add to the plan across ONE
+    # approach. Without a stated cap this is a plan-growth loop -- the same
+    # reasoning `peer_plan_review_max_revisions` above states for its own
+    # bound. Tracked in `status.json`'s `workerSplitProposals[str(approach)]`
+    # (accepted-task count, not proposal-batch count), the same disk-backed,
+    # per-approach-keyed shape `planReviewRevisions` already uses so it
+    # survives a resumed process. A proposal that would push the running
+    # total over this budget is refused whole (no partial insertion) --
+    # see `LoopSupervisor._apply_worker_proposed_tasks`.
+    worker_split_budget_per_approach: int = 3
     # Task 020 (PRD requirement L, #101): the opt-in peer VERDICT gate.
     # OFF by default -- `transitions.table_for(vigilant)` (no extra
     # arguments) stays byte-identical to today's table whenever this

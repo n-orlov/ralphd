@@ -3449,6 +3449,69 @@ class LoopSupervisor:
                     f"skipped: {names}"]
         return []
 
+    def _apply_worker_proposed_tasks(self, proposed_tasks: list,
+                                     assigned_task_id: str | None,
+                                     approach: int) -> None:
+        """Task 021 (requirement N, #102): ingest a worker's optional
+        `proposed_tasks` split proposal (`transitions.HAT_SCHEMAS["worker"]`)
+        through `plan_ingestion.lint_worker_split` -- the EXISTING lint
+        (`validate_proposal_shape`/`lint_proposal`/`lint_own_terminal_
+        state`) reused, never a second one -- then, only once that lint is
+        clean AND this approach's `worker_split_budget_per_approach` still
+        has room, `state.insert_worker_split_tasks` (worker-origin marking,
+        `splitFrom` stamping).
+
+        Deliberately NOT routed through `contract_enforcement.enforce_
+        contract`'s re-ask ladder the way `_apply_unsatisfiable_report`/
+        `_apply_worker_completion_report` are: those two are the worker's
+        PRIMARY verdict for the iteration and a bad one must come back to
+        the same worker to fix. `proposed_tasks` is an optional side
+        channel that can accompany ANY verdict (including a plain
+        `no_verdict`, which has no ladder of its own at all) -- an invalid
+        or over-budget proposal is refused and logged instead
+        (`EVENT_VIOLATION`-shaped, `hat="worker"`), leaving the rest of
+        this iteration's own verdict handling completely unaffected. Never
+        raises, never advances a state, never touches `stagnant`.
+        """
+        if not isinstance(proposed_tasks, list) or not proposed_tasks:
+            return
+        tasks_doc = self.run.read_tasks()
+        existing_ids = {t.get("id") for t in tasks_doc.get("tasks", [])
+                        if isinstance(t, dict)}
+        errors = plan_ingestion.lint_worker_split(
+            proposed_tasks, assigned_task_id=assigned_task_id,
+            existing_ids=existing_ids)
+        if errors:
+            self.run.emit(
+                contract_enforcement.EVENT_VIOLATION, hat="worker",
+                message="worker's proposed_tasks split was refused",
+                errors=list(errors))
+            return
+        usage = dict(self.run.read_status().get("workerSplitProposals") or {})
+        used = int(usage.get(str(approach), 0))
+        budget = self.cfg.worker_split_budget_per_approach
+        if used + len(proposed_tasks) > budget:
+            self.run.emit(
+                contract_enforcement.EVENT_VIOLATION, hat="worker",
+                message=(
+                    f"worker's proposed_tasks split was refused: approach "
+                    f"{approach} has already used {used}/{budget} of its "
+                    f"split budget and this proposal would add "
+                    f"{len(proposed_tasks)} more"),
+                errors=[])
+            return
+        inserted = state.insert_worker_split_tasks(
+            self.run, proposed_tasks, assigned_task_id)
+        if not inserted:
+            return
+        usage[str(approach)] = used + len(inserted)
+        self.run.update_status(workerSplitProposals=usage)
+        self.run.emit(
+            "log", level="info",
+            message=(f"worker proposed a split of task {assigned_task_id}: "
+                      f"{len(inserted)} new task(s) created "
+                      f"({', '.join(str(i) for i in inserted)})"))
+
     def _record_worker_iteration_verdict(self, iteration_number: int,
                                           verdict: str,
                                           task_id: str | None) -> None:
@@ -4191,6 +4254,18 @@ class LoopSupervisor:
                 self.run.write_tasks(tasks_before)
                 self._emit_task_status(assigned_id, old_status, "in-progress")
             before = json.dumps(tasks_before, sort_keys=True)
+            # Task 021 (requirement N, #102): the ids already live in the
+            # plan BEFORE this iteration ran -- fixed here, once, so the
+            # `after` diff below (`state.tasks_doc_excluding_new_entries`)
+            # can tell "a brand-new worker-origin task this pass created"
+            # (excluded from the diff -- never counts as progress) from "an
+            # EXISTING worker-origin task whose status just changed"
+            # (included -- genuine progress, whether that task was created
+            # this pass's own predecessor or any earlier one).
+            before_task_ids = {
+                t.get("id") for t in tasks_before.get("tasks", [])
+                if isinstance(t, dict)
+            }
             extra = self._worker_assignment_extra(selected)
             # Task 016 (requirement I/J): the in-hand task's EFFECTIVE tier
             # (post-escalation) drives this dispatch's model; a pass with
@@ -4254,9 +4329,25 @@ class LoopSupervisor:
             except (json.JSONDecodeError, TypeError):
                 payload = None
             verdict = payload.get("verdict") if isinstance(payload, dict) else None
+            proposed_split_tasks = (
+                payload.get("proposed_tasks") if isinstance(payload, dict) else None)
             applied_this_iteration = False
             if verdict is not None:
                 schema_errors = contracts.validate_payload("worker", payload)
+                # Task 021 (requirement N, #102): `proposed_tasks` is an
+                # optional side channel, independent of which verdict this
+                # reply also carries -- applied here, once, BEFORE the
+                # verdict-specific branches below (each of which may re-read
+                # `tasks_after` on its own), so a subsequent re-read in any
+                # branch already sees whatever split this call accepted.
+                # Only attempted when the whole payload is schema-valid: a
+                # malformed `proposed_tasks` (wrong type) already falls into
+                # the generic `elif schema_errors:` re-ask ladder below, same
+                # as any other schema violation on this payload.
+                if not schema_errors and proposed_split_tasks:
+                    self._apply_worker_proposed_tasks(
+                        proposed_split_tasks, assigned_id, approach)
+                    tasks_after = self.run.read_tasks()
                 if verdict == "unsatisfiable":
                     # v0.13 task 005 (#92 site 3): a schema violation or an
                     # illegal `_apply_unsatisfiable_report` (bad `task_id`,
@@ -4583,7 +4674,19 @@ class LoopSupervisor:
                 # this exact guard while nothing about the plan was stuck.
                 continue
 
-            after = json.dumps(tasks_after, sort_keys=True)
+            after = json.dumps(
+                state.tasks_doc_excluding_new_entries(
+                    tasks_after, before_task_ids, origin=state.TASK_ORIGIN_WORKER),
+                sort_keys=True)
+            # Task 021 (requirement N, #102): the view above excludes any
+            # task `_apply_worker_proposed_tasks` inserted THIS pass from
+            # the diff `stagnant` below is computed over -- proposing a
+            # split is a `tasks.json` change like any other, and without
+            # this exclusion it would register as progress every single
+            # pass, resetting `stagnant` to 0 forever and giving a worker
+            # that never does anything BUT propose splits an unlimited
+            # escape from the 3-iteration stagnation guard
+            # (`tests/test_worker_split_proposal.py` pins exactly this).
             # Task 015 (requirement O, #100) retired the literal
             # `<promise>COMPLETE</promise>` marker as an authoritative
             # decision here: `IterationResult.saw_complete` is now purely

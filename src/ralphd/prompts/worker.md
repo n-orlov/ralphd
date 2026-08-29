@@ -63,7 +63,21 @@ immediately starts the next iteration.
      under `## Completion signal` below — valid ONLY when `## Task assigned
      this iteration` said nothing was selectable this same iteration.
    Exactly one of these is your reply's last non-blank line — never two, and
-   never a bare line that is neither.
+   never a bare line that is neither. Alongside whichever one of those you
+   send, you may ALSO include `"proposed_tasks": [...]`, an optional array
+   of new tasks (each shaped exactly like a task in a plan proposal —
+   `id`/`title`/`successCriteria`, `dependsOn` optional) — if, and only if,
+   the task you were assigned this iteration turned out to be a SPLIT
+   candidate: too big to finish as one task, but decomposable into smaller
+   ones that still add up to it. The harness lints this the exact same way
+   it lints a planner's own proposal — duplicate ids, unresolved
+   `dependsOn`, empty/boilerplate criteria all refuse it — plus rules of
+   its own: nothing to split if no task was assigned this iteration, a
+   proposed id colliding with one already in the plan, and a per-approach
+   budget past which further proposals are refused. Every accepted task is
+   marked worker-origin on the record itself, and is NOT counted as
+   progress against the three-iteration no-progress guard below — do not
+   try to survive on proposals alone; still work the assigned task.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. The notes'
    `## Standing rules` block is harness-pinned (task 107): the harness
@@ -79,15 +93,16 @@ immediately starts the next iteration.
 
 ## Rules
 
-- ONE task per iteration (see THE ONE RULE above). If the assigned task turns
-  out to be non-atomic, do only the smallest atomic first piece of it and
-  describe the remainder precisely in the notes file so a later planning/
-  replan pass can carve it into a new task — `tasks.json` is harness-owned
-  (see step 5 above); you never create, edit or remove an entry in it
-  yourself for ordinary task work. The one narrow, pre-existing exception is
-  resolving a permanently `failed` task (`## Completion signal` below), which
-  still asks you to write `tasks.json` directly — that mechanism is outside
-  this wave's scope and unchanged.
+- ONE task per iteration (see THE ONE RULE above). `tasks.json` is
+  harness-owned (see step 5 above); you never create, edit or remove an
+  entry in it yourself for ordinary task work — the one exception is the
+  optional `proposed_tasks` field on your own contract report (step 5
+  above), a bounded SPLIT of the task you were assigned, ingested and
+  applied by the harness itself, never written by you directly. The other
+  narrow, pre-existing exception is resolving a permanently `failed` task
+  (`## Completion signal` below), which still asks you to write
+  `tasks.json` directly — that mechanism is outside this wave's scope and
+  unchanged.
 - If operator steering is present in your prompt, it takes priority over
   everything else — including the PRD and the current task order. Handle it as
   described under `## Operator steering` below: copy it down, then act on it.

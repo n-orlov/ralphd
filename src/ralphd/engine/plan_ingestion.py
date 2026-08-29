@@ -330,6 +330,55 @@ def lint_own_terminal_state(payload: dict) -> list[str]:
     return errors
 
 
+def lint_worker_split(proposed_tasks: Any, *, assigned_task_id: str | None,
+                       existing_ids: set) -> list[str]:
+    """Requirement N (#102): the semantic + shape lint for a worker's
+    optional `proposed_tasks` contract field
+    (`transitions.HAT_SCHEMAS["worker"]`) -- reuses the SAME three
+    functions `_parse_proposal` already runs for a planner's file-borne
+    proposal (`validate_proposal_shape`, `lint_proposal`,
+    `lint_own_terminal_state`) rather than writing a second lint (fact
+    16/#65's lesson).
+
+    Two rules on top of that reused pipeline are what make this a SPLIT of
+    the task actually assigned THIS iteration rather than unbounded new
+    scope:
+
+    * `assigned_task_id` must be real -- nothing to split if the harness
+      handed this worker no task at all this pass.
+    * `lint_proposal`'s own `dependsOn` resolution is already scoped to
+      exactly the ids present in `proposed_tasks` itself (see that
+      function's `known_ids`) -- a split cannot silently wire itself to
+      unrelated plan work, which is the coherence check requirement N asks
+      for. The one thing that reused check has no way to know is whether a
+      proposed id collides with one already LIVE in the plan (it only ever
+      sees the proposed batch) -- checked here against `existing_ids`,
+      the caller's live `tasks.json` id set.
+
+    Called from `LoopSupervisor._apply_worker_proposed_tasks`
+    (`engine/loop.py`) -- this module stays engine-loop-agnostic, exactly
+    like `lint_proposal`/`lint_own_terminal_state` already are; it does not
+    read or write `tasks.json` itself.
+    """
+    if not assigned_task_id:
+        return ["proposed_tasks: no task was assigned this iteration -- a "
+                "split proposal requires a real task to split"]
+    payload = {"tasks": proposed_tasks}
+    shape_errors = validate_proposal_shape(payload)
+    if shape_errors:
+        return shape_errors
+    errors = lint_proposal(payload) + lint_own_terminal_state(payload)
+    collisions = sorted({
+        t.get("id") for t in payload["tasks"]
+        if isinstance(t, dict) and t.get("id") in existing_ids
+    })
+    if collisions:
+        errors.append(
+            f"proposed_tasks: id(s) already exist in the plan: {collisions}"
+        )
+    return errors
+
+
 def normalize_task_tiers(payload: dict) -> list[str]:
     """Requirement F, task 013: normalise every task's optional `tier`
     annotation IN PLACE and return a list of WARNING strings -- a channel

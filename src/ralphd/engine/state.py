@@ -2585,6 +2585,103 @@ def is_steering_origin(task: dict) -> bool:
     return isinstance(task, dict) and task.get("origin") == TASK_ORIGIN_STEER
 
 
+# Task 021 (PRD requirement N, #102): the sibling marker for a task the
+# WORKER hat inserted through its own optional `proposed_tasks` split
+# proposal (`transitions.HAT_SCHEMAS["worker"]`) -- same reasoning as
+# `TASK_ORIGIN_STEER` just above, for the same reason: a plan reader must be
+# able to tell a task the planner reasoned about from one a worker carved
+# out of an assignment mid-run, not just tasks the operator injected.
+# `insert_worker_split_tasks` below is the only writer, and it writes this
+# value unconditionally, exactly as `steer_task_insert` always forces
+# `status` and `origin` regardless of what the caller supplied.
+TASK_ORIGIN_WORKER = "worker"
+
+
+def is_worker_origin(task: dict) -> bool:
+    """True for a task `insert_worker_split_tasks` created -- the sibling
+    predicate to `is_steering_origin`, called by the same surfaces
+    (`format_task_status` below, the CLI table, the hub row/dialog)."""
+    return isinstance(task, dict) and task.get("origin") == TASK_ORIGIN_WORKER
+
+
+# Fields a worker's proposed split task is allowed to carry through to
+# `tasks.json` verbatim -- the same set `plan_ingestion._TASK_PASSTHROUGH_
+# FIELDS` uses for a planner's proposal, duplicated here (not imported)
+# because this module must not depend on `plan_ingestion` (the reverse
+# dependency already exists: `plan_ingestion.lint_worker_split` is called
+# FROM `LoopSupervisor`, never the other way).
+_WORKER_SPLIT_PASSTHROUGH_FIELDS = (
+    "id", "title", "successCriteria", "dependsOn", "priority", "tier",
+)
+
+
+def insert_worker_split_tasks(run: "RunDir", proposed_tasks: list,
+                              assigned_task_id: str) -> list:
+    """Requirement N (#102): append every task in an already-linted
+    `proposed_tasks` batch (`plan_ingestion.lint_worker_split` returned no
+    errors for it -- this function trusts its caller the same way
+    `steer_task_insert` trusts ITS caller's tool-call payload) to
+    `tasks.json`, stamping each one `status: "pending"`, `origin:
+    "worker"` (`TASK_ORIGIN_WORKER`) and `splitFrom: assigned_task_id` --
+    always, regardless of what the proposal itself said, the identical
+    discipline `steer_task_insert` already applies to `status`/`origin`.
+    `splitFrom` is what makes "restricted to a split of the assigned task"
+    an auditable fact on the created row, not just an ingestion-time rule
+    that leaves no trace afterwards.
+
+    A proposed id that already exists in the live plan is skipped rather
+    than overwriting the existing row -- belt-and-suspenders alongside
+    `lint_worker_split`'s own collision check, the same layering `ingest_
+    proposal` already has relative to `lint_proposal`'s `status`-field
+    refusal. Returns the ids actually inserted, in order.
+    """
+    data = run.read_tasks()
+    tasks = data.setdefault("tasks", [])
+    existing_ids = {t.get("id") for t in tasks if isinstance(t, dict)}
+    inserted = []
+    for t in proposed_tasks:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if tid in existing_ids:
+            continue
+        new_task = {k: t[k] for k in _WORKER_SPLIT_PASSTHROUGH_FIELDS if k in t}
+        new_task["status"] = "pending"
+        new_task["origin"] = TASK_ORIGIN_WORKER
+        new_task["splitFrom"] = assigned_task_id
+        tasks.append(new_task)
+        existing_ids.add(tid)
+        inserted.append(tid)
+    if inserted:
+        run.write_tasks(data)
+    return inserted
+
+
+def tasks_doc_excluding_new_entries(tasks_doc: dict, known_ids: set, *,
+                                    origin: str) -> dict:
+    """Requirement N (#102): a view of `tasks_doc` with any task whose
+    `origin` equals `origin` AND whose id is NOT already in `known_ids`
+    filtered out of its `tasks` list -- everything else passes through
+    unchanged. This is what keeps a worker's `proposed_tasks` split from
+    ever registering as "progress" against `_step_worker`'s 3-iteration
+    stagnation guard: `LoopSupervisor` computes that guard's before/after
+    diff over THIS view (with `known_ids` fixed at the ids present BEFORE
+    the iteration ran), so inserting a brand-new worker-origin task changes
+    nothing the diff can see, while a REAL later change to an EXISTING
+    task -- including one this exact mechanism created on an earlier pass,
+    once its id is already in `known_ids` -- still does. Proposing a split
+    is deliberately excluded from counting as forward motion; completing
+    one is not, and this is the one function both properties run through.
+    """
+    tasks = tasks_doc.get("tasks", [])
+    filtered = [
+        t for t in tasks
+        if not (isinstance(t, dict) and t.get("origin") == origin
+                and t.get("id") not in known_ids)
+    ]
+    return {**tasks_doc, "tasks": filtered}
+
+
 # Task 013 (PRD requirement I, #98): a task's TERMINAL statuses -- the set
 # `steering_origin_outstanding` below waits for. Deliberately WIDER than
 # `TASK_COMPLETION_STATUSES` (which excludes `failed` on purpose: a
@@ -2836,6 +2933,12 @@ def format_task_status(task: dict, blocked_by: list | None = None) -> str:
     every surface that already renders through this one function -- `ralphctl
     tasks`, the hub's task row and dialog -- marks an injected task without
     each surface re-testing the `origin` field itself.
+
+    Task 021 (PRD requirement N, #102): the sibling case, `is_worker_
+    origin()` (`task["origin"] == TASK_ORIGIN_WORKER`), gets ` (worker-
+    origin)` in the same slot -- mutually exclusive with steering-origin
+    (a task has exactly one `origin` value or none), so this is `elif`, not
+    a second independent append.
     """
     if not isinstance(task, dict):
         return "unknown"
@@ -2845,6 +2948,8 @@ def format_task_status(task: dict, blocked_by: list | None = None) -> str:
     text = f"{status} ({kind})" if kind else status
     if is_steering_origin(task):
         text += " (steering-origin)"
+    elif is_worker_origin(task):
+        text += " (worker-origin)"
     if blocked_by:
         text += f" (blocked by {', '.join(str(b) for b in blocked_by)})"
     return text

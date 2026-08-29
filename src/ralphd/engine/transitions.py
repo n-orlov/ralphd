@@ -865,6 +865,42 @@ HAT_SCHEMAS: dict[str, dict] = {
             "task_id": {"type": "string"},
             "reason": {"type": "string"},
             "notes": {"type": "string"},
+            # Task 021 (requirement N, #102): an OPTIONAL split proposal --
+            # "the assigned task is too big; here is how I'd break it up" --
+            # scoped deliberately narrower than the planner's own proposal
+            # channel (`HAT_SCHEMAS["planning"]`'s `proposal_path`, a
+            # pointer to a FILE): this one travels inline, in the same
+            # payload as `verdict`, because it is always small (a split of
+            # ONE task, never a whole plan) and always accompanies an
+            # ordinary verdict rather than replacing one. Only the TYPE is
+            # checked here (`contracts.py`'s schema engine has no `items`
+            # sub-schema for array elements, by design -- see that
+            # module's docstring); the actual shape/semantic lint is
+            # `plan_ingestion.lint_worker_split` below, deliberately the
+            # SAME three functions (`validate_proposal_shape`,
+            # `lint_proposal`, `lint_own_terminal_state`) `_parse_proposal`
+            # already runs for the planner's file-borne proposal, reused
+            # rather than re-derived (fact 16/#65's lesson) --
+            # `LoopSupervisor._apply_worker_proposed_tasks` (`engine/
+            # loop.py`) is the one call site. Restricted to a SPLIT of the
+            # task actually assigned this iteration (never unbounded new
+            # scope -- that is what the PRD and the peer plan gate exist to
+            # constrain instead), budgeted per approach
+            # (`JobConfig.worker_split_budget_per_approach`), and every
+            # accepted task is stamped `origin: "worker"` -- see
+            # `state.TASK_ORIGIN_WORKER`/`state.insert_worker_split_tasks`,
+            # the same "always stamp, never trust the caller" discipline
+            # `state.steer_task_insert` already applies for `origin:
+            # "steer"` (requirement I). A worker whose ONLY activity across
+            # three iterations is proposing splits still fails the
+            # 3-iteration stagnation guard -- proposing is deliberately
+            # excluded from what counts as "progress" there
+            # (`state.tasks_doc_excluding_new_entries`,
+            # `tests/test_worker_split_proposal.py`'s stagnation pin) --
+            # there is no escape hatch through this field, the same hazard
+            # v0.9 requirement H had to pin for "unsatisfiable" and pinned
+            # the same way.
+            "proposed_tasks": {"type": "array"},
         },
         "additionalProperties": False,
     },

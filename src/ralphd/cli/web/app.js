@@ -556,6 +556,14 @@ function isSteeringOrigin(t) {
   return !!(t && t.origin === "steer");
 }
 
+// Task 021 (PRD requirement N, #102): the sibling predicate for a task the
+// WORKER hat inserted through its own `proposed_tasks` split proposal
+// (`engine.state.TASK_ORIGIN_WORKER`) -- same reasoning as `isSteeringOrigin`
+// just above.
+function isWorkerOrigin(t) {
+  return !!(t && t.origin === "worker");
+}
+
 // The status as `engine.state.format_task_status` words it -- `failed
 // (validation-exhausted)`, or `pending (blocked by 004, 005)` -- so the pill,
 // the task dialog and `ralphctl tasks` say the same words about the same
@@ -565,6 +573,7 @@ function taskStatusText(doc, t) {
   const kind = taskFailureKind(doc, t);
   let text = kind ? status + " (" + kind + ")" : status;
   if (isSteeringOrigin(t)) text += " (steering-origin)";
+  if (isWorkerOrigin(t)) text += " (worker-origin)";
   const by = taskBlockedBy(doc, t);
   if (by) text += " (blocked by " + by.join(", ") + ")";
   return text;
@@ -574,6 +583,7 @@ function taskDialogText(t, doc) {
   const lines = [];
   lines.push("status: " + taskStatusText(doc, t));
   if (isSteeringOrigin(t)) lines.push("origin: steer");
+  if (isWorkerOrigin(t)) lines.push("origin: worker");
   if (t.priority != null) lines.push("priority: " + String(t.priority));
   if (Array.isArray(t.dependsOn) && t.dependsOn.length > 0) {
     lines.push("dependsOn: " + t.dependsOn.map(String).join(", "));
@@ -1981,12 +1991,13 @@ function renderTasks(el, tasks) {
     const kind = taskFailureKind(doc, t);
     const blockedBy = taskBlockedBy(doc, t);
     const steering = isSteeringOrigin(t);
+    const workerOrigin = isWorkerOrigin(t);
     tbody.appendChild(h("tr", {
       class: "task-row" + (blockedBy ? " task-row-blocked" : ""),
       "data-task-id": String(t.id == null ? "" : t.id),
       "data-failure-kind": String(kind || ""),
       "data-blocked": blockedBy ? blockedBy.join(",") : "",
-      "data-task-origin": steering ? "steer" : "",
+      "data-task-origin": steering ? "steer" : (workerOrigin ? "worker" : ""),
       role: "button",
       tabindex: "0",
       title: "show this task's success criteria",
@@ -2009,10 +2020,14 @@ function renderTasks(el, tasks) {
       // own pill too -- planner-proposed and steer-injected are otherwise
       // visually identical rows, which is exactly what this task exists to
       // stop.
+      //
+      // Task 021 (PRD requirement N, #102): the sibling pill for a task the
+      // worker split OUT of its own assignment mid-run.
       h("td", {}, [
         pill(t.status),
         ...(kind ? [" ", pill(kind)] : []),
         ...(steering ? [" ", pill("steering-origin")] : []),
+        ...(workerOrigin ? [" ", pill("worker-origin")] : []),
         ...(blockedBy ? [" ", pill("blocked by " + blockedBy.join(", "))] : []),
       ]),
       h("td", {}, [String(t.title || "")]),
