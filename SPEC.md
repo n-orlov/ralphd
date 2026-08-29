@@ -124,7 +124,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R2** | **Operator-initiated termination is never undone.** An `abort`/`stop` is recorded durably (`operator-termination.json` in the run dir) and is authoritative over every automatic mechanism: `classify_fault(operator_abort=...)` can never call it `"infra"`, the backoff wrapper never re-runs the iteration the operator just stopped, and `doctor --fix` never auto-resumes such a run. | Otherwise a `SIGINT` — which `pi` reports as the bare in-band error `aborted`, textually identical to a provider aborting a stream — reads as a transient fault, and the run the operator deliberately killed sits in backoff or comes back as a fresh container. |
 | **R3** | **The run directory on the host is the source of truth and outlives the container.** `~/.ralphd/runs/<run-id>/` is *always* a bind-mount (at `/run/ralphd`); `status.json`/`tasks.json` are written temp-then-rename; every host-side surface — `status`, `logs`, `runs`, the hub, `repair` — falls back to reading that directory when the API is unreachable, and says so (`"live": false`) rather than erroring. | Otherwise the container's death takes the run's observability with it: 29,720 lines of on-disk transcript with an empty log tail in the UI, `tasks: (none)` next to a 25 KB `tasks.json`, and every post-mortem done by hand in `output.jsonl`. |
 | **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down instead records `reflect: {ok: null, attempted, skipped}` — no attempt, no tombstone (§8.4). | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
-| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's `<promise>COMPLETE</promise>` gates entry to review and nothing else; the job succeeds only on the reviewer's own `{"verdict": "verified"}` contract report, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach, and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
+| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's whole-plan `"plan_complete"` verdict (retiring the `<promise>COMPLETE</promise>` marker, v0.14 requirement O) gates entry to review and nothing else; the job succeeds only on the reviewer's own `{"verdict": "verified"}` contract report, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach, and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
 | **R6** | **Secrets never reach disk or a transcript.** Credentials arrive as `<name>.env` files, are placed at `~/.creds/*.env` (mode `0600`) by the engine itself, and are never auto-exported into the agent's environment; only file *names* ever reach the run dir, the persisted job config, or a log line. On top of the prompt rule, redaction is **mechanical**: known secret values are scrubbed from `output.jsonl` at write time, from `events.jsonl` at emit time, and again as `GET /logs` serves. The redaction set is memory-only and no route returns it. | Otherwise one `cat` of a cred file, or one `docker inspect` of the engine container, writes a live token into host-visible history permanently — which prompt guidance alone demonstrably does not prevent. Persisting the redaction map to enable a second pass would put every secret on disk next to the transcript it protects, so that is forbidden too. |
 | **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, a cheap per-hat models table optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
 | **R8** | **The engine cannot be killed by the agent it supervises.** The job container carries `ralphd.role=job` alongside `ralphd.run=<run-id>`, siblings carry `ralphd.role=sibling`, and the container is told its own name via `RALPHD_SELF_CONTAINER_ID`. Every documented cleanup command — prompt, skill example, docs — is the two-filter, sibling-only form. | Otherwise the idiom ralphd itself teaches deletes the job container mid-iteration: that iteration's work and transcript are lost and the run dir is left non-terminal, which is exactly how a run becomes a zombie that `status` reports as healthy and still-running. |
@@ -538,6 +538,9 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/prompts/review.md` | Review phase: independently re-check every PRD requirement, re-verify criteria flagged as edited after a validation failure, report `{"verdict": "verified"}` or `{"verdict": "rejected", ...}` and write findings on rejection. Never fix anything. |
 | `src/ralphd/prompts/task-verify.md` | Vigilant-mode per-task verification against `successCriteria`, reporting through the `verify` response contract (task 118) instead of a `<task-verified>id</task-verified>` sentinel. |
 | `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else, reporting through the `reflect` response contract (task 121) instead of a bare `<promise>REFLECTED</promise>` sentinel. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
+| `src/ralphd/prompts/steer.md` | v0.14 requirement G (#98, task 009): the `steer` hat's prompt. Reshapes state (inserts/updates/deletes tasks, amends the standing rules) in response to unsettled operator steering; writes no code, holds absolute top priority over any pending/validation-failed task, and reports `{"settled": ..., "notes": ...}` -- never a claim about whether the tasks it touched will pass. Builtin-only, like `reflect.md`. |
+| `src/ralphd/prompts/plan_review.md` | v0.14 requirement K (#101, task 018): the opt-in (`peer_plan_review: false` by default) peer plan-review gate's prompt -- runs once after planning, before the worker touches a task, and either approves the fresh plan or objects with findings that route back into a bounded planning revision (`peer_plan_review_max_revisions`, default `2`). Builtin-only. |
+| `src/ralphd/prompts/verdict_gate.md` | v0.14 requirement L (#101, task 020): the opt-in (`peer_verdict_gate: false` by default), genuinely BLIND peer verdict gate's prompt -- runs once per approach after review's own `verified` verdict, handed only the finished work and the PRD, never the reviewer's reasoning or verdict, and either approves the run's exit or rejects it back into a new approach. Builtin-only. |
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
 | `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); per-hat model resolution (`model_for`, `MODEL_HATS`) and the retired-knob migration (`_migrate_legacy_model_config`, task 006). |
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
@@ -590,7 +593,7 @@ An iteration runs exactly one phase. There are five.
 | phase | prompt | given | must produce |
 |---|---|---|---|
 | `planning` | `planning.md` | PRD, workspace | a file-borne `plan-proposal.json` plus `{"proposal_path": ..., "summary": ..., "standing_rules": ...}` (task 120/107) -- the harness ingests the proposal into `tasks.json`, initialising every task to `pending`, and pins `standing_rules` (when supplied) as this run's own `standing-rules.md`, re-injected into `notes.md`'s `## Standing rules` block after every later iteration (§5.1) |
-| `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | `{"verdict": "complete", "task_id": ...}` for the task the harness assigned this iteration (task 116) -- `{"verdict": "complete"}` alone is refused; a `no_verdict`/`unsatisfiable` verdict, or nothing parseable, leaves the task's status untouched -- the harness alone applies the resulting move (`awaiting-validation`/`completed`), never the agent's own `tasks.json` write; `notes.md` refreshed; the narrower whole-plan `<promise>COMPLETE</promise>` only when every task the plan holds was ALREADY terminal before this iteration started (§4.3) |
+| `worker` | `worker.md` | `tasks.json`, `notes.md`, workspace | `{"verdict": "complete", "task_id": ...}` for the task the harness assigned this iteration (task 116) -- `{"verdict": "complete"}` alone is refused; a `no_verdict`/`unsatisfiable` verdict, or nothing parseable, leaves the task's status untouched -- the harness alone applies the resulting move (`awaiting-validation`/`completed`), never the agent's own `tasks.json` write; `notes.md` refreshed; the narrower whole-plan `{"verdict": "plan_complete"}` (v0.14 requirement O, #100, task 015 -- retiring the `<promise>COMPLETE</promise>` marker) only when no task was assigned this iteration and every task the plan holds was ALREADY terminal before it started (§4.3) |
 | `verify` | `task-verify.md` | one task's `id`/`title`/`successCriteria` | `{"task_id": {id}, "verdict": "verified"}`, or `{"task_id": {id}, "verdict": "rejected", "reason": ...}` -- the harness applies `validated`/`validation-failed`/`failed` and copies `reason` onto that task's `validationNotes` (task 118) |
 | `review` | `review.md` | PRD (composite when present), `tasks.json`, workspace | `{"verdict": "verified"}`, or `{"verdict": "rejected", "reason": ..., "findings_path": "review-findings.md"}` with `review-findings.md` listing every unmet requirement -- the harness applies `succeeded`/`verified` or archives the approach from this payload (task 119) |
 | `reflect` | `reflect.md` | the finished run's own records | `artifacts/reflection/report.md`, optionally `suggestions.diff`, plus `{"report_written": ..., "suggestions_written": ...}` (harness applies the `ok`/`error` verdict from this payload and the file check together, task 121) |
@@ -602,8 +605,8 @@ change how it ended. What runs next is decided from disk state, not from agent
 narration: `_resume_point()` skips `planning` when the run dir already holds a
 `tasks.json` with tasks and at least one completed iteration, continuing the
 existing approach's worker loop; `planning` that produces no tasks abandons the
-approach; the `worker` loop runs while budget remains, ending on
-`<promise>COMPLETE</promise>`, on a plan with nothing actionable left and at
+approach; the `worker` loop runs while budget remains, ending on an honoured
+`"plan_complete"` verdict (§4.3), on a plan with nothing actionable left and at
 least one `failed` task (§5.3), on three consecutive iterations that changed
 nothing, or on exhaustion; `review` then decides the run.
 
@@ -791,11 +794,16 @@ are recorded, with reasoning, in
 
 ### 4.3 Sentinels and completion
 
-One exact string still carries an agent claim scanned from the final assistant
-text of the iteration, not from tool output: `worker`'s whole-plan
-`<promise>COMPLETE</promise>` -- but only for the narrow case task 116 leaves
-it for (below). Every other claim, including the worker's PER-TASK one, is a
-structured JSON contract (task 116, task 118, task 119).
+Every worker/verify/review claim is a structured JSON contract
+(task 116, task 118, task 119). The whole-plan completion claim was the one
+exception -- a bare sentinel scanned from the final assistant text of the
+iteration rather than from tool output, `<promise>COMPLETE</promise>` --
+until v0.14 requirement O (#100, task 015) retired it: the literal marker,
+and the paragraph in `worker.md` that named the signal in prose ("the
+completion marker", so an agent explaining why it withheld it never had to
+reproduce the literal), are both gone from the prompt. What replaced it is
+below, folded into the SAME last-line JSON contract the per-task claim
+already used.
 
 **The worker's own per-task contract (task 116, #60 pillar 3, fact 9).**
 `_step_worker` runs `engine.scheduler.select_next_task()` itself and writes
@@ -813,12 +821,36 @@ through; `{"verdict": "unsatisfiable", "task_id": ..., "reason": ...}`
 a targeted replan of that one task while the approach continues; `{"verdict":
 "no_verdict"}` (still working, or nothing assigned) applies nothing and the
 worker loop simply continues. A last line that is not valid JSON, or valid
-JSON with no `verdict` key, leaves this whole mechanism untouched -- including
-the legacy whole-plan sentinel below, which never shares a code path with it.
+JSON with no `verdict` key, leaves this whole mechanism untouched.
 
-| sentinel | emitted by | meaning to the engine |
-|---|---|---|
-| `<promise>COMPLETE</promise>` | `worker` | every task is `completed`/`validated` (or justified `skipped`) ALREADY, before this iteration started; end the worker loop and run `review` |
+**The worker's own whole-plan contract (v0.14 requirement O, #100, task 015).**
+The SAME last line, when its `verdict` is `"plan_complete"`, is the
+whole-plan sibling of the per-task claim above -- a name distinct from the
+per-task `"complete"` so it can never read as a per-task claim. It is valid
+only when `assigned_task_id` is `None`: the harness had nothing to assign
+this iteration (`scheduler.select_next_task()` found no pickable task) --
+a worker handed real work this iteration has no business claiming the
+whole plan is done in the same breath; that claim belongs to `"complete"`
+alone. `_apply_worker_plan_complete_report()` then cross-checks it against
+`_outstanding_for_completion(tasks_doc)`, the IDENTICAL helper the retired
+marker's own `honoured_complete` cross-check used (below): any task not
+`completed`/`skipped`/`validated` refuses the claim, naming the outstanding
+tasks. Both refusals -- the wrong structural moment, or a plan that is not
+really finished -- reach `enforce_contract`'s re-ask ladder like every other
+malformed claim, so a badly-formed attempt is recoverable rather than
+reading as silent no-progress; the retired marker's equivalent miss only
+ever logged a warning and left the loop working. An accepted claim still
+emits `signal: "COMPLETE"` (surfaces and `IterationResult.saw_complete`
+below both still read it) and ends the worker loop into `review`, exactly as
+the retired marker did.
+
+`IterationResult.saw_complete` (`engine/runner.py`, still matched against the
+literal `<promise>COMPLETE</promise>` text) and `saw_verified` are both now
+purely operator-facing diagnostics -- "mentioned but did not end with it"
+(task 046, #55) for whichever of the two a reply's text happens to name,
+regardless of phase. Neither drives a decision any more: the whole-plan
+verdict above reads the JSON contract exclusively, exactly as review's own
+decision already did before this task.
 
 `verify`'s own claim is `{"task_id": ..., "verdict": "verified"|"rejected",
 "reason": ...}` (`transitions.HAT_SCHEMAS["verify"]`), validated against the task
@@ -829,12 +861,13 @@ claim is `{"verdict": "verified"|"rejected", "reason": ..., "findings_path":
 the harness decides `succeeded`/`verified` or archives the approach from this
 payload alone, never from the retired `<promise>VERIFIED</promise>` sentinel.
 
-`COMPLETE` is matched in `engine/runner.py` (`IterationResult.saw_complete`);
-the retired `VERIFIED` sentinel is still matched too (`saw_verified`), but
-only for the "mentioned but did not end with it" operator diagnostic (task
-046, #55) that runs for every iteration regardless of phase -- review's own
-decision reads the JSON contract exclusively. Each honoured COMPLETE/
-contract report emits a `signal` event. A `VERIFIED` signal is refused while
+`COMPLETE` is matched in `engine/runner.py` (`IterationResult.saw_complete`) as
+before, but see the diagnostic-only demotion just above: the retired `VERIFIED`
+sentinel is still matched too (`saw_verified`), for the same "mentioned but
+did not end with it" operator diagnostic (task 046, #55) that runs for every
+iteration regardless of phase -- both hats' own decisions read their JSON
+contract exclusively. Each honoured claim emits a `signal` event. A `VERIFIED`
+signal is refused while
 operator steering is still unconsumed (§4.6). The reflect prompt no longer ends on a bare sentinel; its own `reflect`
 contract claim (`{"report_written": ..., "suggestions_written": ...,
 "notes": ...}`, `transitions.HAT_SCHEMAS["reflect"]`) is read by
@@ -843,35 +876,42 @@ contract claim (`{"report_written": ..., "suggestions_written": ...,
 missing file and an absent/malformed/`report_written: false` contract are
 recorded as a failed reflection (`_reflect_failure()`, task 121).
 
-**A promise counts only as the last line, and only when the plan agrees.** Two
-rules, one string-level and one semantic, and the second is the load-bearing one.
+**A promise counted only as the last line, and only when the plan agreed --
+the design the retired `<promise>COMPLETE</promise>` marker followed, and
+which `"plan_complete"` above preserves in JSON form.** Two rules, one
+string-level and one semantic, and the second is the load-bearing one --
+load-bearing enough that it survived the marker's own retirement unchanged,
+just re-expressed as a contract cross-check instead of a warning-only miss.
 
-1. **Last non-blank line, stripped, equal to the marker** —
+1. **Last non-blank line, stripped, equal to the marker (historical: how the
+   retired sentinel was read)** --
    `runner.last_nonblank_line()`. A marker anywhere else in the message is
    **absent**, and the engine emits a `log` warning saying it was mentioned but
    not ended with, so failing closed never looks like an unexplained
    non-conclusion. This is deliberately not an "on its own line anywhere"
    (`MULTILINE ^…$`) match: an agent quoting the protocol in a fenced block, or
    echoing a `notes.md` section documenting it, legitimately puts the marker on a
-   line of its own. `worker.md` asks for exactly this shape for its own
-   sentinel ("end your reply with this exact line") and names the signal in
-   prose -- "the completion marker" -- so an agent explaining why it is
-   withholding it never has to reproduce the literal to do it. `review.md`
-   has no sentinel of its own to defend this way any more: a malformed JSON
+   line of its own. `review.md`
+   has no sentinel of its own to defend this way either: a malformed JSON
    payload simply is not the last line's valid JSON, so the same defence
    falls out of requiring the LAST line to parse as the contract, with no
-   separate naming convention needed.
-2. **A COMPLETE is cross-checked against `tasks.json` before it is honoured.**
+   separate naming convention needed -- exactly the shape `"plan_complete"`
+   now uses too, since it is JSON rather than a bare string.
+2. **A whole-plan completion is cross-checked against `tasks.json` before it is
+   honoured.**
    `_outstanding_for_completion()` lists every task that is not `completed` or
    `skipped` (`state.TASK_COMPLETION_STATUSES`, `task_blocks_completion()`) in
-   the plan the worker loop has just re-read; if any exist the signal is refused,
-   a `log` warning names the outstanding count and the first ids, and the loop
-   keeps working. This is strictly stronger than any string assertion because it
-   does not depend on how the marker was formatted, and it is checked against the
-   plan on disk rather than the agent's narration (§4.1's rule). An empty or
-   unreadable plan is not refused — review is the gate there (§5.3).
+   the plan the worker loop has just re-read; if any exist the claim is refused,
+   a `log` warning names the outstanding count and the first ids, and (for the
+   retired marker) the loop kept working, or (for `"plan_complete"` today) the
+   contract's re-ask ladder engages. This is strictly stronger than any string
+   assertion because it does not depend on how the marker was formatted, and it
+   is checked against the plan on disk rather than the agent's narration (§4.1's
+   rule). An empty or unreadable plan is not refused — review is the gate there
+   (§5.3).
 
-Both rules exist because of a live near-miss: a worker that obeyed the contract
+Both rules exist because of a live near-miss, back when the claim was still the
+bare marker: a worker that obeyed the contract
 perfectly ended its reply with "36 tasks are still pending, so I will not emit
 `<promise>COMPLETE</promise>`", the substring match read that explanation as the
 signal, and the run left the worker loop with 36 tasks pending. Only the reviewer
@@ -1293,6 +1333,9 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `health` | string | `ok` \| `degraded` — degraded while sitting out an infra outage |
 | `infraWait` | object \| null | the backoff wait in progress: `since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`; `null` whenever nothing is being waited on |
 | `infraWaitTotalS` | float | cumulative seconds this run spent in infra backoff waits |
+| `pausedTotalS` | float | cumulative seconds credited back for operator pauses (v0.14 requirement P, #95, task 016) -- the pause twin of `infraWaitTotalS` above, published beside it; absent (read as `0`) for a run that has never been paused, and seeded from `status.json` at startup so it survives `resume` |
+| `planReviewRevisions` | object | `{"<approach>": <count>}` -- per-approach peer plan-review revision counter (v0.14 requirement K, #101, task 018); absent for a run with `peer_plan_review: false` (the default) or one whose plan was never objected to |
+| `workerSplitProposals` | object | `{"<approach>": <count>}` -- per-approach running total of tasks an accepted worker `proposed_tasks` split proposal has inserted (v0.14 requirement N, #102, task 021); compared against `worker_split_budget_per_approach` (default `3`) before a further proposal is accepted; absent for a run that has never had one accepted |
 | `phase` | string \| null | the phase running now; `null` between phases and once terminal |
 | `iteration` | int | the current (raw) iteration number |
 | `iterationsUsed` | int | charged iterations: raw attempts minus infra and steer refunds (task 014, #98) |
@@ -1310,7 +1353,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
 | `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
-| `steerSettled` | object \| null | the most recent `steer` hat iteration's own `settled` claim: `{settled, at, notes}`; `null` until the first `steer` iteration runs. `settled` is a harness-observable fact SEPARATE from `done` (task 013, requirement I, #98) -- it means only "the hat processed this iteration's pending steering message(s) and applied its changes to the plan", never a claim about whether the tasks it inserted or changed will pass. That verdict is read off those tasks' own `status` plus their `origin: "steer"` marker (§ steering-origin tasks, task 011) -- the exit gate (R11 below) waits on THAT, never on this field |
+| `steerSettled` | object \| null | the most recent `steer` hat iteration's own `settled` claim: `{settled, at, notes}`; `null` until the first `steer` iteration runs. `settled` is a harness-observable fact SEPARATE from `done` (task 013, requirement I, #98) -- it means only "the hat processed this iteration's pending steering message(s) and applied its changes to the plan", never a claim about whether the tasks it inserted or changed will pass. That verdict is read off those tasks' own `status` plus their `origin: "steer"` marker (`tasks[].origin`, §5.3) -- the exit gate (R11 below) waits on THAT, never on this field |
 | `deadlineBeatVerdict` | object \| absent | present only on a `failed`/`unverified` terminal write where every task was done, `COMPLETE` was already honoured, and review never rendered a verdict because the deadline took the last attempt (v0.10 requirement B, #72): `{deadline, completeHonouredAt}`, naming the wall-clock deadline and the `ts` of the honoured `COMPLETE` event -- see §4.2 |
 | `onComplete` | string | `exit` \| `idle` |
 | `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
@@ -1442,6 +1485,7 @@ its own bookkeeping fields to it.
 | `tasks[].tier` | string | optional, planner-annotated (task 013): one of `trivial`\|`normal`\|`hard` (§4.7); a missing or unrecognised value is normalised to `normal` at ingestion time, once, with a warning -- never left for a reader to default |
 | `tasks[].effectiveTier` | string | engine-written (§4.7): this task's CURRENT tier, claimed equal to `tier` on first claim, escalated one rung per `validation-failed` re-claim, never de-escalated; absent on a task never yet claimed |
 | `tasks[].tierLadderExhausted` | bool | engine-written, sticky (§4.7): set the moment a validation verdict comes back negative while `effectiveTier` is already `hard` -- there is nowhere left to escalate to |
+| `tasks[].origin` | string | absent (planner-authored, the ordinary case) \| `"steer"` \| `"worker"` -- engine-written the instant a task is inserted OUTSIDE ordinary planning, never by the agent itself: `"steer"` (`TASK_ORIGIN_STEER`) the moment the `steer` hat's own edit inserts one (v0.14 requirement I, #98, task 013), `"worker"` (`TASK_ORIGIN_WORKER`) the moment an accepted `proposed_tasks` split proposal inserts one (v0.14 requirement N, #102, task 021). `state.is_steering_origin()`/`is_worker_origin()` are the one-place readers every surface that marks such a task (`format_task_status`, the CLI table, the hub row/dialog) calls, so an injected task is never indistinguishable from one the planner reasoned about. A worker-origin task also carries `tasks[].splitFrom`, the id of the task it was split out of. |
 
 The worker picks the first `validation-failed` task, else the first
 `in-progress` one, else the first `pending` task whose `dependsOn` are all
@@ -1476,7 +1520,8 @@ assigned task to `awaiting-validation`/`completed`; `verify`'s applied
 `validated`/`validation-failed`/`failed` already went through it from task
 019 itself (verify never had a separate, legacy write path to retire). The
 only claim left outside this table is the whole-plan
-`<promise>COMPLETE</promise>` sentinel (§4.3), which ends the worker loop
+`"plan_complete"` verdict (§4.3, retiring the `<promise>COMPLETE</promise>`
+sentinel, v0.14 requirement O), which ends the worker loop
 rather than moving any one task's status and so has nothing in
 `TASK_STATUS_TABLE` to route through.
 
@@ -1502,8 +1547,8 @@ so a garbled label can neither crash a reader nor invent a third meaning.
 
 **Why the vocabulary is load-bearing: a `failed` task used to be able to strand a
 whole run.** `worker.md`'s completion signal recognises only `completed` and
-`skipped`, so with a `failed` task in the plan no `<promise>COMPLETE</promise>` is
-ever legitimate — and from task 046 (#55) the engine refuses one rather than
+`skipped`, so with a `failed` task in the plan the whole-plan claim (§4.3) is
+never legitimate — and from task 046 (#55) the engine refuses one rather than
 taking the worker's word for it (§4.3) — the run never reaches `review`, and the
 stagnation guard
 eventually replans the wave against an already-finished repo — the `043d`
@@ -1517,6 +1562,28 @@ a plan with nothing actionable left in it, and the worker loop routes to `review
 — entry to review only, the reviewer still decides the verdict — instead of
 stagnating. Both kinds of `failed` route, because both block the worker's
 signal identically and the reviewer is the right judge of either.
+
+**A doomed plan gets the same routing, one hop earlier (v0.14, requirement D, #99).**
+`_unresolved_failures()` just above is itself dependency-blind: `state.task_is_actionable()`
+reads `status in ("pending", "in-progress", "validation-failed")` with no regard for
+`dependsOn`, so a `pending` task whose own dependency chain is dead (unsatisfiable per
+`state.task_blocked_by()`'s doomed-set fixpoint) still reads as actionable — the routing
+above never fires, the plan starves through three no-progress worker iterations, and it
+lands on `stagnation_exhausted` (§5.3) with the wrong cause recorded: the plan did not
+stagnate, it became unreachable. `LoopSupervisor._doomed_plan_fault()`, checked from the
+same worker-dispatch site the routing above lives at and BEFORE any worker iteration for
+the pass is dispatched, asks a narrower question than `blocked_by` alone: does the doomed
+set cover the ENTIRE actionable remainder, not merely a subset? A doomed subset with real
+work left is untouched by this — the ordinary per-task blocked-notes/stagnation machinery
+still governs exactly as before this requirement. When it does cover the whole remainder,
+the loop emits a `log` event (`level: error`) carrying `doomedTaskIds` (the full doomed
+set, not only its actionable subset), `deadAncestorIds` (every `failed`/`skipped` task
+reachable by walking `dependsOn` back from a doomed task — the actual dead root cause,
+as opposed to `blocked_by`'s own per-task lists, which stop at the first doomed hop) and
+`planUnverifiable: true`, then takes the declared `doomed_plan_unverifiable` edge straight
+to `review` for a verdict — reusing the mechanism just above rather than a
+dependency-graph replan or a terminal degraded state, because a doomed plan is exactly
+the "work with a hole" shape `blocked_with_failures` already hands a reviewer.
 
 **The vocabulary stays eight terms (v0.14, requirement F, #99 suggestion 3, #51).**
 #99's third suggestion was a status that satisfies dependents while recording a
@@ -2730,6 +2797,21 @@ exactly the seconds waited, adds them to `infraWaitTotalS`, and emits
 adjustment. One number drives the episode clock, `infraWaitTotalS` and the
 deadline extension, so the three can never disagree. `infraWaitTotalS` is
 seeded from `status.json` at startup and therefore survives `resume`.
+
+**An operator pause must not eat the job's working time either (v0.14, requirement P,
+#95).** `self.deadline`/`deadlineAt` used to be fixed at construction, so a run paused near
+its deadline burned `job_timeout_s` doing no work — and once the deadline fell behind the
+run, every remaining iteration got only the 60-second floor
+(`min(cfg.iteration_timeout_s, max(60, int(deadline - now)))`). `_account_paused_wait()` is
+the pause twin of `_account_infra_wait()` just above, sharing its deadline arithmetic
+(`_extend_deadline_by`) but its own running total, `pausedTotalS` (published beside
+`infraWaitTotalS`), and its own `deadline_extended` `reason` (`"operator pause"`, never
+`"infra wait"`), so an operator reading the event log can tell the two credits apart
+without cross-referencing anything else. The amount booked is measured at the wait site
+itself — `_gate()`, via `_park_until_resumed()` — never in `pause()`/`resume()`: a pause
+requested while an iteration is still running credits only the time the loop was actually
+parked. `pausedTotalS` is seeded from `status.json` at startup, the same way
+`infraWaitTotalS` is, and therefore survives `resume`.
 
 The degraded status contract is two fields, not a new state. **`state` stays
 `running` throughout an outage**, because adding a `degraded` state value

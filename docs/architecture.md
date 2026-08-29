@@ -37,8 +37,8 @@ The loop has three phase types drawing on one shared **iteration budget**
 job start
   └─ approach 1..max_approaches (shared budget):
        ├─ PLANNING   (1 iteration)  read PRD → write tasks.json + notes.md
-       ├─ WORKER     (n iterations) execute tasks one at a time until it
-       │                            emits <promise>COMPLETE</promise>
+       ├─ WORKER     (n iterations) execute tasks one at a time until a
+       │                            "plan_complete" verdict is honoured
        │    └─ [vigilant mode] VERIFY after each newly completed task;
        │                       failure ⇒ status=validation-failed, back to worker
        └─ REVIEW     (1 iteration)  independently re-check EVERY PRD requirement
@@ -68,16 +68,17 @@ Design invariants:
   writes are not atomic — which is why every reader goes through one hardened
   read path (§3, "Reading `tasks.json`: unknown is not zero") instead of
   assuming it can never catch a half-written file.
-- **`COMPLETE` is an exact sentinel** (`<promise>COMPLETE</promise>`) scanned from
-  the agent's final output; `verify` and `review` each report through a
-  structured JSON contract instead (task 118, task 119, SPEC §4.3). The promise
-  marker itself must count **only as the final
-  non-blank line** of that output, so an agent quoting the protocol — or
-  explaining why it is *withholding* the signal — cannot accidentally emit it;
-  mentioning one anywhere else is logged as "mentioned but did not end with it".
-  And a `COMPLETE` is honoured only after the engine has cross-checked the plan it
-  just re-read: any task not `completed`/`skipped` refuses it and the worker loop
-  keeps going (SPEC §4.3). Narration never decides; the record does.
+- **The whole-plan claim is a contract verdict, not a bare sentinel** (v0.14
+  requirement O, #100 -- the retired `<promise>COMPLETE</promise>` marker's
+  successor). `worker`'s reply is parsed the same JSON-contract way `verify`
+  and `review` already report through (task 118, task 119, SPEC §4.3); a
+  `"plan_complete"` verdict is valid only when no task was assigned this
+  iteration, and is honoured only after the engine has cross-checked the plan
+  it just re-read: any task not `completed`/`skipped` refuses it and the claim
+  reaches the contract's re-ask ladder rather than reading as silent
+  no-progress (SPEC §4.3). Narration never decides; the record does. The
+  literal marker text is still matched by `IterationResult.saw_complete` for
+  an operator diagnostic only -- it drives no decision any more.
 - **One task per worker iteration.** Checkpointing, steering application, and
   vigilant verification all key off iteration boundaries; a worker that batches
   several tasks into one iteration silently bypasses all three. The worker
@@ -382,7 +383,7 @@ exhausted), so an old plan still reads correctly.
 
 The vocabulary matters because of what a `failed` task used to do to a run:
 `worker.md`'s completion signal recognises only `completed` and `skipped`, so no
-`<promise>COMPLETE</promise>` was ever legitimate again, the run never reached
+whole-plan completion claim was ever legitimate again, the run never reached
 review, and the stagnation guard eventually replanned the wave against a
 finished repo -- escapable only by an operator hand-editing `tasks.json`. The
 worker gets exactly one iteration to apply one of its two honest resolutions
@@ -392,7 +393,10 @@ counter); a worker that changes nothing hands the run to review instead:
 `LoopSupervisor._unresolved_failures()` reports the `failed` tasks of a plan with
 no actionable task left (`state.TASK_ACTIONABLE_STATUSES`), the loop emits a
 warning `log` event naming them and their kinds, and enters `review`. Entry only
--- the reviewer still decides whether the run succeeded.
+-- the reviewer still decides whether the run succeeded. A doomed *dependency*
+chain gets the same routing one hop earlier, when it covers the entire
+actionable remainder rather than leaving `_unresolved_failures()` anything to
+find (v0.14 requirement D, #99, `doomed_plan_unverifiable` in the table below).
 
 Every surface that *counts* task statuses reports both meanings (task 025, #33)
 without learning a sixth status: `state.task_counts()` keeps counting both kinds
