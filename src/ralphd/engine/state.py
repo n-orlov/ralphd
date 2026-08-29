@@ -3707,7 +3707,7 @@ def artifact_text(entry: dict) -> str:
 # without reading a raw NDJSON transcript by hand and cross-referencing
 # `transitions.TABLE` themselves.
 #
-# `LoopSupervisor._step_generic_hat` writes one JSON line to
+# `LoopSupervisor._route_with_router` writes one JSON line to
 # `artifacts/router/decisions.jsonl` per COMPLETED router decision (not per
 # `_ask_router` attempt -- a decision that took three attempts before it
 # fell back is still one entry, with `attempts: 3`), through
@@ -3716,21 +3716,22 @@ def artifact_text(entry: dict) -> str:
 # `artifact_entries`/`cost_breakdown` are read-only shapings of files the
 # engine writes elsewhere.
 #
-# `ROUTER_FALLBACK` is `{}` by design (transitions.py:310-323) and no shipped
-# state has more than one hand-decided legal edge today, so this file is
-# empty for every real run that has ever shipped -- see
-# `artifacts/reports/router-calls-surface.md` for that claim's evidence.
-# This surface exists anyway, ahead of any real router-ambiguous hat, so a
-# future one (a v0.12 peer gate, per the PRD) arrives observable from day
-# one instead of needing its own follow-up task.
+# Task 019 (requirement M): `ROUTER_FALLBACK` now has exactly ONE real entry
+# (`plan_review`, the opt-in peer gate's own multi-edge state), so this file
+# is still empty for every run that leaves that gate off -- which is every
+# default run -- and non-empty only when an enabled gate got a reply it
+# could not decide from. See `artifacts/reports/router-calls-surface.md` for
+# the pre-gate claim's evidence.
 
 # `artifacts/router/decisions.jsonl`'s own filename, spelled once.
 ROUTER_DECISIONS_FILENAME = "decisions.jsonl"
 
 NO_ROUTER_CALLS = (
-    "(no router calls this run -- transitions.ROUTER_FALLBACK is {} by "
-    "design, so no shipped state has ever reached a genuine multi-edge "
-    "choice; see artifacts/reports/router-calls-surface.md)"
+    "(no router calls this run -- every state this run reached decided its "
+    "own edge deterministically; the only router-ambiguous state shipped "
+    "today is the opt-in peer plan-review gate's own `plan_review`, and it "
+    "asks the router only for a reply it cannot decide from; see "
+    "artifacts/reports/router-calls-surface.md)"
 )
 
 # Said on EVERY entry, not just in a header: a router call must never be
@@ -5022,10 +5023,11 @@ class RunDir:
     def record_router_decision(self, record: dict) -> None:
         """Append one COMPLETED router decision to
         `artifacts/router/decisions.jsonl` -- the ONE write path this file
-        ever gets, called exactly once by `LoopSupervisor._step_generic_hat`
-        right after `router.decide()` returns (never per `_ask_router`
-        attempt: a decision that took several attempts is still one line,
-        carrying its own `attempts` count).
+        ever gets, called exactly once by
+        `LoopSupervisor._route_with_router` right after `router.decide()`
+        returns (never per `_ask_router` attempt: a decision that took
+        several attempts is still one line, carrying its own `attempts`
+        count).
 
         Deliberately a plain append, not `self.emit()`: this is a second,
         purpose-built stream living beside the router's own transcripts

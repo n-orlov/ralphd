@@ -437,11 +437,13 @@ HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect",
 # transition, or an obvious next pending task. Only a genuine choice reaches
 # a model." Every hand-written `_step_*` method (planning/worker/review/
 # replan) computes its own guard directly from disk state and NEVER reaches
-# the router, whatever this dict says -- `ROUTER_FALLBACK` only matters to
-# `engine.loop._step_generic_hat` (task 015's one shipped fallback for any
-# OTHER state the table names), and then only when that state has more than
-# one legal edge (task 015 shipped only the single-edge case; task 018 is
-# what makes a multi-edge one work, via `engine.router`).
+# the router, whatever this dict says -- `ROUTER_FALLBACK` matters to
+# `engine.loop._route_with_router`, the ONE production router call site
+# (reached from `_step_generic_hat`, task 015's shipped fallback for any
+# OTHER state the table names, and from `_step_plan_review`, task 019's
+# first real one), and then only when that state has more than one legal
+# edge (task 015 shipped only the single-edge case; task 018 is what makes
+# a multi-edge one work, via `engine.router`).
 #
 # "Say in the table what that fallback is for each ambiguous state"
 # (requirement E's acceptance): a state that can reach the router MUST name,
@@ -455,19 +457,21 @@ HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect",
 # `plan_review` (task 018, requirement K, #101) is the first genuinely
 # multi-edge hat this table declares (three edges in
 # `PEER_PLAN_REVIEW_DELTA` above: approved, objected-revision, revision-
-# bound-reached). `_step_plan_review` (loop.py) still decides its own
-# guard deterministically from the hat's own `verdict` field in every
-# SHIPPED run -- exactly like `_step_worker`/`_step_review` do for theirs
-# -- so this entry is not yet reached by the production dispatch loop
-# (that cutover, if it ever happens, is a separate decision from simply
-# proving the mechanism works on a real hat's real edges). What changes
-# here is that `plan_review` is no longer a state a hypothetical FUTURE
-# router-mediated cutover would have to stop and design a fallback for --
-# it already has one, declared beside its table entry, and
-# `tests/test_router.py`'s live-path tests below exercise
+# bound-reached), and the first state to reach `engine.router.decide()` in
+# PRODUCTION. `_step_plan_review` (loop.py) still decides its own guard
+# deterministically from the hat's own `verdict` field whenever that
+# verdict is decidable -- exactly like `_step_worker`/`_step_review` do for
+# theirs -- but an UNDECIDABLE reply (absent/malformed/schema-invalid, or
+# `objected` with no reason) with a revision still available is a genuine
+# choice between two different targets, and that case now asks the router
+# instead of inventing a verdict the peer never gave. When the router's
+# own budget is spent, THIS entry is what the run takes.
+# `tests/test_router.py`'s live-path tests exercise
 # `engine.router.decide()` against these exact edges (via
 # `transitions.successors("plan_review", ..., peer_plan_review=True)`),
-# never the task-015/018 synthetic fixture states.
+# never the task-015/018 synthetic fixture states, and
+# `tests/test_peer_plan_review_gate.py` drives the same edges through a
+# real `LoopSupervisor` run.
 #
 # The guard chosen, `plan_review_revision_bound_reached`, targets `worker`
 # -- the SAME target `plan_review_approved` already names. Rationale: if

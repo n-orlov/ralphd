@@ -5061,10 +5061,12 @@ def cmd_artifacts(args):
 
 def cmd_router(args):
     """This run's router calls (task 022, P, #80): `ls` lists every
-    decision the router made -- most shipped runs have none, since
-    `transitions.ROUTER_FALLBACK` is `{}` by design and every real hat
-    today decides its own edge without ever reaching `engine.router` --
-    `show <index>` prints one decision's full header block.
+    decision the router made -- most runs have none, since the only
+    router-ambiguous state shipped today is the opt-in peer plan-review
+    gate's `plan_review` (`transitions.ROUTER_FALLBACK`'s one real entry,
+    task 019) and every other hat decides its own edge without ever
+    reaching `engine.router` -- `show <index>` prints one decision's full
+    header block.
 
     Purely on-disk, like `ralphctl artifacts`: `state.router_call_entries`
     reads `artifacts/router/decisions.jsonl`, the engine's own append-only

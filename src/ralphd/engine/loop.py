@@ -2831,13 +2831,18 @@ class LoopSupervisor:
                     outcome = await self._step_review()
                 elif step == "plan_review":
                     # Task 018 (requirement K, #101): a dedicated handler,
-                    # NOT the generic `_step_generic_hat`/router.decide()
-                    # fallback below -- this hat picks its own outgoing
-                    # edge deterministically from its own `verdict` field,
-                    # exactly like `_step_worker`/`_step_review` already do
-                    # for theirs. The first hat to genuinely need
-                    # `router.decide()` in production is task 019's
-                    # business (requirement M), not this one's.
+                    # NOT the generic `_step_generic_hat` fallback below --
+                    # this hat picks its own outgoing edge deterministically
+                    # from its own `verdict` field whenever that verdict IS
+                    # decidable, exactly like `_step_worker`/`_step_review`
+                    # already do for theirs. Task 019 (requirement M) is
+                    # what makes this the FIRST state to reach
+                    # `router.decide()` in PRODUCTION: `_step_plan_review`
+                    # itself calls the shared router call site
+                    # (`_route_with_router`) for the one case its own
+                    # verdict cannot decide -- an unusable peer reply with
+                    # revisions still available -- rather than inventing a
+                    # verdict the peer never gave.
                     outcome = await self._step_plan_review()
                 else:
                     # Task 015 (requirement B): any OTHER state the table
@@ -3139,21 +3144,64 @@ class LoopSupervisor:
             self._advance(state, edge.target, edge.guard)
             return ("advance", edge.target, edge.guard)
         # Task 018: a genuine choice -- the router's one constrained
-        # question, validated against both the table's legal transitions
-        # and its own schema (engine.router.ROUTER_SCHEMA), re-prompted on
-        # an invalid answer, and falling back to the state's OWN declared
-        # deterministic choice (never an illegal transition) after
-        # `contract_retry_max` extra attempts or a hung call.
+        # question. Task 019 (requirement M) moved the call itself into
+        # `_route_with_router` below so this generic dispatcher and
+        # `_step_plan_review` (the first PRODUCTION router caller) share
+        # ONE call site rather than two copies of the decide/log/record
+        # sequence.
+        target, guard, _outcome = await self._route_with_router(state, edges)
+        self._advance(state, target, guard)
+        return ("advance", target, guard)
+
+    async def _route_with_router(
+            self, state: str, edges: tuple, *,
+            peer_plan_review: bool = False,
+            guard_for_target=None) -> tuple:
+        """The ONE place `engine.router.decide()` is called in production
+        (task 018, requirement E; widened to a real state by task 019,
+        requirement M). Returns `(target, guard, outcome)`; the caller does
+        its own `_advance`, because what a state does BESIDE taking the
+        edge (spending a plan-review revision, say) is the caller's
+        business, not this method's.
+
+        The answer is validated against both the table's legal transitions
+        and the router's own schema (`engine.router.ROUTER_SCHEMA`),
+        re-prompted on an invalid answer, and falls back to the state's OWN
+        declared `transitions.ROUTER_FALLBACK` guard (never an illegal
+        transition) after `contract_retry_max` extra attempts or a hung
+        call.
+
+        `peer_plan_review` selects the caller's table variant on the peer
+        gate's axis, so `plan_review`'s real edges are resolved by
+        `transitions.successors` itself rather than being passed in as a
+        hand-written list.
+
+        `guard_for_target` exists because the router answers with a TARGET
+        STATE, and a state may declare two edges to the SAME target under
+        different guards (`plan_review` -> `worker` is both
+        `plan_review_approved` and `plan_review_revision_bound_reached`).
+        Where that is so, only the caller knows which guard truthfully
+        describes the move -- `_step_plan_review` maps `worker` to the
+        exhaustion guard, never to `plan_review_approved`, because nothing
+        approved the plan when the router had to be asked at all. The
+        recorded decision carries the caller-resolved guard, so
+        `artifacts/router/decisions.jsonl` can never disagree with the edge
+        the run actually took.
+        """
         router_calls_before = self._router_calls
         outcome = await router.decide(
             state, self.cfg.vigilant, ask=self._ask_router,
             fallback_guard=transitions.fallback_guard(state),
             retry_max=self.cfg.contract_retry_max,
-            timeout_s=self.cfg.router_timeout_s)
+            timeout_s=self.cfg.router_timeout_s,
+            peer_plan_review=peer_plan_review)
+        guard = outcome.guard
+        if guard_for_target is not None:
+            guard = guard_for_target(outcome.target)
         self.run.emit(
             "log", level=("warning" if outcome.used_fallback else "info"),
             message=(f"router selected {state!r} -> {outcome.target!r} "
-                     f"(guard={outcome.guard!r}, attempts={outcome.attempts}"
+                     f"(guard={guard!r}, attempts={outcome.attempts}"
                      + (", FELL BACK to the declared deterministic choice "
                         "after exhausting the router's retry budget"
                         if outcome.used_fallback else "") + ")"))
@@ -3170,7 +3218,7 @@ class LoopSupervisor:
             "candidateEdges": [{"target": e.target, "guard": e.guard}
                                for e in edges],
             "chosenTarget": outcome.target,
-            "chosenGuard": outcome.guard,
+            "chosenGuard": guard,
             "usedRouter": outcome.used_router,
             "usedFallback": outcome.used_fallback,
             "fallbackGuard": transitions.fallback_guard(state),
@@ -3180,8 +3228,7 @@ class LoopSupervisor:
             "transcripts": [f"{n:04d}.jsonl" for n in
                             range(router_calls_before + 1, self._router_calls + 1)],
         })
-        self._advance(state, outcome.target, outcome.guard)
-        return ("advance", outcome.target, outcome.guard)
+        return (outcome.target, guard, outcome)
 
     def _apply_reported_task_status(self, payload: dict) -> list[str]:
         """Task 019 (requirement F): validate and (if legal) apply one
@@ -3706,16 +3753,14 @@ class LoopSupervisor:
         (`transitions.HAT_SCHEMAS["plan_review"]`) exactly the way
         `_review_verdict` parses review's own: an absent/malformed payload,
         a schema violation, or an `objected` verdict with no `reason`
-        (`transitions.plan_review_report_errors`) is treated as an
-        implicit `objected` verdict -- the same safe default
-        `_review_verdict` already applies to a malformed review reply --
-        never a run-ending contract violation.
+        (`transitions.plan_review_report_errors`) is never a run-ending
+        contract violation -- it is an UNDECIDABLE reply, routed as
+        described below.
 
-        `approved` (real or implicit-through-malformed, per above) ->
-        `worker` (`plan_review_approved`). An `objected` verdict with
-        revisions still available for THIS approach
-        (`self.cfg.peer_plan_review_max_revisions`, an explicit NUMBER,
-        checked against status.json's persisted
+        `approved` (real, per above) -> `worker` (`plan_review_approved`).
+        An `objected` verdict with revisions still available for THIS
+        approach (`self.cfg.peer_plan_review_max_revisions`, an explicit
+        NUMBER, checked against status.json's persisted
         `planReviewRevisions[str(approach)]` count -- disk, not an
         in-memory-only counter, so it survives a resumed process exactly
         the way `_record_stagnation_signature`'s `blockerSignatures` map
@@ -3726,6 +3771,31 @@ class LoopSupervisor:
         objected verdict instead falls through to `worker` anyway
         (`plan_review_revision_bound_reached`) -- fail OPEN on a bounded
         gate, never a deadlocked or faulted run.
+
+        Task 019 (requirement M): an absent/malformed/schema-invalid reply,
+        or an `objected` verdict with no reason
+        (`transitions.plan_review_report_errors`), is the one case this
+        handler CANNOT decide from disk state alone -- the peer named no
+        verdict at all. Task 018 answered it by inventing one ("treated as
+        an implicit objection"); this task instead asks the harness's own
+        constrained question, `router.decide()` through
+        `_route_with_router`, over `plan_review`'s REAL edges
+        (`peer_plan_review=True`). This is the router's first production
+        call site in any shipped run. Two properties hold by construction:
+
+        * Deterministic-first is untouched. A decidable verdict
+          (`approved`, or `objected` with a reason) never reaches the
+          router at all, and neither does an undecidable one once the
+          revision bound is spent -- with no revision left, `planning` is
+          not a move this gate may make, so there is no genuine choice to
+          ask about and `plan_review_revision_bound_reached` is taken
+          deterministically.
+        * A router-resolved move to `worker` is recorded under
+          `plan_review_revision_bound_reached`, NEVER
+          `plan_review_approved` (both edges name `worker`): nothing
+          approved this plan, so the honest guard is the exhaustion one --
+          which is also `transitions.ROUTER_FALLBACK["plan_review"]`, the
+          edge taken when the router itself cannot answer.
         """
         approach = self._approach
         if not self.budget_left():
@@ -3750,13 +3820,39 @@ class LoopSupervisor:
         revisions = dict(
             self.run.read_status().get("planReviewRevisions") or {})
         used = int(revisions.get(str(approach), 0))
-        if used < self.cfg.peer_plan_review_max_revisions:
+        revision_available = used < self.cfg.peer_plan_review_max_revisions
+
+        def spend_revision(objection: str) -> tuple:
             revisions[str(approach)] = used + 1
             self.run.update_status(planReviewRevisions=revisions)
-            self._pending_plan_review_objection = (
-                reason or "plan review objected with no reason given")
+            self._pending_plan_review_objection = objection
             return ("advance", "planning",
                     "plan_review_objected_revision_available")
+
+        if payload is None and revision_available:
+            # Task 019 (requirement M): the router's first production call.
+            # The peer named no usable verdict, so this handler has a
+            # genuine choice between two DIFFERENT targets and no disk fact
+            # that picks one -- exactly what `engine.router` exists for.
+            edges = transitions.successors("plan_review", self.cfg.vigilant,
+                                           True)
+            target, guard, _outcome = await self._route_with_router(
+                "plan_review", edges, peer_plan_review=True,
+                guard_for_target=lambda t: (
+                    "plan_review_objected_revision_available"
+                    if t == "planning"
+                    else "plan_review_revision_bound_reached"))
+            if target == "planning":
+                return spend_revision(
+                    "the plan review hat's reply was unusable (no valid "
+                    "verdict payload); the router routed the plan back for "
+                    "one revision -- re-state the plan so a peer can judge "
+                    "it")
+            return ("advance", "worker", guard)
+
+        if revision_available:
+            return spend_revision(
+                reason or "plan review objected with no reason given")
         return ("advance", "worker", "plan_review_revision_bound_reached")
 
     def _step_replan(self) -> tuple:

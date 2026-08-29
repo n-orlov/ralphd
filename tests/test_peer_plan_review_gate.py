@@ -26,6 +26,14 @@ Two layers, both exercised here:
    `tests/test_steering_priority_routing_task012.py` uses -- proving the
    approval path, the objection-then-revision path, the revision-bound
    fail-open path, and the off-by-default byte-identical table.
+
+Task 019 (requirement M) adds a third thing this file proves: `plan_review`
+is the first state to reach `engine.router.decide()` in PRODUCTION. A reply
+that states no usable verdict is routed by the LIVE router (only the model
+call, `_ask_router`, is stubbed) over `plan_review`'s real edges, falling
+back to `transitions.ROUTER_FALLBACK["plan_review"]` when the router cannot
+decide -- while a stated verdict still decides its own edge with no router
+call at all.
 """
 
 from __future__ import annotations
@@ -332,7 +340,8 @@ class _ScriptedAgent:
             self.running = False
 
 
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
+def _supervisor(root: Path, handlers: dict, router_answer=None,
+                **cfg_kw) -> LoopSupervisor:
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
     kw = {"iterations": 15, "max_approaches": 1, "vigilant": False,
@@ -348,12 +357,41 @@ def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
         return seconds, False
 
     sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
+    # Task 019 (requirement M): the ROUTER's own channel, stubbed at
+    # `_ask_router` (the model call) and NOT at `router.decide` -- so the
+    # live `engine.router.decide()` logic (schema check, legal-target check
+    # against `plan_review`'s REAL edges, N-then-fall-back retry ladder)
+    # runs for real in every test below that reaches it. `router_answer` is
+    # one answer string or a list of them (the last one repeats).
+    sup.router_prompts = []               # type: ignore[attr-defined]
+    answers = ([] if router_answer is None else
+               [router_answer] if isinstance(router_answer, str)
+               else list(router_answer))
+
+    async def fake_ask_router(prompt: str) -> tuple[str, dict]:
+        assert answers, ("a test that reaches the router must declare "
+                         "router_answer=...")
+        sup.router_prompts.append(prompt)   # type: ignore[attr-defined]
+        sup._router_calls += 1
+        i = min(len(sup.router_prompts) - 1,   # type: ignore[attr-defined]
+                len(answers) - 1)
+        return answers[i], {"input": 3, "output": 2, "totalTokens": 5}
+
+    sup._ask_router = fake_ask_router     # type: ignore[method-assign]
     return sup
 
 
-def _run_job(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:
+def _router_decisions(root: Path) -> list[dict]:
+    p = root / "artifacts" / "router" / "decisions.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(line) for line in p.read_text().splitlines() if line]
+
+
+def _run_job(root: Path, handlers: dict, router_answer=None,
+             **cfg_kw) -> tuple[LoopSupervisor, str]:
     RunDir(root=root).update_status(state="starting")
-    sup = _supervisor(root, handlers, **cfg_kw)
+    sup = _supervisor(root, handlers, router_answer=router_answer, **cfg_kw)
     return sup, asyncio.run(sup._run_job_core())
 
 
@@ -445,10 +483,20 @@ def test_gate_on_revision_bound_reached_fails_open_to_worker(tmp_path):
         "the configured bound")
 
 
-def test_gate_on_malformed_plan_review_payload_is_treated_as_an_objection(tmp_path):
-    """An absent/malformed payload is a safe-default implicit objection --
-    it still spends a revision -- never a run-ending contract violation,
-    the same philosophy `_review_verdict` already applies to review."""
+def test_gate_on_an_undecidable_reply_is_routed_by_the_live_router(tmp_path):
+    """Task 019 (requirement M): an absent/malformed payload names no
+    verdict at all, so `_step_plan_review` cannot decide its own edge from
+    disk state -- it asks `engine.router.decide()` over `plan_review`'s REAL
+    edges (the router's first PRODUCTION call site in any shipped run).
+
+    Task 018's claim here was weaker: the harness INVENTED a verdict the
+    peer never gave ("treated as an implicit objection") and took the
+    revision edge silently. The claim now is that the choice is made by the
+    router, recorded in `artifacts/router/decisions.jsonl`, and -- when the
+    router routes back to `planning`, as here -- still spends exactly one
+    revision, so the observable revision accounting this test pinned before
+    is unchanged while the fabricated verdict is gone.
+    """
     def _garbage(sup, prompt=""):
         return _ok("not json at all")
 
@@ -458,6 +506,7 @@ def test_gate_on_malformed_plan_review_payload_is_treated_as_an_objection(tmp_pa
         {"planning": [_plan(), _plan()],
          "plan_review": [_garbage, _plan_review_approves],
          "worker": [_worker_completes(TASK_1)], "review": [_review_verifies]},
+        router_answer='{"next_step": "planning"}',
         peer_plan_review=True)
 
     agent = sup.runner
@@ -468,11 +517,103 @@ def test_gate_on_malformed_plan_review_payload_is_treated_as_an_objection(tmp_pa
     revisions = sup.run.read_status().get("planReviewRevisions")
     assert revisions == {"1": 1}
 
+    # the LIVE router was asked exactly once, for the real state, and its
+    # answer decided the edge (no fallback needed).
+    assert len(sup.router_prompts) == 1
+    assert "'plan_review'" in sup.router_prompts[0]
+    decisions = _router_decisions(root)
+    assert len(decisions) == 1, decisions
+    d = decisions[0]
+    assert d["state"] == "plan_review"
+    assert d["chosenTarget"] == "planning"
+    assert d["chosenGuard"] == "plan_review_objected_revision_available"
+    assert d["usedRouter"] is True and d["usedFallback"] is False
+    assert d["fallbackGuard"] == "plan_review_revision_bound_reached"
+    assert sorted(e["guard"] for e in d["candidateEdges"]) == [
+        "plan_review_approved", "plan_review_objected_revision_available",
+        "plan_review_revision_bound_reached"]
 
-def test_the_router_is_never_consulted_for_plan_review(tmp_path):
-    """Task 018's own dedicated `_step_plan_review` picks its own edge --
-    it must never fall through to `_step_generic_hat`/`engine.router.decide`
-    (that widening is task 019's business, requirement M)."""
+    # the revision the router asked for reaches planning as an objection
+    # that says WHY, without claiming the peer objected on the merits.
+    second_planning_prompt = agent.prompts[agent.phases_seen.index(
+        "planning", 1)]
+    assert "unusable" in second_planning_prompt
+
+
+def test_gate_on_an_undecidable_reply_falls_back_to_the_declared_guard(tmp_path):
+    """Task 019 (requirement M): the LIVE `router.decide()` path exhausts
+    its retry budget on a router that never answers validly, so the run
+    takes `plan_review`'s OWN declared `transitions.ROUTER_FALLBACK` guard
+    (`plan_review_revision_bound_reached` -> `worker`) -- a real, legal
+    edge, recorded as a fallback, never an illegal target, never a hang,
+    and never `plan_review_approved` (nothing approved this plan)."""
+    def _garbage(sup, prompt=""):
+        return _ok("not json at all")
+
+    root = tmp_path / "run"
+    sup, final_state = _run_job(
+        root,
+        {"planning": [_plan()], "plan_review": [_garbage],
+         "worker": [_worker_completes(TASK_1)], "review": [_review_verifies]},
+        router_answer="still not json",
+        peer_plan_review=True, contract_retry_max=1)
+
+    agent = sup.runner
+    assert agent.phases_seen == ["planning", "plan_review", "worker",
+                                "review"]
+    assert final_state == "succeeded", sup.run.read_status()
+    # the fallback edge is NOT the revision edge: no revision was spent.
+    assert sup.run.read_status().get("planReviewRevisions") is None
+    # 1 + contract_retry_max attempts, all invalid.
+    assert len(sup.router_prompts) == 2
+    d = _router_decisions(root)
+    assert len(d) == 1, d
+    assert d[0]["usedFallback"] is True
+    assert d[0]["attempts"] == 2
+    assert d[0]["chosenTarget"] == "worker"
+    assert d[0]["chosenGuard"] == tr.fallback_guard("plan_review")
+    assert d[0]["chosenGuard"] == "plan_review_revision_bound_reached"
+
+
+def test_gate_on_an_undecidable_reply_with_the_bound_spent_asks_no_router(tmp_path):
+    """Deterministic-first, even for an undecidable reply: with the revision
+    bound spent, `planning` is not a move this gate may make, so there is no
+    genuine choice to ask about -- `plan_review_revision_bound_reached` is
+    taken without a single router call."""
+    def _garbage(sup, prompt=""):
+        return _ok("not json at all")
+
+    root = tmp_path / "run"
+    RunDir(root=root).update_status(state="starting",
+                                    planReviewRevisions={"1": 1})
+    sup = _supervisor(
+        root,
+        {"planning": [_plan()], "plan_review": [_garbage],
+         "worker": [_worker_completes(TASK_1)], "review": [_review_verifies]},
+        peer_plan_review=True, peer_plan_review_max_revisions=1)
+    final_state = asyncio.run(sup._run_job_core())
+
+    assert sup.runner.phases_seen == ["planning", "plan_review", "worker",
+                                      "review"]
+    assert final_state == "succeeded", sup.run.read_status()
+    assert sup.router_prompts == []
+    assert _router_decisions(root) == []
+    assert sup.run.read_status().get("planReviewRevisions") == {"1": 1}
+
+
+def test_the_router_is_never_consulted_for_a_decidable_plan_review_verdict(tmp_path):
+    """Deterministic-first (task 018, kept intact by task 019): a plan
+    review verdict the hat DID state -- `approved`, or `objected` with a
+    reason -- decides `plan_review`'s edge in `_step_plan_review` itself,
+    without ever consulting `engine.router.decide`. Only an undecidable
+    reply reaches the router (the three tests above).
+
+    Stronger than task 018's version of this test in two ways: it spies on
+    `router.decide` across BOTH decidable verdicts rather than the approval
+    path alone, and it asserts the decisions file stays absent too, so a
+    router call could not hide behind a monkeypatch that missed a second
+    call site.
+    """
     from ralphd.engine import router as router_module
 
     router_calls = []
@@ -487,7 +628,9 @@ def test_the_router_is_never_consulted_for_plan_review(tmp_path):
     try:
         sup, final_state = _run_job(
             root,
-            {"planning": [_plan()], "plan_review": [_plan_review_approves],
+            {"planning": [_plan(), _plan()],
+             "plan_review": [_plan_review_objects("a stated objection"),
+                             _plan_review_approves],
              "worker": [_worker_completes(TASK_1)],
              "review": [_review_verifies]},
             peer_plan_review=True)
@@ -495,6 +638,11 @@ def test_the_router_is_never_consulted_for_plan_review(tmp_path):
         router_module.decide = orig_decide
 
     assert final_state == "succeeded", sup.run.read_status()
+    assert sup.runner.phases_seen == [
+        "planning", "plan_review", "planning", "plan_review", "worker",
+        "review"]
     assert router_calls == [], (
-        "plan_review's own verdict must decide its edge without ever "
+        "a stated plan_review verdict must decide its edge without ever "
         "consulting engine.router.decide")
+    assert _router_decisions(root) == []
+    assert sup.run.read_status().get("planReviewRevisions") == {"1": 1}
