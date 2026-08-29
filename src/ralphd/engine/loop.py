@@ -1,4 +1,17 @@
-"""Loop supervisor: planning → worker → review, approaches, budgets."""
+"""Loop supervisor: planning → worker → review, approaches, budgets.
+
+Task 007 (requirement D, #99): a plan whose entire actionable remainder is
+doomed (`state.task_blocked_by`'s doomed set covers every task
+`task_is_actionable()` still calls workable) raises a named fault --
+`LoopSupervisor._doomed_plan_fault` -- rather than starving through three
+silent no-progress worker iterations into a `stagnation_exhausted` verdict.
+The chosen consequence is `transitions.TABLE["worker"]`'s
+`doomed_plan_unverifiable` edge to `review`: this reuses the #33
+`blocked_with_failures` mechanism (a reviewer's verdict on work-with-a-hole,
+not a dependency-graph replan or a terminal degraded state) so a doomed plan
+gets exactly the same kind of adjudication a plan with an unresolved
+`failed` task already gets.
+"""
 
 from __future__ import annotations
 
@@ -3252,7 +3265,12 @@ class LoopSupervisor:
         `stagnation_exhausted` (-> replan -- ledger guard 10 fails the
         approach directly, it does NOT get a review verdict; task 008's
         first draft of the table had this row wrong, corrected by this
-        cutover against the runtime behaviour it now executes).
+        cutover against the runtime behaviour it now executes). Task 007
+        (requirement D, #99) adds `doomed_plan_unverifiable` (-> review,
+        same target as `blocked_with_failures` but a DIFFERENT guard and a
+        different cause: the doomed set covers the entire actionable
+        remainder, checked and routed before this pass's worker iteration
+        is ever dispatched -- see `_doomed_plan_fault`'s own docstring).
 
         Task 025 (requirement H, #63) adds `unsatisfiable_targeted_replan`
         (self-loop, applied and audited exactly like the verify round trip
@@ -3299,6 +3317,39 @@ class LoopSupervisor:
                 # iterations in a row (e.g. while the stagnation guard
                 # counts down) does not grow notes.md once per iteration.
                 blocked_by = state.task_blocked_by(tasks_before.get("tasks", []))
+                # Task 007 (requirement D, #99): the doomed set can cover
+                # the ENTIRE actionable remainder -- no worker iteration,
+                # ever, could move this plan again -- rather than merely a
+                # subset that still leaves other work reachable. That is a
+                # DIFFERENT fact from "nothing is pickable THIS pass" (the
+                # ordinary reason `selected` is None here, e.g. every
+                # pending task's dependency is merely not finished YET) and
+                # from "something failed but other work remains" (guard 9's
+                # `blocked_with_failures`, `_unresolved_failures` below,
+                # which is dependency-BLIND and reads a doomed `pending`
+                # task as still actionable). Checked, and routed, BEFORE
+                # this pass's worker iteration is ever dispatched -- unlike
+                # `blocked_with_failures`, which still gives the worker one
+                # real iteration to carve a residual task or self-skip, a
+                # doomed plan has no such escape for ANY worker reply to
+                # take, so spending even one iteration confirming that changes
+                # nothing.
+                doom_fault = self._doomed_plan_fault(tasks_before, blocked_by)
+                if doom_fault is not None:
+                    self.run.emit(
+                        "log", level="error",
+                        message=(
+                            "the doomed set covers the entire actionable "
+                            "remainder of this plan -- no worker iteration "
+                            "could ever move it again; routing to review "
+                            "for a verdict instead of three silent "
+                            "no-progress iterations and a stagnation "
+                            "verdict (task 007, requirement D, #99)"),
+                        **doom_fault)
+                    self._advance("worker", "review", "doomed_plan_unverifiable")
+                    verdict_ready = True
+                    guard_ready = "doomed_plan_unverifiable"
+                    break
                 if blocked_by:
                     new_ids = sorted(set(blocked_by) - self._blocked_notes_written)
                     if new_ids:
@@ -4123,6 +4174,89 @@ class LoopSupervisor:
         status.json alone -- not just from combing steering/.consumed.json
         by hand. Empty list when nothing is stranded (the common case)."""
         return {"unconsumedSteering": [p.name for p in self.run.pending_steering()]}
+
+    def _doomed_plan_fault(self, tasks_doc: dict,
+                           blocked_by: dict[str, list[str]]) -> dict | None:
+        """Task 007 (requirement D, #99): the fault payload iff `blocked_by`
+        (`state.task_blocked_by`'s doomed-set derivation, computed by the
+        caller from the SAME `tasks_doc`) covers the ENTIRE actionable
+        remainder -- every task `task_is_actionable()` still calls workable
+        is doomed -- else `None`.
+
+        This is the two-function disagreement the PRD names directly:
+        `scheduler.select_next_task()` is graph-aware (a doomed `pending`
+        task is never a candidate), but `task_is_actionable()` is per-task
+        and dependency-blind (`status in ("pending", "in-progress",
+        "validation-failed")`, nothing more) -- so a doomed task still reads
+        as actionable to `_unresolved_failures()` (guard 9) below, and the
+        run starves through three no-progress iterations into
+        `stagnation_exhausted` (guard 10) with the cause misattributed as a
+        stuck approach rather than an unreachable plan. `None` whenever at
+        least one actionable task is NOT doomed -- a doomed SUBSET with real
+        work left is unaffected by this method: the existing per-task
+        blocked-notes/stagnation machinery still governs exactly as it did
+        before this task.
+
+        Chosen consequence (task 007, recorded here and in the commit
+        message and in `transitions.py`'s `doomed_plan_unverifiable` table
+        entry): the caller routes straight to `review` for a verdict,
+        reusing the #33 `blocked_with_failures` mechanism, rather than a
+        dependency-graph replan or a terminal degraded state -- a doomed
+        plan is exactly the shape `blocked_with_failures` already hands to
+        a reviewer (work-with-a-hole is worth a verdict), and inventing a
+        second consequence for a dependency-shaped hole would be a second
+        answer to a question guard 9 already answers.
+
+        The payload: `doomedTaskIds` (the full doomed set, `blocked_by`'s own
+        keys -- not only the actionable subset, since a doomed
+        `awaiting-validation` task is worth naming too), `deadAncestorIds`
+        (every `failed`/`skipped` task reachable by walking `dependsOn` back
+        from any doomed task -- the actual dead root cause, as opposed to
+        `blocked_by`'s own per-task "direct doomed dependency" lists, which
+        stop at the first doomed hop and may themselves be merely doomed,
+        not dead), and `planUnverifiable: True` -- the plan cannot produce a
+        genuine COMPLETE from here, stated directly rather than left for a
+        reader to infer from the other two fields.
+        """
+        if not blocked_by:
+            return None
+        tasks = tasks_doc.get("tasks") or []
+        actionable_ids = {
+            str(t["id"]) for t in tasks
+            if isinstance(t, dict) and t.get("id") not in (None, "")
+            and task_is_actionable(t)}
+        if not actionable_ids:
+            return None
+        doomed_ids = set(blocked_by.keys())
+        if not actionable_ids <= doomed_ids:
+            return None
+        depends_on: dict[str, list[str]] = {}
+        status_by_id: dict[str, str] = {}
+        for t in tasks:
+            if not isinstance(t, dict) or t.get("id") in (None, ""):
+                continue
+            tid = str(t["id"])
+            status_by_id[tid] = t.get("status", "pending")
+            raw = t.get("dependsOn")
+            depends_on[tid] = [str(d) for d in raw] if isinstance(raw, list) else []
+        dead_ancestors: set[str] = set()
+        seen: set[str] = set(doomed_ids)
+        stack = list(doomed_ids)
+        while stack:
+            tid = stack.pop()
+            for dep in depends_on.get(tid, []):
+                if dep in seen:
+                    continue
+                seen.add(dep)
+                if status_by_id.get(dep) in state.TASK_DEPENDENCY_DEAD_STATUSES:
+                    dead_ancestors.add(dep)
+                else:
+                    stack.append(dep)
+        return {
+            "doomedTaskIds": sorted(doomed_ids),
+            "deadAncestorIds": sorted(dead_ancestors),
+            "planUnverifiable": True,
+        }
 
     def _unresolved_failures(self, tasks_doc: dict) -> list[dict]:
         """The `failed` tasks of a plan that has nothing actionable left in it.

@@ -124,6 +124,20 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # this task's cutover proved wrong against the code it now
         # executes rather than merely declares.
         T("replan", "stagnation_exhausted"),
+        # Task 007 (requirement D, #99): `state.task_blocked_by`'s doomed
+        # set covers the ENTIRE actionable remainder -- no worker iteration
+        # could EVER move this plan again, not just "not yet" the way an
+        # ordinary `blocked_with_failures`/`stagnation_exhausted` pass would
+        # read it. Routed to `review` for a verdict, reusing the #33
+        # `blocked_with_failures` mechanism (guard 9) rather than starving
+        # through three no-progress iterations into `stagnation_exhausted`
+        # (guard 10), which would misattribute an UNREACHABLE plan as a
+        # merely-stuck approach -- exactly the PRD's complaint. See
+        # `LoopSupervisor._doomed_plan_fault`'s own docstring in `loop.py`
+        # for the fault payload shape and why this consequence (review, not
+        # a dependency-graph replan or a terminal degraded state) was
+        # chosen.
+        T("review", "doomed_plan_unverifiable"),
         # Task 025 (requirement H, #63): a worker's `verdict: "unsatisfiable"`
         # report is a state change (the named task moves to `skipped`,
         # `unsatisfiableReason` recorded on its record) the moment the
