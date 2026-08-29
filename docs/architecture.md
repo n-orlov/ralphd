@@ -598,10 +598,23 @@ the *refund* is persisted and the *grant* is not. If the
 grace review comes back `VERIFIED` (and no operator steering is left
 pending unconsumed), the job goes terminal `succeeded`/`verified` with
 `status.json`'s `graceReview: true` and a `reason` stating the grace
-review ran and verified. If it does not verify, the job still ends
+review ran and verified — **unless the opt-in peer verdict gate
+(`peer_verdict_gate: true`, task 020, PRD requirement L) is on**, in which
+case this path gets its own single, equally BLIND off-budget
+`verdict_gate` iteration first (`_grace_verdict_gate()`, refunded through
+the same `grace` channel, bounded by the same `_grace_review_granted`
+guard, and called with no `extra` context so the grace review's own
+verdict/`reason` never reach the peer). The gate is a property of the run
+reaching terminal success, not of one particular edge into `finishing`:
+`_maybe_grace_review()` is the only other site that writes
+`succeeded`/`verified`, and a peer rejection (or any unusable reply,
+`_verdict_gate_verdict()`'s shared safe default) leaves the ordinary
+failed/unverified terminal write below — there is no approach to replan
+into, since exhausted budget is why this path ran at all. If it does not verify, the job still ends
 failed/aborted exactly as it would without this feature — no second
 approach is attempted once budget is exhausted — except the terminal
-`reason` now says a grace review ran and did not verify (via
+`reason` now says a grace review ran and did not verify, or that the off-budget blind peer verdict
+gate did not verify (via
 `_terminal_reason_note`, kept separate from `_abort_reason` so a plain
 unsatisfied grace review doesn't relabel the terminal `state` from
 `failed` to `aborted`). The negative case (tasks NOT all completed when

@@ -3935,18 +3935,8 @@ class LoopSupervisor:
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self.run_iteration(
             "verdict_gate", tier=state.run_level_verify_tier())
-        try:
-            parsed = json.loads(last_nonblank_line(result.final_text))
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            parsed = None
-        payload = None
-        if isinstance(parsed, dict):
-            contract_errors = (
-                contracts.validate_payload("verdict_gate", parsed)
-                or transitions.verdict_gate_report_errors(parsed))
-            if not contract_errors:
-                payload = parsed
-        if payload is not None and payload.get("verdict") == "verified":
+        approved, payload = self._verdict_gate_verdict(result)
+        if approved:
             self._advance("verdict_gate", "finishing", "verdict_gate_approved")
             self.run.emit("signal", signal="VERIFIED")
             self._finish("succeeded", "verified",
@@ -3967,6 +3957,38 @@ class LoopSupervisor:
         self._advance("verdict_gate", "finishing",
                      "verdict_gate_rejected_no_approach_left")
         return ("tail",)
+
+    def _verdict_gate_verdict(self, result) -> tuple[bool, dict | None]:
+        """Task 020 (requirement L, #101): the ONE parser of a
+        `verdict_gate` hat reply, consulted by BOTH sites that can let the
+        peer gate bless a run -- the ordinary `_step_verdict_gate` state
+        and the off-budget `_grace_verdict_gate` call `_maybe_grace_review`
+        makes (the same single-predicate discipline task 013 imposed on
+        `_terminal_success_blockers`, for the same reason: two hand-rolled
+        copies of a gate's parsing rules drift).
+
+        Returns `(approved, payload)`. `approved` is True only for a
+        well-formed payload whose `verdict` is `verified`; an absent,
+        unparseable or schema-violating reply, or a `rejected` verdict with
+        no `reason` (`transitions.verdict_gate_report_errors`), is never a
+        run-ending contract violation -- it collapses to the SAME safe
+        default an unparseable `review` reply already gets (not verified),
+        with `payload` None so the caller's log says "no usable
+        verdict_gate payload" rather than inventing a reason.
+        """
+        try:
+            parsed = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            parsed = None
+        payload = None
+        if isinstance(parsed, dict):
+            contract_errors = (
+                contracts.validate_payload("verdict_gate", parsed)
+                or transitions.verdict_gate_report_errors(parsed))
+            if not contract_errors:
+                payload = parsed
+        approved = payload is not None and payload.get("verdict") == "verified"
+        return approved, payload
 
     def _step_replan(self) -> tuple:
         """The `replan` state: the approach boundary as a transition with a
@@ -5290,6 +5312,30 @@ class LoopSupervisor:
         # cannot silently reopen the gap this closes.)
         blockers = self._terminal_success_blockers()
         if verified and not blockers:
+            # Task 020 rework (requirement L, #101): the peer verdict gate
+            # guards EVERY terminal-success path, not only the ordinary
+            # `review -> verdict_gate` edge. This off-budget grace review
+            # is the second (and only other) site that can write
+            # `succeeded`/`verified`, so when the gate is on it gets its
+            # own off-budget, equally blind peer call before the run may
+            # finish -- otherwise a run that exhausts its budget on the
+            # very iteration its last task completes reaches terminal
+            # success with the gate never having run, which is exactly the
+            # hole an opt-in "nothing succeeds unless a second, independent
+            # peer agrees" gate exists to close. Decision (recorded in
+            # `artifacts/reports/task-020-requirement-l-rejection-
+            # semantics.md`): an off-budget grace REVIEW gets an
+            # off-budget grace VERDICT GATE -- charging it would be
+            # incoherent (the budget is already spent, which is why we are
+            # here at all), and skipping it would make the gate's
+            # guarantee conditional on how the budget ran out.
+            if self.cfg.peer_verdict_gate and \
+                    not await self._grace_verdict_gate(approach):
+                self._terminal_reason_note = (
+                    "budget exhausted with all tasks completed; the grace "
+                    "review VERIFIED but the off-budget blind peer verdict "
+                    "gate did not")
+                return False
             self.run.emit("signal", signal="VERIFIED")
             self._finish("succeeded", "verified", graceReview=True,
                         reason=("budget exhausted with all tasks completed; "
@@ -5306,6 +5352,58 @@ class LoopSupervisor:
                 "budget exhausted with all tasks completed; a grace "
                 "review ran but did not verify")
         self.run.emit("log", message=f"grace review did not verify approach {approach}")
+        return False
+
+    async def _grace_verdict_gate(self, approach: int) -> bool:
+        """Task 020 rework (requirement L, #101): the off-budget peer
+        verdict-gate call that guards the OTHER terminal-success site --
+        `_maybe_grace_review`'s VERIFIED grace review (task 002) -- so the
+        opt-in gate is a property of the run reaching terminal success, not
+        a property of one particular edge into `finishing`.
+
+        Bounded by construction exactly as the grace review itself is: it
+        is reached only from inside the `_grace_review_granted`-guarded
+        block, so at most one call per approach, and it never loops back
+        into the worker.
+
+        Off-budget (`_refund_iteration("grace")`, the same mechanism and
+        persistence the grace review's own refund uses): the ordinary
+        `_step_verdict_gate` charges its iteration like `plan_review`, but
+        this path exists precisely because the budget is already exhausted,
+        so charging it would either be a no-op or push the run further
+        negative for a gate the operator asked for.
+
+        Genuinely BLIND on the same terms as `_step_verdict_gate`:
+        `run_iteration("verdict_gate", ...)` with NO `extra` argument --
+        review's verdict and `reason` (including THIS grace review's,
+        which `_maybe_grace_review` has in hand and deliberately does not
+        pass) never reach the peer's prompt.
+
+        Returns True iff the peer independently verified; False for a
+        rejection or any unusable reply (`_verdict_gate_verdict`'s safe
+        default), leaving the caller to write the ordinary
+        failed/unverified terminal state -- fail OPEN in the sense the
+        decision note means (never a deadlock, never a stuck run), never a
+        silently granted `verified`.
+        """
+        await self._gate()
+        self.run.emit("log", message=(
+            "grace review VERIFIED with the peer verdict gate enabled; "
+            "granting a single off-budget BLIND peer verdict-gate "
+            "iteration before the run may go terminal-succeeded (task 020)"))
+        self.run.emit("phase", phase="verdict_gate", approach=approach)
+        result = await self.run_iteration(
+            "verdict_gate", tier=state.run_level_verify_tier())
+        self._refund_iteration("grace")
+        approved, payload = self._verdict_gate_verdict(result)
+        if approved:
+            return True
+        reason = (payload or {}).get("reason")
+        self.run.emit(
+            "log", level="warning",
+            message=(f"off-budget peer verdict gate rejected approach {approach}"
+                     + (f": {reason}" if reason else
+                        " (no usable verdict_gate payload)")))
         return False
 
     # Bounded retries for a verify iteration that errors out mid-stream

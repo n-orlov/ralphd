@@ -20,18 +20,30 @@ this task's own commit message and
 approach budget is spent the gate fails OPEN (`finishing` anyway), never a
 deadlocked run.
 
-*Blind* is the requirement's teeth, and this file's Part 6 pins it
-end-to-end: a real scripted `review` reply carries a distinctive marker in
-its `reason` field, and the test asserts that marker is ABSENT from the
-peer verdict gate's own rendered prompt -- `_step_verdict_gate` never
-passes review's payload as `extra` context, unlike `_run_review_iteration`
-itself.
+*Blind* is the requirement's teeth, and this file pins it at every level:
+Part 6 drives a real scripted `review` reply carrying a distinctive marker
+in its `reason` field and asserts that marker is ABSENT from the peer
+verdict gate's own rendered prompt (`_step_verdict_gate` never passes
+review's payload as `extra` context, unlike `_run_review_iteration`
+itself), and Part 7b forbids the shipped prompt TEXT from attributing a
+verdict value to the review hat at all -- the first attempt at this task
+opened the prompt with "review has already emitted a `verified` verdict",
+which handed the peer review's conclusion however clean the `extra`
+plumbing was.
+
+Part 8 pins the other half of "before the run may reach terminal success":
+`_maybe_grace_review` (task 002's off-budget grace review) is the only
+other site that writes `succeeded`/`verified`, so with the gate on it gets
+its own single off-budget, equally blind `verdict_gate` call before any
+terminal write -- and with the gate off it behaves exactly as it always
+did.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -603,3 +615,250 @@ def test_verdict_gate_run_iteration_call_site_passes_no_extra_context(monkeypatc
     phase, extra = calls[0]
     assert phase == "verdict_gate"
     assert extra == ""
+
+
+# ---------------------------------------------------------------------------
+# 7b. blind means the prompt itself never states what review CONCLUDED
+#     (task 020 rework: the earlier prompt said "review has already emitted
+#     a `verified` verdict" in its own opening sentence -- the reviewer's
+#     verdict leaking through the prompt TEXT rather than through `extra`)
+# ---------------------------------------------------------------------------
+
+
+# every value a judge's verdict can take, as whole words. `unverifiable`,
+# `verifiably`, `Rejecting` and `verdict` are deliberately NOT matches: the
+# leak this rule forbids is a statement of what verdict some OTHER judge
+# reached, not the peer's own contract vocabulary.
+VERDICT_VALUE_RE = re.compile(
+    r"\b(verified|unverified|rejected|approved|passed)\b", re.IGNORECASE)
+# the run-dir FILENAME both judges write is not a statement about either
+# judge's conclusion, so it is masked out before the proximity rule runs.
+FINDINGS_FILENAME = "review-findings.md"
+REVIEW_TOKEN_RE = re.compile(r"\breview(er|s|ed)?\b", re.IGNORECASE)
+PROXIMITY_CHARS = 400
+
+
+def _review_verdict_attributions(text: str) -> list[str]:
+    """Every place in `text` where a verdict VALUE sits within
+    `PROXIMITY_CHARS` of a word naming the `review` hat -- i.e. every place
+    the text could be read as telling this blind peer what review decided.
+    Proximity rather than sentence-splitting on purpose: a leak spread over
+    two sentences ("review has already run. It verified the work.") is the
+    same leak, and sentence-splitting on `.` would also split
+    `review-findings.md` into fragments and hide it.
+    """
+    masked = text.replace(FINDINGS_FILENAME, "F" * len(FINDINGS_FILENAME))
+    hits = []
+    for m in VERDICT_VALUE_RE.finditer(masked):
+        lo = max(0, m.start() - PROXIMITY_CHARS)
+        window = masked[lo:m.end() + PROXIMITY_CHARS]
+        if REVIEW_TOKEN_RE.search(window):
+            hits.append(masked[max(0, m.start() - 120):m.end() + 120])
+    return hits
+
+
+def test_the_proximity_rule_itself_catches_the_leak_it_exists_to_catch():
+    """The rule above is only worth asserting if it fails on the exact
+    sentence the first attempt at this task shipped."""
+    leak = ("You run right after the independent `review` phase has already "
+            "emitted a `verified` verdict, and right before the run may "
+            "reach terminal success.")
+    assert _review_verdict_attributions(leak), (
+        "the proximity rule must flag a prompt that states review's verdict")
+    # ... and it must not flag the peer's own reporting contract, which
+    # legitimately contains both verdict values.
+    clean = ('End with `{"verdict": "verified"}` or `{"verdict": '
+             '"rejected", "reason": "..."}`; write your findings to '
+             '`review-findings.md`.')
+    assert _review_verdict_attributions(clean) == []
+
+
+def test_verdict_gate_prompt_text_never_states_what_review_concluded():
+    """Requirement L, literally: "its prompt states what it does and does
+    not receive". A prompt whose own opening sentence says review already
+    emitted `verified` HANDS the peer review's verdict, however blind the
+    `extra` plumbing is -- so the shipped prompt text may not attribute a
+    verdict value to the review hat anywhere.
+    """
+    hits = _review_verdict_attributions(VERDICT_GATE_PROMPT.read_text())
+    assert hits == [], (
+        "prompts/verdict_gate.md states review's own verdict to the blind "
+        f"peer: {hits}")
+    # the withholding is still stated positively, in words.
+    lowered = VERDICT_GATE_PROMPT.read_text().lower()
+    assert "blind" in lowered
+    assert "what you do not receive" in lowered
+    assert "what you do receive" in lowered
+
+
+def test_the_rendered_verdict_gate_prompt_never_states_what_review_concluded(tmp_path):
+    """The same rule applied to what the model is ACTUALLY handed at
+    runtime (prompt file + every scrap `build_prompt` composes around it),
+    on a run where review really did reply `verified` with a planted
+    `reason` -- so this covers both leak channels at once: `extra` context
+    and the prompt text itself.
+    """
+    root = tmp_path / "run"
+    sup, final_state = _run_job(
+        root,
+        {"planning": [_plan()], "worker": [_worker_completes(TASK_1)],
+         "review": [_review_verifies(REVIEW_SECRET_REASON)],
+         "verdict_gate": [_verdict_gate_approves]},
+        peer_verdict_gate=True)
+    assert final_state == "succeeded", sup.run.read_status()
+
+    agent = sup.runner
+    rendered = agent.prompts[agent.phases_seen.index("verdict_gate")]
+    assert REVIEW_SECRET_REASON not in rendered
+    hits = _review_verdict_attributions(rendered)
+    assert hits == [], f"the rendered peer prompt states review's verdict: {hits}"
+
+
+# ---------------------------------------------------------------------------
+# 8. the gate guards EVERY terminal-success path, including the off-budget
+#    grace review (task 002) -- task 020 rework
+# ---------------------------------------------------------------------------
+
+
+def _seed_all_completed(root: Path) -> RunDir:
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    run.update_status(state="running")
+    atomic_write_json(run.tasks_file,
+                      {"version": 1, "tasks": [{"id": TASK_1, "title": "t",
+                                                "successCriteria": "c",
+                                                "status": "completed"}]})
+    return run
+
+
+def test_grace_review_alone_can_no_longer_reach_terminal_success_with_the_gate_on(tmp_path):
+    """The hole this rework closes: `_maybe_grace_review` is the SECOND
+    site that can write `succeeded`/`verified`, and with
+    `peer_verdict_gate=True` it used to do so with `phases_seen ==
+    ['review']` and zero verdict_gate calls -- terminal success without the
+    peer gate ever running. Now the grace review's VERIFIED verdict only
+    stands if an off-budget, equally blind peer agrees.
+    """
+    root = tmp_path / "run"
+    _seed_all_completed(root)
+    sup = _supervisor(
+        root,
+        {"review": [_review_verifies(REVIEW_SECRET_REASON)],
+         "verdict_gate": [_verdict_gate_approves]},
+        peer_verdict_gate=True)
+    sup._approach = 1
+
+    assert asyncio.run(sup._maybe_grace_review(1)) is True
+    agent = sup.runner
+    assert agent.phases_seen == ["review", "verdict_gate"]
+    assert agent.calls == {"review": 1, "verdict_gate": 1}
+    status = sup.run.read_status()
+    assert status.get("state") == "succeeded"
+    assert status.get("verdict") == "verified"
+    # blind on this path too: the grace review's own reason is in hand at
+    # the call site and still never reaches the peer.
+    assert REVIEW_SECRET_REASON not in agent.prompts[1]
+    assert _review_verdict_attributions(agent.prompts[1]) == []
+
+
+def test_a_grace_review_peer_rejection_never_reaches_terminal_success(tmp_path):
+    """Fail closed on success, open on deadlock: the peer's rejection on
+    the grace path leaves the ordinary failed/unverified terminal write to
+    the caller (the budget is already spent, so there is no approach to
+    replan into) -- never `succeeded`, never a hang."""
+    root = tmp_path / "run"
+    _seed_all_completed(root)
+    sup = _supervisor(
+        root,
+        {"review": [_review_verifies()],
+         "verdict_gate": [_verdict_gate_rejects("the peer disagrees")]},
+        peer_verdict_gate=True)
+    sup._approach = 1
+
+    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert sup.run.read_status().get("state") != "succeeded"
+    note = sup._terminal_reason_note or ""
+    assert "grace" in note and "peer verdict gate" in note, note
+
+
+def test_a_malformed_grace_peer_reply_takes_the_same_safe_default(tmp_path):
+    """One parser, one safe default, both sites: an unusable
+    `verdict_gate` reply on the grace path is not verified either."""
+    root = tmp_path / "run"
+    _seed_all_completed(root)
+    sup = _supervisor(
+        root,
+        {"review": [_review_verifies()],
+         "verdict_gate": [lambda sup, prompt="": _ok("not json at all")]},
+        peer_verdict_gate=True)
+    sup._approach = 1
+
+    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert sup.run.read_status().get("state") != "succeeded"
+
+
+def test_the_grace_path_is_untouched_when_the_gate_is_off(tmp_path):
+    """Off by default stays off HERE too: a gate-off grace review reaches
+    terminal success exactly as it did before this task, with no
+    verdict_gate phase and no extra iteration."""
+    root = tmp_path / "run"
+    _seed_all_completed(root)
+    sup = _supervisor(root, {"review": [_review_verifies()]},
+                     peer_verdict_gate=False)
+    sup._approach = 1
+
+    assert asyncio.run(sup._maybe_grace_review(1)) is True
+    assert sup.runner.phases_seen == ["review"]
+    status = sup.run.read_status()
+    assert status.get("state") == "succeeded"
+    assert status.get("graceReview") is True
+
+
+def test_the_grace_verdict_gate_iteration_is_off_budget(tmp_path):
+    """The grace review is off-budget (task 002) because the budget is
+    already exhausted when it runs; its peer gate is granted on the same
+    terms -- charging an iteration against a spent budget would be
+    incoherent. Both refunds are recorded as `grace`."""
+    root = tmp_path / "run"
+    _seed_all_completed(root)
+    sup = _supervisor(
+        root, {"review": [_review_verifies()],
+               "verdict_gate": [_verdict_gate_approves]},
+        peer_verdict_gate=True)
+    sup._approach = 1
+
+    assert asyncio.run(sup._maybe_grace_review(1)) is True
+    # two off-budget attempts ran, and BOTH are credited back through the
+    # same `grace` channel the grace review has always used (the channel
+    # `budget_left()` subtracts). `iterationsUsed` stays the raw attempt
+    # count by long-standing design -- only infra/steer refunds are netted
+    # out of the published figure, and this task changes neither.
+    status = sup.run.read_status()
+    assert (status.get("iterationsRefunded") or {}).get("grace") == 2, status
+
+    # gate OFF on the same scenario: exactly one grace refund, unchanged.
+    root2 = tmp_path / "run-off"
+    _seed_all_completed(root2)
+    sup2 = _supervisor(root2, {"review": [_review_verifies()]},
+                      peer_verdict_gate=False)
+    sup2._approach = 1
+    assert asyncio.run(sup2._maybe_grace_review(1)) is True
+    assert (sup2.run.read_status().get("iterationsRefunded")
+            or {}).get("grace") == 1
+
+
+def test_only_one_off_budget_peer_gate_per_approach(tmp_path):
+    """Bounded by construction, exactly as the grace review itself is: the
+    peer call lives inside the `_grace_review_granted`-guarded block, so a
+    second `_maybe_grace_review(1)` runs neither phase again."""
+    root = tmp_path / "run"
+    _seed_all_completed(root)
+    sup = _supervisor(
+        root, {"review": [_review_verifies()],
+               "verdict_gate": [_verdict_gate_rejects("no")]},
+        peer_verdict_gate=True)
+    sup._approach = 1
+
+    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert sup.runner.calls == {"review": 1, "verdict_gate": 1}
