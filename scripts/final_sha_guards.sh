@@ -8,9 +8,14 @@
 # validation ladder ("failed" -- see docs/prds and notes.md for the record).
 # This script removes the failure mode instead of patching the list: there
 # is no list anywhere in this file. Every invocation grep's `tests/` fresh
-# for the literal strings a test would need to reference `docs/`,
-# `artifacts/` or `README` content, and runs exactly what it finds. Add a
-# brand-new test module tomorrow that reads docs/ -- with no edit to this
+# for a *word-boundary* mention of `docs`, `artifacts` or `README` -- not
+# just the slash-form `docs/`, because a test that reads repository content
+# just as often builds the path from split components (`REPO_ROOT / "docs" /
+# "architecture.md"`, `REPO_ROOT / "artifacts" / "reports" / ...`), which a
+# `docs/`-only pattern silently misses. Discovery deliberately errs towards
+# over-inclusion: running a handful of extra modules costs seconds, while
+# omitting one is exactly the v0.13 failure this script exists to kill. Add
+# a brand-new test module tomorrow that reads docs/ -- with no edit to this
 # script -- and the very next run picks it up, because the discovery step
 # runs then, not now.
 #
@@ -29,11 +34,13 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 # Discovery, not enumeration: any tests/test_*.py file whose own SOURCE
-# mentions docs/, artifacts/ or README is a guard for this subset -- that
-# is the literal shape a test has to take to read one of those on disk.
+# mentions `docs`, `artifacts` or `README` as a word is a guard for this
+# subset -- a test cannot read one of those off disk without naming it,
+# whether as `docs/architecture.md`, as `REPO_ROOT / "docs" / "cli.md"`, or
+# as a bare `README` reference. `\b` keeps `docstring`/`docstrings` out.
 # -l = filenames only, -E = extended regex, sort for a deterministic order.
 mapfile -t MODULES < <(
-  grep -lE 'docs/|artifacts/|README' tests/test_*.py 2>/dev/null | sort
+  grep -lE '\b(docs|artifacts|README)\b' tests/test_*.py 2>/dev/null | sort
 )
 
 if [[ "${1:-}" == "--list" ]]; then

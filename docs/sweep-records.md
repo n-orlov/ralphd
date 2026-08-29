@@ -65,8 +65,9 @@ of:
 * the commits between the stale sha and `HEAD` are report/roadmap/index-only
   (no `src/`, `tests/`, or behaviour-affecting `docs/` change), and
   requirement B's discovered guard subset
-  (`scripts/final_sha_guards.sh`, or its underlying modules
-  `tests/test_docs_consistency.py tests/test_docs_prd_index.py`) has been run
+  (`scripts/final_sha_guards.sh`, which greps `tests/` for its own membership
+  at run time -- there is deliberately no fallback list of module names to
+  copy, here or anywhere else) has been run
   green at the current `HEAD`; or
 * a later sweep record in the same wave already re-ran the full check at (or
   past) `HEAD` and is itself either current or discharged the same way.

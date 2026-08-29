@@ -5,15 +5,22 @@ a module list for the same job, omitted one, and the task exhausted its
 validation ladder ("failed") -- this module exists so that failure mode can
 never come back silently.
 
-Two things are checked:
+Three things are checked:
 
 * the script's own source contains no hand-maintained module list -- no
   literal `test_<name>.py` filename anywhere in it, only the wildcard glob
   (`tests/test_*.py`) the discovery grep uses to scan the directory fresh
   each run;
-* discovery genuinely runs at invocation time: a brand-new test module,
-  planted here and reading `docs/`, is picked up by `--list` with *no* edit
-  to the script -- proving the selection is computed, not cached or typed.
+* the selection equals what an *independent* reimplementation of the rule
+  ("a module that mentions `docs`, `artifacts` or `README` as a word") finds
+  by scanning `tests/` here in Python -- a rule comparison, so this module
+  does not type a module name either;
+* discovery genuinely runs at invocation time: two brand-new test modules,
+  planted here, are picked up by `--list` with *no* edit to the script --
+  one that reads `docs/` by slash-form path, and one that reads
+  `docs/architecture.md` by *split* path components (`REPO_ROOT / "docs" /
+  "architecture.md"`, no literal `docs/` in its source), which is the shape
+  the first version of this script silently missed.
 """
 
 from __future__ import annotations
@@ -59,12 +66,65 @@ def _list_selected() -> list[str]:
 
 
 def test_known_docs_reading_modules_are_already_selected() -> None:
-    """Sanity: the two modules the PRD names as the trivial subset
-    (`docs/prds/v0.14-every-hand-on-the-plan.md:218-225`) are already picked
-    up today, with no help from this test."""
-    selected = set(_list_selected())
-    assert "tests/test_docs_consistency.py" in selected
-    assert "tests/test_docs_prd_index.py" in selected
+    """The selection equals an independent scan of `tests/` for the same rule.
+
+    Stronger than the assertion this replaced, which named
+    two module filenames and checked they were in the selection: that
+    version passed while the script's `docs/|artifacts/|README` pattern was
+    still missing every module which builds its path from split components
+    (`REPO_ROOT / "docs" / "architecture.md"`), because the two it named
+    happened to use the slash form. Comparing against the whole rule,
+    recomputed here, cannot pass with an incomplete selection -- and it
+    still types no module name.
+    """
+    rule = re.compile(r"\b(docs|artifacts|README)\b")
+    expected = {
+        f"tests/{path.name}"
+        for path in sorted((REPO_ROOT / "tests").glob("test_*.py"))
+        if rule.search(path.read_text())
+    }
+    assert expected, "the independent scan found nothing -- the rule is broken"
+    assert set(_list_selected()) == expected
+
+
+def _plant(source: str) -> tuple[str, Path]:
+    name = f"test_zzz_tmp_discovery_proof_{uuid.uuid4().hex[:8]}.py"
+    path = REPO_ROOT / "tests" / name
+    path.write_text(source)
+    return name, path
+
+
+def test_discovery_picks_up_a_module_that_reads_docs_via_split_path_components() -> None:
+    """The gap the first version of the script had: a module whose source
+    never contains the literal string `docs/`, only the path component
+    `"docs"`, still reads repository docs and must be selected."""
+    before = set(_list_selected())
+    source = (
+        '"""Throwaway module planted by '
+        "test_discovery_picks_up_a_module_that_reads_docs_via_split_path_components; "
+        'deleted at the end of that test."""\n'
+        "\n"
+        "from pathlib import Path\n"
+        "\n"
+        "REPO_ROOT = Path(__file__).resolve().parents[1]\n"
+        'ARCH = REPO_ROOT / "docs" / "architecture.md"\n'
+        "\n"
+        "\n"
+        "def test_the_architecture_doc_is_readable() -> None:\n"
+        "    assert ARCH.read_text().strip()\n"
+    )
+    assert "docs/" not in source, "the fixture must not contain the slash form"
+    new_name, new_path = _plant(source)
+    try:
+        after = set(_list_selected())
+    finally:
+        new_path.unlink()
+
+    assert f"tests/{new_name}" in after, (
+        "a brand-new module that reads docs/architecture.md via split path "
+        "components was not picked up by scripts/final_sha_guards.sh --list"
+    )
+    assert after - before == {f"tests/{new_name}"}
 
 
 def test_discovery_picks_up_a_brand_new_docs_reading_module_with_no_list_edit() -> None:
