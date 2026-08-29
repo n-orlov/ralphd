@@ -43,6 +43,7 @@ from ..engine.config import (
     JobConfig,
 )
 from ..engine.tiers import TIERS
+from ..engine.transitions import TASK_STATUSES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -50,6 +51,7 @@ from ..engine.state import (
     NO_ROUTER_CALLS,
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
+    AMENDMENT_MODE_STATUS,
     TASK_BLOCKED_FIELD,
     TASK_FAILURE_KINDS,
     TASK_STATUS_LABELS,
@@ -4283,8 +4285,15 @@ def cmd_amend_list(args) -> None:
         return
     print(f"{'SEQ':>3}  {'MODE':<7}  {'RECORDED':<25}  {'TASK':<8}  RULING")
     for e in entries:
-        mode = "waive" if e.get("waive") else "replace"
-        preview = " ".join(str(e.get("text") or "").split())
+        if e.get("mode") == AMENDMENT_MODE_STATUS:
+            mode = "status"
+            preview = f"-> {e.get('status')}"
+            reason = " ".join(str(e.get("text") or "").split())
+            if reason:
+                preview += f" ({reason})"
+        else:
+            mode = "waive" if e.get("waive") else "replace"
+            preview = " ".join(str(e.get("text") or "").split())
         if len(preview) > 60:
             preview = preview[:59] + "\u2026"
         seq = e.get("seq")
@@ -4313,22 +4322,52 @@ def cmd_amend(args):
     `--list` shows what has been recorded instead of writing a new one (see
     `cmd_amend_list`); combining it with a task id / text / `--file` /
     `--waive` is a usage error, mirroring `steer --list`.
+
+    `--status <status>` (task 006/029, #26 requirement E) records a THIRD
+    ruling kind instead of a criteria waiver/replacement: a typed status
+    ruling the engine itself applies to that task's `status` field at load
+    time (`LoopSupervisor._apply_operator_status_rulings` ->
+    `engine.state.apply_amendment_status_rulings`), never a claim about
+    successCriteria. Goes through the SAME `write_amendment` writer as
+    every other ruling (`status=` kwarg instead of `waive=`) -- there is no
+    second writer. `<status>` must be one of `engine.transitions.
+    TASK_STATUSES`; anything else is rejected here, on the host, before a
+    file is ever written, so a typo never reaches the run dir as an inert
+    file the engine silently ignores. The trailing text/`--file`/stdin
+    argument becomes the operator's OPTIONAL reason (never required, never
+    read from stdin when omitted) -- combining `--status` with `--waive`
+    is a usage error.
     """
     if args.list:
-        if args.task_id or args.text or args.file or args.waive:
+        if args.task_id or args.text or args.file or args.waive or args.status:
             die(2, "--list only shows this run's recorded operator rulings; "
-                   "drop the task id/text/--file/--waive")
+                   "drop the task id/text/--file/--waive/--status")
         cmd_amend_list(args)
         return
     _require_run(args.run_id)
     if not args.task_id:
         die(2, "a task id is required (or --list to show recorded rulings)")
+    cdir = config_root(args.run_id)
+    cdir.mkdir(parents=True, exist_ok=True)
+    if args.status:
+        if args.waive:
+            die(2, "--status and --waive are two different ruling kinds; "
+                   "drop one")
+        if args.status not in TASK_STATUSES:
+            die(2, f"unknown status {args.status!r}; must be one of "
+                   f"{', '.join(TASK_STATUSES)}")
+        reason = args.text or (Path(args.file).read_text() if args.file else "")
+        fname = write_amendment(cdir, args.task_id, reason,
+                                status=args.status)
+        out(args, {"file": fname, "taskId": args.task_id,
+                   "status": args.status},
+            f"operator status ruling recorded: {fname} (task {args.task_id} "
+            f"-> {args.status}, applied by the engine at load time)")
+        return
     text = args.text or (Path(args.file).read_text() if args.file
                          else sys.stdin.read())
     if not text.strip():
         die(2, "empty ruling text")
-    cdir = config_root(args.run_id)
-    cdir.mkdir(parents=True, exist_ok=True)
     fname = write_amendment(cdir, args.task_id, text, waive=args.waive)
     kind = "waiver" if args.waive else "replacement"
     out(args, {"file": fname, "taskId": args.task_id, "waive": args.waive},
@@ -6371,6 +6410,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="a full waiver (the task's successCriteria is "
                         "satisfied by operator decision) rather than a "
                         "replacement of its criteria text")
+    s.add_argument("--status", metavar="STATUS",
+                   help="record a status ruling instead (must be one of "
+                        "engine.transitions.TASK_STATUSES); the trailing "
+                        "text/--file/stdin argument becomes an optional "
+                        "reason, never required")
     s.add_argument("--list", action="store_true",
                    help="list this run's recorded operator rulings instead "
                         "of recording one; always reads the run's /config "

@@ -1549,11 +1549,48 @@ re-failing the same finding.
 | Option | Meaning |
 |--------|---------|
 | `--waive` | a full waiver: that task's criteria are satisfied by operator decision, not a text replacement |
+| `--status <status>` | record a status ruling instead (task 006/029, #26 requirement E) — see below |
 | `--file <f>` | read the ruling text from a file instead of the trailing argument |
 | `--list` | **show** this run's recorded rulings instead of recording one |
 
 Text comes from the trailing positional argument, `--file <f>`, or stdin — the
-same three-way choice as `steer`.
+same three-way choice as `steer`. For a criteria ruling (the default, or
+`--waive`), that text is required and non-empty.
+
+#### `ralphctl amend <run-id> <task-id> --status <status> [reason]`
+
+A THIRD ruling kind (task 006/029, #26 requirement E), alongside the
+waiver/replacement above: a typed status ruling the ENGINE itself applies to
+that task's `status` field in `tasks.json`, at load time, rather than one that
+only binds review's judgement of successCriteria. Goes through the exact same
+`write_amendment` writer as every other ruling — `status=` instead of
+`waive=` — there is no second writer and no second on-disk shape; the file
+gets `mode: status` and a `status: <status>` header line instead of
+`mode: waive`/`mode: replace`.
+
+`<status>` must be one of `engine.transitions.TASK_STATUSES`
+(`pending`, `in-progress`, `awaiting-validation`, `validated`,
+`validation-failed`, `completed`, `failed`, `skipped`); anything else is
+rejected right here, on the host, with the full list of legal statuses in the
+error, exit `2` — no file is ever written for a bad status, so a typo can
+never land as an inert file the engine silently ignores. The trailing
+text/`--file`/stdin argument becomes the operator's OPTIONAL reason for a
+status ruling — never required, and never read from stdin when omitted (unlike
+the criteria-ruling path, which blocks on stdin when nothing else is given).
+Combining `--status` with `--waive` is a usage error (exit `2`): a ruling is
+exactly one kind, never two at once.
+
+Applying the ruling to `tasks.json` is NOT this command's job —
+`ralphctl amend` never touches the run dir at all, only `config_root`. The
+engine applies it (`LoopSupervisor._apply_operator_status_rulings` →
+`engine.state.apply_amendment_status_rulings`) the next time the run loads,
+checked against the same declared task-status transition table every other
+status move is checked against; an illegal transition for the CURRENT status
+is refused there, not here, since this command has no way to know the task's
+current status at write time. `ralphctl amend <run-id> --list` shows a
+recorded status ruling as `status  -> <status> (<reason>)` in the table (and
+`mode: "status"` / `status: "<status>"` in `--json`), the same reader as
+every other ruling kind.
 
 **Why this is unforgeable, and why that's the whole design.** `ralphctl amend`
 runs on the HOST and writes directly into `config_root(run_id)`
@@ -1595,8 +1632,9 @@ to read like one.
 so there is nothing for a live container to answer differently than the file
 on disk — it always reads `config_root(run_id)/amendments/` directly, live or
 dead run, with a `(no operator rulings recorded)` notice when there are none.
-Unknown run id is exit `3`; combining `--list` with a task id, text, `--file`
-or `--waive` is exit `2`, mirroring `steer --list`'s own mutual exclusion.
+Unknown run id is exit `3`; combining `--list` with a task id, text, `--file`,
+`--waive` or `--status` is exit `2`, mirroring `steer --list`'s own mutual
+exclusion.
 
 ### `ralphctl interrupt <run-id>`
 

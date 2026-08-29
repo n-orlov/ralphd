@@ -255,6 +255,72 @@ def test_amend_empty_ruling_text_is_a_usage_error(tmp_path):
     assert res.returncode == 2
 
 
+def test_amend_status_writes_a_status_ruling_through_write_amendment(tmp_path):
+    """Task 006 (#26, requirement E): `--status` goes through the SAME
+    `write_amendment` path as waive/replace -- `mode: status` in the file,
+    reason optional."""
+    registry = tmp_path / "registry"
+    cdir_ = _seed(registry, "s1")[1]
+    res = ralphctl(registry, "amend", "s1", "007", "--status", "skipped",
+                  "operator says drop it")
+    assert res.returncode == 0, res.stderr
+    f = cdir_ / "amendments" / "001-007.md"
+    assert f.exists()
+    raw = f.read_text()
+    assert "mode: status" in raw
+    assert "status: skipped" in raw
+    assert "operator says drop it" in raw
+
+
+def test_amend_status_reason_is_optional(tmp_path):
+    registry = tmp_path / "registry"
+    cdir_ = _seed(registry, "s2")[1]
+    res = ralphctl(registry, "amend", "s2", "007", "--status", "failed")
+    assert res.returncode == 0, res.stderr
+    f = cdir_ / "amendments" / "001-007.md"
+    assert f.exists()
+    assert "status: failed" in f.read_text()
+
+
+def test_amend_status_rejects_a_status_not_in_task_statuses(tmp_path):
+    registry = tmp_path / "registry"
+    cdir_ = _seed(registry, "s3")[1]
+    res = ralphctl(registry, "amend", "s3", "007", "--status", "bogus-status")
+    assert res.returncode == 2
+    assert "bogus-status" in res.stderr
+    assert not (cdir_ / "amendments").exists() or \
+        not any((cdir_ / "amendments").glob("*.md"))
+
+
+def test_amend_status_mutex_with_waive(tmp_path):
+    registry = tmp_path / "registry"
+    _seed(registry, "s4")
+    res = ralphctl(registry, "amend", "s4", "007", "--status", "skipped",
+                  "--waive")
+    assert res.returncode == 2
+    assert "--waive" in res.stderr
+
+
+def test_amend_status_shows_up_in_list(tmp_path):
+    registry = tmp_path / "registry"
+    _seed(registry, "s5")
+    ralphctl(registry, "amend", "s5", "007", "--status", "skipped", "why")
+    res = ralphctl(registry, "--json", "amend", "s5", "--list")
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert len(payload["entries"]) == 1
+    entry = payload["entries"][0]
+    assert entry["taskId"] == "007"
+    assert entry["mode"] == "status"
+    assert entry["status"] == "skipped"
+
+    res_text = ralphctl(registry, "amend", "s5", "--list")
+    assert res_text.returncode == 0, res_text.stderr
+    assert "status" in res_text.stdout
+    assert "skipped" in res_text.stdout
+    assert "007" in res_text.stdout
+
+
 def test_amend_never_calls_docker_or_the_http_api(monkeypatch):
     """`amend` is host-only by design -- source-level check that `cmd_amend`
     never references `docker`/`DOCKER`/`sh(`/the `api()` helper anywhere in
