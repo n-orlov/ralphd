@@ -545,6 +545,17 @@ function taskBlockedBy(doc, t) {
   return Array.isArray(by) && by.length > 0 ? by.map(String) : null;
 }
 
+// Task 011 (PRD requirement I, #98): a task the steer hat inserted carries
+// `origin: "steer"` (`engine.state.TASK_ORIGIN_STEER`) directly on the
+// record -- unlike `taskFailureKind` above, there is no legacy label to
+// migrate and nothing to derive server-side; the raw field IS the answer, so
+// this is a plain predicate, not a lookup into a payload map. A
+// planner-proposed task carries no `origin` key at all (backward compatible
+// with every plan written before this existed).
+function isSteeringOrigin(t) {
+  return !!(t && t.origin === "steer");
+}
+
 // The status as `engine.state.format_task_status` words it -- `failed
 // (validation-exhausted)`, or `pending (blocked by 004, 005)` -- so the pill,
 // the task dialog and `ralphctl tasks` say the same words about the same
@@ -553,6 +564,7 @@ function taskStatusText(doc, t) {
   const status = t && t.status ? String(t.status) : "unknown";
   const kind = taskFailureKind(doc, t);
   let text = kind ? status + " (" + kind + ")" : status;
+  if (isSteeringOrigin(t)) text += " (steering-origin)";
   const by = taskBlockedBy(doc, t);
   if (by) text += " (blocked by " + by.join(", ") + ")";
   return text;
@@ -561,6 +573,7 @@ function taskStatusText(doc, t) {
 function taskDialogText(t, doc) {
   const lines = [];
   lines.push("status: " + taskStatusText(doc, t));
+  if (isSteeringOrigin(t)) lines.push("origin: steer");
   if (t.priority != null) lines.push("priority: " + String(t.priority));
   if (Array.isArray(t.dependsOn) && t.dependsOn.length > 0) {
     lines.push("dependsOn: " + t.dependsOn.map(String).join(", "));
@@ -1967,11 +1980,13 @@ function renderTasks(el, tasks) {
     const open = () => { openTaskDialog(t, doc); };
     const kind = taskFailureKind(doc, t);
     const blockedBy = taskBlockedBy(doc, t);
+    const steering = isSteeringOrigin(t);
     tbody.appendChild(h("tr", {
       class: "task-row" + (blockedBy ? " task-row-blocked" : ""),
       "data-task-id": String(t.id == null ? "" : t.id),
       "data-failure-kind": String(kind || ""),
       "data-blocked": blockedBy ? blockedBy.join(",") : "",
+      "data-task-origin": steering ? "steer" : "",
       role: "button",
       tabindex: "0",
       title: "show this task's success criteria",
@@ -1989,9 +2004,15 @@ function renderTasks(el, tasks) {
       // Task 021 (#60 pillar 3): a task the dependency graph dooms gets a
       // `blocked` pill alongside its OWN real status -- so a dead subtree
       // is visible in the row itself, not only inside the dialog.
+      //
+      // Task 011 (PRD requirement I, #98): a steering-origin task gets its
+      // own pill too -- planner-proposed and steer-injected are otherwise
+      // visually identical rows, which is exactly what this task exists to
+      // stop.
       h("td", {}, [
         pill(t.status),
         ...(kind ? [" ", pill(kind)] : []),
+        ...(steering ? [" ", pill("steering-origin")] : []),
         ...(blockedBy ? [" ", pill("blocked by " + blockedBy.join(", "))] : []),
       ]),
       h("td", {}, [String(t.title || "")]),

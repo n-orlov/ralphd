@@ -1242,6 +1242,13 @@ def steer_task_insert(run: "RunDir", task: dict) -> dict:
     never written verbatim: a freshly-inserted task has never been worked,
     and handing it a status here would be exactly the kind of hand-written
     status field this module exists to keep out of every OTHER path too.
+
+    Task 011 (PRD requirement I, #98): also always stamps `origin:
+    "steer"` (`TASK_ORIGIN_STEER`), the same way and for the same reason it
+    always forces `status` to `pending` -- any `origin` key the caller
+    supplied is IGNORED and overwritten, because the fact being recorded is
+    "the steer hat inserted this row", not whatever the tool call happened
+    to say about itself.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
@@ -1250,6 +1257,7 @@ def steer_task_insert(run: "RunDir", task: dict) -> dict:
         return {"inserted": False, "reason": "id already exists", "taskId": task_id}
     new_task = dict(task)
     new_task["status"] = "pending"
+    new_task["origin"] = TASK_ORIGIN_STEER
     tasks.append(new_task)
     run.write_tasks(data)
     return {"inserted": True, "taskId": task_id}
@@ -2554,6 +2562,28 @@ TASK_COUNT_OVERLAY_KEYS = TASK_COUNT_SUBKEYS + ("blocked",)
 TASK_DEPENDENCY_SATISFIED_STATUSES = ("completed", "validated")
 TASK_DEPENDENCY_DEAD_STATUSES = ("failed", "skipped")
 
+# Task 011 (PRD requirement I, #98): a task the steer hat inserted carries
+# this `origin` value in `tasks.json` -- `tasks.json` being planner-proposed
+# is a deliberate property (PRD: "an injected task must not be
+# indistinguishable from one the planner reasoned about"), so an operator
+# reading a plan, or a run's own dependency graph, can tell which tasks were
+# never reasoned about by the planning hat at all. A planner-proposed task
+# carries NO `origin` key (backward compatible with every plan written
+# before this existed, not a second spelling of "planner"); only
+# `steer_task_insert` ever writes this value, and it writes it
+# unconditionally -- the same way that function always forces `status` to
+# `pending` regardless of what the caller supplied.
+TASK_ORIGIN_STEER = "steer"
+
+
+def is_steering_origin(task: dict) -> bool:
+    """True for a task `steer_task_insert` created -- the one predicate every
+    surface that marks steering-origin tasks (`format_task_status` below,
+    the CLI table, the hub row/dialog) calls, so "what counts as steering-
+    origin" is decided once rather than re-testing `task.get("origin") ==
+    "steer"` in three languages."""
+    return isinstance(task, dict) and task.get("origin") == TASK_ORIGIN_STEER
+
 
 def task_blocked_by(tasks: list) -> dict[str, list[str]]:
     """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}` for
@@ -2751,6 +2781,13 @@ def format_task_status(task: dict, blocked_by: list | None = None) -> str:
     status (`pending`, `in-progress`, ...) is never hidden by the overlay,
     only annotated. Optional and keyword-friendly so every existing call
     site that has no dependency graph handy keeps working unchanged.
+
+    Task 011 (PRD requirement I, #98): a steering-origin task (`is_steering_
+    origin()`, `task["origin"] == TASK_ORIGIN_STEER`) gets ` (steering-
+    origin)` appended after the kind and before the blocked-by suffix, so
+    every surface that already renders through this one function -- `ralphctl
+    tasks`, the hub's task row and dialog -- marks an injected task without
+    each surface re-testing the `origin` field itself.
     """
     if not isinstance(task, dict):
         return "unknown"
@@ -2758,6 +2795,8 @@ def format_task_status(task: dict, blocked_by: list | None = None) -> str:
     status = str(status) if status else "unknown"
     kind = task_failure_kind(task)
     text = f"{status} ({kind})" if kind else status
+    if is_steering_origin(task):
+        text += " (steering-origin)"
     if blocked_by:
         text += f" (blocked by {', '.join(str(b) for b in blocked_by)})"
     return text
