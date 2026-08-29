@@ -1179,6 +1179,150 @@ does.
   final sha, and the closing operator report walking the repaired A-N —
   both tracked as this run's own remaining tasks and not claimed here.
 
+## v0.14 — every hand on the plan is named
+
+Full PRD:
+[`docs/prds/v0.14-every-hand-on-the-plan.md`](prds/v0.14-every-hand-on-the-plan.md).
+`deck-phase3g` lost six dependent tasks to one `failed` task with neither `worker.md`
+resolution able to clear the doom; `selfdev-v013-a-broken-contract` steer 003 was marked
+`consumed` with three quarters of it undone; the first approach of every wave since v0.11 was
+rejected for a suite that was not green at its own shipped sha. Nine issues (#103, #99, #98,
+#101, #102, #100, #95, #96, #88 — and #91, closing as a consequence of #98), and this run
+(`selfdev-v014-hands-on-the-plan`) supplied a further data point for #99 on its own:
+approach 1 landed 22 of its own 35 tasks (requirements A through R, including P's own work),
+then task 016 — requirement P, itself only a test-fidelity shortfall on landed code —
+went `failed`, and the twelve-deep dependency chain the closing sequence had been built as
+(`024→025→…→035`) made every remaining issue closure, doc update, sweep and the closing
+report itself permanently unreachable in one stroke. The engine driving that approach had
+been built from the wheel at launch, hours before this same wave's own requirement E and D
+fixes landed in its own tree — so the run reproduced the #99 doom scenario its own fix was
+shipping, and could not reach the escape hatch it had just built for the next run. Approach 2
+(this record) repairs two defects requirement A's own guard mechanism carried into that same
+approach, gives P's test-fidelity gap one honest attempt, and closes the wave's issues and
+record. Requirement letters below are the PRD's own, `A`-`S`.
+
+- ✅ **A. A sweep record's sha becomes a checkable, machine-readable fact — and the checker
+  itself was wrong twice (#103).** Approach 1 (`c4f24ad`, `007c33c`, task 002) shipped the
+  `sweep-sha` block and the discharge-chain check. Approach 2 found and fixed two defects in
+  that same mechanism before trusting it for this wave's own closing sequence: the pytest
+  summary-line detector matched prose containing "N failed" (misclassifying
+  `artifacts/reports/v0.14-operator-notifications.md` as an undeclared sweep record),
+  fixed by anchoring the regex to a whole line with a duration suffix (task 001, `e7524cc`,
+  `5f9d7cf`); and the discharge rule could never be satisfied at a wave's own true final sha,
+  because a `discharge-sha` line can only name a sha that already exists, so the commit that
+  adds it always moves `HEAD` one past the chain it discharges — fixed by accepting a
+  report-only tail past the chain's end (task 003, `d46199c`). Both fixes are pinned by tests
+  that fail against the pre-change code (`tests/test_sweep_sha_guard.py`,
+  `tests/test_final_sha_guards_discovery.py`).
+- ✅ **B. The guard subset a docs- or report-only commit can break, discovered rather than
+  listed (#103).** `scripts/final_sha_guards.sh` (`0ee0ec0`, widened at `34be5fa`) finds its
+  membership by grepping `tests/` for modules that read `docs/`, `artifacts/` or `README`
+  content, rather than a hand-maintained list — the shape v0.13's own approach 3 task 012
+  attempted as a list and shipped `failed`.
+- ✅ **C. `worker.md` stops confidently recommending a no-op (#99).** The `## Completion
+  signal` section now states plainly that neither of its two resolutions for a
+  validation-exhausted task clears dependency doom for that task's dependents, and instructs
+  the worker to report the doomed set and stop rather than pick a resolution that cannot work
+  (`945fcf2`).
+- ✅ **D. A doomed plan raises a named fault instead of starving quietly (#99).** When the
+  doomed set covers the entire actionable remainder, the loop now raises a fault naming the
+  doomed tasks and their dead ancestors rather than producing three silent no-progress
+  iterations and a stagnation misattribution (`838753e`, `tests/test_doomed_plan_fault.py`).
+  This run's own approach 1 reproduced exactly the failure D exists to prevent — but under the
+  wheel-baked engine that predates this fix, so D's own mechanism was never live in the process
+  that needed it; the fix is proven by test, not by the run demonstrating it against itself.
+- ✅ **E. `ralphctl amend --status`: the operator's typed, unforgeable status ruling
+  (#99).** The engine-side applier validates a ruling against `TASK_STATUS_TABLE` at load
+  time, preserves `validationAttempts`/`tierLadderExhausted`, and emits an audited event
+  (`12f7c9e`, task 005); `ralphctl amend <run> <task> --status` writes it through the same
+  read-only amendments mount (`df28b1e`, task 006). `deck-phase3g`'s operator amendment did
+  nothing for the scheduler; this is the lever that would have.
+- ✅ **F. The vocabulary question, decided (#99, #51).** No third status term was added.
+  The decision — E is the sanctioned resolution for "the work landed, one stated property did
+  not" — is recorded in `SPEC.md` and in this wave's closing record rather than left implicit
+  (`4ec3629`, task 008).
+- ✅ **G. The steer hat: a state, a schema, a prompt, a model role (#98).** `steer` is a real
+  `TABLE` entry, `HAT_SCHEMAS` entry and `MODEL_HATS` entry with its own prompt, reached only
+  through declared edges (`0650acd`, task 009, `tests/test_steer_hat_table_entry.py`).
+- ✅ **H. The authority boundary is the tool surface, not the prompt (#98).** The steer hat's
+  tool set carries no budget tool, asserted by a test that fails the moment one is added to
+  the wrong list; its status-changing tool calls requirement E's own applier rather than a
+  second implementation (`a6f63ec`, task 010, `tests/test_steer_hat_tool_surface.py`).
+- ✅ **I. Priority, `--now`, and what "settled" means (#98).** Steering-origin tasks are
+  marked on `tasks.json` and every surface (`dd550fd`, task 011); unsettled steering runs
+  next, above validation-failed retries and any pending task, deterministically
+  (`45860c2`, task 012); `settled` is split from `done`, and terminal success is gated on
+  steering-origin tasks rather than on a steering file (`a3d31d4`, `3215df4`, task 013) — the
+  exact conflation steer 003 fell through (`tests/test_steering_origin_marker.py`,
+  `tests/test_steering_priority_routing_task012.py`, `tests/test_status_unconsumed_steering.py`).
+- ✅ **J. Uncharged, laddered, pre-plan left exactly alone (#98).** The steer hat's own
+  iteration is uncharged via a third refund kind, malformed output gets the existing contract
+  ladder, and pre-plan steering keeps its prompt-injected shape unchanged (`db4a9a2`,
+  `c6385c5`, task 014, `tests/test_steer_uncharged_task014.py`). **With G-J landed, #91
+  closes as a consequence**: adding scope to a running approach is now possible through the
+  steer hat's task-insertion path.
+- ✅ **K. The peer plan review gate (#101).** An opt-in peer model approves a plan or routes
+  objections back into a bounded planning revision (`1a4c1bf`, task 018,
+  `tests/test_peer_plan_review_gate.py`).
+- ✅ **L. The peer verdict gate, genuinely blind (#101).** An opt-in peer model re-verifies a
+  `verified` review without the reviewer's own reasoning or verdict before the run may exit
+  (`75e6c43`, `07aa515`, task 020, `tests/test_peer_verdict_gate.py`).
+- ✅ **M. The router's first live edge, and the fail-fast that must not be skipped
+  (#101).** The peer gate declares the first real `ROUTER_FALLBACK` entry and exercises
+  `router.decide()` from production rather than a fixture hat; an opt-in gate whose configured
+  model has no route fails at start time rather than silently degrading to "no gate"
+  (`f5fbd29`, `8832903`, task 019).
+- ✅ **N. A worker's split, proposed through the contract; budgeted, marked, no escape hatch
+  (#102).** `proposed_tasks` is an optional `HAT_SCHEMAS["worker"]` field ingested through
+  `plan_ingestion`'s existing lint, scoped to splits only, budgeted per approach, marked with
+  a worker-origin marker, checked for `dependsOn` coherence, and pinned that proposing a task
+  alone still fails the approach under the stagnation guard (`191aa3f`, task 021,
+  `tests/test_worker_split_proposal.py`); the superseded `worker.md` prose was deleted in the
+  same commit.
+- ✅ **O. The whole-plan completion marker becomes a contract value (#100).** The worker
+  contract's `verdict` enum gains a fourth value valid only when no task was assigned,
+  cross-checked against `_outstanding_for_completion()` the same way the old marker was, and
+  `<promise>COMPLETE</promise>` is retired from `worker.md` including the paragraph that
+  existed only to explain the textual channel (`9a6f202`, task 015,
+  `tests/test_worker_plan_complete_task015.py`).
+- ✅ **P. A paused run does not burn its own deadline (#95) — landed, with a disclosed
+  residual now also landed.** `_gate()` credits only the span actually parked, extends both
+  deadline fields, republishes `deadlineAt`, and records `pausedTotalS` beside
+  `infraWaitTotalS` with a pause-specific `deadline_extended` reason distinct from an infra
+  wait (`b4fa78a`, task 016, requirement P). That same task's validator found the module's own
+  test fidelity wanting — no test drove a pause requested while an iteration was genuinely in
+  flight through a stubbed `sup.runner` — and the task was marked `failed` on that gap alone,
+  becoming the doom this wave's own D and E were shipped to answer (see D above). This
+  approach gave the residual its one prescribed honest attempt and it landed:
+  `test_pause_mid_flight_iteration_credits_only_the_real_park` drives a real in-flight
+  iteration and is hand-verified to fail when `_account_paused_wait`'s call in `_gate()` is
+  removed (`8ed5083`, task 004, `tests/test_pause_deadline_credit_task016.py`). **#104**, filed
+  against exactly this gap, remains **open** as of this entry — the fix it asked for is in the
+  tree and green, but closing the tracking issue itself was not this wave's own task.
+- ✅ **Q. Reflect gets the ladder every other hat has (#96).** `_reflect_verdict` now goes
+  through `contract_enforcement.enforce_contract` like the other five sites, keeping v0.12
+  requirement G's guarantee that an unrecovered reflect stays degraded rather than fatal, and
+  bounding the uncharged re-ask inside `REFLECT_TAIL_TIMEOUT_S` (`82b05a6`, task 017,
+  `tests/test_reflect_tail_budget.py`).
+- ✅ **R. The shipped operator skill can be installed (#88).** `ralphctl skills install`
+  copies (not symlinks), stamps, refuses on local modification, verifies discoverability, and
+  auto-detects both `~/.claude/skills/` and `~/.pi/agent/skills/` (`80e4678`, task 022); the
+  wheel ships `skills/` via the same force-include treatment as `container/`, and
+  `ralphctl doctor` reports the installed/missing/stale line (`0839fbb`, task 023,
+  `tests/test_cli_skills_install.py`).
+- ⏳ **S. The predecessor's row, this wave's row, the version, the roadmap, the closures.**
+  Landed as of this entry: `0.14.0` in `pyproject.toml` and
+  `src/ralphd/__init__.py` (task 008); this `## v0.14` block; #103, #99, #100 closed with
+  evidence (task 005); #95, #96 closed with evidence disclosing the P residual (task 006);
+  #98, #91, #101, #102, #88 closed with evidence (task 007) — all ten issues this wave owns
+  are closed. **Not yet landed as of this entry**: `selfdev-v013-a-broken-contract`'s own PRD
+  index row (still stale) and this wave's own row snapshot; `SPEC.md`/`docs/cli.md`/
+  `docs/api.md`/`docs/architecture.md` updates for the three new hats, the amendment ruling,
+  the new worker contract value, pause semantics and `skills install`; the fast/docker/browser
+  tier sweeps and both dev-layout mode sweeps at this approach's true final sha; the guard
+  subset re-verification at that sha; and the closing operator report walking A through S —
+  all tracked as this run's own remaining tasks and not claimed here.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
