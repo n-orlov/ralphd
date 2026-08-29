@@ -106,30 +106,55 @@ Pre-existing records are explicitly out of scope (no `sweep-sha` block,
 skipped by the primary guard by construction). New records this wave writes
 are not exempt: any file under `artifacts/reports/` whose name starts with
 the `v0.14-` prefix (this wave's own naming convention, already used by
-`artifacts/reports/v0.14-operator-notifications.md`) **and** whose body
-contains a genuine pytest result *summary line* -- one or more
+`artifacts/reports/v0.14-operator-notifications.md`) **and** which contains a
+genuine pytest result *summary line* counts as one of this wave's sweep
+records and must declare a `sweep-sha` block.
+
+A "genuine pytest result summary line" is defined by shape, and the shape is
+anchored to a **whole line**: the line's entire content (ignoring
+indentation and pytest's optional `=` padding) is one or more
 comma-separated "N \<outcome\>" clauses (`passed`, `failed`, `skipped`,
 `error`/`errors`, `deselected`, `warning`/`warnings`, `xfailed`, `xpassed`)
-followed by an "in \<n\>s" duration, the shape pytest itself prints (e.g.
-`588 passed in 21.92s`, `2227 passed, 1 skipped, 42 deselected in
-164.09s`) -- counts as one of this wave's sweep records and must declare a
-`sweep-sha` block. An English sentence that merely contains a count next to
-one of those words but no trailing duration (e.g. "Attempt 1 failed
-validation because ...") is prose, not a result line, and does not trigger
-this rule -- `PYTEST_SUMMARY_RE` in `tests/sweep_sha_guard.py` requires the
-"in \<n\>s" suffix precisely so prose like that cannot be mistaken for a
-sweep record.
+followed by pytest's own "in \<n\>s" duration -- e.g. `588 passed in 21.92s`,
+`2227 passed, 1 skipped, 42 deselected in 164.09s`, or
+`==== 2 failed, 10 passed in 1.23s ====`. So the practical rule when writing
+a record is: **quote the wrapper's own summary line verbatim, on a line of
+its own** (a fenced block is the natural place).
+
+Two kinds of prose are therefore *not* result lines, and neither makes the
+file holding it a sweep record:
+
+* a sentence with a count next to an outcome word but no duration --
+  "Attempt 1 failed validation because ...", "cannot relabel 016
+  failed->skipped itself";
+* a sentence that quotes a real summary *inline* -- "the fast tier came back
+  4302 passed, 1 skipped in 856.12s, same as last wave" -- because the
+  counts-plus-duration shape is not the whole line there. It is prose
+  *about* a sweep, in a notification log or a plan note; the sweep's own
+  record is the file that quotes the line itself.
+
+`tests/sweep_sha_guard.py` implements this as `is_pytest_result_line` /
+`contains_pytest_result_line` over `PYTEST_SUMMARY_RE`, anchored with
+`^`/`$` and matched a line at a time -- an unanchored search would classify
+both kinds of prose above as sweep records.
 `tests/test_sweep_sha_guard.py::test_every_v014_sweep_record_declares_a_sha`
-enforces this; a `v0.14-*.md` file that names no test result at all (a plain
-notification log, for instance) is not a sweep record and is not required to
-declare anything.
+enforces the companion rule;
+`::test_an_english_sentence_with_a_count_is_not_a_pytest_result_line`,
+`::test_a_real_pytest_summary_line_is_a_pytest_result_line`,
+`::test_a_report_that_only_quotes_counts_inline_is_not_a_sweep_record` and
+`::test_the_real_notification_log_is_not_misclassified_as_a_sweep_record`
+pin both directions of the line rule. A `v0.14-*.md` file that names no test
+result at all (a plain notification log, for instance) is not a sweep record
+and is not required to declare anything.
 
 ## Where the checks live
 
 * `tests/sweep_sha_guard.py` -- the parser (`sweep_shas`,
-  `discharge_entries`, `malformed_discharge_lines`) and the two problem-list
-  functions (`check_reports`, `wave_sha_missing_problems`), shared the same
-  way `tests/report_claims.py` shares its checks with every report.
+  `discharge_entries`, `malformed_discharge_lines`), the result-line rule
+  (`is_pytest_result_line`, `contains_pytest_result_line`) and the two
+  problem-list functions (`check_reports`, `wave_sha_missing_problems`),
+  shared the same way `tests/report_claims.py` shares its checks with every
+  report.
 * `tests/test_sweep_sha_guard.py` -- applies them to every report the
   directory currently holds, plus the tmp-dir fixtures that prove the guard
   actually fires and actually clears.

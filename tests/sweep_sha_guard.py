@@ -30,29 +30,61 @@ SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 # one 40-hex-char sha per line (leading/trailing blank lines tolerated).
 _FENCE_RE = re.compile(r"```(sweep-sha|discharge-sha)\s*\n(.*?)```", re.S)
 
-# A genuine pytest result summary line -- one or more comma-separated
-# "N <outcome>" clauses followed by a duration ("in <n>s"), the shape
-# pytest itself prints (e.g. "588 passed in 21.92s", "2227 passed, 1
-# skipped, 42 deselected in 164.09s", "1 failed, 1 passed in 0.07s").
+# A genuine pytest result summary line: a line whose WHOLE content is one or
+# more comma-separated "N <outcome>" clauses followed by pytest's own
+# trailing duration ("in <n>s"), optionally wrapped in the `=` padding
+# pytest's non-quiet mode prints (e.g. "588 passed in 21.92s",
+# "2227 passed, 1 skipped, 42 deselected in 164.09s",
+# "==== 1 failed, 1 passed in 0.07s ====").
 #
-# The previous rule (task 001, #103) was `\b\d+\s+(?:passed|failed|
-# skipped|errors?)\b` -- any "N passed"/"N failed"/etc token anywhere in
-# the text. That also matched ordinary English sentences that happen to
-# contain a number next to one of those words -- e.g. "Attempt 1 failed
-# validation because ..." and "container) cannot relabel 016 failed-
-# >skipped itself" in artifacts/reports/v0.14-operator-notifications.md --
-# misclassifying a plain notification log as a sweep record that must
-# declare a `sweep-sha` block. The new rule is stronger because it requires
-# the trailing "in <n>s" duration that only pytest's own summary line
-# carries; prose never happens to have that shape immediately after the
-# count, so a sentence with "1 failed" in it no longer matches while a real
-# pytest summary line still does. See docs/sweep-records.md's "companion
-# rule" paragraph.
+# Rule history, both steps recorded because each one was a real defect:
+#
+# 1. The original rule (task 002, #103) was `\b\d+\s+(?:passed|failed|
+#    skipped|errors?)\b` -- any "N passed"/"N failed"/etc token ANYWHERE in
+#    the text. That matched ordinary English sentences containing a number
+#    next to one of those words -- "Attempt 1 failed validation because ..."
+#    and "cannot relabel 016 failed->skipped itself" in
+#    artifacts/reports/v0.14-operator-notifications.md -- misclassifying a
+#    plain notification log as a sweep record owing a `sweep-sha` block.
+# 2. Requiring the trailing "in <n>s" duration killed those two sentences
+#    but was still an UNANCHORED search, so prose that quotes a real summary
+#    inline -- "English says 4302 passed, 1 skipped in 856.12s yesterday."
+#    -- still counted as a result line, and the detector could only ever
+#    report that some fragment of a line looked like a summary.
+#
+# The rule below is stronger than both: the counts-plus-duration shape must
+# be the entire line, so a match is a claim about a whole line of the report
+# rather than about a substring of a sentence. Prose that mentions counts
+# always has words around them, so it no longer matches, while every real
+# pytest summary line -- alone on its line, indented inside a fenced block,
+# or `=`-padded -- still does. Use `is_pytest_result_line` /
+# `contains_pytest_result_line` rather than the regex directly. See
+# docs/sweep-records.md's "companion rule" paragraph.
+_OUTCOME = r"(?:passed|failed|skipped|errors?|deselected|warnings?|xfailed|xpassed)"
 PYTEST_SUMMARY_RE = re.compile(
-    r"\b\d+\s+(?:passed|failed|skipped|errors?|deselected|warnings?|xfailed|xpassed)"
-    r"(?:,\s*\d+\s+(?:passed|failed|skipped|errors?|deselected|warnings?|xfailed|xpassed))*"
-    r"\s+in\s+\d+(?:\.\d+)?s\b"
+    r"^[ \t=]*"
+    rf"\d+ +{_OUTCOME}"
+    rf"(?:, *\d+ +{_OUTCOME})*"
+    r" +in +\d+(?:\.\d+)?s"
+    r"[ \t=]*$",
+    re.MULTILINE,
 )
+
+
+def is_pytest_result_line(line: str) -> bool:
+    """True only when the WHOLE line is a pytest result summary line.
+
+    Anchored on purpose: a sentence that quotes counts inline ("the fast
+    tier reported 4302 passed, 1 skipped in 856.12s yesterday") is prose
+    about a sweep, not the sweep's own result line, and must not make the
+    file holding it a sweep record.
+    """
+    return bool(PYTEST_SUMMARY_RE.fullmatch(line.strip("\r\n")))
+
+
+def contains_pytest_result_line(text: str) -> bool:
+    """True when any single line of `text` is a pytest result summary line."""
+    return any(is_pytest_result_line(line) for line in text.splitlines())
 
 
 def report_files() -> list[Path]:
@@ -136,7 +168,7 @@ def is_wave_sweep_record(path: Path, text: str | None = None) -> bool:
         return False
     if text is None:
         text = path.read_text()
-    return bool(PYTEST_SUMMARY_RE.search(text))
+    return contains_pytest_result_line(text)
 
 
 def current_head(cwd: Path = REPO_ROOT) -> str:
