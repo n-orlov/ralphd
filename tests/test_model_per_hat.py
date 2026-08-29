@@ -1,10 +1,10 @@
 """Task 005 (#60 pillar 4, requirement A): the per-hat model table.
 
 `model_overrides` (job.yaml key `model_overrides:` or its new alias
-`models:`) becomes THE mechanism for a model per hat, covering the six hats
-`model_for` resolves: the five `STATE_HAT` roles (planning/worker/verify/
-review/reflect) plus the router. Four things must hold, and each gets its
-own section below:
+`models:`) becomes THE mechanism for a model per hat, covering the seven hats
+`model_for` resolves: the six `STATE_HAT` roles (planning/worker/verify/
+review/reflect/steer) plus the router. Four things must hold, and each gets
+its own section below:
 
 * an entirely absent table reproduces today's behaviour for a run that
   configures only `model` (and, separately, a run that configures nothing);
@@ -12,9 +12,16 @@ own section below:
 * a KNOWN hat with no entry in the table falls back to the single shipped
   default ref (`model` itself, or `DEFAULT_HAT_MODEL_REF`/`None` when that
   is unset too);
-* an UNRECOGNISED hat name (a typo -- not one of the six) resolves to the
+* an UNRECOGNISED hat name (a typo -- not one of the seven) resolves to the
   most capable CONFIGURED entry, never the cheap one, per
   `UNRECOGNISED_HAT_FALLBACK`.
+
+Task 009 (PRD requirement G, #98) added `steer` as a real seventh entry --
+the assertion below is strengthened (never weakened) accordingly: the old
+claim was `set(MODEL_HATS) == {planning, worker, verify, review, reflect,
+router}` (six members); it is now that set PLUS `steer`, because `steer` is
+no longer an unrecognised name that would degrade through
+`UNRECOGNISED_HAT_FALLBACK` -- it is one of `model_for`'s own known hats.
 """
 
 from __future__ import annotations
@@ -24,7 +31,7 @@ import pytest
 from ralphd.engine.config import (DEFAULT_HAT_MODEL_REF, MODEL_HATS,
                                   UNRECOGNISED_HAT_FALLBACK, JobConfig)
 
-HATS = MODEL_HATS  # ("planning", "worker", "verify", "review", "reflect", "router")
+HATS = MODEL_HATS  # ("planning", "worker", "verify", "review", "reflect", "router", "steer")
 
 
 # --------------------------------------------------------- the two constants
@@ -38,7 +45,7 @@ def test_the_two_constants_are_named_and_kept_apart():
     assert UNRECOGNISED_HAT_FALLBACK == "planning"
     assert UNRECOGNISED_HAT_FALLBACK in MODEL_HATS
     assert set(MODEL_HATS) == {"planning", "worker", "verify", "review",
-                               "reflect", "router"}
+                               "reflect", "router", "steer"}
 
 
 # ------------------------------------------------- absent-table equivalence

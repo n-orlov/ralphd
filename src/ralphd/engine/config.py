@@ -245,11 +245,19 @@ def _migrate_legacy_model_config(raw: dict) -> dict:
 # reason: a typo in a hat name must never quietly make a run cheaper, even
 # though the shipped default is free to be the cheap/absent choice.
 #
-# All six hats `model_for` resolves: the five `STATE_HAT` roles
+# All seven hats `model_for` resolves: the six `STATE_HAT` roles
 # (transitions.py) plus the router, which is not state-tiered but still gets
 # a per-hat table entry (`router_model`/`models["router"]`).
+#
+# `steer` (task 009, PRD requirement G, #98): a REAL entry here, resolved
+# through the exact same `model_for`/`bundle_for` machinery every other
+# known hat uses -- never through `UNRECOGNISED_HAT_FALLBACK`, which is
+# reserved for a hat name that is NOT one of this tuple's members (a typo).
+# Its shipped default, like every other hat's, is simply "whatever `model`
+# resolves to when nothing configures it explicitly" -- `DEFAULT_HAT_MODEL_
+# REF`/`None`, same as the rest.
 MODEL_HATS: tuple[str, ...] = (
-    "planning", "worker", "verify", "review", "reflect", "router")
+    "planning", "worker", "verify", "review", "reflect", "router", "steer")
 
 # "What ships": the ref a KNOWN hat resolves to when neither the per-hat
 # table (`models:`/`model_overrides:`) nor the bare `model` field configures
@@ -603,7 +611,7 @@ class JobConfig:
         if override := self.model_overrides.get(phase):
             return override
         # Task 005 (#60 pillar 4, requirement A): a hat name that is not one
-        # of the six `MODEL_HATS` -- a typo, not a real role -- degrades via
+        # of the seven `MODEL_HATS` -- a typo, not a real role -- degrades via
         # `UNRECOGNISED_HAT_FALLBACK` ("planning"'s own configured entry),
         # never via a second mechanism. Falls through to the bare `model`
         # field only when even that borrowed entry is unset, so a table with

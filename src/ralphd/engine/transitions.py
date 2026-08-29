@@ -39,6 +39,16 @@ STEP_STATES: tuple[str, ...] = (
     "review",
     "replan",   # the approach boundary, as an explicit state (requirement B)
     "reflect",  # the post-finishing unwind iteration (fact 11, #56)
+    # Task 009 (PRD requirement G, #98): the steer hat's own step state --
+    # reshapes state (tasks.json inserts/updates/deletes, standing rules),
+    # never does the work itself. Reachable only through the declared edge
+    # below (worker -> steer), exactly like every other state -- an
+    # undeclared target is refused by `is_legal`/`TransitionExecutor.advance`
+    # the same way it is for any other state. Task 012 is what makes the
+    # harness actually TAKE that edge (the absolute-top-priority routing
+    # rule, requirement I); this table entry alone declares that the edge
+    # is legal, nothing more.
+    "steer",
 )
 
 RUN_TERMINAL_STATES: tuple[str, ...] = ("succeeded", "failed", "aborted")
@@ -107,6 +117,15 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("worker", "planning_produced_tasks"),
     ),
     "worker": (
+        # Task 009 (requirement G/I, #98): unsettled operator steering takes
+        # absolute top priority over every other worker edge below --
+        # listed first so the table's own order mirrors that priority, even
+        # though the executor's guard evaluation order is task 014's
+        # business, not this table's (see `Transition`'s docstring). Task
+        # 012 is what actually computes `steering_pending`'s truth value
+        # and takes this edge deterministically, without consulting the
+        # router.
+        T("steer", "steering_pending"),
         # the common case: no verdict yet, same state, next task or retry.
         T("worker", "no_verdict_yet"),
         # honoured COMPLETE (ledger guard 8) — verdict ready for review.
@@ -213,6 +232,14 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("failed", "reflect_done_outcome_failed"),
         T("aborted", "reflect_done_outcome_aborted"),
     ),
+    # Task 009 (requirement G/I, #98): once the steer hat has settled every
+    # pending steering message for this iteration ("all pending steers in
+    # one iteration, in arrival order"), control returns to `worker` -- the
+    # ordinary lifecycle then does and verifies whatever the hat just
+    # inserted/updated, same as any planner-proposed task.
+    "steer": (
+        T("worker", "steer_settled"),
+    ),
     "succeeded": (),
     "failed": (),
     "aborted": (),
@@ -297,6 +324,8 @@ STATE_HAT: dict[str, str | None] = {
     "replan": None,
     "finishing": None,
     "reflect": "reflect",
+    # Task 009 (requirement G, #98): the steer hat occupies its own state.
+    "steer": "steer",
     "succeeded": None,
     "failed": None,
     "aborted": None,
@@ -305,7 +334,8 @@ STATE_HAT: dict[str, str | None] = {
 # The hats that need a response-contract schema (task 009) and a prompt.
 # `verify` is included even though it is unreachable in the non-vigilant
 # variant: the hat exists in both, the *transition* into it does not.
-HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect")
+# `steer` (task 009, requirement G, #98) joins the same way.
+HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect", "steer")
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +663,22 @@ HAT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "report_written": {"type": "boolean"},
             "suggestions_written": {"type": "boolean"},
+            "notes": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    "steer": {
+        "type": "object",
+        # Task 009 (requirement G/I, #98): `settled` is the harness-
+        # observable fact the PRD's own vocabulary distinguishes from
+        # `done` -- "settled is a harness-observable fact: the hat
+        # processed the message and applied its changes. done is the
+        # ordinary lifecycle's verdict on the tasks it created." The hat
+        # claims only the former here; the latter is judged later, by the
+        # ordinary worker/verify/review path over whatever it inserted.
+        "required": ["settled"],
+        "properties": {
+            "settled": {"type": "boolean"},
             "notes": {"type": "string"},
         },
         "additionalProperties": False,
