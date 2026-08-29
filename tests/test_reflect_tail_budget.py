@@ -37,6 +37,30 @@ Tests:
    shape (deadline already gone before reflect's one attempt) end to end
    through `LoopSupervisor.run_job()`, asserting a real
    `artifacts/reflection/report.md` lands, not `FAILED.md`.
+
+Task 017 (requirement Q, #96) adds:
+
+5. `test_reflect_ladder_never_extends_the_subprocess_timeout` -- a
+   malformed reflect payload now goes through `_reflect_contract_ladder`,
+   but the reflect SUBPROCESS itself (`_run_iteration_once`'s one call) is
+   made exactly once, still with `timeout_s == REFLECT_TAIL_TIMEOUT_S` --
+   the ladder's re-asks are a wholly separate, uncounted channel
+   (`_ask_contract_fix`) on `cfg.router_timeout_s`, never a second
+   subprocess attempt on the tail budget.
+6. `test_reflect_ladder_is_bounded_by_contract_retry_max_not_the_deadline`
+   -- with a persistently malformed reflect payload AND every re-ask also
+   malformed, the ladder makes exactly `cfg.contract_retry_max` extra
+   `_ask_contract_fix` calls, never more, however far behind the deadline
+   already is (varied across two deadlines to show the count does not
+   move) -- pinning the PRD's "bounded, stated" requirement rather than
+   trusting the comment alone. The outcome still lands DEGRADED (v0.12
+   requirement G stays true: the run's own state/verdict is never in
+   scope here, and a failed reflect stays non-fatal).
+7. `test_reflect_ladder_recovers_a_malformed_first_attempt` -- the other
+   half: when a re-ask DOES return a valid payload, the ladder recovers it
+   and `_record_reflect_outcome` reads the corrected payload as a genuine
+   success, not a degraded one -- the whole point of wiring reflect into
+   `enforce_contract` in the first place.
 """
 
 from __future__ import annotations
@@ -183,3 +207,124 @@ def test_v09_iteration_185_regression_reflect_past_the_deadline_still_reports(
     # never gets to grant a verdict it did not earn.
     assert status["state"] in ("failed", "aborted")
     assert status["verdict"] == "unverified"
+
+
+# ---------------------------------------------------------------------------
+# 5-7. task 017 (requirement Q, #96): the ladder's own tail-budget bound
+# ---------------------------------------------------------------------------
+
+class _MalformedReflectRunner:
+    """Reflect's own subprocess ALWAYS returns a malformed payload (but
+    writes a real report.md -- #87's own shape: ran cleanly, left no valid
+    deliverable) exactly once per `_run_reflection()` call. Every
+    subsequent call is a `_ask_contract_fix` re-ask: `_run_reflection`
+    resets `phase` to `None` before `_reflect_contract_ladder` ever runs,
+    so these calls see `phase is None`, never `"reflect"` -- the same key
+    `_RecordingRunner` above already reads. `fix_outcomes` is the raw text
+    handed back to each successive re-ask in order; once exhausted, further
+    calls are recorded but still return malformed text, so a script that
+    ran on longer than expected is never accidentally masked as a pass.
+    """
+
+    def __init__(self, sup: LoopSupervisor, fix_outcomes: list[str] | None = None):
+        self.sup = sup
+        self.fix_outcomes = list(fix_outcomes or [])
+        self.reflect_calls: list[dict] = []
+        self.fix_calls: list[dict] = []
+
+    def interrupt(self) -> bool:
+        return False
+
+    async def run(self, prompt, transcript, **kw) -> IterationResult:
+        phase = self.sup.run.read_status().get("phase")
+        if phase == "reflect":
+            self.reflect_calls.append(kw)
+            outdir = self.sup.run.artifacts_dir / "reflection"
+            outdir.mkdir(parents=True, exist_ok=True)
+            (outdir / "report.md").write_text("# stub reflection report\n")
+            return IterationResult(
+                exit_code=0,
+                final_text="not a reflect contract payload at all")
+        idx = len(self.fix_calls)
+        self.fix_calls.append(kw)
+        if idx < len(self.fix_outcomes):
+            return IterationResult(exit_code=0, final_text=self.fix_outcomes[idx])
+        return IterationResult(exit_code=0, final_text="still not a payload")
+
+
+def _bare_supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    run.update_status(state="starting")
+    cfg = JobConfig(run_id="task017-reflect-ladder", reflect=True, **cfg_kw)
+    return LoopSupervisor(cfg, run, root)
+
+
+def test_reflect_ladder_never_extends_the_subprocess_timeout(tmp_path):
+    sup = _bare_supervisor(tmp_path / "run", job_timeout_s=3600)
+    sup.runner = _MalformedReflectRunner(sup)  # type: ignore[assignment]
+    sup.deadline = time.monotonic() - 10_000.0
+
+    asyncio.run(sup._run_reflection())
+
+    # the reflect SUBPROCESS is attempted exactly once, no matter how many
+    # re-asks the ladder makes afterward -- the ladder is a wholly separate,
+    # uncounted channel, never a second subprocess attempt on the tail.
+    assert len(sup.runner.reflect_calls) == 1
+    assert sup.runner.reflect_calls[0]["timeout_s"] == pytest.approx(
+        LoopSupervisor.REFLECT_TAIL_TIMEOUT_S)
+    # the ladder DID run (report.md existed, the payload was malformed) --
+    # otherwise this test would prove nothing about the ladder at all.
+    assert len(sup.runner.fix_calls) >= 1
+    for call in sup.runner.fix_calls:
+        assert call["timeout_s"] == sup.cfg.router_timeout_s
+
+    status = sup.run.read_status()
+    assert status["reflect"]["ok"] is False
+    assert status["reflect"]["errorClass"] == LoopSupervisor.REFLECT_FAULT_DEGRADED
+
+
+def test_reflect_ladder_is_bounded_by_contract_retry_max_not_the_deadline(tmp_path):
+    for deadline_offset in (10_000.0, 999_999.0):
+        sup = _bare_supervisor(
+            tmp_path / f"run-{int(deadline_offset)}", job_timeout_s=3600)
+        sup.runner = _MalformedReflectRunner(sup)  # every re-ask still malformed
+        sup.deadline = time.monotonic() - deadline_offset
+
+        asyncio.run(sup._run_reflection())
+
+        # an exhausted ladder makes EXACTLY contract_retry_max re-asks,
+        # never one more for being further behind the deadline.
+        assert len(sup.runner.fix_calls) == sup.cfg.contract_retry_max, (
+            f"deadline offset={deadline_offset}")
+
+        status = sup.run.read_status()
+        # a failed reflect ladder is still DEGRADED, never FATAL (a failed
+        # reflect must not become fatal).
+        assert status["reflect"]["ok"] is False
+        assert status["reflect"]["errorClass"] == LoopSupervisor.REFLECT_FAULT_DEGRADED
+        # v0.12 requirement G: reflect never touches state/verdict on ANY
+        # path, ladder or not -- an unparseable reflect (even after a
+        # ladder that never recovers it) cannot overwrite the work's
+        # verdict, because reflect is never handed the power to set one.
+        assert status["state"] == "starting"
+        assert status.get("verdict") is None
+
+
+def test_reflect_ladder_recovers_a_malformed_first_attempt(tmp_path):
+    sup = _bare_supervisor(tmp_path / "run", job_timeout_s=3600)
+    good_payload = json.dumps({"report_written": True,
+                                "suggestions_written": False})
+    sup.runner = _MalformedReflectRunner(  # type: ignore[assignment]
+        sup, fix_outcomes=[good_payload])
+    sup.deadline = time.monotonic() - 10_000.0
+
+    asyncio.run(sup._run_reflection())
+
+    # one re-ask is enough to recover once it returns a valid payload --
+    # the ladder must not keep asking past a success.
+    assert len(sup.runner.fix_calls) == 1
+    status = sup.run.read_status()
+    assert status["reflect"]["ok"] is True
+    assert "errorClass" not in status["reflect"]
+    assert not (sup.run.artifacts_dir / "reflection" / "FAILED.md").exists()

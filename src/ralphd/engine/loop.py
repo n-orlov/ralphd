@@ -16,6 +16,7 @@ gets exactly the same kind of adjudication a plan with an unresolved
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -2227,6 +2228,13 @@ class LoopSupervisor:
                 # returned describes the teardown, not the reflection.
                 self._record_reflect_not_attempted(attempted=True)
             else:
+                # Task 017 (requirement Q, #96): give an unparseable/
+                # malformed reflect payload the same re-ask ladder every
+                # other contract site has, BEFORE `_record_reflect_outcome`
+                # ever reads it as a failure -- see `_reflect_contract_
+                # ladder`'s own docstring for the REFLECT_TAIL_TIMEOUT_S
+                # bound and the v0.12 requirement G guarantee it preserves.
+                result = await self._reflect_contract_ladder(result)
                 self._record_reflect_outcome(result)
 
     def _reflect_skipped_reason(self, attempted: bool) -> str:
@@ -2303,6 +2311,88 @@ class LoopSupervisor:
     # identically.
     REFLECT_FAULT_DEGRADED = "degraded"
     REFLECT_FAULT_FATAL = "fatal"
+
+    async def _reflect_contract_ladder(
+        self, result: IterationResult | None
+    ) -> IterationResult | None:
+        """Task 017 (requirement Q, #96): give `_reflect_verdict`'s payload
+        the same re-ask ladder every other contract site already has
+        (`contract_enforcement.enforce_contract`) instead of leaving an
+        absent/malformed `reflect` payload to degrade with no second
+        chance. Called once from `_run_reflection`, strictly before
+        `_record_reflect_outcome` ever reads `result`.
+
+        Skips the ladder entirely (returns `result` unchanged) whenever
+        `_reflect_failure` would never have reached `_reflect_verdict` in
+        the first place: `result is None`, or
+        `artifacts/reflection/report.md` does not exist. Neither of those
+        is a payload-shape problem a re-ask could fix -- there is no
+        attempt to correct -- so they still fall straight through to
+        `_reflect_failure`'s existing FATAL/DEGRADED classification,
+        unchanged by this task. Also skips it (returns `result` unchanged)
+        when the payload is already valid: `enforce_contract`'s own retry
+        loop is for recovering a BAD attempt, not for re-litigating a good
+        one.
+
+        REFLECT_TAIL_TIMEOUT_S interaction (states and bounds it, per the
+        PRD): each re-ask goes over `_ask_contract_fix`, an UNCOUNTED call
+        on its own short `cfg.router_timeout_s` (60s default) -- never the
+        reflect subprocess's own `REFLECT_TAIL_TIMEOUT_S`-bounded `timeout`
+        (loop.py's `run_iteration`/`_run_iteration_once`). The reflect
+        subprocess has already exited by the time this method is reached,
+        so a re-ask cannot extend ITS timeout at all. What it can extend is
+        the wall clock between that exit and `_record_reflect_outcome`
+        being called -- and that is bounded too: `enforce_contract` makes
+        at most `cfg.contract_retry_max` (2 default) extra `_ask_contract_
+        fix` calls before giving up, so the worst case this whole ladder
+        can add is `contract_retry_max * router_timeout_s` (240s by
+        default) -- a fixed quantity set by config, never proportional to
+        anything unbounded, and never re-armed: `_run_reflection` calls
+        this exactly once per process, matching its own "runs
+        unconditionally... exactly once" guarantee.
+
+        v0.12 requirement G is unmoved: this method only ever hands back
+        the SAME `result` (unchanged) or a corrected copy of it
+        (`dataclasses.replace(result, final_text=...)`) for
+        `_reflect_failure`/`_reflect_verdict` to re-parse exactly as they
+        always have. Neither of those, nor this method, ever touches
+        `state`/`verdict`/`reason` -- `_promote_finishing_state()`/
+        `_finish()` have already settled the job's own outcome by the time
+        `_run_reflection` is even called (see `REFLECT_FAULT_FATAL`'s own
+        comment). A ladder that never resolves returns `result` unchanged,
+        so an unparseable reflect ends exactly where it always did:
+        DEGRADED, not fatal, and the work's verdict untouched.
+        """
+        if result is None:
+            return result
+        report = self.run.artifacts_dir / "reflection" / self.REFLECT_REPORT
+        if not report.exists():
+            return result
+        _payload, contract_errors = self._reflect_verdict(result)
+        if not contract_errors:
+            return result
+        first_attempt_text = last_nonblank_line(result.final_text)
+        event_loop = asyncio.get_running_loop()
+
+        def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+            if attempt == 0:
+                return first_attempt_text
+            raw, _usage = asyncio.run_coroutine_threadsafe(
+                self._ask_contract_fix("reflect", prior_errors or []),
+                event_loop).result()
+            return last_nonblank_line(raw)
+
+        enforcement = await asyncio.to_thread(
+            contract_enforcement.enforce_contract,
+            "reflect", respond,
+            max_retries=self.cfg.contract_retry_max,
+            state=self.run,
+            extra_validate=transitions.reflect_report_errors,
+        )
+        if enforcement.ok:
+            return dataclasses.replace(
+                result, final_text=json.dumps(enforcement.payload))
+        return result
 
     def _reflect_verdict(self, result: IterationResult) -> tuple[dict | None, list[str]]:
         """Task 121 (#60 pillar 3, fact 9): parse the reflect hat's final
