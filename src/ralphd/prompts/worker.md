@@ -246,6 +246,22 @@ completion, resolve it deliberately in one iteration instead of grinding on it:
 Never edit a task's `successCriteria` to make it pass, and never change another
 task's status while resolving this one.
 
+**Neither resolution above clears dependency doom.** Carving the residual gap
+into a new task leaves the original `failed` task's own status exactly as it
+was — `failed`, never `completed` or `validated` — no matter how completely
+the new task discharges the gap; relabelling it `skipped` does not change that
+either, since `skipped` is not in `TASK_DEPENDENCY_SATISFIED_STATUSES`
+(`completed`, `validated`) any more than `failed` is. Any other task whose
+`dependsOn` names that id is checked against exactly that pair of statuses, so
+it stays `blocked` forever after either resolution — the scheduler can never
+assign it, whichever resolution you picked. Do not pick whichever of the two
+resolutions looks tidiest and call the plan fixed: after you act, reread
+`dependsOn` across `tasks.json` (or the `taskBlockedBy` map) for tasks that
+name the failed task's id, and if any remain, report that doomed set in the
+notes file and stop — clearing it means repointing each dependent's
+`dependsOn` at the new task or a planning/replan pass, not another guess from
+a worker iteration.
+
 **Naming the signal in prose: call it "the completion marker".** The literal line
 above has exactly one legitimate place in your reply — the very end, as the final
 line, with nothing after it. Anywhere else it is a formatting error, including
