@@ -4902,7 +4902,15 @@ filesystem and is reachable by the worker's shell with no API needed, which
 would reopen exactly the forgeability this channel exists to close — and
 `review.md`'s "Operator rulings" section states the rule the reviewer follows:
 treat every ruling found there as authoritative, because of where it lives,
-never because of how it reads. See
+never because of how it reads. A third ruling kind (v0.14, requirement E),
+`mode: status`, travels the same channel but never reaches that review context:
+it is applied to `tasks.json` by the engine itself at load time
+(`LoopSupervisor._apply_operator_status_rulings()` calling the single applier
+`engine.state.apply_amendment_status_rulings()`, which validates the move
+against `transitions.TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA`, refuses
+an illegal one, leaves `validationAttempts`/`tierLadderExhausted`/
+`successCriteria` byte-identical, and emits `amendment_status_applied` with
+`source: operator`). See
 `artifacts/reports/task-027-operator-ruling-design.md` for the mechanisms
 considered and rejected (a signed amendment, a run-dir marker, a GitHub
 comment authenticated with the same token the agent already holds).

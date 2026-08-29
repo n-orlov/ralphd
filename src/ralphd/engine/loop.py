@@ -2447,6 +2447,16 @@ class LoopSupervisor:
         # with its own lifecycle transition. `resumed` says which case it is.
         self.run.emit("state", state="running",
                       resumed=self._resuming_existing_run_dir())
+        # Task 005 (requirement E, #99): apply any operator status ruling
+        # recorded on the read-only amendments mount BEFORE this episode
+        # decides anything -- ahead of `_resume_point()` and therefore ahead
+        # of the scheduler's first pick, so a ruling that skips a doomed
+        # task or hands one back to the worker is already on tasks.json by
+        # the time either reads it. This is the "applied by the engine at
+        # load time" half of requirement E; `state.apply_amendment_status_
+        # rulings` is the ONLY applier (the steer hat's status tool calls the
+        # same function, never a second copy of these rules).
+        self._apply_operator_status_rulings()
         start_approach, skip_planning, step = self._resume_point()
         self._approach = start_approach
         try:
@@ -4452,6 +4462,50 @@ class LoopSupervisor:
                 f"successCriteria: {t.get('successCriteria', '')}\n")
         return "".join(lines)
 
+    def _apply_operator_status_rulings(self) -> None:
+        """Task 005 (requirement E, #99): the load-time call site of the
+        single engine-side task-status applier,
+        `state.apply_amendment_status_rulings`. Called once per engine
+        episode from `_run_job_core`, before `_resume_point()` -- see the
+        comment there for why that position matters.
+
+        Reads `CONFIG_DIR` directly, exactly as
+        `_operator_amendment_review_context` does and for the same reason
+        (the host's `:ro` bind mount is the only place this run cannot
+        forge a ruling into; `overlay_or_config` would let it).
+
+        The applier itself never raises for an ordinary refusal: it returns
+        one record per `mode: status` entry, and the ones it did NOT apply
+        carry the reason. A refusal must not be silent -- an operator who
+        ruled `pending -> validated` needs to see that the engine declined
+        rather than wonder why nothing moved -- so every non-applied ruling
+        is surfaced here as a `log` event. `already at that status` is not
+        reported: that ruling HAS taken effect, and this method runs on
+        every episode of the run, so reporting it would repeat one line for
+        the rest of the run's life. An applied ruling emits its own
+        `amendment_status_applied` audit event from inside the applier
+        (source=operator, surfaced like `budget_changed`), so nothing is
+        emitted twice from here.
+
+        A broken amendments mount costs nothing more than itself (same rule
+        as `_verify_skills_placement`): the run continues unruled.
+        """
+        try:
+            results = state.apply_amendment_status_rulings(
+                self.run, CONFIG_DIR, self.cfg.vigilant)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.run.emit("log", message=(
+                "operator status rulings could not be applied: "
+                f"{type(exc).__name__}: {exc}"))
+            return
+        for r in results:
+            if r.get("applied") or r.get("reason") == "already at that status":
+                continue
+            self.run.emit("log", message=(
+                f"operator status ruling {r.get('file')} REFUSED for task "
+                f"{r.get('taskId')}: {r.get('reason')} "
+                f"({r.get('previous')} -> {r.get('status')})"))
+
     def _operator_amendment_review_context(self) -> str:
         """Task 028 (#26): render every operator ruling recorded under
         `CONFIG_DIR/amendments/` (written HOST-SIDE by `ralphctl amend`,
@@ -4476,7 +4530,16 @@ class LoopSupervisor:
         review prompts are unaffected until an operator actually amends
         something.
         """
-        entries = state.amendment_entries(CONFIG_DIR)
+        # Task 005 (requirement E, #99): a `mode: status` ruling is NOT a
+        # criteria ruling and must never be rendered as one -- it carries
+        # the operator's reason for a status move, not replacement criteria
+        # text, and telling review "the text below REPLACES that task's
+        # successCriteria" for it is precisely the "a ruling must not be
+        # able to look like a claim the criteria were met" failure this
+        # requirement forbids. Those entries are applied to tasks.json by
+        # `_apply_operator_status_rulings` and bind review not at all.
+        entries = [e for e in state.amendment_entries(CONFIG_DIR)
+                   if e.get("mode") != state.AMENDMENT_MODE_STATUS]
         if not entries:
             return ""
         lines = [

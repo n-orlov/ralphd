@@ -1578,9 +1578,18 @@ line and the ruling text verbatim (`engine.state.write_amendment`/
 `amendment_entries`, the ONE reader/writer pair, mirroring the `steering/`
 convention). `engine.loop`'s `_operator_amendment_review_context()` reads this
 directory directly (never the writable overlay) at every point a
-review-phase prompt is built, and appends every ruling found as a mandatory,
-unconditional instruction — review never has to (and must not) ask why the
-operator is entitled to grant one.
+review-phase prompt is built, and appends every *criteria* ruling found (`mode:
+waive`/`mode: replace`) as a mandatory, unconditional instruction — review
+never has to (and must not) ask why the operator is entitled to grant one. A
+`mode: status` ruling (v0.14, requirement E) is deliberately excluded from that
+context: it changes a task's `status` in `tasks.json`, applied by the ENGINE at
+load time (`LoopSupervisor._apply_operator_status_rulings` →
+`engine.state.apply_amendment_status_rulings`, validated against the task-status
+table, leaving `validationAttempts`, `tierLadderExhausted` and the criteria text
+untouched and emitting an `amendment_status_applied` event with
+`source: operator`), and it binds review's judgement of successCriteria not at
+all — a status ruling is not a claim the criteria were met and must not be able
+to read like one.
 
 `--list` has no live half at all: `ralphctl amend` never talks to the engine,
 so there is nothing for a live container to answer differently than the file
