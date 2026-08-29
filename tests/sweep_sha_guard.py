@@ -217,36 +217,87 @@ def _discharge_message(path: Path, sha: str, head: str) -> str:
     )
 
 
-def _reaches_head(sha: str, head: str, chain: dict[str, set[str]]) -> bool:
-    """Walk the discharge chain from `sha`, accepting only if it ends at HEAD.
+def _report_only_tail(sha: str, head: str, repo_root: Path) -> bool:
+    """True when every path `git diff --name-only sha..head` names lives
+    under `artifacts/reports/` -- the report/roadmap/index-only tail
+    requirement B's discovered guard subset exists for. A commit that adds
+    a `discharge-sha` block is itself exactly this shape: it can only name
+    shas that already exist, so it always leaves HEAD one commit past the
+    chain's own end, and a rule that demanded literal equality with HEAD
+    could never be satisfied by any reachable repository state. False on
+    any git failure (unknown/invalid sha, not a git repo, etc.) -- this
+    allowance never masks a real problem, it only bridges a gap already
+    known to be report-only.
+    """
+    if sha == head:
+        return True
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--name-only", f"{sha}..{head}"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    if out.returncode != 0:
+        return False
+    changed = [p for p in out.stdout.splitlines() if p.strip()]
+    if not changed:
+        return True
+    return all(p.startswith("artifacts/reports/") for p in changed)
 
-    Implements docs/sweep-records.md's discharge rule literally: "a chain of
-    stale shas each pointing at a `discharge-sha` entry, ending at a sha that
-    equals current HEAD, is accepted; a chain that never reaches HEAD is
-    not." Cycles terminate as rejection, not recursion.
+
+def _reaches_head(
+    sha: str,
+    head: str,
+    chain: dict[str, set[str]],
+    repo_root: Path | None = None,
+) -> bool:
+    """Walk the discharge chain from `sha`, accepting when it ends at HEAD
+    -- OR, for any sha reached by actually following at least one
+    `discharge-sha` hop, when the remaining gap to HEAD is report-only.
+
+    The bare declared `sha` never gets the report-only allowance on its own
+    (that would let an undischarged stale sha pass just because nothing but
+    reports happened to change since -- still a hard failure, per
+    docs/sweep-records.md): the allowance only bridges the LAST leg of a
+    chain that a real `discharge-sha` entry actually walked to. Cycles
+    terminate as rejection, not recursion.
     """
     seen: set[str] = set()
-    frontier = [sha]
+    frontier: list[tuple[str, bool]] = [(sha, False)]
     while frontier:
-        node = frontier.pop()
+        node, discharged = frontier.pop()
         if node == head:
+            return True
+        if discharged and repo_root is not None and _report_only_tail(node, head, repo_root):
             return True
         if node in seen:
             continue
         seen.add(node)
-        frontier.extend(chain.get(node, ()))
+        frontier.extend((nxt, True) for nxt in chain.get(node, ()))
     return False
 
 
-def check_reports(paths: list[Path], head: str) -> list[str]:
-    """Every declared sweep-sha must be current HEAD or discharged AT HEAD.
+def check_reports(
+    paths: list[Path], head: str, repo_root: Path = REPO_ROOT
+) -> list[str]:
+    """Every declared sweep-sha must be current HEAD, discharged AT HEAD, or
+    discharged at a sha whose remaining gap to HEAD is report-only.
 
     Discharge is resolved transitively and is *anchored*: each
     `discharge-sha` line names both the stale sha it retires and the sha the
-    discharge check was run at, so the chain of retirements has to terminate
-    at current `HEAD` to be accepted. A chain that never reaches `HEAD` (and
-    a discharge block that names no verified-at sha at all) leaves the stale
-    declaration flagged.
+    discharge check was run at. That chain has to terminate at current
+    `HEAD` -- OR at a sha for which `git diff --name-only sha..HEAD` (run in
+    `repo_root`) touches only `artifacts/reports/**` -- to be accepted; a
+    chain that reaches neither (and a discharge block that names no
+    verified-at sha at all) leaves the stale declaration flagged. The
+    report-only allowance is why this is satisfiable at all: the commit
+    that ADDS a `discharge-sha` block can only name shas that already
+    exist, so it always leaves `HEAD` one commit past the chain's own end,
+    and that one commit is itself report-only.
     """
     texts = {p: p.read_text() for p in paths}
     chain: dict[str, set[str]] = {}
@@ -259,7 +310,7 @@ def check_reports(paths: list[Path], head: str) -> list[str]:
 
     for path, text in texts.items():
         for sha in sweep_shas(text):
-            if _reaches_head(sha, head, chain):
+            if _reaches_head(sha, head, chain, repo_root=repo_root):
                 continue
             problems.append(_discharge_message(path, sha, head))
     return problems

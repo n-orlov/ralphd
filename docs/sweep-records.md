@@ -74,10 +74,39 @@ of:
 
 The guard resolves discharge transitively and *anchored*: a chain of stale
 shas, each line pointing from the sha it retires at the sha the check was run
-at, ending at a sha that equals current `HEAD`, is accepted; a chain that
-never reaches `HEAD` is not — the stale declaration stays flagged. So when
-the wave's tail moves `HEAD` again, the previous discharge does not silently
-keep covering the record: either re-verify at the new `HEAD` and add
+at, has to terminate somewhere the guard accepts.
+
+**Literal equality with `HEAD` alone would make this rule unsatisfiable by
+construction, so it is not the only way to terminate.** A commit can only
+name shas that already exist -- it cannot truthfully name its own resulting
+sha (see above) -- so the commit that *adds* a `discharge-sha` block always
+leaves `HEAD` exactly one commit past the chain's own end: the discharge
+commit itself. A guard that demanded the chain reach literal `HEAD` would
+therefore reject every discharge the moment it was written, and the very
+next report/roadmap/index tail commit would repeat the same off-by-one --
+no reachable repository state could ever satisfy it. (This was a real,
+measured defect in an earlier revision of this rule, not a hypothetical:
+task 003, #103.)
+
+The chain terminates successfully when it reaches a sha that either
+
+* equals current `HEAD` exactly, or
+* has a report-only gap to `HEAD` -- `git diff --name-only <sha>..HEAD`
+  names nothing outside `artifacts/reports/**`.
+
+The second form is what makes the rule satisfiable at all: it is precisely
+wide enough to cover the discharge commit itself (and any further
+report/roadmap/index-only tail commits after it), and no wider -- a single
+intervening `src/` or `tests/` change still fails the chain. The allowance
+only ever applies to a sha the chain actually walked to by following a real
+`discharge-sha` hop; the bare `sweep-sha` a record declares never gets it on
+its own, so an entirely undischarged stale sha is still a hard failure no
+matter how report-only the time since has been -- discharge has to be
+*stated*, not merely true by accident of what else did not change.
+
+So when the wave's tail moves `HEAD` again, the previous discharge does not
+silently keep covering the record forever: either the new tail is itself
+report-only (already covered), or re-verify at the new `HEAD` and add
 `<old-verified-at-sha> <new-HEAD>`, extending the chain, or re-take the
 sweep.
 
@@ -93,7 +122,14 @@ discharge path actually clears the same failure, one hop and two hops;
 `::test_a_discharge_chain_that_never_reaches_head_fails`,
 `::test_a_discharge_cycle_never_clears_a_stale_sha` and
 `::test_a_one_sha_discharge_block_is_rejected_as_malformed` prove the three
-ways a discharge can fail to be one.
+ways a discharge can fail to be one. `::test_a_discharge_ending_short_of_head_passes_when_the_tail_is_report_only`,
+`::test_a_discharge_ending_short_of_head_fails_when_one_tail_commit_touches_src`
+and `::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`
+build real throwaway git repos (never inside the real `artifacts/reports/`)
+to prove the report-only-tail allowance itself: it bridges a genuinely
+report-only gap, it does not bridge a gap with even one `src/`-touching
+commit in it, and it never applies to a sha that was never discharged in the
+first place.
 
 The failure message names the record's path, its declared sha, the current
 `HEAD`, and what to do: re-take the sweep at `HEAD` and update the record, or

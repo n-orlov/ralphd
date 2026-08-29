@@ -12,11 +12,45 @@ sha is discharged -- the fixtures build their own throwaway record so the
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import sweep_sha_guard as guard
 
 REPORTS = guard.report_files()
+
+
+def _run_git(repo: Path, *args: str) -> str:
+    out = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, f"git {args} failed: {out.stderr}"
+    return out.stdout.strip()
+
+
+def _init_throwaway_repo(root: Path) -> Path:
+    """A throwaway git repo under tmp_path -- never inside the real
+    artifacts/reports/, so these fixtures can never trip the real guard.
+    """
+    repo = root / "repo"
+    repo.mkdir()
+    _run_git(repo, "init", "-q")
+    _run_git(repo, "config", "user.email", "fixture@example.invalid")
+    _run_git(repo, "config", "user.name", "Fixture")
+    return repo
+
+
+def _commit(repo: Path, relpath: str, content: str, message: str) -> str:
+    path = repo / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    _run_git(repo, "add", relpath)
+    _run_git(repo, "commit", "-q", "-m", message)
+    return _run_git(repo, "rev-parse", "HEAD")
 
 
 def _ids(reports: list[Path]) -> list[str]:
@@ -302,3 +336,95 @@ def test_the_real_notification_log_is_not_misclassified_as_a_sweep_record() -> N
     assert not guard.contains_pytest_result_line(log.read_text())
     assert not guard.PYTEST_SUMMARY_RE.search(log.read_text())
     assert guard.wave_sha_missing_problems([log]) == []
+
+
+# --------------------------------------------------------------------------
+# Task 003 (#103, requirement A hardening): the discharge chain's own end
+# can never be literal HEAD -- the commit that ADDS a `discharge-sha` block
+# can only name shas that already exist, so it always leaves HEAD one
+# commit past the chain's end. These three tests build real throwaway git
+# repos under tmp_path (never inside the real artifacts/reports/, so they
+# can never trip the real guard) and pin the report-only-tail allowance
+# that makes the rule satisfiable at all. Each of the first two fails
+# against the pre-change `_reaches_head`, which only ever compared for
+# literal string equality with HEAD and had no `repo_root` to run `git
+# diff` against.
+# --------------------------------------------------------------------------
+
+
+def test_a_discharge_ending_short_of_head_passes_when_the_tail_is_report_only(
+    tmp_path,
+) -> None:
+    repo = _init_throwaway_repo(tmp_path)
+    stale = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
+    verified_at = _commit(
+        repo, "artifacts/reports/note-1.md", "note one\n", "report note one"
+    )
+    # Further report-only tail commits after the sha the discharge was
+    # actually verified at -- exactly the shape a wave's own tail (roadmap
+    # block, PRD index row, closing report, and the discharge commit
+    # itself) produces.
+    _commit(repo, "artifacts/reports/note-2.md", "note two\n", "report note two")
+    head = _commit(
+        repo, "artifacts/reports/note-3.md", "note three\n", "report note three"
+    )
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-sweep.md"
+    record.write_text(
+        f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n\n"
+        f"```discharge-sha\n{stale} {verified_at}\n```\n"
+    )
+
+    problems = guard.check_reports([record], head, repo_root=repo)
+
+    assert problems == [], problems
+
+
+def test_a_discharge_ending_short_of_head_fails_when_one_tail_commit_touches_src(
+    tmp_path,
+) -> None:
+    repo = _init_throwaway_repo(tmp_path)
+    stale = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
+    verified_at = _commit(
+        repo, "artifacts/reports/note-1.md", "note one\n", "report note one"
+    )
+    # One intervening commit touches src/, not just artifacts/reports/ -- the
+    # gap is no longer report-only and the allowance must not bridge it.
+    _commit(repo, "src/thing.py", "print('v2')\n", "change thing")
+    head = _commit(
+        repo, "artifacts/reports/note-2.md", "note two\n", "report note two"
+    )
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-sweep.md"
+    record.write_text(
+        f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n\n"
+        f"```discharge-sha\n{stale} {verified_at}\n```\n"
+    )
+
+    problems = guard.check_reports([record], head, repo_root=repo)
+
+    assert len(problems) == 1, problems
+    assert stale in problems[0] and head in problems[0]
+
+
+def test_an_undischarged_sha_still_fails_even_with_a_report_only_tail(
+    tmp_path,
+) -> None:
+    """The allowance only bridges the LAST leg of a chain a real
+    `discharge-sha` entry actually walked to -- it must not let a bare,
+    never-discharged sweep-sha pass just because nothing but reports
+    happened to change since. Without this, the guard would stop being a
+    hard failure and become a warning that clears itself with time."""
+    repo = _init_throwaway_repo(tmp_path)
+    stale = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
+    head = _commit(
+        repo, "artifacts/reports/note-1.md", "note one\n", "report note one"
+    )
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-sweep.md"
+    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
+
+    problems = guard.check_reports([record], head, repo_root=repo)
+
+    assert len(problems) == 1, problems
+    assert stale in problems[0] and head in problems[0]
