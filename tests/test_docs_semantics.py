@@ -649,7 +649,7 @@ PROMPTS_DIR = REPO_ROOT / "src" / "ralphd" / "prompts"
 
 
 def _documented_prompt_files(text: str) -> set[str]:
-    return set(re.findall(r"`([A-Za-z-]+\.md)`",
+    return set(re.findall(r"`([A-Za-z_-]+\.md)`",
                          _section(text, "### Phase prompts")))
 
 

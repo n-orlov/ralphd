@@ -49,6 +49,22 @@ STEP_STATES: tuple[str, ...] = (
     # rule, requirement I); this table entry alone declares that the edge
     # is legal, nothing more.
     "steer",
+    # Task 018 (PRD requirement K, #101): the peer plan-review hat's own
+    # step state -- reviews the plan `planning` just produced and either
+    # approves it (-> worker) or objects, routing back to `planning` for a
+    # bounded number of revisions (`JobConfig.peer_plan_review_max_
+    # revisions`, an explicit NUMBER, never "until it agrees" --
+    # `artifacts/reports/task-018-requirement-k-budget-decision.md`).
+    # Reachable only through the declared `planning -> plan_review` edge,
+    # gated on `self.cfg.peer_plan_review` -- the opt-in flag is OFF by
+    # default, and `table_for`'s third parameter (below) is what keeps
+    # the composed table byte-identical to today's whenever it stays off
+    # (`tests/test_peer_plan_review_gate.py::
+    # test_gate_off_by_default_table_is_byte_identical_to_today`). Present
+    # in the state inventory unconditionally anyway, exactly like `verify`
+    # is for the vigilant/non-vigilant axis: the hat exists either way,
+    # only its *reachability* differs.
+    "plan_review",
 )
 
 RUN_TERMINAL_STATES: tuple[str, ...] = ("succeeded", "failed", "aborted")
@@ -240,6 +256,15 @@ TABLE: dict[str, tuple[Transition, ...]] = {
     "steer": (
         T("worker", "steer_settled"),
     ),
+    # Task 018 (requirement K, #101): `plan_review` has NO base-table entry
+    # -- unlike `verify` (which is always a key, forced to `()` when
+    # non-vigilant), this state's edges exist ONLY inside
+    # `PEER_PLAN_REVIEW_DELTA` below, so `table_for(vigilant)` (no third
+    # argument, or `peer_plan_review=False`) never gains a `"plan_review"`
+    # key at all -- `.get(state, ())` already answers `()` for an absent
+    # key, which is exactly what keeps the off-by-default composed table
+    # byte-identical to today's (a dict with an extra `"plan_review": ()`
+    # entry would NOT be byte-identical to one missing that key).
     "succeeded": (),
     "failed": (),
     "aborted": (),
@@ -275,35 +300,93 @@ VIGILANT_DELTA: dict[str, tuple[Transition, ...]] = {
 }
 
 
-def table_for(vigilant: bool) -> dict[str, tuple[Transition, ...]]:
+# ---------------------------------------------------------------------------
+# The peer-plan-review delta — task 018, requirement K, #101
+# ---------------------------------------------------------------------------
+# A SECOND, INDEPENDENT delta beside `VIGILANT_DELTA`, on its own axis
+# (`JobConfig.peer_plan_review`, opt-in, OFF by default) -- the two never
+# interact: this delta only ever touches `planning`/`plan_review`, and
+# `VIGILANT_DELTA` only ever touches `worker`/`verify`, so composing both at
+# once (a vigilant run with the gate on) is unambiguous regardless of
+# application order.
+#
+# `planning`'s WHOLE tuple is replaced (not appended to, the same shape
+# `VIGILANT_DELTA["verify"]` already uses for a full replacement) so that
+# its one changed edge -- `planning_produced_tasks` targeting `worker` --
+# is retargeted at `plan_review` under a DELIBERATELY DIFFERENT guard name
+# (`planning_produced_tasks_peer_review_enabled`) rather than reusing the
+# same guard name for two different targets: the fact being guarded ("a
+# plan proposal was ingested") is the same, but naming the two edges
+# distinctly keeps `scripts/render_transition_table.py`'s rendered doc
+# unambiguous (no guard name that maps to two different targets depending
+# on config nobody reading a single row can see).
+#
+# `plan_review`'s three edges: `plan_review_approved` (-> worker, the plan
+# proceeds), `plan_review_objected_revision_available` (-> planning, one
+# more revision), `plan_review_revision_bound_reached` (-> worker, the
+# SAME target as approval -- the plan proceeds anyway once
+# `JobConfig.peer_plan_review_max_revisions`, an explicit NUMBER, is spent,
+# because "until it agrees" is exactly the unbounded loop this requirement
+# forbids). `LoopSupervisor._step_plan_review` (loop.py) is what computes
+# which of these three fires, deterministically from the hat's own
+# `verdict` field -- never through `engine.router` (that widening to a
+# genuinely router-mediated multi-edge hat is task 019's business,
+# requirement M, the FIRST hat to exercise it in production; this hat
+# picks its own edge exactly like `_step_worker`'s `_apply_reported_task_
+# status` and `_review_verdict` already do for theirs).
+PEER_PLAN_REVIEW_DELTA: dict[str, tuple[Transition, ...]] = {
+    "planning": (
+        T("planning", "instant_failure_streak"),
+        T("replan", "empty_plan"),
+        T("plan_review", "planning_produced_tasks_peer_review_enabled"),
+    ),
+    "plan_review": (
+        T("worker", "plan_review_approved"),
+        T("planning", "plan_review_objected_revision_available"),
+        T("worker", "plan_review_revision_bound_reached"),
+    ),
+}
+
+
+def table_for(vigilant: bool, peer_plan_review: bool = False) -> dict[str, tuple[Transition, ...]]:
     """Compose `TABLE` with `VIGILANT_DELTA` (vigilant) or leave `verify`
-    unreachable (non-vigilant). This is the ONLY function that produces a
-    variant's table — there must never be a second, hand-written
-    non-vigilant table sitting beside this one.
+    unreachable (non-vigilant), THEN layer `PEER_PLAN_REVIEW_DELTA` on top
+    when `peer_plan_review` is True. This is the ONLY function that
+    produces a variant's table — there must never be a second, hand-written
+    table sitting beside this one.
+
+    `peer_plan_review` defaults to `False` so every pre-existing caller
+    that only ever passed `vigilant` keeps getting EXACTLY today's table,
+    unchanged -- this is what requirement K's "off by default, byte-
+    identical to today's" acceptance rests on
+    (`tests/test_peer_plan_review_gate.py`).
     """
     table = dict(TABLE)
     if vigilant:
         table.update(VIGILANT_DELTA)
     else:
         table["verify"] = ()
+    if peer_plan_review:
+        table.update(PEER_PLAN_REVIEW_DELTA)
     return table
 
 
-def successors(state: str, vigilant: bool) -> tuple[Transition, ...]:
+def successors(state: str, vigilant: bool, peer_plan_review: bool = False) -> tuple[Transition, ...]:
     """Every legal transition out of `state` for the given variant. Always
     returns a tuple (possibly empty) — never raises for a state the table
     knows about, so successors are enumerable for every declared state."""
-    return table_for(vigilant).get(state, ())
+    return table_for(vigilant, peer_plan_review).get(state, ())
 
 
-def is_legal(state: str, target: str, vigilant: bool) -> bool:
+def is_legal(state: str, target: str, vigilant: bool, peer_plan_review: bool = False) -> bool:
     """True iff `target` is a legal successor of `state` in this variant."""
-    return any(edge.target == target for edge in successors(state, vigilant))
+    return any(edge.target == target
+               for edge in successors(state, vigilant, peer_plan_review))
 
 
-def guard_names(state: str, vigilant: bool) -> tuple[str, ...]:
+def guard_names(state: str, vigilant: bool, peer_plan_review: bool = False) -> tuple[str, ...]:
     """The declared guard names for `state`'s transitions, in table order."""
-    return tuple(edge.guard for edge in successors(state, vigilant))
+    return tuple(edge.guard for edge in successors(state, vigilant, peer_plan_review))
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +409,11 @@ STATE_HAT: dict[str, str | None] = {
     "reflect": "reflect",
     # Task 009 (requirement G, #98): the steer hat occupies its own state.
     "steer": "steer",
+    # Task 018 (requirement K, #101): the peer plan-review hat occupies its
+    # own state too, exactly like `steer` -- reachable only when
+    # `JobConfig.peer_plan_review` is on, unreachable (but still a real
+    # hat with a schema and a prompt, see `HATS` just below) otherwise.
+    "plan_review": "plan_review",
     "succeeded": None,
     "failed": None,
     "aborted": None,
@@ -334,8 +422,12 @@ STATE_HAT: dict[str, str | None] = {
 # The hats that need a response-contract schema (task 009) and a prompt.
 # `verify` is included even though it is unreachable in the non-vigilant
 # variant: the hat exists in both, the *transition* into it does not.
-# `steer` (task 009, requirement G, #98) joins the same way.
-HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect", "steer")
+# `steer` (task 009, requirement G, #98) joins the same way, and
+# `plan_review` (task 018, requirement K, #101) joins on the SAME axis --
+# unreachable when `JobConfig.peer_plan_review` is off, but a real hat with
+# a real schema, prompt and `MODEL_HATS` entry either way.
+HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect",
+                        "steer", "plan_review")
 
 
 # ---------------------------------------------------------------------------
@@ -546,18 +638,24 @@ class TransitionExecutor:
     difference between the two modes' behaviour here (requirement B: "the
     two modes differ only by which table variant is selected"); there is no
     second, hand-written non-vigilant executor anywhere.
+
+    `peer_plan_review` (task 018, requirement K, #101) is a SECOND,
+    independent selector on its own axis, defaulting to `False` so every
+    pre-existing construction site (`TransitionExecutor(cfg.vigilant)`)
+    keeps behaving exactly as before.
     """
 
-    __slots__ = ("vigilant",)
+    __slots__ = ("vigilant", "peer_plan_review")
 
-    def __init__(self, vigilant: bool) -> None:
+    def __init__(self, vigilant: bool, peer_plan_review: bool = False) -> None:
         self.vigilant = vigilant
+        self.peer_plan_review = peer_plan_review
 
     def advance(self, state: str, target: str, guard: str) -> str:
         """Move from `state` to `target` via the named `guard`'s edge, or
         raise `IllegalTransition`. Returns `target` on success so a caller
         can write `state = executor.advance(state, target, guard)`."""
-        if not is_legal(state, target, self.vigilant):
+        if not is_legal(state, target, self.vigilant, self.peer_plan_review):
             raise IllegalTransition(state, target, guard, self.vigilant)
         return target
 
@@ -698,6 +796,27 @@ HAT_SCHEMAS: dict[str, dict] = {
         },
         "additionalProperties": False,
     },
+    # Task 018 (requirement K, #101): the peer plan-review hat's own
+    # contract -- `verdict: "approved"` (the plan proceeds to `worker`) or
+    # `verdict: "objected"` with a mandatory `reason` (checked by
+    # `plan_review_report_errors` below, the same split every sibling
+    # semantic check in this module already uses) routed back to
+    # `planning` for a bounded revision. Deliberately the SAME two-value
+    # shape `review`'s `verdict` enum uses (`verified`/`rejected`) rather
+    # than reusing those exact strings -- `plan_review` is a judgement
+    # about a PLAN, `review` is a judgement about a completed APPROACH,
+    # and the two must never be confusable by a payload that named the
+    # wrong hat's enum value by mistake.
+    "plan_review": {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {
+            "verdict": {"type": "string", "enum": ["approved", "objected"]},
+            "reason": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
 }
 
 
@@ -824,6 +943,32 @@ def review_report_errors(payload: Any) -> list[str]:
     reason = payload.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         return ["verdict 'rejected' requires a non-empty reason"]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Task 018 (requirement K, #101): the peer plan-review hat's sibling to
+# `review_report_errors` just above -- a `verdict: "objected"` claim with
+# no `reason` names nothing a planning revision could act on, exactly the
+# gap a mandatory `reason` on a `rejected` review/verify verdict already
+# closes. Same split every sibling semantic check in this module uses:
+# schema validation is `contracts.validate_payload`'s job, this is the
+# business rule.
+# ---------------------------------------------------------------------------
+
+
+def plan_review_report_errors(payload: Any) -> list[str]:
+    """Errors in a peer reviewer's `verdict: "objected"` report, or an
+    empty list when the report is well-formed. A payload that does not
+    claim `verdict == "objected"` at all (including an `approved` verdict,
+    which carries no such requirement) is never in violation here -- same
+    "nothing proposed, nothing to check" shape `review_report_errors` uses.
+    """
+    if not isinstance(payload, dict) or payload.get("verdict") != "objected":
+        return []
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return ["verdict 'objected' requires a non-empty reason"]
     return []
 
 

@@ -185,6 +185,13 @@ class LoopSupervisor:
         # stays blocked across several worker iterations in a row does not
         # grow notes.md by one duplicate line per iteration.
         self._blocked_notes_written: set[str] = set()
+        # Task 018 (requirement K, #101): the peer plan-review hat's most
+        # recent objection reason, set by `_step_plan_review` when it
+        # routes back to `planning` for a revision, consumed (and cleared)
+        # by `_step_planning`'s very next attempt so the model actually
+        # sees what the peer objected to, exactly the way an ingestion
+        # rejection's `prior_errors` already reach the same attempt.
+        self._pending_plan_review_objection: str | None = None
         # Task 010 (#5): the error signature the current instant-failure
         # streak is made of, plus the memoised verdict for the attempt
         # _check_instant_failure() scored last (the infra-retry wrapper
@@ -296,7 +303,13 @@ class LoopSupervisor:
         # non-vigilant executor). `self._approach` is set for real in
         # `_run_job_core` once `_resume_point()` has run; `None` here is
         # just "not started yet".
-        self._executor = transitions.TransitionExecutor(cfg.vigilant)
+        #
+        # `cfg.peer_plan_review` (task 018, requirement K, #101) is a
+        # SECOND, independent selector passed alongside `cfg.vigilant` --
+        # see `transitions.table_for`'s own docstring for why the two axes
+        # never interact.
+        self._executor = transitions.TransitionExecutor(
+            cfg.vigilant, cfg.peer_plan_review)
         self._approach: int | None = None
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
@@ -850,7 +863,16 @@ class LoopSupervisor:
     # engine-recorded abort reason vetoing the infra verdict) are handled in
     # _begin_reflect_retry_window(), and reflect's episode is budgeted
     # separately (_outage_budget_for) because the job is already over.
-    INFRA_RETRY_PHASES = ("planning", "worker", "review", "verify", "reflect")
+    INFRA_RETRY_PHASES = ("planning", "worker", "review", "verify", "reflect",
+                         # Task 018 (requirement K, #101): `plan_review` is
+                         # budget-charged like planning/worker/review (the
+                         # commit message and `artifacts/reports/task-018-
+                         # requirement-k-budget-decision.md` record why),
+                         # so it gets the SAME infra-retry wrapper they do
+                         # -- an infra-classified fault here is retried and
+                         # refunded, never charged against the run's own
+                         # iteration budget or the bounded revision count.
+                         "plan_review")
 
     async def run_iteration(self, phase: str, extra: str = "",
                              prompt_name: str | None = None,
@@ -2807,6 +2829,16 @@ class LoopSupervisor:
                     outcome = await self._step_worker()
                 elif step == "review":
                     outcome = await self._step_review()
+                elif step == "plan_review":
+                    # Task 018 (requirement K, #101): a dedicated handler,
+                    # NOT the generic `_step_generic_hat`/router.decide()
+                    # fallback below -- this hat picks its own outgoing
+                    # edge deterministically from its own `verdict` field,
+                    # exactly like `_step_worker`/`_step_review` already do
+                    # for theirs. The first hat to genuinely need
+                    # `router.decide()` in production is task 019's
+                    # business (requirement M), not this one's.
+                    outcome = await self._step_plan_review()
                 else:
                     # Task 015 (requirement B): any OTHER state the table
                     # names is driven by the one generic fallback below --
@@ -3573,6 +3605,14 @@ class LoopSupervisor:
         if not skip_planning:
             self.run.emit("phase", phase="planning", approach=approach)
 
+            # Task 018 (requirement K, #101): consumed here, once, and
+            # cleared immediately -- `_step_plan_review` is the only
+            # writer, and this is the very next planning attempt after it
+            # wrote it, so the model actually sees what the peer objected
+            # to on the revision it asked for.
+            pending_objection = self._pending_plan_review_objection
+            self._pending_plan_review_objection = None
+
             event_loop = asyncio.get_running_loop()
 
             def respond(attempt: int, prior_errors):
@@ -3586,8 +3626,14 @@ class LoopSupervisor:
                 if self._abort_reason is not None or not self.budget_left():
                     return None
                 extra = ""
+                if pending_objection:
+                    extra += (
+                        "\n## Peer plan review objected to your previous "
+                        "plan\n\nRevise the plan to address this objection "
+                        "before resubmitting a proposal:\n"
+                        + pending_objection + "\n")
                 if prior_errors:
-                    extra = (
+                    extra += (
                         "\n## Your previous plan-proposal.json was "
                         "rejected\n\nFix every problem below and resubmit "
                         "a corrected proposal (a fresh `proposal_path` "
@@ -3634,7 +3680,84 @@ class LoopSupervisor:
         # exactly once per approach, whether planning ran or was skipped
         # (a resumed process's first visit to `worker`).
         self._ensure_criteria_baseline()
+        # Task 018 (requirement K, #101): the opt-in gate, off by default.
+        # `transitions.PEER_PLAN_REVIEW_DELTA` is what actually declares
+        # this alternate edge legal -- this `if` is just which of the two
+        # ALREADY-legal targets this run takes, decided from the SAME
+        # config flag `transitions.table_for`'s caller (`TransitionExecutor`
+        # construction, `__init__`) was built with, so the two can never
+        # disagree about which table variant is in force.
+        if self.cfg.peer_plan_review:
+            return ("advance", "plan_review",
+                    "planning_produced_tasks_peer_review_enabled")
         return ("advance", "worker", "planning_produced_tasks")
+
+    async def _step_plan_review(self) -> tuple:
+        """The `plan_review` state (task 018, requirement K, #101) --
+        reachable only when `self.cfg.peer_plan_review` is on. Budget-
+        charged like planning/worker/review, NOT given `steer`'s uncharged
+        special-casing: this hat does real reasoning work over the plan
+        `planning` just ingested, unlike `steer`'s bookkeeping-only role
+        (the decision this task's own commit message and
+        `artifacts/reports/task-018-requirement-k-budget-decision.md`
+        record).
+
+        Parses the hat's `plan_review` contract payload
+        (`transitions.HAT_SCHEMAS["plan_review"]`) exactly the way
+        `_review_verdict` parses review's own: an absent/malformed payload,
+        a schema violation, or an `objected` verdict with no `reason`
+        (`transitions.plan_review_report_errors`) is treated as an
+        implicit `objected` verdict -- the same safe default
+        `_review_verdict` already applies to a malformed review reply --
+        never a run-ending contract violation.
+
+        `approved` (real or implicit-through-malformed, per above) ->
+        `worker` (`plan_review_approved`). An `objected` verdict with
+        revisions still available for THIS approach
+        (`self.cfg.peer_plan_review_max_revisions`, an explicit NUMBER,
+        checked against status.json's persisted
+        `planReviewRevisions[str(approach)]` count -- disk, not an
+        in-memory-only counter, so it survives a resumed process exactly
+        the way `_record_stagnation_signature`'s `blockerSignatures` map
+        already does) -> `planning` (`plan_review_objected_revision_
+        available`), stashing the objection's reason on
+        `self._pending_plan_review_objection` for the very next planning
+        attempt to fold into its prompt. Once the bound is spent, the SAME
+        objected verdict instead falls through to `worker` anyway
+        (`plan_review_revision_bound_reached`) -- fail OPEN on a bounded
+        gate, never a deadlocked or faulted run.
+        """
+        approach = self._approach
+        if not self.budget_left():
+            return ("tail",)
+        self.run.emit("phase", phase="plan_review", approach=approach)
+        result = await self.run_iteration("plan_review")
+        try:
+            parsed = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            parsed = None
+        payload = None
+        if isinstance(parsed, dict):
+            contract_errors = (
+                contracts.validate_payload("plan_review", parsed)
+                or transitions.plan_review_report_errors(parsed))
+            if not contract_errors:
+                payload = parsed
+        if payload is not None and payload.get("verdict") == "approved":
+            return ("advance", "worker", "plan_review_approved")
+
+        reason = (payload or {}).get("reason") if payload else None
+        revisions = dict(
+            self.run.read_status().get("planReviewRevisions") or {})
+        used = int(revisions.get(str(approach), 0))
+        if used < self.cfg.peer_plan_review_max_revisions:
+            revisions[str(approach)] = used + 1
+            self.run.update_status(planReviewRevisions=revisions)
+            self._pending_plan_review_objection = (
+                reason or "plan review objected with no reason given")
+            return ("advance", "planning",
+                    "plan_review_objected_revision_available")
+        return ("advance", "worker", "plan_review_revision_bound_reached")
 
     def _step_replan(self) -> tuple:
         """The `replan` state: the approach boundary as a transition with a

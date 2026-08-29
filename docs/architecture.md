@@ -154,6 +154,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `planning` | planning | both | `planning` | `instant_failure_streak` |
 | `planning` | planning | both | `replan` | `empty_plan` |
 | `planning` | planning | both | `worker` | `planning_produced_tasks` |
+| `planning` | planning | peer plan review only | `plan_review` | `planning_produced_tasks_peer_review_enabled` |
 | `worker` | worker | both | `steer` | `steering_pending` |
 | `worker` | worker | both | `worker` | `no_verdict_yet` |
 | `worker` | worker | both | `review` | `verdict_ready` |
@@ -178,6 +179,9 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `reflect` | reflect | both | `failed` | `reflect_done_outcome_failed` |
 | `reflect` | reflect | both | `aborted` | `reflect_done_outcome_aborted` |
 | `steer` | steer | both | `worker` | `steer_settled` |
+| `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_approved` |
+| `plan_review` | plan_review | peer plan review only | `planning` | `plan_review_objected_revision_available` |
+| `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_bound_reached` |
 | `finishing` | — | both | `reflect` | `reflect_enabled` |
 | `finishing` | — | both | `succeeded` | `reflect_disabled_outcome_succeeded` |
 | `finishing` | — | both | `failed` | `reflect_disabled_outcome_failed` |
@@ -236,15 +240,17 @@ so the repair stays inside the tier that made the mistake.
 
 Prompt templates ship inside the installed package (`src/ralphd/prompts/`) —
 one per phase: `planning.md`, `worker.md`, `review.md`, `task-verify.md`,
-`reflect.md` and `steer.md` (task 009, PRD requirement G). Every one of them
-is **overridable by mount**: a file of the same
+`reflect.md`, `steer.md` (task 009, PRD requirement G) and `plan_review.md`
+(task 018, PRD requirement K — the opt-in peer plan-review gate). Every one
+of them is **overridable by mount**: a file of the same
 name in `/config/prompts/` (mapped by the CLI) takes precedence, resolved per
 iteration through the config overlay order (§5). Runtime replacement over the
 API (`PUT /config/prompts/{name}`, taking effect next iteration) covers the
-four phases `engine/config.py: PROMPT_NAMES` lists — `reflect` and `steer`
-are deliberately not among them (neither is listed by `GET /config/prompts`
-or `ralphctl prompts ls` either), so the post-terminal reflection prompt and
-the steer hat's prompt can only be replaced by a mount or in the image.
+four phases `engine/config.py: PROMPT_NAMES` lists — `reflect`, `steer` and
+`plan_review` are deliberately not among them (none of the three is listed
+by `GET /config/prompts` or `ralphctl prompts ls` either), so the
+post-terminal reflection prompt, the steer hat's prompt and the peer
+plan-review hat's prompt can only be replaced by a mount or in the image.
 `PUT /config/prompts/{name}` is one of
 the routes `control_token` gates unconditionally (task 005, requirement A /
 #62, SPEC §13.3), and no spawned iteration's own process can ever present
@@ -599,14 +605,17 @@ before this feature.
 
 Each hat resolves its model independently: per-hat override (`models:`/
 `model_overrides:`, keyed by `planning`, `worker`, `verify`, `review`,
-`reflect`, `steer`, `router`) → job default (`model`, `None` = pi's own
-default). An unrecognised hat name degrades to `planning`'s own configured
-entry (`UNRECOGNISED_HAT_FALLBACK`), never to some cheaper tier — a typo must
-never quietly downgrade a phase. `steer` (task 009, PRD requirement G) is a
-real, first-class entry here, resolved through this same table like every
-other known hat — never through the unrecognised-name fallback, which is
-reserved for a typo, not a real role. `router` additionally has its own dedicated
-`router_model` key, checked before `model_overrides["router"]`'s sibling rung.
+`reflect`, `steer`, `plan_review`, `router`) → job default (`model`, `None` =
+pi's own default). An unrecognised hat name degrades to `planning`'s own
+configured entry (`UNRECOGNISED_HAT_FALLBACK`), never to some cheaper tier —
+a typo must never quietly downgrade a phase. `steer` (task 009, PRD
+requirement G) and `plan_review` (task 018, PRD requirement K, the opt-in
+peer plan-review gate — off by default via `peer_plan_review: false`) are
+both real, first-class entries here, resolved through this same table like
+every other known hat — never through the unrecognised-name fallback, which
+is reserved for a typo, not a real role. `router` additionally has its own
+dedicated `router_model` key, checked before `model_overrides["router"]`'s
+sibling rung.
 Each hat's `(model, thinking)` PAIR — never just the model — is what
 `JobConfig.bundle_for(hat)` (task 007) actually returns: `thinking_overrides:`
 is the same per-hat table for `pi --thinking`/reasoning settings, kept as a

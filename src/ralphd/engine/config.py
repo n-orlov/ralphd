@@ -256,8 +256,14 @@ def _migrate_legacy_model_config(raw: dict) -> dict:
 # Its shipped default, like every other hat's, is simply "whatever `model`
 # resolves to when nothing configures it explicitly" -- `DEFAULT_HAT_MODEL_
 # REF`/`None`, same as the rest.
+#
+# `plan_review` (task 018, PRD requirement K, #101): the peer plan-review
+# hat joins the SAME way -- a real entry, a real shipped default, never the
+# unrecognised-hat fallback, whether or not `JobConfig.peer_plan_review`
+# (the opt-in gate, off by default) is actually turned on for a given run.
 MODEL_HATS: tuple[str, ...] = (
-    "planning", "worker", "verify", "review", "reflect", "router", "steer")
+    "planning", "worker", "verify", "review", "reflect", "router", "steer",
+    "plan_review")
 
 # "What ships": the ref a KNOWN hat resolves to when neither the per-hat
 # table (`models:`/`model_overrides:`) nor the bare `model` field configures
@@ -329,6 +335,23 @@ class JobConfig:
     on_complete: str = "exit"  # idle | exit (idle is an explicit debugging opt-in)
     on_complete_cmd: str | None = None  # shell hook run once at terminal state
     reflect: bool = False  # run one extra 'reflect' iteration after terminal state
+    # Task 018 (PRD requirement K, #101): the opt-in peer plan-review gate.
+    # OFF by default -- `transitions.table_for(vigilant)` (no third
+    # argument) is byte-identical to today's table whenever this stays
+    # False (`tests/test_peer_plan_review_gate.py`). When True, `planning`'s
+    # `planning_produced_tasks` edge targets `plan_review` instead of
+    # `worker`, and a peer model either approves the plan or objects,
+    # routing back to `planning` for a revision -- bounded by
+    # `peer_plan_review_max_revisions` below, never "until it agrees".
+    peer_plan_review: bool = False
+    # An explicit NUMBER (decision recorded in `artifacts/reports/
+    # task-018-requirement-k-budget-decision.md` and this task's own commit
+    # message): the maximum number of `planning -> plan_review -> planning`
+    # revision round trips ONE approach may spend on an objecting peer
+    # before the plan proceeds to `worker` regardless
+    # (`plan_review_revision_bound_reached`). Reset to 0 at the start of
+    # every approach (`LoopSupervisor._record_plan_review_revision`).
+    peer_plan_review_max_revisions: int = 2
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
     # any pi "provider/model" ref; the plain fallback every hat resolves to

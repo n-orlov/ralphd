@@ -43,6 +43,13 @@ def test_terminal_states_have_no_successors_and_nothing_else_does():
     # -- and only has successors -- under vigilant (VIGILANT_DELTA). It is
     # not a terminal state; it is simply unreachable, non-terminal state
     # under non-vigilant, which is exactly what the delta declares.
+    #
+    # `plan_review` (task 018, requirement K, #101) is the SAME shape on a
+    # DIFFERENT axis: it is a real hat-bearing state either way, but this
+    # test never turns `peer_plan_review` on (it only parametrizes
+    # `vigilant`), so its successors are `()` regardless of `vigilant`
+    # here -- reachability is gated by `JobConfig.peer_plan_review`
+    # (default OFF), never by `vigilant` at all.
     for vigilant in (True, False):
         for state in tr.ALL_STATES:
             succ = tr.successors(state, vigilant)
@@ -50,6 +57,10 @@ def test_terminal_states_have_no_successors_and_nothing_else_does():
                 assert succ == (), f"{state} ({vigilant=}) must be terminal"
             elif state == "verify" and not vigilant:
                 assert succ == (), "verify is unreachable, not terminal, non-vigilant"
+            elif state == "plan_review":
+                assert succ == (), (
+                    "plan_review is unreachable, not terminal, when "
+                    "peer_plan_review is off (this test's default)")
             else:
                 assert succ != (), (
                     f"{state} ({vigilant=}) is not terminal but has no "
