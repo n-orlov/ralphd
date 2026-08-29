@@ -130,7 +130,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R8** | **The engine cannot be killed by the agent it supervises.** The job container carries `ralphd.role=job` alongside `ralphd.run=<run-id>`, siblings carry `ralphd.role=sibling`, and the container is told its own name via `RALPHD_SELF_CONTAINER_ID`. Every documented cleanup command — prompt, skill example, docs — is the two-filter, sibling-only form. | Otherwise the idiom ralphd itself teaches deletes the job container mid-iteration: that iteration's work and transcript are lost and the run dir is left non-terminal, which is exactly how a run becomes a zombie that `status` reports as healthy and still-running. |
 | **R9** | **A job is resumable from its own run directory.** A fresh `ralphd-engine` over an existing run dir seeds `iterations_used` from the highest *completed* iteration, resumes the recorded approach, skips planning, and treats a topped-up `iterations` as remaining budget. `resume` reproduces the original `docker run` wiring from files (`llm-wiring.json`, `env-wiring.json`, `host.json`), not from the resuming shell. Concurrency is bounded by an exclusive `flock` on `<run-dir>/.lock`; an on-disk `schemaVersion` newer than the build refuses to run. | Otherwise recovery re-plans from scratch, or — worse — resumes into a credential-less container and fails instantly on every iteration because the `-e` flags only ever existed in the shell that typed `start`. Two engines over one run dir would interleave writes into `status.json` and `events.jsonl`. |
 | **R10** | **The CLI's `--json` output is a stable machine interface.** Every command supports it, the schema is stable, human text goes to stderr on that path, and exit codes are documented (`0` success · `1` error · `2` usage · `3` unknown run · `4` API unreachable · `5` invalid in current state · `130` follow interrupted). Followers reconcile against live state: a terminal-state event ends a stream only when it is the log's last event *and* the engine is not live. | Otherwise the documented agent completion-wait (`ralphctl watch <id> --json \| jq …`) returns a *historical* `aborted` from before a resume and exits `0` while the job is still running — failing silently, successfully, and precisely after a crash recovery, which is when supervision matters most. |
-| **R11** | **Steering is never silently discarded.** A steering file is only marked consumed by a phase whose prompt tells the agent to act on it (`planning`, `worker`); a `VERIFIED` verdict observed with steering still pending is discarded in favour of one more worker iteration and a re-review; and every terminal `status.json` carries `unconsumedSteering`. | Otherwise a note accepted with `202` while the worker was in flight is recorded as consumed by a review iteration that was never going to act on it, or is stranded forever by a run that went terminal — and a terminal run never reads pending steering again. |
+| **R11** | **Steering is never silently discarded.** A steering file is only marked consumed by a phase whose prompt tells the agent to act on it (`planning`, `worker`, `steer`); a `VERIFIED` verdict is refused while anything the exit gate names is outstanding — an **unsettled** steering file (deferred once through `steering_pending_at_verified`, so the ordinary dispatch loop routes it to the `steer` hat at absolute top priority) or a **non-terminal steering-origin task** (`settled` is not `done`, task 013/requirement I, #98); and every terminal `status.json` carries `unconsumedSteering`. | Otherwise a note accepted with `202` while the worker was in flight is recorded as consumed by a review iteration that was never going to act on it, or is stranded forever by a run that went terminal — and a terminal run never reads pending steering again. Gating on the *file* alone was not enough either: a message can be `consumed` with three quarters of the work it asked for undone. |
 | **R12** | **Zero environment coupling.** A job needs a docker daemon, a reachable LLM endpoint, and a writable directory. No cloud service, no CI, no secret manager, no corporate network; the container has no docker socket and no host network unless explicitly opted in. | Otherwise the thing cannot be run on a laptop, which is the only deployment target it has. |
 
 A misconfiguration must still fail fast — R1 and that requirement pull against each
@@ -1054,9 +1054,16 @@ is pending.
   (`STEERING_ACTIONABLE_PHASES`): they get a read-only note that steering is
   waiting for the next actionable phase. Marking it consumed there would record
   it as actioned and silently discard it.
-- A `VERIFIED` verdict with steering still pending is deferred: one more `worker`
-  iteration actions it, then the review is re-run. Nothing reads pending steering
-  after a terminal state, so going terminal there would strand it forever.
+- A `VERIFIED` verdict is refused while the exit gate
+  (`LoopSupervisor._terminal_success_blockers()`, the one predicate both
+  `_step_review` and the grace review ask) names anything: an **unsettled**
+  steering file, or a **non-terminal steering-origin task** (task 013,
+  requirement I, #98 — `settled` is not `done`). The verdict is discarded and
+  the run defers ONCE through the declared `steering_pending_at_verified`
+  edge; the dispatch loop then routes to the `steer` hat (unsettled message)
+  or lets the worker's own scheduler finish the outstanding task, and review
+  is asked again the ordinary way. Nothing reads pending steering after a
+  terminal state, so going terminal there would strand it forever.
 - Every terminal write records `unconsumedSteering`, so stranded steering is
   visible from `status.json` alone.
 

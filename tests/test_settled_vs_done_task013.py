@@ -17,14 +17,27 @@ This module pins three things:
    `steer.settled` event, and a `steerSettled` status.json field, both
    recorded the moment the steer hat's payload validates (`test_steer_
    hats_settled_claim_is_recorded_as_a_harness_observable_fact`).
-2. The exit gate (`_step_review`'s VERIFIED check) now blocks terminal
-   success while ANY steering-origin task (`state.is_steering_origin`) is
-   non-terminal (`state.task_is_terminal`) -- independently of whether the
-   message that produced it was ever marked `settled` at all
-   (`test_settled_but_not_done_blocks_terminal_success`) -- and permits it
-   once every steering-origin task IS terminal
+2. The exit gate (`_step_review`'s VERIFIED check, `_maybe_grace_review`)
+   now blocks terminal success while ANY steering-origin task
+   (`state.is_steering_origin`) is non-terminal (`state.task_is_terminal`)
+   -- independently of whether the message that produced it was ever
+   marked `settled` at all (`test_settled_but_not_done_blocks_terminal_
+   success`) -- and permits it once every steering-origin task IS terminal
    (`test_all_done_permits_terminal_success`).
-3. The at-least-once property of steering consumption a dying iteration
+3. Both gates ask ONE predicate, `LoopSupervisor._terminal_success_
+   blockers()`, which REPLACES the pre-013 mechanism: a `while verified and
+   self.run.pending_steering():` loop inside `_step_review` that discarded
+   the verdict and dispatched a no-task `worker` iteration in place until
+   every steering FILE was consumed, plus a second hand-rolled
+   `pending_steering()` test inside `_maybe_grace_review`. The replacement
+   defers ONCE through the declared `steering_pending_at_verified` edge and
+   lets the ordinary dispatch loop route to the `steer` hat (task 012's
+   absolute-top-priority check) -- `test_unsettled_steering_at_verified_
+   defers_once_through_the_declared_edge`,
+   `test_the_deferred_edge_is_settled_by_the_steer_hat_then_review_
+   verifies`, `test_both_blockers_are_named_by_the_one_shared_predicate`,
+   `test_the_grace_gate_asks_the_same_predicate`.
+4. The at-least-once property of steering consumption a dying iteration
    must never defeat is unaffected by any of this -- pinned again here,
    specifically for the newly-reachable `steer` phase (task 012), mirroring
    `tests/test_steering_consumed_on_success.py`'s own pattern for `worker`
@@ -44,7 +57,7 @@ from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
 from test_steering_priority_routing_task012 import (
-    TASK_1, _ok, _review_verifies, _supervisor,
+    TASK_1, _ok, _review_verifies, _steer_settles, _supervisor,
 )
 
 STEER_EDGES = transitions.successors("steer", vigilant=False)
@@ -130,6 +143,134 @@ def test_no_steering_origin_tasks_at_all_permits_terminal_success(tmp_path):
 
     assert outcome == ("done", "succeeded")
     assert sup.run.read_status().get("state") == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# 1b. the REPLACEMENT itself: one predicate, one deferral, the steer hat
+#     rather than an in-place worker/re-review loop
+# ---------------------------------------------------------------------------
+
+def test_unsettled_steering_at_verified_defers_once_through_the_declared_edge(
+        tmp_path):
+    """The pre-013 mechanism looped IN PLACE: it discarded the VERIFIED
+    verdict, dispatched a no-task `worker` iteration from inside
+    `_step_review` itself and re-reviewed, over and over, until
+    `pending_steering()` came back empty -- the dispatch loop never saw a
+    state change at all. Task 013 replaces that with `_terminal_success_
+    blockers()` and a single return through the declared
+    `steering_pending_at_verified` edge: exactly ONE review iteration runs,
+    no worker iteration is dispatched from here, and the run does not go
+    terminal."""
+    root = tmp_path / "run"
+    run = _seed(root, [{"id": TASK_1, "status": "completed"}])
+    fname = run.add_steering("hold on, check one more thing", "lastcall")
+
+    sup = _supervisor(root, {"review": [_review_verifies]})
+    sup._approach = 1
+
+    outcome = asyncio.run(sup._step_review())
+
+    assert outcome == ("advance", "worker", "steering_pending_at_verified")
+    assert sup.runner.calls == {"review": 1}, (
+        "the replacement must not dispatch a worker iteration (nor a second "
+        f"review) from inside _step_review: {sup.runner.calls!r}")
+    assert sup.runner.phases_seen == ["review"]
+    status = sup.run.read_status()
+    assert status.get("state") != "succeeded"
+    assert status.get("verdict") is None
+    # untouched, therefore still deliverable: at-least-once is the file's
+    # own consume-on-clean-exit ordering, not something this gate does.
+    assert sup.run.pending_steering() == [root / "steering" / fname]
+    warnings = [ev for ev in _events(root, "log")
+                if ev.get("level") == "warning"]
+    assert any("deferring" in ev.get("message", "")
+               and fname in ev.get("message", "") for ev in warnings), (
+        f"the deferral must name the unsettled file: {warnings!r}")
+
+
+def test_the_deferred_edge_is_settled_by_the_steer_hat_then_review_verifies(
+        tmp_path):
+    """What the removed in-place loop used to do by hand, now done by the
+    ordinary dispatch loop: the deferral lands in `worker`, whose
+    absolute-top-priority check (task 012) routes to the `steer` hat, which
+    settles the message and consumes the file on its clean exit -- and only
+    then does a re-review's VERIFIED verdict make the run terminal."""
+    root = tmp_path / "run"
+    run = _seed(root, [{"id": TASK_1, "status": "completed"}])
+    fname = run.add_steering("hold on, check one more thing", "lastcall")
+
+    sup = _supervisor(root, {"review": [_review_verifies],
+                             "steer": [_steer_settles]})
+    sup._approach = 1
+
+    assert asyncio.run(sup._step_review()) == (
+        "advance", "worker", "steering_pending_at_verified")
+    # the declared edge's target, reached the ordinary way -- and it routes
+    # to `steer`, not into a worker iteration.
+    assert asyncio.run(sup._step_worker()) == (
+        "advance", "steer", "steering_pending")
+    assert asyncio.run(sup._step_generic_hat("steer", STEER_EDGES)) == (
+        "advance", "worker", "steer_settled")
+    assert sup.run.pending_steering() == [], (
+        "the steer hat's clean exit must consume the message")
+    consumed = json.loads((root / "steering" / ".consumed.json").read_text())
+    assert fname in consumed
+    assert sup._terminal_success_blockers() == []
+
+    assert asyncio.run(sup._step_review()) == ("done", "succeeded")
+    status = sup.run.read_status()
+    assert status.get("state") == "succeeded"
+    assert status.get("verdict") == "verified"
+    assert status.get("unconsumedSteering") == []
+
+
+def test_both_blockers_are_named_by_the_one_shared_predicate(tmp_path):
+    """One predicate, two blockers, so the two gate sites cannot drift: an
+    unsettled FILE (not `settled`) and a non-terminal steering-origin TASK
+    (not `done`) are both named, and both clear independently."""
+    root = tmp_path / "run"
+    run = _seed(root, [
+        {"id": TASK_1, "status": "completed"},
+        {"id": "002", "status": "in-progress", "origin": "steer"},
+    ])
+    fname = run.add_steering("and one more thing", "more")
+    sup = _supervisor(root, {})
+
+    blockers = sup._terminal_success_blockers()
+    assert len(blockers) == 2, blockers
+    assert fname in blockers[0] and "not settled" in blockers[0]
+    assert "002" in blockers[1] and "not terminal" in blockers[1]
+
+    # settle the file: only the task half is left
+    run.consume_steering([root / "steering" / fname], 1)
+    blockers = sup._terminal_success_blockers()
+    assert len(blockers) == 1 and "002" in blockers[0]
+
+    # finish the task: nothing blocks terminal success any more
+    doc = sup.run.read_tasks()
+    for t in doc["tasks"]:
+        if t["id"] == "002":
+            t["status"] = "validated"
+    atomic_write_json(sup.run.tasks_file, doc)
+    assert sup._terminal_success_blockers() == []
+
+
+def test_the_grace_gate_asks_the_same_predicate(tmp_path):
+    """`_maybe_grace_review`'s own hand-rolled `pending_steering()` test is
+    replaced by the same predicate: a VERIFIED grace review still may not
+    make the run terminal-succeeded while an operator message is unsettled,
+    and the reason note now says so in the shared vocabulary."""
+    root = tmp_path / "run"
+    run = _seed(root, [{"id": TASK_1, "status": "completed"}])
+    fname = run.add_steering("one last thing", "last")
+
+    sup = _supervisor(root, {"review": [_review_verifies]})
+    sup._approach = 1
+
+    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert sup.run.read_status().get("state") != "succeeded"
+    note = sup._terminal_reason_note or ""
+    assert "grace" in note and fname in note and "not settled" in note, note
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +372,10 @@ def test_a_crash_between_processing_and_marking_still_represents_the_steer(
     sup.runner = _DyingThenOk()  # type: ignore[assignment]
 
     # attempt 1: dies mid-work -- the note must stay pending, not banked.
-    asyncio.run(sup._run_iteration_once("steer"))
+    # (`run_iteration` is the public seam; `steer` is not in
+    # `INFRA_RETRY_PHASES`, so it is a straight pass-through -- no
+    # `_run_iteration_once` call in a test, per the PRD's non-negotiable 5.)
+    asyncio.run(sup.run_iteration("steer"))
     assert sup.run.pending_steering() == [root / "steering" / fname], (
         "a dying steer iteration must leave its note pending")
     consumed_path = root / "steering" / ".consumed.json"
@@ -242,7 +386,7 @@ def test_a_crash_between_processing_and_marking_still_represents_the_steer(
     # attempt 2: the following actionable (steer) iteration is handed the
     # SAME note again (at-least-once) and, having succeeded cleanly this
     # time, consumes it.
-    asyncio.run(sup._run_iteration_once("steer"))
+    asyncio.run(sup.run_iteration("steer"))
     assert sup.run.pending_steering() == [], (
         "the following clean steer iteration must consume the note")
     consumed = json.loads(consumed_path.read_text())

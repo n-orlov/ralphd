@@ -603,9 +603,21 @@ def test_verified_review_refused_while_steering_pending(engine_factory):
     """Task 005 regression: steering that lands during the review iteration of
     what would otherwise be the final VERIFIED verdict must not be silently
     stranded by a terminal-succeeded run. The engine must discard that verdict,
-    route back through one more (actionable) worker iteration to actually
-    consume the steering, then re-review -- only succeeding once no steering
-    is left pending."""
+    route back so the steering is actually settled, then re-review -- only
+    succeeding once no steering is left pending.
+
+    Task 013 (requirement I, #98) strengthens WHAT settles it. The old claim
+    was `phases == [planning, worker, review, worker, review]` with the file
+    consumed by iteration 4 -- a no-task `worker` iteration `_step_review`
+    dispatched by hand from inside its own in-place discard loop. That loop is
+    replaced by ONE deferral through the declared
+    `steering_pending_at_verified` edge, so the ordinary dispatch loop routes
+    the message to the hat that exists for it: `planning, worker, review,
+    steer, worker, review`, with `001-lastcall.md` consumed by the `steer`
+    iteration. The guarantee this test exists for is unchanged -- the run
+    still may not go terminal-succeeded with the file unconsumed -- and the
+    consumer is now a hat whose whole prompt is about operator messages
+    instead of a worker iteration with no task in hand."""
     e = engine_factory(job={"on_complete": "idle"},
                        stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.0"})
     e.wait_api()
@@ -634,16 +646,21 @@ def test_verified_review_refused_while_steering_pending(engine_factory):
     iters = sorted((e.run_dir / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
     phases = [m["phase"] for m in metas]
-    # The engine must NOT go terminal after the first review: it has to
-    # insert one more worker+review pair to actually consume the steering.
-    assert phases == ["planning", "worker", "review", "worker", "review"]
+    # The engine must NOT go terminal after the first review: it defers and
+    # the dispatch loop routes to `steer` (task 012/013) before re-reviewing.
+    assert phases == ["planning", "worker", "review",
+                     "steer", "worker", "review"]
 
     review1_meta = metas[2]
     assert review1_meta["steeringConsumed"] == []
 
-    worker2_meta = metas[3]
-    assert worker2_meta["phase"] == "worker"
-    assert "001-lastcall.md" in worker2_meta["steeringConsumed"]
+    steer_meta = metas[3]
+    assert steer_meta["phase"] == "steer"
+    assert "001-lastcall.md" in steer_meta["steeringConsumed"]
+    # ...and the worker iteration that follows it is handed nothing to
+    # consume, because the steer hat already settled it.
+    assert metas[4]["phase"] == "worker"
+    assert metas[4]["steeringConsumed"] == []
 
     # It was never silently discarded: recorded consumed, and the run only
     # went terminal-succeeded once it was.

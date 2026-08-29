@@ -982,17 +982,30 @@ so neither the `applied` state nor the `steering.consumed` event can be doubled.
 The per-iteration record keeps the two apart, so an operator can see a note was
 handed to iteration 12 and only earned by iteration 13.
 
-**A `VERIFIED` verdict is refused while steering sits unconsumed.** Passive
-notice at review time is not enough on its own: if a steering file arrives
-while the worker is in flight and the very next iteration boundary is the
-review that would otherwise end the job, the engine must not let the run go
-terminal-succeeded with that steering permanently stranded (a terminal run
-never reads pending steering again). So `_run_job_core` checks
-`Run.pending_steering()` after every `VERIFIED` review verdict: if steering is
-still pending, the verdict is discarded, one more (actionable) worker
-iteration runs to consume it, and the approach is re-reviewed. Only a
-`VERIFIED` verdict observed with no pending steering left is allowed to end
-the job successfully.
+**A `VERIFIED` verdict is refused while steering is unsettled or a
+steering-origin task is unfinished.** Passive notice at review time is not
+enough on its own: if a steering file arrives while the worker is in flight
+and the very next iteration boundary is the review that would otherwise end
+the job, the engine must not let the run go terminal-succeeded with that
+steering permanently stranded (a terminal run never reads pending steering
+again). Both exit-gate sites -- `_step_review`'s `VERIFIED` check and the
+off-budget grace review -- therefore ask one shared predicate,
+`LoopSupervisor._terminal_success_blockers()`, which names two things: a
+steering file nothing has settled yet (`Run.pending_steering()`), and a
+steering-origin task that is not terminal (`state.steering_origin_
+outstanding`, task 013 of v0.14 -- `settled` is not `done`, a message can be
+`consumed` with most of the work it asked for still undone). When it names
+anything, the verdict is discarded and the run defers exactly once through
+the declared `steering_pending_at_verified` edge back to `worker`; the
+ordinary dispatch loop then routes an unsettled message to the `steer` hat
+at absolute top priority (which consumes it only on a clean exit) or leaves
+the outstanding task to the worker's own scheduler, and the approach is
+re-reviewed the ordinary way. Only a `VERIFIED` verdict observed with that
+predicate empty is allowed to end the job successfully. (Before v0.14 this
+was an in-place loop inside `_step_review` that dispatched a no-task
+`worker` iteration itself and re-reviewed until the FILE was consumed --
+same guarantee, but keyed on the message rather than on the work it asked
+for.)
 
 **Any terminal state still surfaces unconsumed steering, belt-and-braces
 (task 006).** The `VERIFIED`-refusal above closes the most common silent-drop
