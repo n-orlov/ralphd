@@ -3116,22 +3116,69 @@ class LoopSupervisor:
             {"task_id": assigned_task_id, "task_status": target})
         return []
 
+    def _apply_worker_plan_complete_report(self, payload: dict,
+                                            assigned_task_id: str | None,
+                                            tasks_doc: dict) -> list[str]:
+        """Task 015 (requirement O, #100): the semantic half of the new
+        `verdict: "plan_complete"` claim -- the whole-plan sibling of
+        `_apply_worker_completion_report` just above, refused on exactly
+        the same two facts the retired `<promise>COMPLETE</promise>`
+        marker's own `honoured_complete` cross-check used:
+
+        1. **structural** -- `plan_complete` is valid only when the
+           harness assigned NO task this iteration (`assigned_task_id` is
+           `None`, i.e. `scheduler.select_next_task` found nothing
+           pickable). A worker handed real work this iteration has no
+           business claiming the whole plan is done in the same breath --
+           that claim belongs to "complete" (this task's own completion),
+           never to this field.
+        2. **semantic** -- cross-checked against `_outstanding_for_
+           completion(tasks_doc)`, the identical helper `honoured_
+           complete` already consulted for the marker: any task not
+           `completed`/`skipped`/`validated` refuses the claim, naming
+           the outstanding tasks so the reviewer/operator can see why.
+
+        A payload failing either check returns here rather than applying
+        anything -- `_step_worker`'s caller treats a non-empty return
+        exactly like a schema violation, carrying the claim back through
+        `contract_enforcement.enforce_contract`'s re-ask ladder instead of
+        silently taking it, or silently reading it as a no-progress
+        iteration.
+        """
+        if assigned_task_id is not None:
+            return [f"verdict 'plan_complete' is only valid when no task "
+                    f"was assigned this iteration; task {assigned_task_id!r} "
+                    "was assigned"]
+        outstanding = self._outstanding_for_completion(tasks_doc)
+        if outstanding:
+            names = ", ".join(
+                f"{t.get('id', '?')} ({t.get('status', 'unknown')})"
+                for t in outstanding[:10])
+            return [f"verdict 'plan_complete' reported with "
+                    f"{len(outstanding)} task(s) not completed or "
+                    f"skipped: {names}"]
+        return []
+
     def _record_worker_iteration_verdict(self, iteration_number: int,
                                           verdict: str,
                                           task_id: str | None) -> None:
         """Task 123 (#60): task 116 moved the worker's per-task completion
-        signal off the bare `<promise>COMPLETE</promise>` line (still only
-        emitted for the separate whole-plan marker further down) onto a
-        JSON verdict whose last line is never that literal sentinel, so
+        signal off the bare `<promise>COMPLETE</promise>` line onto a JSON
+        verdict whose last line is never that literal sentinel, so
         `IterationResult.saw_complete` -- which only ever recognised the
-        exact sentinel text -- can no longer tell an operator (or a
+        exact sentinel text, and is now purely an operator-facing
+        diagnostic (task 015, #100) -- can no longer tell an operator (or a
         black-box test, e.g. `tests/test_crash_consistency.py`) which
         iteration actually applied a task's completion. Record it directly
         in that iteration's own `meta.json`, mirroring how `_verify_task`
         already enriches a verify iteration's meta with `verifiedTask`/
-        `verifyOutcome` rather than inventing a second convention. Only
-        called once a verdict's contract has genuinely been applied to
-        tasks.json (never for a schema violation or a bare 'no_verdict').
+        `verifyOutcome` rather than inventing a second convention. Called
+        once a per-task verdict's contract has genuinely been applied to
+        tasks.json (never for a schema violation or a bare 'no_verdict'),
+        and once more for the whole-plan "plan_complete" claim (task 015)
+        -- which applies nothing to tasks.json itself, task_id=None,
+        purely so that ending iteration's own meta.json also carries an
+        appliedVerdict an operator or test can read.
         """
         itdir = self.run.iteration_dir(iteration_number)
         meta_path = itdir / "meta.json"
@@ -3779,6 +3826,68 @@ class LoopSupervisor:
                     # `enforce_contract` already emitted the
                     # `contract.violation`/`contract.agent_fault` events
                     # for the record.
+                elif verdict == "plan_complete":
+                    # Task 015 (requirement O, #100): the LAST untyped
+                    # claim -- "nothing was assigned to me and every task
+                    # is already terminal", formerly only sayable through
+                    # the literal `<promise>COMPLETE</promise>` marker --
+                    # is now a contract value, refused on exactly the same
+                    # evidence `honoured_complete` used to cross-check the
+                    # marker against (`_apply_worker_plan_complete_report`
+                    # below): no task assigned THIS iteration (a
+                    # structural check -- a worker that was handed real
+                    # work has no business claiming the WHOLE plan is
+                    # done in the same breath) and nothing outstanding in
+                    # the freshly re-read plan (the semantic check,
+                    # `_outstanding_for_completion`). Same ladder shape as
+                    # "unsatisfiable"/"complete" above: a schema violation
+                    # or an illegal claim is carried back to the SAME
+                    # worker through `contract_enforcement.enforce_
+                    # contract`'s uncharged `_ask_contract_fix` re-ask
+                    # ladder rather than read as silence. Attempt 0 reuses
+                    # THIS already-completed work iteration's own final
+                    # line -- no extra hat call, no double-charge.
+                    event_loop = asyncio.get_running_loop()
+
+                    def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                        if attempt == 0:
+                            return worker_final_text
+                        raw, _usage = asyncio.run_coroutine_threadsafe(
+                            self._ask_contract_fix("worker", prior_errors or []),
+                            event_loop).result()
+                        return last_nonblank_line(raw)
+
+                    enforcement = await asyncio.to_thread(
+                        contract_enforcement.enforce_contract,
+                        "worker", respond,
+                        max_retries=self.cfg.contract_retry_max,
+                        state=self.run,
+                        extra_validate=lambda p: self._apply_worker_plan_complete_report(
+                            p, assigned_id, tasks_after),
+                    )
+                    if enforcement.ok:
+                        # Nothing was, or could be, applied to tasks.json
+                        # by this verdict (unlike "complete"/"unsatisfiable"
+                        # above) -- the claim IS the whole-plan conclusion,
+                        # not a step towards one, so this ends the worker
+                        # loop directly rather than falling through to the
+                        # ordinary stagnation bookkeeping below (matching
+                        # the retired marker's own `honoured_complete`
+                        # break, just moved onto the contract-verified
+                        # path instead of a raw string match).
+                        self._record_worker_iteration_verdict(
+                            worker_iter_n, "plan_complete", None)
+                        verdict_ready = True
+                        guard_ready = "verdict_ready"
+                        self.run.emit("signal", signal="COMPLETE")
+                        break
+                    # Ladder exhausted: falls through to the SAME ordinary
+                    # stagnation bookkeeping every other exhausted site
+                    # already takes -- no `_advance` call, no early
+                    # `return`, `self.budget_left()` still owns when this
+                    # run actually ends. `enforce_contract` already
+                    # emitted the `contract.violation`/`contract.
+                    # agent_fault` events for the record.
                 elif schema_errors:
                     # v0.13 task 007 (#92 site 5, the LAST cutover): a
                     # `verdict` the schema itself rejects -- not
@@ -3885,13 +3994,14 @@ class LoopSupervisor:
                 # whether the WHOLE run is now done is the harness's own
                 # question to answer from the record it just wrote, not
                 # something the agent has to notice or re-assert with a
-                # separate marker (contrast the literal
-                # `<promise>COMPLETE</promise>` path below, which is
-                # unchanged and still available for a reply that carries no
-                # JSON verdict at all). `_outstanding_for_completion` is the
-                # exact same check `honoured_complete` already crosschecks
-                # a promise-marker claim against; here it is the sole
-                # decision, made directly from state.
+                # separate marker (contrast the `verdict: "plan_complete"`
+                # branch above, task 015/#100, which exists for exactly
+                # the OTHER case -- nothing was assigned this iteration at
+                # all, so there is no per-task application here to fold
+                # the check into). `_outstanding_for_completion` is the
+                # same check that branch cross-checks its own claim
+                # against; here it is the sole decision, made directly
+                # from state.
                 if not self._outstanding_for_completion(tasks_after):
                     verdict_ready = True
                     guard_ready = "verdict_ready"
@@ -3930,40 +4040,25 @@ class LoopSupervisor:
                 continue
 
             after = json.dumps(tasks_after, sort_keys=True)
-            # Task 046 (#55): the COMPLETE the loop acts on is the HONOURED
-            # one -- the marker cross-checked against the plan that was
-            # just re-read -- not the raw string the agent emitted. A
-            # signal is a claim about tasks.json, and tasks.json is right
-            # here; refusing an unearned one is strictly stronger than any
-            # assertion about how the marker was formatted, because it does
-            # not depend on formatting at all. Both uses below must read
-            # `honoured_complete`, and the stagnation one especially:
-            # resetting the counter on the RAW marker would let an agent
-            # that emits COMPLETE every iteration while changing nothing
-            # hold `stagnant` at 0 forever -- trading a false conclusion
-            # for an endless loop.
-            outstanding = (self._outstanding_for_completion(tasks_after)
-                           if result.saw_complete else [])
-            honoured_complete = result.saw_complete and not outstanding
-            if outstanding:
-                names = ", ".join(
-                    f"{t.get('id', '?')} ({t.get('status', 'unknown')})"
-                    for t in outstanding[:10])
-                self.run.emit(
-                    "log", level="warning",
-                    message=(
-                        f"iteration {self.iterations_used} signalled "
-                        f"COMPLETE with "
-                        f"{len(outstanding)} task(s) not completed or "
-                        f"skipped: {names}; refusing the signal and "
-                        "continuing the worker loop (task 046, #55)"))
+            # Task 015 (requirement O, #100) retired the literal
+            # `<promise>COMPLETE</promise>` marker as an authoritative
+            # decision here: `IterationResult.saw_complete` is now purely
+            # an operator-facing diagnostic (recorded in `meta.json`/
+            # `iteration.end`, same demotion `saw_verified` already had --
+            # `_review_verdict`'s docstring), never consulted below. The
+            # whole-plan conclusion the retired marker used to make ("the
+            # plan is done, refused unless `_outstanding_for_completion`
+            # agrees") is now made exclusively by the `verdict:
+            # "plan_complete"` contract branch above -- which `break`s
+            # out of this loop directly on success, so code below this
+            # point never has a completion claim to cross-check at all.
             # Task 117 (steering 005): the `self._last_fault_class in
             # ("infra", "signal")` gate a few lines above already excludes
             # those iterations from reaching this line at all (`continue`),
-            # so this ternary is unchanged from before that task -- it never
+            # so this is unchanged from before that task -- it never
             # needed to know about fault class itself, only about whether
-            # tasks.json moved and whether the marker was honoured.
-            stagnant = stagnant + 1 if (before == after and not honoured_complete
+            # tasks.json moved.
+            stagnant = stagnant + 1 if (before == after
                                         and not result.interrupted) else 0
             blocked = self._unresolved_failures(tasks_after)
             if stagnant and blocked:
@@ -4029,11 +4124,6 @@ class LoopSupervisor:
                 # the failing iteration's own `result` in hand.
                 self._record_stagnation_signature(
                     approach, self._blocker_signature(result))
-                break
-            if honoured_complete:
-                verdict_ready = True
-                guard_ready = "verdict_ready"
-                self.run.emit("signal", signal="COMPLETE")
                 break
 
         if not self.budget_left():
@@ -4267,8 +4357,8 @@ class LoopSupervisor:
         BOTH:
           * every task in the record is done -- `_outstanding_for_
             completion` empty, the identical check `_step_worker`'s own
-            `honoured_complete` uses to decide whether a COMPLETE claim was
-            earned; and
+            `complete`/`plan_complete` verdict branches use to decide
+            whether a COMPLETE claim was earned; and
           * an actual `signal` event recording `signal: "COMPLETE"` exists
             in this run's `events.jsonl` -- so a plan that merely happens
             to read all-done at this exact snapshot (for some unrelated

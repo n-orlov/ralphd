@@ -42,7 +42,7 @@ import pytest
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events
 
 
@@ -132,13 +132,17 @@ def _plan(sup: LoopSupervisor, _prompt: str = "") -> IterationResult:
 
 
 def _complete_task(sup: LoopSupervisor, _prompt: str = "") -> IterationResult:
+    # Task 015 (requirement O, #100): report the harness-owned `complete`
+    # verdict instead of writing tasks.json directly and ending with the
+    # retired `<promise>COMPLETE</promise>` marker. With only one task in
+    # this fixture's plan, applying this single move already leaves
+    # `_outstanding_for_completion` empty, so `_step_worker`'s
+    # `applied_this_iteration` branch (task 116) emits `signal: "COMPLETE"`
+    # and ends the worker loop in this SAME iteration -- the call counts
+    # below are unchanged from before this task.
     doc = sup.run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(sup.run.tasks_file, doc)
-    # `IterationResult.saw_complete` is a read-only property derived from
-    # `final_text`'s own last line (task 046, #55) -- the marker has to
-    # actually be the message's last line.
-    return _ok(f"done\n{COMPLETE}")
+    task_id = doc["tasks"][0]["id"]
+    return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": task_id}))
 
 
 def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:

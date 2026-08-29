@@ -14,36 +14,49 @@ pending and went to review; only the reviewer rejecting the approach stopped
 that run from going terminal `succeeded`/`verified` with three quarters of its
 plan undone. `saw_verified` had the identical defect with nothing behind it.
 
+Task 015 (requirement O, #100) retired the literal `<promise>COMPLETE</promise>`
+marker itself as the mechanism that carries this claim: the worker's
+whole-plan-is-done signal is now `{"verdict": "plan_complete"}`, a value in
+the SAME contract enum as `complete`/`no_verdict`/`unsatisfiable`, valid ONLY
+when no task was assigned this iteration. `IterationResult.saw_complete` (the
+bare-marker string match this module's layer 1 still exercises) is now purely
+the operator-facing "mentioned the completion line" diagnostic that
+`saw_verified` already was before this task -- it does not drive
+`_step_worker`'s decision any more than `saw_verified` ever drove review's.
+
 Three layers, tested here in that order:
 
-1. **String.** The marker must be the last non-blank line, stripped, equal --
-   `runner.last_nonblank_line()`. Deliberately not an "own line anywhere"
-   (`MULTILINE ^...$`) match, which a fenced block or an echoed notes.md
-   section defeats. A marker seen elsewhere is absent AND logged, so failing
-   closed does not look like an unexplained non-conclusion.
-2. **Plan.** A COMPLETE is honoured only after the freshly re-read plan is
-   checked: anything not `completed`/`skipped` refuses it, names the
-   outstanding count in a log event, and the worker loop keeps working. This
-   layer does not care how the marker was formatted, so it stops the whole
-   class rather than one sentence.
-3. **Stagnation.** The counter consults the HONOURED completion. Reading the
-   raw marker there would trade the false conclusion for an infinite loop: an
-   agent emitting COMPLETE every iteration while changing nothing would hold
-   `stagnant` at 0 forever. test_an_agent_that_emits_complete_forever_still_
-   stagnates is that test.
+1. **String.** The retired marker must still be recognised as the last
+   non-blank line, stripped, equal -- `runner.last_nonblank_line()` -- purely
+   so the diagnostic can still name a near-miss sentence for the operator.
+   Deliberately not an "own line anywhere" (`MULTILINE ^...$`) match, which a
+   fenced block or an echoed notes.md section defeats.
+2. **Plan.** A `plan_complete` claim is honoured only after the freshly
+   re-read plan is checked, exactly as `honoured_complete` checked the
+   marker before this task: a task assigned this iteration, or anything not
+   `completed`/`skipped`, refuses it and routes it to
+   `contract_enforcement.enforce_contract`'s retry ladder -- a malformed
+   claim is a contract violation, never silent no-progress. This layer does
+   not care how the JSON was formatted, so it stops the whole class rather
+   than one shape.
+3. **Stagnation.** The counter consults the HONOURED completion (now:
+   whether `_step_worker` actually reached the `plan_complete` success
+   branch this iteration), not the raw diagnostic. Reading the raw
+   diagnostic there would trade the false conclusion for an infinite loop:
+   an agent claiming `plan_complete` every iteration while changing nothing
+   would hold `stagnant` at 0 forever.
+   test_an_agent_that_claims_plan_complete_forever_still_stagnates is that
+   test.
 
-Plus the prompt half: an agent has to be able to NAME the signal to explain
-withholding it, and if the only name it has is the literal line it will use the
-literal line. So `worker.md` supplies "the completion marker" for its own
-`<promise>COMPLETE</promise>` sentinel, and forbids reproducing the line
-anywhere but at the very end. `review.md`'s own `VERIFIED` sentinel was
-retired in favour of a JSON contract (task 119, #60 pillar 3) -- it never had
-a naming convention of its own to preserve, and the coverage below of
-`saw_verified`/`VERIFIED` is now purely the low-level string mechanics
+Plus the prompt half: `worker.md` no longer needs a prose name for a literal
+line it no longer asks anyone to write -- `plan_complete` is JSON like every
+other verdict here, with no substring-mention hazard for a naming convention
+to defend against, exactly the property `review.md`'s own retired `VERIFIED`
+sentinel already had (task 119, #60 pillar 3). The coverage below of
+`saw_verified`/`VERIFIED` remains the low-level string mechanics
 (`IterationResult`), kept for the "mentioned but did not end with it"
 operator diagnostic (task 046, #55) that still runs for every iteration
-regardless of phase, not for anything review.md itself still asks an agent
-to write.
+regardless of phase.
 
 Mutation matrix in the commit message / task notes.
 """
@@ -269,7 +282,10 @@ def _finish_one(sup: LoopSupervisor) -> IterationResult:
 
 
 def _signal_done(sup: LoopSupervisor) -> IterationResult:
-    return _ok(f"every task is terminal\n{COMPLETE}")
+    # Task 015 (requirement O, #100): the retired `<promise>COMPLETE</promise>`
+    # marker's replacement -- the same whole-plan claim, now the contract
+    # value `verdict: "plan_complete"`.
+    return _ok("every task is terminal\n" + json.dumps({"verdict": "plan_complete"}))
 
 
 def _review_verified(sup: LoopSupervisor) -> IterationResult:
@@ -334,80 +350,116 @@ def test_a_review_that_mentions_the_verification_line_is_not_a_verdict(tmp_path)
     assert (outcome, sup.run.read_status()["verdict"]) == ("failed", "unverified")
 
 
-def test_an_unearned_complete_is_refused_and_the_loop_keeps_working(tmp_path):
-    """Layer 2, and the layer that does not depend on formatting: the marker is
-    in the only place that counts, and the plan still says otherwise."""
+def test_an_unearned_plan_complete_is_refused_and_reaches_the_ladder(tmp_path):
+    """Task 015 (requirement O, #100): a malformed/unearned `plan_complete`
+    claim is a CONTRACT VIOLATION now, carried back through
+    `contract_enforcement.enforce_contract`'s retry ladder -- never read as
+    silent no-progress the way the retired marker's `honoured_complete`
+    refusal used to be (that refusal only ever logged a warning and fell
+    straight through to the ordinary stagnation bookkeeping, no ladder, no
+    `contract.violation` event)."""
+    calls = {"n": 0}
+
+    def worker(sup: LoopSupervisor) -> IterationResult:
+        calls["n"] += 1
+        n = calls["n"]
+        # calls 1-3 are this ONE pass's whole ladder: call 1 is the real
+        # worker dispatch (task 001 freshly claimed `in-progress` by the
+        # scheduler before it even ran), calls 2-3 are the two
+        # `_ask_contract_fix` re-asks `cfg.contract_retry_max`'s default (2)
+        # grants -- all three see the SAME assigned task and are refused
+        # STRUCTURALLY, so the ladder exhausts and this pass counts as
+        # no-progress.
+        if n <= 3:
+            return _signal_done(sup)
+        # calls 4-5: the worker's next two real iterations, finishing 001
+        # then 002 directly -- ordinary progress, no verdict at all.
+        if n <= 5:
+            return _finish_one(sup)
+        # call 6: nothing assigned, nothing outstanding -- earned.
+        return _signal_done(sup)
+
     root = tmp_path / "run"
-    sup, outcome = _run(root, _steps(_signal_done, _finish_one, _finish_one,
-                                     _signal_done))
-    msgs = _log_messages(root)
-    assert "signalled COMPLETE with 2 task(s) not completed or skipped" in msgs
-    # Task 116: the harness itself claims task 001 `in-progress` (the
-    # scheduler's own pick, persisted strictly before this iteration's
-    # subprocess was spawned) before the scripted handler ever runs --
-    # so the very first refused-COMPLETE snapshot already shows it moved
-    # off `pending`, unlike task 002 which the scheduler never touched.
-    assert "001 (in-progress), 002 (pending)" in msgs
-    assert "refusing the signal and continuing the worker loop (task 046, #55)" in msgs
-    assert sup.runner.phases.count("worker") == 4, sup.runner.phases
+    sup, outcome = _run(root, worker)
+    events = _events(root)
+    violations = [ev for ev in events if ev.get("type") == "contract.violation"]
+    assert violations, "the unearned claim must reach the ladder"
+    all_errors = " ".join(" ".join(ev.get("errors", [])) for ev in violations)
+    assert "only valid when no task was assigned" in all_errors, all_errors
+    assert "'001' was assigned" in all_errors, all_errors
+    faults = [ev for ev in events if ev.get("type") == "contract.agent_fault"]
+    assert len(faults) == 1, "the ladder exhausts exactly once, for the one refused pass"
+    assert sup.runner.phases.count("worker") == 6, sup.runner.phases
     assert _signals(root).count("COMPLETE") == 1, "one earned signal, at the end"
     assert (outcome, sup.run.read_status()["verdict"]) == ("succeeded", "verified")
 
 
-def test_an_earned_complete_is_still_honoured(tmp_path):
+def test_an_earned_plan_complete_is_still_honoured(tmp_path):
     """The control: nothing about the ordinary path changes."""
     root = tmp_path / "run"
     sup, outcome = _run(root, _steps(_finish_one, _finish_one, _signal_done))
-    msgs = _log_messages(root)
-    assert "refusing the signal" not in msgs and "mentioned the completion" not in msgs
+    events = _events(root)
+    assert not [ev for ev in events
+                if ev.get("type") in ("contract.violation", "contract.agent_fault")]
+    assert not [ev for ev in events if ev.get("type") == "log"
+                and "mentioned the completion" in (ev.get("message") or "")]
     assert _signals(root) == ["COMPLETE", "VERIFIED"]
     assert sup.runner.phases == ["planning", "worker", "worker", "worker", "review"]
     assert (outcome, sup.run.read_status()["verdict"]) == ("succeeded", "verified")
 
 
 def test_a_skipped_task_is_completion_but_a_failed_one_is_not(tmp_path):
-    """`completed`/`skipped` is exactly what worker.md's completion signal
-    recognises, so a justified skip must not block the run -- while `failed`
-    must, which is what routes such a plan to review (#33) instead."""
-    def skip_and_signal(sup: LoopSupervisor) -> IterationResult:
+    """`completed`/`skipped` is exactly what `_outstanding_for_completion`
+    recognises, so a justified skip must not block the `plan_complete` claim
+    -- while `failed` must, which is what routes such a plan to review (#33)
+    instead. Two iterations, not one: `plan_complete` is structurally
+    refused whenever a task was assigned THIS iteration (task 015), so the
+    skip/complete pair and the whole-plan claim can no longer share the one
+    reply the retired marker let them share."""
+    def skip_both(sup: LoopSupervisor) -> IterationResult:
         doc = sup.run.read_tasks()
         doc["tasks"][0]["status"] = "completed"
         doc["tasks"][1]["status"] = "skipped"
         doc["tasks"][1]["notes"] = "out of scope; not a claim the criteria hold"
         atomic_write_json(sup.run.tasks_file, doc)
-        return _ok(f"one done, one honestly skipped\n{COMPLETE}")
+        return _ok("one done, one honestly skipped")
 
     root = tmp_path / "run"
-    sup, outcome = _run(root, _steps(skip_and_signal))
-    assert "refusing the signal" not in _log_messages(root)
+    sup, outcome = _run(root, _steps(skip_both, _signal_done))
+    events = _events(root)
+    assert not [ev for ev in events
+                if ev.get("type") in ("contract.violation", "contract.agent_fault")]
     assert _signals(root) == ["COMPLETE", "VERIFIED"]
     assert (outcome, sup.run.read_status()["verdict"]) == ("succeeded", "verified")
 
 
-def test_an_agent_that_emits_complete_forever_still_stagnates(tmp_path):
-    """The second-order bug #55 warns about: once an unearned COMPLETE is
-    ignored, the stagnation counter must consult the HONOURED completion, or an
-    agent that signals every iteration while changing nothing holds `stagnant`
-    at 0 and the run never ends. Three no-progress iterations, approach failed,
-    review never entered."""
+def test_an_agent_that_claims_plan_complete_forever_still_stagnates(tmp_path):
+    """The second-order bug #55 warns about, now for the contract value: once
+    an unearned `plan_complete` claim is refused, the stagnation counter must
+    consult the HONOURED completion (whether the ladder actually succeeded),
+    or an agent that claims it every iteration while changing nothing holds
+    `stagnant` at 0 and the run never ends. Three no-progress PASSES (each
+    its own exhausted ladder), approach failed, review never entered."""
     root = tmp_path / "run"
     sup, outcome = _run(root, _steps(_signal_done))
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert msgs.count("refusing the signal and continuing the worker loop"
-                      " (task 046, #55)") == 3
-    assert sup.runner.phases == ["planning", "worker", "worker", "worker"]
+    faults = [ev for ev in _events(root) if ev.get("type") == "contract.agent_fault"]
+    assert len(faults) == 3, "one exhausted ladder per stagnant pass"
+    assert sup.runner.phases.count("worker") == 9, sup.runner.phases
     assert "review" not in sup.runner.phases
     assert (outcome, sup.run.read_status()["verdict"]) == ("failed", "unverified")
     assert "COMPLETE" not in _signals(root)
 
 
-def test_an_earned_complete_is_progress_even_when_the_plan_did_not_change(tmp_path):
-    """The other half of "consult the HONOURED completion": an honoured COMPLETE
-    must still reset the stagnation counter. The iteration that only signals
-    changes nothing by definition, so on a plan already finished (a resumed run,
-    or a worker that idled first) the guard would otherwise reach 3 and fail the
-    approach on the very iteration that earned its review."""
+def test_an_earned_plan_complete_is_progress_even_when_the_plan_did_not_change(tmp_path):
+    """The other half of "consult the HONOURED completion": an honoured
+    `plan_complete` claim must still end the worker loop directly, without
+    ever reaching the ordinary stagnation bookkeeping at all -- the iteration
+    that only claims it changes nothing by definition, so on a plan already
+    finished (a resumed run, or a worker that idled first) the guard would
+    otherwise reach 3 and fail the approach on the very iteration that earned
+    its review."""
     def plan_all_done(sup: LoopSupervisor) -> IterationResult:
         atomic_write_json(sup.run.tasks_file,
                           _plan_doc(("001", "completed"), ("002", "completed")))
@@ -492,38 +544,28 @@ def _prompt(name: str) -> str:
     return (REPO / "src" / "ralphd" / "prompts" / f"{name}.md").read_text()
 
 
-@pytest.mark.parametrize("prompt, phrase", [("worker", "the completion marker")])
-def test_each_prompt_supplies_the_prose_name_for_its_signal(prompt, phrase):
-    """Prohibiting the literal is not enough on its own: the agent has to name
-    the thing to explain withholding it, and if the only name it has is the
-    literal it will use the literal. `review.md`'s own sentinel was retired
-    for a JSON contract (task 119, #60 pillar 3) -- it never needed this
-    convention afterwards, since a malformed JSON payload simply is not the
-    last line's valid JSON, with no substring-mention hazard to defend
-    against."""
-    text = _prompt(prompt)
-    assert f'call it "{phrase}"' in text
-    assert f'write "{phrase}"' in text
+def test_the_worker_prompt_no_longer_asks_for_a_literal_marker():
+    """Task 015 (requirement O, #100): the literal `<promise>COMPLETE</promise>`
+    line, and the naming convention that existed only to let an agent talk
+    ABOUT it without reproducing it, are both gone -- there is no longer a
+    substring-mention hazard for either to defend against."""
+    text = _prompt("worker")
+    assert "<promise>COMPLETE</promise>" not in text
+    assert "the completion marker" not in text
+    assert "Naming the signal in prose" not in text
 
 
-@pytest.mark.parametrize("prompt", ["worker"])
-def test_each_prompt_confines_the_literal_line_to_the_very_end(prompt):
-    text = " ".join(_prompt(prompt).split())
-    assert ("has exactly one legitimate place in your reply — the very end, as "
-            "the final line, with nothing after it") in text
-    assert "Anywhere else it is a formatting error" in text
-    assert "do not reproduce the literal line" in text
+def test_the_worker_prompt_documents_the_plan_complete_verdict():
+    text = " ".join(_prompt("worker").split())
+    assert '{"verdict": "plan_complete"}' in text
+    assert ("nothing was selectable" in text
+            and "ALREADY reached a terminal status" in text)
+    assert "cross-checks the claim against" in text
 
 
-@pytest.mark.parametrize("prompt", ["worker"])
-def test_each_prompt_names_the_quotation_shapes_that_do_not_count(prompt):
-    text = " ".join(_prompt(prompt).split())
-    assert "including inside quotes, a fenced block, a bullet" in text
-
-
-def test_the_worker_prompt_shows_the_withholding_sentence_to_write_instead():
-    assert ('write "tasks remain, so I am not emitting the completion marker"'
-            in " ".join(_prompt("worker").split()))
+def test_the_worker_prompt_still_warns_the_plan_complete_claim_is_refused_not_silent():
+    text = " ".join(_prompt("worker").split())
+    assert "is refused rather than silently accepted" in text
 
 
 # -- the docs ---------------------------------------------------------------

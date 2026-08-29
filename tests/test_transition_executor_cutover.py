@@ -31,7 +31,7 @@ import pytest
 from ralphd.engine import transitions as tr
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, VERIFIED, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -103,14 +103,18 @@ def _plan(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _complete_task(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
+    # Task 015 (requirement O, #100): report the harness-owned `complete`
+    # verdict for the task the scheduler assigned, instead of writing
+    # tasks.json directly and ending with the now-retired
+    # `<promise>COMPLETE</promise>` whole-plan marker. With only one task in
+    # this fixture's plan, `_apply_worker_completion_report` applying this
+    # single move already leaves `_outstanding_for_completion` empty, so
+    # the SAME iteration's `applied_this_iteration` branch (task 116) emits
+    # `signal: "COMPLETE"` and ends the worker loop -- no separate
+    # `plan_complete` iteration is needed for a one-task plan.
     doc = sup.run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(sup.run.tasks_file, doc)
-    # `IterationResult.saw_complete` is a read-only property derived from
-    # `final_text`'s own last line (task 046, #55) -- it has had no setter
-    # since before this task's cutover, so the marker has to actually be
-    # the message's last line, not assigned onto the result afterwards.
-    return _ok(f"done\n{COMPLETE}")
+    task_id = doc["tasks"][0]["id"]
+    return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": task_id}))
 
 
 def _verify_pass(sup: LoopSupervisor, prompt: str = "") -> IterationResult:

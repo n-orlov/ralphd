@@ -38,7 +38,7 @@ from test_cli_resume import _seed_run
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import PREVIOUS_ENDINGS_MAX, LoopSupervisor
-from ralphd.engine.runner import COMPLETE, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
 REPO = Path(__file__).resolve().parents[1]
@@ -119,10 +119,13 @@ def _abort(sup: LoopSupervisor) -> IterationResult:
 
 
 def _finish_task(sup: LoopSupervisor) -> IterationResult:
-    doc = sup.run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(sup.run.tasks_file, doc)
-    return _ok(f"done\n{COMPLETE}")
+    # Task 015 (requirement O, #100): report the harness-owned `complete`
+    # verdict instead of writing tasks.json directly and ending with the
+    # retired `<promise>COMPLETE</promise>` marker -- with only one task in
+    # every plan this module seeds, applying it already leaves
+    # `_outstanding_for_completion` empty, so the SAME iteration's
+    # `applied_this_iteration` branch (task 116) ends the worker loop.
+    return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": "001"}))
 
 
 def _review_ok(sup: LoopSupervisor) -> IterationResult:

@@ -59,8 +59,11 @@ immediately starts the next iteration.
      continue); note where you got stuck in the notes file.
    - the `verdict: "unsatisfiable"` report below, for a task whose criteria
      cannot be met as written.
-   Never together with the completion marker (`## Completion signal` below) in
-   the same reply — each iteration's last line is exactly one of these.
+   - `{"verdict": "plan_complete"}`, the separate whole-plan claim described
+     under `## Completion signal` below — valid ONLY when `## Task assigned
+     this iteration` said nothing was selectable this same iteration.
+   Exactly one of these is your reply's last non-blank line — never two, and
+   never a bare line that is neither.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. The notes'
    `## Standing rules` block is harness-pinned (task 107): the harness
@@ -206,25 +209,33 @@ applies whether or not that section is present:
 ## Completion signal
 
 The ordinary case is step 5 above: report `verdict: "complete"` for the task
-you were assigned, and the harness applies the status change itself. The
-literal marker below is a separate, narrower signal for the one situation
-step 5 cannot cover — an iteration with NOTHING assigned (`## Task assigned
-this iteration` said nothing was selectable) because every task in the plan
-has ALREADY reached a terminal status — `completed`, `validated`, or
-`skipped` with justification in the notes — before this iteration even
-started; there is no completion the harness has not already recorded. Do not
-try to use it to declare your OWN just-finished task done: at the moment you
-write this reply, `tasks.json` still shows that task `in-progress` (the
-harness applies your step-5 report only after this subprocess exits), so
-checking "every task is terminal" yourself would always be one task short of
-true for exactly the iteration that finishes the last one. When, and ONLY
-when, that check genuinely holds without your own assigned task in question at
-all, end your reply with this exact line:
+you were assigned, and the harness applies the status change itself —
+including working out, on its own, whether that move also finishes the whole
+plan. `verdict: "plan_complete"` is a separate, narrower claim for the one
+situation `"complete"` cannot cover — an iteration with NOTHING assigned
+(`## Task assigned this iteration` said nothing was selectable) because every
+task in the plan has ALREADY reached a terminal status — `completed`,
+`validated`, or `skipped` with justification in the notes — before this
+iteration even started; there is no completion the harness has not already
+recorded. Do not try to use it to declare your OWN just-finished task done: at
+the moment you write this reply, `tasks.json` still shows that task
+`in-progress` (the harness applies your step-5 report only after this
+subprocess exits), so checking "every task is terminal" yourself would always
+be one task short of true for exactly the iteration that finishes the last
+one — report `verdict: "complete"` for that task instead, on its own.
 
-<promise>COMPLETE</promise>
+When, and ONLY when, `## Task assigned this iteration` said nothing was
+selectable AND every task in `tasks.json` already holds a terminal status,
+end your reply's last non-blank line with exactly this JSON object:
 
-Never emit that line otherwise. It triggers an independent review; false claims
-waste the budget.
+{"verdict": "plan_complete"}
+
+The harness cross-checks the claim against `tasks.json` itself before
+honouring it, exactly as it cross-checks every other verdict here — a claim
+reported while a task WAS in fact assigned this iteration, or while any task
+is not `completed`/`validated`/`skipped`, is refused rather than silently
+accepted, and does not end the run. Report it only when the check genuinely
+holds; a false claim wastes the budget on a refusal instead of ending the run.
 
 **A task left `failed` blocks that signal forever, and "blocked forever" is not
 a safe resting state.** The loop's only escape from a worker that stops making
@@ -262,15 +273,6 @@ notes file and stop — clearing it means repointing each dependent's
 `dependsOn` at the new task or a planning/replan pass, not another guess from
 a worker iteration.
 
-**Naming the signal in prose: call it "the completion marker".** The literal line
-above has exactly one legitimate place in your reply — the very end, as the final
-line, with nothing after it. Anywhere else it is a formatting error, including
-inside quotes, a fenced block, a bullet, or a section of the notes file you echo
-back. So when you need to talk *about* the signal — above all when you are
-explaining why you are withholding it — write "the completion marker" and do not
-reproduce the literal line: write "tasks remain, so I am not emitting the
-completion marker", never a sentence with the line itself inside it.
-
 ## Reporting unsatisfiable criteria
 
 Sometimes a task's `successCriteria` cannot be satisfied AS WRITTEN, for a
@@ -281,9 +283,9 @@ decision made elsewhere in the plan. Grinding through `validationAttempts`
 to reach `failed` first, so you can then follow the `skipped`-relabelling
 process above, wastes iterations proving something you already know. Report
 it directly instead: end this iteration's reply with, as its LAST
-non-blank line (nothing after it — same placement rule as the completion
-marker above, and never together with the completion marker in the same
-reply), exactly one JSON object:
+non-blank line (nothing after it — same placement rule as the `plan_complete`
+verdict above, and never together with it in the same reply), exactly one
+JSON object:
 
 {"verdict": "unsatisfiable", "task_id": "<the task's id>", "reason": "<why, specifically, the criteria cannot be met as written>"}
 

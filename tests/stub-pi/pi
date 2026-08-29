@@ -720,18 +720,20 @@ elif "Role: Worker" in prompt:
             f.write(prompt[prompt.rindex(steering_marker):][:2000])
     if picked is None:
         # Nothing was assigned this iteration -- either the plan is
-        # already fully resolved (emit the legacy whole-plan marker,
-        # unaffected by task 116: this path carries no per-task JSON
-        # verdict at all, matching worker.md's own "never both in the
-        # same reply" rule), or something failed with nothing actionable
-        # left (#33) and this stub has no adversarial behaviour to offer
-        # for that case -- a plain no-op reply lets the engine's own
-        # blocked-with-failures routing (task 024) take it from here.
+        # already fully resolved (task 015, requirement O/#100: report it
+        # through the `verdict: "plan_complete"` contract value, the
+        # retired `<promise>COMPLETE</promise>` marker's replacement --
+        # valid precisely because nothing was assigned, matching worker.md's
+        # own "never both in the same reply" rule for the per-task verdict),
+        # or something failed with nothing actionable left (#33) and this
+        # stub has no adversarial behaviour to offer for that case -- a
+        # plain no-op reply lets the engine's own blocked-with-failures
+        # routing (task 024) take it from here.
         if all(t["status"] in _PLAN_FULLY_RESOLVED_STATUSES for t in tasks):
             text = "everything finished"
             if echo_secrets:
                 text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
-            text += "\n<promise>COMPLETE</promise>"
+            text += "\n" + json.dumps({"verdict": "plan_complete"})
             emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
         else:
             emit_final("nothing assigned this iteration and something is "

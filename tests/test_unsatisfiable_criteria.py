@@ -241,12 +241,15 @@ def test_other_actionable_work_keeps_the_same_approach_and_the_worker_loop_conti
     root = tmp_path / "run"
 
     def _complete_task_2(sup, prompt=""):
-        doc = sup.run.read_tasks()
-        for t in doc["tasks"]:
-            if t["id"] == TASK_2:
-                t["status"] = "completed"
-        atomic_write_json(sup.run.tasks_file, doc)
-        return _ok(f"task 002 done\n<promise>COMPLETE</promise>")
+        # Task 015 (requirement O, #100): report the harness-owned `complete`
+        # verdict instead of writing tasks.json directly and ending with the
+        # retired `<promise>COMPLETE</promise>` marker -- with task 001
+        # already `skipped` (from the unsatisfiable report above), applying
+        # this move leaves `_outstanding_for_completion` empty, so the SAME
+        # iteration's `applied_this_iteration` branch (task 116) ends the
+        # worker loop.
+        return _ok("task 002 done\n" +
+                  json.dumps({"verdict": "complete", "task_id": TASK_2}))
 
     tasks = [_task(status="in-progress"),
              _task(id=TASK_2, status="pending", title="the other thing",

@@ -617,8 +617,23 @@ HAT_SCHEMAS: dict[str, dict] = {
             # check -- both non-empty -- is `worker_unsatisfiable_report_
             # errors` below, the same two-layer split `task_status_report_
             # errors` already uses for task 019's plain status reports).
+            # Task 015 (requirement O, #100) adds `"plan_complete"`: the
+            # LAST untyped claim `<promise>COMPLETE</promise>` used to make
+            # -- "nothing was assigned to me and every task is already
+            # terminal" -- is now a contract value too, deliberately NOT
+            # named `"complete"` (already taken by the PER-TASK claim just
+            # above) so a payload can never be misread as one or the other.
+            # Valid only when the harness assigned no task this iteration
+            # (`LoopSupervisor._apply_worker_plan_complete_report`, the
+            # structural half) and cross-checked against `_outstanding_
+            # for_completion()` exactly as `honoured_complete` cross-checked
+            # the retired marker (the semantic half) -- a false claim is
+            # refused on the same evidence, and a malformed attempt reaches
+            # `contract_enforcement.enforce_contract`'s re-ask ladder
+            # instead of reading as a silent no-progress iteration.
             "verdict": {"type": "string",
-                        "enum": ["complete", "no_verdict", "unsatisfiable"]},
+                        "enum": ["complete", "no_verdict", "unsatisfiable",
+                                 "plan_complete"]},
             "task_id": {"type": "string"},
             "reason": {"type": "string"},
             "notes": {"type": "string"},

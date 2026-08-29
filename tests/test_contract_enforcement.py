@@ -78,7 +78,8 @@ def test_wrong_shape_json_reuses_validate_payload_errors():
     payload, errors = ce.parse_response("worker", json.dumps({"verdict": "maybe"}))
     assert payload is None
     assert errors == ["$.verdict: 'maybe' is not one of "
-                       "['complete', 'no_verdict', 'unsatisfiable']"]
+                       "['complete', 'no_verdict', 'unsatisfiable', "
+                       "'plan_complete']"]
 
 
 def test_a_valid_payload_comes_back_with_no_errors():

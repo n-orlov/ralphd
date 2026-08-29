@@ -50,7 +50,7 @@ import pytest
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, VERIFIED, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
     TASK_ACTIONABLE_STATUSES,
     TASK_FAILURE_KINDS,
@@ -586,7 +586,16 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
         return _ok("carved 002 for the residual gap")
 
     def signal_complete(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-        return _ok(f"every task resolved\n{COMPLETE}")
+        # Task 015 (requirement O, #100): the retired
+        # `<promise>COMPLETE</promise>` marker's replacement -- reported
+        # here with nothing assigned this iteration (both 001 and 002 are
+        # terminal, `failed`/`completed`), so it is a structurally valid
+        # `plan_complete` claim, but a semantically UNEARNED one: 001 is
+        # `failed`, which blocks completion. The claim must be refused
+        # and reach `contract_enforcement.enforce_contract`'s ladder
+        # rather than silently taken, exactly like any other malformed
+        # verdict -- see the assertions below.
+        return _ok("every task resolved\n" + json.dumps({"verdict": "plan_complete"}))
 
     root = tmp_path / "run"
     sup, state = _run(root, {"planning": _plan,
@@ -600,11 +609,16 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
     ids = [t["id"] for t in sup.run.read_tasks()["tasks"]]
     assert ids == ["001", "002"], "the worker got its carve iteration"
     assert "review" in _phases_recorded(root)
+    events = _events(root)
+    violations = [ev for ev in events if ev.get("type") == "contract.violation"]
+    assert violations, "the unearned plan_complete claim must reach the ladder"
+    all_errors = " ".join(" ".join(ev.get("errors", [])) for ev in violations)
+    assert "001 (failed)" in all_errors, all_errors
+    fault_events = [ev for ev in events if ev.get("type") == "contract.agent_fault"]
+    assert len(fault_events) == 1, "the ladder must be exhausted exactly once"
     msgs = _log_messages(root)
-    assert ("refusing the signal and continuing the worker loop" in msgs
-            and "001 (failed)" in msgs), msgs
     assert "routing to review" in msgs, msgs
-    assert not [ev for ev in _events(root)
+    assert not [ev for ev in events
                 if ev.get("type") == "signal" and ev.get("signal") == "COMPLETE"], \
         "an unearned COMPLETE is never signalled"
 
