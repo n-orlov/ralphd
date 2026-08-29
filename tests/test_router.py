@@ -249,6 +249,101 @@ def test_router_module_has_no_second_schema_validator():
 
 
 # ---------------------------------------------------------------------------
+# Task 019 (requirement M): the LIVE path -- `plan_review`, a real,
+# shipped, multi-edge hat (task 018, requirement K), not the synthetic
+# `AMBIGUOUS`/`SINGLE_EDGE_STATE` fixtures above. Its real edges come from
+# `transitions.successors("plan_review", vigilant, peer_plan_review=True)`
+# -- the peer gate's own delta, exactly as `PEER_PLAN_REVIEW_DELTA`
+# declares it -- and its fallback comes from the real, shipped
+# `transitions.ROUTER_FALLBACK["plan_review"]` entry, never a
+# test-registered one. Nothing here touches `transitions.TABLE` at all.
+# ---------------------------------------------------------------------------
+
+def test_plan_review_has_a_real_declared_fallback_naming_one_of_its_own_edges():
+    guard = tr.fallback_guard("plan_review")
+    assert guard is not None
+    edges = tr.successors("plan_review", False, True)
+    assert guard in {e.guard for e in edges}
+    assert len(edges) > 1, "plan_review must be genuinely multi-edge for this test to mean anything"
+
+
+def test_plan_review_off_axis_is_still_absent_from_the_base_table():
+    """Task 018's own off-by-default guarantee, re-checked from this
+    module: `plan_review` has zero successors when the peer gate axis is
+    off, so `router.decide()` would refuse it as a terminal state exactly
+    like any other unreachable state -- the live tests below only ever
+    call `decide()` with `peer_plan_review=True`."""
+    assert tr.successors("plan_review", False) == ()
+    assert tr.successors("plan_review", True) == ()
+
+
+def test_router_decide_accepts_a_valid_live_plan_review_answer():
+    async def ask(prompt):
+        return '{"next_step": "planning"}', {"totalTokens": 7}
+
+    outcome = asyncio.run(router.decide(
+        "plan_review", False, ask=ask,
+        fallback_guard=tr.fallback_guard("plan_review"),
+        retry_max=2, timeout_s=5.0, peer_plan_review=True))
+    assert outcome.used_router is True
+    assert outcome.used_fallback is False
+    assert outcome.target == "planning"
+    assert outcome.guard == "plan_review_objected_revision_available"
+    assert tr.is_legal("plan_review", outcome.target, False, True)
+
+
+def test_router_decide_falls_back_on_plan_review_when_the_router_cannot_decide():
+    """The router exhausts its retry budget on a peer that never answers
+    validly (malformed JSON every time) -- `decide()` must fall back to
+    `plan_review`'s own REAL declared guard
+    (`plan_review_revision_bound_reached` -> `worker`), never an
+    illegal/synthetic edge, and never hang."""
+    prompts_seen = []
+
+    async def ask(prompt):
+        prompts_seen.append(prompt)
+        return "not json", {}
+
+    outcome = asyncio.run(router.decide(
+        "plan_review", False, ask=ask,
+        fallback_guard=tr.fallback_guard("plan_review"),
+        retry_max=2, timeout_s=5.0, peer_plan_review=True))
+    assert outcome.used_router is True
+    assert outcome.used_fallback is True
+    assert outcome.attempts == 3  # 1 + retry_max
+    assert outcome.target == "worker"
+    assert outcome.guard == "plan_review_revision_bound_reached"
+    assert outcome.guard == tr.fallback_guard("plan_review")
+    assert tr.is_legal("plan_review", outcome.target, False, True)
+    assert len(prompts_seen) == 3
+
+
+def test_router_decide_falls_back_on_plan_review_when_the_call_hangs():
+    async def ask(prompt):
+        await asyncio.sleep(3600)
+        return '{"next_step": "worker"}', {}
+
+    outcome = asyncio.run(router.decide(
+        "plan_review", False, ask=ask,
+        fallback_guard=tr.fallback_guard("plan_review"),
+        retry_max=0, timeout_s=0.05, peer_plan_review=True))
+    assert outcome.used_fallback is True
+    assert outcome.target == "worker"
+    assert outcome.guard == "plan_review_revision_bound_reached"
+
+
+def test_validate_answer_live_plan_review_rejects_a_target_outside_its_own_edges():
+    """`succeeded` is a real state in the table but not one of
+    `plan_review`'s own three edges -- must be refused exactly like an
+    illegal target for any other state, proven against the real table
+    rather than a synthetic one."""
+    payload, errors = router.validate_answer(
+        '{"next_step": "succeeded"}', "plan_review", False, True)
+    assert payload is None
+    assert errors and "not a legal successor" in errors[0]
+
+
+# ---------------------------------------------------------------------------
 # JobConfig knobs: default, job.yaml, RALPHD_* override, GET /config view,
 # and `model_for("router")`'s resolution order (requirement E's "one new
 # configurable model key ... through the existing model_overrides

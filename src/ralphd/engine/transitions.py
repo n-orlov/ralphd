@@ -451,12 +451,44 @@ HATS: tuple[str, ...] = ("planning", "worker", "verify", "review", "reflect",
 # it is a value alongside the one that already exists, exactly like
 # STATE_HAT/HAT_SCHEMAS beside TABLE.
 #
-# Empty by default: no *shipped* state is router-ambiguous today (every real
-# hat still has a hand-written `_step_*` method that decides its own guard
-# deterministically) -- this dict exists so a FUTURE multi-edge hat can
-# declare its fallback beside its table entry, proven end to end only by a
-# test that registers one (mirroring task 015's no-op hat fixture).
-ROUTER_FALLBACK: dict[str, str] = {}
+# Task 019 (requirement M, #60 pillar 2): the first REAL entry --
+# `plan_review` (task 018, requirement K, #101) is the first genuinely
+# multi-edge hat this table declares (three edges in
+# `PEER_PLAN_REVIEW_DELTA` above: approved, objected-revision, revision-
+# bound-reached). `_step_plan_review` (loop.py) still decides its own
+# guard deterministically from the hat's own `verdict` field in every
+# SHIPPED run -- exactly like `_step_worker`/`_step_review` do for theirs
+# -- so this entry is not yet reached by the production dispatch loop
+# (that cutover, if it ever happens, is a separate decision from simply
+# proving the mechanism works on a real hat's real edges). What changes
+# here is that `plan_review` is no longer a state a hypothetical FUTURE
+# router-mediated cutover would have to stop and design a fallback for --
+# it already has one, declared beside its table entry, and
+# `tests/test_router.py`'s live-path tests below exercise
+# `engine.router.decide()` against these exact edges (via
+# `transitions.successors("plan_review", ..., peer_plan_review=True)`),
+# never the task-015/018 synthetic fixture states.
+#
+# The guard chosen, `plan_review_revision_bound_reached`, targets `worker`
+# -- the SAME target `plan_review_approved` already names. Rationale: if
+# the router's retry budget is exhausted without ever recovering a valid
+# answer from the peer, that is indistinguishable in effect from "this
+# gate has now asked all it is allowed to ask" -- the revision-bound
+# guard's own condition -- so proceeding with the plan (never silently
+# discarding it, never blocking the run indefinitely on a hat that will
+# not answer) is the one fallback consistent with every other exhaustion
+# guard already in this table (`stagnation_exhausted`,
+# `repeated_blocker_signature`): spend the budget, then move on, rather
+# than hang.
+#
+# Empty otherwise: no other *shipped* state is router-ambiguous today
+# (every other real hat still has a hand-written `_step_*` method that
+# decides its own guard deterministically) -- this dict exists so a FUTURE
+# multi-edge hat can declare its fallback beside its table entry, the same
+# way this one now does.
+ROUTER_FALLBACK: dict[str, str] = {
+    "plan_review": "plan_review_revision_bound_reached",
+}
 
 
 def fallback_guard(state: str) -> str | None:

@@ -81,12 +81,23 @@ class RouterOutcome:
 
 def validate_answer(raw: str | None,
                      state: str,
-                     vigilant: bool) -> tuple[dict | None, list[str]]:
+                     vigilant: bool,
+                     peer_plan_review: bool = False) -> tuple[dict | None, list[str]]:
     """Parse and validate one router answer: JSON object, `ROUTER_SCHEMA`,
     and `next_step` must be one of `state`'s own legal targets for this
     variant. Returns `(payload, errors)`; `errors` is empty iff `payload`
     is not None -- the same shape `contract_enforcement.parse_response`
     uses, deliberately, so both re-prompt loops read the same way.
+
+    `peer_plan_review` defaults to False so every pre-existing caller (the
+    production dispatch loop passes only `vigilant`, since `plan_review`
+    has its own dedicated `_step_plan_review` handler and never reaches
+    this function today) keeps validating against exactly the same legal-
+    target set as before. Task 019 (requirement M) adds the parameter so
+    the FIRST real multi-edge state (`plan_review`, only reachable on this
+    axis) can be validated against its true edges by a live test, without
+    a second copy of `transitions.successors`'s own variant-selection
+    logic living here.
     """
     if raw is None or not raw.strip():
         return None, ["router: no payload produced (absent output)"]
@@ -98,7 +109,8 @@ def validate_answer(raw: str | None,
     errors = contracts.validate_against(ROUTER_SCHEMA, payload)
     if errors:
         return None, errors
-    legal_targets = sorted({e.target for e in transitions.successors(state, vigilant)})
+    legal_targets = sorted({e.target for e in
+                            transitions.successors(state, vigilant, peer_plan_review)})
     if payload["next_step"] not in legal_targets:
         return None, [
             f"router: next_step {payload['next_step']!r} is not a legal "
@@ -107,6 +119,16 @@ def validate_answer(raw: str | None,
     return payload, []
 
 
+# Task 019 (requirement M): `peer_plan_review` (both here and on
+# `validate_answer` above) defaults to False -- the production dispatch
+# loop (`LoopSupervisor._step_generic_hat`) passes only `vigilant`, and
+# stays byte-identical in behaviour, because `plan_review` still resolves
+# through its own dedicated `_step_plan_review` handler rather than this
+# generic path. The parameter exists so a caller that DOES want
+# `plan_review`'s real (peer-gate-enabled) edges -- currently only
+# `tests/test_router.py`'s live-path tests -- can ask this module to
+# resolve them without a second, hand-duplicated copy of
+# `transitions.successors`'s own variant-selection logic.
 async def decide(
     state: str,
     vigilant: bool,
@@ -115,6 +137,7 @@ async def decide(
     fallback_guard: str | None,
     retry_max: int,
     timeout_s: float,
+    peer_plan_review: bool = False,
 ) -> RouterOutcome:
     """Resolve `state`'s next edge, calling the model only if a genuine
     choice exists.
@@ -130,7 +153,7 @@ async def decide(
     reached, exactly as `transitions.ROUTER_FALLBACK` declares it -- is
     taken instead.
     """
-    edges = transitions.successors(state, vigilant)
+    edges = transitions.successors(state, vigilant, peer_plan_review)
     if len(edges) <= 1:
         # Deterministic-first: nothing to decide, so `ask` is never called.
         if not edges:
@@ -166,7 +189,7 @@ async def decide(
             error = f"router: no answer within {timeout_s}s timeout"
             continue
         last_usage = usage
-        payload, errors = validate_answer(raw, state, vigilant)
+        payload, errors = validate_answer(raw, state, vigilant, peer_plan_review)
         if payload is not None:
             guard = next(e.guard for e in edges if e.target == payload["next_step"])
             return RouterOutcome(target=payload["next_step"], guard=guard,

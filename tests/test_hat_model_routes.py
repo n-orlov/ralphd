@@ -122,6 +122,42 @@ async def test_unroutable_hat_model_aborts_before_iteration_1(
 
 
 @pytest.mark.asyncio
+async def test_unroutable_plan_review_hat_model_aborts_before_iteration_1(
+        tmp_path, monkeypatch):
+    """Task 019 (requirement M): the peer plan-review gate is opt-in and
+    off by default (`JobConfig.peer_plan_review`), but a misconfigured
+    `plan_review` model ref must fail exactly like any other hat's --
+    never silently degrade to 'no gate' just because the gate itself
+    happens to be off in this job.yaml. `check_hat_routes` (task 009/005)
+    already walks every `config.MODEL_HATS` entry unconditionally
+    (`plan_review` is one, task 018), so this pins that this real hat's
+    entry is genuinely covered rather than merely present in the tuple --
+    mirroring `test_unroutable_hat_model_aborts_before_iteration_1` above,
+    for a different hat and with the gate left off."""
+    rc, run_dir, run_job_calls, main_mod = await _run_amain(
+        tmp_path, monkeypatch,
+        models_yaml_block=f"models:\n  plan_review: {BAD_REF}\n",
+        providers={GOOD_PROVIDER: {"baseUrl": "https://example.invalid"}})
+
+    assert rc == main_mod.EXIT_UNROUTABLE_HAT_MODEL
+    # the loop never reached iteration 1 -- run_job was never scheduled,
+    # exactly as for any other unroutable hat, gate on or off.
+    assert run_job_calls == []
+
+    logs = [e for e in _events(run_dir)
+            if e["type"] == "log" and e.get("level") == "error"]
+    assert logs, _events(run_dir)
+    message = logs[-1]["message"]
+    assert "plan_review" in message      # the hat
+    assert BAD_REF in message            # the offending ref
+    assert GOOD_PROVIDER in message      # the provider keys that ARE available
+
+    status_path = run_dir / "status.json"
+    if status_path.exists():
+        assert json.loads(status_path.read_text()).get("state") != "running"
+
+
+@pytest.mark.asyncio
 async def test_unroutable_tier_rung_aborts_with_exact_message(
         tmp_path, monkeypatch):
     """Task 005 (#68): a typo'd `model_tiers` rung -- not just a bare
