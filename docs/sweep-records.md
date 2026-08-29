@@ -107,9 +107,18 @@ skipped by the primary guard by construction). New records this wave writes
 are not exempt: any file under `artifacts/reports/` whose name starts with
 the `v0.14-` prefix (this wave's own naming convention, already used by
 `artifacts/reports/v0.14-operator-notifications.md`) **and** whose body
-contains a pytest-style result line (`N passed`, `N failed`, `N skipped`, or
-`N error`/`N errors`) counts as one of this wave's sweep records and must
-declare a `sweep-sha` block.
+contains a genuine pytest result *summary line* -- one or more
+comma-separated "N \<outcome\>" clauses (`passed`, `failed`, `skipped`,
+`error`/`errors`, `deselected`, `warning`/`warnings`, `xfailed`, `xpassed`)
+followed by an "in \<n\>s" duration, the shape pytest itself prints (e.g.
+`588 passed in 21.92s`, `2227 passed, 1 skipped, 42 deselected in
+164.09s`) -- counts as one of this wave's sweep records and must declare a
+`sweep-sha` block. An English sentence that merely contains a count next to
+one of those words but no trailing duration (e.g. "Attempt 1 failed
+validation because ...") is prose, not a result line, and does not trigger
+this rule -- `PYTEST_SUMMARY_RE` in `tests/sweep_sha_guard.py` requires the
+"in \<n\>s" suffix precisely so prose like that cannot be mistaken for a
+sweep record.
 `tests/test_sweep_sha_guard.py::test_every_v014_sweep_record_declares_a_sha`
 enforces this; a `v0.14-*.md` file that names no test result at all (a plain
 notification log, for instance) is not a sweep record and is not required to

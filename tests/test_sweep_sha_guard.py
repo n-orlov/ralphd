@@ -198,3 +198,47 @@ def test_a_non_wave_or_non_sweep_report_is_never_required_to_declare_a_sha(
     not_a_sweep.write_text("just a notification, no test result line\n")
 
     assert guard.wave_sha_missing_problems([not_this_wave, not_a_sweep]) == []
+
+
+# --------------------------------------------------------------------------
+# Task 001 (#103, requirement A hardening): prose containing a count next to
+# a pytest outcome word is not a pytest result line -- only a line with the
+# trailing "in <n>s" duration pytest itself prints is. Each assertion below
+# fails against the pre-change rule
+# (`re.compile(r"\b\d+\s+(?:passed|failed|skipped|errors?)\b")`), which is
+# exactly what let artifacts/reports/v0.14-operator-notifications.md's prose
+# ("Attempt 1 failed validation ...", "016 failed->skipped ...") get
+# misclassified as a sweep record owing a `sweep-sha` block.
+# --------------------------------------------------------------------------
+
+
+def test_an_english_sentence_with_a_count_is_not_a_pytest_result_line() -> None:
+    prose = (
+        "reached in PRODUCTION. Attempt 1 failed validation because the "
+        "real work never happened."
+    )
+    assert not guard.PYTEST_SUMMARY_RE.search(prose)
+
+    more_prose = (
+        "container) cannot relabel 016 failed->skipped itself because "
+        "`tasks.json` is read-only here."
+    )
+    assert not guard.PYTEST_SUMMARY_RE.search(more_prose)
+
+
+def test_a_real_pytest_summary_line_is_a_pytest_result_line() -> None:
+    assert guard.PYTEST_SUMMARY_RE.search("4302 passed, 1 skipped in 856.12s")
+    assert guard.PYTEST_SUMMARY_RE.search("588 passed in 21.92s")
+    assert guard.PYTEST_SUMMARY_RE.search(
+        "2227 passed, 1 skipped, 42 deselected in 164.09s"
+    )
+
+
+def test_the_real_notification_log_is_not_misclassified_as_a_sweep_record() -> None:
+    """The measured defect itself: the notification log this wave already
+    wrote contains the prose above, and must not be flagged as a v0.14
+    sweep record that owes a `sweep-sha` block."""
+    log = guard.REPORTS_DIR / "v0.14-operator-notifications.md"
+    assert log in REPORTS
+    assert not guard.is_wave_sweep_record(log)
+    assert guard.wave_sha_missing_problems([log]) == []

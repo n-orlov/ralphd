@@ -30,11 +30,29 @@ SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 # one 40-hex-char sha per line (leading/trailing blank lines tolerated).
 _FENCE_RE = re.compile(r"```(sweep-sha|discharge-sha)\s*\n(.*?)```", re.S)
 
-# A pytest-style result summary line -- "N passed", "N failed", "N skipped",
-# "N error"/"N errors" -- the signature every existing sweep record's
-# verbatim-quoted summary line carries (e.g. "588 passed in 21.92s",
-# "2227 passed, 1 skipped, 42 deselected in 164.09s").
-PYTEST_SUMMARY_RE = re.compile(r"\b\d+\s+(?:passed|failed|skipped|errors?)\b")
+# A genuine pytest result summary line -- one or more comma-separated
+# "N <outcome>" clauses followed by a duration ("in <n>s"), the shape
+# pytest itself prints (e.g. "588 passed in 21.92s", "2227 passed, 1
+# skipped, 42 deselected in 164.09s", "1 failed, 1 passed in 0.07s").
+#
+# The previous rule (task 001, #103) was `\b\d+\s+(?:passed|failed|
+# skipped|errors?)\b` -- any "N passed"/"N failed"/etc token anywhere in
+# the text. That also matched ordinary English sentences that happen to
+# contain a number next to one of those words -- e.g. "Attempt 1 failed
+# validation because ..." and "container) cannot relabel 016 failed-
+# >skipped itself" in artifacts/reports/v0.14-operator-notifications.md --
+# misclassifying a plain notification log as a sweep record that must
+# declare a `sweep-sha` block. The new rule is stronger because it requires
+# the trailing "in <n>s" duration that only pytest's own summary line
+# carries; prose never happens to have that shape immediately after the
+# count, so a sentence with "1 failed" in it no longer matches while a real
+# pytest summary line still does. See docs/sweep-records.md's "companion
+# rule" paragraph.
+PYTEST_SUMMARY_RE = re.compile(
+    r"\b\d+\s+(?:passed|failed|skipped|errors?|deselected|warnings?|xfailed|xpassed)"
+    r"(?:,\s*\d+\s+(?:passed|failed|skipped|errors?|deselected|warnings?|xfailed|xpassed))*"
+    r"\s+in\s+\d+(?:\.\d+)?s\b"
+)
 
 
 def report_files() -> list[Path]:
