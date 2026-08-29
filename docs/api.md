@@ -113,6 +113,7 @@ The one-call summary. Response:
   "previousEndings": [],           // earlier episodes' {endedAt, reason, verdict}, oldest first
   "deadlineAt": "2026-08-08T21:08:11Z",
   "infraWaitTotalS": 62.5,
+  "pausedTotalS": 0,               // cumulative time credited back for operator pauses, task 016
   "health": "ok",                  // "ok" | "degraded"
   "infraWait": null,               // populated only while waiting out an infra outage
   "reflect": null,                 // absent/null until the reflect phase ends, see below
@@ -238,6 +239,15 @@ wait extends the deadline by exactly the waited time and emits a
 available to the agent) and a 4-hour gateway outage cannot silently consume
 half an 8-hour job. `infraWaitTotalS` is `0` for a run that never hit an
 outage and survives `ralphctl resume` (the per-process deadline does not).
+
+Task 016: an operator `POST /pause` is credited back the same way. The time
+the loop actually spends parked at the pause wait (measured at the wait site
+itself, never inside the pause/resume handlers) extends `deadlineAt` and
+`self.deadline` identically to an infra wait, is accumulated in
+`pausedTotalS` (published beside `infraWaitTotalS`, same `0`-when-never-
+paused/survives-resume shape), and emits its own `deadline_extended` event
+whose `reason` reads `"operator pause"` — never `"infra wait"` — so the two
+credit sources stay distinguishable in `events.jsonl`.
 
 #### `approach` and `maxApproaches`
 
@@ -647,7 +657,7 @@ then follows. Event types:
 | `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error`/`errorClass` when it failed (same verdict as status.json's `reflect`) |
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
-| `deadline_extended` | the job deadline moved out after an infra wait: phase, attempt, `waitedS`, `infraWaitTotalS`, new `deadlineAt`, `reason` |
+| `deadline_extended` | the job deadline moved out after an infra wait OR an operator pause: `waitedS`, new `deadlineAt`, `reason` (`"infra wait"` — also phase/attempt/`infraWaitTotalS` — or `"operator pause"` — also `pausedTotalS`) |
 | `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"`, `previous`, `iterations` (new value), `delta`, `iterationsUsed`, `source: "api"` |
 
 Every event also lands in `events.jsonl` in the run dir with a monotonically

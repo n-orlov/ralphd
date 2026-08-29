@@ -266,6 +266,15 @@ class LoopSupervisor:
         self._deadline_epoch = time.time() + cfg.job_timeout_s
         self._infra_wait_total_s = float(
             run.read_status().get("infraWaitTotalS") or 0.0)
+        # Task 016 (#P): the operator-pause twin of _infra_wait_total_s
+        # above -- a run parked by POST /pause is not "using up" its job
+        # clock any more than one sitting out an infra outage is, so every
+        # completed pause wait (measured at the wait site itself, _gate(),
+        # never here or in pause()/resume()) credits the same two deadline
+        # attributes back and accumulates into this running total, seeded
+        # from status.json for the same resume-survival reason.
+        self._paused_wait_total_s = float(
+            run.read_status().get("pausedTotalS") or 0.0)
         # Task 012 (#5): does status.json currently say health "degraded"?
         # Tracked in memory so the transition back to "ok" is emitted (and
         # written) exactly once, on the iteration that proves the endpoint is
@@ -1140,14 +1149,62 @@ class LoopSupervisor:
         really waited).
         """
         self._infra_wait_total_s += waited_s
-        self.deadline += waited_s
-        self._deadline_epoch += waited_s
+        self._extend_deadline_by(waited_s)
         total = round(self._infra_wait_total_s, 3)
         deadline_at = utc_from_epoch(self._deadline_epoch)
         self.run.update_status(infraWaitTotalS=total, deadlineAt=deadline_at)
         self.run.emit("deadline_extended", phase=phase, attempt=attempt,
                       waitedS=round(waited_s, 3), infraWaitTotalS=total,
                       deadlineAt=deadline_at, reason="infra wait")
+
+    def _extend_deadline_by(self, waited_s: float) -> None:
+        """Shared clock math for every kind of parked-time credit (task 016,
+        #P): moves ``self.deadline`` (monotonic, what ``budget_left()`` and
+        the per-iteration timeout formula compare against) and its
+        wall-clock twin ``self._deadline_epoch`` out by exactly the same
+        amount, so the two can never drift apart. ``_account_infra_wait``
+        above also bumps ``self._infra_wait_total_s`` itself (not folded in
+        here); ``_account_paused_wait`` below bumps
+        ``self._paused_wait_total_s`` instead -- the two totals are tracked
+        and published separately (one beside the other in status.json) even
+        though the deadline move itself is identical either way.
+        """
+        self.deadline += waited_s
+        self._deadline_epoch += waited_s
+
+    def _account_paused_wait(self, waited_s: float) -> None:
+        """Books one finished operator-pause wait (task 016, #P): the pause
+        twin of ``_account_infra_wait`` above, sharing its deadline math
+        (``_extend_deadline_by``) but its own running total
+        (``pausedTotalS``, published beside ``infraWaitTotalS``) and its own
+        ``deadline_extended`` ``reason`` ("operator pause", never "infra
+        wait") -- an operator reading the event log can tell a pause credit
+        from an infra-outage credit apart without cross-referencing anything
+        else.
+
+        The amount booked is whatever the caller (``_gate()``, via
+        ``_park_until_resumed()``) measured actually parked at the pause
+        wait -- this method performs no timing of its own, matching the
+        criterion that the parked time is measured at the wait site, not in
+        ``pause()``/``resume()`` nor here.
+        """
+        if waited_s <= 0:
+            # A `_gate()` call that never actually parked (the ordinary,
+            # overwhelmingly common case: not paused) must credit nothing
+            # and emit nothing -- _gate() itself already skips calling this
+            # for that case, but a non-positive value reaching here anyway
+            # (e.g. a scheduling-tick rounding artefact) must still be a
+            # no-op rather than a spurious zero-width credit/event on every
+            # ordinary gate call.
+            return
+        self._paused_wait_total_s += waited_s
+        self._extend_deadline_by(waited_s)
+        total = round(self._paused_wait_total_s, 3)
+        deadline_at = utc_from_epoch(self._deadline_epoch)
+        self.run.update_status(pausedTotalS=total, deadlineAt=deadline_at)
+        self.run.emit("deadline_extended", waitedS=round(waited_s, 3),
+                      pausedTotalS=total, deadlineAt=deadline_at,
+                      reason="operator pause")
 
     def _reset_infra_episode(self) -> None:
         """Ends the current infra-outage episode (task 008, #5): the next
@@ -1777,8 +1834,50 @@ class LoopSupervisor:
                 and time.monotonic() < self.deadline
                 and self._abort_reason is None)
 
-    async def _gate(self) -> None:
+    async def _gate(self) -> float:
+        """Every iteration boundary passes through here (task 015's
+        `pause`/`resume` seam). Task 016 (#P): a pause is not free -- a run
+        parked here is not "using up" its job clock any more than one
+        sitting out an infra backoff wait is, so the time actually spent
+        parked (measured here, at the wait site itself, never inside
+        `pause()`/`resume()`) is credited straight back onto both deadline
+        fields via `_account_paused_wait`.
+
+        The `is_set()` check below is deliberate and load-bearing, not an
+        optimisation: `_gate()` runs at every single iteration boundary,
+        the overwhelming majority of which are NOT paused, and
+        `asyncio.Event.wait()` returns immediately (no `await` point at
+        all) when the event is already set -- so an unconditional
+        before/after `time.monotonic()` pair around it would still measure
+        a tiny non-zero duration on every ordinary boundary, crediting a
+        spurious sliver of deadline and emitting a `deadline_extended`
+        noise event on every iteration of every job that is never paused
+        at all. Skipping the measurement entirely whenever nothing is
+        actually parked is what keeps a real pause's credit legible instead
+        of buried in scheduling-tick noise. Returns the credited seconds
+        (0.0 when nothing was actually parked) purely so a test can observe
+        it directly -- production call sites (every `await self._gate()`
+        elsewhere in this module) discard the value, exactly like they
+        always have.
+        """
+        if self._pause.is_set():
+            return 0.0
+        waited_s = await self._park_until_resumed()
+        self._account_paused_wait(waited_s)
+        return waited_s
+
+    async def _park_until_resumed(self) -> float:
+        """Actually blocks until `resume()` sets `self._pause` again,
+        returning the seconds actually spent parked (task 016, #P). Split
+        out from `_gate()` -- mirroring `_wait_out_backoff`'s split from
+        `_run_iteration_with_infra_retry` -- purely so a test can stub the
+        parking wait itself and drive `_account_paused_wait`'s crediting
+        with a controlled elapsed value, without a real multi-hundred-
+        second sleep; production code always calls the real version below.
+        """
+        started = time.monotonic()
         await self._pause.wait()
+        return time.monotonic() - started
 
     # -- main loop ------------------------------------------------------------
     def _resuming_existing_run_dir(self) -> bool:
@@ -2574,6 +2673,7 @@ class LoopSupervisor:
         self.run.update_status(state="running", startedAt=utcnow(),
                                deadlineAt=utc_from_epoch(self._deadline_epoch),
                                infraWaitTotalS=round(self._infra_wait_total_s, 3),
+                               pausedTotalS=round(self._paused_wait_total_s, 3),
                                health="ok", infraWait=None,
                                iterationsBudget=self.cfg.iterations,
                                maxApproaches=self.cfg.max_approaches,
