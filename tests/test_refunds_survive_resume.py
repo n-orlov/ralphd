@@ -131,7 +131,10 @@ async def test_an_infra_refund_is_recorded_in_status_as_it_is_earned(tmp_path):
 
     assert result.final_text == "done", "the wrapper rode the outage out"
     assert sup._infra_refunded == 3
-    assert _refund_record(run) == {"infra": 3, "grace": 0}
+    # Task 014 (requirement J, #98) widened `REFUND_KINDS` to a third kind
+    # ("steer") -- the record now always carries all three, 0 for the two
+    # this scenario never earns.
+    assert _refund_record(run) == {"infra": 3, "grace": 0, "steer": 0}
 
 
 @pytest.mark.asyncio
@@ -152,7 +155,9 @@ async def test_a_grace_review_refund_is_recorded_in_status(tmp_path):
 
     assert verified is False
     assert sup._grace_refunded == 1
-    assert _refund_record(run) == {"infra": 0, "grace": 1}
+    # Task 014 (requirement J, #98): the record now always carries all
+    # three `REFUND_KINDS`, 0 for the two this scenario never earns.
+    assert _refund_record(run) == {"infra": 0, "grace": 1, "steer": 0}
 
 
 @pytest.mark.asyncio
@@ -172,12 +177,18 @@ async def test_a_live_runs_published_count_matches_the_charged_count(tmp_path):
 
 def test_each_kind_bumps_only_its_own_counter(tmp_path):
     sup = _supervisor(_seed_run(tmp_path, finished=4))
-    assert LoopSupervisor.REFUND_KINDS == ("infra", "grace")
+    # Task 014 (requirement J, #98) widens this from 2 to 3 kinds -- the
+    # OLD claim was `("infra", "grace")`; the new one is stronger (a third
+    # kind, "steer", exercised below) because a steer hat's own iteration
+    # must never cost the run a work iteration either.
+    assert LoopSupervisor.REFUND_KINDS == ("infra", "grace", "steer")
     sup._refund_iteration("infra")
-    assert (sup._infra_refunded, sup._grace_refunded) == (1, 0)
+    assert (sup._infra_refunded, sup._grace_refunded, sup._steer_refunded) == (1, 0, 0)
     sup._refund_iteration("grace")
-    assert (sup._infra_refunded, sup._grace_refunded) == (1, 1)
-    assert _refund_record(sup.run) == {"infra": 1, "grace": 1}
+    assert (sup._infra_refunded, sup._grace_refunded, sup._steer_refunded) == (1, 1, 0)
+    sup._refund_iteration("steer")
+    assert (sup._infra_refunded, sup._grace_refunded, sup._steer_refunded) == (1, 1, 1)
+    assert _refund_record(sup.run) == {"infra": 1, "grace": 1, "steer": 1}
     with pytest.raises(ValueError):
         sup._refund_iteration("approach")
 
@@ -359,7 +370,10 @@ def test_a_refund_earned_before_a_crash_is_still_credited_after_the_resume(
     status = json.loads((e2.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     raw = max(iteration_numbers(e2.run_dir))
-    assert status["iterationsRefunded"] == {"infra": 1, "grace": 0}
+    # Task 014 (requirement J, #98): the record now always carries all
+    # three `REFUND_KINDS`, 0 for "steer" since this scenario has no
+    # operator steering at all.
+    assert status["iterationsRefunded"] == {"infra": 1, "grace": 0, "steer": 0}
     assert status["iterationsUsed"] == raw - 1, (
         "the refund earned before the crash was re-charged by the resume")
 
@@ -426,7 +440,9 @@ def test_the_api_doc_gives_both_fields_their_semantics():
     assert "charged" in rows["iterationsUsed"][0]
     refunded = rows["iterationsRefunded"][0]
     assert "#32" in refunded and "resume" in refunded
-    assert "{infra, grace}" in refunded
+    # Task 014 (requirement J, #98) widened the shape from two counters to
+    # three -- the OLD claim was `{infra, grace}`.
+    assert "{infra, grace, steer}" in refunded
 
 
 def _blocks(text: str) -> list[str]:

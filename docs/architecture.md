@@ -2066,9 +2066,10 @@ false and those loops exit instead of re-charging the same outage.
   `budget_left()` subtracts from `iterations_used`: the attempt still gets
   its own iteration directory (numbering stays monotonic), but the *budget
   comparison* is adjusted. Approaches, the stagnation guard and
-  `validationAttempts` are untouched. Both refund counters are written to
-  `status.json` as `iterationsRefunded` as they are earned and seeded back by
-  the next engine process, so a resume cannot re-charge them (issue #32).
+  `validationAttempts` are untouched. All refund counters (`infra`, `grace`,
+  and `steer` — task 014, #98) are written to `status.json` as
+  `iterationsRefunded` as they are earned and seeded back by the next engine
+  process, so a resume cannot re-charge them (issue #32).
 - **Deadline extension** (task 011, #5). Waiting is not working time: every
   backoff wait adds its real seconds to `status.json`'s `infraWaitTotalS`
   and pushes both `self.deadline` and its published twin `deadlineAt` out by

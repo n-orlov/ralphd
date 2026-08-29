@@ -188,7 +188,8 @@ class LoopSupervisor:
         # Task 023 (#32): seeded from status.json, not from 0 -- see
         # _seed_refunds() for why the counters are persisted rather than
         # folded into the iterations_used seed above.
-        self._infra_refunded, self._grace_refunded = self._seed_refunds()
+        self._infra_refunded, self._grace_refunded, self._steer_refunded = (
+            self._seed_refunds())
         # Task 018 (requirement E, #60 pillar 2): sequence number for this
         # process's own router transcripts (`artifacts/router/NNNN.jsonl`) --
         # a plain counter, not an iteration slot: router calls are NEVER
@@ -276,12 +277,28 @@ class LoopSupervisor:
         self._approach: int | None = None
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
-    REFUND_KINDS = ("infra", "grace")
+    # Task 014 (requirement J, #98): "steer" joins "infra"/"grace" here.
+    # A steer hat's own iteration is refunded the instant it returns
+    # (`_step_generic_hat`'s call site), for the same underlying reason a
+    # grace review's is refunded: "an operator message must not cost the
+    # run a work iteration" (PRD requirement J) is a BUDGET fact, and this
+    # is this engine's one existing mechanism for "this attempt happened,
+    # occupies a real numbered `iterations/NNNN` directory, and is fully
+    # observable -- but never counts against `cfg.iterations`." Unlike
+    # grace (deliberately still shown as a used iteration number -- see
+    # `_run_iteration_once`'s own comment), a steer refund is ALSO
+    # subtracted from the published `iterationsUsed` figure: full parity
+    # with the router/`_ask_contract_fix` channels' own unchargedness
+    # (neither leaves ANY trace in `iterationsUsed`), which is the literal
+    # comparison the PRD draws for this case ("uncharged, like the router
+    # and the v0.13 contract re-ask").
+    REFUND_KINDS = ("infra", "grace", "steer")
 
-    def _seed_refunds(self) -> tuple[int, int]:
+    def _seed_refunds(self) -> tuple[int, int, int]:
         """The refunds this run has ALREADY earned, read back from
-        status.json's `iterationsRefunded` as `(infra, grace)` -- `(0, 0)` for
-        a fresh run dir or any run dir written before this field existed.
+        status.json's `iterationsRefunded` as `(infra, grace, steer)` --
+        `(0, 0, 0)` for a fresh run dir or any run dir written before this
+        field existed.
 
         Task 023 (#32). Both counters used to start at 0 on every engine
         process while `iterations_used` was seeded from the *raw*
@@ -319,18 +336,24 @@ class LoopSupervisor:
         """
         recorded = self.run.read_status().get("iterationsRefunded")
         if not isinstance(recorded, dict):
-            return 0, 0
-        counts = []
+            return 0, 0, 0
+        # Sequential clamp, generalising the old two-counter special case
+        # (`grace = max(0, iterations_used - infra)`) to however many kinds
+        # `REFUND_KINDS` names: each kind is capped by whatever of
+        # `iterations_used` the EARLIER kinds have not already claimed, so
+        # a hand-edited or truncated status file can never make the kinds'
+        # sum exceed `iterations_used`.
+        counts: list[int] = []
+        claimed = 0
         for kind in self.REFUND_KINDS:
             try:
                 value = int(recorded.get(kind) or 0)
             except (TypeError, ValueError):
                 value = 0
-            counts.append(max(0, min(value, self.iterations_used)))
-        infra, grace = counts
-        if infra + grace > self.iterations_used:
-            grace = max(0, self.iterations_used - infra)
-        return infra, grace
+            value = max(0, min(value, self.iterations_used - claimed))
+            counts.append(value)
+            claimed += value
+        return tuple(counts)
 
     def _refund_iteration(self, kind: str) -> None:
         """Refund the attempt that just finished: bump the counter
@@ -343,11 +366,14 @@ class LoopSupervisor:
             self._infra_refunded += 1
         elif kind == "grace":
             self._grace_refunded += 1
+        elif kind == "steer":
+            self._steer_refunded += 1
         else:  # pragma: no cover - programming error
             raise ValueError(f"unknown refund kind: {kind}")
         self.run.update_status(
             iterationsRefunded={"infra": self._infra_refunded,
-                                "grace": self._grace_refunded})
+                                "grace": self._grace_refunded,
+                                "steer": self._steer_refunded})
 
     # -- control surface (called from API) --------------------------------
     @property
@@ -1194,7 +1220,8 @@ class LoopSupervisor:
         # refund is deliberately NOT subtracted here: it keeps showing as a
         # used iteration number, see test_e2e's grace-review contract.)
         self.run.update_status(phase=phase, iteration=n,
-                               iterationsUsed=n - self._infra_refunded,
+                               iterationsUsed=(n - self._infra_refunded
+                                              - self._steer_refunded),
                                currentIteration={"number": n, "phase": phase,
                                                  "model": model,
                                                  "startedAt": meta["startedAt"]})
@@ -1542,10 +1569,13 @@ class LoopSupervisor:
     @property
     def iterations_used_charged(self) -> int:
         """The iteration count exactly as published in status.json's
-        `iterationsUsed` (raw attempts minus infra refunds) -- the figure an
-        operator reads, and therefore the one a budget change is validated
-        against (task 045, #3)."""
-        return self.iterations_used - self._infra_refunded
+        `iterationsUsed` (raw attempts minus infra AND steer refunds --
+        task 014 added the second subtraction, PRD requirement J: a steer
+        iteration must leave no trace in this figure, the same as the
+        router/contract-fix channels that never touch it at all) -- the
+        figure an operator reads, and therefore the one a budget change is
+        validated against (task 045, #3)."""
+        return self.iterations_used - self._infra_refunded - self._steer_refunded
 
     @property
     def deadline_epoch(self) -> float:
@@ -1649,8 +1679,10 @@ class LoopSupervisor:
     def budget_left(self) -> bool:
         # Task 001a: iterations refunded after an infra-classified retry
         # (see _run_iteration_with_infra_retry) never count against the
-        # configured budget.
-        charged = self.iterations_used - self._infra_refunded - self._grace_refunded
+        # configured budget. Task 014 (requirement J, #98): a steer hat's
+        # own iteration joins the subtraction for the same reason.
+        charged = (self.iterations_used - self._infra_refunded
+                  - self._grace_refunded - self._steer_refunded)
         return (charged < self.cfg.iterations
                 and time.monotonic() < self.deadline
                 and self._abort_reason is None)
@@ -2622,6 +2654,29 @@ class LoopSupervisor:
             # is `tiers.DEFAULT_TIER`.
             result = await self.run_iteration(state, prompt_name=hat,
                                               tier=tiers.DEFAULT_TIER)
+            if state == "steer":
+                # Task 014 (requirement J, #98): refund THIS attempt the
+                # instant it returns -- every pass through this while loop
+                # (an engine-cut-short retry, a ladder-exhausted-but-
+                # budget-remains retry, or the eventual successful pass)
+                # gets its own real `iterations/NNNN` slot (full
+                # observability, exactly like any other hat) but NEVER
+                # counts against `cfg.iterations`: "an operator message
+                # must not cost the run a work iteration." Refunding here,
+                # not inside `run_iteration`/`_run_iteration_once`, keeps
+                # the charging decision a property of WHICH hat this is
+                # (`state == "steer"`), the same place task 013's
+                # `settled` handling already special-cases this hat, rather
+                # than a second copy of "which phases are uncharged" logic.
+                self._refund_iteration("steer")
+                # `_run_iteration_once`'s own status write above happened
+                # BEFORE this refund (the refund is only known once the
+                # call returns), so it published `iterationsUsed` computed
+                # from the PRE-refund count -- one refund stale. Re-publish
+                # it now so a caller reading status.json immediately after
+                # this steer pass never sees a figure that still counts it,
+                # even if no further iteration follows to correct it.
+                self.run.update_status(iterationsUsed=self.iterations_used_charged)
             if self._iteration_cut_short_by_engine(result):
                 if not self.budget_left():
                     self._terminal_reason_note = (
