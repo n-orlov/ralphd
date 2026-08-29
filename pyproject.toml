@@ -45,6 +45,14 @@ packages = ["src/ralphd"]
 "pyproject.toml" = "ralphd/_image/pyproject.toml"
 "README.md" = "ralphd/_image/README.md"
 "LICENSE" = "ralphd/_image/LICENSE"
+# The operator skill (task 023, requirement R, #88): a wheel/pipx install has
+# no skills/ checkout next to it either, so `ralphctl skills install` needs
+# its own copy of skills/ralphd under the installed package -- mapped the
+# same way container/ is, but kept OUT of `image.PACKAGED_FILES` (it is not
+# a job-image input; `stage_inputs` must never copy it into a build context).
+# `image.packaged_skill_dir` reads this exact target; a test compares this
+# mapping against it so packaging and code cannot drift apart.
+"skills" = "ralphd/_image/skills"
 
 [tool.ruff]
 line-length = 100

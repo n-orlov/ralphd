@@ -178,6 +178,16 @@ PACKAGED_DIR_NAME = "_image"
 # reads the mapping and compares, so packaging and code cannot drift apart).
 PACKAGED_FILES = ("container", "pyproject.toml", "README.md", "LICENSE")
 
+# The operator skill, shipped the same way (task 023, requirement R, #88): a
+# wheel/pipx install has no `skills/` checkout next to it either, so
+# `ralphctl skills install` needs its own copy under the installed package.
+# Kept OUT of `PACKAGED_FILES` on purpose -- it is not a job-image input and
+# `stage_inputs` must never sweep it into a build context; the pyproject
+# `force-include` mapping puts it at `ralphd/_image/skills` (same `_image/`
+# tree, its own subdirectory) and `packaged_skill_dir` is the one place that
+# reads it back.
+PACKAGED_SKILLS_DIR = "skills"
+
 # The two of them without which there is nothing to build at all -- checked
 # before calling a directory a packaged supply.
 PACKAGED_REQUIRED = (SOURCE_MARKER, "pyproject.toml")
@@ -371,6 +381,25 @@ def packaged_inputs(pkg: Path | str | None = None) -> Path | None:
     if all((d / rel).is_file() for rel in PACKAGED_REQUIRED):
         return d
     return None
+
+
+def packaged_skill_dir(name: str, pkg: Path | str | None = None) -> Path | None:
+    """The packaged copy of skill `name` shipped in the wheel, or None (task
+    023, requirement R).
+
+    Mirrors `packaged_inputs`: read from the installed package directory
+    (never the process cwd), under `PACKAGED_SKILLS_DIR` inside the same
+    `_image/` package-data tree `container/` etc. ship in -- the pyproject
+    `force-include` mapping puts it there, and a packaging test compares the
+    two so they cannot drift apart. `main._skills_install_source_dir` calls
+    this only after `source_root()` finds no checkout, exactly like
+    `find_inputs` prefers a checkout over `packaged_inputs`. Presence is
+    checked by the same rule everything else here uses: a real `SKILL.md`
+    inside the directory, not merely that the directory exists.
+    """
+    base = Path(pkg) if pkg is not None else package_dir()
+    d = Path(base).resolve() / PACKAGED_DIR_NAME / PACKAGED_SKILLS_DIR / name
+    return d if (d / "SKILL.md").is_file() else None
 
 
 @dataclass(frozen=True)

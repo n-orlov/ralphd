@@ -3955,19 +3955,24 @@ def _skill_discoverable(path: Path) -> bool:
 def _skills_install_source_dir() -> Path:
     """Locate this install's copy of `skills/ralphd` on disk.
 
-    Only the checkout case is wired up here -- task 023 ships `skills/` from
-    the wheel (the same `PACKAGED_FILES`-style mapping `container/` already
-    gets) and gives a wheel install a real source; until then a wheel
-    install gets a clear, immediate refusal rather than a silent guess at
-    some other tree."""
+    A checkout wins (same precedence `find_inputs` uses for the image
+    inputs): if this is a checkout, its `skills/ralphd` is the live source.
+    Otherwise (task 023) fall back to the packaged copy the wheel ships at
+    `ralphd/_image/skills/ralphd` (`image.packaged_skill_dir`) -- so a real
+    `pipx install ralphd` now has a real source instead of the refusal this
+    used to be the only wheel behaviour.
+    """
     root = image.source_root()
-    if root is None:
-        die(2, "skills install: no source checkout found for skills/ralphd -- "
-               "wheel packaging for skills/ ships in a later task")
-    src = root / "skills" / _SKILL_INSTALL_NAME
-    if not (src / "SKILL.md").is_file():
-        die(2, f"skills install: {src} has no SKILL.md")
-    return src
+    if root is not None:
+        src = root / "skills" / _SKILL_INSTALL_NAME
+        if not (src / "SKILL.md").is_file():
+            die(2, f"skills install: {src} has no SKILL.md")
+        return src
+    packaged = image.packaged_skill_dir(_SKILL_INSTALL_NAME)
+    if packaged is not None:
+        return packaged
+    die(2, "skills install: no source checkout and no packaged skills/ralphd "
+           "found in this install -- reinstall ralphd to get its skill data")
 
 
 def _auto_detect_skills_install_target(home: Path) -> Path:
@@ -4024,6 +4029,45 @@ def _read_skill_install_stamp(dest: Path) -> dict | None:
         return json.loads(p.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+
+
+# The three states `ralphctl doctor` reports for the operator skill (task
+# 023, requirement R). Vocabulary, so doctor and its test agree on the exact
+# words rather than each spelling "not installed" its own way.
+OPERATOR_SKILL_INSTALLED = "installed"
+OPERATOR_SKILL_MISSING = "missing"
+OPERATOR_SKILL_STALE = "stale"
+
+
+def _operator_skill_status(home: Path) -> dict:
+    """installed / missing / stale for `ralphctl doctor`'s operator-skill
+    line (task 023, requirement R).
+
+    Checks the same two agent layouts `install` auto-detects, pi first --
+    the same order, so doctor and install can never disagree about where the
+    skill lives -- and reports on whichever one is actually discoverable
+    (`_skill_discoverable`, the same rule `install` verifies its own copy
+    against) rather than only the one `install` would default to. `missing`
+    when neither is discoverable; otherwise `stale` when the install stamp's
+    recorded version differs from this `ralphctl`'s own `__version__`
+    (`installedVersion` names it, for the "(built from 0.x.y)" line), and
+    `installed` when it matches -- or when there is no stamp at all (a skill
+    placed some other way than `ralphctl skills install`; there is no
+    version to call stale against, so this does not guess one).
+    """
+    for dest in (home / ".pi" / "agent" / "skills" / _SKILL_INSTALL_NAME,
+                home / ".claude" / "skills" / _SKILL_INSTALL_NAME):
+        if _skill_discoverable(dest):
+            stamp = _read_skill_install_stamp(dest)
+            installed_version = stamp.get("version") if stamp else None
+            if installed_version is not None and installed_version != __version__:
+                status = OPERATOR_SKILL_STALE
+            else:
+                status = OPERATOR_SKILL_INSTALLED
+            return {"status": status, "path": str(dest),
+                    "installedVersion": installed_version}
+    return {"status": OPERATOR_SKILL_MISSING, "path": None,
+            "installedVersion": None}
 
 
 def cmd_skills_install(args):
@@ -5962,6 +6006,10 @@ def cmd_doctor(args):
                   if e["staleness"] == IMAGE_STALENESS_STALE]
     checks["registry"] = os.access(reg, os.W_OK)
     checks["pi_host_config"] = (Path.home() / ".pi" / "agent" / "settings.json").exists()
+    # Task 023, requirement R: report-only, like image staleness -- an
+    # operator who never installed the skill is not broken, so this never
+    # feeds `checks`/`ok`.
+    operator_skill = _operator_skill_status(Path.home())
 
     default_profile_name = reg_cfg.get("default_llm_profile", "host")
     default_llm_profile_error = None
@@ -6015,6 +6063,14 @@ def cmd_doctor(args):
     if inputs.kind == image.INPUTS_PACKAGED:
         report += "\n  " + IMAGE_PACKAGED_INPUTS_NOTICE.format(
             where=inputs.packaged)
+    # Task 023, requirement R: installed / missing / stale, driven by the
+    # install stamp's recorded version -- marked `!` only for `stale`
+    # (something to act on), same rule the job-image line above uses.
+    skill_line = f"operator skill: {operator_skill['status']}"
+    if operator_skill["status"] == OPERATOR_SKILL_STALE:
+        skill_line += f" (built from {operator_skill['installedVersion']})"
+    report += (f"\n{'!' if operator_skill['status'] == OPERATOR_SKILL_STALE else ' '} "
+               f"{skill_line}")
     if stale_runs:
         report += f"\n! {IMAGE_STALE_RUNS_HEADING}"
         for e in stale_runs:
@@ -6097,6 +6153,7 @@ def cmd_doctor(args):
                "defaultLlmProfile": default_profile_name,
                "defaultLlmProfileError": default_llm_profile_error,
                "hostNetworkApiBindNote": host_network_note,
+               "operatorSkill": operator_skill,
                "autoResume": auto_resume}, report)
     sys.exit(0 if ok else 1)
 

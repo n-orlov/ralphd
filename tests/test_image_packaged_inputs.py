@@ -94,8 +94,15 @@ def wheel_pkg(tmp_path):
 def test_the_wheel_mapping_ships_exactly_the_packaged_files():
     """`pyproject.toml` and `cli/image.py` must agree about what a wheel
     carries: the code stages `PACKAGED_FILES`, and only the mapping puts them
-    in the wheel, so a rename on either side has to fail here."""
-    mapping = _force_include()
+    in the wheel, so a rename on either side has to fail here.
+
+    The operator skill (task 023) is force-included the same way but is
+    deliberately NOT one of the `PACKAGED_FILES` image inputs (it must never
+    be staged into a build context) -- carved out of the equality check here,
+    and pinned on its own in `test_the_skills_dir_is_force_included_like_container`.
+    """
+    mapping = dict(_force_include())
+    assert mapping.pop("skills", None) == f"ralphd/{image.PACKAGED_DIR_NAME}/{image.PACKAGED_SKILLS_DIR}"
     assert mapping == {name: f"ralphd/{image.PACKAGED_DIR_NAME}/{name}"
                        for name in image.PACKAGED_FILES}
     # everything insisted on at runtime is actually shipped, and is a real file
@@ -103,6 +110,17 @@ def test_the_wheel_mapping_ships_exactly_the_packaged_files():
         top = rel.split("/")[0]
         assert top in image.PACKAGED_FILES, rel
         assert (REPO / rel).is_file(), rel
+
+
+def test_the_skills_dir_is_force_included_like_container():
+    """Requirement R (task 023): `skills/` is force-included the same way
+    `container/` is, so a wheel/pipx install has a real source for
+    `ralphctl skills install` (`image.packaged_skill_dir`) instead of the
+    checkout-only refusal task 022 shipped."""
+    mapping = _force_include()
+    assert mapping["skills"] == f"ralphd/{image.PACKAGED_DIR_NAME}/{image.PACKAGED_SKILLS_DIR}"
+    assert "skills" not in image.PACKAGED_FILES
+    assert (REPO / "skills" / "ralphd" / "SKILL.md").is_file()
 
 
 def test_the_packaged_files_are_the_recipe_and_what_pip_reads():
@@ -175,6 +193,30 @@ def test_a_named_tree_is_never_silently_replaced_by_package_data(tmp_path,
 def test_package_dir_is_this_installed_package():
     assert image.package_dir() == Path(image.__file__).resolve().parent.parent
     assert image.package_dir().name == "ralphd"
+
+
+# --------------------------------------------------- the operator skill (023)
+def test_a_wheel_install_finds_its_own_packaged_skill(wheel_pkg):
+    """`_skills_install_source_dir` (main.py) falls back to this once
+    `source_root()` finds no checkout -- the real subject of task 023."""
+    found = image.packaged_skill_dir("ralphd", pkg=wheel_pkg)
+    assert found == wheel_pkg / image.PACKAGED_DIR_NAME / image.PACKAGED_SKILLS_DIR / "ralphd"
+    assert (found / "SKILL.md").read_text() == \
+        (REPO / "skills" / "ralphd" / "SKILL.md").read_text()
+
+
+def test_an_unknown_skill_name_or_no_package_data_is_none(tmp_path, wheel_pkg):
+    assert image.packaged_skill_dir("not-a-real-skill", pkg=wheel_pkg) is None
+    pkg = _wheel_install(tmp_path / "install-unpackaged", packaged=False)
+    assert image.packaged_skill_dir("ralphd", pkg=pkg) is None
+
+
+def test_the_skill_is_never_staged_into_a_build_context(tmp_path, wheel_pkg):
+    """`skills/` is force-included for the installer, never for the image --
+    `stage_inputs` only ever walks `PACKAGED_FILES`, which excludes it."""
+    supply = image.find_inputs(root=tmp_path / "nope", pkg=wheel_pkg)
+    staged = image.stage_inputs(supply, tmp_path / "context")
+    assert not (staged / "skills").exists()
 
 
 # ------------------------------------------------------------ staging the copy
@@ -271,6 +313,21 @@ def wheel_install(tmp_path, monkeypatch, wheel_pkg):
     monkeypatch.setattr(image, "package_dir", lambda: wheel_pkg)
     monkeypatch.setattr(image, "source_root", lambda start=None: None)
     return wheel_pkg
+
+
+def test_a_wheel_install_installs_the_operator_skill_from_package_data(
+        wheel_install, tmp_path, monkeypatch):
+    """The end-to-end point of task 023: `ralphctl skills install` on a real
+    wheel-shaped layout (no checkout, package data only) now succeeds instead
+    of task 022's checkout-only refusal."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    args = cli.build_parser().parse_args(["--json", "skills", "install"])
+    cli.cmd_skills_install(args)
+    dest = home / ".pi" / "agent" / "skills" / "ralphd"
+    assert (dest / "SKILL.md").is_file()
+    assert (dest / "SKILL.md").read_text() == (REPO / "skills" / "ralphd" / "SKILL.md").read_text()
 
 
 def test_a_wheel_install_builds_the_checkouts_tag_from_a_staged_context(

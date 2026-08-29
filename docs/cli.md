@@ -2196,9 +2196,19 @@ ralphctl skills install --force            # overwrite a locally-modified instal
   true}`; human: "installed '...' to ... -- verified discoverable (directory
   contains SKILL.md)"). A placement that somehow didn't leave a discoverable
   `SKILL.md` behind exits `1` rather than reporting success.
-- **Wheel installs**: until skills/ ships as package data (a later task),
-  this refuses with exit `2` on a non-checkout install rather than guessing
-  at a source tree.
+- **Wheel installs** (task 023): `skills/` is shipped as package data the same
+  way `container/` etc. already are (`pyproject.toml`'s `force-include`,
+  `cli/image.py: image.packaged_skill_dir`), so a real `pipx install ralphd`
+  now has a real source instead of the checkout-only refusal task 022
+  shipped: a checkout's `skills/ralphd` wins when there is one,
+  `<installed ralphd>/_image/skills/ralphd` otherwise, and exit `2` only if
+  somehow neither exists.
+- **`ralphctl doctor`** reports whether this operator skill is installed at
+  all (task 023): an `operator skill: installed` / `missing` / `stale (built
+  from <old version>)` line, driven by the same install stamp -- `stale`
+  means the discoverable copy's stamped version differs from this
+  `ralphctl`'s own; report-only, like the job-image staleness line, so it
+  never flips the overall verdict.
 
 ### `ralphctl creds <run-id> [ls|get <name>|add <file>.env|rm <name>]`
 
@@ -2707,6 +2717,32 @@ Two dangling-container checks, in both directions — always **non-fatal**
   ```
 
   (one line per entry; wrapped here for the page width)
+
+#### Operator skill (task 023, requirement R)
+
+Also always report-only (never affects `ok`/the exit code): whether
+`skills/ralphd` (the shipped operator skill `ralphctl skills install` places)
+is actually on this machine, checked the same two agent layouts `install`
+auto-detects (pi first) via the same discoverability rule `install` verifies
+its own copy against.
+
+```
+  operator skill: installed
+! operator skill: stale (built from 0.12.0)
+  operator skill: missing
+```
+
+`--json`'s `operatorSkill` is `{"status": ..., "path": ..., "installedVersion": ...}`:
+
+| `status` | meaning |
+| --- | --- |
+| `installed` | discoverable, and either its `.ralphd-skill-stamp.json` names this `ralphctl`'s own `__version__`, or there is no stamp at all (placed some other way -- there is then no version claim to call stale) |
+| `stale` | discoverable, and its stamp names an **older** version than this `ralphctl` -- `installedVersion` in `--json`, `(built from <version>)` in the human line |
+| `missing` | not discoverable at either agent layout |
+
+Marked `!` only for `stale` (news to act on, matching the job-image line's
+rule) -- `missing` is not a fault, since not every host running `ralphctl`
+also drives a coding agent through it.
 
 #### Job-image staleness (#20 H4)
 
