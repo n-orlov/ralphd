@@ -27,6 +27,7 @@ from ..log_merge import (
 )
 from . import contract_enforcement
 from . import privsep
+from . import transitions
 from .faults import explain_fault, matched_signature
 from .redact import redact_job_yaml, scrub_text
 from . import tiers
@@ -1020,6 +1021,15 @@ AMENDMENT_GLOB = "[0-9][0-9][0-9]-*.md"
 AMENDMENT_DIRNAME = "amendments"
 AMENDMENT_MODE_WAIVE = "waive"
 AMENDMENT_MODE_REPLACE = "replace"
+# Task 029 (#26, requirement E): a THIRD ruling kind, alongside waive/
+# replace -- a typed status ruling the engine itself applies to that task's
+# `status` field in tasks.json (see `apply_amendment_status_rulings` below),
+# rather than one that only binds review's judgement of successCriteria.
+# `ralphctl amend --status` (task 030) is the intended writer; nothing
+# stops a hand-written file of this shape either, since the channel's
+# unforgeability comes from WHERE it lives (`config_root`'s `:ro` mount),
+# never from which tool wrote it.
+AMENDMENT_MODE_STATUS = "status"
 
 
 def amendments_dir(config_root: Path) -> Path:
@@ -1027,7 +1037,7 @@ def amendments_dir(config_root: Path) -> Path:
 
 
 def write_amendment(config_root: Path, task_id: str, text: str, *,
-                    waive: bool = False) -> str:
+                    waive: bool = False, status: str | None = None) -> str:
     """Record one operator ruling as the next numbered file under
     `<config_root>/amendments/`. HOST-SIDE ONLY -- `config_root` here is
     `cli.main.config_root(run_id)`, the directory bind-mounted `:ro` into
@@ -1035,14 +1045,27 @@ def write_amendment(config_root: Path, task_id: str, text: str, *,
     writing into a read-only mount and fail on a real one (and must never
     be made to succeed by loosening that mount). Returns the file name
     written (`NNN-<task-id>.md`), the same identifier `amendment_entries`
-    reports back."""
+    reports back.
+
+    Task 029/030 (requirement E): `status`, when given, records a
+    status ruling (`AMENDMENT_MODE_STATUS`) instead of a waive/replace one
+    -- `text` is then the operator's optional reason, never the criteria
+    text a waive/replace ruling carries. `waive` is ignored when `status`
+    is given (a ruling is exactly one kind, never two at once).
+    """
     adir = amendments_dir(config_root)
     adir.mkdir(parents=True, exist_ok=True)
     existing = sorted(adir.glob(AMENDMENT_GLOB))
     seq = int(existing[-1].name[:3]) + 1 if existing else 1
     fname = f"{seq:03d}-{task_id}.md"
-    mode = AMENDMENT_MODE_WAIVE if waive else AMENDMENT_MODE_REPLACE
-    header = f"task: {task_id}\nmode: {mode}\nts: {utcnow()}\n\n"
+    if status:
+        mode = AMENDMENT_MODE_STATUS
+    else:
+        mode = AMENDMENT_MODE_WAIVE if waive else AMENDMENT_MODE_REPLACE
+    header = f"task: {task_id}\nmode: {mode}\n"
+    if status:
+        header += f"status: {status}\n"
+    header += f"ts: {utcnow()}\n\n"
     atomic_write(adir / fname, header + text.rstrip() + "\n")
     return fname
 
@@ -1084,10 +1107,106 @@ def amendment_entries(config_root: Path) -> list[dict]:
             "seq": seq,
             "taskId": task_id,
             "waive": mode == AMENDMENT_MODE_WAIVE,
+            "mode": mode,
+            # Task 029: the ruled target status, only meaningful (and only
+            # ever non-None) for a `mode: status` entry -- a waive/replace
+            # entry never carries a `status:` header line at all.
+            "status": fields.get("status") if mode == AMENDMENT_MODE_STATUS else None,
             "ts": ts,
             "text": body.strip(),
         })
     return out
+
+
+def apply_amendment_status_rulings(run: "RunDir", config_root: Path,
+                                   vigilant: bool) -> list[dict]:
+    """Task 029 (#26, requirement E): the single engine-side applier for an
+    operator's typed status ruling -- the E half of task 028's channel
+    that, before this, only bound review (`_operator_amendment_review_
+    context`) and never touched `tasks.json` at all (PRD: *"That is why the
+    `deck-phase3g` operator's amendment did nothing for the scheduler and a
+    prompt-overriding steer was still needed"*).
+
+    Reads every `mode: status` entry recorded under
+    `<config_root>/amendments/` (`amendment_entries`, the same unforgeable
+    `:ro`-mounted channel `_operator_amendment_review_context` already
+    reads) and, for each one whose named task exists in `run`'s current
+    `tasks.json`:
+
+    - a no-op (`current == status`) changes nothing and emits nothing --
+      the ruling has already taken effect, whether this is the first call
+      to see it or the hundredth. This function is deliberately safe to
+      call every time a run loads ("applied ... at load time", PRD
+      requirement E): nothing here tracks "already applied" separately,
+      because once the task IS at the ruled status there is nothing left
+      to apply;
+    - a LEGAL transition (`transitions.is_legal_task_status_transition`,
+      checked against the SAME declared `TASK_STATUS_TABLE`/
+      `TASK_STATUS_VIGILANT_DELTA` every other status move in the engine
+      is checked against) writes the new `status` and emits an
+      `amendment_status_applied` audit event naming the operator as the
+      source -- surfaced exactly like `budget_changed` (`run.emit`, i.e.
+      `events.jsonl` and everything that already renders that stream);
+    - an ILLEGAL transition is refused: nothing is written, and the
+      returned record says why, so a caller can log/surface the refusal
+      without this function needing to know how.
+
+    `validationAttempts`, `tierLadderExhausted` and `successCriteria` are
+    never touched here -- only the one field, `status`, ever moves. A
+    ruling is not a claim the criteria were met (PRD requirement E):
+    leaving `successCriteria`'s text byte-identical, and never touching
+    `criteriaFingerprint` either, is what keeps
+    `criteriaEditedAfterValidationFailure` (task 008,
+    `LoopSupervisor._check_criteria_edits`) from firing on a ruling the way
+    it fires on a worker's own rewrite of the bar it just failed -- a
+    resumed run's next fingerprint pass sees exactly the same criteria text
+    it always did.
+
+    Returns one record per `mode: status` entry found, oldest first, each
+    `{"file", "taskId", "status", "previous", "applied", "reason"}` --
+    `reason` is `""` for an applied ruling, and one of `"no matching
+    task"` / `"already at that status"` / `"illegal transition"`
+    otherwise, so a caller can report every ruling's fate without
+    re-deriving it.
+    """
+    entries = [e for e in amendment_entries(config_root)
+              if e.get("mode") == AMENDMENT_MODE_STATUS and e.get("status")]
+    if not entries:
+        return []
+    data = run.read_tasks()
+    tasks = data.get("tasks", [])
+    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+    results: list[dict] = []
+    changed = False
+    for e in entries:
+        task_id = e.get("taskId")
+        target = e.get("status")
+        task = by_id.get(task_id)
+        record = {"file": e.get("file"), "taskId": task_id, "status": target}
+        if task is None:
+            record.update(previous=None, applied=False, reason="no matching task")
+            results.append(record)
+            continue
+        current = task.get("status", "pending")
+        record["previous"] = current
+        if current == target:
+            record.update(applied=False, reason="already at that status")
+            results.append(record)
+            continue
+        if not transitions.is_legal_task_status_transition(current, target, vigilant):
+            record.update(applied=False, reason="illegal transition")
+            results.append(record)
+            continue
+        task["status"] = target
+        changed = True
+        run.emit("amendment_status_applied", taskId=task_id, field="status",
+                previous=current, status=target, source="operator",
+                file=e.get("file"), reason=e.get("text") or "")
+        record.update(applied=True, reason="")
+        results.append(record)
+    if changed:
+        run.write_tasks(data)
+    return results
 
 
 # ---------------------------------------------------------------------------
