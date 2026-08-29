@@ -44,11 +44,18 @@ pass: an explicit **discharge**.
 
 A `discharge-sha` block, in any report under `artifacts/reports/` (including
 the same file, as a trailing addendum, or a different, later report),
-retires a specific stale sha:
+retires a specific stale sha. Every line in the block is a **pair** of
+40-hex shas: the stale sha being retired, then the sha the discharge check
+was actually run at (`git rev-parse HEAD` at the moment of examination):
 
     ```discharge-sha
-    1a205cd637caba2874d7db293557fef8ac3558a9
+    1a205cd637caba2874d7db293557fef8ac3558a9 c4f24ad7ab060115cace6779a495dde77f76f8c7
     ```
+
+The second sha is what makes a discharge checkable rather than an assertion:
+the guard walks it. A line naming only one sha is **rejected as malformed**
+(a hard failure naming the file and the line), because without a verified-at
+sha there is no chain for the guard to terminate at `HEAD`.
 
 Adding a `discharge-sha` block is a claim that the sha it names has been
 *examined*, not merely aged -- the commits between that sha and `HEAD` are
@@ -64,18 +71,28 @@ of:
 * a later sweep record in the same wave already re-ran the full check at (or
   past) `HEAD` and is itself either current or discharged the same way.
 
-The guard resolves discharge transitively: a chain of stale shas each
-pointing at a `discharge-sha` entry, ending at a sha that equals current
-`HEAD`, is accepted; a chain that never reaches `HEAD` is not.
+The guard resolves discharge transitively and *anchored*: a chain of stale
+shas, each line pointing from the sha it retires at the sha the check was run
+at, ending at a sha that equals current `HEAD`, is accepted; a chain that
+never reaches `HEAD` is not — the stale declaration stays flagged. So when
+the wave's tail moves `HEAD` again, the previous discharge does not silently
+keep covering the record: either re-verify at the new `HEAD` and add
+`<old-verified-at-sha> <new-HEAD>`, extending the chain, or re-take the
+sweep.
 
 **A stale, undischarged sha is always a hard failure, never a warning.**
 `tests/test_sweep_sha_guard.py::test_stale_undischarged_sha_fails` proves
 this with a fixture record built in a temporary directory (never inside the
 real `artifacts/reports/`, so the fixture cannot itself trip the guard it is
 testing) -- a `sweep-sha` naming a sha that is neither `HEAD` nor discharged
-must be rejected. The companion
-`tests/test_sweep_sha_guard.py::test_discharged_stale_sha_passes` proves the
-discharge path actually clears the same failure.
+must be rejected.
+`tests/test_sweep_sha_guard.py::test_discharged_stale_sha_passes` and
+`::test_a_transitive_discharge_chain_ending_at_head_passes` prove the
+discharge path actually clears the same failure, one hop and two hops;
+`::test_a_discharge_chain_that_never_reaches_head_fails`,
+`::test_a_discharge_cycle_never_clears_a_stale_sha` and
+`::test_a_one_sha_discharge_block_is_rejected_as_malformed` prove the three
+ways a discharge can fail to be one.
 
 The failure message names the record's path, its declared sha, the current
 `HEAD`, and what to do: re-take the sweep at `HEAD` and update the record, or
@@ -99,7 +116,8 @@ declare anything.
 
 ## Where the checks live
 
-* `tests/sweep_sha_guard.py` -- the parser and the two problem-list
+* `tests/sweep_sha_guard.py` -- the parser (`sweep_shas`,
+  `discharge_entries`, `malformed_discharge_lines`) and the two problem-list
   functions (`check_reports`, `wave_sha_missing_problems`), shared the same
   way `tests/report_claims.py` shares its checks with every report.
 * `tests/test_sweep_sha_guard.py` -- applies them to every report the

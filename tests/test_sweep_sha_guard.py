@@ -91,14 +91,89 @@ def test_discharged_stale_sha_passes(tmp_path) -> None:
     record = tmp_path / "v0.14-fixture-stale-sweep.md"
     record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
     discharge = tmp_path / "v0.14-fixture-discharge.md"
+    # The discharge names BOTH shas: what it retires, and the sha the
+    # discharge check was run at -- here, HEAD itself, so the chain is one hop.
     discharge.write_text(
         "# fixture discharge\n\n"
-        f"```discharge-sha\n{stale}\n```\n"
+        f"```discharge-sha\n{stale} {head}\n```\n"
     )
 
     problems = guard.check_reports([record, discharge], head)
 
     assert problems == [], problems
+
+
+def test_a_transitive_discharge_chain_ending_at_head_passes(tmp_path) -> None:
+    stale = "a" * 40
+    middle = "d" * 40
+    head = "b" * 40
+    record = tmp_path / "v0.14-fixture-stale-sweep.md"
+    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
+    discharge = tmp_path / "v0.14-fixture-discharge-chain.md"
+    discharge.write_text(
+        f"```discharge-sha\n{stale} {middle}\n{middle} {head}\n```\n"
+    )
+
+    assert guard.check_reports([record, discharge], head) == []
+
+
+def test_a_discharge_chain_that_never_reaches_head_fails(tmp_path) -> None:
+    """The documented rule, enforced: "a chain that never reaches HEAD is
+    not [accepted]". An earlier revision of this guard treated ANY matching
+    discharge-sha block as sufficient, so a discharge verified at some other
+    stale sha (or at nothing checkable at all) silently cleared the
+    declaration -- exactly the undetected "ran at sha X" claim requirement A
+    exists to kill."""
+    stale = "a" * 40
+    also_stale = "d" * 40
+    head = "b" * 40
+    record = tmp_path / "v0.14-fixture-stale-sweep.md"
+    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
+    discharge = tmp_path / "v0.14-fixture-dangling-discharge.md"
+    discharge.write_text(f"```discharge-sha\n{stale} {also_stale}\n```\n")
+
+    problems = guard.check_reports([record, discharge], head)
+
+    assert len(problems) == 1, problems
+    assert stale in problems[0] and head in problems[0]
+    assert "never reaches HEAD" in problems[0]
+
+
+def test_a_discharge_cycle_never_clears_a_stale_sha(tmp_path) -> None:
+    stale = "a" * 40
+    other = "d" * 40
+    head = "b" * 40
+    record = tmp_path / "v0.14-fixture-stale-sweep.md"
+    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
+    discharge = tmp_path / "v0.14-fixture-cyclic-discharge.md"
+    discharge.write_text(
+        f"```discharge-sha\n{stale} {other}\n{other} {stale}\n```\n"
+    )
+
+    problems = guard.check_reports([record, discharge], head)
+
+    assert len(problems) == 1, problems
+    assert stale in problems[0]
+
+
+def test_a_one_sha_discharge_block_is_rejected_as_malformed(tmp_path) -> None:
+    """A discharge block naming only the retired sha is a hard failure, not a
+    tolerated shorthand: with no verified-at sha there is no chain to check."""
+    stale = "a" * 40
+    head = "b" * 40
+    record = tmp_path / "v0.14-fixture-stale-sweep.md"
+    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
+    discharge = tmp_path / "v0.14-fixture-short-discharge.md"
+    discharge.write_text(f"```discharge-sha\n{stale}\n```\n")
+
+    problems = guard.check_reports([record, discharge], head)
+
+    # Both the malformed block and the still-stale declaration are reported.
+    assert len(problems) == 2, problems
+    malformed = [p for p in problems if "malformed discharge-sha line" in p]
+    assert len(malformed) == 1, problems
+    assert discharge.name in malformed[0]
+    assert stale in malformed[0]
 
 
 def test_a_v014_sweep_record_with_no_sha_is_caught_by_the_companion_check(
