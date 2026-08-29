@@ -61,6 +61,12 @@ def test_terminal_states_have_no_successors_and_nothing_else_does():
                 assert succ == (), (
                     "plan_review is unreachable, not terminal, when "
                     "peer_plan_review is off (this test's default)")
+            elif state == "verdict_gate":
+                assert succ == (), (
+                    "verdict_gate is unreachable, not terminal, when "
+                    "peer_verdict_gate is off (this test's default) -- "
+                    "task 020, requirement L, #101, the SAME shape as "
+                    "plan_review just above, on its own axis")
             else:
                 assert succ != (), (
                     f"{state} ({vigilant=}) is not terminal but has no "

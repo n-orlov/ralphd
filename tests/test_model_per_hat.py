@@ -27,6 +27,11 @@ Task 018 (PRD requirement K, #101) strengthens the same assertion again:
 `plan_review` (the opt-in peer plan-review hat) joins `MODEL_HATS` too, off
 by default (`JobConfig.peer_plan_review`) but a real, known hat name
 either way -- never an unrecognised one.
+
+Task 020 (PRD requirement L, #101) strengthens it a THIRD time, the SAME
+shape on the SAME axis: `verdict_gate` (the opt-in peer verdict gate) joins
+`MODEL_HATS` too, off by default (`JobConfig.peer_verdict_gate`) but a
+real, known hat name either way.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ import pytest
 from ralphd.engine.config import (DEFAULT_HAT_MODEL_REF, MODEL_HATS,
                                   UNRECOGNISED_HAT_FALLBACK, JobConfig)
 
-HATS = MODEL_HATS  # ("planning", "worker", "verify", "review", "reflect", "router", "steer", "plan_review")
+HATS = MODEL_HATS  # ("planning", "worker", "verify", "review", "reflect", "router", "steer", "plan_review", "verdict_gate")
 
 
 # --------------------------------------------------------- the two constants
@@ -50,7 +55,8 @@ def test_the_two_constants_are_named_and_kept_apart():
     assert UNRECOGNISED_HAT_FALLBACK == "planning"
     assert UNRECOGNISED_HAT_FALLBACK in MODEL_HATS
     assert set(MODEL_HATS) == {"planning", "worker", "verify", "review",
-                               "reflect", "router", "steer", "plan_review"}
+                               "reflect", "router", "steer", "plan_review",
+                               "verdict_gate"}
 
 
 # ------------------------------------------------- absent-table equivalence

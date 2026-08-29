@@ -77,9 +77,11 @@ def test_generator_output_is_derived_from_the_table_not_a_constant():
 
     original_successors = transitions.successors
 
-    def _mutated_successors(state, vigilant, peer_plan_review=False):  # noqa: ANN001
+    def _mutated_successors(state, vigilant, peer_plan_review=False,
+                             peer_verdict_gate=False):  # noqa: ANN001
         if state != "worker":
-            return original_successors(state, vigilant, peer_plan_review)
+            return original_successors(state, vigilant, peer_plan_review,
+                                       peer_verdict_gate)
         table = mutated_table if not vigilant else {
             **mutated_table,
             "worker": mutated_table["worker"] + (

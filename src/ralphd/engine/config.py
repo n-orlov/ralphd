@@ -261,9 +261,17 @@ def _migrate_legacy_model_config(raw: dict) -> dict:
 # hat joins the SAME way -- a real entry, a real shipped default, never the
 # unrecognised-hat fallback, whether or not `JobConfig.peer_plan_review`
 # (the opt-in gate, off by default) is actually turned on for a given run.
+#
+# `verdict_gate` (task 020, PRD requirement L, #101): the peer VERDICT gate
+# joins on the SAME axis, a real entry either way, gated by
+# `JobConfig.peer_verdict_gate` (also off by default) for reachability only
+# -- never for whether `check_hat_routes`'s start-time fail-fast
+# (`tests/test_hat_model_routes.py`) covers a misconfigured ref here, per
+# requirement M's own note that an opt-in gate's unroutable model must fail
+# exactly like any other hat's, never silently degrade to "no gate".
 MODEL_HATS: tuple[str, ...] = (
     "planning", "worker", "verify", "review", "reflect", "router", "steer",
-    "plan_review")
+    "plan_review", "verdict_gate")
 
 # "What ships": the ref a KNOWN hat resolves to when neither the per-hat
 # table (`models:`/`model_overrides:`) nor the bare `model` field configures
@@ -352,6 +360,21 @@ class JobConfig:
     # (`plan_review_revision_bound_reached`). Reset to 0 at the start of
     # every approach (`LoopSupervisor._record_plan_review_revision`).
     peer_plan_review_max_revisions: int = 2
+    # Task 020 (PRD requirement L, #101): the opt-in peer VERDICT gate.
+    # OFF by default -- `transitions.table_for(vigilant)` (no extra
+    # arguments) stays byte-identical to today's table whenever this
+    # stays False (`tests/test_peer_verdict_gate.py`). When True,
+    # `review`'s own `verified` edge (once every OTHER terminal-success
+    # blocker -- `_terminal_success_blockers()` -- is already clear)
+    # targets `verdict_gate` instead of `finishing` directly: a SECOND,
+    # genuinely BLIND peer model re-verifies the completed work -- see
+    # `prompts/verdict_gate.md` for exactly what it is and is not handed --
+    # before the run may reach terminal success. A `rejected` verdict
+    # folds the peer's findings into a FRESH approach (`replan`), never a
+    # targeted worker fix-up -- the decided rejection semantics, recorded
+    # in this task's own commit message and `artifacts/reports/task-020-
+    # requirement-l-rejection-semantics.md`.
+    peer_verdict_gate: bool = False
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
     # any pi "provider/model" ref; the plain fallback every hat resolves to

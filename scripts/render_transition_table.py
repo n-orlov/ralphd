@@ -39,10 +39,13 @@ def _rows() -> list[tuple[str, str, str, str, str]]:
     `variant` is `"both"` when the edge is present identically for
     vigilant and non-vigilant, `"vigilant only"` when it is only reachable
     because `VIGILANT_DELTA` adds it (or replaces the state's edges, as it
-    does for `verify`), and `"peer plan review only"` when it is only
+    does for `verify`), `"peer plan review only"` when it is only
     reachable because `PEER_PLAN_REVIEW_DELTA` adds it (task 018,
-    requirement K, #101) -- an INDEPENDENT axis from vigilant/non-vigilant,
-    gated by `JobConfig.peer_plan_review` (default OFF) rather than
+    requirement K, #101), and `"peer verdict gate only"` when it is only
+    reachable because `PEER_VERDICT_GATE_DELTA` adds it (task 020,
+    requirement L, #101) -- each an INDEPENDENT axis from vigilant/
+    non-vigilant and from each other, gated by `JobConfig.peer_plan_review`/
+    `JobConfig.peer_verdict_gate` (both default OFF) rather than
     `cfg.vigilant`.
     """
     rows: list[tuple[str, str, str, str, str]] = []
@@ -51,7 +54,8 @@ def _rows() -> list[tuple[str, str, str, str, str]]:
         hat_label = hat if hat else "\u2014"
         non_vigilant = transitions.successors(state, vigilant=False)
         vigilant = transitions.successors(state, vigilant=True)
-        peer = transitions.successors(state, vigilant=False, peer_plan_review=True)
+        peer_plan = transitions.successors(state, vigilant=False, peer_plan_review=True)
+        peer_verdict = transitions.successors(state, vigilant=False, peer_verdict_gate=True)
         seen: set[tuple[str, str]] = set()
         for edge in non_vigilant:
             key = (edge.target, edge.guard)
@@ -63,13 +67,19 @@ def _rows() -> list[tuple[str, str, str, str, str]]:
                 continue
             seen.add(key)
             rows.append((state, hat_label, "vigilant only", edge.target, edge.guard))
-        for edge in peer:
+        for edge in peer_plan:
             key = (edge.target, edge.guard)
             if key in seen:
                 continue
             seen.add(key)
             rows.append((state, hat_label, "peer plan review only", edge.target, edge.guard))
-        if not non_vigilant and not vigilant and not peer:
+        for edge in peer_verdict:
+            key = (edge.target, edge.guard)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((state, hat_label, "peer verdict gate only", edge.target, edge.guard))
+        if not non_vigilant and not vigilant and not peer_plan and not peer_verdict:
             rows.append((state, hat_label, "\u2014", "\u2014 (terminal)", "\u2014"))
     return rows
 

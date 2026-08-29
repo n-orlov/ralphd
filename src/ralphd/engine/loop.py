@@ -307,9 +307,11 @@ class LoopSupervisor:
         # `cfg.peer_plan_review` (task 018, requirement K, #101) is a
         # SECOND, independent selector passed alongside `cfg.vigilant` --
         # see `transitions.table_for`'s own docstring for why the two axes
-        # never interact.
+        # never interact. `cfg.peer_verdict_gate` (task 020, requirement L,
+        # #101) is a THIRD, independent selector on its own axis, same
+        # shape.
         self._executor = transitions.TransitionExecutor(
-            cfg.vigilant, cfg.peer_plan_review)
+            cfg.vigilant, cfg.peer_plan_review, cfg.peer_verdict_gate)
         self._approach: int | None = None
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
@@ -872,7 +874,14 @@ class LoopSupervisor:
                          # -- an infra-classified fault here is retried and
                          # refunded, never charged against the run's own
                          # iteration budget or the bounded revision count.
-                         "plan_review")
+                         "plan_review",
+                         # Task 020 (requirement L, #101): `verdict_gate` is
+                         # budget-charged the same way, for the same reason
+                         # -- real reasoning work over the finished
+                         # approach, not bookkeeping (see this task's
+                         # commit message and `artifacts/reports/task-020-
+                         # requirement-l-rejection-semantics.md`).
+                         "verdict_gate")
 
     async def run_iteration(self, phase: str, extra: str = "",
                              prompt_name: str | None = None,
@@ -2844,6 +2853,18 @@ class LoopSupervisor:
                     # revisions still available -- rather than inventing a
                     # verdict the peer never gave.
                     outcome = await self._step_plan_review()
+                elif step == "verdict_gate":
+                    # Task 020 (requirement L, #101): a dedicated handler,
+                    # NOT the generic `_step_generic_hat` fallback below --
+                    # that fallback reaches `engine.router` for ANY state
+                    # with more than one legal edge (unconditionally), but
+                    # this hat's own `verdict` field always decides its
+                    # edge deterministically (verified/rejected, both
+                    # always decidable from the payload alone) exactly
+                    # like `_step_review`/`_step_plan_review` decide theirs
+                    # -- there is no undecidable case here that would need
+                    # the router at all.
+                    outcome = await self._step_verdict_gate()
                 else:
                     # Task 015 (requirement B): any OTHER state the table
                     # names is driven by the one generic fallback below --
@@ -3854,6 +3875,98 @@ class LoopSupervisor:
             return spend_revision(
                 reason or "plan review objected with no reason given")
         return ("advance", "worker", "plan_review_revision_bound_reached")
+
+    async def _step_verdict_gate(self) -> tuple:
+        """The `verdict_gate` state (task 020, requirement L, #101) --
+        reachable only when `self.cfg.peer_verdict_gate` is on, and only
+        once `review` itself has already emitted `verified` with no other
+        `_terminal_success_blockers()` outstanding. Budget-charged like
+        `plan_review` (real reasoning work over the finished approach, not
+        bookkeeping -- the decision recorded in this task's own commit
+        message and `artifacts/reports/task-020-requirement-l-rejection-
+        semantics.md`).
+
+        Genuinely BLIND (requirement L's own teeth): `run_iteration(
+        "verdict_gate")` is called with NO `extra` argument at all, unlike
+        `_run_review_iteration`'s `extra=self._review_extra_context()` --
+        review's own reasoning/verdict/flagged-criteria context is never
+        assembled for this call, and `build_prompt` itself carries nothing
+        review-specific for any OTHER phase (job context, steering, the
+        recent-steering echo -- none of it names review's verdict).
+        `prompts/verdict_gate.md` states this explicitly, and
+        `tests/test_peer_verdict_gate.py`'s blind-prompt test asserts a
+        planted review verdict/reason string is absent from this exact
+        call's rendered prompt.
+
+        Parses the hat's `verdict_gate` contract payload
+        (`transitions.HAT_SCHEMAS["verdict_gate"]`) exactly the way
+        `_review_verdict` parses review's own: an absent/malformed payload,
+        a schema violation, or a `rejected` verdict with no `reason`
+        (`transitions.verdict_gate_report_errors`) is never a run-ending
+        contract violation -- it defaults to the SAME safe choice an
+        unparseable review reply already defaults to (not verified, i.e.
+        rejected), never through `engine.router`: both of this hat's live
+        edges are always decidable from its own `verdict` field alone, so
+        there is no genuine choice left for the router to resolve (unlike
+        `plan_review`'s undecidable-reply case, task 019, requirement M).
+
+        `verified` -> `finishing` (`verdict_gate_approved`), the run's
+        real success edge now sitting here instead of directly on
+        `review`'s own `verified` edge. A `rejected` verdict (real, or the
+        safe default above) folds the peer's own findings into a FRESH
+        approach -- `_archive_approach`/`_write_composite_prd`, the exact
+        machinery `review`'s own rejection already uses, so the peer's
+        `review-findings.md` (same fixed path, written by the hat itself
+        per `prompts/verdict_gate.md`) is what the next approach's
+        composite PRD folds in -- `replan` when an approach is still
+        available (`verdict_gate_rejected_approach_left`), `finishing`
+        (fail OPEN, never a deadlocked run) once the budget is spent
+        (`verdict_gate_rejected_no_approach_left`). This is the DECIDED
+        rejection semantics (a NEW approach, never a targeted worker
+        fix-up): see this task's commit message and
+        `artifacts/reports/task-020-requirement-l-rejection-semantics.md`
+        for the reasoning, including who re-runs `review` -- the fresh
+        approach's own ordinary `worker -> review` pass, automatically,
+        with no bespoke re-invocation mechanism needed.
+        """
+        approach = self._approach
+        if not self.budget_left():
+            return ("tail",)
+        self.run.emit("phase", phase="verdict_gate", approach=approach)
+        result = await self.run_iteration(
+            "verdict_gate", tier=state.run_level_verify_tier())
+        try:
+            parsed = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            parsed = None
+        payload = None
+        if isinstance(parsed, dict):
+            contract_errors = (
+                contracts.validate_payload("verdict_gate", parsed)
+                or transitions.verdict_gate_report_errors(parsed))
+            if not contract_errors:
+                payload = parsed
+        if payload is not None and payload.get("verdict") == "verified":
+            self._advance("verdict_gate", "finishing", "verdict_gate_approved")
+            self.run.emit("signal", signal="VERIFIED")
+            self._finish("succeeded", "verified",
+                        **self._unconsumed_steering_patch())
+            return ("done", "succeeded")
+        reason = (payload or {}).get("reason") if payload else None
+        self.run.emit(
+            "log",
+            message=(f"peer verdict gate rejected approach {approach}"
+                     + (f": {reason}" if reason else
+                        " (no usable verdict_gate payload)")))
+        self._archive_approach(approach)
+        self._write_composite_prd(approach)
+        if approach < self.cfg.max_approaches:
+            self._advance("verdict_gate", "replan",
+                         "verdict_gate_rejected_approach_left")
+            return ("advance", "replan", "verdict_gate_rejected_approach_left")
+        self._advance("verdict_gate", "finishing",
+                     "verdict_gate_rejected_no_approach_left")
+        return ("tail",)
 
     def _step_replan(self) -> tuple:
         """The `replan` state: the approach boundary as a transition with a
@@ -4884,6 +4997,20 @@ class LoopSupervisor:
                                "run can go terminal-succeeded"))
                 self._advance("review", "worker", "steering_pending_at_verified")
                 return ("advance", "worker", "steering_pending_at_verified")
+            # Task 020 (requirement L, #101): the opt-in, genuinely BLIND
+            # peer verdict gate. `transitions.PEER_VERDICT_GATE_DELTA` is
+            # what actually declares this alternate edge legal -- this
+            # `if` is just which of the two ALREADY-legal targets this run
+            # takes, decided from the SAME config flag `transitions.
+            # table_for`'s caller (`TransitionExecutor` construction,
+            # `__init__`) was built with, so the two can never disagree
+            # about which table variant is in force (the same shape
+            # `_step_planning`'s `peer_plan_review` check already uses).
+            if self.cfg.peer_verdict_gate:
+                self._advance("review", "verdict_gate",
+                             "verified_peer_verdict_gate_enabled")
+                return ("advance", "verdict_gate",
+                        "verified_peer_verdict_gate_enabled")
             self._advance("review", "finishing", "verified")
             self.run.emit("signal", signal="VERIFIED")
             self._finish("succeeded", "verified",
