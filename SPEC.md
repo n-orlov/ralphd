@@ -1505,6 +1505,29 @@ a plan with nothing actionable left in it, and the worker loop routes to `review
 stagnating. Both kinds of `failed` route, because both block the worker's
 signal identically and the reviewer is the right judge of either.
 
+**The vocabulary stays eight terms (v0.14, requirement F, #99 suggestion 3, #51).**
+#99's third suggestion was a status that satisfies dependents while recording a
+shortfall -- the case where the substantive work landed but one stated property
+did not, which `skipped` overstates as loss and `completed` overstates as full
+delivery. The decision is to leave `TASK_STATUSES`, `TASK_STATUS_TABLE`,
+`TASK_DEPENDENCY_SATISFIED_STATUSES` and `state.task_counts()`'s mapping exactly
+as they stand, and to name `ralphctl amend --status` (requirement E,
+`state.apply_amendment_status_rulings()`) as the sanctioned resolution instead: an
+operator who judges a task's shortfall honest, not disqualifying, rules it
+`completed` (or any other legal transition) through that channel, in the
+operator's own words in `validationNotes`, without the engine ever having to
+guess the distinction from an agent's report. Adding a ninth term would not stop
+at the enum -- `TASK_STATUS_TABLE`'s transitions, the counts mapping, `worker.md`'s
+and `verify`'s completion contracts, and every hub/CLI label that renders a
+status would all have to move with it, on the strength of one nine-issue wave's
+need. That blast radius is exactly how a vocabulary ends up with two words for
+the same thing, which is what #51 was filed to prevent by asking that this
+choice be made explicitly rather than left implicit. So the widening is
+deferred, not merely postponed by omission: E already gives an operator a way
+to say "this landed short of the letter, and I am ruling on it" without a new
+word, and a future wave that finds E insufficient in practice -- not in theory --
+is the one that should reopen this paragraph.
+
 ```json
 {
   "version": 1, "repositories": [], "discovered": {},
