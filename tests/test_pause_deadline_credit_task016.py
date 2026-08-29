@@ -32,13 +32,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time as real_time
 
 import pytest
 
+from ralphd.engine import loop as loop_mod
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import RunDir
+from ralphd.engine.state import RunDir, utc_from_epoch
 
 
 def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
@@ -71,6 +73,33 @@ def _events(run: RunDir, type_: str) -> list[dict]:
     log = run.root / "events.jsonl"
     lines = log.read_text().splitlines() if log.exists() else []
     return [ev for ev in (json.loads(x) for x in lines) if ev.get("type") == type_]
+
+
+class _FakeMonotonic:
+    """A hand-cranked stand-in for the `time` module, scoped to `loop.py`'s
+    own `time.monotonic` (task 004, #104): every OTHER attribute (`time()`,
+    `sleep()`, ...) passes straight through to the real module, so only
+    ``monotonic()`` -- the clock `_park_until_resumed`/`_extend_deadline_by`
+    actually read -- is under the test's control. Advancing it is a plain
+    counter bump, never a real wait, so a test can place the clock exactly
+    where it wants between two genuinely-awaited events without a single
+    `time.sleep`. Patched onto `ralphd.engine.loop`'s own module-global
+    `time` name (not the process-wide `time` module), so `asyncio`'s own
+    scheduler -- which reads the real `time.monotonic` for every timer --
+    is completely unaffected by the advances below."""
+
+    def __init__(self, real_time_module, start: float):
+        self._real = real_time_module
+        self._t = start
+
+    def monotonic(self) -> float:
+        return self._t
+
+    def advance(self, delta: float) -> None:
+        self._t += delta
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 # -- pin 1: a pause requested mid-iteration credits only the parked time ---
@@ -189,3 +218,120 @@ async def test_pause_credit_avoids_the_60s_floor(tmp_path):
     await sup._run_iteration_once("worker")
     assert runner.timeouts[-1] != 60
     assert runner.timeouts[-1] > 900
+
+
+# -- pin 4: a pause requested WHILE an iteration is genuinely in flight ----
+# credits only the span actually spent parked at the real `_gate()` site,
+# never the span between the `pause()` call and the iteration finishing
+# (#104 residual: pins 1-3 above only ever drive `_gate()` with nothing
+# else running, or stub `_park_until_resumed` away entirely -- neither
+# proves an in-flight iteration's own busy time is excluded).
+
+
+@pytest.mark.asyncio
+async def test_pause_mid_flight_iteration_credits_only_the_real_park(
+        tmp_path, monkeypatch):
+    fake_time = _FakeMonotonic(real_time, start=1_000_000.0)
+    monkeypatch.setattr(loop_mod, "time", fake_time)
+
+    sup = _supervisor(tmp_path, job_timeout_s=3600)
+    orig_deadline, orig_epoch = sup.deadline, sup._deadline_epoch
+
+    runner_entered = asyncio.Event()
+    release_runner = asyncio.Event()
+
+    class _BlockingRunner:
+        """Stands in for PiRunner (the one seam `_run_iteration_once`
+        calls) but never actually returns until told to -- signalling
+        `runner_entered` the instant it is called and then parking on
+        `release_runner`, an asyncio.Event, so the test can hold a real
+        iteration "in flight" for as long as it likes with no sleep of
+        any kind on either side."""
+
+        def interrupt(self) -> bool:
+            return False
+
+        async def run(self, prompt, transcript, **kw) -> IterationResult:
+            runner_entered.set()
+            await release_runner.wait()
+            r = IterationResult(exit_code=0)
+            r.final_text = "done"
+            r.duration_s = 1.0
+            return r
+
+    sup.runner = _BlockingRunner()  # type: ignore[assignment]
+
+    # Wraps the REAL `_park_until_resumed` (never replaces it) purely to
+    # get an event-driven signal the instant the driving task actually
+    # reaches the parked await -- so the test never has to guess how many
+    # scheduler ticks a synchronous return chain takes.
+    orig_park = sup._park_until_resumed
+    parked = asyncio.Event()
+
+    async def _signalling_park() -> float:
+        parked.set()
+        return await orig_park()
+
+    sup._park_until_resumed = _signalling_park  # type: ignore[method-assign]
+
+    async def drive() -> float:
+        # The exact production sequence (`_step_worker`'s own while loop:
+        # this pass's iteration, then the NEXT pass's `_gate()` at the top)
+        # -- `run_iteration`, never `_run_iteration_once` directly, so the
+        # test drives the same public seam production call sites use.
+        await sup.run_iteration("worker")
+        return await sup._gate()
+
+    task = asyncio.ensure_future(drive())
+    await runner_entered.wait()  # the iteration is genuinely in flight now
+
+    # Pause is requested WHILE the iteration is still running: nothing has
+    # reached a `_gate()` site yet, so nothing is parked and nothing may be
+    # credited from this moment on.
+    sup.pause()
+
+    # Time that passes before the runner is even released -- the loop is
+    # still busy inside the "in-flight" iteration, nowhere near `_gate()` --
+    # must not be credited.
+    fake_time.advance(500.0)
+    assert not task.done()
+    assert sup._paused_wait_total_s == 0.0
+    assert sup.deadline == orig_deadline
+    assert sup._deadline_epoch == orig_epoch
+
+    release_runner.set()
+    # Driven entirely by the `parked` event above: resolves only once the
+    # driving task has actually finished the iteration and reached the
+    # real parked await inside `_park_until_resumed`.
+    await asyncio.wait_for(parked.wait(), timeout=5)
+
+    # Still not credited: `_park_until_resumed` has captured its own
+    # `started` reading, but `resume()` has not been called yet, so nothing
+    # has actually elapsed at the wait site as far as `_account_paused_wait`
+    # is concerned.
+    assert not task.done()
+    assert sup._paused_wait_total_s == 0.0
+    assert sup.deadline == orig_deadline
+    assert sup._deadline_epoch == orig_epoch
+
+    # Only the span genuinely spent parked at the gate -- from here on --
+    # may move the clock.
+    fake_time.advance(37.0)
+    sup.resume()
+    waited_s = await asyncio.wait_for(task, timeout=5)
+
+    assert waited_s == pytest.approx(37.0)
+    assert sup._paused_wait_total_s == pytest.approx(37.0)
+    assert sup.deadline == pytest.approx(orig_deadline + 37.0)
+    assert sup._deadline_epoch == pytest.approx(orig_epoch + 37.0)
+
+    events = _events(sup.run, "deadline_extended")
+    assert len(events) == 1
+    assert events[0]["reason"] == "operator pause"
+    assert events[0]["waitedS"] == pytest.approx(37.0)
+    assert events[0]["pausedTotalS"] == pytest.approx(37.0)
+    assert "infraWaitTotalS" not in events[0]
+
+    status = json.loads((sup.run.root / "status.json").read_text())
+    assert status["pausedTotalS"] == pytest.approx(37.0)
+    assert status["deadlineAt"] == utc_from_epoch(sup._deadline_epoch)
