@@ -9,6 +9,7 @@ import argparse
 import atexit
 import contextlib
 import functools
+import hashlib
 import io
 import json
 import os
@@ -3925,7 +3926,155 @@ def cmd_watch(args):
 
 
 # ---------------------------------------------------------------- skills
+#
+# `ralphctl skills install` (task 022, requirement R, #88) is the ONE action
+# under this verb that takes no run id -- it installs the shipped operator
+# skill (`skills/ralphd/SKILL.md`, this repo's own guide for a coding agent
+# to *drive* ralphctl) onto the local machine, rather than managing a run's
+# skill inventory over the API. `run_id` is `nargs="?"` on the parser for
+# exactly this reason: `ralphctl skills install ...` and `ralphctl skills
+# <run-id> ls|get|add|rm` share one subparsers tree and argparse resolves
+# which positional the single leading token fills correctly on its own (a
+# bare `install` satisfies the required subparsers action, leaving run_id
+# unset) -- see the parser construction below for the two-line proof.
+
+_SKILL_INSTALL_NAME = "ralphd"
+_SKILL_INSTALL_STAMP = ".ralphd-skill-stamp.json"
+
+
+def _skill_discoverable(path: Path) -> bool:
+    """The agent's own discoverability rule (#83's lesson, restated for R):
+    a directory containing `SKILL.md`. `install` calls this AFTER placing
+    the copy and reports what it found, rather than reporting success
+    because the copy call returned; `doctor` (task 023) calls the same
+    function so the two surfaces can never disagree about what
+    'discoverable' means."""
+    return path.is_dir() and (path / "SKILL.md").is_file()
+
+
+def _skills_install_source_dir() -> Path:
+    """Locate this install's copy of `skills/ralphd` on disk.
+
+    Only the checkout case is wired up here -- task 023 ships `skills/` from
+    the wheel (the same `PACKAGED_FILES`-style mapping `container/` already
+    gets) and gives a wheel install a real source; until then a wheel
+    install gets a clear, immediate refusal rather than a silent guess at
+    some other tree."""
+    root = image.source_root()
+    if root is None:
+        die(2, "skills install: no source checkout found for skills/ralphd -- "
+               "wheel packaging for skills/ ships in a later task")
+    src = root / "skills" / _SKILL_INSTALL_NAME
+    if not (src / "SKILL.md").is_file():
+        die(2, f"skills install: {src} has no SKILL.md")
+    return src
+
+
+def _auto_detect_skills_install_target(home: Path) -> Path:
+    """Pick an install target when `--target` is not given.
+
+    Preference order: an agent's skills/ dir that already has content wins
+    (don't create a second home for the same agent); then an agent whose
+    config dir exists but has no skills/ yet; and only when NEITHER agent
+    has ever been set up on this machine does this default to
+    `~/.pi/agent/skills` -- ralphd's own skill
+    (`skills/ralphd/SKILL.md`) is written for a pi-driven agent first, so
+    that is the sane default when there is nothing on disk to detect at
+    all. pi is checked before claude at every tier so the two agents never
+    race for a default; a caller who wants the other one uses `--target`.
+    """
+    pi_skills = home / ".pi" / "agent" / "skills"
+    claude_skills = home / ".claude" / "skills"
+    if pi_skills.is_dir():
+        return pi_skills
+    if claude_skills.is_dir():
+        return claude_skills
+    if (home / ".pi" / "agent").is_dir():
+        return pi_skills
+    if (home / ".claude").is_dir():
+        return claude_skills
+    return pi_skills
+
+
+def _skill_tree_hash(d: Path, *, exclude: str | None = None) -> str:
+    """A deterministic content hash of every file under `d`, in sorted
+    relative-path order, skipping a top-level file named `exclude` (the
+    stamp file itself so hashing the destination doesn't hash its own
+    record of the last hash). Used both to stamp what `install` placed and
+    to tell, on a later `install`, whether the target still matches that
+    stamp -- i.e. whether it was locally modified since."""
+    h = hashlib.sha256()
+    for p in sorted(d.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(d).as_posix()
+        if exclude is not None and rel == exclude:
+            continue
+        h.update(rel.encode())
+        h.update(b"\0")
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def _read_skill_install_stamp(dest: Path) -> dict | None:
+    p = dest / _SKILL_INSTALL_STAMP
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def cmd_skills_install(args):
+    """Copy `skills/ralphd` to a local agent skills dir; refuse a local
+    edit unless `--force`; verify discoverability rather than trusting the
+    copy returned (task 022, requirement R)."""
+    home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
+    src = _skills_install_source_dir()
+    target_dir = (Path(args.target).expanduser().resolve() if args.target
+                  else _auto_detect_skills_install_target(home))
+    dest = target_dir / _SKILL_INSTALL_NAME
+
+    source_hash = _skill_tree_hash(src)
+    if dest.exists():
+        stamp = _read_skill_install_stamp(dest)
+        installed_hash = _skill_tree_hash(dest, exclude=_SKILL_INSTALL_STAMP)
+        if (stamp is None or stamp.get("sourceHash") != installed_hash) \
+                and not args.force:
+            die(2, f"skills install: {dest} differs from what was last "
+                   f"installed by ralphctl (local modification) -- rerun "
+                   f"with --force to overwrite")
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    staging = dest.with_name(dest.name + ".installing")
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(src, staging)
+    if dest.exists():
+        shutil.rmtree(dest)
+    staging.rename(dest)
+    (dest / _SKILL_INSTALL_STAMP).write_text(
+        json.dumps({"version": __version__, "sourceHash": source_hash},
+                   indent=2) + "\n")
+
+    verified = _skill_discoverable(dest)
+    if not verified:
+        die(1, f"skills install: placed at {dest} but it is not "
+               f"discoverable (no SKILL.md there) -- the copy did not land "
+               f"cleanly")
+    out(args, {"target": str(dest), "verified": True},
+        f"installed '{_SKILL_INSTALL_NAME}' to {dest} -- verified "
+        f"discoverable (directory contains SKILL.md)")
+
+
 def cmd_skills(args):
+    if args.action == "install":
+        cmd_skills_install(args)
+        return
+    if not args.run_id:
+        die(2, "skills: a run id is required for ls|get|add|rm "
+               "(only 'install' takes none)")
     _require_run(args.run_id)
     if args.action == "ls":
         skills = api(args.run_id, "GET", "/config/skills")
@@ -6338,8 +6487,15 @@ def build_parser() -> argparse.ArgumentParser:
     # `logsf <id>` is a pure alias for `logs <id> -f`, rewritten in
     # _preprocess_logs_argv() before argparse ever sees "logsf".
 
-    s = sub.add_parser("skills", help="inspect or hot-swap skills on a running job")
-    s.add_argument("run_id")
+    s = sub.add_parser("skills", help="inspect/hot-swap a running job's skills, "
+                       "or install the shipped operator skill locally")
+    # `run_id` is optional here (unlike every other run-scoped verb) so that
+    # `ralphctl skills install` -- the one action with no run -- and
+    # `ralphctl skills <run-id> ls|get|add|rm` can share this one parser:
+    # argparse resolves a bare `install` to the required subparsers action
+    # with run_id left None, and `<run-id> ls` to the other order, on its
+    # own (task 022, requirement R).
+    s.add_argument("run_id", nargs="?")
     sksub = s.add_subparsers(dest="action", required=True)
     sksub.add_parser("ls", help="list skills with origin")
     g = sksub.add_parser("get", help="download a skill directory")
@@ -6349,6 +6505,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("dir")
     r = sksub.add_parser("rm", help="delete a skill")
     r.add_argument("name")
+    inst = sksub.add_parser("install", help="install the shipped operator "
+                            "skill to a local agent skills dir (no run id)")
+    inst.add_argument("--target", metavar="DIR",
+                      help="override auto-detection of ~/.claude/skills or "
+                           "~/.pi/agent/skills")
+    inst.add_argument("--force", action="store_true",
+                      help="overwrite even if the target was locally modified")
     s.set_defaults(func=cmd_skills)
 
     s = sub.add_parser("creds", help="inspect or hot-swap credentials on a running job")

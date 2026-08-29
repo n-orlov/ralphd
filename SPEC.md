@@ -3373,7 +3373,7 @@ subcommand is mandatory.
 | `fault <id>` | why the run is (or last was) in trouble: class, matched signature, retry ladder, outage budget |
 | `cost <id>` | what the run spent, per phase and per approach, with priced, derived and unavailable money labelled |
 | `docs <id> [name]` | the run's state documents: notes, review findings, composite PRD, the redacted effective job config |
-| `skills <id> …` | `ls`/`get`/`add`/`rm` skills on a live job |
+| `skills <id> …` | `ls`/`get`/`add`/`rm` skills on a live job; `skills install` (no run id) places the shipped operator skill on this machine |
 | `creds <id> …` | `ls`/`get`/`add`/`rm` runtime credentials on a live job |
 | `prompts <id> …` | `ls`/`set` phase prompt overrides on a live job |
 | `llm …` | `profiles`/`show`/`test` LLM profiles on the host |

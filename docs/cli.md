@@ -2156,6 +2156,50 @@ ralphctl skills <run-id> rm <name>
 has no run dir at all; exit `4` if the run exists but its container/API is
 unreachable.
 
+### `ralphctl skills install [--target DIR] [--force]`
+
+The ONE `skills` action that takes no run id (task 022, requirement R, #88):
+it installs `skills/ralphd/SKILL.md` -- this repo's own guide for a coding
+agent driving `ralphctl` -- onto the local machine, so a coding agent's own
+skills directory can pick it up. Everything above (`ls`/`get`/`add`/`rm`)
+manages a *running job's* skill inventory over the API; this one never
+touches a run at all.
+
+```
+ralphctl skills install                    # auto-detect the target, copy, verify
+ralphctl skills install --target DIR       # install under DIR/ralphd instead
+ralphctl skills install --force            # overwrite a locally-modified install
+```
+
+- **Target auto-detection**: without `--target`, checks (in this order)
+  `~/.pi/agent/skills`, then `~/.claude/skills`; the first one that already
+  exists as a directory wins, then the first whose *parent* agent config dir
+  (`~/.pi/agent` or `~/.claude`) exists even without a `skills/` subdirectory
+  yet, and only when neither agent has ever been set up on this machine does
+  it default to creating `~/.pi/agent/skills`. `--target DIR` names the
+  parent directory directly (the skill lands at `DIR/ralphd`), overriding
+  auto-detection entirely.
+- **Copy, not symlink**, so it works the same whether this install is a
+  checkout or (once packaged) a wheel, and so a later `install` can tell
+  *unchanged, upgrade it* from *the operator edited it*.
+- **Version stamp**: every placed copy gets a `.ralphd-skill-stamp.json`
+  recording this build's `__version__` and a content hash of what was placed.
+  A later `install` recomputes the target's current hash (stamp file
+  excluded) and compares it to the recorded one: unchanged means "safe to
+  overwrite with the current source" (this is also how an upgrade lands
+  without `--force` -- only the *source* changed, not the target) --
+  changed means a local edit, refused with exit `2` naming the target and
+  `--force`, unless `--force` is given.
+- **Verifies, rather than trusting the copy returned**: after placing, it
+  re-checks the agent's own discoverability rule -- a directory containing
+  `SKILL.md` -- and reports exactly that (`--json`: `{"target": ..., "verified":
+  true}`; human: "installed '...' to ... -- verified discoverable (directory
+  contains SKILL.md)"). A placement that somehow didn't leave a discoverable
+  `SKILL.md` behind exits `1` rather than reporting success.
+- **Wheel installs**: until skills/ ships as package data (a later task),
+  this refuses with exit `2` on a non-checkout install rather than guessing
+  at a source tree.
+
 ### `ralphctl creds <run-id> [ls|get <name>|add <file>.env|rm <name>]`
 
 Runtime credential management (API-backed, env-file convention).
