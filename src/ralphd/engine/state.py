@@ -1118,6 +1118,68 @@ def amendment_entries(config_root: Path) -> list[dict]:
     return out
 
 
+def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
+                             vigilant: bool, *, source: str,
+                             reason: str = "", file: str | None = None) -> dict:
+    """Task 010 (PRD requirement H, #98): THE one place that decides
+    whether a task's `status` may move, writes it when it may, and emits
+    the audit event -- extracted from `apply_amendment_status_rulings`
+    (task 029/#26, requirement E) so that function and the steer hat's
+    `task-update` tool (`STEER_HAT_TOOLS`, below) are two CALLERS of the
+    same applier rather than two copies of these rules (PRD requirement H:
+    "One place decides which transitions are legal ... two callers use
+    it"). `source` names which caller this is (`"operator"` for an
+    amendment ruling, `"steer"` for the steer hat), surfaced on the audit
+    event exactly like `budget_changed` already names its own trigger.
+    `file` is the amendment file's own name for the operator path, and
+    `None` for the steer path (there is no amendment file); it is passed
+    through to the audit event unchanged either way, matching what
+    `apply_amendment_status_rulings` always emitted.
+
+    - a no-op (`current == target_status`) changes nothing and emits
+      nothing -- safe to call repeatedly once a status has already taken
+      effect;
+    - a LEGAL transition (`transitions.is_legal_task_status_transition`,
+      the SAME declared `TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA`
+      every other status move in the engine is checked against) writes the
+      new `status` via `run.write_tasks` (the one authorized writer, task
+      013) and emits an `amendment_status_applied` audit event;
+    - an ILLEGAL transition is refused: nothing is written, and the
+      returned record says why.
+
+    `validationAttempts`, `tierLadderExhausted` and `successCriteria` are
+    never touched here -- only the one field, `status`, ever moves (PRD
+    requirement E: a status change is not a claim the criteria were met).
+
+    Returns `{"taskId", "status", "previous", "applied", "reason"}` --
+    `reason` is `""` when applied, and one of `"no matching task"` /
+    `"already at that status"` / `"illegal transition"` otherwise.
+    """
+    data = run.read_tasks()
+    tasks = data.get("tasks", [])
+    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+    task = by_id.get(task_id)
+    record = {"taskId": task_id, "status": target_status}
+    if task is None:
+        record.update(previous=None, applied=False, reason="no matching task")
+        return record
+    current = task.get("status", "pending")
+    record["previous"] = current
+    if current == target_status:
+        record.update(applied=False, reason="already at that status")
+        return record
+    if not transitions.is_legal_task_status_transition(current, target_status, vigilant):
+        record.update(applied=False, reason="illegal transition")
+        return record
+    task["status"] = target_status
+    run.write_tasks(data)
+    run.emit("amendment_status_applied", taskId=task_id, field="status",
+            previous=current, status=target_status, source=source,
+            file=file, reason=reason)
+    record.update(applied=True, reason="")
+    return record
+
+
 def apply_amendment_status_rulings(run: "RunDir", config_root: Path,
                                    vigilant: bool) -> list[dict]:
     """Task 029 (#26, requirement E): the single engine-side applier for an
@@ -1131,36 +1193,11 @@ def apply_amendment_status_rulings(run: "RunDir", config_root: Path,
     `<config_root>/amendments/` (`amendment_entries`, the same unforgeable
     `:ro`-mounted channel `_operator_amendment_review_context` already
     reads) and, for each one whose named task exists in `run`'s current
-    `tasks.json`:
-
-    - a no-op (`current == status`) changes nothing and emits nothing --
-      the ruling has already taken effect, whether this is the first call
-      to see it or the hundredth. This function is deliberately safe to
-      call every time a run loads ("applied ... at load time", PRD
-      requirement E): nothing here tracks "already applied" separately,
-      because once the task IS at the ruled status there is nothing left
-      to apply;
-    - a LEGAL transition (`transitions.is_legal_task_status_transition`,
-      checked against the SAME declared `TASK_STATUS_TABLE`/
-      `TASK_STATUS_VIGILANT_DELTA` every other status move in the engine
-      is checked against) writes the new `status` and emits an
-      `amendment_status_applied` audit event naming the operator as the
-      source -- surfaced exactly like `budget_changed` (`run.emit`, i.e.
-      `events.jsonl` and everything that already renders that stream);
-    - an ILLEGAL transition is refused: nothing is written, and the
-      returned record says why, so a caller can log/surface the refusal
-      without this function needing to know how.
-
-    `validationAttempts`, `tierLadderExhausted` and `successCriteria` are
-    never touched here -- only the one field, `status`, ever moves. A
-    ruling is not a claim the criteria were met (PRD requirement E):
-    leaving `successCriteria`'s text byte-identical, and never touching
-    `criteriaFingerprint` either, is what keeps
-    `criteriaEditedAfterValidationFailure` (task 008,
-    `LoopSupervisor._check_criteria_edits`) from firing on a ruling the way
-    it fires on a worker's own rewrite of the bar it just failed -- a
-    resumed run's next fingerprint pass sees exactly the same criteria text
-    it always did.
+    `tasks.json`, routes it through `apply_task_status_change` (`source=
+    "operator"`, `reason=` the ruling's own text, `file=` its own name) --
+    task 010 (requirement H) extracted the actual legality-check/write/
+    audit-event logic out of this function into that one, so this is now
+    a thin driver over `amendment_entries`, not a second copy of the rules.
 
     Returns one record per `mode: status` entry found, oldest first, each
     `{"file", "taskId", "status", "previous", "applied", "reason"}` --
@@ -1173,40 +1210,117 @@ def apply_amendment_status_rulings(run: "RunDir", config_root: Path,
               if e.get("mode") == AMENDMENT_MODE_STATUS and e.get("status")]
     if not entries:
         return []
-    data = run.read_tasks()
-    tasks = data.get("tasks", [])
-    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
     results: list[dict] = []
-    changed = False
     for e in entries:
         task_id = e.get("taskId")
         target = e.get("status")
-        task = by_id.get(task_id)
-        record = {"file": e.get("file"), "taskId": task_id, "status": target}
-        if task is None:
-            record.update(previous=None, applied=False, reason="no matching task")
-            results.append(record)
-            continue
-        current = task.get("status", "pending")
-        record["previous"] = current
-        if current == target:
-            record.update(applied=False, reason="already at that status")
-            results.append(record)
-            continue
-        if not transitions.is_legal_task_status_transition(current, target, vigilant):
-            record.update(applied=False, reason="illegal transition")
-            results.append(record)
-            continue
-        task["status"] = target
-        changed = True
-        run.emit("amendment_status_applied", taskId=task_id, field="status",
-                previous=current, status=target, source="operator",
-                file=e.get("file"), reason=e.get("text") or "")
-        record.update(applied=True, reason="")
+        record = apply_task_status_change(run, task_id, target, vigilant,
+                                          source="operator",
+                                          reason=e.get("text") or "",
+                                          file=e.get("file"))
+        record["file"] = e.get("file")
         results.append(record)
-    if changed:
-        run.write_tasks(data)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Task 010 (PRD requirement H, #98): the steer hat's tool surface.
+#
+# "The authority boundary is the tool surface, not the prompt" -- decided
+# 2026-08-28: tasks and standing rules only, never budgets. Enforced here by
+# WHAT TOOLS EXIST, declared ONCE as a name -> callable mapping so a test
+# can assert the WHOLE set by equality (the same shape requirement A of
+# v0.9 used for `engine.config.CONTROL_PLANE_ENV_VARS`, #62) -- a tool
+# added to the steer hat later that is not also added to this exact dict
+# fails that equality check instead of silently expanding what the hat can
+# do by omission. There is deliberately no budget/iteration/approach/
+# deadline tool in this set: the steer hat may reshape `tasks.json` and the
+# standing rules and nothing else.
+def steer_task_insert(run: "RunDir", task: dict) -> dict:
+    """Insert one new task at the end of `tasks.json`'s task list. Always
+    lands `pending` -- any `status` key the caller supplied is IGNORED,
+    never written verbatim: a freshly-inserted task has never been worked,
+    and handing it a status here would be exactly the kind of hand-written
+    status field this module exists to keep out of every OTHER path too.
+    """
+    data = run.read_tasks()
+    tasks = data.setdefault("tasks", [])
+    task_id = task.get("id")
+    if any(isinstance(t, dict) and t.get("id") == task_id for t in tasks):
+        return {"inserted": False, "reason": "id already exists", "taskId": task_id}
+    new_task = dict(task)
+    new_task["status"] = "pending"
+    tasks.append(new_task)
+    run.write_tasks(data)
+    return {"inserted": True, "taskId": task_id}
+
+
+def steer_task_delete(run: "RunDir", task_id: str) -> dict:
+    """Remove one task by id. Refuses (writes nothing) while some OTHER
+    task's `dependsOn` still names it -- the steer hat's own prompt already
+    asks it to re-point or drop those first; this only stops the tool from
+    silently orphaning a dependency if it doesn't.
+    """
+    data = run.read_tasks()
+    tasks = data.get("tasks", [])
+    if not any(isinstance(t, dict) and t.get("id") == task_id for t in tasks):
+        return {"deleted": False, "reason": "no matching task", "taskId": task_id}
+    referrers = [t.get("id") for t in tasks
+                if isinstance(t, dict) and task_id in (t.get("dependsOn") or [])]
+    if referrers:
+        return {"deleted": False, "taskId": task_id,
+                "reason": f"still depended on by {referrers}"}
+    data["tasks"] = [t for t in tasks
+                     if not (isinstance(t, dict) and t.get("id") == task_id)]
+    run.write_tasks(data)
+    return {"deleted": True, "taskId": task_id}
+
+
+def steer_task_update(run: "RunDir", task_id: str, changes: dict,
+                      vigilant: bool) -> dict:
+    """Update one task's fields. THE status-changing tool (PRD requirement
+    H): a `status` key in `changes` is NEVER written directly here -- it is
+    routed through `apply_task_status_change`, the same applier
+    `apply_amendment_status_rulings` uses for an operator's own ruling, so
+    exactly one place validates the transition, emits the audit event and
+    preserves `validationAttempts`/`tierLadderExhausted`. Every other key
+    (`title`, `successCriteria`, `dependsOn`, `priority`, ...) is a plain
+    dict-merge write with no transition to validate.
+    """
+    changes = dict(changes)
+    target_status = changes.pop("status", None)
+    status_result = None
+    if target_status is not None:
+        status_result = apply_task_status_change(
+            run, task_id, target_status, vigilant, source="steer")
+    if changes:
+        data = run.read_tasks()
+        tasks = data.get("tasks", [])
+        by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+        task = by_id.get(task_id)
+        if task is None:
+            return {"updated": False, "reason": "no matching task",
+                    "taskId": task_id, "statusResult": status_result}
+        task.update(changes)
+        run.write_tasks(data)
+    return {"updated": True, "taskId": task_id, "statusResult": status_result}
+
+
+def steer_standing_rules(run: "RunDir", text: str) -> dict:
+    """Amend the pinned standing-rules block. A callable of its own (not a
+    bare re-export of `RunDir.write_standing_rules`) so `STEER_HAT_TOOLS`
+    below is a table of tools, every entry the same shape.
+    """
+    run.write_standing_rules(text)
+    return {"written": True}
+
+
+STEER_HAT_TOOLS = {
+    "task-insert": steer_task_insert,
+    "task-update": steer_task_update,
+    "task-delete": steer_task_delete,
+    "standing-rules": steer_standing_rules,
+}
 
 
 # ---------------------------------------------------------------------------
