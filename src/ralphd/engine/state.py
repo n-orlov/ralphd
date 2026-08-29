@@ -2585,6 +2585,54 @@ def is_steering_origin(task: dict) -> bool:
     return isinstance(task, dict) and task.get("origin") == TASK_ORIGIN_STEER
 
 
+# Task 013 (PRD requirement I, #98): a task's TERMINAL statuses -- the set
+# `steering_origin_outstanding` below waits for. Deliberately WIDER than
+# `TASK_COMPLETION_STATUSES` (which excludes `failed` on purpose: a
+# `COMPLETE` signal must never be honoured by a failed task, task 046/#55).
+# For this gate a `failed` steering-origin task is just as SETTLED a fact as
+# a `completed` one -- nothing further moves it on its own, and worker.md's
+# own escape hatches (carve a new task, or relabel `skipped`) are what turn
+# it into forward progress on a LATER iteration, not this gate holding the
+# run open until that happens.
+TASK_TERMINAL_STATUSES = ("validated", "completed", "failed", "skipped")
+
+
+def task_is_terminal(task: dict) -> bool:
+    """True iff `task`'s status is one of `TASK_TERMINAL_STATUSES` -- nothing
+    further moves it without an operator/worker action creating a NEW
+    status transition. A task with no status at all (malformed) is not
+    terminal."""
+    return isinstance(task, dict) and task.get("status") in TASK_TERMINAL_STATUSES
+
+
+def steering_origin_outstanding(tasks_doc) -> list:
+    """Every steering-origin task (`is_steering_origin`) that is NOT yet
+    terminal (`task_is_terminal`), in plan order.
+
+    Task 013 (PRD requirement I, #98): this is what the exit gate
+    (`LoopSupervisor._steering_origin_outstanding`) waits on INSTEAD of a
+    steering FILE being unconsumed (`RunDir.pending_steering`) -- "the run
+    cannot reach terminal success while a steering-origin task is
+    non-terminal", expressed against task state rather than the message
+    that produced it. `settled` (the steer hat processed the message and
+    applied its changes -- see `LoopSupervisor._step_generic_hat`'s
+    `steer.settled` event) says nothing about `done` (this predicate): a
+    message can be settled while the task it produced sits `pending`,
+    `in-progress`, `validation-failed` or `awaiting-validation` for many
+    iterations afterwards -- exactly the defect the PRD names (steer 003,
+    `consumed` at iteration 87 with three quarters of it undone).
+
+    Accepts either the whole `tasks.json` document (a dict with a `tasks`
+    key) or a bare list of task dicts, mirroring `task_blocked_by`'s own
+    tolerance -- callers that already hold one or the other should not have
+    to unwrap it first.
+    """
+    tasks = (tasks_doc.get("tasks") if isinstance(tasks_doc, dict)
+             else tasks_doc)
+    return [t for t in (tasks or [])
+            if is_steering_origin(t) and not task_is_terminal(t)]
+
+
 def task_blocked_by(tasks: list) -> dict[str, list[str]]:
     """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}` for
     every task that can never be completed because a `dependsOn` entry --

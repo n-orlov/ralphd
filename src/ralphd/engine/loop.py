@@ -2724,6 +2724,32 @@ class LoopSupervisor:
                 self._abort_reason = message
                 return ("tail",)
             await self._gate()
+        # Task 013 (requirement I, #98): the steer hat's own `settled` claim
+        # (`transitions.HAT_SCHEMAS["steer"]`'s required boolean) is now
+        # READ, not merely schema-checked and discarded -- recorded as a
+        # harness-observable fact SEPARATE from `done` (the ordinary
+        # lifecycle's later verdict on the tasks this iteration touched or
+        # created, which lives on those tasks' own `status` field plus the
+        # `origin` marker task 011 stamps -- `state.is_steering_origin` /
+        # `state.task_is_terminal`). `settled` says only "the hat processed
+        # this iteration's pending messages and applied its changes"; it
+        # says nothing about whether the resulting tasks will pass -- the
+        # exit gate (`_steering_origin_outstanding`, called from
+        # `_step_review`/`_maybe_grace_review`) is what waits on THAT, never
+        # on this claim. Recorded twice, deliberately: an event (the
+        # append-only audit trail) and a status.json field (the latest
+        # snapshot, same pattern as `currentIteration` above) -- so both
+        # "when did every settle claim happen" and "what is the most recent
+        # one" are readable without replaying events.jsonl.
+        if state == "steer":
+            settled_claim = bool(payload.get("settled"))
+            self.run.emit("steer.settled", settled=settled_claim,
+                          notes=payload.get("notes"))
+            self.run.update_status(steerSettled={
+                "settled": settled_claim,
+                "at": utcnow(),
+                "notes": payload.get("notes"),
+            })
         # Task 019 (requirement F, #60 pillar 3), cut over by v0.13 task 004
         # (#92 site 2): a hat's reported `task_status` for a specific
         # `task_id` is a proposed task-state CHANGE, applied by
@@ -4142,12 +4168,26 @@ class LoopSupervisor:
         must not cost the approach); `review_unjudged_at_budget_end`
         (-> finishing, i.e. `("tail",)`, when budget/wall clock ran out
         while still interrupted -- see `_review_unjudged_at_budget_end`);
-        `steering_pending_at_verified` (-> worker, looped in place exactly
-        like the pre-cutover code -- the dispatch loop above never sees
-        this as a state change, because the review phase itself decides
-        when it is done retrying); `verified` (-> finishing, i.e.
-        `("done", "succeeded")`); `rejected_approach_left` (-> replan);
-        `rejected_no_approach_left` (-> finishing, i.e. `("tail",)`).
+        `steering_pending_at_verified` (-> worker, taken TWICE over, for two
+        different reasons layered ADDITIVELY (task 013, requirement I,
+        #98, keeps the pre-013 protection rather than replacing it -- see
+        the two blocks below): first, while a steering FILE is still
+        unconsumed (looped in place exactly like the pre-013 code -- a
+        FILE is consumable in exactly one more actionable iteration by
+        construction, task 018/#34, so the dispatch loop above never sees
+        this as a state change); second, once every file is consumed but a
+        steering-ORIGIN TASK it produced is still not terminal
+        (`state.is_steering_origin` / `state.task_is_terminal`) -- `settled`
+        is not `done`, and finishing a TASK can take an unbounded number of
+        iterations, so THIS check hands control back to the ordinary
+        dispatch loop via the declared edge instead of looping in place,
+        and lets the worker's own scheduler pick the outstanding task(s) up
+        like any other pending task; review is asked again only once the
+        worker signals COMPLETE again); `verified` (-> finishing, i.e.
+        `("done", "succeeded")`, reached only once no steering FILE and no
+        steering-origin TASK is outstanding); `rejected_approach_left`
+        (-> replan); `rejected_no_approach_left` (-> finishing, i.e.
+        `("tail",)`).
         """
         approach = self._approach
         await self._gate()
@@ -4157,16 +4197,21 @@ class LoopSupervisor:
             return self._review_unjudged_at_budget_end(approach)
         verified, _payload, _errors = self._review_verdict(result)
         while verified and self.run.pending_steering():
-            # Refuse to let a VERIFIED verdict make the run terminal while
-            # operator steering still sits unconsumed. review and verify
-            # are pure verification phases that never act on steering
+            # Pre-013 protection, UNCHANGED: refuse to let a VERIFIED
+            # verdict make the run terminal while operator steering still
+            # sits unconsumed as a FILE. review and verify are pure
+            # verification phases that never act on steering
             # (STEERING_ACTIONABLE_PHASES); if steering lands just before
-            # what would otherwise be the final VERIFIED review, going
-            # terminal here would strand it forever -- nothing after a
-            # terminal-succeeded run ever reads pending steering again.
-            # Instead: discard this verdict, run one more (actionable)
-            # worker iteration so the steering actually gets consumed, then
-            # re-review.
+            # what would otherwise be the final VERIFIED review (the race
+            # `tests/test_e2e.py::test_steering_during_review_iteration_
+            # never_silently_dropped` pins), going terminal here would
+            # strand it forever -- nothing after a terminal-succeeded run
+            # ever reads pending steering again. Instead: discard this
+            # verdict, run one more (actionable) worker iteration so the
+            # steering actually gets consumed, then re-review. Task 013
+            # does NOT touch this loop -- it adds the steering-ORIGIN-TASK
+            # check below, which only ever matters once this loop has
+            # already emptied `pending_steering()`.
             names = ", ".join(p.name for p in self.run.pending_steering())
             self.run.emit(
                 "log", level="warning",
@@ -4191,6 +4236,29 @@ class LoopSupervisor:
                 return self._review_unjudged_at_budget_end(approach)
             verified, _payload, _errors = self._review_verdict(result)
         if verified and not self.run.pending_steering():
+            # Task 013 (requirement I, #98): every steering FILE is
+            # consumed by this point (the loop above emptied it, or there
+            # never was one) -- but a message being SETTLED says nothing
+            # about the TASK(s) it produced being DONE. Refuse to let a
+            # VERIFIED verdict make the run terminal while a steering-
+            # origin task is still non-terminal. This is the NEW,
+            # ADDITIONAL check the PRD calls for, expressed against task
+            # state rather than the message that produced it -- layered
+            # ON TOP of the file-based protection above, never in place of
+            # it, so the mid-review race that protection exists for keeps
+            # its own (stronger, single-iteration) guarantee unchanged.
+            outstanding = self._steering_origin_outstanding()
+            if outstanding:
+                ids = ", ".join(str(t.get("id", "?")) for t in outstanding)
+                self.run.emit(
+                    "log", level="warning",
+                    message=(f"steering-origin task(s) ({ids}) not yet "
+                             "terminal at VERIFIED verdict; deferring, "
+                             "routing back to worker so the ordinary "
+                             "lifecycle finishes them before the run can "
+                             "go terminal-succeeded"))
+                self._advance("review", "worker", "steering_pending_at_verified")
+                return ("advance", "worker", "steering_pending_at_verified")
             self._advance("review", "finishing", "verified")
             self.run.emit("signal", signal="VERIFIED")
             self._finish("succeeded", "verified",
@@ -4204,6 +4272,24 @@ class LoopSupervisor:
             return ("advance", "replan", "rejected_approach_left")
         self._advance("review", "finishing", "rejected_no_approach_left")
         return ("tail",)
+
+    def _steering_origin_outstanding(self) -> list[dict]:
+        """Task 013 (requirement I, #98): steering-origin tasks
+        (`state.is_steering_origin`) not yet terminal (`state.task_is_
+        terminal`), read fresh from disk -- the exit-gate predicate that
+        REPLACES `self.run.pending_steering()` at the two sites that used
+        to discard a VERIFIED verdict while a steering FILE was unconsumed
+        (`_step_review`'s VERIFIED check, `_maybe_grace_review`'s check):
+        task 012's absolute-top-priority routing already guarantees no
+        steering FILE reaches either site unprocessed in the ordinary case
+        (a pending file always wins the worker's very next pass), but a
+        processed message can still leave the TASK it produced undone --
+        `settled` is not `done`. `state.steering_origin_outstanding` does
+        the actual filtering; this is just the `self.run.read_tasks()`
+        plumbing around it, matching every other `tasks_doc`-reading call
+        site in this class.
+        """
+        return state.steering_origin_outstanding(self.run.read_tasks())
 
     def _unconsumed_steering_patch(self) -> dict:
         """status.json patch (task 006) applied at every terminal-state write:
@@ -4401,14 +4487,35 @@ class LoopSupervisor:
         # persistence, as the infra-retry refund).
         self._refund_iteration("grace")
         verified, _payload, _errors = self._review_verdict(result)
-        if verified and not self.run.pending_steering():
+        # Task 013 (requirement I, #98): same gate as `_step_review`, and
+        # for the same reason -- `settled` is not `done`. This is ADDITIVE
+        # over the pre-013 `self.run.pending_steering()` check immediately
+        # below (unchanged, still guards the same FILE-unconsumed race
+        # `_step_review`'s own file-loop guards), not a replacement for it.
+        # Whether the task-side check below ever actually fires here is a
+        # separate question from whether it must be present: `_all_tasks_
+        # completed()` (this method's own caller-side guard, see this
+        # method's docstring) already requires every task -- steering-
+        # origin or not -- to be in `TASK_COMPLETION_STATUSES` before a
+        # grace review is even granted, so `outstanding` is empty by
+        # construction on every path that reaches here; kept explicit
+        # rather than assumed so a future change to that guard cannot
+        # silently reopen the gap this closes.
+        outstanding = self._steering_origin_outstanding()
+        if verified and not self.run.pending_steering() and not outstanding:
             self.run.emit("signal", signal="VERIFIED")
             self._finish("succeeded", "verified", graceReview=True,
                         reason=("budget exhausted with all tasks completed; "
                                 "the grace review ran and VERIFIED"),
                         **self._unconsumed_steering_patch())
             return True
-        if verified:
+        if verified and outstanding:
+            ids = ", ".join(str(t.get("id", "?")) for t in outstanding)
+            self._terminal_reason_note = (
+                "budget exhausted with all tasks completed; the grace "
+                f"review VERIFIED but steering-origin task(s) ({ids}) were "
+                "still non-terminal, so the run cannot go terminal-succeeded")
+        elif verified:
             self._terminal_reason_note = (
                 "budget exhausted with all tasks completed; the grace "
                 "review VERIFIED but operator steering was still pending "

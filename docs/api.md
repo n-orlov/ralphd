@@ -128,6 +128,7 @@ The one-call summary. Response:
   "tasksSource": "file",           // absent|file|last-good|unreadable
   "steering": {"pending": 0, "consumed": 2},
   "unconsumedSteering": [],        // steering files still pending at the terminal write
+  "steerSettled": null,            // last steer-hat settle claim: null, or {"settled", "at", "notes"} -- task 013, #98
   "usage": {
     "input": 812345, "output": 90123, "totalTokens": 902468, "costUSD": 14.20,
     "byPhase": {
@@ -165,6 +166,7 @@ keys with no section of their own below:
 | `iterationsUsed` | the **charged** iteration count: raw attempts minus infra refunds. `iteration` (the raw number of the attempt running now) is the higher figure whenever anything was refunded, and `iterationsUsed` is what every budget surface prints and what `PATCH /config/budget` validates against |
 | `iterationsRefunded` | `{infra, grace}` — the refunds this run has earned, written as they are earned and read back by the next engine process, so a `resume` (or an auto-resume after a crash) no longer re-charges refunds granted before it (issue #32). Absent, and read as zeroes, until the run earns its first refund; a pre-v0.7 run dir therefore keeps its recorded `iterationsUsed`. Infra refunds are subtracted from `iterationsUsed`; a grace review's refund is deliberately not (it stays visible as a used iteration) but is still subtracted from the budget comparison |
 | `unconsumedSteering` | steering files still pending at the terminal write |
+| `steerSettled` | the most recent `steer` hat iteration's own `settled` claim (`{"settled": bool, "at": timestamp, "notes": string\|null}`), `null` until the first one runs. `settled` is a harness-observable fact distinct from `done`: it means only "the hat processed this iteration's pending steering message(s) and applied its changes to the plan" -- it says nothing about whether the tasks it inserted or changed will pass. That verdict is the ordinary lifecycle's, read off those tasks' own `status` plus their `origin: "steer"` marker (task 011); the exit gate (`GET /tasks`, the terminal `state`/`verdict`) waits on THAT, never on this field (task 013, #98) |
 | `steering` | live counts — `{pending, consumed}` over `steering/NNN-*.md`, added by the API rather than stored |
 | `blockerSignatures` | per-approach worker-stagnation blocker signature (task 101, #61) — `{"<approach>": "<signature>"}`, written the moment an approach fails on stagnation; the `replan` guard compares the entry for the approach that just failed against its predecessor's, and a genuine match ends the run instead of spending another approach on the same structural wall. Absent for a run that has never stagnated |
 
