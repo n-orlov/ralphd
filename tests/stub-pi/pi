@@ -780,6 +780,30 @@ elif "Role: Worker" in prompt:
             text += "\n" + json.dumps({"verdict": "complete", "task_id": picked["id"]})
             emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
 
+elif "Role: Steer" in prompt:
+    # Task 012 (PRD requirement I, #98): the steer hat is REACHABLE in a
+    # real run for the first time as of this task -- `_step_worker` now
+    # takes the declared `worker -> steer` edge whenever unsettled steering
+    # exists, and dispatches a real subprocess through this same stub, not
+    # only through `LoopSupervisor` unit tests with a scripted `sup.runner`.
+    # Record what this iteration actually saw (same `saw-steering` shape
+    # the Worker branch above already uses) so a test can assert the
+    # steer hat's own prompt carried the real message body -- possible
+    # only because `STEERING_ACTIONABLE_PHASES` gained `"steer"` in this
+    # same commit (`build_prompt` would otherwise hand this phase only the
+    # filename-only "pending, not for this phase" echo).
+    steering_marker = "## Operator steering ("
+    if steering_marker in prompt:
+        with open(marker("saw-steering"), "a") as f:
+            f.write(prompt[prompt.rindex(steering_marker):][:2000])
+    # This stub has no adversarial steer-hat behaviour to offer (no test
+    # yet drives a tasks.json reshape through it) -- it settles every
+    # pending message with no plan change, which is enough to prove the
+    # routing/consumption plumbing end to end. `settled: true` is the
+    # WHOLE contract (`transitions.HAT_SCHEMAS["steer"]`).
+    emit_final("steering settled (stub: no plan change)\n"
+              + json.dumps({"settled": True}))
+
 elif "Role: Reviewer" in prompt:
     fails_wanted = int(os.environ.get("STUB_REVIEW_FAILS", "0"))
     done = 0

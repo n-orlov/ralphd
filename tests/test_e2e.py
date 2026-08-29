@@ -542,7 +542,19 @@ def test_steering_not_lost_across_verify_phase(engine_factory):
     iters = sorted((e.run_dir / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
     phases = [m["phase"] for m in metas]
-    assert phases == ["planning", "worker", "verify", "worker", "verify", "review"]
+    # Task 012 (PRD requirement I, #98): the OLD claim here was that the
+    # very next ACTIONABLE phase (planning/worker) is what finally sees and
+    # consumes steering that arrived mid-flight -- true before this task,
+    # because nothing else ever took the `worker -> steer` edge (it was
+    # legal but unreachable, task 009). The NEW, STRONGER claim: the very
+    # next `worker` pass no longer consumes it inline at all -- it is
+    # ABSOLUTE TOP PRIORITY, so a dedicated `steer` iteration runs first and
+    # settles it, and the worker pass after THAT never even sees it (already
+    # consumed). Same underlying regression guarantee either way -- verify
+    # never marks it consumed, and it is never lost -- expressed against one
+    # more real phase than before.
+    assert phases == ["planning", "worker", "verify", "steer", "worker",
+                      "verify", "review"]
 
     # Iteration 3 is the verify iteration that immediately follows the worker
     # iteration during which we sent steering. It must NOT claim to have
@@ -558,14 +570,27 @@ def test_steering_not_lost_across_verify_phase(engine_factory):
     # iteration itself did not mark it consumed; .consumed.json is checked
     # for its final state below, once the whole job has finished.)
 
-    # Iteration 4 is the next worker iteration (actionable) -- it must be the
-    # one that finally sees and consumes the steering.
-    worker2_meta = metas[3]
-    worker2_prompt = (iters[3] / "prompt.md").read_text()
+    # Iteration 4 is the dedicated `steer` iteration -- the FIRST actionable
+    # phase after verify1, taken deterministically ahead of the ordinary
+    # worker self-loop (requirement I's absolute-top-priority rule) -- and
+    # it is the one that finally sees and consumes the steering, now that
+    # `STEERING_ACTIONABLE_PHASES` includes `"steer"`.
+    steer_meta = metas[3]
+    steer_prompt = (iters[3] / "prompt.md").read_text()
+    assert steer_meta["phase"] == "steer"
+    assert "001-midrun.md" in steer_meta["steeringConsumed"]
+    assert "MUST take priority" in steer_prompt
+    assert "double-check the edge cases" in steer_prompt
+
+    # Iteration 5 is the next worker iteration -- by now the steering is
+    # already settled, so it must NOT see it again (no double-delivery) and
+    # must not claim to have consumed anything itself.
+    worker2_meta = metas[4]
+    worker2_prompt = (iters[4] / "prompt.md").read_text()
     assert worker2_meta["phase"] == "worker"
-    assert "001-midrun.md" in worker2_meta["steeringConsumed"]
-    assert "MUST take priority" in worker2_prompt
-    assert "double-check the edge cases" in worker2_prompt
+    assert worker2_meta["steeringConsumed"] == []
+    assert "MUST take priority" not in worker2_prompt
+    assert "double-check the edge cases" not in worker2_prompt
 
     consumed_final = json.loads((e.run_dir / "steering" / ".consumed.json").read_text())
     assert "001-midrun.md" in consumed_final

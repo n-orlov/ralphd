@@ -78,7 +78,19 @@ log = logging.getLogger("ralphd.loop")
 # Task 018 (#34): being handed to an actionable phase is necessary but not
 # sufficient -- the note is marked consumed only once that iteration has
 # finished cleanly (see the at-least-once comment in _run_iteration_once).
-STEERING_ACTIONABLE_PHASES = {"planning", "worker"}
+#
+# Task 012 (requirement I, #98): `steer` joins this set -- the hat whose
+# entire job is to read and act on pending steering (`prompts/steer.md`'s
+# own step 1: "read the pending steering message(s), in arrival order --
+# handle every pending one this iteration") must be handed their actual
+# BODY text, not just the "pending, not for this phase" filename-only echo
+# `build_prompt` gives review/verify. `worker` stays in the set for the
+# pre-existing direct-`_run_iteration_once("worker", ...)` callers (task
+# 018's own tests) even though `_step_worker`'s new top-of-loop priority
+# check, just below, means an ordinary worker DISPATCH from `_step_worker`
+# itself never actually reaches this phase while steering is pending --
+# that check routes to `steer` first, every pass.
+STEERING_ACTIONABLE_PHASES = {"planning", "worker", "steer"}
 
 # Task 022 (#30): how many earlier episode endings `status.json` keeps in
 # `previousEndings`. Bounded because status.json is rewritten in full on every
@@ -3285,6 +3297,35 @@ class LoopSupervisor:
         guard_ready: str | None = None
         while self.budget_left():
             await self._gate()
+            # Task 012 (requirement I, #98): unsettled operator steering is
+            # ABSOLUTE TOP PRIORITY -- above a validation-failed retry
+            # (guard 1 of this same while loop, computed a few lines below
+            # via `scheduler.select_next_task`) and above any pending task
+            # (guard 3). Checked FIRST, every pass, before
+            # `scheduler.select_next_task` is ever called and before this
+            # pass's would-be task claim is written -- so a pending steer
+            # never loses a race to a task pick, and the rule holds
+            # deterministically without consulting `engine.router` at all
+            # (this is a hand-written `_step_*` guard, exactly like
+            # `no_verdict_yet`/`verdict_ready` below, never one of
+            # `_step_generic_hat`'s multi-edge states). `self.run.
+            # pending_steering()` already returns every unsettled file in
+            # arrival order (`RunDir.add_steering`'s sequence-numbered
+            # names, sorted) -- the steer hat's own iteration (dispatched
+            # by `_step_generic_hat` for the `steer` state declared in
+            # `transitions.TABLE`) is handed that SAME list and settles all
+            # of them in the one iteration this edge routes to, per the
+            # PRD's "all pending steers in one iteration, in arrival
+            # order." `ralphctl steer --now` (`POST /interrupt`) enqueues
+            # its message via `RunDir.add_steering` before interrupting the
+            # running iteration (`api.py`'s `interrupt` handler) -- so by
+            # the time this pass re-enters `_step_worker`, `pending_
+            # steering()` is non-empty and this same check forces the next
+            # transition to `steer`, superseding the pre-task-012 behaviour
+            # of simply falling back into `worker`'s own self-loop.
+            if self.run.pending_steering():
+                self._advance("worker", "steer", "steering_pending")
+                return ("advance", "steer", "steering_pending")
             tasks_before = self.run.read_tasks()
             # Task 116 (#60 pillar 3, fact 9): the HARNESS -- not the agent
             # -- decides which task a worker iteration works on, through
