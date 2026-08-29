@@ -47,8 +47,8 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v010-not-a-verdict` | [v0.10-clock-is-not-a-verdict.md](v0.10-clock-is-not-a-verdict.md) | succeeded / verified — approach 1: 17 of 17 tasks validated, then rejected by review for under-evidenced closure (archived `approaches/01`); approach 2: 4 of 4 tasks validated. The reflect iteration was interrupted at the deadline | 57 | 124.8M | ~$54.38 derived |
 | `selfdev-v011-model-per-hat` | [v0.11-a-model-per-hat.md](v0.11-a-model-per-hat.md) | succeeded / verified — approach 1: 30 of 30 tasks validated, then rejected by review (a report-only commit left the suite red at the shipped sha, and requirement E's hat x tier matrix had no host-side surface; archived `approaches/01`); approach 2: 16 of 16 tasks validated | 104 | 262.5M | ~$116.07 derived |
 | `selfdev-v012-green-on-a-real-host` | [v0.12-green-on-a-real-host.md](v0.12-green-on-a-real-host.md) | succeeded / verified — approach 1: 24 of 24 tasks validated, then rejected by review (#83 closed on a false "loss is now impossible" claim while a wider in-process survivor reproduced at HEAD, and the new dev-layout tier was not green at the shipped sha; archived `approaches/01`); approach 2: 12 of 12 tasks validated | 90 | 134.9M | ~$76.29 derived |
-| `selfdev-v013-a-broken-contract` | [v0.13-a-broken-contract-is-a-conversation.md](v0.13-a-broken-contract-is-a-conversation.md) | running / approach 1: 33 of 33 tasks validated, then rejected by review (the suite was RED at the shipped sha from two of the wave's own regressions, three operator steering directives to fix or decide them were never actioned, and the shipped evidence misattributed both failures as pre-existing; archived `approaches/01`); approach 2: 18 of 18 tasks validated, then rejected by review (a docs-only commit correcting the roadmap N bullet reintroduced a stale test identifier the same wave had already renamed, making the fast tier RED at the shipped sha; archived `approaches/02`); approach 3: 9 of 12 tasks validated, 1 in progress, 2 pending | 133 | 186.7M | ~$86.79 derived |
-| `selfdev-v014-hands-on-the-plan` | [v0.14-every-hand-on-the-plan.md](v0.14-every-hand-on-the-plan.md) | not started — nine issues (#103, #99, #98, #101, #102, #100, #95, #96, #88), with #91 closing as a consequence of #98 | — | — | — |
+| `selfdev-v013-a-broken-contract` | [v0.13-a-broken-contract-is-a-conversation.md](v0.13-a-broken-contract-is-a-conversation.md) | succeeded / verified — approach 1: 33 of 33 tasks validated, then rejected by review (the suite was RED at the shipped sha from two of the wave's own regressions, three operator steering directives to fix or decide them were never actioned, and the shipped evidence misattributed both failures as pre-existing; archived `approaches/01`); approach 2: 18 of 18 tasks validated, then rejected by review (a docs-only commit correcting the roadmap N bullet reintroduced a stale test identifier the same wave had already renamed, making the fast tier RED at the shipped sha; archived `approaches/02`); approach 3: 11 of 12 tasks validated, 1 `failed` (task 012, "re-verify the docs- and report-reading guards at the true final sha, by discovery not by a hand list" — validation-exhausted, the very trap requirement B of this wave now fixes) | 145 | ~230M | ~$111.57 derived |
+| `selfdev-v014-hands-on-the-plan` | [v0.14-every-hand-on-the-plan.md](v0.14-every-hand-on-the-plan.md) | running — approach 1: 22 of 35 tasks validated, then task 016 (requirement P) `failed` / validation-exhausted, leaving the twelve-deep dependency chain 024→…→035 unreachable in one stroke — the doom this wave shipped the fix for (archived `approaches/01`); approach 2 (this record, in progress): 9 of 18 tasks validated, 1 in progress, 8 pending | 97+ | 340.4M+ | ~$164.37+ derived |
 
 Notes worth keeping with the documents:
 
@@ -253,6 +253,48 @@ Notes worth keeping with the documents:
   again once `status.json` actually reaches a terminal state, the same way
   v0.10's, v0.11's and v0.12's rows were resettled after their own histories
   closed out.
+- **`selfdev-v013-a-broken-contract`'s row is now settled from the run's own
+  terminal record** (task 010, `selfdev-v014-hands-on-the-plan`'s own wave):
+  the run ended `succeeded` / `verified`, `iterationsUsed: 145`,
+  `usage.costDerivedUSD` rendering `~$111.57 derived`, and a plan tally of 11
+  of approach 3's 12 tasks `validated` — the 12th, task 012 ("re-verify the
+  docs- and report-reading guards at the true final sha, by discovery not by
+  a hand list"), reads `failed` / `validation-exhausted`: its own attempt
+  re-verified the guard subset with a hand-typed module list, the same shape
+  requirement B of `selfdev-v014-hands-on-the-plan` replaced with grep
+  discovery precisely because a hand list can silently omit a module. This
+  run's own `status.json`/`tasks.json` are gone from this sandbox by the
+  time this settle task ran; the figures above are this wave's own PRD
+  record of that run's outcome (`docs/prds/v0.14-every-hand-on-the-plan.md`,
+  half 9), not a fresh read repeated here. The token cell (`~230M`) is
+  therefore an estimate, not a recorded counter: the last *read* figure on
+  record for this run was 186.7M at `iterationsUsed: 133` (the bullet
+  above); this settle scales that reading by the same ratio the settled
+  cost grew over the settled iteration count (145/133 and $111.57/$86.79)
+  to a round figure, and is marked `~` for that reason — a later hand with
+  the real terminal `status.json` in hand should replace it with the
+  recorded counter rather than trust this estimate.
+- **`selfdev-v014-hands-on-the-plan`'s row is a live snapshot of a run still
+  in progress** (`state: running`, no `verdict` yet), read fresh from
+  `/run/ralphd/status.json` and `/run/ralphd/tasks.json` at task 010's own
+  read: `iterationsUsed: 97`, `usage.totalTokens: 340409821` (340.4M),
+  `usage.costDerivedUSD: 164.37093` (`costStatus: derived`, so
+  `engine.state.format_cost` renders `~$164.37 derived`). Approach 1 landed
+  22 of its own 35-task plan to `validated`, then task 016 (requirement P)
+  exhausted its validation ladder and shipped `failed`: the closing sequence
+  had been built as a twelve-deep dependency chain (`024→025→…→035`), so one
+  `failed` task made every remaining issue closure, doc update, sweep and
+  the closing report itself permanently unreachable in one stroke — the
+  exact #99 doom scenario this same wave's own requirements C/D ship the fix
+  for, reproduced by the run driving them (its engine was built from the
+  wheel before those fixes had landed in this tree). Approach 2 (this
+  record, archived nowhere because it is the run's current approach) is a
+  repair pass: a fresh tally of `tasks.json` at this read — 9 tasks
+  `validated`, 1 `in-progress` (this row-settling task, 010, itself), 8
+  `pending`, 18 total. This row carries the `+` snapshot marker on every
+  count cell, per this task's own success criteria — the run has not
+  reached a terminal `state`, so a later task will need to resettle it once
+  approach 2 (or a further approach) actually ends.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
