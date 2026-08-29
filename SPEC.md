@@ -2020,7 +2020,17 @@ prompt fresh, in `LoopSupervisor.build_prompt()`:
 5. pending operator steering — as a MUST-take-priority block in phases that may
    consume it, or as an explicitly read-only "not for this phase" note in
    review/verify, so a non-actionable phase cannot swallow it;
-6. the phase's own `extra` (the task under verification, the review findings, and
+6. a `## Recent operator messages (read-only context)` echo — the most recent
+   operator messages of the run (up to `STEERING_ECHO_MAX_MESSAGES`, each body
+   capped at `STEERING_ECHO_MAX_BODY_CHARS` with a pointer to the file),
+   **whatever the phase and whatever each message's state**, including messages
+   already settled. It carries no consumption semantics: building a prompt never
+   consumes or settles anything, `applied (settled)` is only the harness fact
+   that some hat processed the message and never a claim that the tasks it
+   produced are `done` (`tasks.json` is the single source of truth for that),
+   and presence in the list is not permission to act — whether the reading hat
+   may act on a still-pending message is what item 5 says;
+7. the phase's own `extra` (the task under verification, the review findings, and
    so on).
 
 The composed text is written to `<run-dir>/iterations/<n>/prompt.md`, so the

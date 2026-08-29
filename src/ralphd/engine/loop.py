@@ -92,6 +92,19 @@ log = logging.getLogger("ralphd.loop")
 # that check routes to `steer` first, every pass.
 STEERING_ACTIONABLE_PHASES = {"planning", "worker", "steer"}
 
+# Task 014 (PRD requirement J, #98): the read-only **context echo** of recent
+# operator messages, carried in EVERY hat's prompt -- the successor of the
+# filename-only "pending, not for this phase" notice below, which only ever
+# reached the non-actionable hats and only while a message was still pending.
+# The echo is history, not an instruction: it carries NO consumption semantics
+# (building a prompt never consumes/settles anything -- that is exclusively
+# `RunDir.consume_steering`), and "applied/settled" in it says nothing about
+# whether the tasks a message produced are done (`tasks.json` is the single
+# source of truth for that, requirement I).
+STEERING_ECHO_HEADING = "## Recent operator messages (read-only context)"
+STEERING_ECHO_MAX_MESSAGES = 5
+STEERING_ECHO_MAX_BODY_CHARS = 2000
+
 # Task 022 (#30): how many earlier episode endings `status.json` keeps in
 # `previousEndings`. Bounded because status.json is rewritten in full on every
 # status update, so an auto-resume loop must not be able to grow it without
@@ -561,9 +574,78 @@ class LoopSupervisor:
                     f"Steering file(s) {names} are waiting for the operator's "
                     "instructions to be actioned by the next planning/worker "
                     "iteration. This phase does not consume or act on them.\n")
+        parts.append(self._recent_steering_echo())
         if extra:
             parts.append("\n" + extra)
         return "".join(parts)
+
+    def _recent_steering_echo(self) -> str:
+        """The read-only context echo of RECENT operator messages (task 014,
+        PRD requirement J, #98) -- appended to EVERY hat's prompt, whatever
+        the phase and whatever each message's state.
+
+        The successor of the `pending, not for this phase` notice above,
+        which the requirement asks be kept but which on its own was neither
+        *every* hat's (only the non-actionable ones saw it) nor *recent*
+        (a message vanished from every prompt the moment it was consumed,
+        so a `review`/`reflect` hat could not see what the operator had
+        just asked for). Both gaps are closed here in one place: this text
+        is phase-independent by construction, so no hat can be forgotten.
+
+        It deliberately carries NO consumption semantics:
+
+        * building a prompt neither consumes nor settles anything -- the
+          only writer of `steering/.consumed.json` is
+          `RunDir.consume_steering`, called after an ACTIONABLE-phase
+          iteration finishes cleanly (`_run_iteration_once`), and nothing
+          here touches it;
+        * a message's `applied (settled)` label is the harness fact that
+          some hat processed it -- never a claim that the tasks it produced
+          are `done`. That verdict lives in `tasks.json` alone
+          (requirement I's `settled` != `done` split), which the echo says
+          out loud so no hat can read "settled" as "finished";
+        * whether the hat now reading this may ACT on a still-pending
+          message is stated by the sections above (`STEERING_ACTIONABLE_
+          PHASES`), never by presence in this list.
+
+        Capped at `STEERING_ECHO_MAX_MESSAGES` most recent messages, each
+        body at `STEERING_ECHO_MAX_BODY_CHARS`, so a long-running job with
+        dozens of steers cannot crowd out the prompt it is attached to; the
+        cap is stated in the text (with the run-dir path of the full file)
+        rather than silently applied.
+        """
+        entries = self.run.steering_entries()
+        if not entries:
+            return ""
+        shown = entries[-STEERING_ECHO_MAX_MESSAGES:]
+        lines = [f"\n{STEERING_ECHO_HEADING}\n"]
+        if len(shown) < len(entries):
+            lines.append(f"The {len(shown)} most recent of {len(entries)} "
+                         f"operator messages this run ")
+        else:
+            lines.append(f"All {len(entries)} operator message(s) of this run ")
+        lines.append(
+            "(oldest first), as CONTEXT ONLY.\n"
+            "\nThis section is read-only and carries no consumption "
+            "semantics: reading it neither consumes nor settles anything, "
+            "and being listed here is not permission to act. Whether this "
+            "phase may act on a still-pending message is stated in the "
+            "steering section above (if any); `applied (settled)` means only "
+            "that some hat processed the message, never that the work it "
+            "asked for is done -- `" + str(self.run.tasks_file) + "` is the "
+            "single source of truth for that.\n")
+        for entry in shown:
+            body = (entry.get("body") or "").strip()
+            if len(body) > STEERING_ECHO_MAX_BODY_CHARS:
+                path = self.run.steering_dir / entry["file"]
+                body = (body[:STEERING_ECHO_MAX_BODY_CHARS]
+                        + f"\n[truncated at {STEERING_ECHO_MAX_BODY_CHARS} "
+                          f"characters; full text: {path}]")
+            state = ("applied (settled)" if entry.get("consumed")
+                     else "pending")
+            lines.append(f"\n### {entry['file']} — {state}, received "
+                         f"{entry.get('ts')}\n{body}\n")
+        return "".join(lines)
 
     def _workspace_note(self) -> str:
         """Single-workspace jobs (the common case) get the original one-line
@@ -901,8 +983,16 @@ class LoopSupervisor:
             log.warning("iteration %s classified infra fault (attempt %d, %.0fs of "
                        "the %.0fs outage budget waited): %s",
                        phase, attempt, waited, budget, error_desc)
+            # Task 014 (requirement J, #98): the ONE charged-count
+            # expression, `iterations_used_charged` -- subtracting infra AND
+            # steer refunds. Spelling the subtraction out here by hand used to
+            # subtract only `_infra_refunded`, so an infra-faulted attempt
+            # following a refunded steer pass silently RE-CHARGED that steer
+            # pass in the published figure (`iterationsUsed` 2 while
+            # `iterations_used_charged` said 1), undoing exactly the
+            # unchargedness this requirement asks for.
             self.run.update_status(
-                iterationsUsed=self.iterations_used - self._infra_refunded)
+                iterationsUsed=self.iterations_used_charged)
             if broken_env:
                 # _check_instant_failure() has already set _abort_reason to
                 # the broken-environment diagnosis and logged it: the

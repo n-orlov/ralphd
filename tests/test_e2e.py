@@ -564,7 +564,21 @@ def test_steering_not_lost_across_verify_phase(engine_factory):
     verify1_prompt = (iters[2] / "prompt.md").read_text()
     assert verify1_meta["steeringConsumed"] == []
     assert "MUST take priority" not in verify1_prompt
-    assert "double-check the edge cases" not in verify1_prompt
+    # Task 014 (requirement J, #98) changed the last assertion of this block.
+    # The OLD claim was that the message text appears NOWHERE in a `verify`
+    # prompt -- a proxy for "this phase must not act on it", made false by
+    # design by requirement J's read-only context echo of recent operator
+    # messages in EVERY hat's prompt. The NEW claim is stricter about what
+    # matters: the text appears ONLY below the read-only echo heading (marked
+    # as carrying no consumption semantics), never in the act-on-this part of
+    # the prompt above it, and the iteration still consumed nothing.
+    # (literal heading, not an import: this module reads the engine only
+    # through its HTTP API and run-dir files)
+    head, echo = verify1_prompt.split(
+        "## Recent operator messages (read-only context)", 1)
+    assert "double-check the edge cases" not in head
+    assert "double-check the edge cases" in echo
+    assert "no consumption semantics" in echo
 
     # (verify1_meta["steeringConsumed"] == [] above already proves the verify
     # iteration itself did not mark it consumed; .consumed.json is checked
@@ -590,7 +604,19 @@ def test_steering_not_lost_across_verify_phase(engine_factory):
     assert worker2_meta["phase"] == "worker"
     assert worker2_meta["steeringConsumed"] == []
     assert "MUST take priority" not in worker2_prompt
-    assert "double-check the edge cases" not in worker2_prompt
+    # Task 014 (requirement J, #98): the OLD claim was that the message text is
+    # absent from this later prompt entirely -- a proxy for "it was not
+    # re-delivered". Requirement J's read-only context echo keeps RECENT
+    # operator messages in every hat's prompt precisely so a settled message
+    # stays visible as context, so the new claim is stronger: the text appears
+    # only below the echo heading and there labelled `applied (settled)`, while
+    # the actionable delivery path (a MUST-take-priority block, a
+    # `steeringConsumed` entry) is still empty for this iteration.
+    head2, echo2 = worker2_prompt.split(
+        "## Recent operator messages (read-only context)", 1)
+    assert "double-check the edge cases" not in head2
+    assert "double-check the edge cases" in echo2
+    assert "applied (settled)" in echo2
 
     consumed_final = json.loads((e.run_dir / "steering" / ".consumed.json").read_text())
     assert "001-midrun.md" in consumed_final

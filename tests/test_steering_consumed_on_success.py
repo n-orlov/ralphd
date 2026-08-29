@@ -43,7 +43,7 @@ from test_cli_resume import _seed_run
 
 from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
-from ralphd.engine.loop import LoopSupervisor
+from ralphd.engine.loop import STEERING_ECHO_HEADING, LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (STEERING_APPLIED, STEERING_CONSUMED_FILE,
                                  STEERING_PENDING, RunDir, steering_entries)
@@ -298,7 +298,19 @@ def test_a_non_actionable_phase_still_never_consumes_even_when_it_succeeds(
     meta = _metas(tmp_path)[-1]
     assert meta["faultClass"] is None, "a clean review iteration"
     assert (meta["steeringDelivered"], meta["steeringConsumed"]) == ([], [])
-    assert NOTE.strip() not in sup.runner.prompts[-1]   # type: ignore[attr-defined]
+    # Task 014 (requirement J, #98) changed this last assertion. The OLD claim
+    # was that the note's body appears NOWHERE in a `review` prompt; that was
+    # a proxy for "this phase may not act on it", and requirement J's read-only
+    # context echo (recent operator messages in EVERY hat's prompt) makes it
+    # false by design. The new claim is stricter about the thing that actually
+    # matters: the body appears ONLY below the read-only echo heading, never in
+    # the act-on-this part of the prompt above it -- and, as before, nothing is
+    # consumed (asserted above, and re-asserted against the echo's own
+    # "no consumption semantics" wording here).
+    prompt = sup.runner.prompts[-1]                    # type: ignore[attr-defined]
+    head, echo = prompt.split(STEERING_ECHO_HEADING, 1)
+    assert NOTE.strip() not in head
+    assert NOTE.strip() in echo and "no consumption semantics" in echo
 
 
 def test_an_iteration_with_no_steering_records_both_halves_empty(tmp_path):

@@ -968,6 +968,20 @@ the next planning/worker iteration instead. This prevents steering from being
 silently discarded (recorded as "consumed" yet never actually acted on) when
 it happens to land just before a non-worker-bound phase.
 
+**Every hat's prompt also carries a read-only context echo of recent operator
+messages** (`## Recent operator messages (read-only context)`,
+`LoopSupervisor._recent_steering_echo()`) -- the successor of the passive notice
+above, which reached only the non-actionable phases and only while a message was
+still pending, so a message vanished from every prompt the moment it was applied.
+The echo lists the run's most recent messages (capped in count and per-message
+length, with the file path for the full text) with each one's state, whatever the
+phase. It carries **no consumption semantics**: building a prompt neither
+consumes nor settles anything (`RunDir.consume_steering` remains the only
+writer), `applied (settled)` says only that some hat processed the message and
+never that the tasks it produced are `done` -- `tasks.json` is the single source
+of truth for that -- and being listed is not permission to act, which is what the
+actionable/passive block above still decides.
+
 **Delivery is at-least-once; application is at-most-once (issue #34).** Being
 handed to an actionable phase is not enough either: the marker append happens
 only after that iteration has *finished cleanly* (`faultClass is None`), so the
