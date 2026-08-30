@@ -265,7 +265,11 @@ def code_vocabulary() -> dict[str, str]:
         "loop.py no longer persists a blocker signature across approaches")
 
     verdicts = contracts.HAT_SCHEMAS["worker"]["properties"]["verdict"]["enum"]
-    refusals = [v for v in verdicts if v not in ("complete", "no_verdict")]
+    # "plan_complete" (task 015, requirement O) is a completion claim like
+    # "complete", not a refusal -- exclude it alongside "complete"/
+    # "no_verdict" so this only counts the actual refusal verdict.
+    refusals = [v for v in verdicts
+                if v not in ("complete", "no_verdict", "plan_complete")]
     assert len(refusals) == 1, f"worker verdicts are {verdicts!r}"
 
     return {
