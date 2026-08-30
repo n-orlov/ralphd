@@ -28,7 +28,7 @@ import pytest
 from ralphd.engine import state
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
 PINNED = "## Standing rules\n- commit as task NNN: <title>\n- never force-push\n"
@@ -123,16 +123,16 @@ def _plan_with_pinned_rules(sup: LoopSupervisor, prompt: str = "") -> IterationR
 
 def _worker_overwrites_notes_wholesale(sup: LoopSupervisor,
                                        prompt: str = "") -> IterationResult:
-    # Task 116's worker-claims-its-own-task rule already marks task 001
-    # in-progress before this handler runs; complete it, and -- separately
-    # -- blow away notes.md entirely, the way a careless/overwriting agent
-    # would, with NO "## Standing rules" heading anywhere in the new text.
-    doc = sup.run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(sup.run.tasks_file, doc)
+    # Blow away notes.md entirely, the way a careless/overwriting agent
+    # would, with NO "## Standing rules" heading anywhere in the new text --
+    # and report the harness-owned `complete` verdict for the task the
+    # scheduler assigned (task 015, requirement O, #100), instead of writing
+    # tasks.json directly and ending with the now-retired
+    # `<promise>COMPLETE</promise>` marker.
+    task_id = sup.run.read_tasks()["tasks"][0]["id"]
     sup.run.notes_file.write_text(
         "# Fresh notes\n\nonly the worker's own content survives here.\n")
-    return _ok(f"done\n{COMPLETE}")
+    return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": task_id}))
 
 
 def _review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResult:

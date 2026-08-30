@@ -38,7 +38,7 @@ import pytest
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, VERIFIED, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
 
@@ -192,10 +192,12 @@ def _plan(run: RunDir) -> IterationResult:
 
 
 def _finish_task(run: RunDir) -> IterationResult:
-    doc = run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(run.tasks_file, doc)
-    return _ok(f"done\n{COMPLETE}")
+    # Task 015 (requirement O, #100): report the harness-owned `complete`
+    # verdict for the task the scheduler assigned, instead of writing
+    # tasks.json directly and ending with the now-retired
+    # `<promise>COMPLETE</promise>` marker.
+    task_id = run.read_tasks()["tasks"][0]["id"]
+    return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": task_id}))
 
 
 @pytest.fixture

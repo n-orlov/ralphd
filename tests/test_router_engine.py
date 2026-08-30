@@ -28,7 +28,7 @@ import pytest
 from ralphd.engine import transitions as tr
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events
 
 AMBIGUOUS_STATE = "task018_ambiguous_engine_state"
@@ -91,10 +91,14 @@ def _plan(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _complete_task(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    doc = sup.run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(sup.run.tasks_file, doc)
-    return _ok(f"done\n{COMPLETE}")
+    # Task 015 (requirement O, #100): report the harness-owned `complete`
+    # verdict for the task the scheduler assigned, instead of writing
+    # tasks.json directly and ending with the now-retired
+    # `<promise>COMPLETE</promise>` marker (see
+    # tests/test_transition_executor_cutover.py's `_complete_task`, the same
+    # fixture shape).
+    task_id = sup.run.read_tasks()["tasks"][0]["id"]
+    return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": task_id}))
 
 
 def _review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResult:

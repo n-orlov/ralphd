@@ -33,7 +33,7 @@ from test_cli_resume import _seed_run
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.runner import COMPLETE, VERIFIED, IterationResult
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
     NONTERMINAL_STATES,
     TERMINAL_STATES,
@@ -86,10 +86,12 @@ def _plan(sup: LoopSupervisor) -> IterationResult:
 
 
 def _finish_task(sup: LoopSupervisor) -> IterationResult:
-    doc = sup.run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(sup.run.tasks_file, doc)
-    return _ok(f"done\n{COMPLETE}")
+    # Task 015 (requirement O, #100): report the harness-owned `complete`
+    # verdict for the task the scheduler assigned, instead of writing
+    # tasks.json directly and ending with the now-retired
+    # `<promise>COMPLETE</promise>` marker.
+    task_id = sup.run.read_tasks()["tasks"][0]["id"]
+    return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": task_id}))
 
 
 def _review_ok(sup: LoopSupervisor) -> IterationResult:
