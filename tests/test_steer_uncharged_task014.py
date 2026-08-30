@@ -279,9 +279,13 @@ def test_planning_still_gets_the_full_steering_body_injected(tmp_path):
 # Every hat there is (`transitions.HAT_SCHEMAS`) and the prompt file each one
 # is built from -- `verify` is the only hat whose prompt name differs from its
 # phase name (`prompts/task-verify.md`, see `_step_verify`'s
-# `prompt_name="task-verify"`).
-HAT_PROMPT_NAMES = {"planning": None, "worker": None, "review": None,
-                    "verify": "task-verify", "reflect": None, "steer": None}
+# `prompt_name="task-verify"`). Derived from the shipped hat table itself
+# (not hand-listed) so a new hat (e.g. task 018/020's `plan_review`/
+# `verdict_gate`) is picked up automatically instead of silently passing --
+# only the `verify` exception is hand-carried, because nothing in the table
+# names a hat's prompt file.
+HAT_PROMPT_NAMES = {hat: ("task-verify" if hat == "verify" else None)
+                    for hat in transitions.HAT_SCHEMAS}
 
 
 def test_the_hat_list_this_module_checks_is_the_whole_hat_table():

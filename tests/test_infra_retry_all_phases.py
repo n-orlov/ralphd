@@ -32,6 +32,7 @@ import json
 import pytest
 from test_e2e import engine_factory
 
+from ralphd.engine import transitions
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -57,8 +58,13 @@ def _events(run_dir, type_):
 
 
 def test_every_phase_goes_through_the_infra_retry_wrapper():
-    assert set(LoopSupervisor.INFRA_RETRY_PHASES) == {
-        "planning", "worker", "review", "verify", "reflect"}
+    """Derived from the shipped hat table (`transitions.HAT_SCHEMAS`), not
+    hand-listed: every hat except `steer` rides the wrapper -- `steer` is
+    refunded through its own mechanism (`LoopSupervisor.REFUND_KINDS`),
+    never this one -- so a fourth new hat added to the table is covered by
+    this assertion automatically instead of silently passing."""
+    assert set(LoopSupervisor.INFRA_RETRY_PHASES) == (
+        set(transitions.HAT_SCHEMAS) - {"steer"})
 
 
 # -- verify: no double-count against MAX_VERIFY_ERROR_RETRIES --------------
