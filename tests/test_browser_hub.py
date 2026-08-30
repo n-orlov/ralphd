@@ -684,11 +684,15 @@ def test_run_detail_log_tail_collapses_many_delta_thinking_block(tmp_path, pw, l
     server.wait_ready()
     try:
         pw.open(f"{server.base}/#/run/{run.run_id}")
+        # Wait for the state the assertion below actually demands: BOTH
+        # rich iterations' collapsed '[thinking\u2026]' lines (worker + review),
+        # not just the first one to land -- a wait threshold of 1 races the
+        # review iteration's slower-to-render line (#97).
         _wait_for_count_ge(
             pw,
             "Array.from(document.querySelectorAll('#logbox .lg-line'))"
             ".filter(e => e.textContent.includes('[thinking')).length",
-            1, timeout=30)
+            2, timeout=30)
 
         n_thinking = int(pw.eval_js(
             "Array.from(document.querySelectorAll('#logbox .lg-line'))"
