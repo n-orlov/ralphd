@@ -33,32 +33,97 @@ PRE_FIX_SHA = "7f153298de9f5f495e05ab669dc8c31b67cb302f"
 #
 # F2 (#74). The point is to reject the *claim*, not one phrasing of it: a
 # header that says "in this environment there is always a usable docker
-# socket" or "a usable docker socket will always be present in this
-# environment" is exactly as false as the sentence that actually shipped,
-# so all of them must fail. The detector therefore works clause by clause
-# and is insensitive to word order inside a clause: a clause is an offender
-# when it mentions a socket, asserts its presence, quantifies that presence
-# universally, and carries no negation or hedge that would turn the
-# universal into a denial or a qualification.
-_CLAUSE_SPLIT = re.compile(r"[.;:!?]+|\s--+\s")
+# socket", "a usable docker socket will always be present in this
+# environment", "each run includes a usable docker socket" or "without
+# fail, this environment supplies a usable docker socket" is exactly as
+# false as the sentence that actually shipped, so all of them must fail.
+# The detector therefore works clause by clause (and, so a comma cannot
+# hide the quantifier from its own claim, comma-part by comma-part inside
+# each clause) and is insensitive to word order: a part is an offender when
+# it mentions a socket, asserts its presence/provision/possession by ANY of
+# a broad family of verbs, quantifies that presence universally by ANY of a
+# broad family of quantifiers, and carries no negation or hedge that turns
+# the universal into a denial or a qualification. A double negative that
+# spells the same universal ("never runs without a usable socket", "no
+# container lacks a socket") is caught before the negation escape hatch.
+# `.` only ends a clause when whitespace/end follows it, so a path like
+# /var/run/docker.sock cannot split a sentence and hide its own subject.
+_CLAUSE_SPLIT = re.compile(r"(?:[.;:!?]+(?=\s|$))|\s--+\s")
 _SOCKET_MENTION = re.compile(r"\bsockets?\b")
+# Anaphora: "The docker socket? It is there every time." makes the claim in a
+# clause that never says "socket" -- a pronoun referring back to one does.
+_ANAPHOR = re.compile(r"\b(it|one|they|these|those|that|this)\b")
+# Presence / provision / possession / obtainability -- "is present", "is
+# mounted", "includes", "comes with", "accompanies", "you get", "you can
+# count on finding", "supplies", "exposes" ... all assert the same thing.
 _PRESENCE_WORD = re.compile(
     r"\b(present|presence|there is|there are|there's|is there|are there"
-    r"|be there|sits there|available|mounted|bind-mounted|exists|exist"
-    r"|in place|around|have|has|had|attached|provided|supplied|reachable"
-    r"|usable)\b"
+    r"|be there|sits there|sit there|available|availability|mounted"
+    r"|bind-mounted|mounts?|exists?|in place|around|have|has|had|having"
+    r"|attached|provided|provides?|supplied|supplies|supply|reachable"
+    r"|usable|includes?|included|including|comes? with|came with"
+    r"|ships? with|shipped with|accompanies|accompany|accompanied"
+    r"|offers?|grants?|hands?|exposes?|exposed|wired|equipped|carries|carry"
+    r"|finds?|finding|found|gets?|getting|receives?|access to|count on"
+    r"|counted on|rely on|relies on|depend on|depends on|guaranteed"
+    r"|guarantees?|standard|default|furnished|furnishes|set up|live"
+    r"|working|bundled|baked in|built in|built-in|comes as)\b"
 )
+# Universal quantification -- adverbs ("always", "invariably", "without
+# fail"), frequency phrases ("every time", "at all times", "100% of the
+# time") and any of every/each/all/any/both applied to an occasion or scope
+# noun ("each run", "every invocation", "all containers", "any job").
 _UNIVERSAL_QUANTIFIER = re.compile(
-    r"\b(always|invariably|universally|unconditionally|guaranteed|guarantees"
-    r"|every time|each time|any time|anytime|without exception|in every case"
-    r"|in all cases|in every (?:ralphd )?(?:job )?container"
-    r"|every (?:ralphd )?(?:job )?container"
-    r"|all (?:ralphd )?(?:job )?containers"
-    r"|any (?:ralphd )?(?:job )?container)\b"
+    r"\b(always|invariably|universally|unconditionally|unfailingly"
+    r"|guaranteed|guarantees?|without fail|without exception|no exceptions?"
+    r"|at all times|all the time|every time|each time|any time|anytime"
+    r"|whenever|in every case|in all cases|in each case|100% of the time"
+    r"|each and every|by default|as standard|out of the box"
+    r"|(?:every|each|all|any|both)(?:\s+\w+){0,3}?\s+"
+    r"(?:run|runs|time|times|invocation|invocations|case|cases|container"
+    r"|containers|job|jobs|environment|environments|instance|instances"
+    r"|session|sessions|execution|executions|host|hosts|machine|machines"
+    r"|box|boxes|sandbox|sandboxes|script|scripts|call|calls|start|starts"
+    r"|startup|launch|launches|checkout|checkouts|one|ones))\b"
 )
 _HEDGE_OR_NEGATION = re.compile(
-    r"\b(not|never|n't|no|nor|rarely|seldom|hardly|may or may not|some"
-    r"|sometimes|often|usually|most|might|occasionally|whether|unless)\b"
+    r"\b(not|never|n't|no|nor|none|nothing|cannot|lacks?|lacking|lacked"
+    r"|absent|missing|unavailable|rarely|seldom|hardly|may or may not"
+    r"|may|might|maybe|perhaps|possibly|some|sometimes|often|usually"
+    r"|typically|generally|frequently|occasionally|most|many|several"
+    r"|varies|vary|likely|probably|potentially|whether|unless)\b"
+)
+# A universal presence claim spelled as a double negative -- "this script
+# never runs without a usable docker socket", "no ralphd job container
+# lacks a usable socket", "the socket is never missing here". The negation
+# escape hatch above would otherwise wave these through.
+_DOUBLE_NEGATIVE_UNIVERSAL = re.compile(
+    r"\b(never|not|no|nowhere)\b[^,]*?\b(without|lack\w*|missing|absent"
+    r"|unavailable|optional|short of|devoid of)\b"
+)
+# Honest branch wording makes the socket's presence the *condition* of the
+# sentence, not its claim: "whenever this script detects a usable socket,
+# it filters the tier out", "when no usable socket is present ...". Those
+# must keep passing, or the only way to satisfy the guard would be to
+# delete the header's description of both branches.
+_CONDITION_ON_DETECTION = re.compile(
+    r"\b(when|whenever|if|once|unless)\b(?:\s+\w+){0,4}?\s+"
+    r"(detects?|detected|detecting|finds?|found|sees?|discovers?|probes?"
+    r"|checks?|tests? for)\b"
+)
+_CONDITION_ON_SOCKET_SUBJECT = re.compile(
+    r"\b(when|whenever|if|unless|once)\b\s+(?:a|an|the|no|any|some)?\s*"
+    r"(?:(?:usable|working|real|live|docker|bind-mounted)\s+)*sockets?\b"
+)
+# Describing the probe is not claiming its outcome: "every invocation probes
+# for a usable socket before deciding", "the script checks whether a socket
+# is there". Narrow on purpose -- the probe verb must be followed by
+# for/whether/if, so a bare "every run has a usable socket" is untouched.
+_DETECTION_DESCRIPTION = re.compile(
+    r"\b(probes?|probing|probed|checks?|checking|checked|tests?|testing"
+    r"|looks?|looking|looked|detects?|detecting|decides?|deciding"
+    r"|discovers?|searches|searching|inspects?)\b(?:\s+\w+){0,3}?\s*"
+    r"\b(for|whether|if)\b"
 )
 
 
@@ -70,25 +135,61 @@ def _header_comment_text(script_text: str) -> str:
     )
 
 
+def _part_claims_always_a_socket(part: str, socket_in_context: bool = False) -> bool:
+    """Does this clause (or comma-part of one) assert that a usable docker
+    socket is universally present here? ``socket_in_context`` says the
+    preceding clause named a socket, so a pronoun here can carry it.
+
+    Ambiguity is resolved toward flagging (a subordinate clause can put a
+    universal and a socket in one sentence innocently); the guard's job is to
+    reject the false claim, and the header's honest branch wording -- which
+    hedges, denies or conditions -- is protected by the tables below."""
+    if not _SOCKET_MENTION.search(part):
+        if not (socket_in_context and _ANAPHOR.search(part)):
+            return False
+    if _DOUBLE_NEGATIVE_UNIVERSAL.search(part):
+        # "never runs without a socket" == "always has a socket".
+        return True
+    if not _PRESENCE_WORD.search(part):
+        return False
+    if not _UNIVERSAL_QUANTIFIER.search(part):
+        return False
+    if _CONDITION_ON_DETECTION.search(part) or _CONDITION_ON_SOCKET_SUBJECT.search(part):
+        # The socket's presence is the sentence's condition, not its claim.
+        return False
+    if _DETECTION_DESCRIPTION.search(part):
+        # Describes the probe ("probes for a socket"), not its outcome.
+        return False
+    if _HEDGE_OR_NEGATION.search(part):
+        # "not always", "some containers do", "may or may not" ... --
+        # a qualification or denial, not an always-present assertion.
+        return False
+    return True
+
+
 def _always_a_socket_claims(header_text: str) -> list[str]:
     """Every clause of ``header_text`` that claims a usable docker socket is
     always (or essentially always) present here. Empty list == no such
     claim."""
     normalized = " ".join(header_text.replace("*", "").split()).lower()
     offenders = []
+    socket_in_context = False
     for clause in _CLAUSE_SPLIT.split(normalized):
         clause = clause.strip()
-        if not clause or not _SOCKET_MENTION.search(clause):
+        if not clause:
             continue
-        if not _PRESENCE_WORD.search(clause):
-            continue
-        if not _UNIVERSAL_QUANTIFIER.search(clause):
-            continue
-        if _HEDGE_OR_NEGATION.search(clause):
-            # "not always", "some containers do", "may or may not" ... --
-            # a qualification or denial, not an always-present assertion.
-            continue
-        offenders.append(clause)
+        # The whole clause first (so "each run, without exception, includes a
+        # usable socket" is caught), then each comma-part (so "the socket is
+        # always present, so the tier is filtered out" is caught even though
+        # the trailing part drags in unrelated words).
+        parts = [clause]
+        if "," in clause:
+            parts.extend(p.strip() for p in clause.split(",") if p.strip())
+        if any(
+            _part_claims_always_a_socket(part, socket_in_context) for part in parts
+        ):
+            offenders.append(clause)
+        socket_in_context = bool(_SOCKET_MENTION.search(clause))
     return offenders
 
 
@@ -109,6 +210,59 @@ FORBIDDEN_ALWAYS_A_SOCKET_PARAPHRASES = [
     "Because a usable docker socket is universally available here, the"
     " docker tier runs nested.",
     "When this script runs here, a usable docker socket is always present.",
+    # Validation attempt 2 of task 002 broke the clause-level detector with
+    # these four: presence asserted by "includes"/"accompanies"/"count on
+    # finding"/"supplies" and quantified by "each run"/"every
+    # invocation"/"each invocation"/"without fail" -- families the earlier
+    # word lists did not cover. They are the regression cases now.
+    "Each run includes a usable Docker socket in this environment.",
+    "A usable Docker socket accompanies every invocation in this environment.",
+    "You can count on finding a usable Docker socket on each invocation here.",
+    "Without fail, this environment supplies a usable Docker socket.",
+    # Same claim, further afield: other presence verbs, other quantifiers,
+    # and the double negatives that spell the universal backwards.
+    "Every job container that runs this script exposes a working docker socket.",
+    "A usable docker socket comes with each ralphd job container.",
+    "This environment ships with a usable docker socket at all times.",
+    "You get a usable docker socket 100% of the time here.",
+    "A usable docker socket is available by default in this environment.",
+    "The docker socket is mounted in on every single run of this script.",
+    "Each and every invocation here has a usable docker socket attached.",
+    "This script never runs without a usable docker socket.",
+    "No ralphd job container lacks a usable docker socket.",
+    "The docker socket is never missing in this environment.",
+    "A usable socket is unfailingly reachable from this container.",
+    "Each run, without exception, includes a usable docker socket.",
+    "In every case a usable docker socket is bind-mounted into this container.",
+    # The claim made across a clause boundary by a pronoun, and one whose
+    # subject is a socket path (so a naive split on every "." would lose it).
+    "The docker socket? It is there each and every time.",
+    "The socket at /var/run/docker.sock is available in each job container.",
+]
+
+# Cross-product proof that the guard is claim-bound, not phrase-bound: every
+# combination of a universal quantifier with a presence assertion about the
+# socket is the same false claim, and all of them must be rejected.
+ALWAYS_A_SOCKET_QUANTIFIERS = [
+    "always",
+    "invariably",
+    "unconditionally",
+    "without fail",
+    "without exception",
+    "at all times",
+    "every time",
+    "each time",
+    "in every case",
+    "100% of the time",
+]
+ALWAYS_A_SOCKET_TEMPLATES = [
+    "In this environment there is {q} a usable docker socket.",
+    "A usable docker socket is present here {q}.",
+    "This environment provides a usable docker socket {q}.",
+    "You get a usable docker socket here {q}.",
+    "A usable docker socket is bind-mounted into this container {q}.",
+    "This script {q} has a usable docker socket to talk to.",
+    "{q}, a usable docker socket accompanies this script's invocation.",
 ]
 
 # Honest, branch-describing wording that must keep passing, so the guard
@@ -127,6 +281,15 @@ ALLOWED_SOCKET_WORDINGS = [
     "Whenever this script detects a usable socket it filters the docker"
     " tier out instead of running it nested.",
     "Every RALPHD_* environment variable is unset before the run.",
+    # Honest wording that names a universal *and* a socket in one breath but
+    # denies or conditions the presence -- must stay unflagged too.
+    "Not every ralphd job container has a usable docker socket.",
+    "A usable docker socket is not guaranteed in this environment.",
+    "Whenever no usable socket is found, the docker tier is left alone.",
+    "Some invocations have a usable socket and some do not.",
+    "This script may or may not find a usable docker socket at each"
+    " invocation.",
+    "Every invocation probes for a usable docker socket before deciding.",
 ]
 
 
@@ -356,6 +519,22 @@ def test_the_always_a_socket_guard_rejects_every_paraphrase_not_one_wording(
     header, and must be flagged."""
     assert _always_a_socket_claims(wording) != [], (
         "the always-a-socket guard let a false paraphrase through, so it is"
+        f" wording-bound rather than claim-bound: {wording!r}"
+    )
+
+
+@pytest.mark.parametrize("quantifier", ALWAYS_A_SOCKET_QUANTIFIERS)
+@pytest.mark.parametrize("template", ALWAYS_A_SOCKET_TEMPLATES)
+def test_the_always_a_socket_guard_rejects_every_quantifier_presence_combination(
+    template, quantifier
+):
+    """F2 (#74): the false claim is "universal quantifier + socket presence",
+    so the guard is exercised over the whole cross-product of both families
+    rather than a hand-picked sentence list -- a detector that passes this
+    cannot be satisfied by swapping in another synonym."""
+    wording = template.format(q=quantifier)
+    assert _always_a_socket_claims(wording) != [], (
+        "the always-a-socket guard let a false claim through, so it is"
         f" wording-bound rather than claim-bound: {wording!r}"
     )
 
