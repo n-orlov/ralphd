@@ -9,6 +9,47 @@ block forms this module reads (`sweep-sha`, `discharge-sha`) and the
 discharge rule; this module implements the parser and the two problem-list
 functions `tests/test_sweep_sha_guard.py` applies to every report the
 directory holds, the same way `tests/report_claims.py` shares its checks.
+
+Task 005 (v0.14.1): the terminating fixed point for the final-sha rule.
+Every sweep record names its *parent* sha (a commit cannot truthfully name
+its own resulting sha -- see the `sweep-sha` docs below), so the commit that
+ADDS a record always leaves that record's own declared sha exactly one
+commit behind `HEAD` the instant it lands, with no possible `discharge-sha`
+entry any commit could add yet, because the sha the discharge would need to
+name (its own resulting HEAD) does not exist until after it is computed.
+Demanding an explicit discharge for that gap would make the guard subset
+permanently red the moment any record's own commit landed, for every record,
+forever -- not a corner case, the *typical* case.
+
+The mechanism chosen to close that gap is **parent-of-HEAD acceptance**: a
+sha declaration is also accepted, with no `discharge-sha` block at all, when
+`HEAD` is *exactly* the commit that ADDED the declaring record (git status
+`A`, not `M`), that commit's diff touches the record's own path and nothing
+else, and the declared sha is precisely that commit's single parent
+(`_is_self_anchoring_add_commit`, used from `_reaches_head`/`check_reports`
+alongside the discharge chain). This is narrow by construction: it names the
+record's own path and only that path, it is refused outright the moment the
+tip commit touches any other path, and it is refused for a second commit
+stacked on top of the first (an edit to an already-existing record shows
+git status `M`, not `A`, so the "added the record" test alone -- not the
+resolver's cycle/visited-set logic used for a multi-hop discharge chain --
+is what keeps this specific mechanism from ever iterating: it is checked
+once, against literal `HEAD`, never walked). Report and docs commits are
+never exempted as a *class* -- only the one commit that adds the one record
+naming its own literal parent gets this, exactly as a hand-written
+`discharge-sha` would have to be added for any other commit shape.
+
+**The invariant this preserves:** the guard subset
+(`scripts/final_sha_guards.sh`) ran green over every line of content that
+ships, and a record-only commit -- one that does nothing but add a record
+naming its own true parent sha -- can never change what that subset would
+report if run again right now. Accepting such a commit's declaration
+without a discharge block does not widen what counts as "the suite was
+green at the sha the wave shipped" (`docs/sweep-records.md`'s own framing):
+the commit contributed no `src/`/`tests/`/behaviour-affecting change of its
+own, so the guard subset's own verdict is unchanged by its landing, and the
+record's claim about its parent sha remains exactly as true after the
+add-commit as before it.
 """
 
 from __future__ import annotations
@@ -346,6 +387,75 @@ def _reaches_head(
     return False
 
 
+def _rel_to(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _is_self_anchoring_add_commit(
+    path: Path, sha: str, head: str, repo_root: Path
+) -> bool:
+    """True when `head` is the git commit that ADDED `path` to the repo,
+    `sha` is exactly that commit's single parent, and the commit's diff
+    touches `path` and nothing else -- the terminating fixed point for a
+    record's own sweep-sha (see the module docstring: "parent-of-HEAD
+    acceptance"). Narrow by construction:
+
+    * it names `path` itself and only `path` -- a diff that touches any
+      other file (another record, a roadmap block, anything) is refused;
+    * it fires only for the commit that ADDS the file (git diff status
+      `A`), never one that edits an already-existing record -- a second
+      record-only commit stacked on top of the first is an *edit*, so it
+      shows status `M` and this refuses it; the ordinary discharge-sha
+      chain is required for that case, exactly as for any other commit
+      shape.
+
+    False (never an exemption) on any git failure -- no parent (a root
+    commit), more than one parent (a merge commit), or any other git error.
+    """
+    rel = _rel_to(path, repo_root)
+    try:
+        parents = subprocess.run(
+            ["git", "rev-list", "--parents", "-n", "1", head],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    if parents.returncode != 0:
+        return False
+    fields = parents.stdout.split()
+    if len(fields) != 2:
+        # fields[0] is `head` itself; anything but exactly one parent (a
+        # root commit with zero, or a merge commit with two or more) is not
+        # the single-parent shape this mechanism is anchored to.
+        return False
+    parent_sha = fields[1]
+    if parent_sha != sha:
+        return False
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--name-status", parent_sha, head],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    if diff.returncode != 0:
+        return False
+    changes = [line for line in diff.stdout.splitlines() if line.strip()]
+    if len(changes) != 1:
+        return False
+    status, _, changed_path = changes[0].partition("\t")
+    return status == "A" and changed_path == rel
+
+
 def _is_ancestor(sha: str, descendant: str, repo_root: Path) -> bool:
     """True when `sha` is `descendant` itself or a genuine git ancestor of
     it (`git merge-base --is-ancestor`). False on any git failure (unknown
@@ -416,6 +526,8 @@ def check_reports(
     for path, text in texts.items():
         for sha in sweep_shas(text):
             if _reaches_head(sha, head, chain, repo_root=repo_root):
+                continue
+            if _is_self_anchoring_add_commit(path, sha, head, repo_root):
                 continue
             problems.append(_discharge_message(path, sha, head))
         for sha in archived_shas(text):

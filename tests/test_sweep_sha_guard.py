@@ -525,3 +525,114 @@ def test_an_undischarged_sha_still_fails_even_with_a_report_only_tail(
 
     assert len(problems) == 1, problems
     assert stale in problems[0] and head in problems[0]
+
+
+# --------------------------------------------------------------------------
+# Task 005 (v0.14.1): the terminating fixed point. A record's own add-commit
+# always leaves its declared sha one commit behind HEAD, with no possible
+# discharge-sha entry any commit could add yet (it would have to name its
+# own not-yet-computed resulting sha). `_is_self_anchoring_add_commit`
+# accepts exactly that shape without a discharge block -- and only that
+# shape. Built in real throwaway git repos under tmp_path (never inside the
+# real artifacts/reports/), same pattern as the report-only-tail fixtures
+# above.
+# --------------------------------------------------------------------------
+
+
+def test_a_records_own_add_commit_naming_its_parent_passes_with_no_discharge(
+    tmp_path,
+) -> None:
+    """The ordinary, typical case this mechanism exists for: a commit that
+    does nothing but add a record naming its own true parent sha as HEAD.
+    Fails against the pre-change `_reaches_head` alone, which only accepts
+    literal equality with HEAD or a walked discharge chain -- neither of
+    which a brand-new record's own commit can ever have.
+    """
+    repo = _init_throwaway_repo(tmp_path)
+    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n")
+    _run_git(repo, "add", "artifacts/reports/v0.14-fixture-self-anchor.md")
+    head = _commit(
+        repo,
+        "artifacts/reports/v0.14-fixture-self-anchor.md",
+        record.read_text(),
+        "add the sweep record",
+    )
+
+    assert guard.check_reports([record], head, repo_root=repo) == []
+
+
+def test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path(
+    tmp_path,
+) -> None:
+    """Narrow by construction: the add commit must touch the record's own
+    path and NOTHING else. One extra file in the same commit -- even a
+    second report -- refuses the exemption."""
+    repo = _init_throwaway_repo(tmp_path)
+    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n")
+    other = repo / "artifacts" / "reports" / "note.md"
+    other.write_text("unrelated note\n")
+    _run_git(
+        repo,
+        "add",
+        "artifacts/reports/v0.14-fixture-self-anchor.md",
+        "artifacts/reports/note.md",
+    )
+    head = _commit(
+        repo,
+        "artifacts/reports/note.md",
+        other.read_text(),
+        "add the sweep record plus an unrelated note",
+    )
+
+    problems = guard.check_reports([record], head, repo_root=repo)
+
+    assert len(problems) == 1, problems
+    assert parent in problems[0] and head in problems[0]
+
+
+def test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top(
+    tmp_path,
+) -> None:
+    """A second, later commit that edits the already-existing record (even
+    if it, too, touches only that one path) is not an ADD -- git reports it
+    as a modification -- so this mechanism must not exempt it. Report/docs
+    commits are not exempted as a class; only the literal add commit is.
+    """
+    repo = _init_throwaway_repo(tmp_path)
+    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n")
+    add_head = _commit(
+        repo,
+        "artifacts/reports/v0.14-fixture-self-anchor.md",
+        record.read_text(),
+        "add the sweep record",
+    )
+
+    # Stack a second, record-only commit on top: still declares the SAME
+    # (now stale-by-two) parent sha, still touches only this one path.
+    record.write_text(
+        f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n\nfixed a typo\n"
+    )
+    head = _commit(
+        repo,
+        "artifacts/reports/v0.14-fixture-self-anchor.md",
+        record.read_text(),
+        "fix a typo in the sweep record",
+    )
+
+    problems = guard.check_reports([record], head, repo_root=repo)
+
+    assert len(problems) == 1, problems
+    assert parent in problems[0] and head in problems[0]
+    assert add_head not in problems[0]

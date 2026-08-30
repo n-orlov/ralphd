@@ -153,6 +153,39 @@ The failure message names the record's path, its declared sha, the current
 -- if the intervening commits are the report/roadmap/index tail requirement B
 exists for -- run that subset at `HEAD` and add a `discharge-sha` block.
 
+## Parent-of-HEAD acceptance: the terminating fixed point
+
+A record's own add-commit is a special case of the discharge gap above, not
+a different problem: the record names its true parent sha (a commit cannot
+name its own resulting sha -- see above), so the instant that add-commit
+lands, the declaration is exactly one commit behind `HEAD`, and there is no
+`discharge-sha` any commit could yet add naming that not-yet-computed `HEAD`
+as its verified-at sha. Requiring an explicit discharge for that gap would
+make the guard permanently red the moment *any* record's own commit landed
+-- not a corner case, the typical one.
+
+`check_reports` therefore also accepts a declared sha with no
+`discharge-sha` block at all when `HEAD` is *exactly* the commit that ADDED
+the declaring record (`git diff --name-status` reports it as `A`, not `M`),
+that commit's diff touches the record's own path and nothing else, and the
+declared sha is precisely that commit's single parent
+ (`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`). This is narrow
+by construction: refused the moment the tip commit touches any path outside
+the one record, and refused for a second commit stacked on top of the
+first -- an edit to an already-existing record is git status `M`, so only
+the literal add commit ever qualifies; report/docs commits are never
+exempted as a class. The invariant preserved: the guard subset ran green
+over every line of content that ships, and a record-only commit -- one that
+does nothing but add a record naming its own true parent -- cannot change
+what that subset would report if run again right now.
+
+`tests/test_sweep_sha_guard.py::test_a_records_own_add_commit_naming_its_parent_passes_with_no_discharge`,
+`::test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path`
+and
+`::test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top`
+pin the mechanism and its two refusals, in real throwaway git repos under
+`tmp_path`.
+
 ## The companion rule: every sweep record declares one
 
 Task 002/#103 introduced this rule scoped to the wave that was current then
