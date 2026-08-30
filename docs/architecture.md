@@ -71,14 +71,17 @@ Design invariants:
 - **The whole-plan claim is a contract verdict, not a bare sentinel** (v0.14
   requirement O, #100 -- the retired `<promise>COMPLETE</promise>` marker's
   successor). `worker`'s reply is parsed the same JSON-contract way `verify`
-  and `review` already report through (task 118, task 119, SPEC §4.3); a
-  `"plan_complete"` verdict is valid only when no task was assigned this
-  iteration, and is honoured only after the engine has cross-checked the plan
-  it just re-read: any task not `completed`/`skipped` refuses it and the claim
-  reaches the contract's re-ask ladder rather than reading as silent
-  no-progress (SPEC §4.3). Narration never decides; the record does. The
+  and `review` already report through (task 118, task 119, SPEC §4.3), and the
   literal marker text is still matched by `IterationResult.saw_complete` for
-  an operator diagnostic only -- it drives no decision any more.
+  an operator diagnostic only -- it drives no decision any more. The promise
+  claim itself must count **only as the final non-blank line** of that
+  output, so an agent quoting the protocol — or explaining why it is
+  *withholding* the signal — cannot accidentally emit it; mentioning one
+  anywhere else is logged as "mentioned but did not end with it".
+  And a `"plan_complete"` verdict, valid only when no task was assigned this
+  iteration, is honoured only after the engine has cross-checked the plan it
+  just re-read: any task not `completed`/`skipped` refuses it and the worker loop
+  keeps going (SPEC §4.3). Narration never decides; the record does.
 - **One task per worker iteration.** Checkpointing, steering application, and
   vigilant verification all key off iteration boundaries; a worker that batches
   several tasks into one iteration silently bypasses all three. The worker

@@ -876,15 +876,14 @@ contract claim (`{"report_written": ..., "suggestions_written": ...,
 missing file and an absent/malformed/`report_written: false` contract are
 recorded as a failed reflection (`_reflect_failure()`, task 121).
 
-**A promise counted only as the last line, and only when the plan agreed --
-the design the retired `<promise>COMPLETE</promise>` marker followed, and
-which `"plan_complete"` above preserves in JSON form.** Two rules, one
+**A promise counts only as the last line, and only when the plan agrees.**
+The rule the retired `<promise>COMPLETE</promise>` marker followed, and
+which `"plan_complete"` above preserves in JSON form. Two rules, one
 string-level and one semantic, and the second is the load-bearing one --
 load-bearing enough that it survived the marker's own retirement unchanged,
 just re-expressed as a contract cross-check instead of a warning-only miss.
 
-1. **Last non-blank line, stripped, equal to the marker (historical: how the
-   retired sentinel was read)** --
+1. **Last non-blank line, stripped, equal to the marker** --
    `runner.last_nonblank_line()`. A marker anywhere else in the message is
    **absent**, and the engine emits a `log` warning saying it was mentioned but
    not ended with, so failing closed never looks like an unexplained
@@ -897,8 +896,7 @@ just re-expressed as a contract cross-check instead of a warning-only miss.
    falls out of requiring the LAST line to parse as the contract, with no
    separate naming convention needed -- exactly the shape `"plan_complete"`
    now uses too, since it is JSON rather than a bare string.
-2. **A whole-plan completion is cross-checked against `tasks.json` before it is
-   honoured.**
+2. **A COMPLETE is cross-checked against `tasks.json` before it is honoured.**
    `_outstanding_for_completion()` lists every task that is not `completed` or
    `skipped` (`state.TASK_COMPLETION_STATUSES`, `task_blocks_completion()`) in
    the plan the worker loop has just re-read; if any exist the claim is refused,
@@ -1586,7 +1584,7 @@ dependency-graph replan or a terminal degraded state, because a doomed plan is e
 the "work with a hole" shape `blocked_with_failures` already hands a reviewer.
 
 **The vocabulary stays eight terms (v0.14, requirement F, #99 suggestion 3, #51).**
-#99's third suggestion was a status that satisfies dependents while recording a
+Issue #99's third suggestion was a status that satisfies dependents while recording a
 shortfall -- the case where the substantive work landed but one stated property
 did not, which `skipped` overstates as loss and `completed` overstates as full
 delivery. The decision is to leave `TASK_STATUSES`, `TASK_STATUS_TABLE`,
