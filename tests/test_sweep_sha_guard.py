@@ -539,12 +539,17 @@ def test_an_undischarged_sha_still_fails_even_with_a_report_only_tail(
 # --------------------------------------------------------------------------
 
 
-def test_a_records_own_add_commit_naming_its_parent_passes_with_no_discharge(
+def test_a_record_only_add_commit_naming_its_parent_passes_with_no_discharge(
     tmp_path,
 ) -> None:
-    """The ordinary, typical case this mechanism exists for: a commit that
-    does nothing but add a record naming its own true parent sha as HEAD.
-    Fails against the pre-change `_reaches_head` alone, which only accepts
+    """Task 006 (#106, requirement B), fixture (1) -- the record-only tip
+    commit: this commit adds nothing but its own sweep record, naming its
+    own true parent sha as HEAD, and leaves that record current with no
+    discharge-sha needed. Requirement B's invariant, stated out loud: 'the
+    guard subset ran green over every line of content that ships' -- a
+    record-only commit cannot change what the subset would find, so it
+    must not be able to make an already-current record stale. Fails
+    against the pre-change `_reaches_head` alone, which only accepts
     literal equality with HEAD or a walked discharge chain -- neither of
     which a brand-new record's own commit can ever have.
     """
@@ -568,9 +573,14 @@ def test_a_records_own_add_commit_naming_its_parent_passes_with_no_discharge(
 def test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path(
     tmp_path,
 ) -> None:
-    """Narrow by construction: the add commit must touch the record's own
-    path and NOTHING else. One extra file in the same commit -- even a
-    second report -- refuses the exemption."""
+    """Task 006 (#106, requirement B), fixture (2) -- a report/docs commit
+    that also touches another file does NOT get the exemption, and stays
+    flagged. Requirement B's invariant, stated out loud: the exemption
+    exists only because a record-only commit 'cannot change what the
+    [guard] subset would find'; a commit that touches ANY other path --
+    even a second report -- might, so it is narrow by construction: the
+    add commit must touch the record's own path and NOTHING else. One
+    extra file in the same commit refuses the exemption."""
     repo = _init_throwaway_repo(tmp_path)
     parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
 
@@ -601,9 +611,14 @@ def test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path(
 def test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top(
     tmp_path,
 ) -> None:
-    """A second, later commit that edits the already-existing record (even
-    if it, too, touches only that one path) is not an ADD -- git reports it
-    as a modification -- so this mechanism must not exempt it. Report/docs
+    """Task 006 (#106, requirement B), fixture (3) -- a second record
+    commit stacked on top of the record does NOT get the exemption, and
+    stays flagged. Requirement B's invariant, stated out loud: the fixed
+    point is the SINGLE add commit whose diff is exactly 'nothing but its
+    own guard/sweep record' relative to HEAD's one true parent -- a later
+    commit that edits the already-existing record (even if it, too,
+    touches only that one path) is not an ADD -- git reports it as a
+    modification -- so this mechanism must not exempt it. Report/docs
     commits are not exempted as a class; only the literal add commit is.
     """
     repo = _init_throwaway_repo(tmp_path)
