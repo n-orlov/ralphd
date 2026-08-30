@@ -153,7 +153,19 @@ The failure message names the record's path, its declared sha, the current
 -- if the intervening commits are the report/roadmap/index tail requirement B
 exists for -- run that subset at `HEAD` and add a `discharge-sha` block.
 
-## Parent-of-HEAD acceptance: the terminating fixed point
+## Parent-of-HEAD acceptance: the terminating fixed point (#106)
+
+**#106** named the defect this section closes: the rule "the last commit is
+followed by the guard subset, green, recorded" has no fixed point, because
+recording that result is itself a commit -- which makes the record it just
+wrote stale by requirement A's own correct rule the instant it lands, no
+matter how the recording is phrased. There is no reachable repository state
+that satisfies a rule shaped that way: the very act of writing down "the
+subset was green at `HEAD`" moves `HEAD`, so the sentence is false again
+before anyone can read it. This is not a hypothetical -- it cost **five
+consecutive waves** a task or an approach: v0.13 task 012, v0.14 approach 2
+task 018, and v0.14 approach 3 task 018, the last of these while the thing
+it guards was independently confirmed green.
 
 A record's own add-commit is a special case of the discharge gap above, not
 a different problem: the record names its true parent sha (a commit cannot
@@ -163,6 +175,11 @@ lands, the declaration is exactly one commit behind `HEAD`, and there is no
 as its verified-at sha. Requiring an explicit discharge for that gap would
 make the guard permanently red the moment *any* record's own commit landed
 -- not a corner case, the typical one.
+
+**The mechanism chosen is parent-of-HEAD acceptance**, not an extension of
+the existing `discharge-sha` pair form: a record anchors itself directly off
+`HEAD` when the tip commit is its own add-commit, with no second block and
+no pair of shas to write.
 
 `check_reports` therefore also accepts a declared sha with no
 `discharge-sha` block at all when `HEAD` is *exactly* the commit that ADDED
