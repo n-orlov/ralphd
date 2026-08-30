@@ -18,8 +18,116 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "host_like_pytest.sh"
+
+# The sha of the commit immediately before task 001's header fix -- the
+# header at this sha literally claims "in this environment a usable socket
+# is present essentially every time this script runs here", so it is the
+# mutation target the always-a-socket guard below must reject.
+PRE_FIX_SHA = "7f153298de9f5f495e05ab669dc8c31b67cb302f"
+
+# --- wording-independent detector for the false always-a-socket claim ---
+#
+# F2 (#74). The point is to reject the *claim*, not one phrasing of it: a
+# header that says "in this environment there is always a usable docker
+# socket" or "a usable docker socket will always be present in this
+# environment" is exactly as false as the sentence that actually shipped,
+# so all of them must fail. The detector therefore works clause by clause
+# and is insensitive to word order inside a clause: a clause is an offender
+# when it mentions a socket, asserts its presence, quantifies that presence
+# universally, and carries no negation or hedge that would turn the
+# universal into a denial or a qualification.
+_CLAUSE_SPLIT = re.compile(r"[.;:!?]+|\s--+\s")
+_SOCKET_MENTION = re.compile(r"\bsockets?\b")
+_PRESENCE_WORD = re.compile(
+    r"\b(present|presence|there is|there are|there's|is there|are there"
+    r"|be there|sits there|available|mounted|bind-mounted|exists|exist"
+    r"|in place|around|have|has|had|attached|provided|supplied|reachable"
+    r"|usable)\b"
+)
+_UNIVERSAL_QUANTIFIER = re.compile(
+    r"\b(always|invariably|universally|unconditionally|guaranteed|guarantees"
+    r"|every time|each time|any time|anytime|without exception|in every case"
+    r"|in all cases|in every (?:ralphd )?(?:job )?container"
+    r"|every (?:ralphd )?(?:job )?container"
+    r"|all (?:ralphd )?(?:job )?containers"
+    r"|any (?:ralphd )?(?:job )?container)\b"
+)
+_HEDGE_OR_NEGATION = re.compile(
+    r"\b(not|never|n't|no|nor|rarely|seldom|hardly|may or may not|some"
+    r"|sometimes|often|usually|most|might|occasionally|whether|unless)\b"
+)
+
+
+def _header_comment_text(script_text: str) -> str:
+    """The script's `#`-comment lines with their markers stripped, so the
+    checks below cannot be defeated by rewrapping a sentence across lines."""
+    return " ".join(
+        line[1:] for line in script_text.splitlines() if line.startswith("#")
+    )
+
+
+def _always_a_socket_claims(header_text: str) -> list[str]:
+    """Every clause of ``header_text`` that claims a usable docker socket is
+    always (or essentially always) present here. Empty list == no such
+    claim."""
+    normalized = " ".join(header_text.replace("*", "").split()).lower()
+    offenders = []
+    for clause in _CLAUSE_SPLIT.split(normalized):
+        clause = clause.strip()
+        if not clause or not _SOCKET_MENTION.search(clause):
+            continue
+        if not _PRESENCE_WORD.search(clause):
+            continue
+        if not _UNIVERSAL_QUANTIFIER.search(clause):
+            continue
+        if _HEDGE_OR_NEGATION.search(clause):
+            # "not always", "some containers do", "may or may not" ... --
+            # a qualification or denial, not an always-present assertion.
+            continue
+        offenders.append(clause)
+    return offenders
+
+
+# Paraphrases of the false claim. Every one of these must be rejected --
+# including the two that slipped through an earlier, wording-bound version
+# of this guard (the first two entries).
+FORBIDDEN_ALWAYS_A_SOCKET_PARAPHRASES = [
+    "In this environment there is always a usable docker socket.",
+    "A usable docker socket will always be present in this environment.",
+    "In this environment a usable socket is present essentially every time"
+    " this script runs here.",
+    "Every ralphd job container has a usable docker socket bind-mounted in.",
+    "All ralphd job containers ship with a usable docker socket.",
+    "The docker socket is invariably available inside a ralphd job container.",
+    "A working socket is guaranteed to be mounted here.",
+    "Here, the docker socket is there every time.",
+    "The socket is always present, so the tier is filtered out.",
+    "Because a usable docker socket is universally available here, the"
+    " docker tier runs nested.",
+    "When this script runs here, a usable docker socket is always present.",
+]
+
+# Honest, branch-describing wording that must keep passing, so the guard
+# cannot be satisfied by deleting the header's docker-tier discussion.
+ALLOWED_SOCKET_WORDINGS = [
+    "A ralphd job container may or may not have a usable docker socket"
+    " bind-mounted in.",
+    "Some ralphd job containers do have a usable socket at invocation time,"
+    " but not every one does.",
+    "When a usable socket is present, the script filters the docker tier"
+    " out with -m 'not docker'.",
+    "When no usable socket is present the script injects nothing extra for"
+    " the docker tier.",
+    "This container has no usable docker socket right now.",
+    "The docker socket is not always present in this environment.",
+    "Whenever this script detects a usable socket it filters the docker"
+    " tier out instead of running it nested.",
+    "Every RALPHD_* environment variable is unset before the run.",
+]
 
 
 def test_script_exists_and_is_executable():
@@ -226,6 +334,66 @@ def test_header_rejects_the_false_always_a_socket_claim_about_this_environment()
         f" matched: {always_present_claim.search(normalized)}"
     )
     assert "essentially every time this script runs" not in normalized
+    # Wording-independent form of the same rejection: the literal regex
+    # above only catches sentences that open "usable socket is ...", which
+    # a reworded-but-equally-false header would walk straight past.
+    assert _always_a_socket_claims(_header_comment_text(text)) == [], (
+        "header must not claim, in any wording, that a usable docker socket"
+        " is always present in this environment (F2, #74) -- offending"
+        f" clauses: {_always_a_socket_claims(_header_comment_text(text))}"
+    )
+
+
+@pytest.mark.parametrize("wording", FORBIDDEN_ALWAYS_A_SOCKET_PARAPHRASES)
+def test_the_always_a_socket_guard_rejects_every_paraphrase_not_one_wording(
+    wording,
+):
+    """F2 (#74): the guard above must reject the *claim*, however it is
+    phrased. An earlier version of it matched only headers whose sentence
+    opened "usable socket is ...", so a header saying "in this environment
+    there is always a usable docker socket" -- just as false -- passed it.
+    Each paraphrase here is fed through the detector as if it were the
+    header, and must be flagged."""
+    assert _always_a_socket_claims(wording) != [], (
+        "the always-a-socket guard let a false paraphrase through, so it is"
+        f" wording-bound rather than claim-bound: {wording!r}"
+    )
+
+
+@pytest.mark.parametrize("wording", ALLOWED_SOCKET_WORDINGS)
+def test_the_always_a_socket_guard_leaves_honest_branch_wording_alone(wording):
+    """The mirror of the test above: the detector must not be a blanket ban
+    on the words "socket" and "always", or the only way to satisfy it would
+    be to delete the header's honest description of both branches."""
+    assert _always_a_socket_claims(wording) == [], (
+        "honest, hedged branch wording must not be flagged as the false"
+        f" always-a-socket claim: {wording!r} -> {_always_a_socket_claims(wording)}"
+    )
+
+
+def test_the_always_a_socket_guard_fails_on_the_pre_fix_header():
+    """In-repo mutation proof for F2 (#74): applied to the header as it
+    stood immediately before task 001's fix (``git show
+    <PRE_FIX_SHA>:scripts/host_like_pytest.sh``), the detector must flag
+    the claim -- otherwise the guard proves nothing about the regression it
+    exists to catch."""
+    completed = subprocess.run(
+        ["git", "show", f"{PRE_FIX_SHA}:scripts/host_like_pytest.sh"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(
+            "pre-fix blob unreachable (shallow clone or missing object):"
+            f" {completed.stderr.strip()[:200]}"
+        )
+    offenders = _always_a_socket_claims(_header_comment_text(completed.stdout))
+    assert offenders != [], (
+        "the pre-fix header claims a usable socket is present essentially"
+        " every time this script runs here -- the guard must reject it"
+    )
+    assert any("essentially every time" in clause for clause in offenders)
 
 
 def test_script_filters_the_docker_tier_out_when_a_usable_socket_is_present(tmp_path):
