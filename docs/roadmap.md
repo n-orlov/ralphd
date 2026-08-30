@@ -1427,24 +1427,93 @@ review found around them.
   the five-wave cost the missing fixed point had already run up (task 007, `98cfa7d`).
 - **C. The roadmap says what landed.** The `## v0.14` block's stale "not yet landed" summary
   paragraph is rewritten above to state what actually landed, the four review findings, and that
-  the suite was green at the shipped sha while the record about it was not (task 008); a
-  fast-tier test pinning that no terminal wave's block may carry a live "not yet landed" claim
-  follows (task 009).
+  the suite was green at the shipped sha while the record about it was not (task 008,
+  `validated`). A fast-tier test pinning that no terminal wave's block may carry a live "not yet
+  landed" claim landed as substance at `117aadc`+`d5302f2`
+  (`tests/test_roadmap_terminal_claims.py`) — but task 009 itself is `failed` /
+  validation-exhausted, on exactly the residual its own guard left open: the template match
+  caught only its own literal opening template sentence and missed four rephrasings a validator
+  constructed, the same paraphrase-coverage gap v0.14.2's own requirement C (task 007) closes.
 - **D. The version and the two rows.** `0.14.1` in `pyproject.toml` and
   `src/ralphd/__init__.py`, v0.14's `docs/prds/README.md` row settled from its terminal state
   (`failed`/`unverified`, approach 3 17 of 18 validated, task 017 `failed`), and this PRD's own
-  row added (task 010, task 011).
-- **E. v0.14's closing report stops contradicting itself.** An errata section reconciles task
-  018's actual disposition and the true 17/1 task tally across the report's B, cuts, residuals
-  and current-accounting sections (task 012).
+  row added (task 010, task 011, both `validated`).
+- **E. v0.14's closing report stops contradicting itself.** An errata section was appended to
+  `artifacts/reports/v0.14-a3-closing-report.md`, reconciling task 018's actual disposition and
+  the true 17/1 task tally across the report's B, cuts, residuals and current-accounting
+  sections (task 012, `979ad85`+`f30ab83`) — but task 012 itself is `failed` /
+  validation-exhausted: that first errata inverted task 018's own disposition, denying a
+  guard-subset run at sha `9ad6ef6` that had, in fact, landed and validated. The inversion was
+  fixed in place, nothing deleted, by a second correction (`8adf2bc`, #107) landed before this
+  wave (v0.14.2) opened.
 - **F. The evidence, the closures, and the record.** #105 and #106 closed with the evidence
-  above (tasks 013/014); #103 re-verified with a fresh evidence comment (task 015); #104
-  verified and closed, or left open with findings (task 016); the discovered guard subset
-  discharged and re-run at the true final sha (tasks 017/020); a fast-tier sweep recorded at the
-  shipped sha (task 018); the closing report walking A–F (task 019).
+  above (tasks 013/014, `validated`); #103 re-verified with a fresh evidence comment (task 015,
+  `skipped` with a recorded `unsatisfiableReason` — the criteria asked its comment to cite a
+  green guard-subset run recorded by this wave itself, and none could exist yet while task 017's
+  own staleness discharge was still pending); #104 verified and closed (task 016, `validated`);
+  the discovered guard subset discharged and re-run at the true final sha (task 017,
+  `validated`; task 020, `skipped` — its own tracked record,
+  `artifacts/reports/v0.14.1-final-guard-subset.md`, shows the same single RED node tasks
+  017/018 disclosed, no docker socket in this container); a fast-tier sweep recorded at the
+  shipped sha (task 018, `validated`, RED-with-disclosure on that same node); the closing report
+  walking A–F (task 019, three revisions, itself `failed` / validation-exhausted).
 
-This entry is written from task 008, mid-wave: A and B's code landed and is pinned; C is in
-progress (this entry); D, E and F are this wave's remaining tasks, not yet claimed landed here.
+**This wave ended `failed` / unverified — settled history, not a mid-wave snapshot.** One
+approach, a 20-task flat plan; terminal tally 13 `validated`, 3 `skipped` (002, 015, 020), 4
+`failed` (003, 009, 012, 019) — every one of those four `failed` tasks nonetheless landed real,
+verifiable substance, named by bullet above; `/run/ralphd/notes.md` recorded both facts side by
+side as an accepted residual of the harness's own status vocabulary. Review honoured all seven
+operator waivers by name and rejected on a single finding: the required fast tier was RED in
+this job container on exactly one node,
+`tests/test_host_like_pytest_script.py::test_script_filters_the_docker_tier_out_when_a_usable_socket_is_present`,
+because that test asserted docker-socket behaviour unconditionally in an environment with no
+socket — the defect this wave's own successor (v0.14.2, below) exists to fix. Nothing was cut;
+the PRD's own cut order was never invoked. This run's own `status.json` is on the host and
+unreachable from this container, so this paragraph and `docs/prds/README.md`'s row for
+`selfdev-v0141-a-guard-that-cannot-see` are both sourced from this tree's own tracked records —
+`artifacts/reports/v0.14.1-closing-report.md` and `artifacts/reports/v0.14.1-final-guard-subset.md`
+— rather than a fresh status read.
+
+## v0.14.2 — green where it runs
+
+Full PRD:
+[`docs/prds/v0.14.2-green-where-it-runs.md`](prds/v0.14.2-green-where-it-runs.md).
+v0.14.1 delivered all six of its own requirements and was still rejected, on exactly the one
+finding named above: the fast tier cannot be green inside a job container, because one test
+asserted docker-socket behaviour unconditionally in an environment that has none. This wave
+makes the suite green where it actually runs — three small fixes, mostly in tests, plus the
+version, the rows and the record.
+
+- **A (#109) — the fast tier's one impossible node becomes precondition-aware.**
+  `tests/test_host_like_pytest_script.py::test_script_filters_the_docker_tier_out_when_a_usable_socket_is_present`
+  was made hermetic against a fake `docker` executable and a real, bound `AF_UNIX` socket
+  instead of relying on this container's own ambient socket (task 002, `24b5f29c`); the
+  socket-absent direction was pinned by a new test asserting the docker module stays collected
+  when no usable socket exists, and `scripts/host_like_pytest.sh`'s header was corrected to drop
+  its false "always has a working docker socket" claim (task 003, `4d7ee2a`).
+  `tests/test_host_like_pytest_script.py`: 11 passed.
+- **B (#97) — the browser-hub race.** Tracked as this wave's own tasks 008–010; status pending
+  in `tasks.json` as of this entry.
+- **C (#108) — the roadmap guard learns to paraphrase.** Tracked as this wave's own task 007;
+  status pending in `tasks.json` as of this entry — the exact paraphrase-coverage gap
+  requirement C above names in v0.14.1's own task 009.
+- **D — the version and the rows.** `0.14.2` in `pyproject.toml` and `src/ralphd/__init__.py`
+  (task 004, `6a110e4`); v0.14.1's `docs/prds/README.md` row settled from its terminal state and
+  this wave's own row marked in-flight (task 005, `3d4c833`); this `## v0.14.2` block, and the
+  correction to the `## v0.14.1` block above now that its wave is terminal (task 006, this
+  entry).
+- **E — the evidence, the closures, and the record.** Tracked as this wave's own tasks 011–018;
+  status pending in `tasks.json` as of this entry.
+
+This entry is written from task 006, mid-wave; the operator or a later task in this same wave
+updates it once the wave reaches its own terminal state. **Gotcha for whoever edits this block
+next:** `docs/prds/README.md`'s row for this wave currently opens "in progress", and
+`tests/test_roadmap_terminal_claims.py`'s `is_terminal()` only excludes the literal words
+"running" and "launching" — so that row is, right now, already misclassified `is_terminal() ==
+True` by that check. Do not write the phrase "not yet landed" (or, once v0.14.2's own task 007
+lands, any of its four pinned rephrasings) anywhere in this block until that vocabulary gap is
+fixed or this wave's row wording changes — it would trip the very guard this wave's own
+requirement C exists to strengthen.
 
 ## Later / explicitly deferred
 
