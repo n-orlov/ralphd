@@ -252,6 +252,41 @@ def test_script_filters_the_docker_tier_out_when_a_usable_socket_is_present(tmp_
     assert "deselected" in (result.stdout + result.stderr)
 
 
+def test_script_injects_nothing_when_no_usable_docker_socket_is_present(tmp_path):
+    """Pins the socket-absent direction (#109). Chosen policy: **injects
+    nothing, docker-marked tests self-skip at runtime** -- when this
+    script's own probe finds no usable docker socket (mirroring a bare
+    developer host), it must NOT add ``-m "not docker"`` on the caller's
+    behalf. The docker-marked module is left to its own module-level
+    ``skipif`` (``tests/test_docker_sibling_e2e.py``'s
+    ``_docker_available()``) to self-skip cleanly at runtime, the same way
+    it would for a developer invoking the bare acceptance command by hand
+    with no socket around. Proven here at collection time: with
+    ``DOCKER_SOCK_PATH`` pointed at a path that does not exist (so the
+    script's own ``-S`` probe fails regardless of any ambient docker socket
+    this container happens to have), the docker-marked module's tests are
+    still *collected* (no ``-m "not docker"`` deselection), unlike the
+    usable-socket case above where they are deselected to zero."""
+    absent_sock_path = tmp_path / "does-not-exist" / "docker.sock"
+    assert not absent_sock_path.exists()
+
+    env = dict(os.environ)
+    env["PYTHON"] = sys.executable
+    env["DOCKER_SOCK_PATH"] = str(absent_sock_path)
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "tests/test_docker_sibling_e2e.py", "--collect-only"],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "no tests collected" not in combined, combined
+    assert "deselected" not in combined, combined
+
+
 def test_script_lets_an_explicit_marker_argument_override_the_default(tmp_path):
     """An explicit ``-m`` after the script's own filename must win over the
     default docker-exclusion the script injects -- proven by asking for only
