@@ -42,8 +42,9 @@
 #     usable socket at invocation time -- but not every one does, and not
 #     always: this very container has none right now (`ls
 #     /var/run/docker.sock` fails with "No such file or directory",
-#     `DOCKER_SOCK_PATH` is unset, and `docker version` exits 1 with
-#     "failed to connect to the docker API at unix:///var/run/docker.sock").
+#     `DOCKER_SOCK_PATH` is unset, and the `docker` CLI's `version`
+#     round-trip (the probe spelled out below) exits 1 with "failed to
+#     connect to the docker API at unix:///var/run/docker.sock").
 #     When a usable socket *is* present, running the docker-marked modules
 #     anyway would not exercise the tier the way it runs on a bare host: it
 #     would run *nested* (a sibling of a sibling), and the sibling's
