@@ -45,21 +45,11 @@ import pytest
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from test_review_interrupted_not_rejection import (
+    _complete_task,
     _interrupted,
-    _ok,
     _plan,
     _supervisor,
 )
-
-
-def _complete_task(sup: LoopSupervisor, _prompt: str = "") -> IterationResult:
-    from ralphd.engine.runner import COMPLETE
-    from ralphd.engine.state import atomic_write_json
-
-    doc = sup.run.read_tasks()
-    doc["tasks"][0]["status"] = "completed"
-    atomic_write_json(sup.run.tasks_file, doc)
-    return _ok(f"done\n{COMPLETE}")
 
 
 def _garbage_reflect_with_report(sup: LoopSupervisor, _prompt: str = "") -> IterationResult:
@@ -85,7 +75,23 @@ def test_a_deadline_fired_garbage_reflect_leaves_the_works_outcome_intact(tmp_pa
         "worker": [_complete_task],
         "review": [_interrupted],
     }
-    sup = _supervisor(tmp_path / "run", handlers, iterations=3, reflect=True)
+    sup = _supervisor(tmp_path / "run", handlers, iterations=3, reflect=True,
+                      # Task 012 (v0.14, #56 follow-up): `_run_reflection`
+                      # deliberately clears status.json's `phase` field to
+                      # `None` BEFORE `_reflect_contract_ladder` ever runs
+                      # (see `_MalformedReflectRunner`'s own docstring in
+                      # test_reflect_tail_budget.py -- an established,
+                      # separately-tested contract, not a bug this module
+                      # gets to relitigate). `_ScriptedAgent.run` here
+                      # routes by that same `phase` field, so it cannot
+                      # tell a re-ask attempt apart from any other
+                      # phase-less call. Pinning `contract_retry_max=0`
+                      # keeps this module's own scripted `_complete_task`/
+                      # `_garbage_reflect_with_report` queues exactly as
+                      # sized (one entry each) and still exercises the
+                      # real DEGRADED outcome this module is about: one
+                      # malformed reflect payload, zero re-asks granted.
+                      contract_retry_max=0)
     state = asyncio.run(sup._run_job_core())
 
     assert state == "failed"
