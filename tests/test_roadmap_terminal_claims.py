@@ -3,16 +3,28 @@
 its own wave is outstanding.
 
 Every wave's block is written *while the run is still going* and updated as
-work lands; the standing template for the still-outstanding tail is the
-literal phrase **"not yet landed as of this entry"** (case-insensitive,
-tolerant of the soft line-wraps markdown inserts inside it — see
-`_TEMPLATE_RE` below). Once the run the block is about reaches a terminal
-state, nothing in `docs/prds/README.md` is still updating that block for it,
-so a live copy of that template is now simply wrong: either the outstanding
-item landed later and the sentence was never revisited, or it never landed
-at all and the record needs to say so as a settled historical fact instead
-of an open item. Either way, the fix is a rewrite of that block, not a
-future task nobody owns.
+work lands; the standing template for the still-outstanding tail was
+originally the literal phrase **"not yet landed as of this entry"**
+(case-insensitive, tolerant of the soft line-wraps markdown inserts inside
+it). v0.14.1's own task 009 pinned that literal template and then went
+`failed` on exactly the residual its own guard left open: the match caught
+only that one opening sentence and missed every rephrasing of the same
+live claim (a bare "not yet landed" with a different tail, or the same
+words in a different order around it) — v0.14.2's requirement C (this
+module) closes that gap. The check now flags the **bare phrase "not yet
+landed"** anywhere inside a terminal block, in any surrounding wording,
+*except* when it is a past-tense quoted reference to the phrase itself —
+wrapped immediately in quote marks on both sides, narrating that an earlier
+sentence used and was corrected, not asserting anything is currently
+outstanding (see `_is_quoted_reference` below; the three passages this
+file's own docstring names below are exactly that shape). Once the run the
+block is about reaches a terminal state, nothing in `docs/prds/README.md`
+is still updating that block for it, so a live copy of the claim — in
+whatever wording — is now simply wrong: either the outstanding item landed
+later and the sentence was never revisited, or it never landed at all and
+the record needs to say so as a settled historical fact instead of an open
+item. Either way, the fix is a rewrite of that block, not a future task
+nobody owns.
 
 This module derives *terminal* from `docs/prds/README.md`'s own Outcome
 column for the run the block's own "Full PRD:" link names — never from a
@@ -44,13 +56,40 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ROADMAP = REPO_ROOT / "docs" / "roadmap.md"
 README = REPO_ROOT / "docs" / "prds" / "README.md"
 
-# The live, still-outstanding template. Tolerant of the soft line-wrap
-# markdown inserts between "this" and "entry" (both docs/roadmap.md's own
-# v0.12 and v0.13 blocks wrap right there) and of bold markers immediately
-# around the phrase (the pre-task-008 v0.14 paragraph wrapped it in `**...**`
-# right up against a trailing comma instead of a colon).
-_TEMPLATE_RE = re.compile(
-    r"not\s+yet\s+landed\s+as\s+of\s+this\s+entry", re.IGNORECASE)
+# The live, still-outstanding claim, in ANY phrasing: the bare phrase "not
+# yet landed" (case-insensitive, tolerant of soft line-wraps markdown
+# inserts inside it — both docs/roadmap.md's own v0.12 and v0.13 blocks wrap
+# right inside the original "...as of this entry" template, and bold
+# markers can sit right up against the phrase too, e.g. the pre-task-008
+# v0.14 paragraph). Deliberately wider than the original template so that a
+# validator paraphrasing around the same three words — moving the tail
+# before it, dropping "as of this entry" for "as of today", swapping the
+# colon for "is", wrapping it in em-dashes — still trips this check; see
+# `_is_quoted_reference` for the one carve-out.
+_BARE_PHRASE_RE = re.compile(r"not\s+yet\s+landed", re.IGNORECASE)
+
+# Quote characters (straight and curly) this repo's prose uses to quote the
+# phrase itself as a past-tense reference rather than assert it live.
+_QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019"
+
+
+def _is_quoted_reference(body: str, match: "re.Match[str]") -> bool:
+    """True if `match` sits immediately inside quote marks on both sides —
+    a reference to the phrase (narrating that an earlier sentence used it
+    and was corrected), not a live claim that something is outstanding."""
+    before = body[:match.start()]
+    after = body[match.end():]
+    return (
+        bool(before) and before[-1] in _QUOTE_CHARS
+        and bool(after) and after[0] in _QUOTE_CHARS
+    )
+
+
+def _live_claim_present(body: str) -> bool:
+    return any(
+        not _is_quoted_reference(body, m)
+        for m in _BARE_PHRASE_RE.finditer(body)
+    )
 
 # Non-terminal run states, read off docs/prds/README.md's own vocabulary
 # (the two seen at HEAD: v0.14 reads `running`, v0.14.1 reads `launching`).
@@ -116,7 +155,7 @@ def unresolved_claim_problems(roadmap_text: str, readme_text: str) -> list[str]:
         outcome = outcomes[filename]
         if not is_terminal(outcome):
             continue
-        if _TEMPLATE_RE.search(body):
+        if _live_claim_present(body):
             problems.append(
                 f"## {heading} is terminal (docs/prds/README.md outcome "
                 f"{outcome!r}) but still carries a live 'not yet landed as "
@@ -172,6 +211,47 @@ def test_the_check_fails_against_the_pre_task_008_v014_paragraph():
     block = _synthetic_block("v9.9 — every hand on the plan is named", "vX.md", tail)
     problems = unresolved_claim_problems(block, _SYNTHETIC_README)
     assert problems
+
+
+# The four evading rephrasings v0.14.1's own task 009 left uncaught (#108):
+# same three words, none of them followed by "as of this entry", each
+# pinned by its own assertion so a future narrowing cannot silently drop one.
+
+
+def test_the_check_fails_against_a_colon_led_rephrasing():
+    block = _synthetic_block(
+        "v9.9 — a made-up wave", "vX.md",
+        "Not yet landed: the closing report.",
+    )
+    problems = unresolved_claim_problems(block, _SYNTHETIC_README)
+    assert problems, "the check must flag 'Not yet landed: X.'"
+
+
+def test_the_check_fails_against_a_subject_led_rephrasing():
+    block = _synthetic_block(
+        "v9.9 — a made-up wave", "vX.md",
+        "The closing report is not yet landed.",
+    )
+    problems = unresolved_claim_problems(block, _SYNTHETIC_README)
+    assert problems, "the check must flag 'X is not yet landed.'"
+
+
+def test_the_check_fails_against_an_as_of_today_rephrasing():
+    block = _synthetic_block(
+        "v9.9 — a made-up wave", "vX.md",
+        "Not yet landed as of today: the closing report.",
+    )
+    problems = unresolved_claim_problems(block, _SYNTHETIC_README)
+    assert problems, "the check must flag 'Not yet landed as of today: X.'"
+
+
+def test_the_check_fails_against_an_em_dash_wrapped_rephrasing():
+    block = _synthetic_block(
+        "v9.9 — a made-up wave", "vX.md",
+        "Outstanding work — not yet landed — includes the closing report.",
+    )
+    problems = unresolved_claim_problems(block, _SYNTHETIC_README)
+    assert problems, "the check must flag 'Outstanding work — not yet landed — includes X.'"
 
 
 def test_the_check_skips_a_non_terminal_runs_block():
