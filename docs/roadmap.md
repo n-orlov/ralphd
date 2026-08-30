@@ -1492,28 +1492,38 @@ version, the rows and the record.
   when no usable socket exists, and `scripts/host_like_pytest.sh`'s header was corrected to drop
   its false "always has a working docker socket" claim (task 003, `4d7ee2a`).
   `tests/test_host_like_pytest_script.py`: 11 passed.
-- **B (#97) — the browser-hub race.** Tracked as this wave's own tasks 008–010; status pending
-  in `tasks.json` as of this entry.
-- **C (#108) — the roadmap guard learns to paraphrase.** Tracked as this wave's own task 007;
-  status pending in `tasks.json` as of this entry — the exact paraphrase-coverage gap
-  requirement C above names in v0.14.1's own task 009.
+- **B (#97) — the browser-hub race.** This wave's own task 008 reproduced the race and named it
+  in code terms (`28675aa3`); task 009 fixed `tests/test_browser_hub.py`'s wait condition,
+  awaiting both rich iterations' thinking lines before the exact-count assert instead of racing
+  a fixed sleep (`c0930f01`); task 010 ran the browser-hub module green at the fix and recorded
+  it (`7ad716ac`, retaken `a4826062`). `tests/test_browser_hub.py`: 36 passed.
+- **C (#108) — the roadmap guard learns to paraphrase.** This wave's own task 007 widened
+  `tests/test_roadmap_terminal_claims.py`'s staleness matcher from the one literal template it
+  shipped with to the bare phrase in any surrounding wording, closing the exact
+  paraphrase-coverage gap v0.14.1's own task 009 left open (`e21915c5`).
 - **D — the version and the rows.** `0.14.2` in `pyproject.toml` and `src/ralphd/__init__.py`
   (task 004, `6a110e4`); v0.14.1's `docs/prds/README.md` row settled from its terminal state and
   this wave's own row marked in-flight (task 005, `3d4c833`); this `## v0.14.2` block, and the
   correction to the `## v0.14.1` block above now that its wave is terminal (task 006, this
   entry).
-- **E — the evidence, the closures, and the record.** Tracked as this wave's own tasks 011–018;
-  status pending in `tasks.json` as of this entry.
+- **E — the evidence, the closures, and the record.** This wave's own tasks 011–018 closed all
+  three tracked issues with fresh-`GET`-verified evidence (#109 `5f3e09f4`; #108 `319eb901`; #97
+  `147908ba`); ran the fast tier green at the shipped sha and discharged its sweep-sha, after two
+  retakes to reach the mandated literal launch command (task 014, `39bc1c41`, retaken `21cb3358`
+  and `f4b662e8`, discharged `04ad189b`); ran the guard subset green and discharged its
+  sweep-sha, retaken once at the final sha (task 015, `8606c90d`, retaken `bbde4c83`, discharged
+  `1d1d58e4`; re-run again at the true final sha, task 017, `1aa48a48`); and wrote the closing
+  report walking A–E (task 016, `0a041b96`, corrected `e07536f2` and `014b8066`).
 
-This entry is written from task 006, mid-wave; the operator or a later task in this same wave
-updates it once the wave reaches its own terminal state. **Gotcha for whoever edits this block
-next:** `docs/prds/README.md`'s row for this wave currently opens "in progress", and
-`tests/test_roadmap_terminal_claims.py`'s `is_terminal()` only excludes the literal words
-"running" and "launching" — so that row is, right now, already misclassified `is_terminal() ==
-True` by that check. Do not write the phrase "not yet landed" (or, once v0.14.2's own task 007
-lands, any of its four pinned rephrasings) anywhere in this block until that vocabulary gap is
-fixed or this wave's row wording changes — it would trip the very guard this wave's own
-requirement C exists to strengthen.
+This entry was first written by task 006, mid-wave, promising that a later task would fill in B,
+C and E once they landed. Approach 1 (the 18-task flat plan this wave ran as) reached its own
+terminal tally — 15 `validated`, 1 `skipped`, 2 `failed` (016, 017) — and was rejected by review
+on four findings unrelated to B/C/E's substance; this paragraph, still promising a future update
+for three requirements that had in fact already landed, was itself one symptom review flagged.
+Approach 2 — a 13-task flat corrective plan touching only `scripts/`, `tests/` and `docs/`
+paths, none of them `src/ralphd/` — rewrites this block in its own task 004 to state, plainly,
+which commit shipped which requirement, rather than deferring the statement to a future update
+that by then had no task left to write it.
 
 ## Later / explicitly deferred
 
