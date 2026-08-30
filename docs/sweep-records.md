@@ -29,9 +29,26 @@ final code/docs sha of the work it verifies.)
     1a205cd637caba2874d7db293557fef8ac3558a9
     ```
 
-A record with no `sweep-sha` block declares nothing and is out of scope for
-the guard -- this is how every pre-v0.14 report (v0.5 through v0.13) stays
-exempt without being edited.
+A record with no `sweep-sha` block is not thereby out of scope. Every report
+under `artifacts/reports/` that contains a genuine pytest result summary line
+must declare something: a `sweep-sha` if its sweep is current enough to need
+discharge-chain tracking to `HEAD`, or an `archived-sha` (below) if the
+record's own sha predates this run's launch sha -- checked by the ancestor
+rule (`git merge-base --is-ancestor <sha> <LAUNCH_SHA>`), never by exempting
+a whole vintage of report by filename or by date.
+
+An earlier revision of this rule said the opposite: an undeclared record
+declared nothing and was simply out of scope, and every report predating the
+`v0.14-` filename prefix (v0.5 through v0.13, as a class) was exempt by
+construction, unedited. That blanket carve-out is the hole that let #105
+hide -- the guard's own summary-line pattern was blind to every sweep whose
+pytest run took longer than a minute (i.e. every sweep there is), and that
+defect went unnoticed for waves precisely because most of the reports it
+would have flagged were never run through the guard at all: they were
+exempt, so nobody ever asked what the guard made of them. Requiring a
+declaration from every report that shows a result line -- with no exemption
+left to hide a blind spot behind -- is what makes the guard's coverage
+provable instead of assumed.
 
 ## The discharge rule
 
