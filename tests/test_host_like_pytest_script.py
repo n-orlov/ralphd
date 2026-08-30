@@ -13,6 +13,7 @@ mechanism.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -195,6 +196,36 @@ def test_header_makes_no_self_skip_claim_about_the_docker_or_browser_tiers():
     assert "no docker socket" not in lowered, (
         "the header must not claim this environment lacks a docker socket"
     )
+
+
+def test_header_rejects_the_false_always_a_socket_claim_about_this_environment():
+    """F2 (#74) mutation guard, sibling to the self-skip-framing test above:
+    the actual false premise an earlier header shipped was not just "it
+    self-skips" -- the sentence preceding that claimed "in *this*
+    environment a usable socket is present essentially every time this
+    script runs here", which is also false: plenty of ralphd job
+    containers, including this one, have no usable docker socket at all
+    (see the docs/gotchas above and the header's own current wording). A
+    fix that only rewords the self-skip sentence while leaving an
+    always/essentially-always-present claim about the socket intact would
+    still pass the older assertions above but must fail this one. Header
+    lines are collapsed across the `#` comment markers and line wraps so
+    the check is not defeated by rewrapping alone."""
+    text = SCRIPT.read_text()
+    header_lines = [
+        line[1:] for line in text.splitlines() if line.startswith("#")
+    ]
+    normalized = " ".join(" ".join(header_lines).split()).lower()
+    always_present_claim = re.compile(
+        r"usable (?:docker )?socket is (?:present |there )?"
+        r"(?:essentially )?(?:always|every time)"
+    )
+    assert not always_present_claim.search(normalized), (
+        "header must not claim a usable docker socket is always, or"
+        " essentially always, present in this environment (F2, #74) --"
+        f" matched: {always_present_claim.search(normalized)}"
+    )
+    assert "essentially every time this script runs" not in normalized
 
 
 def test_script_filters_the_docker_tier_out_when_a_usable_socket_is_present(tmp_path):
