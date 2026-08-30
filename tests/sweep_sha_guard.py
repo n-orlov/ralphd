@@ -89,7 +89,26 @@ WAVE_PREFIX = "v0.14-"
 # the fix `v0.14-a2-closing-report.md` (a v0.14 record whose real sha is
 # newer than v0.14's own LAUNCH_SHA but older than v0.14.1's) needed to take
 # `archived-sha` at all without relaxing the ancestor check itself.
-LAUNCH_SHA = "7c962c6ea64933f664ab71b8eddcab18ae236cd1"
+#
+# Task 001 (v0.14.2): same shape of staleness, one run later. This constant
+# still held v0.14.1's own launch sha after v0.14.2 had already launched
+# from a later one (`b91840433786fd932117852e421b128c344dc469`, one commit
+# past `8adf2bc`, the sha `docs/prds/README.md`'s v0.14.2 row and
+# `/run/ralphd/notes.md` both name as this run's launch). Updated here to
+# that real launch sha. The old value (`7c962c6ea64933f...`) is a genuine
+# ancestor of the new one -- v0.14.2 shipped strictly after v0.14.1 -- so
+# this only widens which pre-launch shas the ancestor check accepts; no
+# record that passed before stops passing now. Sixteen v0.14/v0.14.1
+# records (all now-terminal, pre-v0.14.2 sweeps) took `archived-sha` in the
+# same commit as this constant update, for the identical reason
+# `v0.14-a2-closing-report.md` needed it at the v0.14->v0.14.1 boundary: a
+# `sweep-sha` declaration whose discharge chain to current `HEAD` no longer
+# holds once a later wave's own tail commits (here, `docs/prds/README.md`'s
+# v0.14.2 index-row edit and the new PRD file, neither under
+# `artifacts/reports/`) break the report-only-tail bridge -- not because
+# the sweep itself stopped being true, but because it now predates the run
+# that is checking it.
+LAUNCH_SHA = "b91840433786fd932117852e421b128c344dc469"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
