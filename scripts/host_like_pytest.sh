@@ -37,30 +37,34 @@
 # genuinely branches on whether a usable docker socket is present at
 # invocation time -- it does not universally assume one:
 #
-#   - This job container in particular is itself a ralphd job container that
-#     talks to its own sibling containers over a real, bind-mounted docker
-#     socket, so in *this* environment a usable socket is present essentially
-#     every time this script runs here. When the socket is present, running
-#     the docker-marked modules anyway would not exercise the tier the way it
-#     runs on a bare host: it would run *nested* (a sibling of a sibling), and
-#     the sibling's published port is on a network namespace this container
-#     does not share, so every docker test would time out with
-#     `[Errno 111] Connection refused` against the bridge gateway instead of
-#     skipping or passing cleanly. That false "it self-skips" premise in an
-#     earlier version of this header cost a real 57-minute sweep (8 failed,
-#     6 errors, all in the five docker-marked modules) before anyone noticed
+#   - A ralphd job container talks to its own sibling containers over a
+#     bind-mounted docker socket, so *some* ralphd job containers do have a
+#     usable socket at invocation time -- but not every one does, and not
+#     always: this very container has none right now (`ls
+#     /var/run/docker.sock` fails with "No such file or directory",
+#     `DOCKER_SOCK_PATH` is unset, and `docker version` exits 1 with
+#     "failed to connect to the docker API at unix:///var/run/docker.sock").
+#     When a usable socket *is* present, running the docker-marked modules
+#     anyway would not exercise the tier the way it runs on a bare host: it
+#     would run *nested* (a sibling of a sibling), and the sibling's
+#     published port is on a network namespace this container does not
+#     share, so every docker test would time out with `[Errno 111]
+#     Connection refused` against the bridge gateway instead of skipping or
+#     passing cleanly. That false "it self-skips" premise in an earlier
+#     version of this header cost a real 57-minute sweep (8 failed, 6
+#     errors, all in the five docker-marked modules) before anyone noticed
 #     the failures were an artefact of nesting, not a real regression
 #     (F2, #74). So: whenever this script detects a usable socket (a `docker`
 #     binary on PATH, a real socket file, and a working `docker version`
 #     round-trip), it filters the docker tier out with `-m "not docker"`
 #     instead of attempting to run it nested.
-#   - On a bare developer host that lacks a usable docker socket entirely --
-#     the environment this script otherwise reproduces -- there genuinely is
-#     no usable socket to detect. In that direction the script injects nothing extra
-#     for the docker tier: the docker-marked modules' own module-level
-#     `skipif` (see tests/test_docker_sibling_e2e.py's `_docker_available()`)
-#     is what makes them self-skip cleanly there, the same as it would for a
-#     developer running the bare acceptance command by hand.
+#   - When no usable socket is present -- as in this container right now, and
+#     as on a bare developer host that lacks docker entirely -- the script
+#     injects nothing extra for the docker tier: the docker-marked modules'
+#     own module-level `skipif` (see tests/test_docker_sibling_e2e.py's
+#     `_docker_available()`) is what makes them self-skip cleanly there, the
+#     same as it would for a developer running the bare acceptance command
+#     by hand.
 #
 # Making the nested docker tier actually pass is explicitly out of scope
 # (#74) -- that tier still needs a real, unnested host run to mean anything.
