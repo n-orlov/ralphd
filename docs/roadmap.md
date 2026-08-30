@@ -1213,7 +1213,14 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   adds it always moves `HEAD` one past the chain it discharges — fixed by accepting a
   report-only tail past the chain's end (task 003, `d46199c`). Both fixes are pinned by tests
   that fail against the pre-change code (`tests/test_sweep_sha_guard.py`,
-  `tests/test_final_sha_guards_discovery.py`).
+  `tests/test_final_sha_guards_discovery.py`). A third defect surfaced only once approach 3
+  reviewed the mechanism's own reach: the mandatory `sweep-sha` declaration applied only to
+  filenames beginning `v0.14-`, so dozens of real sweep records outside that prefix carried a
+  pytest summary line with no declared sha at all. Fixed (task 008, `11f8b41`+`e7fbe91`): the
+  filename gate is gone, the rule now applies to every report under `artifacts/reports/` that
+  contains a pytest result line, a new `archived-sha` block form is accepted only for a sha that
+  is `LAUNCH_SHA` or a genuine ancestor of it, and all 24 previously-undeclared records were
+  backfilled with one.
 - ✅ **B. The guard subset a docs- or report-only commit can break, discovered rather than
   listed (#103).** `scripts/final_sha_guards.sh` (`0ee0ec0`, widened at `34be5fa`) finds its
   membership by grepping `tests/` for modules that read `docs/`, `artifacts/` or `README`
@@ -1260,7 +1267,10 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   ladder, and pre-plan steering keeps its prompt-injected shape unchanged (`db4a9a2`,
   `c6385c5`, task 014, `tests/test_steer_uncharged_task014.py`). **With G-J landed, #91
   closes as a consequence**: adding scope to a running approach is now possible through the
-  steer hat's task-insertion path.
+  steer hat's task-insertion path. The "every hat" pin itself went stale once `plan_review` and
+  `verdict_gate` joined the hat table without a matching update to the two whole-hat-table lists
+  this requirement's own test walks — re-pinned by approach 3 before trusting it for this
+  closing sequence (task 002, `40cc84d`).
 - ✅ **K. The peer plan review gate (#101).** An opt-in peer model approves a plan or routes
   objections back into a bounded planning revision (`1a4c1bf`, task 018,
   `tests/test_peer_plan_review_gate.py`).
@@ -1311,17 +1321,52 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   `ralphctl doctor` reports the installed/missing/stale line (`0839fbb`, task 023,
   `tests/test_cli_skills_install.py`).
 - ⏳ **S. The predecessor's row, this wave's row, the version, the roadmap, the closures.**
-  Landed as of this entry: `0.14.0` in `pyproject.toml` and
-  `src/ralphd/__init__.py` (task 008); this `## v0.14` block; #103, #99, #100 closed with
-  evidence (task 005); #95, #96 closed with evidence disclosing the P residual (task 006);
-  #98, #91, #101, #102, #88 closed with evidence (task 007) — all ten issues this wave owns
-  are closed. **Not yet landed as of this entry**: `selfdev-v013-a-broken-contract`'s own PRD
-  index row (still stale) and this wave's own row snapshot; `SPEC.md`/`docs/cli.md`/
-  `docs/api.md`/`docs/architecture.md` updates for the three new hats, the amendment ruling,
-  the new worker contract value, pause semantics and `skills install`; the fast/docker/browser
-  tier sweeps and both dev-layout mode sweeps at this approach's true final sha; the guard
-  subset re-verification at that sha; and the closing operator report walking A through S —
-  all tracked as this run's own remaining tasks and not claimed here.
+  Landed as of this entry: `0.14.0` in `pyproject.toml` and `src/ralphd/__init__.py` (task 008);
+  this `## v0.14` block; #103, #99, #100 closed with evidence (task 005); #95, #96 closed with
+  evidence disclosing the P residual (task 006); #98, #91, #101, #102, #88 closed with evidence
+  (task 007) — all ten issues this wave owns are closed, and a fresh `GET` at this entry confirms
+  every one of the ten still reads `closed`. Two claims this block's own first draft made under
+  "not yet landed" were wrong the moment the tree already held the work:
+  `selfdev-v013-a-broken-contract`'s own PRD index row is settled, not stale (task 010,
+  `2c698d5`), and `SPEC.md`/`docs/cli.md`/`docs/api.md`/`docs/architecture.md` already carry the three new hats, the
+  amendment ruling, the `plan_complete` contract value, pause semantics and `skills install`
+  (task 011, `48ace84`) — both corrected here rather than left standing.
+
+  **Approach 3 is a recovery approach**, opened because the independent review at `551066c`
+  found the shipped suite genuinely RED at that sha: 25 fast-tier failures, all this wave's own
+  regressions and none pre-existing (evidence:
+  `/run/ralphd/artifacts/plan-a3-attribution-evidence.md`,
+  `/run/ralphd/artifacts/plan-a3-redmods.log` — the same 14 modules at the run's
+  launch sha `8fc9ee3` give 778 passed / 0 failed), and found that seven v0.14 records had
+  already called those 25 failures "pre-existing". All 25 are now fixed: the legacy loop-driving
+  fixtures that still signalled completion with the retired `<promise>COMPLETE</promise>` marker
+  were migrated onto the `plan_complete` contract value (task 001, `5820b45`); the two
+  whole-hat-table lists requirement J's every-hat pin walks were re-pinned to include
+  `plan_review` and `verdict_gate` (task 002, `40cc84d`, see J above); the line-cited
+  ambient-`$HOME` allowlist and conformance-ledger guards were re-pinned to the code they cite
+  (task 003, `3427628`); the pinned verbatim documentation text the wave's own edits broke was
+  restored (task 004, `1ff384e`); and the roadmap-vocabulary and issue-traceability claim guards
+  were made green (task 005, `0f658c4`) — re-running the exact 25-node set plus the two modules
+  that did not exist at launch now gives 880 passed, 0 failed. The false "pre-existing"
+  attribution was then corrected in all seven records that carried it, dated and without
+  deleting any original count (task 006, `e5d6247`+`29348d0`+`9a03037`); the approach-2 closing
+  report's non-absolute predecessor path and its 18/18-vs-actual-17/1 task tally were fixed, and
+  every place it called a red (`exit=1`) run green now names it red (task 007, `9a16689`); and
+  requirement A's own `sweep-sha` mandate was widened from files named `v0.14-*` to every report
+  under `artifacts/reports/` carrying a pytest result line, with the 24 previously-undeclared
+  records backfilled and a new `archived-sha` ancestor form added (task 008, `11f8b41`+
+  `e7fbe91` — see A above).
+
+  **Not yet landed as of this entry**, tracked as this run's own remaining tasks and not claimed
+  here: a fresh fast/docker/browser-tier sweep and both dev-layout-mode sweeps taken at this
+  approach's own final sha — the sweep records already in the tree were taken at the red
+  `551066c` sha and correctly record that redness; they are not being recast as green by this
+  entry. Also outstanding: the discovered guard subset re-verified at that same final sha; fresh
+  evidence comments posted to the ten closed issues from this approach's own record, re-verified
+  with a fresh `GET`; the leftover sibling container, test image and `.docker-e2e-tmp-*` debris
+  the prior review found; and the closing operator report walking A through S. **No requirement
+  has been cut**: the standing cut order (task 013 → 012 → 016) is a contingency against the
+  deadline, not yet exercised.
 
 ## Later / explicitly deferred
 
