@@ -1357,16 +1357,79 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   records backfilled and a new `archived-sha` ancestor form added (task 008, `11f8b41`+
   `e7fbe91` — see A above).
 
-  **Not yet landed as of this entry**, tracked as this run's own remaining tasks and not claimed
-  here: a fresh fast/docker/browser-tier sweep and both dev-layout-mode sweeps taken at this
-  approach's own final sha — the sweep records already in the tree were taken at the red
-  `551066c` sha and correctly record that redness; they are not being recast as green by this
-  entry. Also outstanding: the discovered guard subset re-verified at that same final sha; fresh
-  evidence comments posted to the ten closed issues from this approach's own record, re-verified
-  with a fresh `GET`; the leftover sibling container, test image and `.docker-e2e-tmp-*` debris
-  the prior review found; and the closing operator report walking A through S. **No requirement
-  has been cut**: the standing cut order (task 013 → 012 → 016) is a contingency against the
-  deadline, not yet exercised.
+  **Corrected by v0.14.1, from a terminal, self-contradicting record — this is what actually
+  happened, not the live "not yet landed" list this entry originally carried.** Approach 3
+  ran all five fresh sweeps, re-verified the discovered guard subset at its own final sha, posted
+  fresh evidence to the ten closed issues, cleared the debris the prior review found, and wrote
+  the closing operator report (task 017) walking A through S — every item the first draft of
+  this paragraph called outstanding did land. **17 of 18 approach-3 tasks validated** (001–016
+  and 018); **task 017 itself is `failed` / validation-exhausted** — not because the work it
+  reported was undone, but because its own report contradicted itself (see the errata below) and
+  its notification inventory was incomplete. No requirement was cut; the standing cut order
+  (task 013 → 012 → 016) was never exercised.
+
+  An independent review at the shipped sha `f73e94f` then rejected the approach outright on
+  **four record-and-evidence findings**, two of them real defects in requirement A's own guard
+  mechanism rather than mere paperwork: (1) **#105** — the sweep-record guard's summary-line
+  regex rejects pytest's parenthesized elapsed suffix, so it is blind to every sweep longer than
+  60 seconds, which is every sweep there is; (2) **#106** — "the last commit is followed by the
+  guard subset, green, recorded" has no fixed point, because recording the result is itself a
+  commit; (3) the record itself was stale and self-contradictory — this block's own "not yet
+  landed" paragraph (the one this text replaces), `docs/prds/README.md`'s index row still
+  reading `running`, and the closing report's B/cuts/residuals sections still calling task 018
+  pending after its S section called it complete; (4) #103's and #104's own evidence was not
+  re-verified with a fresh `GET` before this entry claimed it. Notably, review's own independent
+  rerun of the discovered guard subset at that same shipped sha `f73e94f` gave **110 modules,
+  2747 passed, exit 0** — **the suite was green at the shipped sha while the record about it was
+  not**, which is exactly the shape #106 exists to close. v0.14.1 (below) is the wave that fixes
+  #105 and #106 and settles the rest of this paragraph's own bookkeeping.
+
+## v0.14.1 — a guard that cannot see, and a rule that cannot finish
+
+Full PRD:
+[`docs/prds/v0.14.1-a-guard-that-cannot-see.md`](prds/v0.14.1-a-guard-that-cannot-see.md).
+v0.14 shipped nineteen requirements' worth of working code and then failed on its own record;
+independent review found the code sound (379 focused tests across C–R, six green suite lanes,
+110 modules / 2747 passed at the shipped sha `f73e94f`) but rejected the approach on the four
+findings named in the corrected `## v0.14` block above. This wave is deliberately small: six
+requirements, no new subsystems, fixing the two real code defects and settling the bookkeeping
+review found around them.
+
+- **A. The guard learns to read the summary line pytest actually prints (#105).**
+  `PYTEST_SUMMARY_RE` was widened to accept pytest's optional parenthesized elapsed suffix and
+  pinned against both literal PRD summary lines (task 002, `2c97af0`) — landed as substance,
+  though task 002 itself is `skipped` on one structurally un-meetable clause (a `-k` selector
+  that names its own expected-red node). The sha-declaration backfill this fix exposed (20 newly
+  discovered undeclared records) landed in task 003's commits (`8a5882c`, `b71258e`), though task
+  003 itself is `failed` / validation-exhausted on a residual (no manifest exhaustively
+  enumerating every path those two commits touched) that a later task, or a `skipped`
+  relabelling, still owes.
+- **B. The final-sha rule gets a fixed point (#106).** Parent-of-HEAD acceptance — a
+  sweep-sha declaration needs no `discharge-sha` block when HEAD is exactly the add-commit for
+  that record, touching only that record's own path, whose sha is precisely that commit's single
+  parent — is implemented and pinned with its two must-still-fail fixtures (tasks 005/006,
+  `b64f59e`+`76a1b94`) and documented in `docs/sweep-records.md`, which also now names #106 and
+  the five-wave cost the missing fixed point had already run up (task 007, `98cfa7d`).
+- **C. The roadmap says what landed.** The `## v0.14` block's stale "not yet landed" summary
+  paragraph is rewritten above to state what actually landed, the four review findings, and that
+  the suite was green at the shipped sha while the record about it was not (task 008); a
+  fast-tier test pinning that no terminal wave's block may carry a live "not yet landed" claim
+  follows (task 009).
+- **D. The version and the two rows.** `0.14.1` in `pyproject.toml` and
+  `src/ralphd/__init__.py`, v0.14's `docs/prds/README.md` row settled from its terminal state
+  (`failed`/`unverified`, approach 3 17 of 18 validated, task 017 `failed`), and this PRD's own
+  row added (task 010, task 011).
+- **E. v0.14's closing report stops contradicting itself.** An errata section reconciles task
+  018's actual disposition and the true 17/1 task tally across the report's B, cuts, residuals
+  and current-accounting sections (task 012).
+- **F. The evidence, the closures, and the record.** #105 and #106 closed with the evidence
+  above (tasks 013/014); #103 re-verified with a fresh evidence comment (task 015); #104
+  verified and closed, or left open with findings (task 016); the discovered guard subset
+  discharged and re-run at the true final sha (tasks 017/020); a fast-tier sweep recorded at the
+  shipped sha (task 018); the closing report walking A–F (task 019).
+
+This entry is written from task 008, mid-wave: A and B's code landed and is pinned; C is in
+progress (this entry); D, E and F are this wave's remaining tasks, not yet claimed landed here.
 
 ## Later / explicitly deferred
 
