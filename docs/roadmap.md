@@ -1027,10 +1027,14 @@ below are the PRD's own, `A`-`H`.
   `tests/test_roadmap_v09.py` already uses (`f4e58c4`, `82f219e`) --
   #85/#84/#86/#87/#83 are all closed (A-E above), #88
   (`ralphctl skill install`) stays untouched, per the PRD's own exclusion.
-  Not yet landed as of this entry: settling this run's row in
-  `docs/prds/README.md` from a fresh `status.json` read, and the closing
-  operator report walking the repaired A-H -- both tracked as this run's
-  own remaining tasks and not claimed here.
+  **Corrected by v0.14.1, task 009: both items this bullet once called
+  outstanding did land, later than this bullet itself.** The closing operator
+  report walking the repaired A-H landed the same day (task 011, `486052c`),
+  and `docs/prds/README.md`'s row was settled from the run's own terminal
+  record (`state: succeeded`, `verdict: verified`) the next day, by a commit
+  in the following wave rather than this run's own task 012 (`e845bcd`). Kept
+  here as history, not deleted, the same way v0.14.1 kept the corrected v0.14
+  paragraph below rather than erasing what an earlier entry believed.
 
 ## v0.13 — a broken contract is a conversation
 
@@ -1174,10 +1178,21 @@ does.
   (`9610c78`, 4323 passed/1 skipped/20 deselected/0 failed/1355.48s) and
   fast tier, run last (`c11c1f5`, 4286 passed/1 skipped/62 deselected/0
   failed/856.29s) — tasks 005-009. The `docs/prds/README.md` row
-  resettle (task 010) has now landed too. Not yet landed as of this
-  entry: the repository-guard re-verification at approach 3's own true
-  final sha, and the closing operator report walking the repaired A-N —
-  both tracked as this run's own remaining tasks and not claimed here.
+  resettle (task 010) has now landed too.
+
+  **Corrected by v0.14.1, task 009: this is what actually happened, not the
+  live "Not yet landed" claim this entry originally carried.** The closing
+  operator report walking the repaired A-N landed the same approach (task
+  011, `1a205cd`), naming the guard re-verification as its own named,
+  undone residual rather than claiming it done. That residual — task 012,
+  "re-verify the docs- and report-reading guards at the true final sha, by
+  discovery not by a hand list" — never landed: it went `failed` /
+  validation-exhausted, and review accepted the wave anyway (11 of 12 tasks
+  validated is this run's own terminal record, per `docs/prds/README.md`).
+  Requirement B of the next wave, v0.14, later built the discovery-based
+  guard subset (`scripts/final_sha_guards.sh`) that task 012 was reaching
+  for, but that landed in that later wave's own tree, not this one's — it
+  does not retroactively close task 012 itself.
 
 ## v0.14 — every hand on the plan is named
 
