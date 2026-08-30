@@ -203,17 +203,46 @@ def test_script_filters_the_docker_tier_out_when_a_usable_socket_is_present(tmp_
     cannot reach), the script must detect a usable docker socket and
     exclude the tier with ``-m "not docker"`` -- proven here by collecting
     a real docker-marked module through the script and asserting nothing
-    from it is collected."""
-    env = dict(os.environ)
-    env["PYTHON"] = sys.executable
-    result = subprocess.run(
-        ["bash", str(SCRIPT), "tests/test_docker_sibling_e2e.py", "--collect-only"],
-        cwd=str(REPO),
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=60,
-    )
+    from it is collected.
+
+    Made hermetic (#109): this must hold regardless of whether *this*
+    container happens to have a real docker socket mounted in, so it
+    fabricates its own usable-socket precondition instead of relying on
+    the ambient environment -- a fake ``docker`` executable on ``PATH``
+    that exits 0 for ``docker version`` (matching the script's own probe,
+    ``command -v docker`` + ``-S "${DOCKER_SOCK_PATH:-/var/run/docker.sock}"``
+    + a ``docker version`` round-trip), plus a real bound unix socket at a
+    path handed to the script via ``DOCKER_SOCK_PATH`` so the ``-S`` test
+    passes without touching ``/var/run/docker.sock``."""
+    import socket as socket_module
+
+    fake_bin_dir = tmp_path / "fake_bin"
+    fake_bin_dir.mkdir()
+    fake_docker = fake_bin_dir / "docker"
+    fake_docker.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_docker.chmod(0o755)
+
+    sock_path = tmp_path / "fake-docker.sock"
+    fake_socket = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    fake_socket.bind(str(sock_path))
+    fake_socket.listen(1)
+    try:
+        assert sock_path.is_socket()
+
+        env = dict(os.environ)
+        env["PYTHON"] = sys.executable
+        env["PATH"] = f"{fake_bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        env["DOCKER_SOCK_PATH"] = str(sock_path)
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "tests/test_docker_sibling_e2e.py", "--collect-only"],
+            cwd=str(REPO),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+    finally:
+        fake_socket.close()
     # exit code 5 is pytest's own "no tests collected" -- expected here since
     # every test in the module is deselected, not an error in the script.
     assert result.returncode == 5, result.stdout + result.stderr
