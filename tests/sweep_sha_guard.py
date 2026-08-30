@@ -34,7 +34,21 @@ WAVE_PREFIX = "v0.14-"
 # "archived" mean something older than the current run, rather than a second
 # unchecked way for a current-wave record to dodge the sweep-sha/
 # discharge-sha chain.
-LAUNCH_SHA = "8fc9ee33d68e86114f513d1591c4add8356a45d9"
+#
+# Task 003 (v0.14.1, #105/#106 backfill): this constant was still v0.14's
+# OWN launch sha (`8fc9ee33d...`) after v0.14.1 had already launched from a
+# later one -- a stale value inherited across the run boundary, not a fresh
+# choice. It is updated here to v0.14.1's real launch sha
+# (`7c962c6ea64933f664ab71b8eddcab18ae236cd1`, one commit past `f73e94f`,
+# the tree `docs/prds/README.md`'s own v0.14.1 row and `notes.md` both name
+# as this run's launch). The old value (`8fc9ee33d...`) is a genuine
+# ancestor of the new one -- v0.14.1 shipped strictly after v0.14 -- so this
+# widens which pre-launch shas the ancestor check accepts; it never narrows
+# it, and no record that passed the check before stops passing now. This is
+# the fix `v0.14-a2-closing-report.md` (a v0.14 record whose real sha is
+# newer than v0.14's own LAUNCH_SHA but older than v0.14.1's) needed to take
+# `archived-sha` at all without relaxing the ancestor check itself.
+LAUNCH_SHA = "7c962c6ea64933f664ab71b8eddcab18ae236cd1"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
