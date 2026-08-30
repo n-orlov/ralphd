@@ -41,7 +41,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     # back to the invoking user's real `$HOME`.
     {
         "path": "cli/main.py",
-        "line": "155",
+        "line": "158",
         "reason": ("registry()'s ralphctl-managed-state root: overridable via "
                    "RALPHD_REGISTRY; the ambient fallback is the operator's own "
                    "machine home, which is exactly right for a bare `ralphctl` "
@@ -49,7 +49,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "1780",
+        "line": "1783",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -57,14 +57,24 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "1793",
+        "line": "1796",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "4084",
+        "line": "4077",
+        "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
+                   "default target dir (`_auto_detect_skills_install_target`) "
+                   "when the operator passes no `--target` -- the CLI IS the "
+                   "operator's own host process, so their own agent-skills "
+                   "directory is exactly the right default, same trust "
+                   "boundary as `registry()`'s RALPHD_REGISTRY fallback above."),
+    },
+    {
+        "path": "cli/main.py",
+        "line": "4279",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -73,17 +83,27 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4088",
+        "line": "4283",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
-                   "-- same reasoning as line 4084."),
+                   "-- same reasoning as the `.aws` mount just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "5774",
+        "line": "6008",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
                    "runs on -- there is no other caller to take this from."),
+    },
+    {
+        "path": "cli/main.py",
+        "line": "6012",
+        "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
+                   "requirement R): `_operator_skill_status` reports on "
+                   "whichever agent-skills layout is discoverable under the "
+                   "OPERATOR's own home, on the same host `doctor` itself "
+                   "runs on -- report-only, same reasoning as pi_host_config "
+                   "just above it."),
     },
     {
         "path": "cli/ui_server.py",
@@ -144,7 +164,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "engine/loop.py",
-        "line": "542",
+        "line": "700",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
