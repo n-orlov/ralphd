@@ -77,8 +77,8 @@ def test_every_declared_sweep_sha_is_current_or_discharged() -> None:
     assert not problems, "\n".join(problems)
 
 
-def test_every_v014_sweep_record_declares_a_sha() -> None:
-    problems = guard.wave_sha_missing_problems(REPORTS)
+def test_every_sweep_record_declares_a_sha() -> None:
+    problems = guard.sha_missing_problems(REPORTS)
     assert not problems, "\n".join(problems)
 
 
@@ -210,28 +210,98 @@ def test_a_one_sha_discharge_block_is_rejected_as_malformed(tmp_path) -> None:
     assert stale in malformed[0]
 
 
-def test_a_v014_sweep_record_with_no_sha_is_caught_by_the_companion_check(
+def test_a_sweep_record_with_no_sha_is_caught_by_the_missing_check(
     tmp_path,
 ) -> None:
-    record = tmp_path / "v0.14-fixture-missing-sha-sweep.md"
+    """Task 008 (#103, requirement A): the missing-declaration check applies
+    regardless of filename -- there is no `v0.14-` gate any more."""
+    record = tmp_path / "fixture-missing-sha-sweep.md"
     record.write_text("# fixture\n\n1 passed in 0.01s\n")
 
-    problems = guard.wave_sha_missing_problems([record])
+    problems = guard.sha_missing_problems([record])
 
     assert len(problems) == 1
     assert record.name in problems[0]
     assert "sweep-sha" in problems[0]
+    assert "archived-sha" in problems[0]
 
 
-def test_a_non_wave_or_non_sweep_report_is_never_required_to_declare_a_sha(
+def test_a_pre_launch_filename_no_longer_exempts_a_sweep_record(
     tmp_path,
 ) -> None:
-    not_this_wave = tmp_path / "v0.13-old-sweep.md"
-    not_this_wave.write_text("1 passed in 0.01s\n")
+    """The old rule exempted every report not named `v0.14-*`, whatever it
+    reported -- a report of a real sweep with no declaration at all still
+    passed as long as its filename predated the wave. Task 008 (#103,
+    requirement A) closed that: a pytest result line now owes a declaration
+    (sweep-sha or archived-sha) no matter what the file is named. Only a
+    report that names no pytest result line at all is exempt, filename
+    aside.
+    """
+    undeclared_old_sweep = tmp_path / "v0.13-old-sweep.md"
+    undeclared_old_sweep.write_text("1 passed in 0.01s\n")
     not_a_sweep = tmp_path / "v0.14-fixture-plain-notification.md"
     not_a_sweep.write_text("just a notification, no test result line\n")
 
-    assert guard.wave_sha_missing_problems([not_this_wave, not_a_sweep]) == []
+    problems = guard.sha_missing_problems([undeclared_old_sweep, not_a_sweep])
+
+    assert len(problems) == 1
+    assert undeclared_old_sweep.name in problems[0]
+
+
+def test_an_archived_sha_predating_launch_satisfies_the_missing_check(
+    tmp_path,
+) -> None:
+    """The documented alternative to sweep-sha: a record whose real sha
+    predates this run's launch entirely declares `archived-sha` instead and
+    is not flagged as missing a declaration. (Ancestry itself is checked by
+    `check_reports`, exercised separately below -- this test only pins that
+    `sha_missing_problems` recognises the form at all.)
+    """
+    record = tmp_path / "v0.13-old-sweep.md"
+    record.write_text(
+        f"```archived-sha\n{'a' * 40}\n```\n\n1 passed in 0.01s\n"
+    )
+
+    assert guard.sha_missing_problems([record]) == []
+
+
+def test_a_post_launch_sha_declared_as_archived_is_refused(tmp_path) -> None:
+    """The rule this backfill exists to protect: a current-wave record
+    cannot label itself archived. `archived-sha` is only accepted for a sha
+    that is an ancestor of `LAUNCH_SHA`; a descendant (or an unrelated sha)
+    is a hard failure, not a silent pass, even though the missing-check
+    above never flags the file at all (it declared *something*).
+    """
+    head = guard.current_head()
+    # HEAD is (by definition of an in-progress run) never an ancestor of a
+    # sha that was fixed before any of this run's work landed -- so head
+    # itself is a safe, always-true "post-launch" sha for this fixture,
+    # with no dependency on which commit happens to be HEAD right now.
+    record = tmp_path / "v0.14-fixture-fake-archived.md"
+    record.write_text(f"```archived-sha\n{head}\n```\n\n1 passed in 0.01s\n")
+
+    problems = guard.check_reports([record], head)
+
+    assert len(problems) == 1, problems
+    assert record.name in problems[0]
+    assert head in problems[0]
+    assert guard.LAUNCH_SHA in problems[0]
+    assert "archived" in problems[0]
+    # And the missing-declaration check does NOT also flag it -- it declared
+    # something, just not something check_reports accepts.
+    assert guard.sha_missing_problems([record]) == []
+
+
+def test_archived_sha_accepts_the_launch_sha_itself(tmp_path) -> None:
+    """LAUNCH_SHA is its own ancestor for this purpose -- a record that ran
+    exactly at the launch sha is the boundary case, not an edge case to
+    special-case away."""
+    record = tmp_path / "v0.5-fixture-at-launch.md"
+    record.write_text(
+        f"```archived-sha\n{guard.LAUNCH_SHA}\n```\n\n1 passed in 0.01s\n"
+    )
+
+    assert guard.check_reports([record], guard.current_head()) == []
 
 
 # --------------------------------------------------------------------------

@@ -20,15 +20,28 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = REPO_ROOT / "artifacts" / "reports"
 
-# This wave's own filename prefix for new reports (already used by task 001's
-# artifacts/reports/v0.14-operator-notifications.md).
+# This wave's own filename prefix. Historically this gated which records
+# owed a sha declaration at all (only files named with this prefix did);
+# task 008 (#103, requirement A) removed that gate -- every report under
+# artifacts/reports/ that contains a pytest result line owes a declaration
+# now, this wave's own or not (see docs/sweep-records.md). The constant
+# survives only as a label some historical records/messages still refer to.
 WAVE_PREFIX = "v0.14-"
+
+# This run's launch sha -- the sha `docs/prds/README.md` records this run
+# shipped from. The `archived-sha` form (below) is accepted for a record
+# only when its declared sha is an ANCESTOR of this one: that is what makes
+# "archived" mean something older than the current run, rather than a second
+# unchecked way for a current-wave record to dodge the sweep-sha/
+# discharge-sha chain.
+LAUNCH_SHA = "8fc9ee33d68e86114f513d1591c4add8356a45d9"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
-# A fenced block tagged `sweep-sha` or `discharge-sha`, whose body is exactly
-# one 40-hex-char sha per line (leading/trailing blank lines tolerated).
-_FENCE_RE = re.compile(r"```(sweep-sha|discharge-sha)\s*\n(.*?)```", re.S)
+# A fenced block tagged `sweep-sha`, `discharge-sha` or `archived-sha`, whose
+# body is exactly one (sweep-sha/archived-sha) or two (discharge-sha)
+# 40-hex-char shas per line (leading/trailing blank lines tolerated).
+_FENCE_RE = re.compile(r"```(sweep-sha|discharge-sha|archived-sha)\s*\n(.*?)```", re.S)
 
 # A genuine pytest result summary line: a line whose WHOLE content is one or
 # more comma-separated "N <outcome>" clauses followed by pytest's own
@@ -109,6 +122,16 @@ def sweep_shas(text: str) -> list[str]:
     return _fenced_shas(text, "sweep-sha")
 
 
+def archived_shas(text: str) -> list[str]:
+    """Every sha this record declares via the `archived-sha` form -- the
+    documented alternative to `sweep-sha`/`discharge-sha` for a record whose
+    declared sha predates this run's launch sha (`LAUNCH_SHA`) and therefore
+    has no chain to walk to current `HEAD` at all. See `check_reports` for
+    the ancestor check that makes this form refuse a current-wave record.
+    """
+    return _fenced_shas(text, "archived-sha")
+
+
 def discharge_entries(text: str) -> list[tuple[str, str]]:
     """Every well-formed discharge this record states.
 
@@ -160,15 +183,30 @@ def malformed_discharge_lines(text: str) -> list[str]:
     ]
 
 
-def is_wave_sweep_record(path: Path, text: str | None = None) -> bool:
-    """This wave's own report, and a report *of a sweep* (names a pytest
-    result line) -- the two things that jointly make declaring a
-    `sweep-sha` block mandatory rather than optional."""
-    if not path.name.startswith(WAVE_PREFIX):
-        return False
+def is_sweep_record(path: Path, text: str | None = None) -> bool:
+    """A report *of a sweep* -- one that names a pytest result line -- and
+    therefore owes a sha declaration (`sweep-sha` or `archived-sha`).
+
+    Task 008 (#103, requirement A) removed the earlier `WAVE_PREFIX`
+    filename gate: every report under `artifacts/reports/` that names a
+    pytest result line owes a declaration now, this wave's own or not.
+    `path` is accepted (and still named first) for call-site symmetry with
+    the historical `is_wave_sweep_record` name and because callers already
+    pass it; only `text` is examined.
+    """
     if text is None:
         text = path.read_text()
     return contains_pytest_result_line(text)
+
+
+# Historical alias: every real report and test in this repo has moved to
+# `is_sweep_record`, but a v0.14-era report still cites
+# `tests/sweep_sha_guard.py::is_wave_sweep_record` by node id
+# (`tests/report_claims.py::node_problems` requires that exact `def` to
+# exist in this file for that citation to keep resolving) -- kept as a real
+# function, not a bare assignment, so that citation is never a stale one.
+def is_wave_sweep_record(path: Path, text: str | None = None) -> bool:
+    return is_sweep_record(path, text)
 
 
 def current_head(cwd: Path = REPO_ROOT) -> str:
@@ -281,19 +319,59 @@ def _reaches_head(
     return False
 
 
+def _is_ancestor(sha: str, descendant: str, repo_root: Path) -> bool:
+    """True when `sha` is `descendant` itself or a genuine git ancestor of
+    it (`git merge-base --is-ancestor`). False on any git failure (unknown
+    sha, not a git repo, etc.) -- an archived-sha declaration this cannot
+    positively confirm is treated as unproven, never as accepted by default.
+    """
+    if sha == descendant:
+        return True
+    try:
+        out = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sha, descendant],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return out.returncode == 0
+
+
+def _archived_message(path: Path, sha: str) -> str:
+    rel = _rel(path)
+    return (
+        f"{rel} declares archived-sha {sha}, but {sha} is not an ancestor "
+        f"of this run's launch sha {LAUNCH_SHA} -- the archived-sha form is "
+        f"reserved for a sha that predates this run entirely (see "
+        f"docs/sweep-records.md). A record produced during this run cannot "
+        f"label itself archived to dodge the sweep-sha/discharge-sha chain: "
+        f"declare it as sweep-sha instead and either match HEAD or carry a "
+        f"discharge chain that reaches it."
+    )
+
+
 def check_reports(
     paths: list[Path], head: str, repo_root: Path = REPO_ROOT
 ) -> list[str]:
     """Every declared sweep-sha must be current HEAD, discharged AT HEAD, or
-    discharged at a sha whose remaining gap to HEAD is report-only.
+    discharged at a sha whose remaining gap to HEAD is report-only. Every
+    declared archived-sha must be an ancestor of `LAUNCH_SHA` (this run's
+    own launch sha) -- the archived form's whole point is that it names a
+    sha that predates the run, so it never needs a chain to HEAD at all;
+    a sha that is NOT such an ancestor is refused outright, because that is
+    precisely a current-wave record trying to label itself archived instead
+    of carrying a real sweep-sha/discharge-sha chain.
 
-    Discharge is resolved transitively and is *anchored*: each
-    `discharge-sha` line names both the stale sha it retires and the sha the
-    discharge check was run at. That chain has to terminate at current
-    `HEAD` -- OR at a sha for which `git diff --name-only sha..HEAD` (run in
-    `repo_root`) touches only `artifacts/reports/**` -- to be accepted; a
-    chain that reaches neither (and a discharge block that names no
-    verified-at sha at all) leaves the stale declaration flagged. The
+    Discharge (for sweep-sha) is resolved transitively and is *anchored*:
+    each `discharge-sha` line names both the stale sha it retires and the
+    sha the discharge check was run at. That chain has to terminate at
+    current `HEAD` -- OR at a sha for which `git diff --name-only sha..HEAD`
+    (run in `repo_root`) touches only `artifacts/reports/**` -- to be
+    accepted; a chain that reaches neither (and a discharge block that names
+    no verified-at sha at all) leaves the stale declaration flagged. The
     report-only allowance is why this is satisfiable at all: the commit
     that ADDS a `discharge-sha` block can only name shas that already
     exist, so it always leaves `HEAD` one commit past the chain's own end,
@@ -313,22 +391,42 @@ def check_reports(
             if _reaches_head(sha, head, chain, repo_root=repo_root):
                 continue
             problems.append(_discharge_message(path, sha, head))
+        for sha in archived_shas(text):
+            if _is_ancestor(sha, LAUNCH_SHA, repo_root):
+                continue
+            problems.append(_archived_message(path, sha))
     return problems
 
 
-def wave_sha_missing_problems(paths: list[Path]) -> list[str]:
-    """Companion assertion: every sweep record THIS WAVE writes declares the
-    sweep-sha form. Pre-existing (pre-v0.14) records are out of scope by
-    construction (they don't match WAVE_PREFIX)."""
+def sha_missing_problems(paths: list[Path]) -> list[str]:
+    """Every report that names a pytest result line owes a sha declaration
+    -- `sweep-sha` (checked against HEAD/discharge by `check_reports`) or
+    `archived-sha` (checked against `LAUNCH_SHA` ancestry, same place).
+    Task 008 (#103, requirement A) removed the earlier `WAVE_PREFIX`
+    filename gate that used to exempt every report not named `v0.14-*`; a
+    record with a pytest result line and no declaration at all is now a
+    hard failure regardless of its filename.
+    """
     problems: list[str] = []
     for path in paths:
         text = path.read_text()
-        if is_wave_sweep_record(path, text) and not sweep_shas(text):
-            rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
-            problems.append(
-                f"{rel} is a v0.14 sweep record (name starts with "
-                f"'{WAVE_PREFIX}', names a pytest result line) but declares "
-                f"no sweep-sha block -- add one naming the sha the sweep "
-                f"ran at (see docs/sweep-records.md)."
-            )
+        if not is_sweep_record(path, text):
+            continue
+        if sweep_shas(text) or archived_shas(text):
+            continue
+        rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+        problems.append(
+            f"{rel} names a pytest result line but declares no sweep-sha "
+            f"or archived-sha block -- add a `sweep-sha` block naming the "
+            f"sha the sweep ran at, or, if that sha predates this run's "
+            f"launch sha {LAUNCH_SHA}, an `archived-sha` block naming it "
+            f"(see docs/sweep-records.md)."
+        )
     return problems
+
+
+# Historical alias, kept for the same reason as `is_wave_sweep_record`
+# above -- a real `def`, not a bare assignment, in case a future report ever
+# cites this node id too.
+def wave_sha_missing_problems(paths: list[Path]) -> list[str]:
+    return sha_missing_problems(paths)

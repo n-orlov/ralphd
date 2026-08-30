@@ -136,15 +136,17 @@ The failure message names the record's path, its declared sha, the current
 -- if the intervening commits are the report/roadmap/index tail requirement B
 exists for -- run that subset at `HEAD` and add a `discharge-sha` block.
 
-## The companion rule: every v0.14 sweep record declares one
+## The companion rule: every sweep record declares one
 
-Pre-existing records are explicitly out of scope (no `sweep-sha` block,
-skipped by the primary guard by construction). New records this wave writes
-are not exempt: any file under `artifacts/reports/` whose name starts with
-the `v0.14-` prefix (this wave's own naming convention, already used by
-`artifacts/reports/v0.14-operator-notifications.md`) **and** which contains a
-genuine pytest result *summary line* counts as one of this wave's sweep
-records and must declare a `sweep-sha` block.
+Task 002/#103 introduced this rule scoped to the wave that was current then
+(any `artifacts/reports/*.md` file named with the `v0.14-` prefix). Task 008
+(#103, requirement A) removed that filename gate: **every** report under
+`artifacts/reports/`, whatever it is named, that contains a genuine pytest
+result *summary line* is a sweep record and must declare a `sweep-sha` or
+`archived-sha` block (the latter documented in the next section). A report
+naming no pytest result line at all -- a plain notification log, for
+instance -- is not a sweep record and is not required to declare anything,
+regardless of its filename.
 
 A "genuine pytest result summary line" is defined by shape, and the shape is
 anchored to a **whole line**: the line's entire content (ignoring
@@ -173,22 +175,67 @@ file holding it a sweep record:
 `contains_pytest_result_line` over `PYTEST_SUMMARY_RE`, anchored with
 `^`/`$` and matched a line at a time -- an unanchored search would classify
 both kinds of prose above as sweep records.
-`tests/test_sweep_sha_guard.py::test_every_v014_sweep_record_declares_a_sha`
+`tests/test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`
 enforces the companion rule;
 `::test_an_english_sentence_with_a_count_is_not_a_pytest_result_line`,
 `::test_a_real_pytest_summary_line_is_a_pytest_result_line`,
 `::test_a_report_that_only_quotes_counts_inline_is_not_a_sweep_record` and
 `::test_the_real_notification_log_is_not_misclassified_as_a_sweep_record`
-pin both directions of the line rule. A `v0.14-*.md` file that names no test
-result at all (a plain notification log, for instance) is not a sweep record
-and is not required to declare anything.
+pin both directions of the line rule. A file that names no test result at
+all (a plain notification log, for instance) is not a sweep record and is
+not required to declare anything.
+
+## The `archived-sha` block, and the ancestor rule
+
+Before task 008 (#103, requirement A), every report predating the `v0.14-`
+prefix was exempt from the companion rule above by construction -- its
+filename simply did not match. Once the filename gate is gone, those
+records (and every earlier wave's) need a way to satisfy the rule without a
+discharge chain to current `HEAD`, because that chain was never going to
+exist: the sweep they report ran, and the code and the record both stopped
+changing, long before this run's own work started.
+
+The `archived-sha` block is that second, narrower form. Its shape is
+identical to `sweep-sha` -- exactly one 40-hex-char sha, in its own fenced
+block:
+
+    ```archived-sha
+    035160131dfc52fec00c6b4415f543232fd428c3
+    ```
+
+but the check is different: `check_reports` accepts a declared
+`archived-sha` only when it is `LAUNCH_SHA` (the sha this run itself
+launched from, `docs/prds/README.md`'s "the sha the wave actually shipped"
+for whichever run is current) or a genuine git **ancestor** of it
+(`git merge-base --is-ancestor <sha> <LAUNCH_SHA>`) -- never a check against
+current `HEAD`, and never a discharge chain. A sha that is *not* such an
+ancestor -- in particular any sha produced during this run's own work, which
+is by definition a descendant of `LAUNCH_SHA`, not an ancestor of it -- is a
+hard failure naming the file, the declared sha and `LAUNCH_SHA`. This is the
+rule's whole point: **a current-wave record cannot label itself archived**
+to dodge the sweep-sha/discharge-sha chain the way an actually-current
+record has to carry it. "Archived" means the record's own sha predates the
+run that is checking it, not merely that nobody has re-verified it lately.
+
+Backfilling an `archived-sha` for a pre-existing record: derive the real sha
+the sweep ran at from git history -- `git log --follow --diff-filter=A --
+<path>` finds the commit that added the file, and (per the "names its
+parent sha" rule above) that add commit's **parent** is the sha the sweep
+itself actually ran at, because the record commit necessarily comes after
+the sweep it reports. Never hand-guess a sha for this.
+
+`tests/test_sweep_sha_guard.py::test_a_post_launch_sha_declared_as_archived_is_refused`
+and `::test_archived_sha_accepts_the_launch_sha_itself` pin the ancestor
+check both ways;
+`::test_a_pre_launch_filename_no_longer_exempts_a_sweep_record` pins that
+the old filename exemption is gone.
 
 ## Where the checks live
 
-* `tests/sweep_sha_guard.py` -- the parser (`sweep_shas`,
+* `tests/sweep_sha_guard.py` -- the parser (`sweep_shas`, `archived_shas`,
   `discharge_entries`, `malformed_discharge_lines`), the result-line rule
   (`is_pytest_result_line`, `contains_pytest_result_line`) and the two
-  problem-list functions (`check_reports`, `wave_sha_missing_problems`),
+  problem-list functions (`check_reports`, `sha_missing_problems`),
   shared the same way `tests/report_claims.py` shares its checks with every
   report.
 * `tests/test_sweep_sha_guard.py` -- applies them to every report the
