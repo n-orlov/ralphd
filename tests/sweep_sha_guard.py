@@ -73,12 +73,25 @@ _FENCE_RE = re.compile(r"```(sweep-sha|discharge-sha|archived-sha)\s*\n(.*?)```"
 # or `=`-padded -- still does. Use `is_pytest_result_line` /
 # `contains_pytest_result_line` rather than the regex directly. See
 # docs/sweep-records.md's "companion rule" paragraph.
+#
+# Task 002 (#105, requirement A): pytest's own `-q` summary line grows a
+# parenthesized `(H:MM:SS)` elapsed suffix once a run passes roughly 60s of
+# wall time -- e.g. `4198 passed, 1 skipped, 62 deselected in 852.84s
+# (0:14:12)`. The rule above, with no allowance for that suffix, rejected
+# every one of those lines outright, which in practice meant it rejected
+# every REAL sweep this project runs (the fast tier alone takes ~850s) while
+# still matching every short, synthetic one -- the matcher saw fewer real
+# records, never more. The trailing group below is OPTIONAL and adds
+# nothing a real line didn't already have, so widening it can only make the
+# matcher see MORE genuine summary lines, never fewer, and it changes
+# nothing about the anchoring or the prose-rejection behaviour above.
 _OUTCOME = r"(?:passed|failed|skipped|errors?|deselected|warnings?|xfailed|xpassed)"
 PYTEST_SUMMARY_RE = re.compile(
     r"^[ \t=]*"
     rf"\d+ +{_OUTCOME}"
     rf"(?:, *\d+ +{_OUTCOME})*"
     r" +in +\d+(?:\.\d+)?s"
+    r"(?: +\(\d+:\d{2}:\d{2}\))?"
     r"[ \t=]*$",
     re.MULTILINE,
 )

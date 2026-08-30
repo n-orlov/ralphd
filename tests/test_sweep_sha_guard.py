@@ -371,6 +371,33 @@ def test_a_real_pytest_summary_line_is_a_pytest_result_line() -> None:
     )
 
 
+def test_a_real_elapsed_hms_summary_line_is_a_pytest_result_line() -> None:
+    """Task 002 (#105, requirement A): pytest's `-q` summary grows a
+    parenthesized `(H:MM:SS)` suffix once a run passes ~60s of wall time, so
+    the pre-widening matcher rejected every real sweep this project runs.
+    Both lines below are taken verbatim from the PRD -- the fast tier's own
+    real summary and the guard subset's -- and both must be recognized as
+    whole-line pytest result lines.
+    """
+    fast_tier_line = (
+        "4198 passed, 1 skipped, 62 deselected in 852.84s (0:14:12)"
+    )
+    guard_subset_line = "42 passed, 2 deselected in 473.94s (0:07:53)"
+
+    for line in (fast_tier_line, guard_subset_line):
+        assert guard.is_pytest_result_line(line), line
+        match = guard.PYTEST_SUMMARY_RE.fullmatch(line)
+        assert match is not None and match.group(0) == line, line
+
+    # Same forms a real record actually holds: indented in a fenced block,
+    # and pytest's non-quiet `=`-padded form, now with the suffix present.
+    assert guard.is_pytest_result_line(f"    {fast_tier_line}")
+    assert guard.contains_pytest_result_line(
+        f"the fast tier:\n\n```\n    {fast_tier_line}\n```\n"
+    )
+    assert guard.is_pytest_result_line(f"===== {guard_subset_line} =====")
+
+
 def test_a_report_that_only_quotes_counts_inline_is_not_a_sweep_record(
     tmp_path,
 ) -> None:
