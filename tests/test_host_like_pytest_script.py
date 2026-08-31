@@ -193,6 +193,82 @@ def _always_a_socket_claims(header_text: str) -> list[str]:
     return offenders
 
 
+# --- wording-independent detector for the mirror-image false claim: an
+# UNCONDITIONAL, universal claim that a usable docker socket is *absent* ---
+#
+# The header genuinely branches (present -> filter with `-m "not docker"`;
+# absent -> inject nothing, let the docker-marked modules self-skip), and
+# both branches are true, conditional, per-invocation statements -- neither
+# is a claim about every invocation. A rewrite that flattened either branch
+# into a universal ("this environment always/never has a usable docker
+# socket") would be just as false as the original always-present claim, so
+# this side needs its own detector rather than a blanket string match that
+# only happens to pass by phrasing luck (task 002, review finding 1).
+_UNIVERSAL_ABSENCE_QUANTIFIER = re.compile(
+    r"\b(never|at no time|not once|not ever|under no circumstances"
+    r"|no matter when)\b"
+)
+_HARD_NEGATIONS = {
+    "not", "never", "no", "nor", "none", "nothing", "cannot",
+    "lacks", "lacking", "lacked", "absent", "missing", "unavailable",
+}
+
+
+def _part_is_conditioned_or_describes_the_probe(part: str) -> bool:
+    return bool(
+        _CONDITION_ON_DETECTION.search(part)
+        or _CONDITION_ON_SOCKET_SUBJECT.search(part)
+        or _DETECTION_DESCRIPTION.search(part)
+    )
+
+
+def _part_claims_never_a_socket(part: str, socket_in_context: bool = False) -> bool:
+    """Does this clause (or comma-part) assert that a usable docker socket
+    is UNCONDITIONALLY absent here -- the mirror image of
+    ``_part_claims_always_a_socket`` above. Honest, branch-conditioned
+    wording ("when no usable socket is present ...", "this container has
+    none right now") must not trip this: the condition/probe-description
+    exclusions and the requirement for an explicit universal (never/at no
+    time/always+lacks/...) rather than a bare, unquantified "no" keep
+    those passing."""
+    if not _SOCKET_MENTION.search(part):
+        if not (socket_in_context and _ANAPHOR.search(part)):
+            return False
+    if not _PRESENCE_WORD.search(part):
+        return False
+    if _UNIVERSAL_ABSENCE_QUANTIFIER.search(part):
+        return not _part_is_conditioned_or_describes_the_probe(part)
+    if _UNIVERSAL_QUANTIFIER.search(part):
+        negation = _HEDGE_OR_NEGATION.search(part)
+        if negation and negation.group(0) in _HARD_NEGATIONS:
+            return not _part_is_conditioned_or_describes_the_probe(part)
+    return False
+
+
+def _always_absent_socket_claims(header_text: str) -> list[str]:
+    """Every clause of ``header_text`` that claims a usable docker socket is
+    unconditionally (always, never, at no time, ...) absent here. Empty
+    list == no such claim. Sibling to ``_always_a_socket_claims``: together
+    the two reject a header that flattens either branch of the genuine
+    present/absent split into a universal."""
+    normalized = " ".join(header_text.replace("*", "").split()).lower()
+    offenders = []
+    socket_in_context = False
+    for clause in _CLAUSE_SPLIT.split(normalized):
+        clause = clause.strip()
+        if not clause:
+            continue
+        parts = [clause]
+        if "," in clause:
+            parts.extend(p.strip() for p in clause.split(",") if p.strip())
+        if any(
+            _part_claims_never_a_socket(part, socket_in_context) for part in parts
+        ):
+            offenders.append(clause)
+        socket_in_context = bool(_SOCKET_MENTION.search(clause))
+    return offenders
+
+
 # Paraphrases of the false claim. Every one of these must be rejected --
 # including the two that slipped through an earlier, wording-bound version
 # of this guard (the first two entries).
@@ -451,21 +527,47 @@ def test_the_decoy_is_a_regular_package_not_a_namespace_portion():
 
 
 def test_header_makes_no_self_skip_claim_about_the_docker_or_browser_tiers():
-    """F2 (#74): an earlier header claimed the docker (and browser) tiers
-    self-skip cleanly here for want of a socket/browser -- false, since this
-    script always runs inside a job container that has a real docker socket
-    mounted in. The header must describe what actually happens (the tier is
-    detected and filtered out, not left to self-skip) and must cite #74, not
-    repeat the false premise."""
+    """F2 (#74): an earlier header claimed a usable docker socket is always
+    present here, so the docker tier is always filtered out and self-skip
+    is dismissed outright as a false premise -- itself false, since socket
+    presence genuinely varies per invocation (some ralphd job containers
+    have one, some -- including this one -- do not, and a bare developer
+    host usually has none). The header's actual, current behaviour branches
+    on that per-invocation probe: when a usable socket IS present it
+    injects ``-m "not docker"`` to filter the tier out (never runs it
+    nested); when the socket is ABSENT it injects nothing, and the
+    docker-marked modules' own module-level ``skipif`` self-skips cleanly,
+    the same as it would for a developer running the bare command by hand.
+    The header must describe *both* branches, cite #74, and must not claim
+    either branch -- present or absent -- as this environment's
+    unconditional, universal behaviour."""
     text = SCRIPT.read_text()
     assert "#74" in text
-    lowered = text.lower()
-    assert "self-skip" not in lowered or "false" in lowered, (
-        "a stray 'self-skip' claim must be framed as the false premise being"
-        " corrected, not restated as fact"
+    header = _header_comment_text(text)
+    normalized = " ".join(header.split()).lower()
+    # The header must describe both halves of the actual branch, not just
+    # one of them.
+    assert "not docker" in normalized, (
+        "header must describe the socket-present branch (-m 'not docker')"
     )
-    assert "no docker socket" not in lowered, (
-        "the header must not claim this environment lacks a docker socket"
+    assert "self-skip" in normalized, (
+        "header must describe the socket-absent branch (modules self-skip)"
+    )
+    # Neither branch may be asserted as this environment's unconditional,
+    # universal behaviour -- in either direction. This replaces a former
+    # blanket `"no docker socket" not in lowered` check, which only passed
+    # by phrasing luck and would reject the header's truthful, conditioned
+    # description of the absent branch just as readily as a false
+    # universal-absence claim.
+    presence_offenders = _always_a_socket_claims(header)
+    assert presence_offenders == [], (
+        "header must not claim a usable docker socket is always present"
+        f" -- offending clauses: {presence_offenders}"
+    )
+    absence_offenders = _always_absent_socket_claims(header)
+    assert absence_offenders == [], (
+        "header must not claim a usable docker socket is always/never"
+        f" absent -- offending clauses: {absence_offenders}"
     )
 
 
