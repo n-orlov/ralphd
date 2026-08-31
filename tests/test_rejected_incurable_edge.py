@@ -254,6 +254,11 @@ def test_a_curable_blocking_finding_still_takes_the_ordinary_replan_edge(tmp_pat
     assert sup._pause.is_set() is True  # never paused
     assert sup.notifier.messages == []  # never escalated
     assert (root / "approaches" / "01").exists()  # archived as usual
+    # DoD predicate 5 (#111): the ordinary replan edge also writes the
+    # composite PRD for the next approach to work from -- a curable
+    # blocking finding must not short-circuit that half either.
+    assert sup.run.composite_prd_file.exists()
+    assert "Do the thing." in sup.run.composite_prd_file.read_text()
 
 
 def test_rejected_no_approach_left_still_wins_when_approaches_are_exhausted(tmp_path):
