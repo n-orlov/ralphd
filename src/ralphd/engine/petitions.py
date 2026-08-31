@@ -48,24 +48,42 @@ because no ONE of them is enough:
    boundary exists (`privsep.separated()`) a hat process cannot write the
    file at all;
 2. its authentication tag is a KEYED HMAC-SHA256 over a per-run secret
-   (`run.root/petition-adjudications.key`, minted root-owned mode 0600 by
-   the engine) that the record itself does not contain, so recomputing
-   the documented hash of hand-edited entries does not produce a valid
-   tag -- an unkeyed digest stored beside the data it covers, which is
-   what this module shipped first, is recomputable by anyone who can
-   write the file and therefore proves nothing;
-3. every write announces its tag in an append-only `events.jsonl` witness
-   line (`ADJUDICATIONS_RECORDED_EVENT`) that `read_confirmed_
-   adjudications` cross-checks, so even a forger who read the key in an
-   unprivileged single-uid container (the documented degrade: no boundary
-   to raise into) must also fabricate an engine witness line -- and any
-   detection is itself recorded (`ADJUDICATIONS_TAMPERED_EVENT`) and
-   sticky for the rest of the run.
+   that NOTHING under the run directory ever contains -- the key lives in
+   the engine PROCESS's own memory for the life of an episode, and (only
+   where the uid boundary exists) in a root-owned 0600 file inside a
+   root-owned 0700 store OUTSIDE the run dir (`key_store_dir`), because
+   the run directory itself is agent-OWNED: a hat process can replace any
+   file in it, root-owned or not, so a key kept there is not a secret at
+   all. An unkeyed digest stored beside the data it covers (what this
+   module shipped first) is recomputable by anyone who can write the
+   file, and a keyed MAC whose key sits in the same agent-owned tree is
+   recomputable the same way -- both were defeated by exactly that probe;
+3. every write announces its tag twice: in the engine's own in-memory
+   record of the last MAC it wrote, and in an `events.jsonl` witness line
+   (`ADJUDICATIONS_RECORDED_EVENT`). `read_confirmed_adjudications`
+   cross-checks both, so rewriting the (agent-writable) event log to
+   announce a forged MAC does not help either -- and any detection is
+   itself recorded (`ADJUDICATIONS_TAMPERED_EVENT`), sticky in memory AND
+   in the log for the rest of the run.
 
-Any mismatch means the record is treated as EMPTY (no obligation is
-exempted) and review is told, in its own prompt, to raise a BLOCKING
-finding -- fail closed, never towards trusting a record that may have
-been edited to manufacture an exemption.
+The threat model is narrow and worth stating: the property claimed is
+that nothing outside `record_confirmed_adjudications` can ADD or KEEP an
+exemption -- against a hat process, which is a separate PROCESS from the
+engine (`runner.py` spawns the agent CLI), so it can write every file in
+the run dir but cannot read the engine's address space. Where
+`$RALPHD_RUN_SECRETS_DIR` points the key store somewhere the agent uid
+can read (an operator's choice, and never the default), the property
+holds for the episode that wrote the record -- the engine's in-memory
+`last_mac` still catches a re-MAC -- but not for a LATER episode reading
+that store's key; put the store where only root can read it, which is
+what the `privsep.separated()` default does. Destroying the record (deleting it, replacing the key store,
+truncating the event log) is always possible for whoever owns the run
+directory, and it only ever REMOVES exemptions -- the safe direction.
+Any mismatch, and any record that cannot be authenticated at all, means
+the record is treated as EMPTY (no obligation is exempted) and -- for a
+mismatch -- review is told, in its own prompt, to raise a BLOCKING
+finding: fail closed, never towards trusting a record that may have been
+edited to manufacture an exemption.
 """
 
 from __future__ import annotations
@@ -76,6 +94,7 @@ import json
 import os
 import re
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 
 # The four petition types `docs/petition-format.md` enumerates. A section
@@ -228,13 +247,21 @@ def petitions_review_context(workspace: Path) -> str:
 # adjudications, tamper-evident against the worker.
 # ---------------------------------------------------------------------------
 
-# The per-run MAC key file (`run.root/petition-adjudications.key`) and the
-# two `events.jsonl` witness event types. Together with the root-owned
-# record write (`privsep.write_root_owned_json`) these are the three
-# independent artifacts a forged adjudication would have to line up.
-ADJUDICATIONS_KEY_FILENAME = "petition-adjudications.key"
+# The `events.jsonl` event types this layer writes. Together with the
+# root-owned record write (`privsep.write_root_owned_json`) and the
+# engine-memory-only MAC key below, these are the independent artifacts a
+# forged adjudication would have to line up.
 ADJUDICATIONS_RECORDED_EVENT = "petition_adjudications_recorded"
 ADJUDICATIONS_TAMPERED_EVENT = "petition_adjudications_tampered"
+ADJUDICATIONS_UNAUTHENTICATED_EVENT = "petition_adjudications_unauthenticated"
+
+# Where a per-run MAC key MAY be persisted so that a record written by an
+# earlier engine episode still authenticates after a restart: a directory
+# OUTSIDE the (agent-owned) run dir, root-owned mode 0700, holding
+# root-owned mode 0600 key files. `$RALPHD_RUN_SECRETS_DIR` overrides the
+# default for an operator who wants the store on a root-only tmpfs.
+RUN_SECRETS_DIR_ENV = "RALPHD_RUN_SECRETS_DIR"
+DEFAULT_RUN_SECRETS_DIR = Path("/var/lib/ralphd/run-secrets")
 
 def _normalize_obligation(obligation: str) -> str:
     """Case/whitespace-insensitive key for matching an obligation string
@@ -264,63 +291,146 @@ def _adjudications_digest(entries: list[dict]) -> str:
     return hashlib.sha256(_canonical(entries).encode("utf-8")).hexdigest()
 
 
-def _key_path(run) -> Path:
-    """The per-run MAC key backing `_adjudications_mac`, at
-    `run.root/petition-adjudications.key` (documented in SPEC 5.1's
-    run-dir tree and `docs/architecture.md`). Written ONCE, by the engine,
-    root-owned mode 0600 when `privsep.separated()` -- i.e. unreadable by
-    the dropped-to-agent uid every hat process (worker AND review) runs
-    at, which is what makes forging a MAC impossible rather than merely
-    detectable. Lives at run scope, beside the record it authenticates,
-    so it survives an engine restart mid-run (the record must still verify
-    in a later episode) and is never copied into `approaches/NN/`."""
-    return Path(run.root) / ADJUDICATIONS_KEY_FILENAME
+@dataclass
+class _Authority:
+    """The engine process's own authority over one run's adjudication
+    record: the MAC key, the MAC of the last write the engine itself made
+    (an in-memory witness no other process can reach, let alone rewrite),
+    and whether tampering has been detected in this episode (sticky)."""
+
+    key: bytes
+    last_mac: str | None = None
+    tampered: bool = False
 
 
-def _read_key(run) -> bytes | None:
-    """The run's MAC key, or None when there is none to read (no record
-    has ever been written -- or the key was removed, which is itself
-    treated as tampering by `read_confirmed_adjudications` whenever a
-    record file does exist)."""
+# Per-run authorities, held ONLY in this process's memory, keyed by run
+# root. This is the primary home of the MAC key: a worker iteration is a
+# separate process, so even at the identical uid (the documented
+# single-uid degrade, which is also every test in this repo) it cannot
+# read the key out of the engine's address space -- and there is no file
+# under the agent-OWNED run dir for it to read the key out of either,
+# which is precisely what attempt 2 got wrong.
+_AUTHORITIES: dict[str, _Authority] = {}
+
+
+def _authority_id(run) -> str:
+    return str(Path(run.root))
+
+
+def key_store_dir() -> Path | None:
+    """The directory a per-run MAC key MAY additionally be persisted in so
+    that a record written by an earlier engine EPISODE still authenticates
+    after a restart -- or None when there is none and the key is
+    memory-only for the episode.
+
+    Never inside the run dir: the run directory is agent-owned, which is
+    what makes every file in it replaceable at the agent uid whether the
+    file itself is root-owned or not (the reason attempt 2's
+    `run.root/petition-adjudications.key` was not a secret).
+    `$RALPHD_RUN_SECRETS_DIR` names the store explicitly (an operator
+    putting it on a root-only tmpfs -- a store the agent uid can read is
+    the operator's own trade-off, see the module docstring); otherwise it exists exactly when the
+    uid boundary does (`privsep.separated()`), where
+    `/var/lib/ralphd/run-secrets` is created root-owned 0700 -- neither
+    readable nor replaceable at the agent uid, because its PARENT is
+    root-owned too. With no boundary and no override there is NO on-disk
+    key at all: a later episode then cannot authenticate an earlier
+    episode's record and treats it as empty (fail closed), which is the
+    documented degrade.
+    """
+    override = os.environ.get(RUN_SECRETS_DIR_ENV)
+    if override:
+        return Path(override)
+    from ralphd.engine import privsep
+    if privsep.separated():
+        return DEFAULT_RUN_SECRETS_DIR
+    return None
+
+
+def _stored_key_path(run) -> Path | None:
+    """This run's key file inside `key_store_dir()`, named by a digest of
+    the run root (the store names no run paths), or None when there is no
+    store."""
+    store = key_store_dir()
+    if store is None:
+        return None
+    ident = hashlib.sha256(_authority_id(run).encode("utf-8")).hexdigest()
+    return store / f"{ident[:32]}.key"
+
+
+def _read_stored_key(run) -> bytes | None:
+    path = _stored_key_path(run)
+    if path is None:
+        return None
     try:
-        material = _key_path(run).read_bytes().strip()
+        material = path.read_bytes().strip()
     except OSError:
         return None
     return material or None
 
 
-def _load_or_create_key(run) -> bytes:
-    """The run's MAC key, minted on first use. Created inside
-    `privsep.root_for_write()` with mode 0600 so that, wherever the uid
-    boundary exists, the key is root-owned and no hat process can read it;
-    with no boundary (`privsep.separated()` is False -- the test suite, an
-    unprivileged container) it degrades to an agent-owned 0600 file, the
-    same documented degrade `privsep.write_root_owned_json` takes, and
-    detection then rests on the `events.jsonl` witness below."""
-    existing = _read_key(run)
-    if existing is not None:
-        return existing
+def _persist_key(run, material: bytes) -> None:
+    """Best-effort copy of a freshly minted key into `key_store_dir()`:
+    root-owned 0700 directory, root-owned 0600 file, written inside
+    `privsep.root_for_write()`. A failure here is never fatal -- the key
+    stays in memory, this episode authenticates its own writes as usual,
+    and only cross-episode verification degrades (to fail-closed)."""
+    path = _stored_key_path(run)
+    if path is None:
+        return
     from ralphd.engine import privsep
-    path = _key_path(run)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    material = secrets.token_hex(32).encode("ascii")
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with privsep.root_for_write():
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, material)
-        finally:
-            os.close(fd)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    return _read_key(run) or material
+    try:
+        with privsep.root_for_write():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(path.parent, 0o700)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, material)
+            finally:
+                os.close(fd)
+            os.chmod(path, 0o600)
+    except OSError:
+        return
+
+
+def _authority(run, create: bool = False) -> _Authority | None:
+    """This run's authority: the one already held in this process's
+    memory, else one rebuilt from the key store (a later episode of the
+    same run), else -- only when `create` -- a freshly minted one. None
+    means this process holds no key for the run, so nothing about the
+    record can be authenticated at all; see
+    `read_confirmed_adjudications`, which then reads it as empty."""
+    ident = _authority_id(run)
+    auth = _AUTHORITIES.get(ident)
+    if auth is not None:
+        return auth
+    material = _read_stored_key(run)
+    if material is None:
+        if not create:
+            return None
+        material = secrets.token_bytes(32)
+        _persist_key(run, material)
+    auth = _Authority(key=material)
+    _AUTHORITIES[ident] = auth
+    return auth
+
+
+def forget_run_authority(run) -> None:
+    """Drop this run's in-memory authority -- exactly what an engine
+    RESTART does to it for free. Exposed so a test can model a later
+    episode honestly (the key store, if any, is all that survives)
+    instead of pretending a process boundary it never crossed."""
+    _AUTHORITIES.pop(_authority_id(run), None)
 
 
 def _adjudications_mac(entries: list[dict], key: bytes) -> str:
     """A KEYED authentication tag over `entries` -- HMAC-SHA256 under the
-    per-run key `_key_path` holds. This is what a worker-phase edit cannot
-    reproduce: the key is not in the record, and under the uid boundary it
-    is not even readable by the uid a hat runs at."""
+    per-run key the engine's `_Authority` holds. This is what a
+    worker-phase edit cannot reproduce: the key is in NO file under the
+    run dir (it lives in the engine process's memory, plus -- where the
+    uid boundary exists -- a root-owned store outside the run dir), so
+    there is nothing in the tree a hat process can write for it to read
+    the key out of."""
     return hmac.new(key, _canonical(entries).encode("utf-8"),
                      hashlib.sha256).hexdigest()
 
@@ -353,20 +463,29 @@ def _witness_macs(run) -> list[str]:
 
 
 def _tamper_already_witnessed(run) -> bool:
-    """Whether tampering has ALREADY been detected and recorded in this
-    run's event log. Detection is sticky by design: once the record has
-    been edited by something other than its only writer, nothing later in
-    the run can restore trust in it (a forger could otherwise tamper and
-    then wait for the next legitimate review write to erase the
-    evidence), and review keeps being told about it."""
+    """Whether tampering has ALREADY been detected in this run -- in this
+    engine process's own memory (which nothing outside the process can
+    reach) or, across episodes, in the run's event log. Detection is
+    sticky by design: once the record has been edited by something other
+    than its only writer, nothing later in the run can restore trust in it
+    (a forger could otherwise tamper and then wait for the next legitimate
+    review write to erase the evidence), and review keeps being told."""
     from ralphd.engine.state import read_events
+    auth = _authority(run)
+    if auth is not None and auth.tampered:
+        return True
     return bool(read_events(Path(run.root), (ADJUDICATIONS_TAMPERED_EVENT,)))
 
 
 def _flag_tampered(run, reason: str) -> bool:
-    """Record the detection in `events.jsonl` (once -- `_tamper_already_
-    witnessed` short-circuits every later read) and return True, the
-    `tampered` half of `read_confirmed_adjudications`'s return."""
+    """Record the detection in this process's own authority (the sticky
+    flag a forger cannot clear by rewriting a file) AND in `events.jsonl`
+    (once -- `_tamper_already_witnessed` short-circuits every later read),
+    then return True, the `tampered` half of
+    `read_confirmed_adjudications`'s return."""
+    auth = _authority(run)
+    if auth is not None:
+        auth.tampered = True
     _emit(run, ADJUDICATIONS_TAMPERED_EVENT, reason=reason)
     return True
 
@@ -403,9 +522,10 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     itself goes through `privsep.write_root_owned_json` -- the same
     root-owned write task 105 gave `tasks.json`, so under the uid boundary
     the record is not writable by a hat at all -- and leaves THREE
-    coherent artifacts behind: the record, its keyed MAC (over a key the
-    record does not contain, `_key_path`), and an
-    `ADJUDICATIONS_RECORDED_EVENT` witness line in `events.jsonl`.
+    coherent artifacts behind: the record, its keyed MAC (over a key no
+    file under the run dir contains -- `_authority`), and an
+    `ADJUDICATIONS_RECORDED_EVENT` witness line in `events.jsonl`, whose
+    MAC the engine also remembers in memory for the episode.
 
     A record found tampered is NOT merged forward: it is dropped in favour
     of the entries being written now (fail closed, never carry an
@@ -437,13 +557,15 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     if not changed:
         return
     entries = sorted(by_key.values(), key=lambda e: e["obligation"])
-    key = _load_or_create_key(run)
-    mac = _adjudications_mac(entries, key)
+    auth = _authority(run, create=True)
+    assert auth is not None  # create=True always yields one
+    mac = _adjudications_mac(entries, auth.key)
     doc = {"entries": entries,
            "digest": _adjudications_digest(entries),
            "mac": mac}
     Path(run.root).mkdir(parents=True, exist_ok=True)
     privsep.write_root_owned_json(run.petition_adjudications_file, doc)
+    auth.last_mac = mac
     _emit(run, ADJUDICATIONS_RECORDED_EVENT, mac=mac, entries=len(entries))
 
 
@@ -453,32 +575,48 @@ def read_confirmed_adjudications(run) -> tuple[list[dict], bool]:
     every respect, what `record_confirmed_adjudications` -- its only
     writer -- leaves behind:
 
-    1. a tamper detection already witnessed in `events.jsonl` (sticky:
-       trust is never restored later in the run);
-    2. the record missing/unreadable although the engine announced
-       writing one (a deleted or truncated record);
+    1. a tamper detection already sticky for this run (in this process's
+       own authority, or witnessed in `events.jsonl`): trust is never
+       restored later in the run;
+    2. the record missing/unreadable although the engine announced writing
+       one (a deleted or truncated record);
     3. a malformed record (non-dict top level, non-list `entries`);
-    4. no MAC key on disk although a record exists -- a record the engine
-       never wrote;
-    5. a keyed MAC (`_adjudications_mac`) that does not match `entries`;
+    4. a keyed MAC (`_adjudications_mac`) that does not match `entries`;
        this is the check an unkeyed digest cannot make, and the one that
        catches a worker-phase edit that recomputes the documented plain
-       digest;
-    6. the unkeyed `digest` field disagreeing with `entries`;
-    7. the `events.jsonl` witness's latest announced MAC disagreeing with
-       the record's -- so a forger would have to hold the key AND append a
-       matching engine witness line, not just rewrite one file.
+       digest -- the key is in no file under the run dir, so a hat process
+       has nothing to recompute it with;
+    5. the unkeyed `digest` field disagreeing with `entries`;
+    6. a MAC disagreeing with the last MAC THIS process wrote, when it has
+       written one -- an in-memory witness no forger can rewrite, so
+       replacing the record with an older (or fabricated) one is caught
+       even if the event log is rewritten to match;
+    7. otherwise (a record from an earlier episode, nothing written yet in
+       this one) the `events.jsonl` witness's latest announced MAC
+       disagreeing with the record's, or there being no witness at all --
+       a record the engine never announced writing.
 
-    A missing file with no witness is `([], False)` -- no record at all is
-    not tampering, just nothing having been CONFIRMED yet.
+    Two cases are deliberately NOT tampering, because both fail in the
+    safe direction (no obligation is exempted) and both have an innocent
+    cause that is indistinguishable from the guilty one:
+
+    * no record at all and no witness -- nothing has been CONFIRMED yet;
+    * a record this process cannot authenticate because it holds no key
+      for the run (an engine restart with no `key_store_dir()`, i.e. the
+      no-uid-boundary degrade). The entries are read as EMPTY and an
+      `ADJUDICATIONS_UNAUTHENTICATED_EVENT` records why; whoever owns the
+      run dir can always destroy the record's trustworthiness, and doing
+      so only ever REMOVES exemptions.
     """
     from ralphd.engine.state import read_json
     if _tamper_already_witnessed(run):
         return [], True
     witnesses = _witness_macs(run)
+    auth = _authority(run)
+    expected = auth.last_mac if auth is not None else None
     doc = read_json(run.petition_adjudications_file, default=None)
     if not doc:
-        if witnesses:
+        if witnesses or expected:
             return [], _flag_tampered(
                 run, "record missing or unreadable although the engine "
                      "announced writing one")
@@ -488,20 +626,26 @@ def read_confirmed_adjudications(run) -> tuple[list[dict], bool]:
     entries = doc.get("entries")
     if not isinstance(entries, list):
         return [], _flag_tampered(run, "record's entries field is not a list")
-    key = _read_key(run)
-    if key is None:
-        return [], _flag_tampered(
-            run, "a record exists but the run holds no MAC key -- the "
-                 "engine never wrote this record")
     stored_mac = doc.get("mac")
+    if auth is None:
+        _emit(run, ADJUDICATIONS_UNAUTHENTICATED_EVENT,
+              reason="this engine episode holds no MAC key for the run, so "
+                     "the record cannot be authenticated -- it is read as "
+                     "empty (no obligation is exempted)")
+        return [], False
     if not isinstance(stored_mac, str) or not hmac.compare_digest(
-            stored_mac, _adjudications_mac(entries, key)):
+            stored_mac, _adjudications_mac(entries, auth.key)):
         return [], _flag_tampered(
             run, "keyed MAC does not authenticate the record's entries")
     if doc.get("digest") != _adjudications_digest(entries):
         return [], _flag_tampered(
             run, "unkeyed digest field does not match the record's entries")
-    if not witnesses or not hmac.compare_digest(witnesses[-1], stored_mac):
+    if expected is not None:
+        if not hmac.compare_digest(expected, stored_mac):
+            return [], _flag_tampered(
+                run, "the record's MAC is not the one this engine process "
+                     "last wrote")
+    elif not witnesses or not hmac.compare_digest(witnesses[-1], stored_mac):
         return [], _flag_tampered(
             run, "events.jsonl holds no engine witness for this record's MAC")
     return entries, False

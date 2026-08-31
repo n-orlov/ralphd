@@ -362,30 +362,120 @@ def test_recomputing_the_documented_unkeyed_digest_is_still_detected(tmp_path):
     assert still_blocking[0]["severity"] == "blocking"
 
 
-def test_a_forger_holding_the_key_still_fails_the_event_log_witness(tmp_path):
-    """The unprivileged-container degrade (`privsep.separated()` is False --
-    every test here): the key file is readable by the same uid, so a forger
-    can compute a VALID keyed MAC. The `events.jsonl` witness, which only
-    the engine appends to on a real write, is what still catches it."""
+def test_a_forger_holding_the_key_still_fails_the_in_memory_witness(tmp_path):
+    """Hand a forger the key itself -- the one thing a real hat process
+    cannot get, since the key exists only in the engine process's memory --
+    and let it also rewrite the agent-writable `events.jsonl` witness (the
+    exact combination that defeated attempt 2). The engine's OWN in-memory
+    memory of the last MAC it wrote, which lives in no file and so cannot
+    be rewritten from outside the process, still catches it."""
+    from ralphd.engine.state import read_events
+
     run = RunDir(root=tmp_path / "run")
     _confirm(run)
-    key = (run.root / petitions.ADJUDICATIONS_KEY_FILENAME).read_bytes().strip()
+    key = petitions._authority(run).key  # a real hat has no way to do this
     entries = _recorded(run) + [{"obligation": "A fabricated exemption",
                                   "adjudication": "CONFIRMED"}]
+    forged_mac = petitions._adjudications_mac(entries, key)
     run.petition_adjudications_file.write_text(json.dumps({
         "entries": entries,
         "digest": petitions._adjudications_digest(entries),
-        "mac": petitions._adjudications_mac(entries, key),
+        "mac": forged_mac,
     }))
+    # ... and fabricate the engine witness line for it, appending to the
+    # agent-writable event log exactly as the attempt-2 probe did.
+    with (run.root / "events.jsonl").open("a") as fh:
+        fh.write(json.dumps({"ts": "2026-08-31T00:00:00Z",
+                              "type": petitions.ADJUDICATIONS_RECORDED_EVENT,
+                              "mac": forged_mac, "entries": len(entries)}) + "\n")
+    assert [ev["mac"] for ev in read_events(
+        run.root, (petitions.ADJUDICATIONS_RECORDED_EVENT,))][-1] == forged_mac
 
     obligations, tampered = petitions.confirmed_obligations(run)
     assert tampered is True
     assert obligations == set()
 
 
-def test_a_record_the_engine_never_keyed_is_detected(tmp_path):
+def test_no_file_under_the_run_dir_carries_the_key(tmp_path):
+    """The property attempt 2 lacked: there is nothing under the (agent-
+    OWNED) run directory for a hat process to read the key out of -- not a
+    dedicated key file, not the record, not the event log. Searched
+    byte-wise across every file in the tree, so a future key file added
+    under any name fails this test."""
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run, "Obligation One")
+    _confirm(run, "Obligation Two")
+    key = petitions._authority(run).key
+    for path in sorted(run.root.rglob("*")):
+        if not path.is_file():
+            continue
+        blob = path.read_bytes()
+        assert key not in blob, path
+        assert key.hex().encode("ascii") not in blob, path
+
+
+def test_a_separate_process_cannot_forge_an_exemption(tmp_path):
+    """The threat model as it actually stands: a worker iteration is a
+    SEPARATE PROCESS from the engine (`runner.py` spawns the agent CLI), so
+    it can write every file in the run dir but cannot read the engine's
+    address space. This test runs the attempt-2 probe's full program in a
+    genuine subprocess -- edit the record, hunt the run dir for key
+    material, recompute both the documented unkeyed digest and a keyed MAC
+    under every candidate key it can find, append a matching
+    `petition_adjudications_recorded` witness line -- and the engine
+    process then reads the result as TAMPERED with no exemption granted."""
+    import subprocess
+    import sys
+
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    probe = tmp_path / "forge.py"
+    probe.write_text(
+        "import hashlib, hmac, json, sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, %r)\n"
+        "from ralphd.engine import petitions\n"
+        "root = Path(sys.argv[1])\n"
+        "record = root / 'petition-adjudications.json'\n"
+        "doc = json.loads(record.read_text())\n"
+        "doc['entries'].append({'obligation': 'A fabricated exemption',\n"
+        "                       'adjudication': 'CONFIRMED'})\n"
+        "entries = doc['entries']\n"
+        "doc['digest'] = petitions._adjudications_digest(entries)\n"
+        "candidates = []\n"
+        "for path in sorted(root.rglob('*')):\n"
+        "    if path.is_file():\n"
+        "        blob = path.read_bytes()\n"
+        "        candidates += [blob, blob.strip()]\n"
+        "macs = [petitions._adjudications_mac(entries, c) for c in candidates]\n"
+        "doc['mac'] = macs[0] if macs else doc['digest']\n"
+        "record.write_text(json.dumps(doc))\n"
+        "with (root / 'events.jsonl').open('a') as fh:\n"
+        "    fh.write(json.dumps({'ts': '2026-08-31T00:00:00Z',\n"
+        "                         'type': petitions.ADJUDICATIONS_RECORDED_EVENT,\n"
+        "                         'mac': doc['mac'],\n"
+        "                         'entries': len(entries)}) + '\\n')\n"
+        "print('forged', len(candidates))\n"
+        % str(Path(petitions.__file__).parents[3]))
+    proc = subprocess.run([sys.executable, str(probe), str(run.root)],
+                           capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("forged")
+    assert {"obligation": "A fabricated exemption",
+            "adjudication": "CONFIRMED"} in _recorded(run)  # the edit landed
+
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is True
+    assert obligations == set()
+
+
+def test_a_record_the_engine_never_keyed_grants_no_exemption(tmp_path):
     """A record fabricated from scratch in a run where the engine never
-    wrote one: no key exists, so no MAC could be valid."""
+    wrote one: this process holds no key for the run, so the record cannot
+    be authenticated at all -- it is read as EMPTY (fail closed, no
+    obligation exempted) and the reason is recorded in the event log."""
+    from ralphd.engine.state import read_events
+
     run = RunDir(root=tmp_path / "run")
     run.root.mkdir(parents=True, exist_ok=True)
     entries = [{"obligation": "A fabricated exemption",
@@ -396,8 +486,10 @@ def test_a_record_the_engine_never_keyed_is_detected(tmp_path):
         "mac": petitions._adjudications_digest(entries),
     }))
     obligations, tampered = petitions.confirmed_obligations(run)
-    assert tampered is True
     assert obligations == set()
+    assert tampered is False  # unauthenticatable, not provably edited
+    assert read_events(run.root,
+                       (petitions.ADJUDICATIONS_UNAUTHENTICATED_EVENT,))
 
 
 def test_deleting_the_record_after_a_witnessed_write_is_detected(tmp_path):
@@ -409,12 +501,46 @@ def test_deleting_the_record_after_a_witnessed_write_is_detected(tmp_path):
     assert obligations == set()
 
 
-def test_removing_the_key_is_detected(tmp_path):
+def test_a_later_episode_with_no_key_store_reads_the_record_as_empty(tmp_path):
+    """The documented no-uid-boundary degrade: with no `key_store_dir()`
+    the key is memory-only, so an engine RESTART (modelled honestly by
+    `forget_run_authority`, which is exactly what a new process starts
+    with) can no longer authenticate the earlier episode's record. It fails
+    CLOSED -- the confirmed set is empty, the obligation goes back to
+    blocking -- and that is not called tampering."""
     run = RunDir(root=tmp_path / "run")
     _confirm(run)
-    (run.root / petitions.ADJUDICATIONS_KEY_FILENAME).unlink()
-    _obligations, tampered = petitions.confirmed_obligations(run)
-    assert tampered is True
+    assert petitions.key_store_dir() is None  # no boundary, no override
+    petitions.forget_run_authority(run)
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert obligations == set()
+    assert tampered is False
+
+
+def test_a_later_episode_with_a_key_store_still_authenticates(tmp_path,
+                                                              monkeypatch):
+    """With a key store OUTSIDE the run dir (`$RALPHD_RUN_SECRETS_DIR`, or
+    the root-owned default wherever the uid boundary exists), a record
+    written by an earlier engine episode still authenticates after a
+    restart -- and the store's key file is 0600 inside a 0700 directory,
+    with the run dir itself still carrying no key material."""
+    import stat
+
+    store = tmp_path / "secrets"
+    monkeypatch.setenv(petitions.RUN_SECRETS_DIR_ENV, str(store))
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    keys = list(store.glob("*.key"))
+    assert len(keys) == 1
+    assert stat.S_IMODE(keys[0].stat().st_mode) == 0o600
+    assert stat.S_IMODE(store.stat().st_mode) == 0o700
+    assert store not in run.root.parents and not str(store).startswith(
+        str(run.root))
+
+    petitions.forget_run_authority(run)  # the restart
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is False
+    assert obligations == {"requirement b, dod predicate 9"}
 
 
 def test_tamper_detection_is_recorded_in_the_event_log_and_sticky(tmp_path):
@@ -482,17 +608,16 @@ def test_the_record_write_goes_through_the_root_owned_write_path(tmp_path,
     assert seen == [run.petition_adjudications_file]
 
 
-def test_the_key_is_owner_only_and_never_archived(tmp_path):
-    import stat
-
+def test_the_key_store_is_never_archived(tmp_path, monkeypatch):
+    store = tmp_path / "secrets"
+    monkeypatch.setenv(petitions.RUN_SECRETS_DIR_ENV, str(store))
     sup = _supervisor(tmp_path / "run")
     _confirm(sup.run)
-    key = sup.run.root / petitions.ADJUDICATIONS_KEY_FILENAME
-    mode = stat.S_IMODE(key.stat().st_mode)
-    assert mode == 0o600, oct(mode)
     sup._archive_approach(1)
-    assert not (sup.run.root / "approaches" / "01" /
-                petitions.ADJUDICATIONS_KEY_FILENAME).exists()
+    archived = sup.run.root / "approaches" / "01"
+    assert archived.is_dir()
+    assert not list(archived.rglob("*.key"))
+    assert not list(sup.run.root.rglob("*.key"))  # the store is outside it
     assert petitions.confirmed_obligations(sup.run)[1] is False
 
 
