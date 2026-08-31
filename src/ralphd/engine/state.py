@@ -772,6 +772,10 @@ PRD_FILE = "prd.md"
 COMPOSITE_PRD_FILE = "composite-prd.md"
 NOTES_FILE = "notes.md"
 FINDINGS_FILE = "review-findings.md"
+# Task 001 (requirement A, #110): the machine-readable sidecar beside the
+# human-readable findings markdown above -- a JSON list of structured
+# findings (`engine.findings.FINDING_SCHEMA`), never a replacement for it.
+FINDINGS_JSON_FILE = "review-findings.json"
 # Task 107 (#60 pillar 3): the notes' `## Standing rules` block, pinned by
 # the harness rather than trusted to worker.md's "preserve verbatim"
 # convention. This file is the SOURCE OF TRUTH the planner's `standing_rules`
@@ -4722,6 +4726,10 @@ class RunDir:
     @property
     def findings_file(self) -> Path:
         return self.root / FINDINGS_FILE
+
+    @property
+    def findings_json_file(self) -> Path:
+        return self.root / FINDINGS_JSON_FILE
 
     @property
     def steering_dir(self) -> Path:
