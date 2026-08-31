@@ -27,7 +27,12 @@ findings and a stub `review` iteration reply, and asserts:
    is `False`, exactly what `POST /pause`'s own `loop.pause()` sets);
 4. a stub notifier attached to `sup.notifier` receives escalation text
    containing every finding's clause/evidence AND the exact `ralphctl
-   amend` invocation for each one;
+   amend` invocation for each one -- compared in FULL against the
+   literal command string this module spells out itself (run id, the
+   clause-derived slug, `--waive`, the shell-quoted `clause: evidence`
+   reason, in that argument order), never merely `"ralphctl amend" in
+   text`, so a malformed, misordered or wrongly-slugged invocation cannot
+   pass;
 5. requirement B.3's other half -- a CURABLE blocking finding still takes
    `rejected_approach_left`, and `rejected_no_approach_left` still wins once
    the approach budget is exhausted, even when every finding is incurable.
@@ -37,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -143,8 +149,45 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
     for f in all_incurable:
         assert f["clause"] in text
         assert f["evidence"] in text
-    assert text.count("ralphctl amend task006-rejected-incurable") == 2
-    assert "--waive" in text
+
+    # The exact invocations, spelled out here as literals (NOT derived from
+    # `loop._amend_invocation_for_finding`, which would make this test a
+    # tautology): `ralphctl amend <run_id> <clause-slug> --waive <reason>`,
+    # where the slug lowercases the clause and collapses every run of
+    # non-alphanumerics to a single `-`, and the reason is the shell-quoted
+    # `"<clause>: <evidence>"` pair.
+    expected_commands = [
+        "ralphctl amend task006-rejected-incurable requirement-b-111 "
+        "--waive 'requirement B (#111): the endpoint has no docker.sock "
+        "in this container'",
+        "ralphctl amend task006-rejected-incurable requirement-d-99 "
+        "--waive 'requirement D (#99): the deadline already passed before "
+        "this approach started'",
+    ]
+    # Each command appears verbatim, exactly once, on its own
+    # `resolve with:` line -- and the set of such lines is EXACTLY these
+    # two, in finding order, so an extra/misordered/malformed invocation
+    # fails here too.
+    resolve_lines = [line for line in text.splitlines()
+                    if line.strip().startswith("resolve with:")]
+    assert resolve_lines == [f"  resolve with: {c}" for c in expected_commands]
+    for command in expected_commands:
+        assert text.count(command) == 1
+    # No other `ralphctl amend` invocation hides anywhere in the body.
+    assert text.count("ralphctl amend") == len(expected_commands)
+
+    # Argument-by-argument, as a shell would parse it: subcommand, run id,
+    # clause slug, the `--waive` flag, then ONE reason argument carrying
+    # both the clause and its evidence unquoted.
+    for command, finding in zip(expected_commands, all_incurable):
+        argv = shlex.split(command)
+        assert argv[:2] == ["ralphctl", "amend"]
+        assert argv[2] == "task006-rejected-incurable"
+        assert argv[3] == finding["clause"].lower().replace(
+            " ", "-").replace("(#", "").replace(")", "").replace("#", "")
+        assert argv[4] == "--waive"
+        assert argv[5] == f"{finding['clause']}: {finding['evidence']}"
+        assert len(argv) == 6
 
     # never archived, never composited into a fresh approach's PRD -- the
     # SAME approach is what review is asked about again on resume.
