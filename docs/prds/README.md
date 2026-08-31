@@ -20,6 +20,15 @@ other thing — the marker is gone and every cell is a settled figure read from
 that run's final `status.json`, which is why the marker is what the checks in
 `tests/test_docs_prd_index.py` key on.
 
+A PRD that wants the review-economics contract fragment (the materiality
+rubric, the impossibility-petition protocol, the late-cure rule — see
+`docs/review-economics.md`) includes it by reference rather than retyping it.
+The petition half of that fragment has its own file format spelled out in
+[`../petition-format.md`](../petition-format.md): one petition per obligation,
+typed `environmental | temporal | contradictory-clauses | external`, evidence
+required, filed once per obligation in that wave's own
+`artifacts/reports/<wave>-petitions.md`.
+
 A row whose Outcome cell reads **failed** / unverified but whose note reports
 every planned task `completed` (and, where the plan reached review, verified)
 is not reporting a judgement on the work — it is the shape `status.json`'s
