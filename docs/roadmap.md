@@ -1569,8 +1569,16 @@ future update the way the `## v0.14.2` block above once did and was corrected fo
   blocking|residual` per finding; `_review_verdict` computes the verdict from blocking findings
   only, engine-side (`3e5c0be8`, task 002), refusing rather than failing open on a present but
   invalid channel (`c38b9b2a`, task 002); the materiality rubric is read from the contract, with
-  an all-blocking default when none exists (`92ee6808`, task 003); `review.md` and both peer
-  gates demand the structured shape (`b4232230`, task 004).
+  an all-blocking default when none exists (`92ee6808`, task 003). On the prompt side
+  (`b4232230`, task 004) `review.md` is what *demands* the structured shape — per-finding
+  `severity`, `curable`, `clause` and `evidence` in `review-findings.md` plus its
+  `review-findings.json` sidecar — and of the two peer gates only `verdict_gate.md` was
+  touched, to stay consistent with that shape (it names every structured finding field and
+  drops the stale "my payload is the whole channel" claim, without leaking a verdict into its
+  own blindness window). `plan_review.md` was deliberately left unchanged: its contract is
+  `approved`/`objected` and it never described findings at all, which
+  `tests/test_review_findings_prompt_shape.py::test_plan_review_md_has_no_stale_review_payload_description`
+  now pins so a future edit cannot introduce a stale claim there either.
 - ✅ **B (#111) — a curability bit, and the `rejected_incurable` edge.** Blocking findings are
   classified curable/incurable engine-side (`d466bc64`, task 005); an approach rejected only on
   incurable blocking findings pauses the run and escalates to the operator instead of
