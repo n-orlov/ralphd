@@ -31,6 +31,7 @@ record, drops the obligation.
 
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 
 from ralphd.engine import petitions
@@ -216,6 +217,50 @@ def test_engine_petitions_function_itself_survives_the_fresh_episode(
 
     run2 = RunDir(root=run_root)  # fresh object, same root -- the episode
     ctx = petitions.petitions_review_context(workspace, run2)
+    assert "DoD predicate 9" not in ctx
+    assert "wholly unrelated obligation" in ctx
+    _assert_workspace_petitions_still_textually_open(petitions_file)
+
+
+def test_the_fresh_episode_survives_a_whitespace_edged_minted_key(
+        tmp_path, monkeypatch):
+    """Regression (found by this task's own validation, which saw this
+    module exit nonzero once): the exclusion has to survive the episode
+    boundary for EVERY key `secrets.token_bytes(32)` can mint, not for 95%
+    of them. The store used to hold the key as raw bytes and read it back
+    through `.strip()`, so a key whose first or last byte was an ASCII
+    whitespace byte came back short, the rebuilt authority's keyed MAC
+    mismatched, and approach 1's own CONFIRMED obligation was read as
+    tampered/empty -- i.e. re-litigated by approach 2, the exact failure
+    requirement C.4 forbids. The key is hex encoded in the store now
+    (`petitions._decode_key_material`); the minted key here is pinned to
+    the worst case (leading `\\n`, trailing `\\t`) so the check is
+    deterministic rather than a ~1-in-22 flake."""
+    workspace = tmp_path / "ws"
+    petitions_file = _write_two_open_petitions(workspace)
+    run_root = tmp_path / "run"
+    monkeypatch.setenv(petitions.RUN_SECRETS_DIR_ENV, str(tmp_path / "secrets"))
+
+    worst_case_key = b"\n" + secrets.token_bytes(30) + b"\t"
+    monkeypatch.setattr(secrets, "token_bytes", lambda n: worst_case_key)
+
+    run1 = RunDir(root=run_root)
+    petitions.record_confirmed_adjudications(run1, [
+        {"obligation": CONFIRMED_OBLIGATION, "adjudication": "CONFIRMED"},
+    ])
+    assert petitions._authority(run1).key == worst_case_key
+    petitions.forget_run_authority(run1)
+    monkeypatch.undo()  # the later episode mints nothing; it reads the store
+    monkeypatch.setenv(petitions.RUN_SECRETS_DIR_ENV, str(tmp_path / "secrets"))
+
+    run2 = RunDir(root=run_root)
+    assert petitions._read_stored_key(run2) == worst_case_key
+    obligations, tampered = petitions.confirmed_obligations(run2)
+    assert tampered is False
+    assert obligations == {"requirement b, dod predicate 9"}
+
+    sup2 = _supervisor(run_root, workspace)
+    ctx = sup2._petitions_review_context()
     assert "DoD predicate 9" not in ctx
     assert "wholly unrelated obligation" in ctx
     _assert_workspace_petitions_still_textually_open(petitions_file)

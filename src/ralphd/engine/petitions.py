@@ -513,6 +513,32 @@ def _stored_key_path(run) -> Path | None:
     return store / f"{ident[:32]}.key"
 
 
+def _decode_key_material(material: bytes) -> bytes:
+    """Decode what `_persist_key` wrote. The store holds the key HEX
+    encoded (64 ASCII hex digits for the 32 raw bytes) precisely so that
+    reading it can be whitespace-tolerant without ever being
+    whitespace-DESTRUCTIVE: a raw random 32-byte key whose first or last
+    byte happens to be an ASCII whitespace byte (`\\n`, `\\t`, ` `, `\\r`,
+    `\\x0b`, `\\x0c` -- about a 1-in-22 chance per minted key) came back
+    from `.strip()` short, so the later episode rebuilt a DIFFERENT key,
+    the keyed MAC mismatched and the run's own CONFIRMED record was read
+    as tampered/empty (#112, requirement C.4: the exclusion must hold for
+    the rest of the run, not for 95% of runs). Bytes that are not a pure
+    even-length ASCII hex string are returned unchanged, so a key file
+    written by an earlier (raw-bytes) engine build still authenticates."""
+    try:
+        text = material.decode("ascii")
+    except UnicodeDecodeError:
+        return material
+    if len(text) < 2 or len(text) % 2 or any(
+            c not in "0123456789abcdefABCDEF" for c in text):
+        return material
+    try:
+        return bytes.fromhex(text)
+    except ValueError:  # pragma: no cover - guarded by the check above
+        return material
+
+
 def _read_stored_key(run) -> bytes | None:
     path = _stored_key_path(run)
     if path is None:
@@ -521,15 +547,18 @@ def _read_stored_key(run) -> bytes | None:
         material = path.read_bytes().strip()
     except OSError:
         return None
-    return material or None
+    if not material:
+        return None
+    return _decode_key_material(material)
 
 
 def _persist_key(run, material: bytes) -> None:
     """Best-effort copy of a freshly minted key into `key_store_dir()`:
     root-owned 0700 directory, root-owned 0600 file, written inside
-    `privsep.root_for_write()`. A failure here is never fatal -- the key
-    stays in memory, this episode authenticates its own writes as usual,
-    and only cross-episode verification degrades (to fail-closed)."""
+    `privsep.root_for_write()`, HEX encoded (see `_decode_key_material`).
+    A failure here is never fatal -- the key stays in memory, this episode
+    authenticates its own writes as usual, and only cross-episode
+    verification degrades (to fail-closed)."""
     path = _stored_key_path(run)
     if path is None:
         return
@@ -540,7 +569,7 @@ def _persist_key(run, material: bytes) -> None:
             os.chmod(path.parent, 0o700)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                os.write(fd, material)
+                os.write(fd, material.hex().encode("ascii"))
             finally:
                 os.close(fd)
             os.chmod(path, 0o600)
