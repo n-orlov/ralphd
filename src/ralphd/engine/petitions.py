@@ -204,6 +204,125 @@ def open_petitions_in_workspace(workspace: Path) -> list[dict]:
     return petitions
 
 
+def duplicate_petition_obligations(workspace: Path) -> list[dict]:
+    """Every normalised obligation with MORE THAN ONE filed petition section
+    across every `<wave>-petitions.md` file under `workspace` --
+    `docs/petition-format.md`'s own rule, stated once and covering both
+    named cases at once: "Filing a second petition against an obligation
+    that already has one -- regardless of whether the first was
+    adjudicated yet -- is a duplicate" AND "[t]he same rule covers
+    re-filing an obligation whose petition was already REFUTED". Both are
+    the identical structural fact -- more than one petition section for
+    the same obligation -- so ONE scan finds both; a caller only needs to
+    look at whether any filing in the group is `REFUTED` to tell which
+    sentence of the docs it is (see `duplicate_petition_findings` below).
+
+    This is purely structural (counting sections, comparing normalised
+    obligation text) -- no review judgement call is needed to know it is
+    true, which is exactly why the engine can detect and enforce it
+    directly (task 012, requirement C.1, #112) rather than leaving it to
+    a run's own prose describing what it filed.
+
+    Returns one dict per violated obligation: `{"obligation": <the first
+    filing's own obligation text>, "filings": [every petition dict for it,
+    filing order]}`. Empty when every obligation across every file has at
+    most one filing -- the overwhelming common case.
+    """
+    grouped: dict[str, list[dict]] = {}
+    first_text: dict[str, str] = {}
+    for path in discover_petition_files(workspace):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for p in parse_petitions(text):
+            key = _normalize_obligation(p["obligation"])
+            grouped.setdefault(key, []).append(p)
+            first_text.setdefault(key, p["obligation"])
+    return [
+        {"obligation": first_text[key], "filings": filings}
+        for key, filings in grouped.items()
+        if len(filings) > 1
+    ]
+
+
+def duplicate_petition_findings(workspace: Path) -> list[dict]:
+    """One `severity: "blocking"` finding, shaped exactly like
+    `engine.findings.FINDING_SCHEMA` (`severity`/`curable`/`clause`/
+    `evidence`), per obligation `duplicate_petition_obligations` flags.
+    This is the engine's own deterministic report of the violation --
+    `LoopSupervisor._review_findings_channel` appends this list to
+    whatever findings review's own sidecar carries, so a duplicate or a
+    re-filed-REFUTED petition is a blocking finding on the engine/prompt
+    surface unconditionally, never dependent on review's own prose having
+    mentioned it (task 012, requirement C.1, #112 -- the docs/petition-
+    format.md rule enforced, not merely restated).
+
+    `curable` is always `True`: a fresh worker attempt that simply removes
+    the extra filing (or never files a second one) changes this finding's
+    truth value on the next pass -- unlike the incurable facts requirement
+    B is about, this is a self-inflicted, fully fixable procedural error.
+    """
+    out = []
+    for dup in duplicate_petition_obligations(workspace):
+        n = len(dup["filings"])
+        refuted = any(f["adjudication"] == "REFUTED" for f in dup["filings"])
+        if refuted:
+            evidence = (
+                f"{n} petitions filed for the same obligation, and an "
+                "earlier filing was already adjudicated REFUTED -- "
+                "docs/petition-format.md: re-filing a REFUTED petition "
+                "against the same obligation is a duplicate, a blocking "
+                "finding, not a second hearing.")
+        else:
+            evidence = (
+                f"{n} petitions filed for the same obligation -- "
+                "docs/petition-format.md: a petition may be filed once "
+                "per obligation; filing a second one is a duplicate, a "
+                "blocking finding.")
+        out.append({
+            "severity": "blocking",
+            "curable": True,
+            "clause": dup["obligation"],
+            "evidence": evidence,
+        })
+    return out
+
+
+def duplicate_petitions_review_context(workspace: Path) -> str:
+    """The review-prompt context block naming every duplicate/re-filed
+    petition the engine has already detected and turned into a blocking
+    finding (`duplicate_petition_findings`) -- the prompt half of the
+    engine/prompt surface task 012 puts this detection on. Tells review
+    the finding is already recorded engine-side (so review does not need
+    to -- and must not -- treat any of these obligations as newly
+    eligible for a fresh CONFIRMED/REFUTED call) rather than leaving
+    review to notice the duplicate on its own. Returns '' when none exist
+    (the common case).
+    """
+    dupes = duplicate_petition_obligations(workspace)
+    if not dupes:
+        return ""
+    lines = [
+        "\n## Duplicate or re-filed petitions detected (task 012, "
+        "requirement C.1, #112)\n",
+        ("The engine has already detected the following obligation(s) with "
+         "more than one filed petition under this workspace's "
+         "`artifacts/reports/*-petitions.md` files, and has already "
+         "recorded each as a BLOCKING finding in this run's findings "
+         "channel per `docs/petition-format.md` (a petition may be filed "
+         "once per obligation; re-filing one already adjudicated REFUTED "
+         "is the same violation). Do not adjudicate any of these "
+         "obligations as newly CONFIRMED/REFUTED -- the duplicate filing "
+         "itself is the finding.\n"),
+    ]
+    for dup in dupes:
+        lines.append(
+            f"\n- **Obligation**: {dup['obligation']} "
+            f"({len(dup['filings'])} filings)\n")
+    return "".join(lines)
+
+
 def petitions_review_context(workspace: Path) -> str:
     """Render the review-prompt context block for every OPEN petition
     found under `workspace` -- the same treatment

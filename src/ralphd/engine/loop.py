@@ -4981,6 +4981,19 @@ class LoopSupervisor:
         never towards trusting a record that might have been edited to
         manufacture a false exemption; `_petition_adjudications_tamper_
         context` is what surfaces that fact to review itself.
+
+        Task 012 (requirement C.1, #112): after the downgrade, APPEND one
+        engine-detected `severity: "blocking"` finding per obligation with
+        more than one filed petition under this run's workspace
+        (`engine.petitions.duplicate_petition_findings`) -- a duplicate
+        filing, or a re-filed petition whose earlier filing was already
+        REFUTED (`docs/petition-format.md`). This is unconditional: the
+        engine adds it whether or not review's own findings.json mentioned
+        it, so the fact is reported on the engine/prompt surface rather
+        than resting on a run's own prose ever having noticed it. Only
+        reached when a base channel exists (the `path.exists()` guard
+        above) -- by task 004 review.md always produces one, so this is
+        not a live gap in practice.
         """
         path = self.run.findings_json_file
         if not path.exists():
@@ -4994,7 +5007,8 @@ class LoopSupervisor:
         confirmed, tampered = petitions.confirmed_obligations(self.run)
         if tampered:
             confirmed = set()
-        return petitions.downgrade_confirmed_findings(findings_list, confirmed), []
+        downgraded = petitions.downgrade_confirmed_findings(findings_list, confirmed)
+        return downgraded + petitions.duplicate_petition_findings(self.workspace), []
 
     def _review_findings(self) -> list[dict] | None:
         """The valid findings list for the review just run, or `None` when
@@ -6291,6 +6305,19 @@ class LoopSupervisor:
         _confirmed, tampered = petitions.confirmed_obligations(self.run)
         return petitions.tamper_review_context(tampered)
 
+    def _duplicate_petitions_review_context(self) -> str:
+        """Task 012 (requirement C.1, #112): tell review, in-prompt, about
+        every obligation the engine has already found with more than one
+        filed petition under this run's workspace -- so review sees the
+        SAME fact its own findings channel is about to be forced to carry
+        (`_review_findings_channel`'s appended `duplicate_petition_
+        findings`), rather than only discovering the contradiction via a
+        re-ask. Thin render call into `engine.petitions.
+        duplicate_petitions_review_context`; returns '' in the common case
+        (no duplicate/re-filed petition exists).
+        """
+        return petitions.duplicate_petitions_review_context(self.workspace)
+
     def _review_materiality_rubric_context(self) -> str:
         """Task 003 (requirement A.3, #110): hand review the contract's own
         materiality rubric, or -- when the contract supplies none -- the
@@ -6321,7 +6348,9 @@ class LoopSupervisor:
         the contract's materiality rubric or the all-blocking default
         (task 003, requirement A.3, #110), any recorded operator ruling
         (task 028, #26), then every OPEN impossibility petition (task 010,
-        requirement C, #112). All four return '' (or, for the rubric
+        requirement C, #112), then any duplicate/re-filed petition already
+        detected and turned into a blocking finding engine-side (task 012,
+        requirement C.1, #112). All return '' (or, for the rubric
         context, the fixed default text) in the common case, so review
         prompts are unaffected beyond the rubric hand-off itself until one
         of the other mechanisms actually fires. One helper, used at every
@@ -6331,6 +6360,7 @@ class LoopSupervisor:
                 self._review_materiality_rubric_context() +
                 self._operator_amendment_review_context() +
                 self._petitions_review_context() +
+                self._duplicate_petitions_review_context() +
                 self._petition_adjudications_tamper_context())
 
     @staticmethod
