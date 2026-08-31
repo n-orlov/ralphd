@@ -257,3 +257,137 @@ def test_the_ladder_is_a_noop_with_no_findings_channel_at_all(tmp_path):
     verified, payload, errors = sup._review_verdict(laddered)
     assert verified is True
     assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# The fail-OPEN hole a validation attempt on this task caught: a findings
+# channel PRESENT on disk but only PARTIALLY valid (one good `severity:
+# "blocking"` finding beside one finding missing `evidence`) used to read as
+# "no channel at all", so the blocking finding became invisible and a
+# `verdict: "verified"` payload contradicting it was ACCEPTED. It must be
+# refused through the same contract re-ask ladder instead -- and repairable
+# by the hat, since the ladder re-reads the channel on every attempt.
+# ---------------------------------------------------------------------------
+
+def _write_raw_findings(sup: LoopSupervisor, payload) -> None:
+    """Write the sidecar WITHOUT `findings.write_findings_json`'s validation
+    -- the only way to produce the on-disk state this section is about (a
+    hand-edited/corrupted/partially-malformed channel)."""
+    sup.run.findings_json_file.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _partially_malformed() -> list[dict]:
+    good = _finding("blocking", clause="requirement A", evidence="observed X")
+    broken = _finding("residual", clause="requirement D")
+    broken.pop("evidence")
+    return [good, broken]
+
+
+def test_a_partially_malformed_channel_is_reported_as_errors_not_as_absent(
+        tmp_path):
+    sup = _supervisor(tmp_path)
+    _write_raw_findings(sup, _partially_malformed())
+
+    findings_list, channel_errors = sup._review_findings_channel()
+
+    assert findings_list is None
+    assert channel_errors
+    assert "findings" in channel_errors[0]
+    # ... and the "no channel at all" case stays distinguishable from it.
+    sup.run.findings_json_file.unlink()
+    assert sup._review_findings_channel() == (None, [])
+
+
+def test_a_verified_claim_over_a_partially_malformed_channel_is_refused(
+        tmp_path):
+    """Fail CLOSED: the payload claims `verified` while a channel the engine
+    cannot read sits on disk holding a blocking finding. `_review_verdict`
+    refuses it (contract_errors non-empty, `verified` False) and never
+    rewrites the payload's own verdict field."""
+    sup = _supervisor(tmp_path)
+    _write_raw_findings(sup, _partially_malformed())
+    result = _result(json.dumps({"verdict": "verified"}))
+
+    verified, payload, errors = sup._review_verdict(result)
+
+    assert verified is False
+    assert errors
+    assert payload["verdict"] == "verified"  # untouched, never rewritten
+
+
+def test_the_ladder_re_asks_over_a_partially_malformed_channel(tmp_path):
+    """The refusal goes through `contract_enforcement.enforce_contract`, not
+    a silent downgrade: the ladder makes real `_ask_contract_fix` calls, the
+    channel error is among the errors the hat is shown, and an unrepaired
+    channel still ends as a refused verdict."""
+    sup = _supervisor(tmp_path)
+    sup.cfg.contract_retry_max = 1
+    _write_raw_findings(sup, _partially_malformed())
+    claim = json.dumps({"verdict": "verified"})
+    result = _result(claim)
+
+    calls = []
+
+    async def fake_ask_contract_fix(hat, errors):
+        calls.append((hat, list(errors)))
+        return claim, {}
+
+    sup._ask_contract_fix = fake_ask_contract_fix  # type: ignore[method-assign]
+
+    laddered = asyncio.run(sup._review_contract_ladder(result))
+    verified, payload, errors = sup._review_verdict(laddered)
+
+    assert len(calls) == sup.cfg.contract_retry_max
+    assert calls[0][0] == "review"
+    assert any("findings" in e for e in calls[0][1])
+    assert verified is False
+    assert errors
+    assert payload["verdict"] == "verified"
+
+
+def test_a_repaired_channel_on_re_ask_recovers(tmp_path):
+    """The ladder re-reads the channel on every attempt, so a hat that fixes
+    the sidecar (here: writing a valid all-residual channel) and re-answers
+    is accepted -- the recomputation path then verifies it honestly, with
+    the residual still recorded."""
+    sup = _supervisor(tmp_path)
+    sup.cfg.contract_retry_max = 2
+    _write_raw_findings(sup, _partially_malformed())
+    residual = [_finding("residual", clause="requirement D",
+                          evidence="observed Y")]
+    corrected = json.dumps({"verdict": "rejected",
+                             "reason": "one residual finding remains",
+                             "findings_path": "review-findings.md"})
+
+    async def fake_ask_contract_fix(hat, errors):
+        _write_findings(sup, residual)
+        return corrected, {}
+
+    sup._ask_contract_fix = fake_ask_contract_fix  # type: ignore[method-assign]
+
+    laddered = asyncio.run(sup._review_contract_ladder(
+        _result(json.dumps({"verdict": "verified"}))))
+    verified, payload, errors = sup._review_verdict(laddered)
+
+    assert errors == []
+    assert payload["verdict"] == "rejected"
+    assert verified is True  # all-residual: recomputed, DoD predicate 3
+    events = [json.loads(line) for line in
+               (tmp_path / "events.jsonl").read_text().splitlines()]
+    recomputed = [e for e in events if e["type"] == "review.verdict_recomputed"]
+    assert recomputed and recomputed[-1]["residual_findings"] == residual
+
+
+def test_a_rejected_claim_over_a_malformed_channel_stays_rejected(tmp_path):
+    """The other direction never becomes a crash or a promotion: a
+    `rejected` payload beside an unreadable channel is simply not verified,
+    with the channel error reported."""
+    sup = _supervisor(tmp_path)
+    _write_raw_findings(sup, {"severity": "blocking"})  # not even a list
+    result = _result(json.dumps({"verdict": "rejected", "reason": "x"}))
+
+    verified, payload, errors = sup._review_verdict(result)
+
+    assert verified is False
+    assert errors
+    assert payload["verdict"] == "rejected"

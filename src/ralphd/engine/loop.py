@@ -4836,26 +4836,56 @@ class LoopSupervisor:
         signatures[str(approach)] = signature
         self.run.update_status(blockerSignatures=signatures)
 
-    def _review_findings(self) -> list[dict] | None:
-        """Task 002 (requirement A.2, #110): the structured findings sidecar
-        (`engine/findings.py`, task 001) for the review just run, or `None`
-        when there is nothing to compute a verdict FROM -- no structured
-        findings channel exists for this run at all (`review.md` has not
-        been updated to always produce one; that is task 004's scope), or
-        the file on disk fails `findings.read_findings_json`'s own
-        re-validation (hand-edited, corrupted). Either way `None` means
-        exactly the same thing to every caller: fall back to trusting the
-        payload's own claimed verdict, exactly as review always has --
-        never a run-ending crash over a channel review never claimed to
-        have written correctly this run.
+    def _review_findings_channel(self) -> tuple[list[dict] | None, list[str]]:
+        """Task 002 (requirement A.2, #110): read the structured findings
+        sidecar (`engine/findings.py`, task 001) for the review just run and
+        report BOTH halves of its state, because they mean opposite things:
+
+        * `(None, [])` -- there is no findings channel for this run AT ALL
+          (`review.md` has not been updated to always produce one; that is
+          task 004's scope). Nothing exists to check the payload's claimed
+          verdict against, so every caller falls back to trusting that
+          claim, exactly as review always has.
+        * `(list, [])` -- a channel exists and every finding in it
+          re-validated through the one schema engine.
+        * `(None, [errors])` -- a channel EXISTS on disk but does not
+          re-validate (`findings.read_findings_json` raised: truncated,
+          hand-edited, or -- the case a validation attempt on this task
+          actually caught -- partially malformed, one good `severity:
+          "blocking"` finding beside one finding missing `evidence`).
+
+        That third case must never be collapsed into the first. Treating an
+        unreadable-but-present channel as "no channel" fails OPEN: the
+        blocking finding sitting in the file is invisible, and a `verdict:
+        "verified"` payload contradicting it is accepted instead of refused.
+        So the errors are returned as CONTRACT errors -- `_review_verdict`
+        folds them into `contract_errors` (a payload can never earn
+        `verified` while its own findings channel is unreadable) and
+        `_review_contract_ladder` re-asks over them through
+        `contract_enforcement.enforce_contract`, re-reading the channel on
+        every attempt so the hat can genuinely repair the sidecar. Still
+        never a run-ending crash: an unrepaired channel ends as an ordinary
+        refused verdict, never a rewritten one.
         """
         path = self.run.findings_json_file
         if not path.exists():
-            return None
+            return None, []
         try:
-            return findings.read_findings_json(path)
-        except ValueError:
-            return None
+            return findings.read_findings_json(path), []
+        except ValueError as exc:
+            return None, [
+                "findings: a structured findings channel is present but does "
+                f"not validate, so the verdict cannot be checked against it: {exc}"]
+
+    def _review_findings(self) -> list[dict] | None:
+        """The valid findings list for the review just run, or `None` when
+        there is none. Thin caller of `_review_findings_channel` above for
+        the sites that only need the list; anything that decides whether a
+        verdict may be TRUSTED must use `_review_findings_channel` instead,
+        so that a present-but-invalid channel is refused rather than read as
+        an absent one (see that method's docstring).
+        """
+        return self._review_findings_channel()[0]
 
     def _review_verdict(self, result: IterationResult) -> tuple[bool, dict | None, list[str]]:
         """Task 119 (#60 pillar 3, fact 9): parse the review hat's final
@@ -4891,6 +4921,11 @@ class LoopSupervisor:
         exhausted its retries, so a contradiction still present at this
         point is refused (`verified` stays `False`) exactly like any other
         unresolved contract violation, never silently rewritten. Second: a
+        A findings channel that is PRESENT but does not re-validate is
+        folded into `contract_errors` the same way (`_review_findings_
+        channel`): a verdict can never be trusted against a channel the
+        engine cannot read, so it is refused (and re-asked by the ladder
+        first), never accepted as though no channel existed. Second: a
         `rejected` verdict whose findings are ALL residual (`findings.
         compute_verdict` returns `"verified"`) is the engine's own honest
         recomputation (DoD predicate 3) -- not a contradiction to refuse,
@@ -4902,12 +4937,13 @@ class LoopSupervisor:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
             parsed = None
-        findings_list = self._review_findings()
+        findings_list, channel_errors = self._review_findings_channel()
         if isinstance(parsed, dict):
             payload = parsed
             contract_errors = (
                 contracts.validate_payload("review", payload)
                 or transitions.review_report_errors(payload)
+                or channel_errors
                 or transitions.review_verdict_findings_errors(
                     payload, findings_list))
         else:
@@ -4955,11 +4991,19 @@ class LoopSupervisor:
         over a `rejected` verdict whose findings are all residual -- that
         is `_review_verdict`'s own honest recomputation, not a hat mistake
         to refuse.
+
+        One case beyond the plain contradiction rides the same ladder: a
+        findings channel PRESENT on disk that does not re-validate
+        (`_review_findings_channel`'s third case). It cannot be read as "no
+        channel" without failing open on whatever blocking findings it
+        holds, so it is re-asked here too -- and `extra_validate` below
+        re-reads the channel on every attempt, so a hat that rewrites the
+        sidecar correctly recovers on its own.
         """
         if result is None or self._review_interrupted(result):
             return result
-        findings_list = self._review_findings()
-        if findings_list is None:
+        findings_list, channel_errors = self._review_findings_channel()
+        if findings_list is None and not channel_errors:
             return result
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
@@ -4971,13 +5015,20 @@ class LoopSupervisor:
             return result
         if transitions.review_report_errors(parsed):
             return result
-        if not transitions.review_verdict_findings_errors(parsed, findings_list):
+        if not (channel_errors or transitions.review_verdict_findings_errors(
+                parsed, findings_list)):
             return result
 
         def extra_validate(payload: dict) -> list[str]:
+            # Re-read the channel on every attempt: the hat's re-ask answer
+            # may have repaired the sidecar, and a stale in-memory copy
+            # would either refuse a now-consistent payload or accept a
+            # newly-broken one.
+            fresh, fresh_channel_errors = self._review_findings_channel()
             return (transitions.review_report_errors(payload)
+                    or fresh_channel_errors
                     or transitions.review_verdict_findings_errors(
-                        payload, findings_list))
+                        payload, fresh))
 
         first_attempt_text = last_nonblank_line(result.final_text)
         event_loop = asyncio.get_running_loop()
