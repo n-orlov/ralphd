@@ -314,3 +314,215 @@ def test_review_verdict_with_no_petition_adjudications_writes_nothing(tmp_path):
     result = _result(json.dumps({"verdict": "verified"}))
     sup._review_verdict(result)
     assert not sup.run.petition_adjudications_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Tamper-evidence, hardened (task 011 attempt 2): an UNKEYED digest stored
+# in the same worker-writable file proves nothing -- a worker that edits the
+# entries and recomputes the documented digest defeats it (this is exactly
+# the probe that rejected attempt 1). The property now rests on three
+# independent artifacts: a root-owned write (`privsep.write_root_owned_json`,
+# unwritable by a hat wherever the uid boundary exists), a KEYED HMAC over a
+# per-run secret the record does not contain, and an append-only
+# `events.jsonl` witness line per write, with any detection itself recorded
+# and sticky for the rest of the run.
+# ---------------------------------------------------------------------------
+
+def _recorded(run):
+    """Every CONFIRMED entry the record currently holds, straight off disk,
+    without going through the verification layer."""
+    return read_json(run.petition_adjudications_file)["entries"]
+
+
+def _confirm(run, obligation="Requirement B, DoD predicate 9"):
+    petitions.record_confirmed_adjudications(
+        run, [{"obligation": obligation, "adjudication": "CONFIRMED"}])
+
+
+def test_recomputing_the_documented_unkeyed_digest_is_still_detected(tmp_path):
+    """The probe that rejected attempt 1, verbatim in shape: append a
+    fabricated CONFIRMED obligation, recompute the unkeyed SHA-256 digest
+    with the module's own documented canonical-JSON algorithm, and the
+    record must STILL read as tampered -- the fabricated exemption must not
+    reach the blocking set."""
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    doc = read_json(run.petition_adjudications_file)
+    doc["entries"].append({"obligation": "A fabricated exemption",
+                            "adjudication": "CONFIRMED"})
+    doc["digest"] = petitions._adjudications_digest(doc["entries"])
+    run.petition_adjudications_file.write_text(json.dumps(doc))
+
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is True
+    assert obligations == set()
+    still_blocking = petitions.downgrade_confirmed_findings(
+        [_finding("blocking", clause="A fabricated exemption", curable=False)],
+        obligations)
+    assert still_blocking[0]["severity"] == "blocking"
+
+
+def test_a_forger_holding_the_key_still_fails_the_event_log_witness(tmp_path):
+    """The unprivileged-container degrade (`privsep.separated()` is False --
+    every test here): the key file is readable by the same uid, so a forger
+    can compute a VALID keyed MAC. The `events.jsonl` witness, which only
+    the engine appends to on a real write, is what still catches it."""
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    key = (run.root / petitions.ADJUDICATIONS_KEY_FILENAME).read_bytes().strip()
+    entries = _recorded(run) + [{"obligation": "A fabricated exemption",
+                                  "adjudication": "CONFIRMED"}]
+    run.petition_adjudications_file.write_text(json.dumps({
+        "entries": entries,
+        "digest": petitions._adjudications_digest(entries),
+        "mac": petitions._adjudications_mac(entries, key),
+    }))
+
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is True
+    assert obligations == set()
+
+
+def test_a_record_the_engine_never_keyed_is_detected(tmp_path):
+    """A record fabricated from scratch in a run where the engine never
+    wrote one: no key exists, so no MAC could be valid."""
+    run = RunDir(root=tmp_path / "run")
+    run.root.mkdir(parents=True, exist_ok=True)
+    entries = [{"obligation": "A fabricated exemption",
+                 "adjudication": "CONFIRMED"}]
+    run.petition_adjudications_file.write_text(json.dumps({
+        "entries": entries,
+        "digest": petitions._adjudications_digest(entries),
+        "mac": petitions._adjudications_digest(entries),
+    }))
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is True
+    assert obligations == set()
+
+
+def test_deleting_the_record_after_a_witnessed_write_is_detected(tmp_path):
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    run.petition_adjudications_file.unlink()
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is True
+    assert obligations == set()
+
+
+def test_removing_the_key_is_detected(tmp_path):
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    (run.root / petitions.ADJUDICATIONS_KEY_FILENAME).unlink()
+    _obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is True
+
+
+def test_tamper_detection_is_recorded_in_the_event_log_and_sticky(tmp_path):
+    """Detection is evidence, and it is not reversible: restoring the file
+    byte-for-byte, or a later legitimate review write, does not buy back
+    trust in the record for the rest of the run."""
+    from ralphd.engine.state import read_events
+
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    good = run.petition_adjudications_file.read_text()
+    doc = json.loads(good)
+    doc["entries"].append({"obligation": "A fabricated exemption",
+                            "adjudication": "CONFIRMED"})
+    doc["digest"] = petitions._adjudications_digest(doc["entries"])
+    run.petition_adjudications_file.write_text(json.dumps(doc))
+
+    assert petitions.confirmed_obligations(run)[1] is True
+    detections = read_events(run.root, (petitions.ADJUDICATIONS_TAMPERED_EVENT,))
+    assert len(detections) == 1
+    assert detections[0]["reason"]
+
+    run.petition_adjudications_file.write_text(good)  # "put it back"
+    assert petitions.confirmed_obligations(run) == (set(), True)
+    _confirm(run, "Some later, genuine obligation")   # a real review write
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is True
+    assert obligations == set()
+    # and the detection was recorded once, not once per read.
+    assert len(read_events(
+        run.root, (petitions.ADJUDICATIONS_TAMPERED_EVENT,))) == 1
+
+
+def test_every_write_is_witnessed_in_the_event_log(tmp_path):
+    from ralphd.engine.state import read_events
+
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run, "Obligation One")
+    _confirm(run, "Obligation Two")
+    macs = [ev["mac"] for ev in
+            read_events(run.root, (petitions.ADJUDICATIONS_RECORDED_EVENT,))]
+    assert len(macs) == 2
+    assert macs[-1] == read_json(run.petition_adjudications_file)["mac"]
+    assert petitions.confirmed_obligations(run) == (
+        {"obligation one", "obligation two"}, False)
+
+
+def test_the_record_write_goes_through_the_root_owned_write_path(tmp_path,
+                                                                 monkeypatch):
+    """Layer 1 is load-bearing: the record is written by
+    `privsep.write_root_owned_json` (root-owned, unwritable by the agent uid
+    wherever `privsep.separated()`), not by a plain agent-owned write."""
+    from ralphd.engine import privsep
+
+    seen = []
+    real = privsep.write_root_owned_json
+
+    def spy(path, obj):
+        seen.append(Path(path))
+        return real(path, obj)
+
+    monkeypatch.setattr(privsep, "write_root_owned_json", spy)
+    run = RunDir(root=tmp_path / "run")
+    _confirm(run)
+    assert seen == [run.petition_adjudications_file]
+
+
+def test_the_key_is_owner_only_and_never_archived(tmp_path):
+    import stat
+
+    sup = _supervisor(tmp_path / "run")
+    _confirm(sup.run)
+    key = sup.run.root / petitions.ADJUDICATIONS_KEY_FILENAME
+    mode = stat.S_IMODE(key.stat().st_mode)
+    assert mode == 0o600, oct(mode)
+    sup._archive_approach(1)
+    assert not (sup.run.root / "approaches" / "01" /
+                petitions.ADJUDICATIONS_KEY_FILENAME).exists()
+    assert petitions.confirmed_obligations(sup.run)[1] is False
+
+
+def test_review_sees_a_digest_recomputing_edit_as_a_blocking_finding(tmp_path):
+    """End to end through the supervisor: the same probe that defeated
+    attempt 1, run against a live review pass -- the fabricated obligation
+    stays BLOCKING in review's findings channel, and review's own prompt
+    carries the mandatory blocking-finding instruction."""
+    sup = _supervisor(tmp_path / "run")
+    _confirm(sup.run)
+    doc = read_json(sup.run.petition_adjudications_file)
+    doc["entries"].append({"obligation": "A fabricated exemption",
+                            "adjudication": "CONFIRMED"})
+    doc["digest"] = petitions._adjudications_digest(doc["entries"])
+    sup.run.petition_adjudications_file.write_text(json.dumps(doc))
+
+    findings.write_findings_json(sup.run.findings_json_file, [
+        _finding("blocking", clause="A fabricated exemption", curable=False),
+        _finding("blocking", clause="Requirement B, DoD predicate 9",
+                  curable=False),
+    ])
+    live_findings, errors = sup._review_findings_channel()
+    assert errors == []
+    assert {f["clause"]: f["severity"] for f in live_findings} == {
+        "A fabricated exemption": "blocking",
+        "Requirement B, DoD predicate 9": "blocking",
+    }
+    assert findings.compute_verdict(live_findings) == "rejected"
+
+    ctx = sup._review_extra_context()
+    assert "tampered" in ctx.lower()
+    assert "BLOCKING" in ctx
+    assert "tampered" in sup.build_prompt("review", extra=ctx).lower()

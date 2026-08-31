@@ -39,20 +39,43 @@ writer of that file -- called from `LoopSupervisor` itself once a review
 iteration settles, never from inside a worker or review hat's own spawned
 process, which is what "review writes them" (the PRD's own words) means
 in a world where review's hat process runs at the exact same
-dropped-to-agent uid a worker iteration does (`privsep.py`): the
-tamper-evidence property comes from WHERE the write happens (the engine,
-never a hat), not from file permissions alone. `read_confirmed_
-adjudications` re-derives a digest over the entries on every read and
-flags a mismatch as tampered -- the one detection available when
-`privsep.separated()` is False (every test here, and any operator running
-an unprivileged container) and root-ownership offers no real protection.
+dropped-to-agent uid a worker iteration does (`privsep.py`).
+Tamper-evidence against the worker rests on three independent things,
+because no ONE of them is enough:
+
+1. the record is written through `privsep.write_root_owned_json` -- the
+   root-owned write task 105 gave `tasks.json` -- so wherever the uid
+   boundary exists (`privsep.separated()`) a hat process cannot write the
+   file at all;
+2. its authentication tag is a KEYED HMAC-SHA256 over a per-run secret
+   (`run.root/petition-adjudications.key`, minted root-owned mode 0600 by
+   the engine) that the record itself does not contain, so recomputing
+   the documented hash of hand-edited entries does not produce a valid
+   tag -- an unkeyed digest stored beside the data it covers, which is
+   what this module shipped first, is recomputable by anyone who can
+   write the file and therefore proves nothing;
+3. every write announces its tag in an append-only `events.jsonl` witness
+   line (`ADJUDICATIONS_RECORDED_EVENT`) that `read_confirmed_
+   adjudications` cross-checks, so even a forger who read the key in an
+   unprivileged single-uid container (the documented degrade: no boundary
+   to raise into) must also fabricate an engine witness line -- and any
+   detection is itself recorded (`ADJUDICATIONS_TAMPERED_EVENT`) and
+   sticky for the rest of the run.
+
+Any mismatch means the record is treated as EMPTY (no obligation is
+exempted) and review is told, in its own prompt, to raise a BLOCKING
+finding -- fail closed, never towards trusting a record that may have
+been edited to manufacture an exemption.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import re
+import secrets
 from pathlib import Path
 
 # The four petition types `docs/petition-format.md` enumerates. A section
@@ -205,6 +228,14 @@ def petitions_review_context(workspace: Path) -> str:
 # adjudications, tamper-evident against the worker.
 # ---------------------------------------------------------------------------
 
+# The per-run MAC key file (`run.root/petition-adjudications.key`) and the
+# two `events.jsonl` witness event types. Together with the root-owned
+# record write (`privsep.write_root_owned_json`) these are the three
+# independent artifacts a forged adjudication would have to line up.
+ADJUDICATIONS_KEY_FILENAME = "petition-adjudications.key"
+ADJUDICATIONS_RECORDED_EVENT = "petition_adjudications_recorded"
+ADJUDICATIONS_TAMPERED_EVENT = "petition_adjudications_tampered"
+
 def _normalize_obligation(obligation: str) -> str:
     """Case/whitespace-insensitive key for matching an obligation string
     against itself across the two independent free-text channels
@@ -213,15 +244,131 @@ def _normalize_obligation(obligation: str) -> str:
     return " ".join(obligation.split()).strip().lower()
 
 
+def _canonical(entries: list[dict]) -> str:
+    """Canonical JSON over `entries` (sorted keys, no incidental
+    whitespace) so two semantically identical entries lists always hash
+    the same regardless of dict ordering."""
+    return json.dumps(entries, sort_keys=True, separators=(",", ":"))
+
+
 def _adjudications_digest(entries: list[dict]) -> str:
-    """A stable digest over `entries` -- the ONE thing `read_confirmed_
-    adjudications` below checks to decide whether the file has been
-    touched by anything other than `record_confirmed_adjudications`
-    (which always keeps entries+digest consistent). Canonical JSON
-    (sorted keys, no incidental whitespace) so two semantically identical
-    entries lists always digest the same regardless of dict ordering."""
-    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    """An UNKEYED digest over `entries`, kept as a human/debug-readable
+    field of the record. It is deliberately NOT the tamper check on its
+    own: an unkeyed digest stored in the same file as the data it covers
+    is recomputable by anyone who can write the file, so a worker-phase
+    edit that also recomputes it would go unnoticed. The two checks that
+    actually carry the property are `_adjudications_mac` (keyed, over a
+    per-run secret the record does not contain) and the `events.jsonl`
+    witness (`ADJUDICATIONS_RECORDED_EVENT`) -- see
+    `read_confirmed_adjudications`."""
+    return hashlib.sha256(_canonical(entries).encode("utf-8")).hexdigest()
+
+
+def _key_path(run) -> Path:
+    """The per-run MAC key backing `_adjudications_mac`, at
+    `run.root/petition-adjudications.key` (documented in SPEC 5.1's
+    run-dir tree and `docs/architecture.md`). Written ONCE, by the engine,
+    root-owned mode 0600 when `privsep.separated()` -- i.e. unreadable by
+    the dropped-to-agent uid every hat process (worker AND review) runs
+    at, which is what makes forging a MAC impossible rather than merely
+    detectable. Lives at run scope, beside the record it authenticates,
+    so it survives an engine restart mid-run (the record must still verify
+    in a later episode) and is never copied into `approaches/NN/`."""
+    return Path(run.root) / ADJUDICATIONS_KEY_FILENAME
+
+
+def _read_key(run) -> bytes | None:
+    """The run's MAC key, or None when there is none to read (no record
+    has ever been written -- or the key was removed, which is itself
+    treated as tampering by `read_confirmed_adjudications` whenever a
+    record file does exist)."""
+    try:
+        material = _key_path(run).read_bytes().strip()
+    except OSError:
+        return None
+    return material or None
+
+
+def _load_or_create_key(run) -> bytes:
+    """The run's MAC key, minted on first use. Created inside
+    `privsep.root_for_write()` with mode 0600 so that, wherever the uid
+    boundary exists, the key is root-owned and no hat process can read it;
+    with no boundary (`privsep.separated()` is False -- the test suite, an
+    unprivileged container) it degrades to an agent-owned 0600 file, the
+    same documented degrade `privsep.write_root_owned_json` takes, and
+    detection then rests on the `events.jsonl` witness below."""
+    existing = _read_key(run)
+    if existing is not None:
+        return existing
+    from ralphd.engine import privsep
+    path = _key_path(run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    material = secrets.token_hex(32).encode("ascii")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with privsep.root_for_write():
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, material)
+        finally:
+            os.close(fd)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    return _read_key(run) or material
+
+
+def _adjudications_mac(entries: list[dict], key: bytes) -> str:
+    """A KEYED authentication tag over `entries` -- HMAC-SHA256 under the
+    per-run key `_key_path` holds. This is what a worker-phase edit cannot
+    reproduce: the key is not in the record, and under the uid boundary it
+    is not even readable by the uid a hat runs at."""
+    return hmac.new(key, _canonical(entries).encode("utf-8"),
+                     hashlib.sha256).hexdigest()
+
+
+def _emit(run, type_: str, **data) -> None:
+    """Best-effort `RunDir.emit` -- the witness/tamper events below are
+    evidence, never load-bearing control flow, so a run object without an
+    event log (a bare stub in someone else's test) costs nothing."""
+    emit = getattr(run, "emit", None)
+    if emit is None:
+        return
+    try:
+        emit(type_, **data)
+    except OSError:
+        pass
+
+
+def _witness_macs(run) -> list[str]:
+    """Every MAC the engine has ANNOUNCED writing, oldest first, read off
+    `events.jsonl` -- the independent witness that makes a coherent forgery
+    require updating two artifacts the engine alone appends to, not one.
+    The last entry is the MAC the record must currently carry."""
+    from ralphd.engine.state import read_events
+    macs = []
+    for ev in read_events(Path(run.root), (ADJUDICATIONS_RECORDED_EVENT,)):
+        mac = ev.get("mac")
+        if isinstance(mac, str):
+            macs.append(mac)
+    return macs
+
+
+def _tamper_already_witnessed(run) -> bool:
+    """Whether tampering has ALREADY been detected and recorded in this
+    run's event log. Detection is sticky by design: once the record has
+    been edited by something other than its only writer, nothing later in
+    the run can restore trust in it (a forger could otherwise tamper and
+    then wait for the next legitimate review write to erase the
+    evidence), and review keeps being told about it."""
+    from ralphd.engine.state import read_events
+    return bool(read_events(Path(run.root), (ADJUDICATIONS_TAMPERED_EVENT,)))
+
+
+def _flag_tampered(run, reason: str) -> bool:
+    """Record the detection in `events.jsonl` (once -- `_tamper_already_
+    witnessed` short-circuits every later read) and return True, the
+    `tampered` half of `read_confirmed_adjudications`'s return."""
+    _emit(run, ADJUDICATIONS_TAMPERED_EVENT, reason=reason)
+    return True
 
 
 def record_confirmed_adjudications(run, adjudications) -> None:
@@ -252,12 +399,25 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     asks for: "review writes them" means the ENGINE writes them on
     review's behalf, because review's OWN spawned process runs at the
     identical dropped-to-agent uid a worker iteration does (`privsep.py`)
-    and could not literally hold a privilege the worker lacks.
+    and could not literally hold a privilege the worker lacks. The write
+    itself goes through `privsep.write_root_owned_json` -- the same
+    root-owned write task 105 gave `tasks.json`, so under the uid boundary
+    the record is not writable by a hat at all -- and leaves THREE
+    coherent artifacts behind: the record, its keyed MAC (over a key the
+    record does not contain, `_key_path`), and an
+    `ADJUDICATIONS_RECORDED_EVENT` witness line in `events.jsonl`.
+
+    A record found tampered is NOT merged forward: it is dropped in favour
+    of the entries being written now (fail closed, never carry an
+    untrusted exemption), while the sticky tamper event keeps the finding
+    alive for the rest of the run.
     """
     if not adjudications:
         return
-    from ralphd.engine.state import atomic_write_json
-    existing, _tampered = read_confirmed_adjudications(run)
+    from ralphd.engine import privsep
+    existing, tampered = read_confirmed_adjudications(run)
+    if tampered:
+        existing = []
     by_key = {_normalize_obligation(e["obligation"]): e for e in existing
               if isinstance(e, dict) and isinstance(e.get("obligation"), str)}
     changed = False
@@ -277,30 +437,74 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     if not changed:
         return
     entries = sorted(by_key.values(), key=lambda e: e["obligation"])
-    doc = {"entries": entries, "digest": _adjudications_digest(entries)}
-    atomic_write_json(run.petition_adjudications_file, doc)
+    key = _load_or_create_key(run)
+    mac = _adjudications_mac(entries, key)
+    doc = {"entries": entries,
+           "digest": _adjudications_digest(entries),
+           "mac": mac}
+    Path(run.root).mkdir(parents=True, exist_ok=True)
+    privsep.write_root_owned_json(run.petition_adjudications_file, doc)
+    _emit(run, ADJUDICATIONS_RECORDED_EVENT, mac=mac, entries=len(entries))
 
 
 def read_confirmed_adjudications(run) -> tuple[list[dict], bool]:
     """`(entries, tampered)` read back from `run.petition_adjudications_
-    file`. `tampered` is True exactly when the file exists but does not
-    have the shape/digest `record_confirmed_adjudications` -- its only
-    writer -- always leaves it in: a non-dict top level, a non-list
-    `entries`, or an `entries` list whose recomputed digest does not match
-    the stored one. A missing file is `([], False)` -- no record at all
-    is not tampering, just nothing having been CONFIRMED yet.
+    file`. `tampered` is True exactly when the record does not match, in
+    every respect, what `record_confirmed_adjudications` -- its only
+    writer -- leaves behind:
+
+    1. a tamper detection already witnessed in `events.jsonl` (sticky:
+       trust is never restored later in the run);
+    2. the record missing/unreadable although the engine announced
+       writing one (a deleted or truncated record);
+    3. a malformed record (non-dict top level, non-list `entries`);
+    4. no MAC key on disk although a record exists -- a record the engine
+       never wrote;
+    5. a keyed MAC (`_adjudications_mac`) that does not match `entries`;
+       this is the check an unkeyed digest cannot make, and the one that
+       catches a worker-phase edit that recomputes the documented plain
+       digest;
+    6. the unkeyed `digest` field disagreeing with `entries`;
+    7. the `events.jsonl` witness's latest announced MAC disagreeing with
+       the record's -- so a forger would have to hold the key AND append a
+       matching engine witness line, not just rewrite one file.
+
+    A missing file with no witness is `([], False)` -- no record at all is
+    not tampering, just nothing having been CONFIRMED yet.
     """
     from ralphd.engine.state import read_json
+    if _tamper_already_witnessed(run):
+        return [], True
+    witnesses = _witness_macs(run)
     doc = read_json(run.petition_adjudications_file, default=None)
     if not doc:
+        if witnesses:
+            return [], _flag_tampered(
+                run, "record missing or unreadable although the engine "
+                     "announced writing one")
         return [], False
     if not isinstance(doc, dict):
-        return [], True
+        return [], _flag_tampered(run, "record is not a JSON object")
     entries = doc.get("entries")
     if not isinstance(entries, list):
-        return [], True
-    tampered = doc.get("digest") != _adjudications_digest(entries)
-    return entries, tampered
+        return [], _flag_tampered(run, "record's entries field is not a list")
+    key = _read_key(run)
+    if key is None:
+        return [], _flag_tampered(
+            run, "a record exists but the run holds no MAC key -- the "
+                 "engine never wrote this record")
+    stored_mac = doc.get("mac")
+    if not isinstance(stored_mac, str) or not hmac.compare_digest(
+            stored_mac, _adjudications_mac(entries, key)):
+        return [], _flag_tampered(
+            run, "keyed MAC does not authenticate the record's entries")
+    if doc.get("digest") != _adjudications_digest(entries):
+        return [], _flag_tampered(
+            run, "unkeyed digest field does not match the record's entries")
+    if not witnesses or not hmac.compare_digest(witnesses[-1], stored_mac):
+        return [], _flag_tampered(
+            run, "events.jsonl holds no engine witness for this record's MAC")
+    return entries, False
 
 
 def confirmed_obligations(run) -> tuple[set[str], bool]:
@@ -354,24 +558,29 @@ def downgrade_confirmed_findings(findings_list: list[dict],
 def tamper_review_context(tampered: bool) -> str:
     """The review-prompt context block warning review that its own
     run-scope CONFIRMED-adjudications record (`read_confirmed_
-    adjudications`) no longer matches the digest it was written with --
-    i.e. something other than `record_confirmed_adjudications` touched it
-    since. Returns `''` when nothing is wrong (the overwhelming common
-    case). Joined into `LoopSupervisor._review_extra_context` beside the
-    open-petitions block -- this is what makes a worker-phase edit to the
-    record 'documented as a blocking finding' (PRD requirement C.3): the
-    instruction lives in review's own prompt, the same channel every other
-    engine-detected contract fact already reaches review through.
+    adjudications`) no longer authenticates -- i.e. something other than
+    `record_confirmed_adjudications` touched it since the engine wrote it
+    (keyed MAC, unkeyed digest or `events.jsonl` witness disagreeing; a
+    removed key or a deleted record counts too). Returns `''` when
+    nothing is wrong (the overwhelming common case). Joined into
+    `LoopSupervisor._review_extra_context` beside the open-petitions block
+    -- this is what makes a worker-phase edit to the record 'documented as
+    a blocking finding' (PRD requirement C.3): the instruction lives in
+    review's own prompt, the same channel every other engine-detected
+    contract fact already reaches review through.
     """
     if not tampered:
         return ""
     return (
         "\n## Petition adjudication record tampered (task 011, requirement C, #112)\n"
         "\nThe run-scope record of CONFIRMED petition adjudications no "
-        "longer matches the digest it was written with -- something other "
-        "than review's own prior adjudication has modified it (a "
+        "longer authenticates against the keyed MAC and the `events.jsonl` "
+        "witness line the engine wrote it with -- something other than "
+        "review's own prior adjudication has modified it (a "
         "worker-phase edit is exactly the kind of tampering this checks "
         "for). You MUST include this as a BLOCKING finding (`severity: "
-        "\"blocking\"`) in your verdict's findings channel, and you MUST NOT treat "
-        "any previously CONFIRMED obligation as still confirmed until the "
-        "record is repaired and re-adjudicated.\n")
+        "\"blocking\"`) in your verdict's findings channel. The detection is "
+        "recorded in this run's own event log and is NOT cleared by a later "
+        "write: no previously CONFIRMED obligation counts as confirmed for "
+        "the remainder of this run, and any petition an approach still needs "
+        "must be adjudicated afresh, on its own evidence.\n")
