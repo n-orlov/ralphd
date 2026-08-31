@@ -136,6 +136,50 @@ def compute_verdict(findings: list[dict]) -> str:
         f.get("severity") == "blocking" for f in findings) else "verified"
 
 
+def all_blocking_findings_incurable(findings: list[dict]) -> bool:
+    """Task 005 (requirement B, #111): are this rejection's BLOCKING
+    findings ALL incurable? The one place this question is answered --
+    a later task's `rejected_incurable` edge calls this rather than
+    re-deriving the same scan inline.
+
+    Reads ONLY the `severity`/`curable` fields of the `findings` list the
+    caller hands it -- which itself came from `read_findings_json`/
+    `_review_findings_channel` (review's own structured findings channel,
+    `review-findings.json`, written by `write_findings_json`). Curability
+    is asserted by REVIEW ONLY (PRD requirement B.4): this function takes
+    NO other argument -- no run directory, no workspace path, no
+    worker-writable file -- so there is no second input path through
+    which anything on the run side (the worker's own writable workspace
+    included) could reach the answer; the only way to change it is for
+    review itself to write a different `curable` bit into the findings
+    channel it alone controls.
+
+    Residual findings never enter the scan -- only `severity: "blocking"`
+    entries are inspected, so a residual finding's `curable` value
+    (whatever it is set to) is irrelevant to the answer, exactly as it is
+    irrelevant to `compute_verdict` above.
+
+    An empty blocking set answers `True` (vacuously "all incurable" -- the
+    same shape `all()` always gives an empty iterable), but that is not a
+    licence to route on this answer alone: a caller must first confirm
+    `compute_verdict(findings) == "rejected"` (i.e. that a blocking finding
+    actually exists) before treating `True` here as "take the incurable
+    edge" -- this function only answers the curability question once a
+    rejection is already established, same division of labour
+    `compute_verdict` documents for itself.
+
+    Like `compute_verdict`, this function does no schema checking of its
+    own -- a malformed finding missing `curable` (should never happen past
+    `validate_findings`) reads as curable (only an explicit `curable is
+    False` counts as incurable), which fails towards the ordinary replan
+    path rather than towards pausing the run, the same
+    fail-towards-today's-behaviour posture non-negotiable #2 already
+    established for `compute_verdict`'s own None-safety.
+    """
+    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    return all(f.get("curable") is False for f in blocking)
+
+
 def read_findings_json(path: Path) -> list[dict]:
     """Read the machine-readable sidecar back from `path`, re-validating
     every finding through the same schema engine on the way out — a file
