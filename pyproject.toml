@@ -4,7 +4,7 @@ name = "ralphd"
 # string is spelled in src/ralphd/__init__.py (__version__, served by
 # `GET /version` and both --version flags); tests/test_packaging_metadata.py
 # holds the two in agreement and checks the docs' claims against them.
-version = "0.14.2"
+version = "0.15.0"
 description = "Locally runnable, dockerized autonomous coding loop (Ralph technique) driven by pi"
 readme = "README.md"
 license = "Apache-2.0"
