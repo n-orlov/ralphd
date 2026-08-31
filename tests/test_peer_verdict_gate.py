@@ -86,6 +86,12 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         tr.T("worker", "steering_pending_at_verified"),
         tr.T("finishing", "verified"),
         tr.T("replan", "rejected_approach_left"),
+        # Task 006 (PRD requirement B.2, #111): the incurable-rejection
+        # edge, added to the base table beside `rejected_approach_left` --
+        # present here too since gate-off is byte-identical to TODAY's
+        # table (now including this edge), not to a pre-task-006 snapshot
+        # of it.
+        tr.T("review", "rejected_incurable"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),

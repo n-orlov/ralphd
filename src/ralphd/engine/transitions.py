@@ -206,6 +206,30 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("finishing", "verified"),
         # rejected, and an approach is still available — replan.
         T("replan", "rejected_approach_left"),
+        # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
+        # findings are ALL incurable (`findings.compute_verdict` says
+        # "rejected" AND `findings.all_blocking_findings_incurable` says
+        # `True`) takes THIS edge instead of `rejected_approach_left` --
+        # spending a fresh approach on findings a fresh approach cannot
+        # change is certain rejection, the same "route rather than starve"
+        # precedent `doomed_plan_unverifiable` (worker, task 007/#99)
+        # already set for an unwinnable plan. Self-loops back to `review`
+        # itself -- `_step_review` calls `self.pause()` (the EXISTING
+        # pause machinery, `_gate()`'s `self._pause` event, no new pause
+        # implementation) and produces an operator escalation (each
+        # finding plus the `ralphctl amend` invocation that would resolve
+        # it) before returning this edge; the run parks at the very next
+        # `_gate()` call inside the re-entered `review` state -- i.e. on
+        # resume it asks review again over the SAME approach (`_approach`
+        # untouched, `_archive_approach`/`_write_composite_prd` never
+        # called for this branch) rather than planning a fresh one. Task
+        # 007 owns making a freshly-recorded ruling visible to that
+        # resumed review pass; task 008 pins that a CURABLE blocking
+        # finding still takes `rejected_approach_left` above, and that
+        # `rejected_no_approach_left` below still wins once the approach
+        # budget is spent (checked first in `_step_review`, ahead of this
+        # edge, so an exhausted budget never pauses instead of ending).
+        T("review", "rejected_incurable"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -408,6 +432,13 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         T("worker", "steering_pending_at_verified"),
         T("verdict_gate", "verified_peer_verdict_gate_enabled"),
         T("replan", "rejected_approach_left"),
+        # Task 006 (PRD requirement B.2, #111): carried over byte-for-byte
+        # from `TABLE["review"]` above -- the incurable-rejection check
+        # runs in `_step_review` on the REJECTED branch, entirely before
+        # the peer verdict gate (which only ever sits on the VERIFIED
+        # branch) is consulted, so this edge's meaning is identical
+        # whether or not the gate is on.
+        T("review", "rejected_incurable"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),

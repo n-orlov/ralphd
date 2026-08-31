@@ -22,9 +22,11 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import time
 from pathlib import Path
+from typing import Callable
 
 from . import contract_enforcement
 from . import contracts
@@ -314,6 +316,17 @@ class LoopSupervisor:
         self._executor = transitions.TransitionExecutor(
             cfg.vigilant, cfg.peer_plan_review, cfg.peer_verdict_gate)
         self._approach: int | None = None
+
+        # Task 006 (PRD requirement B.2, #111): the operator-escalation
+        # seam for a `rejected_incurable` pause -- `None` in production
+        # today (the escalation is still `emit()`ed to `events.jsonl`
+        # either way, so nothing is silently lost with no notifier wired
+        # in). A test replaces this with a stub callable AFTER
+        # construction, the same post-construction stubbing shape already
+        # used for `sup.runner`/`sup._wait_out_backoff` throughout this
+        # test suite -- never a constructor parameter, so every existing
+        # call site keeps working unchanged.
+        self.notifier: Callable[[str], None] | None = None
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
     # Task 014 (requirement J, #98): "steer" joins "infra"/"grace" here.
@@ -5323,6 +5336,18 @@ class LoopSupervisor:
                         **self._unconsumed_steering_patch())
             return ("done", "succeeded")
         self.run.emit("log", message=f"review rejected approach {approach}")
+        # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
+        # findings are ALL incurable takes `rejected_incurable` instead of
+        # spending (and losing) a fresh approach on findings a fresh
+        # approach cannot change -- checked BEFORE the ordinary archive/
+        # replan below, but only once an approach is actually available
+        # (requirement B.3: `rejected_no_approach_left` still wins once the
+        # budget is spent -- see `_review_incurable_rejection` for why that
+        # order is load-bearing, not merely convenient).
+        if approach < self.cfg.max_approaches and self._review_incurable_rejection():
+            self._pause_and_escalate_incurable_rejection(approach)
+            self._advance("review", "review", "rejected_incurable")
+            return ("advance", "review", "rejected_incurable")
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:
@@ -5330,6 +5355,99 @@ class LoopSupervisor:
             return ("advance", "replan", "rejected_approach_left")
         self._advance("review", "finishing", "rejected_no_approach_left")
         return ("tail",)
+
+    def _review_incurable_rejection(self) -> bool:
+        """Task 006 (requirement B.2, #111): does the review just run
+        deserve `rejected_incurable` rather than the ordinary replan edge?
+        True only when a structured findings channel exists for this
+        review (`_review_findings`, `None` when review.md has not been
+        updated to always produce one -- nothing to check curability
+        against, so this falls back to `False`, the ordinary replan path,
+        exactly as `_review_verdict` falls back to trusting the payload's
+        own claim when no channel exists), the findings actually compute
+        to `"rejected"` (`findings.compute_verdict` -- a channel present
+        but entirely residual is not a rejection at all, so curability is
+        never asked), AND every blocking finding in it is incurable
+        (`findings.all_blocking_findings_incurable`, PRD requirement B.4:
+        asserted by review alone, no run-side input).
+        """
+        findings_list = self._review_findings()
+        if findings_list is None:
+            return False
+        if findings.compute_verdict(findings_list) != "rejected":
+            return False
+        return findings.all_blocking_findings_incurable(findings_list)
+
+    def _amend_invocation_for_finding(self, finding: dict) -> str:
+        """The exact `ralphctl amend` invocation an operator would run to
+        waive the obligation `finding` says is violated (PRD requirement
+        B.2: "the exact `ralphctl amend` invocations that would resolve
+        each one"). `FINDING_SCHEMA` (`engine/findings.py`) carries no task
+        linkage at all (`additionalProperties: False`, only `severity`/
+        `curable`/`clause`/`evidence`) -- deliberately: requirement B.4
+        forbids curability from taking any run-side input, and a task id
+        supplied by the run would be exactly that. So the identifier this
+        invocation amends is a slug of the finding's own `clause` --
+        `write_amendment` (`engine/state.py`) never validates its `task_id`
+        argument against `tasks.json` at all (it is host-only and cannot
+        read the run dir), so a clause-derived slug is a fully valid,
+        already-instantiated ruling target, not a placeholder the operator
+        has to fill in themselves. The ruling text is the finding's own
+        `clause`/`evidence`, so the file `ralphctl amend` writes records
+        exactly what this escalation showed the operator, verbatim.
+        """
+        clause = str(finding.get("clause") or "finding")
+        evidence = str(finding.get("evidence") or "")
+        slug = re.sub(r"[^a-z0-9]+", "-", clause.lower()).strip("-") or "finding"
+        reason = f"{clause}: {evidence}" if evidence else clause
+        return (f"ralphctl amend {self.cfg.run_id} {slug} --waive "
+               f"{shlex.quote(reason)}")
+
+    def _incurable_rejection_escalation_text(
+        self, approach: int, blocking: list[dict]
+    ) -> str:
+        """The operator-facing escalation body for a `rejected_incurable`
+        pause: each blocking finding (clause, evidence, curable) plus the
+        exact `ralphctl amend` invocation that would resolve it (requirement
+        B.2's own wording), in finding order so a reader can match one to
+        the other by position.
+        """
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: review rejected "
+            "this approach and every blocking finding is incurable -- a "
+            "fresh approach would not change any of them. The run has "
+            "been paused (existing pause machinery); it will not proceed "
+            "until an operator ruling is recorded and the run is resumed "
+            f"(`ralphctl resume {self.cfg.run_id}`).",
+            "",
+        ]
+        for index, finding in enumerate(blocking, start=1):
+            lines.append(f"Finding {index} (blocking, incurable):")
+            lines.append(f"  clause: {finding.get('clause', '')}")
+            lines.append(f"  evidence: {finding.get('evidence', '')}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_incurable_rejection(self, approach: int) -> None:
+        """Task 006 (requirement B.2, #111): pause the run through the
+        EXISTING pause machinery (`self.pause()` -- the same `self._pause`
+        `asyncio.Event` `POST /pause` clears, no second implementation) and
+        produce the operator escalation. `self.notifier`, when set, is
+        handed the escalation TEXT (a stub in tests; a real notifier --
+        e.g. the `telegram-notify` skill's HTTP push -- in production);
+        either way the escalation is also `emit()`ed to `events.jsonl` so
+        it is never ONLY reachable through whatever notifier is wired in.
+        """
+        findings_list = self._review_findings() or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        text = self._incurable_rejection_escalation_text(approach, blocking)
+        self.run.emit("operator_escalation", approach=approach,
+                      reason="rejected_incurable", findings=blocking,
+                      escalation=text)
+        self.pause()
+        if self.notifier is not None:
+            self.notifier(text)
 
     def _terminal_success_blockers(self) -> list[str]:
         """Task 013 (requirement I, #98): the ONE predicate both exit-gate
