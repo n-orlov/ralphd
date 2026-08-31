@@ -1588,10 +1588,17 @@ future update the way the `## v0.14.2` block above once did and was corrected fo
   the ruling's own instruction.
 - ✅ **C (#112) — impossibility petitions.** The petition file format is documented
   (`96cc84fe`, task 009); open petitions are surfaced to the review hat (`fd6dd10d`, task 010);
-  a CONFIRMED adjudication persists at run scope, authenticated with a keyed MAC and an event
-  witness kept out of the agent-owned run dir, so approach N+1 inherits it (`d92762bc`,
-  `df33254f`, `6e0ed8e9`, task 011); a duplicate or re-filed REFUTED petition is itself a
-  blocking finding, appended unconditionally engine-side (`aece29f4`, task 012); the three-way
+  a CONFIRMED adjudication persists at run scope, authenticated with a keyed MAC whose KEY is
+  what stays out of the agent-owned run directory — it lives in the engine process's own memory
+  for the episode, plus (where the uid boundary exists) a root-owned `0600` file in a root-owned
+  `0700` store outside the run dir — and cross-checked against BOTH the engine's in-memory
+  record of the last MAC it wrote and an `events.jsonl` witness line; the witness line itself
+  sits in the agent-writable event log under the run root, so it is the in-memory half that
+  defeats a forged witness. Any mismatch, or a record that cannot be authenticated at all, is
+  read as an EMPTY set of exemptions and told to review as a blocking finding, so approach N+1
+  inherits an authentic exemption or none (`d92762bc`, `df33254f`, `6e0ed8e9`, task 011); a
+  duplicate or re-filed REFUTED petition is itself a blocking finding, appended unconditionally
+  engine-side (`aece29f4`, task 012); the three-way
   interaction — a CONFIRMED petition downgrading its own finding while an unrelated incurable
   finding alone still fires B's pause — is pinned end to end (`eebdc221`, task 013).
 - ✅ **D — the reusable review-economics contract fragment.** `docs/review-economics.md`
