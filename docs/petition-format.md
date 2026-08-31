@@ -70,6 +70,37 @@ Review adjudicates every open petition as part of its verdict:
 The run never grants itself a severity, a curability, or a petition outcome
 — only review adjudicates.
 
+## Where duplicate detection lives, and what pins it
+
+Both duplicate cases above are detected **engine-side**, never in the run's
+own prose: `engine.petitions.duplicate_petition_obligations` groups every
+filing in every `<wave>-petitions.md` by normalised obligation and reports
+any obligation with more than one filing, and
+`engine.petitions.duplicate_petition_findings` turns each into a
+`severity: "blocking"`, `curable: true` finding. `LoopSupervisor` appends
+those findings unconditionally in `_review_findings_channel` (whatever
+review's own `findings.json` says) and names the same fact in review's own
+prompt via `_duplicate_petitions_review_context`, joined at
+`_review_extra_context`.
+
+`tests/test_duplicate_petition_findings.py` (12 tests) pins each case by
+name:
+
+- a second petition for the same obligation —
+  `test_duplicate_petition_for_the_same_obligation_is_detected` and
+  `test_duplicate_petition_becomes_a_blocking_finding`;
+- a petition already adjudicated REFUTED and re-filed —
+  `test_refiled_refuted_petition_is_detected` and
+  `test_refiled_refuted_petition_becomes_a_blocking_finding`;
+- the engine/prompt surfaces themselves —
+  `test_review_findings_channel_appends_duplicate_finding_engine_side`,
+  `test_review_findings_channel_no_extra_finding_without_a_duplicate`,
+  `test_duplicate_petitions_review_context_names_the_obligation` and
+  `test_duplicate_petitions_context_joins_review_extra_context`, with
+  `test_no_duplicate_when_every_obligation_has_one_filing` and
+  `test_no_duplicates_across_disjoint_files_with_distinct_obligations` as
+  the negative controls.
+
 See also: `docs/review-economics.md` for the materiality rubric and the
 late-cure rule this petition protocol is packaged alongside, and
 `docs/prds/v0.15-impossible-is-an-answer.md` (`### Petition protocol`,
