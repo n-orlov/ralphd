@@ -61,6 +61,47 @@ shape, any more than a verifier's own contract enforcement replaces yours over
 a worker's claim -- schema validation and independent verification are two
 different questions, and only this review answers the second one.
 
+## Structured findings (severity, curability, clause, evidence)
+
+(#110) Every finding you record — blocking or residual, whether the overall
+verdict ends up `verified` or `rejected` — carries at minimum four fields,
+machine-checked before your verdict is trusted:
+
+- `severity`: `"blocking"` or `"residual"`. A contract may hand you its own
+  materiality rubric (a `### Materiality rubric` section in the PRD/context
+  above) describing what counts as which; when none is supplied you receive
+  an explicit all-blocking default notice instead, and every finding is
+  blocking under it. Read whichever one you were handed — never invent your
+  own blocking/residual boundary, and never reclassify a finding to force a
+  verdict.
+- `curable`: a boolean — would a FRESH approach change this finding's truth
+  value? A temporal miss (a deadline that has passed, an environment fact
+  that will not change) is not curable; a fixable false claim, a missing
+  test, an unimplemented requirement is. You are the ONLY source of this
+  bit; no run-side input may set or override it.
+- `clause`: the PRD clause / DoD item the finding says is violated.
+- `evidence`: what you actually observed, concretely — the same evidence
+  discipline steps 1-7 above already demand, just attached to the finding
+  itself.
+
+Write BOTH channels for every finding, whether the run is `verified` or
+`rejected`: the free-markdown `review-findings.md` you already produce
+(human judgement in prose, kept exactly as it is), and beside it a JSON
+sidecar, `review-findings.json`, in the run state directory — a plain JSON
+list of these four-field objects, one entry per finding, machine-readable
+for the engine to check your claimed verdict against.
+
+**The verdict is computed from the blocking findings only — engine-side, not
+merely by your own say-so.** An approach whose findings are ALL residual is
+verified, with every residual finding still recorded and still surfacing in
+the closing artifacts; a single blocking finding refuses a `verified` claim.
+This is a computation the engine re-derives and enforces, never a courtesy
+you extend to the run — severity classifies and curability routes, neither
+is a lever the run gets to pull to argue its way out of a finding, and
+nothing here reduces what steps 1-7 above already require you to check or
+weakens the distrust this prompt's Operator rulings section and the closing
+paragraph below already demand.
+
 ## Verdict
 
 Report your verdict through the contract -- this is the only way your
@@ -74,7 +115,10 @@ exactly one JSON object:
   findings file itself, `review-findings.md`, in the run state directory,
   listing each unmet or unverifiable requirement — concretely: what the PRD
   asks, what you observed, what evidence is missing — and point `findings_path`
-  at it. Do NOT fix anything yourself; your value is independence.
+  at it. This markdown file and its `review-findings.json` structured sidecar
+  (previous section) are two views of the SAME findings, written together,
+  every time you record a finding at all, not only on rejection. Do NOT fix
+  anything yourself; your value is independence.
 
 Be strict. "Probably fine" is not verified. If you cannot check something, that is
 a finding, not a pass.

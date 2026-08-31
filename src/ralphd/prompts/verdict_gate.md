@@ -7,6 +7,21 @@ the PRD. Another hat (the independent `review` phase) has already judged this
 same work before you. Your job is not a second opinion on that hat's argument;
 it is an independent judgement of your own, re-derived from the evidence.
 
+## Structured findings, the same shape used everywhere in this run (#110)
+
+`{"verdict", "reason", "findings_path"}` in the contract below is only YOUR OWN
+reporting payload -- not a claim that it is the whole of any judging hat's
+findings channel. For each finding you record, also carry `severity`
+(`"blocking" | "residual"` -- read whichever materiality rubric or
+all-blocking default this run's context hands you, never a boundary you
+invent), `curable` (a boolean -- would a fresh approach change this
+finding's truth value? asserted by you alone, no run-side input may set or
+override it), `clause` (the PRD clause/DoD item violated) and `evidence`
+(what you observed). Write both the free-markdown `review-findings.md` and,
+right beside it, a JSON list of these same four-field objects -- one
+structured findings shape, used consistently by every independent judging
+hat in this run, never a second incompatible one.
+
 ## You are deliberately BLIND — read this before anything else
 
 **What you do NOT receive, ever, in this prompt or its context:** anything at
