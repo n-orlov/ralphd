@@ -323,7 +323,20 @@ def duplicate_petitions_review_context(workspace: Path) -> str:
     return "".join(lines)
 
 
-def petitions_review_context(workspace: Path) -> str:
+def _obligation_confirmed(obligation: str, confirmed: set[str]) -> bool:
+    """Whether `obligation` (a petition's own free-text `Obligation`
+    field) matches an already-run-scope-CONFIRMED obligation, using the
+    same normalised substring-either-direction rule
+    `downgrade_confirmed_findings` applies to a finding's `clause` -- the
+    two channels (a petition's `Obligation`, a finding's `clause`) rarely
+    agree on exact wording, so an exact-string comparison would silently
+    fail to exclude the very obligation `record_confirmed_adjudications`
+    just recorded."""
+    clause = _normalize_obligation(obligation)
+    return bool(clause) and any(clause in c or c in clause for c in confirmed)
+
+
+def petitions_review_context(workspace: Path, run=None) -> str:
     """Render the review-prompt context block for every OPEN petition
     found under `workspace` -- the same treatment
     `LoopSupervisor._operator_amendment_review_context` gives operator
@@ -331,8 +344,31 @@ def petitions_review_context(workspace: Path) -> str:
     each item, then one entry per petition. Returns '' when nothing is
     open (the common case -- most waves file no petitions at all), so
     review prompts are unaffected until a petition actually exists.
+
+    `run` (optional, default `None`) is the run-scope handle whose
+    `confirmed_obligations(run)` record this call consults before
+    rendering: an obligation already CONFIRMED at run scope (PRD
+    requirement C.4 -- 'a CONFIRMED petition removes its obligation from
+    the blocking set' for the REST OF THE RUN, not just the review pass
+    that confirmed it) is no longer genuinely OPEN, so re-issuing a 'MUST
+    adjudicate' instruction naming it on every later review pass would
+    either waste a rehearing on an already-settled fact or invite review
+    to flip a CONFIRMED call back open -- neither of which requirement
+    C.4 permits. Passing `run=None` (every pre-existing caller) keeps
+    this function's behaviour byte-for-byte unchanged. A tampered record
+    (`confirmed_obligations` returning `tampered=True`) is treated as an
+    EMPTY confirmed set: fail towards surfacing the obligation again for
+    a fresh adjudication, never towards trusting a record that might
+    have been edited to manufacture a false exemption.
     """
     petitions = open_petitions_in_workspace(workspace)
+    if run is not None and petitions:
+        confirmed, tampered = confirmed_obligations(run)
+        if not tampered and confirmed:
+            petitions = [
+                p for p in petitions
+                if not _obligation_confirmed(p["obligation"], confirmed)
+            ]
     if not petitions:
         return ""
     lines = [

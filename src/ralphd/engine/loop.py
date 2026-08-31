@@ -6282,13 +6282,25 @@ class LoopSupervisor:
         unforgeability -- a petition is worker-authored by design -- it is
         about which directory the evidence actually lives in).
 
+        Also passes `self.run` through (task 001, requirement C.4,
+        #112): `engine.petitions.petitions_review_context` uses it to
+        drop any petition whose obligation the run-scope record
+        (`petitions.confirmed_obligations`) already adjudicated CONFIRMED
+        -- an obligation review already ruled on, at run scope, does not
+        get a second 'MUST adjudicate' instruction on a later review pass
+        just because its filing's own `Adjudication` field (a workspace,
+        per-file fact) is still open. This is engine-side wiring, not a
+        test-only convenience: the exclusion applies to every real review
+        call through this one method, the same seam every other
+        petitions context uses.
+
         Returns '' when no petition is open (the common case -- most waves
         file none at all), so review prompts are unaffected until one
         actually exists. All parsing/rendering logic lives in
         `engine.petitions`; this method is the one call site that hands it
-        this run's workspace path.
+        this run's workspace path (and now its run handle).
         """
-        return petitions.petitions_review_context(self.workspace)
+        return petitions.petitions_review_context(self.workspace, self.run)
 
     def _petition_adjudications_tamper_context(self) -> str:
         """Task 011 (requirement C.3, #112): warn review, in-prompt, when

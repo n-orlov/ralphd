@@ -61,7 +61,16 @@ Review adjudicates every open petition as part of its verdict:
 
 - **CONFIRMED** converts that obligation into a disclosed residual for the
   remainder of the run — every later approach inherits the adjudication and
-  must not re-litigate it (requirement C, item 3 of the same PRD).
+  must not re-litigate it (requirement C, item 3 of the same PRD). A
+  run-scope CONFIRMED obligation (`engine.petitions.confirmed_obligations`,
+  persisted by `record_confirmed_adjudications`) is not re-surfaced to
+  review as an OPEN petition on any later review pass, even while its own
+  `<wave>-petitions.md` filing's `Adjudication` field still reads blank —
+  `petitions_review_context` consults the run-scope record before
+  rendering, and drops exactly that obligation while leaving every other
+  open petition in the same file rendered; a tampered record is treated as
+  an empty confirmed set, so tampering surfaces the obligation for
+  adjudication again rather than manufacturing an exemption.
 - **REFUTED** must state concretely what would satisfy the obligation, so
   the run knows exactly what to do differently. Re-filing a REFUTED
   petition against the same obligation is the duplicate case above: a
