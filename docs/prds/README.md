@@ -61,7 +61,7 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v014-hands-on-the-plan` | [v0.14-every-hand-on-the-plan.md](v0.14-every-hand-on-the-plan.md) | failed / unverified — approach 1: 22 of 35 tasks validated, task 016 (requirement P) `failed` / validation-exhausted (archived `approaches/01`); approach 2: 17 of 18 tasks validated, task 018 `failed` (archived `approaches/02`); approach 3: 17 of 18 tasks validated, task 017 `failed` / validation-exhausted — the closing report itself, rejected for a self-contradictory account of task 018 and a missing notification inventory | 171 | 468.6M | ~$240.95 derived |
 | `selfdev-v0141-a-guard-that-cannot-see` | [v0.14.1-a-guard-that-cannot-see.md](v0.14.1-a-guard-that-cannot-see.md) | **failed** / unverified — one approach, a 20-task flat plan; terminal tally 13 `validated`, 3 `skipped` (002, 015, 020), 4 `failed` (003, 009, 012, 019); review honoured all seven operator waivers by name and rejected on the single fast-tier-RED finding this wave's (v0.14.2's) requirement A fixes. That run's own `status.json` is unreachable from this container, so — same convention as v0.14.1's own task 011 used for the v0.14 row above — this row is sourced from this wave's PRD, `docs/prds/v0.14.2-green-where-it-runs.md`, requirement D, rather than a `status.json` read | 70 | 70.5M | ~$58.75 derived |
 | `selfdev-v0142-green-where-it-runs` | [v0.14.2-green-where-it-runs.md](v0.14.2-green-where-it-runs.md) | **failed** / unverified — approach 1 (an 18-task flat plan) reached terminal tally 15 `validated`, 1 `skipped`, 2 `failed` (016, 017) and was rejected by review on four findings (archived `approaches/01`); approach 2 (a 13-task flat plan correcting those four findings) reached terminal tally 12 of 13 and was rejected by review on three findings (archived `approaches/02`); approach 3 (a 7-task flat plan, ids 001–007) reached terminal tally 7 of 7 `validated` and was rejected by review on two findings (archived `approaches/03`); approach 4 (a 5-task flat plan correcting those two findings) reached only 1 `validated` when the 10h clock exhausted. All three of its issues (#97, #108, #109) closed; the fast tier ran green inside a job container for the first time. That run's own `status.json` is unreachable from this container, so — same convention as the v0.14.1 row above — this row is sourced from `docs/prds/v0.15-impossible-is-an-answer.md`, requirement E, rather than a `status.json` read | 132 | 131.9M | ~$112.23 derived |
-| `selfdev-v015-impossible-is-an-answer` | [v0.15-impossible-is-an-answer.md](v0.15-impossible-is-an-answer.md) | launching — the operator-authored placeholder row, written before `ralphctl start`; this wave's requirement E settles v0.14.2's row above from the terminal figures its PRD states, and this row stays a live placeholder until its own wave ends | 0+ | 0M+ | ~$0.00+ derived |
+| `selfdev-v015-impossible-is-an-answer` | [v0.15-impossible-is-an-answer.md](v0.15-impossible-is-an-answer.md) | running — in-flight snapshot — approach 1: 27 of 28 tasks validated, 1 skipped (task 006, per operator waiver `/config/amendments/001-006.md` and status ruling `/config/amendments/002-006.md`), then rejected by review on three blocking findings (`approaches/01/review-findings.md`): the CONFIRMED-petition re-litigation gap, this very row still holding the launch placeholder at review time, and the missing plan-acceptance notification with no closing-report residual; archived `approaches/01`; approach 2 (this record, in progress): 2 of 14 tasks validated, 1 in progress (this row-settling task, 003, itself), 11 pending | 110+ | 184.5M+ | ~$117.52+ derived |
 
 Notes worth keeping with the documents:
 
@@ -331,6 +331,30 @@ Notes worth keeping with the documents:
   snapshot marker on every count cell, per this task's own success
   criteria — the run has not reached a terminal `state`, so a later task
   will need to resettle it once this run actually ends.
+- **This PRD's own row (`selfdev-v015-impossible-is-an-answer`) is a live
+  snapshot of the run writing it** (task 003, itself), read fresh from this
+  run's own `/run/ralphd/status.json` and `/run/ralphd/tasks.json` at
+  `2026-08-31T23:13:54Z` (the recorded `updatedAt`): `state: running`,
+  `approach: 2`, `iteration: 117`, `iterationsUsed: 110`,
+  `usage.totalTokens: 184474994` (184.5M), `usage.costDerivedUSD: 117.515432`
+  (`costStatus: derived`, so `engine.state.format_cost` renders `~$117.52
+  derived`). Approach 1 ran its own 28-task plan to 27 `validated` and 1
+  `skipped` (task 006, accepted by the operator waiver
+  `/config/amendments/001-006.md` and status ruling
+  `/config/amendments/002-006.md`), then review rejected it on three blocking
+  findings (`/run/ralphd/approaches/01/review-findings.md`): the CONFIRMED
+  petition re-litigation gap this wave's requirement C fixes, this very row
+  still holding the launch placeholder at review time, and the missing
+  plan-acceptance notification with no closing-report residual — archived
+  `approaches/01`. Approach 2 (this repair pass, this run's current approach)
+  fixes the first finding (tasks 001-002, `validated`), fixes the second (this
+  task, 003, this row itself), and still owes the notification cure (tasks
+  004-005) and a fresh evidence/sweep/closing pass (006-014). A fresh tally of
+  `tasks.json` at this read: 2 `validated`, 1 `in-progress` (this task, 003,
+  itself), 11 `pending`, 14 total — the plan is flat, so nothing is blocked.
+  This row carries the `+` snapshot marker on every count/cost cell, per this
+  task's own success criteria — the run has not reached a terminal `state`, so
+  a later task will need to resettle it once this run actually ends.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
