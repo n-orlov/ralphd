@@ -1267,6 +1267,36 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   regardless of what `state` the previous process left in `status.json`,
   since that field is unconditionally overwritten to `"running"` at the top
   of `run_job()` before the resume decision is made.
+- **Resuming a run paused by `rejected_incurable` (task 007, requirement B,
+  #111).** The `review -> review` `rejected_incurable` edge (task 006) parks
+  the run on `self._pause` awaiting an operator ruling, and that pause is an
+  in-memory `asyncio.Event`: a container restart while it is held loses it
+  entirely. `_resume_point()` therefore has a fifth case,
+  `LoopSupervisor._paused_awaiting_incurable_ruling(approach)` -- the most
+  recent `operator_escalation` event with `reason == "rejected_incurable"`
+  for this approach, with no later `iteration.start` on record -- and routes
+  straight back to **`review`**, never to `replan` (a fresh approach over
+  findings a fresh approach was already shown incapable of curing) and never
+  through a throwaway `worker` pass first.
+  The rulings the operator recorded while it sat paused reach that review
+  iteration through both ruling channels, so nothing is left silently
+  unruled: `mode: status` rulings are applied by
+  `_apply_operator_status_rulings()` (-> `state.apply_amendment_status_rulings`),
+  which runs unconditionally **once per engine episode** at the top of
+  `_run_job_core()`, ahead of the resume decision -- that once-per-episode
+  call is exactly why the container-restart path re-applies rulings recorded
+  during the pause, while the in-process `POST /resume` path (which never
+  re-runs it mid-episode) relies on the other channel: review's own prompt
+  context, `_operator_amendment_review_context()`, re-reads `CONFIG_DIR`
+  fresh on every `_step_review()` call, restart or in-process resume alike.
+  Tests: `tests/test_resume_after_incurable_rejection.py` --
+  `test_resume_point_routes_straight_to_review_not_worker_not_replan` pins
+  the routing, `test_resume_lands_on_review_and_sees_the_ruling_recorded_while_paused`
+  pins the visibility (the amendment text written host-side while paused
+  appears in the resumed review iteration's own prompt), and
+  `test_resume_without_any_ruling_still_lands_on_review_and_rejects_again`
+  is its no-ruling control. All of them reach the paused state through an
+  already-paused fixture and never await an unscheduled operator.
 - Tests: `tests/test_resume.py` (no Docker, real `ralphd-engine` twice over
   the same run dir via `test_e2e.py`'s `engine_factory` fixture).
 - **Vigilant-mode verification across a crash (task 052).** Resuming into an
