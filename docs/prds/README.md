@@ -22,9 +22,10 @@ that run's final `status.json`, which is why the marker is what the checks in
 
 A PRD that wants the review-economics contract fragment (the materiality
 rubric, the impossibility-petition protocol, the late-cure rule — see
-`docs/review-economics.md`) includes it by reference rather than retyping it.
-The petition half of that fragment has its own file format spelled out in
-[`../petition-format.md`](../petition-format.md): one petition per obligation,
+[`../review-economics.md`](../review-economics.md)) includes it by reference
+rather than retyping it. The petition half of that fragment has its own file
+format spelled out in [`../petition-format.md`](../petition-format.md): one
+petition per obligation,
 typed `environmental | temporal | contradictory-clauses | external`, evidence
 required, filed once per obligation in that wave's own
 `artifacts/reports/<wave>-petitions.md`.
