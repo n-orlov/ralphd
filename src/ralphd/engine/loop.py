@@ -6012,15 +6012,43 @@ class LoopSupervisor:
                 f"{e.get('ts')}): {e.get('text')}\n")
         return "".join(lines)
 
+    def _review_materiality_rubric_context(self) -> str:
+        """Task 003 (requirement A.3, #110): hand review the contract's own
+        materiality rubric, or -- when the contract supplies none -- the
+        explicit all-blocking default (`findings.ALL_BLOCKING_DEFAULT_
+        NOTICE`), so review never has to guess which case it is in and the
+        default stays engine-declared rather than merely assumed.
+
+        Reads the same file `build_prompt` already names as "the PRD file"
+        (`prd_path(self.run.root) or self.run.prd_file` -- composite when
+        the engine has written one, the original otherwise; task 056/#1's
+        single decision of which file *is* the run's PRD). A missing file
+        (a run that has not written one yet, e.g. very early in planning)
+        costs nothing more than itself: `findings.materiality_rubric_context`
+        is called with `""`, which contains no rubric heading, so review
+        still receives the explicit all-blocking default rather than this
+        method raising or silently omitting the context.
+        """
+        prd = prd_path(self.run.root) or self.run.prd_file
+        try:
+            text = prd.read_text()
+        except OSError:
+            text = ""
+        return findings.materiality_rubric_context(text)
+
     def _review_extra_context(self) -> str:
         """Everything appended to a review-phase prompt beyond the PRD and
-        tasks.json themselves: flagged-criteria re-verification (task 009)
-        followed by any recorded operator ruling (task 028, #26). Both
-        return '' in the common case, so review prompts are unaffected
-        until either mechanism actually fires. One helper, used at every
-        call site that builds a review prompt, so a future third context
+        tasks.json themselves: flagged-criteria re-verification (task 009),
+        the contract's materiality rubric or the all-blocking default
+        (task 003, requirement A.3, #110), then any recorded operator
+        ruling (task 028, #26). All three return '' (or, for the rubric
+        context, the fixed default text) in the common case, so review
+        prompts are unaffected beyond the rubric hand-off itself until one
+        of the other two mechanisms actually fires. One helper, used at
+        every call site that builds a review prompt, so a future context
         source has exactly one place to join in."""
         return (self._flagged_criteria_review_context() +
+                self._review_materiality_rubric_context() +
                 self._operator_amendment_review_context())
 
     @staticmethod

@@ -35,6 +35,7 @@ below are thin callers of `contracts.validate_against`, the same pattern
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -149,3 +150,82 @@ def read_findings_json(path: Path) -> list[dict]:
         raise ValueError(
             f"invalid findings channel at {path}: " + "; ".join(errors))
     return parsed
+
+
+# ---------------------------------------------------------------------------
+# Task 003 (requirement A.3, #110): the materiality rubric comes from the
+# contract; the engine's own default when a contract supplies none is
+# today's behaviour, unchanged -- every finding is blocking. Non-negotiable
+# #2 names this default explicitly as something never to weaken.
+# ---------------------------------------------------------------------------
+
+# A markdown heading (any level "#" through "######") whose text is
+# "materiality rubric", optionally followed by parenthesised commentary --
+# exactly the shape this PRD's own `### Materiality rubric (review: compute
+# your verdict from blocking findings only)` heading has. Matched
+# case-insensitively so a future contract's own capitalisation choice still
+# surfaces.
+_RUBRIC_HEADING_RE = re.compile(
+    r"^(#{1,6})[ \t]+materiality rubric\b.*$", re.IGNORECASE | re.MULTILINE)
+
+# The explicit, quotable statement of the default this module falls back to
+# when `extract_materiality_rubric` finds nothing -- reused verbatim by
+# `materiality_rubric_context` below and by the pinning test, so the two
+# never drift apart.
+ALL_BLOCKING_DEFAULT_NOTICE = (
+    "This contract supplies no materiality rubric. Default: every finding "
+    "is blocking (today's behaviour, unchanged)."
+)
+
+
+def extract_materiality_rubric(contract_text: str) -> str | None:
+    """Find the PRD's own materiality-rubric section inside `contract_text`
+    (the run's PRD/composite-PRD text, i.e. "the contract") and return it
+    verbatim -- heading line included, body up to (but not including) the
+    next heading of equal or higher level, or end of text. Returns `None`
+    when no such heading exists, which is the ordinary case for a contract
+    written before this convention existed; the caller
+    (`materiality_rubric_context`) is the one place that turns `None` into
+    the explicit all-blocking default -- this function itself makes no
+    default decision, it only answers "is one there".
+
+    A restricted heading match (not a generic keyword search): the rubric
+    is a *section* review must read as a whole, not a sentence that happens
+    to mention the phrase, so only a line that IS a markdown heading titled
+    (near enough) "materiality rubric" opens the section.
+    """
+    match = _RUBRIC_HEADING_RE.search(contract_text or "")
+    if match is None:
+        return None
+    level = len(match.group(1))
+    start = match.start()
+    # The next heading of equal-or-higher level (fewer or equal "#"s) ends
+    # the section; a deeper heading (more "#"s, a subsection) stays inside
+    # it.
+    next_heading = re.compile(
+        r"^#{1," + str(level) + r"}[ \t]+\S.*$", re.MULTILINE)
+    tail = next_heading.search(contract_text, match.end())
+    end = tail.start() if tail else len(contract_text)
+    return contract_text[start:end].strip()
+
+
+def materiality_rubric_context(contract_text: str) -> str:
+    """Render the review-prompt context block that hands review the
+    contract's own materiality rubric -- or, when the contract supplies
+    none, the explicit all-blocking default (`ALL_BLOCKING_DEFAULT_NOTICE`)
+    instead. Requirement A.3 (#110): "review reads the PRD's materiality
+    rubric; the engine defaults to all-blocking when none is present" --
+    this is that hand-off, always present so review is never left to guess
+    which case it is in.
+    """
+    rubric = extract_materiality_rubric(contract_text)
+    lines = ["\n## Materiality rubric (task 003, requirement A.3, #110)\n"]
+    if rubric is None:
+        lines.append(f"\n{ALL_BLOCKING_DEFAULT_NOTICE}\n")
+    else:
+        lines.append(
+            "\nThe contract below is this run's own materiality rubric "
+            "(quoted verbatim from the PRD/composite PRD). Use it -- not "
+            "any other source -- to decide each finding's `severity`.\n")
+        lines.append(f"\n{rubric}\n")
+    return "".join(lines)
