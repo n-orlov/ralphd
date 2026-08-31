@@ -1489,14 +1489,22 @@ version, the rows and the record.
   was made hermetic against a fake `docker` executable and a real, bound `AF_UNIX` socket
   instead of relying on this container's own ambient socket (task 002, `24b5f29c`); the
   socket-absent direction was pinned by a new test asserting the docker module stays collected
-  when no usable socket exists, and `scripts/host_like_pytest.sh`'s header was corrected to drop
-  its false "always has a working docker socket" claim (task 003, `4d7ee2a`).
+  when no usable socket exists. `scripts/host_like_pytest.sh`'s header was **not** corrected by
+  this wave's own task 003 (`4d7ee2a`): that commit still contains the false "usable socket is
+  present essentially # every time this script runs here" claim, verifiable with
+  `git show 4d7ee2a:scripts/host_like_pytest.sh | tr -d '\n' | grep -o 'usable socket is present.\{0,40\}every time'`.
+  The header was corrected later, by approach 2's task 001 (`be51fa5`, `8789ce3`), which the current
+  `scripts/host_like_pytest.sh` reflects (`git show --stat be51fa5`, `git show --stat 8789ce3`).
   `tests/test_host_like_pytest_script.py`: 11 passed.
-- **B (#97) — the browser-hub race.** This wave's own task 008 reproduced the race and named it
-  in code terms (`28675aa3`); task 009 fixed `tests/test_browser_hub.py`'s wait condition,
-  awaiting both rich iterations' thinking lines before the exact-count assert instead of racing
-  a fixed sleep (`c0930f01`); task 010 ran the browser-hub module green at the fix and recorded
-  it (`7ad716ac`, retaken `a4826062`). `tests/test_browser_hub.py`: 36 passed.
+- **B (#97) — the browser-hub race.** This wave's own task 008 attempted to reproduce the race
+  and did not: `artifacts/reports/v0.14.2-browser-hub-evidence.md` section (b) answers "**No.**"
+  with 5 of 5 isolated runs green in that container, so task 008 diagnosed and named the race in
+  code terms without reproducing it (`28675aa3`). Task 009 fixed `tests/test_browser_hub.py`'s
+  wait condition: a *polling* wait (`_wait_for_count_ge`), not a fixed sleep, whose threshold was
+  raised from 1 to 2 so it awaits both rich iterations' thinking lines before the exact-count
+  assert fires (`c0930f01`, `git show --stat c0930f01` shows a 6-line diff to one file); task 010
+  ran the browser-hub module green at the fix and recorded it (`7ad716ac`, retaken `a4826062`).
+  `tests/test_browser_hub.py`: 36 passed.
 - **C (#108) — the roadmap guard learns to paraphrase.** This wave's own task 007 widened
   `tests/test_roadmap_terminal_claims.py`'s staleness matcher from the one literal template it
   shipped with to the bare phrase in any surrounding wording, closing the exact
@@ -1521,9 +1529,16 @@ terminal tally — 15 `validated`, 1 `skipped`, 2 `failed` (016, 017) — and wa
 on four findings unrelated to B/C/E's substance; this paragraph, still promising a future update
 for three requirements that had in fact already landed, was itself one symptom review flagged.
 Approach 2 — a 13-task flat corrective plan touching only `scripts/`, `tests/` and `docs/`
-paths, none of them `src/ralphd/` — rewrites this block in its own task 004 to state, plainly,
+paths, none of them `src/ralphd/` — rewrote this block in its own task 004 to state, plainly,
 which commit shipped which requirement, rather than deferring the statement to a future update
-that by then had no task left to write it.
+that by then had no task left to write it. That rewrite itself carried three false sub-claims
+(task 008 credited with reproducing a race that never reproduced in-container; the header fix
+miscredited to task 003/`4d7ee2a` instead of approach 2's own task 001; requirement B's fix
+described as replacing a fixed sleep instead of raising a polling threshold), which this
+paragraph and the two bullets above now correct. Approach 3 — a further flat corrective plan,
+scoped to `scripts/`, `tests/`, `docs/` and `artifacts/` paths, none of them `src/ralphd/` — is
+this correction's own approach and is, as of this task (003), still in flight; the remainder of
+its own tasks are recorded as they land, not promised in advance here.
 
 ## Later / explicitly deferred
 
