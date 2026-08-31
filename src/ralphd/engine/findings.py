@@ -113,6 +113,28 @@ def write_findings_json(path: Path, findings: list[dict]) -> None:
     atomic_write_json(path, list(findings))
 
 
+def compute_verdict(findings: list[dict]) -> str:
+    """Task 002 (requirement A.2, #110): the verdict the ENGINE computes
+    from a findings list's severities ALONE -- `"rejected"` iff at least
+    one finding's `severity` is `"blocking"`, `"verified"` otherwise
+    (an all-residual list, same as an empty one, computes `"verified"`).
+    This is the ONE place that rule lives; `engine/loop.py`'s
+    `_review_verdict`/`_review_contract_ladder` call this rather than
+    re-deriving the same `any(... == "blocking" ...)` check inline, so a
+    later change to what counts as blocking only has to change here.
+
+    Deliberately takes an already-validated findings list (the caller's
+    job, via `read_findings_json`/`validate_findings`) -- this function
+    itself does no schema checking; a malformed element's `.get("severity")`
+    simply reads `None`, which is never `"blocking"`, so a caller that
+    (incorrectly) fed it unvalidated data fails safe towards `"verified"`
+    rather than crashing -- exactly why callers are expected to validate
+    first, not a licence to skip it.
+    """
+    return "rejected" if any(
+        f.get("severity") == "blocking" for f in findings) else "verified"
+
+
 def read_findings_json(path: Path) -> list[dict]:
     """Read the machine-readable sidecar back from `path`, re-validating
     every finding through the same schema engine on the way out — a file

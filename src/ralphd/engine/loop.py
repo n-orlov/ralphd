@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import contract_enforcement
 from . import contracts
+from . import findings
 from . import plan_ingestion
 from . import router
 from . import scheduler
@@ -4835,6 +4836,27 @@ class LoopSupervisor:
         signatures[str(approach)] = signature
         self.run.update_status(blockerSignatures=signatures)
 
+    def _review_findings(self) -> list[dict] | None:
+        """Task 002 (requirement A.2, #110): the structured findings sidecar
+        (`engine/findings.py`, task 001) for the review just run, or `None`
+        when there is nothing to compute a verdict FROM -- no structured
+        findings channel exists for this run at all (`review.md` has not
+        been updated to always produce one; that is task 004's scope), or
+        the file on disk fails `findings.read_findings_json`'s own
+        re-validation (hand-edited, corrupted). Either way `None` means
+        exactly the same thing to every caller: fall back to trusting the
+        payload's own claimed verdict, exactly as review always has --
+        never a run-ending crash over a channel review never claimed to
+        have written correctly this run.
+        """
+        path = self.run.findings_json_file
+        if not path.exists():
+            return None
+        try:
+            return findings.read_findings_json(path)
+        except ValueError:
+            return None
+
     def _review_verdict(self, result: IterationResult) -> tuple[bool, dict | None, list[str]]:
         """Task 119 (#60 pillar 3, fact 9): parse the review hat's final
         line as a `review` contract payload (`{"verdict": "verified"|
@@ -4855,22 +4877,130 @@ class LoopSupervisor:
         approach is archived and replanned or the job goes terminal, so a
         malformed reply simply fails to earn VERIFIED rather than crashing
         the run.
+
+        Task 002 (requirement A.2, #110) adds two things ON TOP of the
+        above, both engine-side, neither a re-derivation of the schema
+        check fact 16/#65 already guards: `transitions.review_verdict_
+        findings_errors` folds a `verified` claim that contradicts the
+        review's own structured findings (at least one `severity:
+        "blocking"`) into `contract_errors` exactly like any other schema
+        violation -- `_review_contract_ladder` (called by every site that
+        drives a review iteration, strictly BEFORE this method ever sees
+        the result) is what gives that specific contradiction a re-ask
+        chance; by the time control reaches here the ladder has already
+        exhausted its retries, so a contradiction still present at this
+        point is refused (`verified` stays `False`) exactly like any other
+        unresolved contract violation, never silently rewritten. Second: a
+        `rejected` verdict whose findings are ALL residual (`findings.
+        compute_verdict` returns `"verified"`) is the engine's own honest
+        recomputation (DoD predicate 3) -- not a contradiction to refuse,
+        an overcautious claim to correct -- so `verified` flips to `True`
+        here, and the residuals it was computed from are `emit()`ed to
+        `events.jsonl` (surfaced, never dropped) in the same step.
         """
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
             parsed = None
+        findings_list = self._review_findings()
         if isinstance(parsed, dict):
             payload = parsed
-            contract_errors = (contracts.validate_payload("review", payload)
-                                or transitions.review_report_errors(payload))
+            contract_errors = (
+                contracts.validate_payload("review", payload)
+                or transitions.review_report_errors(payload)
+                or transitions.review_verdict_findings_errors(
+                    payload, findings_list))
         else:
             payload = None
             contract_errors = [
                 "response: no parseable 'review' contract payload "
                 "(absent or malformed output)"]
         verified = not contract_errors and payload.get("verdict") == "verified"
+        if (not contract_errors and payload is not None
+                and payload.get("verdict") == "rejected"
+                and findings_list is not None
+                and findings.compute_verdict(findings_list) == "verified"):
+            residual = [f for f in findings_list if f.get("severity") == "residual"]
+            self.run.emit(
+                "review.verdict_recomputed", approach=self._approach,
+                claimed_verdict="rejected", computed_verdict="verified",
+                residual_count=len(residual), residual_findings=residual)
+            verified = True
         return verified, payload, contract_errors
+
+    async def _review_contract_ladder(
+        self, result: IterationResult | None
+    ) -> IterationResult | None:
+        """Task 002 (requirement A.2, #110): give a review payload that
+        CONTRADICTS its own structured findings (`verdict: "verified"`
+        alongside at least one `severity: "blocking"` finding --
+        `transitions.review_verdict_findings_errors`) the SAME re-ask
+        ladder every other contract site already has
+        (`contract_enforcement.enforce_contract`) -- mirroring
+        `_reflect_contract_ladder`'s shape -- instead of `_review_verdict`
+        silently treating the claim as non-verified with no chance for the
+        hat to correct it. Called once per settled review iteration,
+        strictly before `_review_verdict` ever reads the result --
+        `_run_review_iteration`'s return and `_maybe_grace_review`'s own
+        `run_iteration` call are the two sites.
+
+        Deliberately narrow: skips the ladder entirely (returns `result`
+        unchanged) unless the payload is ALREADY schema-valid and
+        `review_report_errors`-clean and genuinely contradicts a present
+        findings list -- an absent/malformed payload, a plain schema
+        violation, or a `rejected` verdict with no reason fall straight
+        through to `_review_verdict`'s existing (unchanged) non-verified
+        default, exactly as they always have; only the ONE NEW
+        contradiction this task adds gets a re-ask. Also never re-asks
+        over a `rejected` verdict whose findings are all residual -- that
+        is `_review_verdict`'s own honest recomputation, not a hat mistake
+        to refuse.
+        """
+        if result is None or self._review_interrupted(result):
+            return result
+        findings_list = self._review_findings()
+        if findings_list is None:
+            return result
+        try:
+            parsed = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError):
+            return result
+        if not isinstance(parsed, dict):
+            return result
+        if contracts.validate_payload("review", parsed):
+            return result
+        if transitions.review_report_errors(parsed):
+            return result
+        if not transitions.review_verdict_findings_errors(parsed, findings_list):
+            return result
+
+        def extra_validate(payload: dict) -> list[str]:
+            return (transitions.review_report_errors(payload)
+                    or transitions.review_verdict_findings_errors(
+                        payload, findings_list))
+
+        first_attempt_text = last_nonblank_line(result.final_text)
+        event_loop = asyncio.get_running_loop()
+
+        def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+            if attempt == 0:
+                return first_attempt_text
+            raw, _usage = asyncio.run_coroutine_threadsafe(
+                self._ask_contract_fix("review", prior_errors or []),
+                event_loop).result()
+            return last_nonblank_line(raw)
+
+        enforcement = await asyncio.to_thread(
+            contract_enforcement.enforce_contract,
+            "review", respond,
+            max_retries=self.cfg.contract_retry_max,
+            state=self.run,
+            extra_validate=extra_validate,
+        )
+        if enforcement.ok:
+            return dataclasses.replace(
+                result, final_text=json.dumps(enforcement.payload))
+        return result
 
     @staticmethod
     def _iteration_cut_short_by_engine(result: IterationResult) -> bool:
@@ -4945,7 +5075,7 @@ class LoopSupervisor:
                 "review", extra=self._review_extra_context(),
                 tier=state.run_level_verify_tier())
             if not self._review_interrupted(result):
-                return result
+                return await self._review_contract_ladder(result)
             self._advance("review", "review", "review_interrupted")
             if not self.budget_left():
                 return None
@@ -5399,6 +5529,7 @@ class LoopSupervisor:
         # iteration budget (same mechanism, and since task 023/#32 the same
         # persistence, as the infra-retry refund).
         self._refund_iteration("grace")
+        result = await self._review_contract_ladder(result)
         verified, _payload, _errors = self._review_verdict(result)
         # Task 013 (requirement I, #98): the SAME single exit-gate
         # predicate `_step_review` asks (`_terminal_success_blockers`),

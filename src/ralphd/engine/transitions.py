@@ -1149,6 +1149,52 @@ def review_report_errors(payload: Any) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Task 002 (requirement A.2, #110): the ONE contradiction a structured
+# findings channel (`engine/findings.py`, task 001) can catch that
+# `review_report_errors` above cannot -- a `verdict: "verified"` claim
+# alongside the SAME review's own findings, when at least one of them is
+# `severity: "blocking"`. `engine/loop.py`'s `_review_contract_ladder` feeds
+# this to `contract_enforcement.enforce_contract` as an `extra_validate`
+# hook, the same re-ask ladder every other semantic check in this module
+# already rides (`task_status_extra_validate`, `worker_unsatisfiable_
+# report_errors`, ...) -- the payload is refused and re-asked, NEVER
+# silently rewritten to `"rejected"` by this function or its caller.
+#
+# Deliberately one-directional: a `verdict: "rejected"` payload whose
+# findings are ALL residual is not flagged here at all -- that is not a
+# hat mistake to refuse, it is the engine's own honest recomputation
+# (`findings.compute_verdict`, DoD predicate 3), applied by the caller on
+# top of an already-accepted payload, never routed back through this
+# re-ask ladder.
+# ---------------------------------------------------------------------------
+
+
+def review_verdict_findings_errors(
+    payload: Any, findings: "list[dict] | None"
+) -> list[str]:
+    """Errors when `payload` claims `verdict == "verified"` while `findings`
+    (the review's own structured findings list, already schema-validated by
+    the caller -- see `engine.findings.read_findings_json`) contains at
+    least one `severity: "blocking"` entry. Returns `[]` whenever `findings`
+    is `None` (no structured findings channel exists for this review at
+    all -- nothing to check the claim against, so the payload's own claimed
+    verdict is trusted exactly as it always was) or the payload does not
+    claim `verified` in the first place (a `rejected` verdict carries no
+    such requirement, same "nothing proposed, nothing to check" shape every
+    sibling check in this module uses).
+    """
+    if findings is None or not isinstance(payload, dict):
+        return []
+    if payload.get("verdict") != "verified":
+        return []
+    from ralphd.engine import findings as findings_mod
+    if findings_mod.compute_verdict(findings) == "rejected":
+        return ["verdict 'verified' contradicts its own findings: at least "
+                "one finding has severity 'blocking'"]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Task 018 (requirement K, #101): the peer plan-review hat's sibling to
 # `review_report_errors` just above -- a `verdict: "objected"` claim with
 # no `reason` names nothing a planning revision could act on, exactly the
