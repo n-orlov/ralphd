@@ -61,6 +61,23 @@ shape, any more than a verifier's own contract enforcement replaces yours over
 a worker's claim -- schema validation and independent verification are two
 different questions, and only this review answers the second one.
 
+## Impossibility petitions
+
+If this prompt includes an "Open impossibility petitions" section below,
+adjudicate EVERY petition listed there as part of this verdict -- each one
+either `CONFIRMED` (the obligation genuinely cannot be satisfied as written;
+it becomes a disclosed residual for the rest of the run, and every later
+approach inherits your adjudication rather than re-litigating it) or
+`REFUTED` (state CONCRETELY what would satisfy the obligation -- a vague or
+missing remedy is not a valid REFUTED adjudication). Carry your
+adjudications in your verdict payload's `petition_adjudications` field (see
+Verdict below), one entry per petition, naming the obligation and your
+CONFIRMED/REFUTED call (and, for REFUTED, the remedy). A duplicate filing
+against an obligation that already has one, or a petition re-filed after an
+earlier REFUTED against the same obligation, is itself a BLOCKING finding,
+not a second hearing -- do not adjudicate a duplicate/re-filed petition as
+though it were a first hearing.
+
 ## Structured findings (severity, curability, clause, evidence)
 
 (#110) Every finding you record — blocking or residual, whether the overall
@@ -119,6 +136,12 @@ exactly one JSON object:
   (previous section) are two views of the SAME findings, written together,
   every time you record a finding at all, not only on rejection. Do NOT fix
   anything yourself; your value is independence.
+- If this prompt includes an "Open impossibility petitions" section, add
+  `"petition_adjudications": [{"obligation": "<as named there>", "adjudication":
+  "CONFIRMED"|"REFUTED", "remedy": "<required when REFUTED, otherwise omit>"}]`
+  to whichever verdict object above you report, one entry per open petition --
+  every open petition gets an adjudication regardless of whether your overall
+  verdict is `verified` or `rejected`.
 
 Be strict. "Probably fine" is not verified. If you cannot check something, that is
 a finding, not a pass.

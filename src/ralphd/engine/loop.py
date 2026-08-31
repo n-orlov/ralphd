@@ -31,6 +31,7 @@ from typing import Callable
 from . import contract_enforcement
 from . import contracts
 from . import findings
+from . import petitions
 from . import plan_ingestion
 from . import router
 from . import scheduler
@@ -6214,6 +6215,32 @@ class LoopSupervisor:
                 f"{e.get('ts')}): {e.get('text')}\n")
         return "".join(lines)
 
+    def _petitions_review_context(self) -> str:
+        """Task 010 (requirement C, #112): render every OPEN impossibility
+        petition filed under this run's WORKSPACE (`artifacts/reports/
+        <wave>-petitions.md`, `docs/petition-format.md`) as review-prompt
+        context, the same treatment `_operator_amendment_review_context`
+        gives an operator ruling -- a named block, joined at the same
+        `_review_extra_context` seam.
+
+        Reads `self.workspace`, never `self.run.root`: the petitions file
+        is tracked evidence in the code tree a job operates on (committed
+        alongside the wave's other `artifacts/reports/*.md`), not run
+        state -- exactly the same workspace-vs-run-dir split
+        `_operator_amendment_review_context`'s own docstring draws for
+        `CONFIG_DIR` vs `OVERLAY_DIR`, applied here to a different pair of
+        directories for a different reason (this channel is not about
+        unforgeability -- a petition is worker-authored by design -- it is
+        about which directory the evidence actually lives in).
+
+        Returns '' when no petition is open (the common case -- most waves
+        file none at all), so review prompts are unaffected until one
+        actually exists. All parsing/rendering logic lives in
+        `engine.petitions`; this method is the one call site that hands it
+        this run's workspace path.
+        """
+        return petitions.petitions_review_context(self.workspace)
+
     def _review_materiality_rubric_context(self) -> str:
         """Task 003 (requirement A.3, #110): hand review the contract's own
         materiality rubric, or -- when the contract supplies none -- the
@@ -6242,16 +6269,18 @@ class LoopSupervisor:
         """Everything appended to a review-phase prompt beyond the PRD and
         tasks.json themselves: flagged-criteria re-verification (task 009),
         the contract's materiality rubric or the all-blocking default
-        (task 003, requirement A.3, #110), then any recorded operator
-        ruling (task 028, #26). All three return '' (or, for the rubric
+        (task 003, requirement A.3, #110), any recorded operator ruling
+        (task 028, #26), then every OPEN impossibility petition (task 010,
+        requirement C, #112). All four return '' (or, for the rubric
         context, the fixed default text) in the common case, so review
         prompts are unaffected beyond the rubric hand-off itself until one
-        of the other two mechanisms actually fires. One helper, used at
-        every call site that builds a review prompt, so a future context
-        source has exactly one place to join in."""
+        of the other mechanisms actually fires. One helper, used at every
+        call site that builds a review prompt, so a future context source
+        has exactly one place to join in."""
         return (self._flagged_criteria_review_context() +
                 self._review_materiality_rubric_context() +
-                self._operator_amendment_review_context())
+                self._operator_amendment_review_context() +
+                self._petitions_review_context())
 
     @staticmethod
     def _verify_no_verdict(result: IterationResult) -> str:

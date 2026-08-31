@@ -954,6 +954,19 @@ HAT_SCHEMAS: dict[str, dict] = {
             "reason": {"type": "string"},
             # Optional file-borne findings, same channel shape as planning.
             "findings_path": {"type": "string"},
+            # Task 010 (requirement C, #112): review's ruling on every OPEN
+            # impossibility petition `engine.petitions.petitions_review_
+            # context` surfaced this pass -- one entry per petition, each
+            # naming the obligation and CONFIRMED/REFUTED (a REFUTED entry
+            # also carries the remedy, per review.md's own instructions).
+            # Only the TYPE is checked here (`contracts.py`'s restricted
+            # schema engine has no `items` sub-schema for array elements,
+            # by design -- see that module's docstring, and
+            # `HAT_SCHEMAS["worker"]`'s `proposed_tasks` for the same
+            # shape of optional array field). Deliberately OPTIONAL: a
+            # review pass with nothing open (the common case) supplies
+            # none, and validates exactly as it always did.
+            "petition_adjudications": {"type": "array"},
         },
         "additionalProperties": False,
     },
