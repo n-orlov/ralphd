@@ -4732,6 +4732,21 @@ class RunDir:
         return self.root / FINDINGS_JSON_FILE
 
     @property
+    def petition_adjudications_file(self) -> Path:
+        """Task 011 (requirement C.3, #112): the RUN-scope record of every
+        CONFIRMED impossibility-petition adjudication, written ONLY by
+        `engine.petitions.record_confirmed_adjudications` (never by a
+        worker or review hat's own process). Deliberately at `self.root`
+        beside `tasks_file`/`notes_file`/`findings_file` -- but, unlike
+        those three, NOT one of the files `_archive_approach` copies into
+        `approaches/NN/` on a rejection, so it sits at the same path for
+        every approach the run ever plans; that is the whole mechanism
+        that lets approach N+1 inherit approach N's CONFIRMED
+        adjudications without any explicit carry-forward step.
+        """
+        return self.root / "petition-adjudications.json"
+
+    @property
     def steering_dir(self) -> Path:
         return self.root / "steering"
 

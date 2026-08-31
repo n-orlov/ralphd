@@ -774,6 +774,7 @@ container and lets the CLI read state even when the container is dead.
 ├── standing-rules.md   # harness-pinned copy of notes.md's "## Standing rules" block (task 107)
 ├── review-findings.md  # written by failed reviews
 ├── review-findings.json # the same findings, structured (severity/curable/clause/evidence, task 001, #110)
+├── petition-adjudications.json # run-scope CONFIRMED impossibility-petition adjudications, survives _archive_approach (task 011, #112)
 ├── vigilant-verified.json # task ids that have passed a verify iteration
 ├── operator-termination.json # what the operator asked for (abort/interrupt)
 ├── .lock               # the engine's exclusive flock (self-protection, below)

@@ -4964,16 +4964,37 @@ class LoopSupervisor:
         every attempt so the hat can genuinely repair the sidecar. Still
         never a run-ending crash: an unrepaired channel ends as an ordinary
         refused verdict, never a rewritten one.
+
+        Task 011 (requirement C.4, #112): before returning a present,
+        valid list, downgrade every `severity: "blocking"` finding whose
+        `clause` matches a run-scope CONFIRMED petition adjudication
+        (`engine.petitions.downgrade_confirmed_findings`) to `"residual"`
+        -- "a CONFIRMED petition removes its obligation from the blocking
+        set". This is the ONE place that downgrade happens, so every
+        caller (`_review_verdict`, `_review_contract_ladder`,
+        `_review_incurable_rejection`) sees the same post-downgrade list
+        without re-deriving the rule -- exactly the discipline `compute_
+        verdict`/`all_blocking_findings_incurable` already document for
+        themselves. A tampered adjudication record (`engine.petitions.
+        confirmed_obligations`'s second return value) is treated as an
+        EMPTY confirmed set here -- fail towards the all-blocking default,
+        never towards trusting a record that might have been edited to
+        manufacture a false exemption; `_petition_adjudications_tamper_
+        context` is what surfaces that fact to review itself.
         """
         path = self.run.findings_json_file
         if not path.exists():
             return None, []
         try:
-            return findings.read_findings_json(path), []
+            findings_list = findings.read_findings_json(path)
         except ValueError as exc:
             return None, [
                 "findings: a structured findings channel is present but does "
                 f"not validate, so the verdict cannot be checked against it: {exc}"]
+        confirmed, tampered = petitions.confirmed_obligations(self.run)
+        if tampered:
+            confirmed = set()
+        return petitions.downgrade_confirmed_findings(findings_list, confirmed), []
 
     def _review_findings(self) -> list[dict] | None:
         """The valid findings list for the review just run, or `None` when
@@ -5030,11 +5051,25 @@ class LoopSupervisor:
         an overcautious claim to correct -- so `verified` flips to `True`
         here, and the residuals it was computed from are `emit()`ed to
         `events.jsonl` (surfaced, never dropped) in the same step.
+
+        Task 011 (requirement C.3, #112): as a side effect, whatever the
+        payload's own `petition_adjudications` field names CONFIRMED is
+        persisted at run scope right here (`engine.petitions.record_
+        confirmed_adjudications`) -- BEFORE `contract_errors` is even
+        computed, deliberately: a malformed payload elsewhere (a bad
+        `findings_path`, a missing `reason`) must not swallow a perfectly
+        valid CONFIRMED adjudication sitting in the SAME payload. Recording
+        is idempotent and additive (never erases an earlier CONFIRMED
+        entry), so calling it on every settled review iteration -- verified
+        or not -- is safe.
         """
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
             parsed = None
+        if isinstance(parsed, dict):
+            petitions.record_confirmed_adjudications(
+                self.run, parsed.get("petition_adjudications"))
         findings_list, channel_errors = self._review_findings_channel()
         if isinstance(parsed, dict):
             payload = parsed
@@ -6241,6 +6276,21 @@ class LoopSupervisor:
         """
         return petitions.petitions_review_context(self.workspace)
 
+    def _petition_adjudications_tamper_context(self) -> str:
+        """Task 011 (requirement C.3, #112): warn review, in-prompt, when
+        the run-scope CONFIRMED-petition-adjudication record
+        (`self.run.petition_adjudications_file`) no longer matches the
+        digest `engine.petitions.record_confirmed_adjudications` -- its
+        only writer -- always leaves it with. `engine.petitions.
+        confirmed_obligations` is the single place that comparison is
+        made; this method only renders it (`petitions.tamper_review_
+        context`), the same split every other context method in this
+        class keeps between 'decide' and 'render'. Returns '' in the
+        overwhelming common case (no record yet, or an untouched one).
+        """
+        _confirmed, tampered = petitions.confirmed_obligations(self.run)
+        return petitions.tamper_review_context(tampered)
+
     def _review_materiality_rubric_context(self) -> str:
         """Task 003 (requirement A.3, #110): hand review the contract's own
         materiality rubric, or -- when the contract supplies none -- the
@@ -6280,7 +6330,8 @@ class LoopSupervisor:
         return (self._flagged_criteria_review_context() +
                 self._review_materiality_rubric_context() +
                 self._operator_amendment_review_context() +
-                self._petitions_review_context())
+                self._petitions_review_context() +
+                self._petition_adjudications_tamper_context())
 
     @staticmethod
     def _verify_no_verdict(result: IterationResult) -> str:

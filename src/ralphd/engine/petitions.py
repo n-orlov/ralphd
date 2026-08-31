@@ -22,10 +22,36 @@ does not decide whether a petition is CONFIRMED or REFUTED -- only review
 does that, per its own prompt instructions -- and it does not turn a
 duplicate/re-filed-REFUTED petition into a finding itself; that
 enforcement is a later task's scope (012).
+
+Task 011 (requirement C.3, #112) adds a second job to this module: once
+review HAS adjudicated an open petition CONFIRMED (in its own verdict
+payload's `petition_adjudications` field), persist that fact at RUN scope
+(`RunDir.petition_adjudications_file`, `self.run.root/petition-
+adjudications.json` -- deliberately not a workspace path like the
+petitions file itself, and deliberately not one of the three files
+`LoopSupervisor._archive_approach` copies into `approaches/NN/` on a
+rejection) so approach N+1 inherits it automatically, with no explicit
+carry-forward step, and so that the obligation's matching findings
+become disclosed residuals rather than blocking ones for the rest of the
+run (PRD requirement C.4: "a CONFIRMED petition removes its obligation
+from the blocking set"). `record_confirmed_adjudications` is the ONLY
+writer of that file -- called from `LoopSupervisor` itself once a review
+iteration settles, never from inside a worker or review hat's own spawned
+process, which is what "review writes them" (the PRD's own words) means
+in a world where review's hat process runs at the exact same
+dropped-to-agent uid a worker iteration does (`privsep.py`): the
+tamper-evidence property comes from WHERE the write happens (the engine,
+never a hat), not from file permissions alone. `read_confirmed_
+adjudications` re-derives a digest over the entries on every read and
+flags a mismatch as tampered -- the one detection available when
+`privsep.separated()` is False (every test here, and any operator running
+an unprivileged container) and root-ownership offers no real protection.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -172,3 +198,180 @@ def petitions_review_context(workspace: Path) -> str:
             f"  **Type**: {p['type']}\n"
             f"  **Evidence**: {p['evidence']}\n")
     return "".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Task 011 (requirement C.3, #112): run-scope persistence of CONFIRMED
+# adjudications, tamper-evident against the worker.
+# ---------------------------------------------------------------------------
+
+def _normalize_obligation(obligation: str) -> str:
+    """Case/whitespace-insensitive key for matching an obligation string
+    against itself across the two independent free-text channels
+    (a petition's own `Obligation` field, a finding's `clause`) that both
+    name the same PRD requirement/DoD item in slightly different words."""
+    return " ".join(obligation.split()).strip().lower()
+
+
+def _adjudications_digest(entries: list[dict]) -> str:
+    """A stable digest over `entries` -- the ONE thing `read_confirmed_
+    adjudications` below checks to decide whether the file has been
+    touched by anything other than `record_confirmed_adjudications`
+    (which always keeps entries+digest consistent). Canonical JSON
+    (sorted keys, no incidental whitespace) so two semantically identical
+    entries lists always digest the same regardless of dict ordering."""
+    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def record_confirmed_adjudications(run, adjudications) -> None:
+    """Persist every CONFIRMED entry in `adjudications` (review's own
+    `petition_adjudications` verdict field -- a list of
+    `{"obligation": str, "adjudication": "CONFIRMED"|"REFUTED", ...}`
+    dicts, already schema-checked by `contracts.validate_payload`) into
+    `run.petition_adjudications_file`. ONLY REFUTED->CONFIRMED entries are
+    kept -- a REFUTED entry is not something a later approach inherits
+    (the PRD's own words: review "states what would satisfy the
+    obligation", not a permanent record), and anything not shaped like a
+    valid entry is silently skipped (this function is not a second
+    schema validator -- fact 16/#65 -- it is a filter over an
+    already-validated payload field).
+
+    Merges into whatever is already on disk keyed by normalised
+    obligation text, rather than overwriting -- a later approach's review
+    adjudicating a DIFFERENT petition must not erase an earlier approach's
+    CONFIRMED entries; this is the actual inheritance mechanism together
+    with `petition_adjudications_file` never being one of the paths
+    `LoopSupervisor._archive_approach` copies away. A no-op (no write at
+    all) when nothing new is CONFIRMED, so a review pass that adjudicates
+    nothing, or only REFUTES, never touches the file's mtime.
+
+    Callers: `LoopSupervisor` only, immediately after a review iteration's
+    contract payload is parsed -- never a worker or review hat's own
+    process. That is the tamper-evidence property PRD requirement C.3
+    asks for: "review writes them" means the ENGINE writes them on
+    review's behalf, because review's OWN spawned process runs at the
+    identical dropped-to-agent uid a worker iteration does (`privsep.py`)
+    and could not literally hold a privilege the worker lacks.
+    """
+    if not adjudications:
+        return
+    from ralphd.engine.state import atomic_write_json
+    existing, _tampered = read_confirmed_adjudications(run)
+    by_key = {_normalize_obligation(e["obligation"]): e for e in existing
+              if isinstance(e, dict) and isinstance(e.get("obligation"), str)}
+    changed = False
+    for item in adjudications:
+        if not isinstance(item, dict):
+            continue
+        if item.get("adjudication") != "CONFIRMED":
+            continue
+        obligation = item.get("obligation")
+        if not isinstance(obligation, str) or not obligation.strip():
+            continue
+        key = _normalize_obligation(obligation)
+        entry = {"obligation": obligation.strip(), "adjudication": "CONFIRMED"}
+        if by_key.get(key) != entry:
+            by_key[key] = entry
+            changed = True
+    if not changed:
+        return
+    entries = sorted(by_key.values(), key=lambda e: e["obligation"])
+    doc = {"entries": entries, "digest": _adjudications_digest(entries)}
+    atomic_write_json(run.petition_adjudications_file, doc)
+
+
+def read_confirmed_adjudications(run) -> tuple[list[dict], bool]:
+    """`(entries, tampered)` read back from `run.petition_adjudications_
+    file`. `tampered` is True exactly when the file exists but does not
+    have the shape/digest `record_confirmed_adjudications` -- its only
+    writer -- always leaves it in: a non-dict top level, a non-list
+    `entries`, or an `entries` list whose recomputed digest does not match
+    the stored one. A missing file is `([], False)` -- no record at all
+    is not tampering, just nothing having been CONFIRMED yet.
+    """
+    from ralphd.engine.state import read_json
+    doc = read_json(run.petition_adjudications_file, default=None)
+    if not doc:
+        return [], False
+    if not isinstance(doc, dict):
+        return [], True
+    entries = doc.get("entries")
+    if not isinstance(entries, list):
+        return [], True
+    tampered = doc.get("digest") != _adjudications_digest(entries)
+    return entries, tampered
+
+
+def confirmed_obligations(run) -> tuple[set[str], bool]:
+    """`(obligations, tampered)` -- the normalised set of obligations
+    CONFIRMED at run scope so far, plus whether the record is tampered.
+    A caller MUST treat a tampered record as an EMPTY set of confirmed
+    obligations (fail towards the all-blocking default non-negotiable #2
+    protects, never towards trusting a record that might have been edited
+    to manufacture a false exemption) -- the flag is returned precisely so
+    a caller can act on it rather than silently swallow it; see
+    `tamper_review_context` below for surfacing it to review itself.
+    """
+    entries, tampered = read_confirmed_adjudications(run)
+    if tampered:
+        return set(), True
+    return ({_normalize_obligation(e["obligation"]) for e in entries
+              if isinstance(e, dict) and isinstance(e.get("obligation"), str)},
+            False)
+
+
+def downgrade_confirmed_findings(findings_list: list[dict],
+                                  confirmed: set[str]) -> list[dict]:
+    """A NEW findings list (never mutates `findings_list` or its dicts in
+    place) where every `severity: "blocking"` finding whose `clause`
+    matches (normalised, substring in either direction -- the two
+    channels' free text rarely agree on exact wording) a CONFIRMED
+    obligation is downgraded to `severity: "residual"`. This is PRD
+    requirement C.4/`docs/petition-format.md`'s own words: "CONFIRMED
+    converts that obligation into a disclosed residual for the remainder
+    of the run" -- the finding is never DROPPED, only recategorised, so
+    `findings.compute_verdict`'s existing severity-only rule handles the
+    rest without any change of its own.
+
+    An empty `confirmed` set is a no-op that still returns a fresh list
+    (never the same object) -- callers may freely reassign their own
+    `findings_list` name to this return value either way.
+    """
+    if not confirmed:
+        return list(findings_list)
+    out = []
+    for f in findings_list:
+        if isinstance(f, dict) and f.get("severity") == "blocking":
+            clause = _normalize_obligation(str(f.get("clause", "")))
+            if clause and any(clause in c or c in clause for c in confirmed):
+                f = dict(f)
+                f["severity"] = "residual"
+        out.append(f)
+    return out
+
+
+def tamper_review_context(tampered: bool) -> str:
+    """The review-prompt context block warning review that its own
+    run-scope CONFIRMED-adjudications record (`read_confirmed_
+    adjudications`) no longer matches the digest it was written with --
+    i.e. something other than `record_confirmed_adjudications` touched it
+    since. Returns `''` when nothing is wrong (the overwhelming common
+    case). Joined into `LoopSupervisor._review_extra_context` beside the
+    open-petitions block -- this is what makes a worker-phase edit to the
+    record 'documented as a blocking finding' (PRD requirement C.3): the
+    instruction lives in review's own prompt, the same channel every other
+    engine-detected contract fact already reaches review through.
+    """
+    if not tampered:
+        return ""
+    return (
+        "\n## Petition adjudication record tampered (task 011, requirement C, #112)\n"
+        "\nThe run-scope record of CONFIRMED petition adjudications no "
+        "longer matches the digest it was written with -- something other "
+        "than review's own prior adjudication has modified it (a "
+        "worker-phase edit is exactly the kind of tampering this checks "
+        "for). You MUST include this as a BLOCKING finding (`severity: "
+        "\"blocking\"`) in your verdict's findings channel, and you MUST NOT treat "
+        "any previously CONFIRMED obligation as still confirmed until the "
+        "record is repaired and re-adjudicated.\n")
