@@ -1,33 +1,35 @@
 """v0.14 requirement S (docs/prds/v0.14-every-hand-on-the-plan.md):
 `docs/roadmap.md`'s v0.14 block and the version bump.
 
-This is the module for the *current* release, the same role
-`tests/test_roadmap_v013.py` played until this wave retargeted it to the
-past-milestone shape (`SERIES` pinned to `(0, 13)`, "declared version has a
-block" moved here). Some future wave will retarget this module the same way
-when it ships its own milestone.
+**Retargeted by v0.15 task 017**, the same move v0.14's own requirement S
+made to `tests/test_roadmap_v013.py`: v0.14 is no longer the declared
+release (`pyproject.toml` moved to `0.15.0` at v0.15 task 015), so `SERIES`
+here is **pinned** to `(0, 14)` rather than read from `pyproject.toml`, and
+the "declared version has a block" half is now enforced elsewhere -- no
+`tests/test_roadmap_v015.py` exists yet to take it over; adding one is out
+of this task's own scope (its own criteria name this exact pytest command,
+not a new module), and is left as a residual for whichever task next needs
+the declared-version-has-a-block half enforced again.
+`declared_version()`/`declared_series()` stay, used only to assert this
+block is a *past* milestone -- if they were still used to select the block,
+every check below would grade the wrong milestone against v0.14's own PRD.
 
-`SERIES` is **pinned** to `(0, 14)`, not derived from `pyproject.toml`: this
-module is the thing that checks the declared version and the roadmap agree,
-so if it read the version to find its own block it could never disagree with
-`pyproject.toml` about which block to grade -- the disagreement is exactly
-what `test_the_declared_version_and_both_literals_agree` below has to be able
-to catch.
+Note this module's pin survived unchanged through both `0.14.1` and
+`0.14.2` (same `(0, 14)` series, point releases only) -- it only went stale
+now that the minor version moved to `0.15`.
 
 Two things established by earlier waves stay true here:
 
 * the roadmap's last milestone and `pyproject.toml`'s declared version are
   the same fact, so the block for the declared version must exist, must
-  record shipped work, and nothing may claim a milestone *after* it. Unlike
-  `tests/test_roadmap_v012.py`/`tests/test_roadmap_v013.py` (past milestones,
-  where that "nothing after" half would trip on the *next* block simply for
-  existing), this module is the *current* release, so the check runs
-  unfiltered here;
+  record shipped work, and nothing may claim a milestone *after* it. That
+  "nothing after" half is filtered out of the two checks here that would
+  otherwise fail on v0.14.2's or v0.15's own blocks simply for existing;
 * a block may not claim a wave landed while omitting requirements of that
   wave. The requirement letters are parsed out of the PRD the block is about
   (`docs/prds/v0.14-every-hand-on-the-plan.md`), never retyped here.
 
-This PRD's requirement headings are `### A \u2014 title` (an em dash, the same
+This PRD's requirement headings are `### A — title` (an em dash, the same
 shape `test_roadmap_v013.py` pinned), letters `A`-`S` with no gaps and no
 split letter this time -- unlike v0.13's `F1`/`F2`, every letter here gets
 its own heading. Like v0.13, **none of this PRD's headings carry an inline
@@ -159,24 +161,34 @@ def _version_block_problems(text: str, series: tuple[int, int]) -> list[str]:
     return problems
 
 
+def _own_block_problems(text: str) -> list[str]:
+    """`_version_block_problems` minus the "nothing after this milestone"
+    half. v0.14.1, v0.14.2 and v0.15 all exist now, so that half reports
+    later blocks unconditionally and would swamp the two checks that are
+    about *this* block's own content. The "nothing after the declared
+    version" rule is not weakened, only relocated: whichever module owns
+    the declared version enforces it for that version, which is the only
+    version it was ever a rule about."""
+    return [p for p in _version_block_problems(text, SERIES)
+            if "milestone blocks after" not in p]
+
+
 def test_the_roadmap_has_a_block_for_this_milestone():
-    """v0.14 is the declared version, so `## v0.14` must exist, record
-    shipped work, and be the last milestone block in the file."""
-    assert not _version_block_problems(roadmap_text(), SERIES)
+    """v0.14 shipped, so `## v0.14` must exist and record shipped work."""
+    assert not _own_block_problems(roadmap_text())
 
 
-def test_the_declared_version_and_both_literals_agree():
-    """`pyproject.toml`'s declared version, `src/ralphd/__init__.py`'s
-    `__version__` literal, and this module's `SERIES` pin all name the same
-    release. If any of the three drifted, the block this module grades would
-    no longer be the declared version's block."""
-    assert declared_series() == SERIES, (
-        f"pyproject declares {declared_series()}, not {SERIES} -- this "
-        "module's SERIES pin is stale")
+def test_v014_is_a_past_milestone_of_the_declared_version():
+    """The pin above is only honest while 0.14 is behind the release: if the
+    version ever went back to 0.14.x, this module would be grading the wrong
+    milestone. The two literals are also still checked to agree, since
+    `test_packaging_metadata.py`'s rule and this pin only line up while they
+    do."""
+    assert declared_series() > SERIES, (
+        f"pyproject declares {declared_series()}, so v0.14 is not history: this "
+        "module's SERIES pin (v0.15 task 017) needs revisiting")
     m = re.search(r'^__version__ = "([^"]+)"', INIT.read_text(), re.MULTILINE)
-    assert m and m.group(1) == declared_version(), (
-        f"src/ralphd/__init__.py's __version__ ({m and m.group(1)!r}) does not "
-        f"match pyproject.toml's declared version ({declared_version()!r})")
+    assert m and m.group(1) == declared_version()
 
 
 def test_the_version_block_check_catches_a_missing_or_unshipped_block():
@@ -184,25 +196,15 @@ def test_the_version_block_check_catches_a_missing_or_unshipped_block():
     heading = f"## v{series[0]}.{series[1]}"
     assert heading in text, "fixture assumption: the block is there to remove"
     # no block for v0.14 at all
-    assert _version_block_problems(text.replace(heading, "## Not a milestone"), series)
+    assert _own_block_problems(text.replace(heading, "## Not a milestone"))
     # a block that only *plans* the release records nothing shipped
     block = milestone_block(text, series)
-    assert _version_block_problems(
-        text.replace(block, block.replace("\u2705", "\u23f3")), series)
-    # a milestone block claimed after the declared version
-    later = text.replace(heading, "## v0.15 — not real\n\n" + heading, 1)
-    assert _version_block_problems(later, series)
-
-
-def test_the_block_check_catches_a_stale_series_pin():
-    """If `SERIES` ever drifted from the declared version, the agreement
-    check above -- not the block-presence check -- is the one that has to
-    catch it, since the block-presence check only ever looks at `SERIES`
-    itself and would happily grade the wrong milestone."""
-    assert declared_series() == SERIES
-    assert not _version_block_problems(roadmap_text(), SERIES)
-    # a pin one milestone ahead of the real declared version finds no block
-    assert _version_block_problems(roadmap_text(), (SERIES[0], SERIES[1] + 1))
+    assert _own_block_problems(
+        text.replace(block, block.replace("\u2705", "\u23f3")))
+    # a version the roadmap has already moved past (v0.10, with later blocks
+    # after it) -- this one is the unfiltered check, since it is exactly
+    # what it reports
+    assert _version_block_problems(text, (0, 10))
 
 
 # --------------------------------------------------- the block covers the wave

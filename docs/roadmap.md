@@ -1536,9 +1536,79 @@ that by then had no task left to write it. That rewrite itself carried three fal
 miscredited to task 003/`4d7ee2a` instead of approach 2's own task 001; requirement B's fix
 described as replacing a fixed sleep instead of raising a polling threshold), which this
 paragraph and the two bullets above now correct. Approach 3 — a further flat corrective plan,
-scoped to `scripts/`, `tests/`, `docs/` and `artifacts/` paths, none of them `src/ralphd/` — is
-this correction's own approach and is, as of this task (003), still in flight; the remainder of
-its own tasks are recorded as they land, not promised in advance here.
+scoped to `scripts/`, `tests/`, `docs/` and `artifacts/` paths, none of them `src/ralphd/` — reached its own terminal tally, 7 of 7 tasks
+`validated`, and was rejected by review again, on two findings. Approach 4 (a 5-task flat plan
+correcting those two findings) reached only 1 task `validated` before the wave's 10-hour clock
+exhausted — the wave ended `failed`/`unverified`: **settled history, not a mid-wave snapshot.**
+All three of this wave's own tracked issues (#97, #108, #109) are closed, and the fast tier ran green inside a job container for the first time
+(requirement A's own substance, above) — the headline this wave existed to deliver landed even
+though the record about it never reached a review-accepted state. This run's own `status.json`
+is unreachable from this container, so — same convention as the v0.14.1 row above —
+`docs/prds/README.md`'s row for this wave is sourced from
+`docs/prds/v0.15-impossible-is-an-answer.md`, requirement E (v0.15 task 016), rather than a
+fresh `status.json` read; that same task settled the row itself, correcting this block's own
+prior "still in flight" claim, which was accurate when approach 3's task 003 wrote it but had
+gone stale by the time this wave actually ended, three approaches later (v0.15 task 017).
+
+## v0.15 — impossible is an answer
+
+Full PRD:
+[`docs/prds/v0.15-impossible-is-an-answer.md`](prds/v0.15-impossible-is-an-answer.md).
+Review rejected eight consecutive approaches across three waves on findings that were every
+time factually correct — v0.14.2 alone spent roughly $50 and 30+ iterations *after* every
+substantive check was green, re-litigating a notification that could never be sent again. This
+wave builds three mechanisms so the judge stays exactly as strict while the loop gains a sound
+way to say "done", "not yet, try again" and "this one obligation cannot be met" as three
+distinct outcomes instead of one binary verdict. Requirement letters below are the PRD's own,
+`A`-`F`; this entry is being written from inside the wave it describes (task 017), before `F`
+has landed — it states what has and has not shipped as of this commit rather than promising a
+future update the way the `## v0.14.2` block above once did and was corrected for.
+
+- ✅ **A (#110) — findings gain severity, and the verdict is computed from blocking findings
+  only.** The structured findings channel (`4ee33a1`, task 001) carries `severity:
+  blocking|residual` per finding; `_review_verdict` computes the verdict from blocking findings
+  only, engine-side (`3e5c0be8`, task 002), refusing rather than failing open on a present but
+  invalid channel (`c38b9b2a`, task 002); the materiality rubric is read from the contract, with
+  an all-blocking default when none exists (`92ee6808`, task 003); `review.md` and both peer
+  gates demand the structured shape (`b4232230`, task 004).
+- ✅ **B (#111) — a curability bit, and the `rejected_incurable` edge.** Blocking findings are
+  classified curable/incurable engine-side (`d466bc64`, task 005); an approach rejected only on
+  incurable blocking findings pauses the run and escalates to the operator instead of
+  replanning into certain rejection (`d1499c6e`, `2fb3f6bd`, task 006); resume-after-rulings
+  routes back to `review` with the fresh rulings visible rather than into a fresh approach
+  (`1ad9e895`, task 007); a curable blocking finding still replans exactly as before, and
+  approach exhaustion still wins over the new edge (`423b317d`, task 008). **Task 006 itself
+  reads `failed` in this run's own `tasks.json`** — not because the mechanism is wrong, but
+  because the operator's own criterion wording ("each finding ... and the exact `ralphctl
+  amend` invocation") was ambiguous between "every finding" and "the incurable blocking set
+  that caused the edge". `/config/amendments/001-006.md` (waiver) and `002-006.md` (status
+  ruling) resolve that ambiguity in the operator's own words: the blocking-only escalation is
+  the **intended design**, accepted as landed at `8687ffd`, and Definition-of-done predicate 4
+  is satisfied under the same reading. No follow-up task was created or proposed for this, per
+  the ruling's own instruction.
+- ✅ **C (#112) — impossibility petitions.** The petition file format is documented
+  (`96cc84fe`, task 009); open petitions are surfaced to the review hat (`fd6dd10d`, task 010);
+  a CONFIRMED adjudication persists at run scope, authenticated with a keyed MAC and an event
+  witness kept out of the agent-owned run dir, so approach N+1 inherits it (`d92762bc`,
+  `df33254f`, `6e0ed8e9`, task 011); a duplicate or re-filed REFUTED petition is itself a
+  blocking finding, appended unconditionally engine-side (`aece29f4`, task 012); the three-way
+  interaction — a CONFIRMED petition downgrading its own finding while an unrelated incurable
+  finding alone still fires B's pause — is pinned end to end (`eebdc221`, task 013).
+- ✅ **D — the reusable review-economics contract fragment.** `docs/review-economics.md`
+  canonicalizes the materiality rubric, the petition protocol and the late-cure rule, citing
+  this wave's own PRD as the first instance, and is linked (not merely named) from
+  `docs/prds/README.md` (`9ff1a091`, task 014).
+- ⏳ **E — the version, the rows, the roadmap, one inherited erratum.** `0.15.0` lands in
+  `pyproject.toml` and `src/ralphd/__init__.py` (`5fe8b87d`, task 015); v0.14.2's
+  `docs/prds/README.md` row is settled from its PRD's own terminal figures (`4bb1db41`, task
+  016); this `## v0.15` block and the `## v0.14.2` correction above land together (this entry,
+  task 017). Still open: appending the inherited erratum to
+  `artifacts/reports/v0.14.2-a3-closing-report.md` (task 018).
+- ⏳ **F — closures, sweeps, the closing report, the terminal summary.** Not yet landed as of
+  this entry: the petitions report (task 019), closing #110/#111/#112 with evidence (task 020),
+  the five tier/layout sweeps (tasks 021-025), the closing report walking A-F (task 026), the
+  true-final-sha guard re-verification (task 027) and the terminal summary with the
+  self-discharging record (task 028).
 
 ## Later / explicitly deferred
 
