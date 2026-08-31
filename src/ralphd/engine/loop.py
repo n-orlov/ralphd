@@ -1989,6 +1989,68 @@ class LoopSupervisor:
             return False
         return meta.get("phase") == "review" and "endedAt" not in meta
 
+    def _paused_awaiting_incurable_ruling(self, approach: int) -> bool:
+        """Task 007 (deferred out of task 006, requirement B.2, #111): True
+        iff the run's last recorded activity was `_pause_and_escalate_
+        incurable_rejection` self-looping `review` back onto itself for
+        `approach` and NOTHING has happened since -- i.e. a prior episode
+        was sitting paused on `self._pause` (the same `asyncio.Event`
+        `POST /pause`/`POST /resume` already drive) waiting for an
+        operator ruling when it died (crash, SIGKILL, a host reboot, a
+        plain container restart) without ever waking back up in-process.
+
+        Without this, `_resume_point()` would fall through to its ordinary
+        default -- skip planning, re-enter `worker` -- which is wrong on
+        both halves of this task's routing requirement: `worker` finds
+        nothing actionable (review just rejected exactly the tasks.json
+        worker would be looking at) before it ever reaches `review` again,
+        and neither `worker` nor a wasted trip through it can ever be
+        mistaken for "a fresh approach" (that would need `replan`, which
+        this case must also never reach) -- so the risk this predicate
+        guards against is a wasted throwaway iteration and a delayed
+        review, not an outright wrong-approach spend; naming it here keeps
+        that guarantee explicit rather than incidental.
+
+        Detected the same way `_archived_approach_awaiting_replan`/
+        `_crashed_mid_review` reconstruct FSM position from disk, not from
+        in-memory state that a restart just lost: the most recent
+        `operator_escalation` event with `reason == "rejected_incurable"`
+        recorded for THIS approach, with no `iteration.start` event on
+        record after it -- if a fresh iteration had already started
+        (an in-process `resume()` that got all the way to running another
+        review attempt, or a second escalation cycle that has since moved
+        on), this must not fire again for the now-stale escalation.
+
+        This is also the container-restart half of "operator rulings
+        recorded while paused stay visible to the next review": a fresh
+        episode landing here still runs `_apply_operator_status_rulings()`
+        (-> `state.apply_amendment_status_rulings`) -- called unconditionally
+        once per engine EPISODE in `_run_job_core`, ahead of `_resume_point()`
+        -- so any `mode: status` ruling recorded while the run sat paused is
+        re-applied on exactly this restart, even though the in-process pause
+        path never re-runs that call mid-episode (it only runs once, at the
+        top of the very episode that reached the pause). A ruling that never
+        provoked a restart at all is not left silently unruled either: the
+        OTHER ruling channel review's prompt reads, `_operator_amendment_
+        review_context()`, hits `CONFIG_DIR` fresh on every `_step_review()`
+        call -- in-process resume or restart alike -- so the very next
+        review iteration sees it either way.
+        """
+        escalation_id = None
+        iteration_start_id = None
+        for ev in state.read_events(
+                self.run.root,
+                types=("operator_escalation", "iteration.start")):
+            if ev.get("type") == "operator_escalation":
+                if (ev.get("reason") == "rejected_incurable"
+                        and ev.get("approach") == approach):
+                    escalation_id = ev.get("id")
+            else:
+                iteration_start_id = ev.get("id")
+        if escalation_id is None:
+            return False
+        return iteration_start_id is None or iteration_start_id < escalation_id
+
     def _resume_point(self) -> tuple[int, bool, str]:
         """Where run_job() should start on this engine invocation (PRD req
         16). A fresh run dir (no tasks.json yet, or no completed
@@ -2016,6 +2078,17 @@ class LoopSupervisor:
         throwaway worker iteration re-confirming there is nothing left to
         do before ever reaching review again.
 
+        A fifth case (task 007): the prior episode paused `review` on the
+        `rejected_incurable` self-loop and died before an operator's
+        `ralphctl resume` ever woke it back up in-process (see
+        `_paused_awaiting_incurable_ruling`) -- the dispatch loop must also
+        start at `review` directly, for the same reason as the fourth case
+        (nothing actionable for `worker` to do) plus one more this case
+        adds: landing anywhere other than `review` risks the run reaching
+        `replan` -- a FRESH approach -- over findings a fresh approach was
+        already shown incapable of curing, which is the exact waste the
+        `rejected_incurable` edge exists to avoid in the first place.
+
         Returns (start_approach, skip_planning_for_start_approach,
         start_step).
         """
@@ -2039,6 +2112,17 @@ class LoopSupervisor:
                     "was mid-review with no verdict recorded when the prior "
                     "episode was killed; resuming directly into review "
                     "instead of re-entering worker over already-completed work"))
+            return approach, False, "review"
+        if self._paused_awaiting_incurable_ruling(approach):
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "was paused on a rejected_incurable escalation with no "
+                    "operator resume ever reaching this episode; resuming "
+                    "directly into review (never a fresh approach) so any "
+                    "ruling recorded while paused is seen by the next review "
+                    "iteration"))
             return approach, False, "review"
         self.run.emit(
             "log",
