@@ -108,7 +108,33 @@ WAVE_PREFIX = "v0.14-"
 # `artifacts/reports/`) break the report-only-tail bridge -- not because
 # the sweep itself stopped being true, but because it now predates the run
 # that is checking it.
-LAUNCH_SHA = "b91840433786fd932117852e421b128c344dc469"
+#
+# Task 018 (v0.15-impossible-is-an-answer): same shape of staleness, one run
+# later, and this time nobody's task had done the update by the time this
+# guard was checked -- the constant still held v0.14.2's own launch sha
+# after v0.15 had already launched from a later one
+# (`db523208a9db0bf0a2166cc063d260b028fcb2c9`, the commit "docs: add the
+# v0.15 PRD and its placeholder index row", the sha `docs/prds/README.md`'s
+# v0.15 row and `/run/ralphd/notes.md` both name as this run's launch).
+# Updated here to that real launch sha. The old value
+# (`b91840433786fd932117852e421b128c344dc469`) is a genuine ancestor of the
+# new one -- v0.15 shipped strictly after v0.14.2 -- so this only widens
+# which pre-launch shas the ancestor check accepts; no record that passed
+# before stops passing now. Twelve v0.14.2 records (all now-terminal,
+# pre-v0.15 sweeps, across `v0.14.2-a2-browser-evidence.md`,
+# `v0.14.2-a2-fast-tier-sweep.md`, `v0.14.2-a2-final-guard-subset.md`,
+# `v0.14.2-a3-fast-tier-sweep.md`, `v0.14.2-a3-final-guard-subset.md`,
+# `v0.14.2-browser-hub-evidence.md` (four declarations),
+# `v0.14.2-fast-tier-sweep.md`, `v0.14.2-final-guard-subset.md` and
+# `v0.14.2-guard-subset-interim.md`) took `archived-sha` in the same commit
+# as this constant update, for the identical reason the v0.14->v0.14.1 and
+# v0.14.1->v0.14.2 boundaries needed it: each one's `sweep-sha` declaration
+# had a discharge chain to current `HEAD` that no longer held once this
+# wave's own 40+ tail commits (`src/`, `tests/`, `docs/` -- not just
+# `artifacts/reports/`) broke the report-only-tail bridge -- not because
+# any of those sweeps stopped being true, but because they now predate the
+# run that is checking them.
+LAUNCH_SHA = "db523208a9db0bf0a2166cc063d260b028fcb2c9"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
