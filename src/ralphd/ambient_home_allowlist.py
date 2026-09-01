@@ -164,7 +164,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "engine/loop.py",
-        "line": "733",
+        # Was line 733 when this entry was written; tasks 032/033/034's engine
+        # work shifted `loop.py` below it and task 027's sweep caught the
+        # stale citation. The read itself is unchanged -- same method, same
+        # reason; line numbers drift with unrelated edits, exactly as this
+        # module's own docstring warns.
+        "line": "866",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
