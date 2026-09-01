@@ -1,10 +1,16 @@
 """Task 009 (requirement C.1, #114): validation exhaustion routes to a new
-`petitioned` status -- not `failed` -- whenever the run's own workspace
-carries a petition protocol (at least one `<wave>-petitions.md` file,
-`petitions.discover_petition_files`, the same default-safe detection
-requirement A.3 (#110) already uses for the materiality rubric: read what
-is actually present in the contract's workspace, default to today's
-behaviour when nothing is). `_verify_task`'s last-attempt handoff -- the
+`petitioned` status -- not `failed` -- whenever the run's CONTRACT carries a
+petition protocol (`petitions.contract_declares_petition_protocol` over the
+run's own PRD/composite-PRD text, the same default-safe by-presence
+detection requirement A.3 (#110) already uses for the materiality rubric:
+read what is actually present in the contract, default to today's behaviour
+when nothing is). Task 011 (requirement C.3) corrected that discriminant --
+it shipped here as "the workspace carries some `<wave>-petitions.md` file",
+which also fired for a run whose contract never mentioned petitions but
+whose repo still carried an earlier wave's file -- so every fixture below
+that expects the `petitioned` route now declares the protocol in its
+contract (`_seed_petitions_file`, which writes both the contract and the
+filing target). `_verify_task`'s last-attempt handoff -- the
 text it would otherwise only ever write into `validationNotes` -- becomes
 the filed petition's own evidence/body, via the engine's new
 `petitions.file_exhaustion_petition` (a second writer beside the worker's
@@ -105,7 +111,24 @@ def _write_plan(sup: LoopSupervisor, tasks: list[dict]) -> None:
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
 
 
+# The contract text that opts a run into the petition protocol -- the ONE
+# discriminant between the two exhaustion routes since task 011 (requirement
+# C.3, #114). Its own module pins both directions of the detection.
+PROTOCOL_CONTRACT = """# PRD v0-test
+
+## Petition protocol
+
+A task whose criteria cannot be satisfied as written files a petition per
+`docs/petition-format.md`; an exhausted task routes to `petitioned`.
+"""
+
+
 def _seed_petitions_file(root: Path, name: str = "test-petitions.md") -> Path:
+    """Declare the petition protocol in the run's contract (what actually
+    selects the `petitioned` route) AND create the wave file a filing lands
+    in. The file alone no longer decides the branch -- see task 011's
+    `tests/test_petitioned_backcompat.py`."""
+    (root / "prd.md").write_text(PROTOCOL_CONTRACT)
     reports = root / "artifacts" / "reports"
     reports.mkdir(parents=True, exist_ok=True)
     path = reports / name
@@ -127,7 +150,8 @@ def _exhaust(sup: LoopSupervisor) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_exhaustion_routes_to_petitioned_when_a_petitions_file_exists(tmp_path):
+def test_exhaustion_routes_to_petitioned_when_the_contract_declares_one(
+        tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root)
     _seed_petitions_file(root)
@@ -227,8 +251,8 @@ def test_tier_ladder_exhausted_bookkeeping_is_unchanged_when_petitioned(tmp_path
 
 
 def test_tier_ladder_exhausted_bookkeeping_is_unchanged_when_failed(tmp_path):
-    """Same bookkeeping, no petitions file at all -- the pre-existing
-    `failed` branch, unaffected by this task's addition."""
+    """Same bookkeeping, no petition protocol in the contract at all -- the
+    pre-existing `failed` branch, unaffected by this task's addition."""
     root = tmp_path / "run"
     sup = _supervisor(root)
     _write_plan(sup, [_task(**{TASK_EFFECTIVE_TIER_FIELD: tiers.TOP_TIER})])
@@ -244,11 +268,16 @@ def test_tier_ladder_exhausted_bookkeeping_is_unchanged_when_failed(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# negative control: no petitions file in the workspace at all
+# negative control: no petition protocol in the contract at all
 # ---------------------------------------------------------------------------
 
 
-def test_no_petitions_file_in_the_workspace_keeps_the_failed_route(tmp_path):
+def test_no_petition_protocol_in_the_contract_keeps_the_failed_route(tmp_path):
+    """No contract text declaring a protocol (and, here, no petitions file
+    either): the same three-attempt sequence lands `failed` with
+    `failureKind` set, and nothing is ever filed. Task 011's own module
+    pins the sharper case -- a petitions file present while the contract
+    declares nothing."""
     root = tmp_path / "run"
     sup = _supervisor(root)
     _write_plan(sup, [_task()])

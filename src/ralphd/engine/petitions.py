@@ -188,6 +188,122 @@ def discover_petition_files(workspace: Path) -> list[Path]:
     return sorted(reports_dir.glob("*-petitions.md"))
 
 
+# ---------------------------------------------------------------------------
+# Task 011 (requirement C.3, #114): does the run's CONTRACT carry a petition
+# protocol at all?
+# ---------------------------------------------------------------------------
+
+# A heading or a list item that names petitions -- the shape an opt-in
+# actually takes in a contract (`## C -- exhaustion is a petition, not a
+# failure`; `- Petitions: file one per obligation ...`). Restricted to those
+# two line shapes, plus the explicit phrases below, for the same reason
+# `findings.extract_materiality_rubric` matches a HEADING rather than a
+# keyword: a contract that merely mentions the noun in passing ("v0.15 filed
+# no petition") has not adopted a protocol, and requirement C.3's default is
+# the pre-wave `failed` routing whenever the contract is silent.
+_PETITION_HEADING_RE = re.compile(
+    r"^[ \t]*#{1,6}[ \t]+.*\bpetitions?\b.*$", re.IGNORECASE | re.MULTILINE)
+_PETITION_LIST_ITEM_RE = re.compile(
+    r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+.*\bpetitions?\b.*$",
+    re.IGNORECASE | re.MULTILINE)
+
+# Phrases that declare the protocol wherever they appear, heading or prose:
+# each one describes the MECHANISM (a filing, a status, a format document),
+# not merely the noun.
+PETITION_PROTOCOL_PHRASES = (
+    "petition protocol",
+    "petition-format",
+    "petitioned",
+    "impossibility petition",
+    "impossibility declaration",
+    "file a petition",
+    "files a petition",
+    "petition is filed",
+    "petitions are filed",
+)
+
+# The explicit, quotable statement of the default this module falls back to
+# when a contract declares no protocol -- the exact string
+# `LoopSupervisor._verify_task` records as the reason exhaustion took the
+# pre-wave route, reused verbatim by the pinning tests so the two never
+# drift apart.
+NO_PETITION_PROTOCOL_NOTICE = (
+    "no petition protocol: the run's contract declares none, so exhaustion "
+    "keeps the pre-wave 'failed' routing (requirement C.3's default-safe "
+    "fallback)"
+)
+
+# Name of the file `ensure_petitions_file` creates when a contract DOES
+# declare the protocol but the workspace carries no `<wave>-petitions.md`
+# yet: the wave token taken from the contract's own text when it names one
+# (`v0.16` -> `v0.16-petitions.md`), else a neutral `run-petitions.md`.
+_WAVE_RE = re.compile(r"\bv(\d+\.\d+)(?:\.\d+)?\b")
+DEFAULT_PETITIONS_WAVE = "run"
+
+
+def contract_declares_petition_protocol(contract_text: str) -> bool:
+    """Whether `contract_text` (the run's PRD/composite-PRD text -- "the
+    contract", the same text `findings.extract_materiality_rubric` reads)
+    carries a petition protocol.
+
+    This is the ONE discriminant requirement C.3 puts between the two
+    exhaustion routes (`LoopSupervisor._verify_task`): a contract that
+    declares a protocol routes an exhausted task to `petitioned`; a contract
+    that declares none keeps today's `failed` +
+    `TASK_FAILURE_VALIDATION_EXHAUSTED` routing, exactly as before this
+    wave. Deliberately NOT keyed on whether the workspace happens to carry
+    an `artifacts/reports/*-petitions.md` file: a repo can carry a historical
+    petitions file from an EARLIER wave (this repo does) while the contract
+    the current run works from says nothing about petitions at all, and that
+    run must keep the old routing -- the workspace's file inventory is not
+    its contract.
+
+    Detection is by-presence, the same default-safe pattern requirement A.3
+    (#110) uses for the materiality rubric: nothing to set, nothing to
+    remember, and silence means the pre-wave behaviour.
+    """
+    text = contract_text or ""
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in PETITION_PROTOCOL_PHRASES):
+        return True
+    return bool(_PETITION_HEADING_RE.search(text)
+                or _PETITION_LIST_ITEM_RE.search(text))
+
+
+def ensure_petitions_file(workspace: Path, contract_text: str = "") -> Path | None:
+    """The petitions file a filing goes into, creating an empty one when the
+    workspace has none yet -- so that a contract which DOES declare the
+    protocol never falls back to `failed` merely because no wave file had
+    been created yet. Without this, the workspace's file inventory would
+    remain a second, hidden discriminant beside the contract, which is
+    exactly what requirement C.3 forbids ("the two branches are
+    distinguished by the contract and nothing else").
+
+    Called only where the contract has already been found to declare a
+    protocol (`contract_declares_petition_protocol`); returns the existing
+    file when there is one (the last, matching `file_worker_petition`'s own
+    target choice), or None when the file cannot be created at all (a
+    read-only workspace), in which case the caller keeps the `failed`
+    fallback.
+    """
+    files = discover_petition_files(workspace)
+    if files:
+        return files[-1]
+    match = _WAVE_RE.search(contract_text or "")
+    wave = f"v{match.group(1)}" if match else DEFAULT_PETITIONS_WAVE
+    path = workspace / "artifacts" / "reports" / f"{wave}-petitions.md"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"# {wave} impossibility petitions\n\n"
+            "Created by the engine because this run's contract declares a "
+            "petition protocol (see `docs/petition-format.md`). One section "
+            "per petition; no petition filed yet.\n")
+    except OSError:
+        return None
+    return path
+
+
 def open_petitions_in_workspace(workspace: Path) -> list[dict]:
     """Every OPEN petition across every petitions file found under
     `workspace` -- the input `petitions_review_context` renders. A file

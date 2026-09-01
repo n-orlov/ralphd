@@ -6419,12 +6419,25 @@ class LoopSupervisor:
         still receives the explicit all-blocking default rather than this
         method raising or silently omitting the context.
         """
+        return findings.materiality_rubric_context(self._contract_text())
+
+    def _contract_text(self) -> str:
+        """THE run's contract text, read from the same file `build_prompt`
+        names as "the PRD file" (`prd_path(self.run.root) or
+        self.run.prd_file` -- the composite when the engine has written one,
+        the original otherwise; task 056/#1's single decision of which file
+        *is* the run's PRD). '' when there is no PRD file yet (very early in
+        planning, or a stub run dir): every caller treats absence as "the
+        contract says nothing", which is the default-safe direction for both
+        readers -- the materiality rubric falls back to all-blocking
+        (requirement A.3, #110) and exhaustion falls back to the pre-wave
+        `failed` routing (requirement C.3, #114).
+        """
         prd = prd_path(self.run.root) or self.run.prd_file
         try:
-            text = prd.read_text()
+            return prd.read_text()
         except OSError:
-            text = ""
-        return findings.materiality_rubric_context(text)
+            return ""
 
     def _review_extra_context(self) -> str:
         """Everything appended to a review-phase prompt beyond the PRD and
@@ -6696,26 +6709,50 @@ class LoopSupervisor:
                     # Task 009 (requirement C.1, #114): a contract that
                     # carries a petition protocol -- detected the same
                     # default-safe way requirement A.3 (#110) detects a
-                    # materiality rubric: by what is actually PRESENT
-                    # (there, a rubric heading in the contract text; here,
-                    # at least one `<wave>-petitions.md` file the run's own
-                    # workspace already carries) rather than a flag nobody
-                    # would remember to set -- routes exhaustion to
-                    # `petitioned`, filing the last-attempt handoff already
-                    # written into `validationNotes` above as the petition's
-                    # evidence (`petitions.file_exhaustion_petition`), INSTEAD
-                    # of forcing `failed`. A contract with no petitions file
-                    # at all (backward compatibility, requirement C.3) falls
-                    # straight through to the `failed` branch below, exactly
-                    # as it always has; so does a filing `file_exhaustion_
-                    # petition` itself refuses (a duplicate obligation) --
-                    # exhaustion must always land the task SOMEWHERE, never
-                    # nowhere, and `failed` is the safe fallback either way.
-                    petition_errors = (
-                        petitions.file_exhaustion_petition(self.workspace, t)
-                        if petitions.discover_petition_files(self.workspace)
-                        else ["no petition protocol: no <wave>-petitions.md "
-                              "file exists under artifacts/reports/"])
+                    # materiality rubric: by what is actually PRESENT in the
+                    # CONTRACT's own text (`petitions.contract_declares_
+                    # petition_protocol` over `self._contract_text()`)
+                    # rather than a flag nobody would remember to set --
+                    # routes exhaustion to `petitioned`, filing the
+                    # last-attempt handoff already written into
+                    # `validationNotes` above as the petition's evidence
+                    # (`petitions.file_exhaustion_petition`), INSTEAD of
+                    # forcing `failed`.
+                    #
+                    # Task 011 (requirement C.3, #114) corrected the
+                    # discriminant: it used to be whether the WORKSPACE
+                    # carried any `<wave>-petitions.md` file, which routed a
+                    # run whose contract says nothing about petitions to
+                    # `petitioned` merely because the repo still carried an
+                    # EARLIER wave's petitions file. The contract -- and
+                    # nothing else -- decides the branch now; the workspace
+                    # file is only the filing TARGET, created on demand
+                    # (`petitions.ensure_petitions_file`) so its absence can
+                    # never become a second, hidden discriminant.
+                    #
+                    # A contract that declares no protocol (backward
+                    # compatibility, requirement C.3) falls straight through
+                    # to the `failed` branch below, exactly as it always has;
+                    # so does a filing `file_exhaustion_petition` itself
+                    # refuses (a duplicate obligation) -- exhaustion must
+                    # always land the task SOMEWHERE, never nowhere, and
+                    # `failed` is the safe fallback either way.
+                    contract_text = self._contract_text()
+                    if petitions.contract_declares_petition_protocol(
+                            contract_text):
+                        if petitions.ensure_petitions_file(
+                                self.workspace, contract_text) is None:
+                            petition_errors = [
+                                "petition: the contract declares a petition "
+                                "protocol but no petitions file could be "
+                                "created under artifacts/reports/"]
+                        else:
+                            petition_errors = (
+                                petitions.file_exhaustion_petition(
+                                    self.workspace, t))
+                    else:
+                        petition_errors = [
+                            petitions.NO_PETITION_PROTOCOL_NOTICE]
                     if not petition_errors:
                         t["status"] = "petitioned"
                         log.warning(
