@@ -1644,6 +1644,73 @@ stopped short of a fourth, accepted approach.
   time; the residual entry-53 correction and the late-sent v0.15 terminal summary are closed by
   the following wave (`docs/prds/v0.16-a-petition-is-not-a-postmortem.md`, requirement E).
 
+## v0.16 — a petition is not a postmortem
+
+Full PRD:
+[`docs/prds/v0.16-a-petition-is-not-a-postmortem.md`](prds/v0.16-a-petition-is-not-a-postmortem.md).
+This wave moves petition adjudication from approach-end review to the moment a worker detects
+an impossible obligation, lets the adjudicating judge alone re-scope a task's criteria on a
+CONFIRMED petition, routes validation exhaustion to a `petitioned` status instead of a
+guaranteed-rejecting `failed`, and lints the stranding criteria shapes that stranded v0.15's own
+tasks out of the planner's hands before a worker ever sees them. Requirement letters below are
+the PRD's own, A-F. **This block is written while the run is still going** — `docs/prds/README.md`'s
+own row for this wave still reads `launching` — so every mark below states what has landed AS OF
+ITS OWN COMMIT and nothing more; it is not a promise that a later commit keeps it current.
+
+- **A — petition at the moment of impossibility.** Landed at `8083b671` (task 005): every worker
+  payload carrying a `petition` field is routed through the declaration schema and the existing
+  contract re-ask ladder, and `LoopSupervisor` invokes `petitions.file_worker_petition` exactly
+  once per accepted declaration, scheduling a bounded mid-run adjudication episode with the
+  review-hat model before the task's next validation attempt. Task 004 (`eb42350d`, requirement
+  A.1) had landed only the declaration's schema and vocabulary, with no production call site, and
+  exhausted its validation ladder `failed`; the operator read that verdict as correct and task 005
+  closes that residual gap on the real `LoopSupervisor._step_worker` path rather than reopening
+  004. Approach-end review's own petition surface (`_petitions_review_context()`) is unchanged.
+- **B — a CONFIRMED petition may re-scope the task.** Partly landed as of this commit. A
+  judge-authored criteria amendment applies on a CONFIRMED petition — `task.criteria_amended`,
+  fingerprint recomputed, attempts reset, status/other fields left untouched — at
+  `3184c651`/`ca5eb6d8` (task 006, requirement B.1); a REFUTED adjudication's remedy is recorded
+  on the run's own record and the ladder keeps running, criteria untouched, at `8389b5e7` (task
+  007). The authority boundary itself (requirement B.2: refusing a worker- or planner-authored
+  criteria edit as a blocking finding) is outstanding as of this commit — task 008 (`63563be9`)
+  exhausted its validation ladder `failed` on that residual and stands unresolved; no later task
+  has yet carved its gap or waived it.
+- **C — exhaustion is a petition, not a failure.** Landed. Validation exhaustion routes to a new
+  `petitioned` status carrying the last-attempt handoff as the petition body at `61b011d2` (task
+  009, requirement C.1); `plan_complete` accepts a CONFIRMED-`petitioned` task and lands a
+  REFUTED one `failed` at `95a98e51` (task 010, requirement C.2); a contract with no petition
+  protocol keeps today's `failed` routing, pinned at `256507e3`/`8f4332cc` (task 011, requirement
+  C.3).
+- **D — a plan-time lint for stranding criteria.** Landed, bounded. All five stranding lints
+  (relational sha anchors, single-commit demands on multi-part deliverables, forward citation of
+  later tasks' commits, unscoped self-growing counts, scratch-state format conditions) are folded
+  into `lint_proposal()` and green against their v0.15-derived must-catch fixtures and must-pass
+  siblings at `b4cae8b4` (tasks 012 `00dd4ffb` and 013 `9230101a`/`68edf1e3`/`94abbd84`). Both
+  tasks themselves exhausted their validation ladders `failed` on a broader, open-ended "reject
+  every natural-language rephrasing of a banned shape" standard the validators applied; operator
+  rulings `/config/amendments/001-012.md` and `/config/amendments/002-013.md` rule that standard
+  unmeetable by a lexical lint and rule requirement D and DoD predicate 6 satisfied by the bounded
+  fixture standard instead — both tasks are waived, never reopened. The uncaught evasion strings
+  the rulings name are a disclosed residual for the closing report to carry forward as named
+  future fixtures, not a gap in this landed scope.
+- **E — the version, the rows, the roadmap, the v0.15 paperwork.** Partly landed as of this
+  commit. `0.16.0` landed in `pyproject.toml` and `src/ralphd/__init__.py` at `3ff576c7` (task
+  001); v0.15's `docs/prds/README.md` row was settled to its terminal truth and the `## v0.15`
+  block above rewritten in the same commit at `755763f2` (task 017), with a sweep-sha discharge
+  bridge at `549e5928`; this `## v0.16` block is added by the present commit (task 018).
+  Outstanding as of this commit: this wave's own index row from a preserved status snapshot
+  (task 019), the entry-53 correction to the v0.15 notification log (task 020), the v0.15 closing
+  addendum (task 021), and the late-cured v0.15 terminal summary (task 022).
+- **F — the evidence, the closure, and the record.** Outstanding as of this commit: closing #114
+  with a fresh-`GET`-verified evidence comment (task 023); the fast/docker/browser/dev-layout
+  sweeps (tasks 024-028); the closing report walking A-F (task 029); the terminal summary (task
+  030); and the final guard-subset re-verification as the true last commit (task 031).
+
+No cut has been taken on requirements A, C or E as of this commit. D's only cut is the bounded-
+vs-open-ended ruling described above, already accounted for and not a further reduction of
+scope. Any cut to B (the PRD's own second cut-order rung) is not yet decided and will be
+announced by notification if it is taken.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
