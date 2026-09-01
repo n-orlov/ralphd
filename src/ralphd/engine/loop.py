@@ -117,6 +117,29 @@ STEERING_ECHO_MAX_BODY_CHARS = 2000
 # keeps the complete append-only transition history either way.
 PREVIOUS_ENDINGS_MAX = 50
 
+# Task 032 (operator-inserted, grounding the contract re-ask in the hat's
+# actual final text): the iteration-36 regression this task fixes -- the
+# steer hat's final text was prose followed by a fenced ```json block
+# carrying the correct `{"settled": true}` payload, but the pre-task-032
+# re-ask ladder threw that text away and asked a CONTEXT-FREE model call
+# for "the corrected JSON payload", which duly fabricated
+# `{"response": "steer"}` from nothing (see this run's own
+# `artifacts/contract/0001.jsonl`/`0002.jsonl`). `_FENCED_JSON_BLOCK_RE`
+# finds every ```json (or bare ```) fenced block in a hat's final text, in
+# the order they appear; `_ask_contract_fix` tries each, most-recent-first
+# (a hat that first shows its reasoning and then a corrected block near
+# the end is the common shape), and uses the first one that both parses
+# as JSON *and* validates against the hat's own declared contract schema
+# -- with NO model call at all. Only once no fenced block validates does
+# the method fall through to an actual model re-ask, and even then the
+# prompt now carries the hat's own final text verbatim (bounded to the
+# last `CONTRACT_REASK_FINAL_TEXT_MAX_CHARS` characters) alongside the
+# error list, so the model is grounded in what the hat actually said
+# instead of starting from nothing.
+_FENCED_JSON_BLOCK_RE = re.compile(
+    r"```(?:json)?[ \t]*\r?\n(.*?)```", re.DOTALL | re.IGNORECASE)
+CONTRACT_REASK_FINAL_TEXT_MAX_CHARS = 4000
+
 
 class LoopSupervisor:
     def __init__(self, cfg: JobConfig, run: RunDir, workspace: Path):
@@ -2526,7 +2549,8 @@ class LoopSupervisor:
             if attempt == 0:
                 return first_attempt_text
             raw, _usage = asyncio.run_coroutine_threadsafe(
-                self._ask_contract_fix("reflect", prior_errors or []),
+                self._ask_contract_fix("reflect", prior_errors or [],
+                                       final_text=result.final_text),
                 event_loop).result()
             return last_nonblank_line(raw)
 
@@ -3165,7 +3189,8 @@ class LoopSupervisor:
                 if attempt == 0:
                     return first_attempt_text
                 raw, _usage = asyncio.run_coroutine_threadsafe(
-                    self._ask_contract_fix(hat, prior_errors or []),
+                    self._ask_contract_fix(hat, prior_errors or [],
+                                   final_text=result.final_text),
                     event_loop).result()
                 return last_nonblank_line(raw)
 
@@ -3739,7 +3764,38 @@ class LoopSupervisor:
             self._accumulate_usage(result.usage, phase="router")
         return (result.final_text or ""), (result.usage or {})
 
-    async def _ask_contract_fix(self, hat: str, errors: list[str]) -> tuple[str, dict]:
+    @staticmethod
+    def _extract_validated_fenced_payload(hat: str, final_text: str | None) -> dict | None:
+        """Task 032: scan `final_text` (the hat's own last completed
+        response, prose and all -- never the already-line-trimmed
+        `last_nonblank_line` a caller may also be holding) for a fenced
+        ```json block that both parses as JSON and validates against
+        `hat`'s own declared contract schema. Tried most-recent-block-
+        first: a hat that narrates its reasoning and then closes with the
+        corrected payload is the common shape this exists for (the
+        iteration-36 regression), and an earlier block is more likely to
+        be a worked example than the final answer. Returns the FIRST
+        candidate that validates, or `None` if there is none -- callers
+        take `None` to mean "a model re-ask is still required", never an
+        error on its own."""
+        if not final_text:
+            return None
+        candidates = _FENCED_JSON_BLOCK_RE.findall(final_text)
+        for block in reversed(candidates):
+            try:
+                payload = json.loads(block.strip())
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if contracts.validate_payload(hat, payload):
+                continue
+            return payload
+        return None
+
+    async def _ask_contract_fix(
+        self, hat: str, errors: list[str], final_text: str | None = None,
+    ) -> tuple[str, dict]:
         """The contract-repair channel (task 001's requirement B decision,
         task 002): one tiny, UNCOUNTED question, built directly on
         `_ask_router`'s precedent immediately above -- no iteration slot,
@@ -3779,15 +3835,55 @@ class LoopSupervisor:
         mistake: cheaper, symmetric, and a hat's own `--model-for`/`models:`
         entry now governs the repair of its own output. Pinned by
         `tests/test_contract_reask_model_task004.py`.
+
+        Task 032 (operator-inserted, grounding the re-ask in the hat's
+        actual final text -- the iteration-36 regression): `final_text` is
+        the hat's own most recently completed response, verbatim, if the
+        caller has one (every existing call site does -- see `loop.py`'s
+        `respond()` closures). Two things change from here:
+
+        1. FENCED-PAYLOAD EXTRACTION, before any model call at all --
+           `_extract_validated_fenced_payload` scans `final_text` for a
+           fenced ```json block that parses AND validates against `hat`'s
+           own contract schema. When one exists, THIS method returns it
+           directly (re-serialised through `json.dumps`, `usage={}`) and
+           `self.runner.run` is never invoked -- no transcript file, no
+           `_contract_calls` increment, no `"contract"`-phase usage. The
+           payload was already there, correctly, in text the hat itself
+           produced; asking the model again to reproduce it can only
+           either repeat it (wasted call) or, as iteration 36 showed,
+           fabricate something worse.
+        2. GROUNDED RE-ASK, when no fenced block validates and a model
+           call is still genuinely needed -- the prompt now carries
+           `final_text` verbatim, bounded to the last
+           `CONTRACT_REASK_FINAL_TEXT_MAX_CHARS` characters, ALONGSIDE
+           the error list (both, never one instead of the other), so the
+           model is repairing what the hat actually said instead of
+           starting from nothing the way the pre-task-032 prompt did. The
+           demand stays exactly what it always was: ONLY the corrected
+           JSON payload, no further workspace work.
+
+        Pinned by `tests/test_contract_reask_grounding.py`.
         """
+        fenced_payload = self._extract_validated_fenced_payload(hat, final_text)
+        if fenced_payload is not None:
+            return json.dumps(fenced_payload), {}
         contract_dir = self.run.artifacts_dir / "contract"
         contract_dir.mkdir(parents=True, exist_ok=True)
         self._contract_calls += 1
         transcript = contract_dir / f"{self._contract_calls:04d}.jsonl"
+        excerpt = (final_text or "")[-CONTRACT_REASK_FINAL_TEXT_MAX_CHARS:]
         prompt = (
             f"Your previous response for the {hat!r} step did not satisfy "
             "its required response contract:\n\n"
             + "\n".join(f"- {e}" for e in errors)
+            + (
+                "\n\nYour previous response for this step was (verbatim, "
+                "possibly truncated to its last "
+                f"{CONTRACT_REASK_FINAL_TEXT_MAX_CHARS} characters):\n\n"
+                + excerpt
+                if excerpt else ""
+            )
             + "\n\nReply with ONLY the corrected final JSON payload that "
             "fixes every error listed above. Do not repeat or restate your "
             "previous reasoning, do not perform any further workspace "
@@ -4522,7 +4618,8 @@ class LoopSupervisor:
                     if attempt == 0:
                         return worker_final_text
                     raw, _usage = asyncio.run_coroutine_threadsafe(
-                        self._ask_contract_fix("worker", prior_errors or []),
+                        self._ask_contract_fix("worker", prior_errors or [],
+                            final_text=result.final_text),
                         event_loop).result()
                     return last_nonblank_line(raw)
 
@@ -4578,7 +4675,8 @@ class LoopSupervisor:
                         if attempt == 0:
                             return worker_final_text
                         raw, _usage = asyncio.run_coroutine_threadsafe(
-                            self._ask_contract_fix("worker", prior_errors or []),
+                            self._ask_contract_fix("worker", prior_errors or [],
+                                final_text=result.final_text),
                             event_loop).result()
                         return last_nonblank_line(raw)
 
@@ -4636,7 +4734,8 @@ class LoopSupervisor:
                         if attempt == 0:
                             return worker_final_text
                         raw, _usage = asyncio.run_coroutine_threadsafe(
-                            self._ask_contract_fix("worker", prior_errors or []),
+                            self._ask_contract_fix("worker", prior_errors or [],
+                                final_text=result.final_text),
                             event_loop).result()
                         return last_nonblank_line(raw)
 
@@ -4701,7 +4800,8 @@ class LoopSupervisor:
                         if attempt == 0:
                             return worker_final_text
                         raw, _usage = asyncio.run_coroutine_threadsafe(
-                            self._ask_contract_fix("worker", prior_errors or []),
+                            self._ask_contract_fix("worker", prior_errors or [],
+                                final_text=result.final_text),
                             event_loop).result()
                         return last_nonblank_line(raw)
 
@@ -4765,7 +4865,8 @@ class LoopSupervisor:
                         if attempt == 0:
                             return worker_final_text
                         raw, _usage = asyncio.run_coroutine_threadsafe(
-                            self._ask_contract_fix("worker", prior_errors or []),
+                            self._ask_contract_fix("worker", prior_errors or [],
+                                final_text=result.final_text),
                             event_loop).result()
                         return last_nonblank_line(raw)
 
@@ -5318,7 +5419,8 @@ class LoopSupervisor:
             if attempt == 0:
                 return first_attempt_text
             raw, _usage = asyncio.run_coroutine_threadsafe(
-                self._ask_contract_fix("review", prior_errors or []),
+                self._ask_contract_fix("review", prior_errors or [],
+                                       final_text=result.final_text),
                 event_loop).result()
             return last_nonblank_line(raw)
 

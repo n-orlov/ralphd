@@ -199,7 +199,7 @@ def test_a_persistent_contradiction_never_earns_verified(tmp_path):
 
     calls = []
 
-    async def fake_ask_contract_fix(hat, errors):
+    async def fake_ask_contract_fix(hat, errors, **_kw):
         calls.append((hat, list(errors)))
         return contradictory, {}
 
@@ -229,7 +229,7 @@ def test_a_corrected_reask_recovers_and_the_second_attempt_verifies(tmp_path):
                              "reason": "a blocking finding is present"})
     result = _result(first_attempt)
 
-    async def fake_ask_contract_fix(hat, errors):
+    async def fake_ask_contract_fix(hat, errors, **_kw):
         return corrected, {}
 
     sup._ask_contract_fix = fake_ask_contract_fix  # type: ignore[method-assign]
@@ -328,7 +328,7 @@ def test_the_ladder_re_asks_over_a_partially_malformed_channel(tmp_path):
 
     calls = []
 
-    async def fake_ask_contract_fix(hat, errors):
+    async def fake_ask_contract_fix(hat, errors, **_kw):
         calls.append((hat, list(errors)))
         return claim, {}
 
@@ -359,7 +359,7 @@ def test_a_repaired_channel_on_re_ask_recovers(tmp_path):
                              "reason": "one residual finding remains",
                              "findings_path": "review-findings.md"})
 
-    async def fake_ask_contract_fix(hat, errors):
+    async def fake_ask_contract_fix(hat, errors, **_kw):
         _write_findings(sup, residual)
         return corrected, {}
 
