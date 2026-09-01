@@ -62,7 +62,7 @@ phrasing on every row whose run recorded the marker.
 | `selfdev-v0141-a-guard-that-cannot-see` | [v0.14.1-a-guard-that-cannot-see.md](v0.14.1-a-guard-that-cannot-see.md) | **failed** / unverified — one approach, a 20-task flat plan; terminal tally 13 `validated`, 3 `skipped` (002, 015, 020), 4 `failed` (003, 009, 012, 019); review honoured all seven operator waivers by name and rejected on the single fast-tier-RED finding this wave's (v0.14.2's) requirement A fixes. That run's own `status.json` is unreachable from this container, so — same convention as v0.14.1's own task 011 used for the v0.14 row above — this row is sourced from this wave's PRD, `docs/prds/v0.14.2-green-where-it-runs.md`, requirement D, rather than a `status.json` read | 70 | 70.5M | ~$58.75 derived |
 | `selfdev-v0142-green-where-it-runs` | [v0.14.2-green-where-it-runs.md](v0.14.2-green-where-it-runs.md) | **failed** / unverified — approach 1 (an 18-task flat plan) reached terminal tally 15 `validated`, 1 `skipped`, 2 `failed` (016, 017) and was rejected by review on four findings (archived `approaches/01`); approach 2 (a 13-task flat plan correcting those four findings) reached terminal tally 12 of 13 and was rejected by review on three findings (archived `approaches/02`); approach 3 (a 7-task flat plan, ids 001–007) reached terminal tally 7 of 7 `validated` and was rejected by review on two findings (archived `approaches/03`); approach 4 (a 5-task flat plan correcting those two findings) reached only 1 `validated` when the 10h clock exhausted. All three of its issues (#97, #108, #109) closed; the fast tier ran green inside a job container for the first time. That run's own `status.json` is unreachable from this container, so — same convention as the v0.14.1 row above — this row is sourced from `docs/prds/v0.15-impossible-is-an-answer.md`, requirement E, rather than a `status.json` read | 132 | 131.9M | ~$112.23 derived |
 | `selfdev-v015-impossible-is-an-answer` | [v0.15-impossible-is-an-answer.md](v0.15-impossible-is-an-answer.md) | **failed** / unverified — aborted by the operator at approach 4 with only record paperwork left. Approach 1 (28 tasks): 27 validated / 1 skipped-waived (task 006, per operator waiver `/config/amendments/001-006.md` and status ruling `/config/amendments/002-006.md`), rejected on 3 curable findings (the CONFIRMED-petition re-litigation gap, this row still holding the launch placeholder at review time, and a missing plan-acceptance notification); archived `approaches/01`. Approach 2 (14 tasks): 10 validated / 3 skipped (tasks 007, 010, 011) / 1 failed (task 006), rejected on 5 findings, one incurable (a reachable commit title's closing reference to the already-closed #112); archived `approaches/02`. Approach 3 (6 tasks): 4 validated / 2 failed-but-waived (operator rulings `003-001`, `004-004`), rejected on 2 curable false-tally findings, both factually correct; the engine work verified green in all six lanes by approach 3's own review at `a900357`; archived `approaches/03`. Approach 4 (6-task cure plan): the first fix landed as `2b0b25d`, curing one finding, before the task exhausted over scratch-state format and the operator stopped the run. #110, #111, #112 closed with evidence; the operator installed `0.15.0` host-side directly from green `main`. That run's own `status.json` is unreachable from this container, so — same convention as the v0.14.1 and v0.14.2 rows above — this row is sourced from `docs/prds/v0.16-a-petition-is-not-a-postmortem.md`, requirement E, rather than a `status.json` read | 199 (181 used of 300) | ~256.4M | ~$182.71 derived |
-| `selfdev-v016-a-petition-is-not-a-postmortem` | [v0.16-a-petition-is-not-a-postmortem.md](v0.16-a-petition-is-not-a-postmortem.md) | launching — operator placeholder | 0+ | 0M+ | ~$0.00+ derived |
+| `selfdev-v016-a-petition-is-not-a-postmortem` | [v0.16-a-petition-is-not-a-postmortem.md](v0.16-a-petition-is-not-a-postmortem.md) | running — in-flight snapshot, `artifacts/reports/v0.16-status-snapshot.json` — approach 1 (34-task flat plan): 14 of 34 tasks validated, 4 `failed` (004, 008, 012, 013 — 004's and 012's residual gaps are operator-endorsed closes folded into later tasks per steer 001/002, 008 stands as an unresolved gap, 012/013 are operator-waived per steer 003/`/config/amendments/001-012.md`/`002-013.md`), 1 in progress (this row-settling task, 019, itself), 15 pending | 64+ | 125.3M+ | ~$78.01+ derived |
 
 Notes worth keeping with the documents:
 
@@ -356,6 +356,27 @@ Notes worth keeping with the documents:
   This row carries the `+` snapshot marker on every count/cost cell, per this
   task's own success criteria — the run has not reached a terminal `state`, so
   a later task will need to resettle it once this run actually ends.
+- **This PRD's own row (`selfdev-v016-a-petition-is-not-a-postmortem`) is a live
+  snapshot of the run writing it** (task 019, itself), derived from the tracked
+  file `artifacts/reports/v0.16-status-snapshot.json` (a verbatim copy of
+  `/run/ralphd/status.json` taken during this task), never from a live read of
+  the untracked source: `state: running`, `approach: 1`,
+  `updatedAt: 2026-09-01T15:51:49Z` (the snapshot's own recorded value),
+  `iteration: 69`, `iterationsUsed: 64`, `usage.totalTokens: 125273415`
+  (125.3M), `usage.costDerivedUSD: 78.010262` (`costStatus: derived`, so
+  `engine.state.format_cost` renders `~$78.01 derived`). A fresh tally of
+  `/run/ralphd/tasks.json` at this same moment: 14 `validated` (001, 002, 003,
+  005, 006, 007, 009, 010, 011, 014, 015, 016, 017, 018), 4 `failed` (004, 008,
+  012, 013 — 004's and 012's residual gaps are operator-endorsed closes folded
+  into later tasks per steers 001/002, 008 stands as an unresolved gap never
+  reopened, and 012/013 are operator-waived per steer 003 and
+  `/config/amendments/001-012.md`/`002-013.md`), 1 `in-progress` (this task,
+  019, itself), 15 `pending`, 34 total. `dependsOn` on this plan only ever
+  names an already-`validated` task (005, 006, 009), so nothing is currently
+  blocked. This row carries the `+` snapshot marker on every count/cost cell,
+  per this task's own success criteria — the run has not reached a terminal
+  `state`, so a later task will need to resettle it once this run actually
+  ends.
 - Some run dirs also hold a `composite-prd.md`. That one is **engine-generated**
   (the PRD with approach history appended for later approaches), not an authored
   input, so it is not kept here.
