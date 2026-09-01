@@ -174,13 +174,132 @@ def _detect_cycles(tasks: list[dict]) -> list[str]:
     return errors
 
 
+# ---------------------------------------------------------------------------
+# Task 012 (requirement D, #114): the first three of the plan's own five
+# stranding lints (PRD contract rule 3, `docs/prds/v0.16-a-petition-is-not-a-postmortem.md:79-84`):
+# relational sha anchors, single-commit demands on a deliverable whose own
+# criteria also mandate a separate disclosure/notification/record commit,
+# and forward citation of a task ordered later in the same plan. Each
+# mirrors `lint_own_terminal_state`'s #86/#76 discipline (below,
+# `_depends_on_own_terminal_state`): matched against ONE clause
+# (`_CLAUSE_SPLIT_RE`), never the whole criteria string, so a criterion that
+# merely *mentions* a sha/commit/count outside the banned shape is never
+# flagged -- every lint below ships at least one must-pass sibling proving
+# exactly that in `tests/test_stranding_lints.py`. Task 013 adds the
+# remaining two lints (unscoped self-growing counts, scratch-state format).
+#
+# The must-catch fixture named by task 012's own success criteria -- "the
+# real v0.15 approach-3 task 004 `HEAD~1` clause" -- cannot be lifted
+# byte-for-byte: that run's own `tasks.json` lived only in its own run
+# directory, torn down once the run finished, and was never committed here
+# (the exact same loss `TASK_042_SUCCESS_CRITERIA` above documents for v0.8's
+# task 042). What survives, verifiably, in THIS repository's tracked history
+# is this PRD's own description of that clause
+# (`docs/prds/v0.16-a-petition-is-not-a-postmortem.md` lines 14 and 204,
+# checked directly by `tests/test_stranding_lints.py` against the tracked
+# file rather than asserted in a comment): "verify with `HEAD~1`" as the
+# generic pattern, and "approach 3 task 004's `HEAD~1` clause" naming this
+# exact instance. `TASK_004_HEAD_ANCHOR_CRITERIA` below is a reconstruction
+# built from that surviving description, not a recovered original file.
+TASK_004_HEAD_ANCHOR_CRITERIA = (
+    "This task's deliverable is verified by running `git diff HEAD~1 -- "
+    "src/ralphd/prompts/review.md` and confirming only the intended change "
+    "appears."
+)
+
+_RELATIONAL_SHA_RE = re.compile(
+    r"HEAD~\d+|HEAD\^+|this commit'?s parent|the parent of this commit",
+    re.IGNORECASE,
+)
+
+# "in a single commit"/"as one commit"/"exactly one commit" etc -- a real
+# demand that the whole deliverable land as exactly one commit. A bare
+# mention like "at least one commit" or "the commit's sha" must NOT match
+# (must-pass sibling in `tests/test_stranding_lints.py`).
+_SINGLE_COMMIT_DEMAND_RE = re.compile(
+    r"\b(?:in|as|within)\s+(?:a\s+)?single\s+commit\b"
+    r"|\bexactly\s+one\s+commit\b"
+    r"|\bsingle[- ]commit\s+(?:deliverable|demand)\b",
+    re.IGNORECASE,
+)
+
+# A mandate, elsewhere in the SAME criteria, that a disclosure/notification/
+# record land as its own, separate, commit -- the contradiction that strands
+# a single-commit demand.
+_SEPARATE_RECORD_COMMIT_RE = re.compile(
+    r"\b(?:separate|second|another|distinct|its\s+own)\s+"
+    r"(?:disclosure|notification|record)\s+commit\b",
+    re.IGNORECASE,
+)
+
+# "task 013's commit", "commit sha of task 013", "cites task 013's commit" --
+# a reference to ANOTHER task's commit sha, by numeric id. A bare "task 013"
+# with no commit/sha language, or a reference to THIS task's own commit,
+# must not match.
+_FORWARD_TASK_COMMIT_REF_RE = re.compile(
+    r"task\s+(\d+)(?:'s|\u2019s)?\s+(?:own\s+)?commit(?:\s+sha)?"
+    r"|commit(?:\s+sha)?\s+of\s+task\s+(\d+)"
+    r"|cites?\s+task\s+(\d+)(?:'s|\u2019s)\s+commit",
+    re.IGNORECASE,
+)
+
+
+def _first_clause_matching(criteria: str, pattern: re.Pattern) -> str | None:
+    """Return the first clause of `criteria` (split by `_CLAUSE_SPLIT_RE`,
+    stripped) that matches `pattern`, or None. Scoping to the clause, not
+    the whole criteria string, is the #76 discipline
+    `_depends_on_own_terminal_state` already applies below."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if stripped and pattern.search(stripped):
+            return stripped
+    return None
+
+
+def _relational_sha_clause(criteria: str) -> str | None:
+    return _first_clause_matching(criteria, _RELATIONAL_SHA_RE)
+
+
+def _single_commit_conflict_clause(criteria: str) -> str | None:
+    """None unless BOTH a single-commit demand clause is present AND some
+    clause of the same criteria separately mandates a disclosure/
+    notification/record commit of its own -- the contradiction, not either
+    half alone."""
+    demand_clause = _first_clause_matching(criteria, _SINGLE_COMMIT_DEMAND_RE)
+    if demand_clause is None:
+        return None
+    if _SEPARATE_RECORD_COMMIT_RE.search(criteria):
+        return demand_clause
+    return None
+
+
+def _forward_task_commit_refs(criteria: str) -> list[tuple[str, str]]:
+    """Return `[(clause, referenced_task_id), ...]` for every clause of
+    `criteria` naming another task's commit sha."""
+    results: list[tuple[str, str]] = []
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        for m in _FORWARD_TASK_COMMIT_REF_RE.finditer(stripped):
+            ref = next(g for g in m.groups() if g)
+            results.append((stripped, ref))
+    return results
+
+
 def lint_proposal(payload: dict) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
-    requirement H's own-terminal-state rule -- that lint is task 012's."""
+    requirement H's own-terminal-state rule -- that lint is task 012's
+    (kept separate, `lint_own_terminal_state`). It DOES enforce task 012's
+    OWN three stranding lints (relational sha anchors, single-commit
+    demands on a deliverable with a mandated second commit, forward
+    citation of a later task's commit sha) -- see the block comment
+    immediately above."""
     errors: list[str] = []
     tasks = payload.get("tasks", [])
     seen: dict[Any, int] = {}
+    id_to_index: dict[Any, int] = {t.get("id"): i for i, t in enumerate(tasks)}
     for i, t in enumerate(tasks):
         tid = t.get("id")
         if tid in seen:
@@ -196,6 +315,41 @@ def lint_proposal(payload: dict) -> list[str]:
         criteria = t.get("successCriteria", "")
         if not isinstance(criteria, str) or not criteria.strip() or _is_boilerplate(criteria):
             errors.append(f"task {tid!r}: successCriteria is empty or boilerplate")
+            continue
+
+        sha_clause = _relational_sha_clause(criteria)
+        if sha_clause is not None:
+            errors.append(
+                f"task {tid!r}: successCriteria anchors verification to a "
+                f"relational sha ({sha_clause!r}) -- name the absolute sha "
+                "this task's own commit lands at once it exists (e.g. "
+                '"at commit `<full-sha>`"), never a relational anchor like '
+                "`HEAD~1`/`HEAD^`/\"this commit's parent\", which means a "
+                "different commit every time another commit lands"
+            )
+
+        commit_clause = _single_commit_conflict_clause(criteria)
+        if commit_clause is not None:
+            errors.append(
+                f"task {tid!r}: successCriteria demands a single commit "
+                f"({commit_clause!r}) while also mandating a separate "
+                "disclosure/notification/record commit elsewhere in the "
+                "same criteria -- require the deliverable's own commit AND "
+                "its separately-committed disclosure/notification/record to "
+                "each land on their own, not a single-commit demand"
+            )
+
+        for ref_clause, ref_id in _forward_task_commit_refs(criteria):
+            ref_index = id_to_index.get(ref_id)
+            if ref_index is not None and ref_index > i:
+                errors.append(
+                    f"task {tid!r}: successCriteria requires the commit sha "
+                    f"of task {ref_id!r} ({ref_clause!r}), which is ordered "
+                    "LATER in this same plan -- cite only a task ordered "
+                    "earlier (already committed by the time this task "
+                    f"runs), or move the citation into task {ref_id!r}'s "
+                    "own criteria instead"
+                )
 
     known_ids = set(seen)
     for t in tasks:
