@@ -25,6 +25,18 @@ Four effects, pinned separately, plus one negative control:
 5. (negative control) every OTHER field on the task record -- `id`,
    `title`, `status`, `dependsOn`, `tier` -- is untouched by the
    amendment.
+
+Effect 5 is pinned at the moment the amendment is applied, not at the end
+of `_step_worker`: the snapshot is taken from inside the VERIFY hat's own
+turn, which the production path enters strictly after
+`_apply_criteria_amendments` has already written `tasks.json` and strictly
+before `_verify_task` records any verdict. Reading the record there is an
+observation of real production state at a real production instant (the
+scripted agent is the test's stand-in for the hat's model, never for the
+behaviour under test) -- an attempt-1 gap the validator demonstrated by
+mutating `task["status"]` inside `_apply_criteria_amendments` and watching
+the end-of-call assertion still pass, because the ordinary verify pass
+overwrites `status` anyway.
 """
 
 from __future__ import annotations
@@ -141,14 +153,30 @@ def _verified(sup, prompt=""):
     return _ok(json.dumps({"task_id": "1", "verdict": "verified"}))
 
 
-def _run_amendment_episode(tmp_path: Path, task: dict) -> tuple[LoopSupervisor, RunDir]:
+def _verified_snapshotting(store: list):
+    """The verify hat's own turn, which the production `_step_worker`
+    reaches strictly AFTER `_apply_criteria_amendments` wrote `tasks.json`
+    and strictly BEFORE `_verify_task` applies any verdict: record what
+    the engine's own amendment left on disk at that instant."""
+
+    def _handler(sup, prompt=""):
+        store.append(sup.run.read_tasks()["tasks"][0])
+        return _verified(sup, prompt)
+
+    return _handler
+
+
+def _run_amendment_episode(
+        tmp_path: Path, task: dict,
+        snapshots: list | None = None) -> tuple[LoopSupervisor, RunDir]:
     sup, run, workspace = _worker_supervisor(tmp_path, task)
     _make_petitions_file(workspace, OBLIGATION, "self-referential")
 
+    verify = _verified if snapshots is None else _verified_snapshotting(snapshots)
     agent = _ScriptedAgent({
         "worker": [lambda s, p: _ok(json.dumps({"verdict": "no_verdict"}))],
         "review": [_confirming_amendment_review],
-        "verify": [_verified],
+        "verify": [verify],
     })
     agent.sup = sup  # type: ignore[attr-defined]
     sup.runner = agent  # type: ignore[assignment]
@@ -212,9 +240,51 @@ def test_success_criteria_replaced_with_the_judges_text(tmp_path):
     assert on_disk["successCriteria"] != OLD_CRITERIA
 
 
+def test_status_is_not_touched_by_the_amendment_itself(tmp_path):
+    """Pinned separately (attempt-1 validator's point): the amendment must
+    not write `status` AT ALL. Observed at the production instant after
+    `_apply_criteria_amendments` and before `_verify_task`, so the verify
+    pass's own legitimate status move cannot mask an amendment-side one."""
+    task = _task_record(status="awaiting-validation")
+    snapshots: list = []
+    sup, run = _run_amendment_episode(tmp_path, task, snapshots)
+
+    assert len(snapshots) == 1, "the verify hat's turn never ran"
+    amended = snapshots[0]
+    # The amendment demonstrably happened by this instant...
+    assert amended["successCriteria"] == NEW_CRITERIA
+    assert amended["validationAttempts"] == 0
+    # ...and it left the status exactly as the engine's own status machine
+    # had it before the adjudication.
+    assert amended["status"] == "awaiting-validation"
+
+
 def test_other_task_fields_are_otherwise_untouched(tmp_path):
     task = _task_record(dependsOn=["0"], tier="hard")
-    sup, run = _run_amendment_episode(tmp_path, task)
+    before = dict(task)
+    snapshots: list = []
+    sup, run = _run_amendment_episode(tmp_path, task, snapshots)
+
+    # The record as the engine's OWN amendment left it, read at the
+    # production instant between `_apply_criteria_amendments` and
+    # `_verify_task` (the verify hat's turn) -- so an amendment-side
+    # mutation of any other field, `status` included, is caught here even
+    # though the verify pass that follows would overwrite `status` anyway.
+    assert len(snapshots) == 1, "the verify hat's turn never ran"
+    amended = snapshots[0]
+    assert amended["successCriteria"] == NEW_CRITERIA, "amendment not applied yet"
+    assert amended["status"] == before["status"] == "awaiting-validation"
+    assert amended["id"] == "1"
+    assert amended["title"] == "a task whose own criteria are unmeetable"
+    assert amended["dependsOn"] == ["0"]
+    assert amended["tier"] == "hard"
+    # Exhaustive: the ONLY keys the amendment may differ on are the three
+    # it is authorized to write. Every other key -- present, absent, or
+    # newly invented -- must match the pre-amendment record exactly.
+    amendable = {"successCriteria", "criteriaFingerprint", "validationAttempts"}
+    assert set(amended) - amendable == set(before) - amendable
+    for key in set(before) - amendable:
+        assert amended[key] == before[key], key
 
     on_disk = run.read_tasks()["tasks"][0]
     assert on_disk["id"] == "1"
