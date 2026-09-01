@@ -5076,6 +5076,16 @@ class LoopSupervisor:
         is idempotent and additive (never erases an earlier CONFIRMED
         entry), so calling it on every settled review iteration -- verified
         or not -- is safe.
+
+        Task 010 (requirement C.2, #114): the SAME field's REFUTED entries
+        are applied here too, but never persisted at run scope the way
+        CONFIRMED is (`docs/petition-format.md`: REFUTED is not something
+        a later approach inherits) -- instead `engine.petitions.apply_
+        refuted_petition_adjudications` mutates the CURRENT `tasks.json`
+        directly, moving any matching `petitioned` task to `failed` with
+        the refutation's remedy recorded, and the change is written back
+        immediately so `_outstanding_for_completion`/`plan_complete` and
+        every other reader see it from this point on.
         """
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
@@ -5084,6 +5094,8 @@ class LoopSupervisor:
         if isinstance(parsed, dict):
             petitions.record_confirmed_adjudications(
                 self.run, parsed.get("petition_adjudications"))
+            self._apply_refuted_petition_adjudications(
+                parsed.get("petition_adjudications"))
         findings_list, channel_errors = self._review_findings_channel()
         if isinstance(parsed, dict):
             payload = parsed
@@ -5766,9 +5778,69 @@ class LoopSupervisor:
         here instead would strand such a run in the stagnation guard with no
         reviewer ever looking at it, which is the failure shape task 002's
         grace review and task 024's route-to-review both exist to avoid.
+
+        Task 010 (requirement C.2, #114): a `petitioned` task -- outside
+        `state.TASK_COMPLETION_STATUSES` by design, so `task_blocks_
+        completion` alone would block here forever, exactly like an
+        un-adjudicated one must -- is EXCEPTED from that block, and only
+        that, when its own engine-filed obligation (`petitions.
+        task_petition_obligation`) has a run-scope CONFIRMED adjudication
+        (`petitions.confirmed_obligations`/`petitioned_task_accepted`):
+        'the task counts as accepted-with-residual; the plan_complete
+        contract check accepts it' (PRD C.2). A tampered adjudication
+        record is treated as an EMPTY confirmed set (fail towards still
+        blocking, never towards trusting a record that might have been
+        edited to manufacture a false exemption) -- same posture
+        `_review_findings_channel` already takes for the identical
+        record. An un-adjudicated `petitioned` task, or one whose
+        petition was REFUTED (which moves it to `failed` instead --
+        `petitions.apply_refuted_petition_adjudications`, called from
+        `_review_verdict` -- so it never reaches this branch as
+        `petitioned` again), still blocks exactly like `task_blocks_
+        completion` already says.
         """
         tasks = tasks_doc.get("tasks") or []
-        return [t for t in tasks if task_blocks_completion(t)]
+        confirmed: set[str] | None = None
+        outstanding = []
+        for t in tasks:
+            if isinstance(t, dict) and t.get("status") == "petitioned":
+                if confirmed is None:
+                    confirmed, tampered = petitions.confirmed_obligations(self.run)
+                    if tampered:
+                        confirmed = set()
+                if petitions.petitioned_task_accepted(t, confirmed):
+                    continue
+                outstanding.append(t)
+                continue
+            if task_blocks_completion(t):
+                outstanding.append(t)
+        return outstanding
+
+    def _apply_refuted_petition_adjudications(self, adjudications) -> list[str]:
+        """Task 010 (requirement C.2, #114): the write-back half of
+        `engine.petitions.apply_refuted_petition_adjudications` -- read
+        the CURRENT `tasks.json`, apply any REFUTED entries in
+        `adjudications` to it (mutating any matching `petitioned` task to
+        `failed`, remedy recorded), and persist + announce the change
+        exactly like any other engine-driven task-status move
+        (`_emit_task_changes`, the same seam `_verify_task`'s own
+        exhaustion routing uses). A no-op call touches neither the file
+        nor the emitted-changes machinery -- `write_tasks` is skipped
+        entirely when nothing changed, so a review pass with no REFUTED
+        entries never perturbs `tasks.json`'s mtime.
+
+        Returns the ids of every task this call moved to `failed`, same
+        as the petitions-module function it wraps.
+        """
+        if not adjudications:
+            return []
+        tasks_doc = self.run.read_tasks()
+        changed = petitions.apply_refuted_petition_adjudications(
+            tasks_doc, adjudications)
+        if changed:
+            self.run.write_tasks(tasks_doc)
+            self._emit_task_changes()
+        return changed
 
     def _all_tasks_completed(self) -> bool:
         """True iff tasks.json exists, is non-empty, and every task's

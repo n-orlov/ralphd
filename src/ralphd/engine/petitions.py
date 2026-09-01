@@ -292,6 +292,20 @@ def file_worker_petition(workspace: Path, obligation: str, ptype: str,
 PETITION_TYPE_EXHAUSTION_DEFAULT = "self-referential"
 
 
+def task_petition_obligation(task: dict) -> str:
+    """The obligation string an engine-filed petition for `task` names --
+    stable across every attempt on the same task, and the SAME text both
+    `file_exhaustion_petition` (below) files under and
+    `apply_refuted_petition_adjudications`/`_outstanding_for_completion`
+    (task 010, requirement C.2, #114) later match a review adjudication
+    against. Extracted so all three sites agree on the shape by
+    construction rather than by convention.
+    """
+    tid = task.get("id", "?")
+    title = (task.get("title") or "").strip()
+    return f"Task {tid}: {title}" if title else f"Task {tid}"
+
+
 def file_exhaustion_petition(workspace: Path, task: dict) -> list[str]:
     """File a petition on a task's behalf the moment its validation ladder
     is exhausted (`state.VALIDATION_ATTEMPT_LIMIT`), carrying its
@@ -321,8 +335,7 @@ def file_exhaustion_petition(workspace: Path, task: dict) -> list[str]:
     already has, not a fresh one).
     """
     tid = task.get("id", "?")
-    title = (task.get("title") or "").strip()
-    obligation = f"Task {tid}: {title}" if title else f"Task {tid}"
+    obligation = task_petition_obligation(task)
     evidence = (task.get("validationNotes") or "").strip() or (
         f"Task {tid} exhausted its validation ladder with no verifier "
         "reason recorded on the last attempt.")
@@ -977,6 +990,82 @@ def confirmed_obligations(run) -> tuple[set[str], bool]:
     return ({_normalize_obligation(e["obligation"]) for e in entries
               if isinstance(e, dict) and isinstance(e.get("obligation"), str)},
             False)
+
+
+def petitioned_task_accepted(task: dict, confirmed: set[str]) -> bool:
+    """Task 010 (requirement C.2, #114): True iff `task` (a `petitioned`
+    task record) has a run-scope CONFIRMED adjudication for its OWN
+    engine-filed obligation (`task_petition_obligation`) -- "the task
+    counts as accepted-with-residual" (PRD C.2). Uses the identical
+    fuzzy substring-either-direction match `_obligation_confirmed`
+    already applies to a finding's `clause` against the same `confirmed`
+    set, because the two free-text channels (a filed petition's own
+    `Obligation` field, this function's own constructed obligation
+    string) are not guaranteed to agree on exact wording either.
+
+    A task whose status is not `petitioned` at all is never "accepted"
+    by this function -- callers gate on status themselves; this is a
+    pure obligation-membership check, not a status check.
+    """
+    if not isinstance(task, dict):
+        return False
+    return _obligation_confirmed(task_petition_obligation(task), confirmed)
+
+
+def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications) -> list[str]:
+    """Task 010 (requirement C.2, #114): the REFUTED counterpart to
+    `record_confirmed_adjudications` -- but, unlike that function, this
+    one is never persisted at run scope (`docs/petition-format.md`:
+    REFUTED "is not something a later approach inherits"). Instead it
+    acts immediately and directly on `tasks_doc`'s own `petitioned` task
+    records, mutating them IN PLACE: any `petitioned` task whose own
+    engine-filed obligation (`task_petition_obligation`) fuzzy-matches a
+    REFUTED entry in `adjudications` (review's `petition_adjudications`
+    verdict field) moves to `failed` -- the same terminal C.2 says an
+    un-rescued exhaustion always lands at -- carrying the refutation's
+    own "what would satisfy it" text (its `remedy` field) into
+    `validationNotes` on the task record, replacing the stale last-attempt
+    handoff that got it petitioned in the first place. `failureKind` is
+    set to `state.TASK_FAILURE_VALIDATION_EXHAUSTED`, matching the label
+    an un-rescued exhaustion already carries (task 024/#33) -- a REFUTED
+    petition does not invent a new failure vocabulary, it is the SAME
+    exhaustion, just adjudicated.
+
+    Returns the ids of every task this call moved to `failed`, in plan
+    order; a no-op call (nothing REFUTED, or nothing `petitioned` to
+    match against) returns `[]` and leaves `tasks_doc` untouched.
+
+    A CONFIRMED entry in `adjudications` is silently ignored here --
+    that side is `record_confirmed_adjudications`'s job, at run scope,
+    read back by `petitioned_task_accepted` above; this function only
+    ever moves a task OFF `petitioned` on REFUTED, never accepts one.
+    """
+    if not adjudications:
+        return []
+    from ralphd.engine.state import TASK_FAILURE_VALIDATION_EXHAUSTED
+    tasks = tasks_doc.get("tasks") or []
+    changed: list[str] = []
+    for item in adjudications:
+        if not isinstance(item, dict) or item.get("adjudication") != "REFUTED":
+            continue
+        obligation = item.get("obligation")
+        if not isinstance(obligation, str) or not obligation.strip():
+            continue
+        norm = _normalize_obligation(obligation)
+        remedy = item.get("remedy")
+        remedy_text = remedy.strip() if isinstance(remedy, str) else ""
+        for t in tasks:
+            if (not isinstance(t, dict) or t.get("status") != "petitioned"
+                    or t.get("id") in changed):
+                continue
+            own = _normalize_obligation(task_petition_obligation(t))
+            if own and (own in norm or norm in own):
+                t["status"] = "failed"
+                t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
+                t["validationNotes"] = remedy_text or (
+                    "Petition REFUTED with no remedy stated.")
+                changed.append(t.get("id"))
+    return changed
 
 
 def downgrade_confirmed_findings(findings_list: list[dict],
