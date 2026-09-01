@@ -1384,6 +1384,57 @@ def criteria_amendment_candidates(adjudications, open_petitions,
     return out
 
 
+def criteria_amendment_refusals(adjudications, tasks: list[dict]) -> list[dict]:
+    """Task 008 (requirement B.2, #114): the authority-boundary sibling of
+    `criteria_amendment_candidates` -- every CONFIRMED entry in
+    `adjudications` that carries a non-empty `replacement_criteria` (a
+    genuine attempted amendment, not an ordinary PRD-obligation
+    adjudication with no rewrite intent at all) whose `task_id` names
+    something that is NOT an id present in the CURRENT plan's `tasks`.
+
+    This is exactly the shape a judge amendment would take if it tried to
+    rewrite the PRD text, a Definition-of-done item, or any path under
+    `/config` -- none of those is ever a key in `tasks_by_id`, because
+    `tasks` is the plan's own task table and nothing else. Rather than the
+    silent drop `criteria_amendment_candidates` gives an ordinary
+    'task exists but is not the obligation's own subject' mismatch (that
+    case -- a judge naming a DIFFERENT real task's id -- stays silently
+    refused, per B.2's own text; only 'not a task at all' gets a named
+    refusal here), this function surfaces the OFFENDING TARGET verbatim
+    (`item['task_id']`, whatever string it is -- 'PRD', 'DoD item 6',
+    '/config/policy.md', or a bogus id) so the caller can record a
+    refusal that NAMES what was attempted, instead of the attempt simply
+    vanishing.
+
+    Returns one dict per refused attempt, in `adjudications` order:
+    `{"target": item['task_id'], "obligation": item.get('obligation'),
+    "adjudication": dict(item)}`. Empty when every CONFIRMED
+    replacement-bearing entry names a real task id (the common case) or
+    there is nothing to refuse at all.
+    """
+    if not adjudications:
+        return []
+    task_ids = {t.get("id") for t in tasks or [] if isinstance(t, dict)}
+    out: list[dict] = []
+    for item in adjudications:
+        if not isinstance(item, dict) or item.get("adjudication") != "CONFIRMED":
+            continue
+        replacement = item.get("replacement_criteria")
+        if not isinstance(replacement, str) or not replacement.strip():
+            continue
+        task_id = item.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            continue
+        if task_id in task_ids:
+            continue
+        out.append({
+            "target": task_id,
+            "obligation": item.get("obligation"),
+            "adjudication": dict(item),
+        })
+    return out
+
+
 def downgrade_confirmed_findings(findings_list: list[dict],
                                   confirmed: set[str]) -> list[dict]:
     """A NEW findings list (never mutates `findings_list` or its dicts in

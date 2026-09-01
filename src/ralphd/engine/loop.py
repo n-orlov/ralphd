@@ -6014,16 +6014,35 @@ class LoopSupervisor:
         ordinary status move.
 
         Returns the ids of every task amended, in `adjudications` order;
-        a no-op call (nothing valid to amend) touches neither the file
-        nor the event log, exactly like its REFUTED sibling.
+        a no-op call (nothing valid to amend and nothing to refuse)
+        touches neither the file nor the event log, exactly like its
+        REFUTED sibling.
+
+        Task 008 (requirement B.2, #114): before anything is applied,
+        every CONFIRMED entry whose `task_id` names something that is
+        NOT a real task in the CURRENT plan (`petitions.
+        criteria_amendment_refusals`) -- the shape an attempted amendment
+        of the PRD text, a Definition-of-done item, or any path under
+        `/config` would take, since none of those is ever a key in the
+        plan's own task table -- gets its own `task.criteria_amendment_
+        refused` event, naming the offending `target` verbatim. This
+        fires even when `candidates` ends up empty, so a run that
+        attempts nothing BUT an out-of-table amendment still leaves a
+        record of the refusal, not silence.
         """
         if not adjudications:
             return []
         tasks_doc = self.run.read_tasks()
+        all_tasks = tasks_doc.get("tasks") or []
         candidates = petitions.criteria_amendment_candidates(
             adjudications,
             petitions.open_petitions_in_workspace(self.workspace),
-            tasks_doc.get("tasks") or [])
+            all_tasks)
+        refusals = petitions.criteria_amendment_refusals(adjudications, all_tasks)
+        for r in refusals:
+            self.run.emit(
+                "task.criteria_amendment_refused", target=r["target"],
+                obligation=r.get("obligation"), adjudication=r["adjudication"])
         if not candidates:
             return []
         changed = []
@@ -6425,7 +6444,18 @@ class LoopSupervisor:
              "notes claim -- and state an explicit pass/fail conclusion for "
              "that task id. Do not let validationAttempts count (even if >= 3) "
              "substitute for this check; that automated skip is exactly what "
-             "this manual re-verification exists to cover.\n"),
+             "this manual re-verification exists to cover. Task 008 "
+             "(requirement B.2, #114): only a judge-authored amendment on a "
+             "CONFIRMED petition, through the existing petition ladder, may "
+             "ever rewrite a task's own successCriteria -- a worker or "
+             "planner rewriting this text directly, as observed here, has "
+             "NO authority to do so. You MUST include this as a BLOCKING "
+             'finding (`severity: "blocking"`) in your verdict\'s findings '
+             "channel for each task listed below unless your own independent "
+             "re-verification, against the rewritten text, still finds the "
+             "work genuinely done -- an unauthorized rewrite is refused by "
+             "this review, exactly as a tampered adjudication record "
+             "(task 011, requirement C) is.\n"),
         ]
         for t in flagged:
             lines.append(
