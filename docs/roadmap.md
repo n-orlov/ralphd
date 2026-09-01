@@ -1557,12 +1557,22 @@ Full PRD:
 Review rejected eight consecutive approaches across three waves on findings that were every
 time factually correct — v0.14.2 alone spent roughly $50 and 30+ iterations *after* every
 substantive check was green, re-litigating a notification that could never be sent again. This
-wave builds three mechanisms so the judge stays exactly as strict while the loop gains a sound
+wave built three mechanisms so the judge stays exactly as strict while the loop gains a sound
 way to say "done", "not yet, try again" and "this one obligation cannot be met" as three
 distinct outcomes instead of one binary verdict. Requirement letters below are the PRD's own,
-`A`-`F`; this entry is being written from inside the wave it describes (task 017), before `F`
-has landed — it states what has and has not shipped as of this commit rather than promising a
-future update the way the `## v0.14.2` block above once did and was corrected for.
+`A`-`F`. **This run ended `failed` / unverified — aborted by the operator at approach 4 with
+only record paperwork left** (`docs/prds/README.md`'s own row, sourced from the following
+wave's PRD, `docs/prds/v0.16-a-petition-is-not-a-postmortem.md`, requirement E, because this
+run's own `status.json` is unreachable from this container): approach 1 (28 tasks) reached 27
+validated / 1 skipped-waived before review rejected it on three curable findings; approach 2
+(14 tasks) reached 10 validated / 3 skipped / 1 failed before review rejected it on five
+findings, one incurable; approach 3 (6 tasks) reached 4 validated / 2 failed-but-waived
+(operator rulings `003-001`, `004-004`) before review rejected it on two curable false-tally
+findings; approach 4 (a 6-task cure plan) landed one fix (`2b0b25d`) before its own task
+exhausted and the operator stopped the run. #110, #111 and #112 were all closed with evidence,
+and the engine work itself was verified green across all six lanes by approach 3's own review
+at `a900357` — the code below is real and running; only this record's own closing paperwork
+stopped short of a fourth, accepted approach.
 
 - ✅ **A (#110) — findings gain severity, and the verdict is computed from blocking findings
   only.** The structured findings channel (`4ee33a1`, task 001) carries `severity:
@@ -1613,17 +1623,26 @@ future update the way the `## v0.14.2` block above once did and was corrected fo
   canonicalizes the materiality rubric, the petition protocol and the late-cure rule, citing
   this wave's own PRD as the first instance, and is linked (not merely named) from
   `docs/prds/README.md` (`9ff1a091`, task 014).
-- ⏳ **E — the version, the rows, the roadmap, one inherited erratum.** `0.15.0` lands in
+- ✅ **E — the version, the rows, the roadmap, one inherited erratum.** `0.15.0` landed in
   `pyproject.toml` and `src/ralphd/__init__.py` (`5fe8b87d`, task 015); v0.14.2's
-  `docs/prds/README.md` row is settled from its PRD's own terminal figures (`4bb1db41`, task
-  016); this `## v0.15` block and the `## v0.14.2` correction above land together (this entry,
-  task 017). Still open: appending the inherited erratum to
-  `artifacts/reports/v0.14.2-a3-closing-report.md` (task 018).
-- ⏳ **F — closures, sweeps, the closing report, the terminal summary.** Not yet landed as of
-  this entry: the petitions report (task 019), closing #110/#111/#112 with evidence (task 020),
-  the five tier/layout sweeps (tasks 021-025), the closing report walking A-F (task 026), the
-  true-final-sha guard re-verification (task 027) and the terminal summary with the
-  self-discharging record (task 028).
+  `docs/prds/README.md` row was settled from its PRD's own terminal figures (`4bb1db41`, task
+  016); this `## v0.15` block and the `## v0.14.2` correction above landed together (approach
+  1's task 017, `3ca3e32`); the inherited erratum was appended to
+  `artifacts/reports/v0.14.2-a3-closing-report.md` (task 018, `fae0f18`, late-cure
+  notification `71a0ac8`).
+- ✅ **F — closures, sweeps, the closing report, the terminal summary.** All landed within
+  approach 1: the petitions report (`artifacts/reports/v0.15-petitions.md`, task 019); #110,
+  #111 and #112 closed with evidence, each verified by a fresh `GET`
+  (`artifacts/reports/v0.15-issue-closures.md`, task 020); the five tier/layout sweeps (tasks
+  021-025); the closing report walking A-F (`artifacts/reports/v0.15-closing-report.md`, task
+  026); the true-final-sha guard re-verification (task 027) and the terminal summary with the
+  self-discharging record (task 028). Review rejected approach 1 on three findings unrelated to
+  F itself; approaches 2 and 3 re-verified the same six lanes across their own cure plans
+  (archived `approaches/02` and `approaches/03`, plus this repo's own `v0.15-a2-*`/`v0.15-a3-*`
+  sweep and guard records), and approach 3's own review confirmed all six lanes green at
+  `a900357`. Approach 4's cure plan exhausted before F's paperwork could be re-landed a fourth
+  time; the residual entry-53 correction and the late-sent v0.15 terminal summary are closed by
+  the following wave (`docs/prds/v0.16-a-petition-is-not-a-postmortem.md`, requirement E).
 
 ## Later / explicitly deferred
 
