@@ -60,10 +60,9 @@ is the fallback when a contract states no rubric at all.
 
 If a run believes a contract obligation is unachievable, it may file an
 **impossibility petition**: one petition per obligation, with a type
-(`environmental | temporal | contradictory-clauses | external | self-referential`)
-and evidence, in that wave's own `artifacts/reports/<wave>-petitions.md` (see
-[`petition-format.md`](petition-format.md) for the full five-type table).
-Review adjudicates every open petition as part of its verdict:
+(`environmental | temporal | contradictory-clauses | external`) and evidence,
+in that wave's own `artifacts/reports/<wave>-petitions.md`. Review adjudicates
+every open petition as part of its verdict:
 
 - **CONFIRMED** converts that obligation to a disclosed residual for the
   remainder of the run — every approach, not just the current one.
@@ -73,8 +72,18 @@ Review adjudicates every open petition as part of its verdict:
 already has one — whether or not the first was adjudicated, and including a
 petition already adjudicated REFUTED — is itself a blocking finding, not a
 second attempt at the same claim. The full file format (required fields,
-where the file lives, the five types) is spelled out in
+where the file lives, the four types) is spelled out in
 [`petition-format.md`](petition-format.md).
+
+**Five types, and the table governs.** The two inline type lists in this
+section are shorthand. The normative list is the five-type table in
+[`petition-format.md`](petition-format.md):
+`environmental | temporal | contradictory-clauses | external |
+self-referential`, the fifth covering an obligation whose own text makes it
+unmeetable as written (a criterion verifiable only from a state its own
+satisfaction would have to create, or one that names its own not-yet-existing
+sha). Where a shorthand count in this section and that table disagree, the
+table governs: there are five types, and no wave narrows the list to four.
 
 ## Mid-run adjudication
 

@@ -185,11 +185,29 @@ def test_petition_format_table_has_exactly_the_five_types():
 
 def test_review_economics_type_list_matches_petition_format_five_types():
     text = _review_economics_text()
-    inline_list = (
-        "`environmental | temporal | contradictory-clauses | external | "
-        "self-referential`"
+    section = _section(text, "Petition protocol")
+    # The launch-sha shorthand enumeration and cross-reference are preserved
+    # verbatim -- the protected sections take additions only, never deletions.
+    assert "(`environmental | temporal | contradictory-clauses | external`)" in section
+    assert "where the file lives, the four types) is spelled out in" in section
+    # ...and the added deference paragraph resolves the count against
+    # petition-format.md's normative table, so the two documents do not
+    # contradict each other on the type list.
+    assert "**Five types, and the table governs.**" in section
+    assert (
+        "`environmental | temporal | contradictory-clauses | external |\n"
+        "self-referential`" in section
     )
-    assert inline_list in text
-    # No stray reference to a stale four-type count anywhere in the doc.
-    assert "the four types" not in text
-    assert "the five types" in text
+    assert "the\ntable governs: there are five types, and no wave narrows the list to four." in section
+    for petition_type in PETITION_TYPES:
+        assert f"{petition_type}" in section, petition_type
+
+
+def test_review_economics_never_claims_a_bare_four_type_list():
+    """Any "four" count in the doc is answered by the deference paragraph."""
+    section = _section(_review_economics_text(), "Petition protocol")
+    four_mentions = section.count("four")
+    assert four_mentions == 2, four_mentions
+    assert section.index("**Five types, and the table governs.**") > section.index(
+        "where the file lives, the four types)"
+    )
