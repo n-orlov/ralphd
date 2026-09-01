@@ -312,3 +312,73 @@ missing `reason`, or a `task_id` that does not match a task in `tasks.json`,
 is a contract violation and ends the run rather than being silently
 accepted. Do not use this to avoid ordinary work you could actually do —
 it is for criteria that are wrong, not for criteria that are merely hard.
+
+## Declaring a structured impossibility petition on a single obligation
+
+`verdict: "unsatisfiable"` above ends your whole task. Sometimes only ONE
+obligation inside a task is the problem — a single requirement letter, a
+single Definition-of-done item, or a single clause of your own task's
+`successCriteria` — while the rest of the task is still worth finishing. For
+that narrower case, alongside ANY `verdict` value (including `no_verdict`,
+still working the rest of the task), your reply's JSON object may carry an
+additional, optional `petition` field naming exactly three things:
+
+```json
+{"verdict": "no_verdict",
+ "petition": {"obligation": "<the requirement letter, DoD item, or your
+               own task's criterion clause this obligation names>",
+              "type": "<one of the five petition types below>",
+              "evidence": "<concrete, checkable support for the claim>"}}
+```
+
+The five petition types (`docs/petition-format.md`), and exactly what each
+claims:
+
+1. **`environmental`** — the sandbox/container this run executes in lacks a
+   capability the obligation needs (no network route, no device, no
+   credential, a service unreachable from here).
+2. **`temporal`** — the obligation is anchored to a moment that has already
+   passed, or depends on a clock the run cannot rewind.
+3. **`contradictory-clauses`** — two clauses in the same contract cannot both
+   be satisfied at once; satisfying one obligation necessarily violates
+   another.
+4. **`external`** — the fact blocking the obligation lives outside the run's
+   control entirely (a third-party service's behaviour, a state on a system
+   the run cannot write to).
+5. **`self-referential`** — the obligation's own text refers to itself in a
+   way that makes it unmeetable as written (a criterion verifiable only
+   using a state its own satisfaction would have to create, or that names
+   its own not-yet-existing commit/sha).
+
+Every `petition` must carry a non-empty `obligation`, a `type` that is one of
+those five exact strings, and non-empty `evidence` — concrete, checkable
+support for the claim, never a bare assertion. A malformed declaration (a
+blank field, an unlisted type) is refused and re-asked through the ordinary
+contract ladder, the same as any other malformed reply.
+
+**You never touch `artifacts/reports/<wave>-petitions.md` yourself, by hand,
+for any reason.** The ENGINE — never the worker — files and validates the
+petition entry: it is the engine's own write path
+(`petitions.file_worker_petition`) that turns your three declared strings
+into a tracked filing in that file, in `docs/petition-format.md`'s field
+shape, after your declaration passes the same schema and semantic checks
+every other channel in your reply goes through. You declare; the engine
+files.
+
+**A duplicate declaration is refused, not filed.** An obligation may carry
+at most one petition for the life of the run. If the named obligation
+already has a filed petition — whether or not it has been adjudicated yet,
+and even if that earlier one was already ruled REFUTED — your declaration
+is refused and re-asked instead of written, and the original filing is left
+untouched. Re-declaring the same obligation with new phrasing does not
+reopen it; only new obligation text, naming something the existing filing
+did not, is a different obligation.
+
+**The run never grants itself a petition outcome or a criteria amendment.**
+Declaring a petition is not adjudicating it: only review rules a petition
+CONFIRMED (the obligation becomes a disclosed residual for the rest of the
+run) or REFUTED (stating concretely what would satisfy it), and only a judge
+grants a criteria amendment. Filing the declaration is the whole of your
+part in it — you make the claim and hand it off; you never mark it
+adjudicated, never treat it as already excused, and never edit your own
+task's `successCriteria` to match what you wish the obligation said instead.

@@ -95,8 +95,8 @@ narrow and yours alone: you cannot amend the PRD, a Definition-of-done item,
 any OTHER task's criteria, or anything under `/config` -- only the ONE task
 the CONFIRMED petition's obligation is genuinely about, and only for these
 two petition types. A CONFIRMED petition about a PRD obligation (not a task's
-own criteria) is never amended -- it converts to a disclosed residual
-exactly as before, with no text rewritten anywhere. Omit both fields on any
+own criteria) is never amended -- it converts to a disclosed residual,
+with no text rewritten anywhere. Omit both fields on any
 CONFIRMED entry you are not re-scoping (the overwhelming common case).
 
 ## Structured findings (severity, curability, clause, evidence)
