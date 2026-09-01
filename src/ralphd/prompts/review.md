@@ -78,6 +78,27 @@ earlier REFUTED against the same obligation, is itself a BLOCKING finding,
 not a second hearing -- do not adjudicate a duplicate/re-filed petition as
 though it were a first hearing.
 
+### Criteria amendment authority (task 006, requirement B.1, #114)
+
+When you adjudicate a petition CONFIRMED and its `Type` is `contradictory-
+clauses` or `self-referential` AND its obligation is the affected task's OWN
+`successCriteria` text (not a PRD requirement letter, not a Definition-of-
+done item, not another task's criteria) -- you, and only you, MAY re-scope
+that one task by adding two fields to that entry: `task_id` (the exact id of
+the task whose criteria this is) and `replacement_criteria` (the full
+replacement text for that task's `successCriteria`, written so the task is
+actually achievable). The engine applies your amendment itself: it rewrites
+the task's `successCriteria`, recomputes its fingerprint and resets its
+validation-attempt counter, and records a `task.criteria_amended` event
+carrying the old text, the new text and this adjudication. This authority is
+narrow and yours alone: you cannot amend the PRD, a Definition-of-done item,
+any OTHER task's criteria, or anything under `/config` -- only the ONE task
+the CONFIRMED petition's obligation is genuinely about, and only for these
+two petition types. A CONFIRMED petition about a PRD obligation (not a task's
+own criteria) is never amended -- it converts to a disclosed residual
+exactly as before, with no text rewritten anywhere. Omit both fields on any
+CONFIRMED entry you are not re-scoping (the overwhelming common case).
+
 ## Structured findings (severity, curability, clause, evidence)
 
 (#110) Every finding you record — blocking or residual, whether the overall
@@ -138,10 +159,15 @@ exactly one JSON object:
   anything yourself; your value is independence.
 - If this prompt includes an "Open impossibility petitions" section, add
   `"petition_adjudications": [{"obligation": "<as named there>", "adjudication":
-  "CONFIRMED"|"REFUTED", "remedy": "<required when REFUTED, otherwise omit>"}]`
+  "CONFIRMED"|"REFUTED", "remedy": "<required when REFUTED, otherwise omit>",
+  "task_id": "<only when re-scoping that ONE task's own criteria, see below>",
+  "replacement_criteria": "<only alongside task_id above>"}]`
   to whichever verdict object above you report, one entry per open petition --
   every open petition gets an adjudication regardless of whether your overall
-  verdict is `verified` or `rejected`.
+  verdict is `verified` or `rejected`. `task_id`/`replacement_criteria` are
+  described under "Criteria amendment authority" above -- add them only on a
+  CONFIRMED, `contradictory-clauses`/`self-referential` entry whose obligation
+  is that task's own `successCriteria`; omit both on every other entry.
 
 Be strict. "Probably fine" is not verified. If you cannot check something, that is
 a finding, not a pass.

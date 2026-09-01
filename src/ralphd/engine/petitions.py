@@ -1204,6 +1204,128 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications) -> list
     return changed
 
 
+# ---------------------------------------------------------------------------
+# Task 006 (requirement B.1, #114): a judge-authored criteria amendment on a
+# CONFIRMED petition whose SUBJECT is the affected task's own
+# `successCriteria`.
+# ---------------------------------------------------------------------------
+
+# The only two petition types requirement B.1 permits a criteria amendment
+# for -- `docs/petition-format.md`'s own definitions: a `contradictory-
+# clauses` petition says two clauses of the SAME contract cannot both be
+# satisfied, and `self-referential` says the obligation's own text makes it
+# unmeetable as written. Both are, structurally, claims ABOUT THE TEXT of an
+# obligation, which is exactly what makes re-scoping that text (rather than
+# merely excusing the run from meeting it, `downgrade_confirmed_findings`'s
+# job) a coherent remedy. The other three types (`environmental`,
+# `temporal`, `external`) are claims about the WORLD, not the text -- no
+# rewrite of a task's criteria changes a missing network route -- so a
+# CONFIRMED entry against one of those is never eligible here, regardless of
+# what a judge's `replacement_criteria` field says.
+CRITERIA_AMENDMENT_TYPES = ("contradictory-clauses", "self-referential")
+
+
+def criteria_amendment_candidates(adjudications, open_petitions,
+                                   tasks: list[dict]) -> list[dict]:
+    """Every entry in `adjudications` (a review/mid-run-adjudication
+    verdict payload's own `petition_adjudications` field) that is a VALID
+    judge-authored criteria amendment on a CONFIRMED petition (PRD
+    requirement B.1, #114) -- a pure DECISION function, exactly the split
+    `apply_refuted_petition_adjudications` already keeps between deciding
+    and writing; the write (the `successCriteria` replacement, the
+    `criteriaFingerprint` recompute via `_criteria_fingerprint`, the
+    `validationAttempts` reset, and the `task.criteria_amended` event) is
+    `LoopSupervisor._apply_criteria_amendments`'s job (`engine/loop.py`),
+    never this module's -- this module has no `_criteria_fingerprint` of
+    its own to call and must not grow one that could drift from the one
+    the fingerprint-pinning tests already check.
+
+    An entry counts as a valid amendment only when ALL of these hold:
+
+    1. `item['adjudication'] == 'CONFIRMED'` -- a REFUTED entry, or one
+       carrying no `adjudication` field at all, is never eligible: only a
+       CONFIRMED petition may re-scope a task (the PRD's own words), and
+       requirement B.2's authority boundary (task 008) starts from the
+       same CONFIRMED-only gate.
+    2. `item['replacement_criteria']` is a non-empty string -- the judge's
+       own replacement text; nothing is amended when a CONFIRMED entry
+       carries none (the ordinary case: an obligation about a PRD clause,
+       never about a task's own criteria, has no reason to carry one at
+       all, per B.3 -- 'no text is rewritten anywhere' for that case).
+    3. `item['task_id']` names a task actually present in `tasks` -- the
+       judge's own claim of WHICH task; an amendment naming a task id
+       that does not exist in the CURRENT plan is silently dropped (never
+       applied to some other task by guesswork).
+    4. `item['obligation']` matches (by normalised obligation text) an
+       entry in `open_petitions` whose own `type` field is one of
+       `CRITERIA_AMENDMENT_TYPES` -- the type comes from the FILED
+       petition on disk, never merely from the judge's say-so in the
+       adjudication entry itself, exactly the same 'decide from the
+       filed fact, not the claim about it' discipline
+       `duplicate_petition_obligations` already applies structurally.
+    5. The named task's OWN, CURRENT `successCriteria` text fuzzy-matches
+       (`_normalize_obligation`, substring either direction -- the same
+       rule `_obligation_confirmed` already applies for the identical
+       reason: two free-text channels rarely agree on exact wording) the
+       petition's `obligation` text -- this is the 'subject is the
+       task's own successCriteria' gate the PRD's B.1 draws: a CONFIRMED,
+       correctly-typed petition about something ELSE (a PRD requirement
+       letter, another task's criteria) is never eligible here, however
+       its `task_id`/`replacement_criteria` fields read.
+
+    Returns one dict per valid amendment, in `adjudications` order:
+    `{"task": <the matching dict from `tasks`, the SAME object -- a
+    caller mutating it mutates `tasks` too>, "old_criteria": str,
+    "new_criteria": str, "obligation": str, "adjudication": <a COPY of
+    the full adjudication entry dict, for the event's own authorizing-
+    adjudication field>}`. Empty when nothing is eligible -- the
+    overwhelming common case (most CONFIRMED petitions are about PRD
+    obligations, per B.3, never a task's own criteria).
+    """
+    if not adjudications:
+        return []
+    petitions_by_obligation: dict[str, dict] = {}
+    for p in open_petitions or []:
+        if isinstance(p, dict) and isinstance(p.get("obligation"), str):
+            key = _normalize_obligation(p["obligation"])
+            petitions_by_obligation.setdefault(key, p)
+    tasks_by_id = {t.get("id"): t for t in tasks or [] if isinstance(t, dict)}
+    out: list[dict] = []
+    for item in adjudications:
+        if not isinstance(item, dict) or item.get("adjudication") != "CONFIRMED":
+            continue
+        replacement = item.get("replacement_criteria")
+        if not isinstance(replacement, str) or not replacement.strip():
+            continue
+        task_id = item.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            continue
+        task = tasks_by_id.get(task_id)
+        if task is None:
+            continue
+        obligation = item.get("obligation")
+        if not isinstance(obligation, str) or not obligation.strip():
+            continue
+        petition = petitions_by_obligation.get(_normalize_obligation(obligation))
+        if petition is None or petition.get("type") not in CRITERIA_AMENDMENT_TYPES:
+            continue
+        current = task.get("successCriteria")
+        if not isinstance(current, str) or not current.strip():
+            continue
+        norm_current = _normalize_obligation(current)
+        norm_obligation = _normalize_obligation(obligation)
+        if not (norm_current in norm_obligation or norm_obligation in norm_current):
+            continue
+        out.append({
+            "task": task,
+            "old_criteria": current,
+            "new_criteria": replacement.strip(),
+            "obligation": obligation,
+            "adjudication": dict(item),
+        })
+    return out
+
+
 def downgrade_confirmed_findings(findings_list: list[dict],
                                   confirmed: set[str]) -> list[dict]:
     """A NEW findings list (never mutates `findings_list` or its dicts in

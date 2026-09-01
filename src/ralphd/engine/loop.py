@@ -5216,6 +5216,8 @@ class LoopSupervisor:
                 self.run, parsed.get("petition_adjudications"))
             self._apply_refuted_petition_adjudications(
                 parsed.get("petition_adjudications"))
+            self._apply_criteria_amendments(
+                parsed.get("petition_adjudications"))
         findings_list, channel_errors = self._review_findings_channel()
         if isinstance(parsed, dict):
             payload = parsed
@@ -5962,6 +5964,74 @@ class LoopSupervisor:
             self._emit_task_changes()
         return changed
 
+    def _apply_criteria_amendments(self, adjudications) -> list[str]:
+        """Task 006 (requirement B.1, #114): the write-back half of
+        `engine.petitions.criteria_amendment_candidates` -- called from
+        `_review_verdict` for EVERY settled review/mid-run-adjudication
+        payload, verified or not, exactly like `_apply_refuted_petition_
+        adjudications` beside it.
+
+        Reads the petition TYPE from `petitions.open_petitions_in_
+        workspace(self.workspace)` -- deliberately NOT `petitions.
+        open_unconfirmed_petitions`/`_petitions_review_context`'s own
+        run-scope-filtered view: this call happens in the SAME method
+        that just persisted this exact obligation as CONFIRMED
+        (`record_confirmed_adjudications`, immediately above), so the
+        run-scope-filtered view would already exclude the very petition
+        whose type this needs to read, for no reason but call order. The
+        unfiltered, on-disk view is exactly the fact this decision needs:
+        the filed `Type` field never changes once written, regardless of
+        run-scope adjudication state.
+
+        For each candidate `engine.petitions.criteria_amendment_
+        candidates` returns, mutates the CURRENT `tasks.json`'s matching
+        task IN PLACE -- `successCriteria` replaced with the judge's
+        `replacement_criteria` text, `criteriaFingerprint` recomputed
+        (`_criteria_fingerprint`, the SAME staticmethod `_ensure_criteria_
+        baseline`/`_check_criteria_edits` already use, so a later
+        `_check_criteria_edits` pass never mistakes this engine-applied
+        rewrite for a worker-authored one), `validationAttempts` reset to
+        0 for the re-scoped criteria -- and nothing else on the task
+        record touched: status, id, title, dependsOn, tier and every
+        other field are left exactly as they were. Persists the change
+        and announces EACH amendment with its own `task.criteria_amended`
+        event (`oldCriteria`, `newCriteria`, `adjudication` -- the
+        authorizing CONFIRMED entry, dict-copied so a later mutation of
+        the live payload object can never retroactively alter the
+        announced record), the same 'engine emits, never silently
+        mutates' discipline `_emit_task_changes` already keeps for an
+        ordinary status move.
+
+        Returns the ids of every task amended, in `adjudications` order;
+        a no-op call (nothing valid to amend) touches neither the file
+        nor the event log, exactly like its REFUTED sibling.
+        """
+        if not adjudications:
+            return []
+        tasks_doc = self.run.read_tasks()
+        candidates = petitions.criteria_amendment_candidates(
+            adjudications,
+            petitions.open_petitions_in_workspace(self.workspace),
+            tasks_doc.get("tasks") or [])
+        if not candidates:
+            return []
+        changed = []
+        for cand in candidates:
+            task = cand["task"]
+            old = cand["old_criteria"]
+            new = cand["new_criteria"]
+            task["successCriteria"] = new
+            task["criteriaFingerprint"] = self._criteria_fingerprint(new)
+            task["validationAttempts"] = 0
+            changed.append(task.get("id"))
+            self.run.emit(
+                "task.criteria_amended", taskId=task.get("id"),
+                oldCriteria=old, newCriteria=new,
+                adjudication=cand["adjudication"])
+        self.run.write_tasks(tasks_doc)
+        self._emit_task_changes()
+        return changed
+
     def _all_tasks_completed(self) -> bool:
         """True iff tasks.json exists, is non-empty, and every task's
         `status` is a vigilant-or-not TERMINAL-completion status
@@ -6550,7 +6620,17 @@ class LoopSupervisor:
             "petition, in your verdict payload's `petition_adjudications` "
             "field: `CONFIRMED` (the obligation genuinely cannot be "
             "satisfied as written) or `REFUTED` (state CONCRETELY, in "
-            "that entry's `remedy`, what would satisfy the obligation).\n",
+            "that entry's `remedy`, what would satisfy the obligation).\n"
+            "\nTask 006 (requirement B.1, #114): if a petition's `Type` is "
+            "`contradictory-clauses` or `self-referential` AND its "
+            "obligation IS the affected task's own `successCriteria` text "
+            "(never a PRD requirement, a Definition-of-done item, or "
+            "another task's criteria), you MAY confirm it and re-scope "
+            "that ONE task by adding `task_id` (that task's id) and "
+            "`replacement_criteria` (the full, achievable replacement "
+            "text) to that entry -- the engine applies the rewrite, the "
+            "fingerprint recompute and the validation-attempt reset "
+            "itself. Omit both fields on every other entry.\n",
         ]
         for p in open_petitions:
             lines.append(
