@@ -192,22 +192,31 @@ def _detect_cycles(tasks: list[dict]) -> list[str]:
 # exactly that in `tests/test_stranding_lints.py`.
 #
 # The must-catch fixture named by task 012's own success criteria -- "the
-# real v0.15 approach-3 task 004 `HEAD~1` clause" -- cannot be lifted
-# byte-for-byte: that run's own `tasks.json` lived only in its own run
-# directory, torn down once the run finished, and was never committed here
-# (the exact same loss `TASK_042_SUCCESS_CRITERIA` above documents for v0.8's
-# task 042). What survives, verifiably, in THIS repository's tracked history
-# is this PRD's own description of that clause
-# (`docs/prds/v0.16-a-petition-is-not-a-postmortem.md` lines 14 and 204,
-# checked directly by `tests/test_stranding_lints.py` against the tracked
-# file rather than asserted in a comment): "verify with `HEAD~1`" as the
-# generic pattern, and "approach 3 task 004's `HEAD~1` clause" naming this
-# exact instance. `TASK_004_HEAD_ANCHOR_CRITERIA` below is a reconstruction
-# built from that surviving description, not a recovered original file.
+# real v0.15 approach-3 task 004 `HEAD~1` clause". Task 013 (third pass,
+# closing task 012's residual gap, see 012's `validationNotes`) replaces the
+# earlier RECONSTRUCTION of that clause with the real one, RECOVERED
+# verbatim from this repository's own tracked v0.15 records: the approach-3
+# task 004 entry of `artifacts/reports/v0.15-operator-notifications.md`
+# carries the relational-sha verification clause below word for word (its
+# `## Task 004 (approach 3, requirement F)` section). The v0.15 run's own
+# `tasks.json` is indeed gone with its run directory (the loss
+# `TASK_042_SUCCESS_CRITERIA` above documents for v0.8's task 042), but the
+# clause itself survives in a tracked file, so nothing here has to be
+# reconstructed -- `tests/test_stranding_lints.py` asserts the recovered
+# string is a verbatim (whitespace-flattened) substring of that tracked
+# record, and only the minimal criterion frame around it is this module's.
+V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE = (
+    "`git diff --stat HEAD~1 HEAD` showing only additions to that file"
+)
+
+V015_TASK_004_RECOVERED_CLAUSE_SOURCE = (
+    "artifacts/reports/v0.15-operator-notifications.md"
+)
+
 TASK_004_HEAD_ANCHOR_CRITERIA = (
-    "This task's deliverable is verified by running `git diff HEAD~1 -- "
-    "src/ralphd/prompts/review.md` and confirming only the intended change "
-    "appears."
+    "This task's deliverable is verified by "
+    + V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE
+    + "."
 )
 
 _RELATIONAL_SHA_RE = re.compile(
@@ -229,20 +238,36 @@ _SINGLE_COMMIT_DEMAND_RE = re.compile(
 # A mandate, elsewhere in the SAME criteria, that a disclosure/notification/
 # record land as its own, separate, commit -- the contradiction that strands
 # a single-commit demand.
+# Task 013 third pass (task 012's residual gap (a), see 012's
+# `validationNotes`): this cue used to be word-order sensitive -- it only
+# understood "a separate notification commit", so the commonest wording of
+# all, "The notification must land in a separate commit", slipped through.
+# Both orders now count: modifier-then-noun AND noun-then-modifier with the
+# verb phrase in between.
 _SEPARATE_RECORD_COMMIT_RE = re.compile(
     r"\b(?:separate|second|another|distinct|its\s+own)\s+"
-    r"(?:disclosure|notification|record)\s+commit\b",
+    r"(?:disclosure|notification|record|report)\s+commit\b"
+    r"|\b(?:disclosure|notification|record|report)\b"
+    r"(?:\W+\w+){0,8}?\W+"
+    r"(?:separate|second|another|distinct|own)\s+commit\b",
     re.IGNORECASE,
 )
 
 # "task 013's commit", "commit sha of task 013", "cites task 013's commit" --
-# a reference to ANOTHER task's commit sha, by numeric id. A bare "task 013"
+# a reference to ANOTHER task's commit sha. Task 013 third pass (task 012's
+# residual gap (b), see 012's `validationNotes`): the id was matched as
+# `\d+`, so a plan with non-numeric ids (`alpha` citing a later `beta`)
+# escaped the lint entirely. Any id token now matches; the reference is only
+# ever REPORTED when the token resolves to a task ordered later in the same
+# plan, so widening the token cannot invent a finding. A bare "task 013"
 # with no commit/sha language, or a reference to THIS task's own commit,
-# must not match.
+# still must not match.
+_TASK_ID_TOKEN = r"[A-Za-z0-9_][A-Za-z0-9_.\-]*"
+
 _FORWARD_TASK_COMMIT_REF_RE = re.compile(
-    r"task\s+(\d+)(?:'s|\u2019s)?\s+(?:own\s+)?commit(?:\s+sha)?"
-    r"|commit(?:\s+sha)?\s+of\s+task\s+(\d+)"
-    r"|cites?\s+task\s+(\d+)(?:'s|\u2019s)\s+commit",
+    rf"task\s+`?({_TASK_ID_TOKEN})`?(?:'s|\u2019s)?\s+(?:own\s+)?commit(?:\s+sha)?"
+    rf"|commit(?:\s+sha)?\s+of\s+task\s+`?({_TASK_ID_TOKEN})`?"
+    rf"|cites?\s+task\s+`?({_TASK_ID_TOKEN})`?(?:'s|\u2019s)\s+commit",
     re.IGNORECASE,
 )
 
@@ -276,6 +301,29 @@ def _single_commit_conflict_clause(criteria: str) -> str | None:
     return None
 
 
+def _resolve_task_index(id_to_index: dict, ref_id: str) -> int | None:
+    """Map a task id token lifted out of a criteria clause onto its position
+    in this same proposal. Ids arrive as strings from the text; a plan may
+    carry them as ints (`13`) or in another case (`Beta`), so all three
+    resolutions are tried before giving up. Returns None when the token
+    names no task in this plan -- the lint then stays silent, which is why
+    widening `_TASK_ID_TOKEN` to non-numeric ids cannot invent a finding."""
+    if ref_id in id_to_index:
+        return id_to_index[ref_id]
+    if ref_id.isdigit():
+        try:
+            numeric = int(ref_id)
+        except ValueError:  # pragma: no cover - isdigit already guarantees it
+            numeric = None
+        if numeric is not None and numeric in id_to_index:
+            return id_to_index[numeric]
+    lowered = ref_id.lower()
+    for known, index in id_to_index.items():
+        if isinstance(known, str) and known.lower() == lowered:
+            return index
+    return None
+
+
 def _forward_task_commit_refs(criteria: str) -> list[tuple[str, str]]:
     """Return `[(clause, referenced_task_id), ...]` for every clause of
     `criteria` naming another task's commit sha."""
@@ -299,19 +347,41 @@ def _forward_task_commit_refs(criteria: str) -> list[tuple[str, str]]:
 # untracked run state (contract rule 1, PRD lines 71-74; the real v0.15
 # case is approach 4 task 001's notes.md demand, PRD lines 18-20 and 204).
 #
-# Neither fixture below is a byte-for-byte recovery of a v0.15 tasks.json
-# entry -- that run's own task table lived only in its own torn-down run
-# directory, the same loss `TASK_004_HEAD_ANCHOR_CRITERIA`'s comment
-# documents above. `TASK_001_NOTES_INLINE_CRITERIA` is a reconstruction
-# built from the PRD's own surviving description of that exact incident;
-# `UNSCOPED_SHA_OCCURRENCE_CRITERIA` instantiates the PRD's own generic
-# pattern description (no specific v0.15 task number survives for this
-# one) -- both checked against the tracked PRD file by
-# `tests/test_stranding_lints.py`, not merely asserted in a comment.
+# Neither fixture below is a reconstruction any more. Task 013 third pass
+# (closing the residual gaps validation named in task 012's and this task's
+# own `validationNotes`) anchors both on text RECOVERED verbatim from this
+# repository's tracked files:
+#   * `V015_TASK_001_RECOVERED_NOTES_CONTENT_CLAUSE` is the operative clause
+#     of the real v0.15 approach-4 task-001 incident, quoted word for word
+#     out of the tracked PRD (`docs/prds/v0.16-a-petition-is-not-a-postmortem.md`,
+#     the paragraph at lines 18-20); only the minimal criterion frame around
+#     it belongs to this module.
+#   * `V015_RECOVERED_WRITE_TIME_COUNT_PATTERN` is the tracked PRD's own
+#     word-for-word statement of the count shape that stranded v0.15 (no
+#     individual v0.15 task number survives for this one, the PRD records
+#     the shape); `UNSCOPED_SHA_OCCURRENCE_CRITERIA` instantiates exactly
+#     that recovered shape.
+# `tests/test_stranding_lints.py` asserts each recovered string is a verbatim
+# (whitespace-flattened) substring of the tracked file named beside it, so
+# the recovery is checked, not claimed.
+V015_TASK_001_RECOVERED_NOTES_CONTENT_CLAUSE = (
+    "`/run/ralphd/notes.md` *pointed to* the artifact holding 19 stale-sha "
+    "pairs instead of inlining them"
+)
+
+V015_RECOVERED_WRITE_TIME_COUNT_PATTERN = (
+    "a write-time occurrence count of a sha that the task's own mandated "
+    "additions increment"
+)
+
+V015_RECOVERED_CLAUSE_SOURCE_PRD = (
+    "docs/prds/v0.16-a-petition-is-not-a-postmortem.md"
+)
+
 TASK_001_NOTES_INLINE_CRITERIA = (
-    "This task's one-line fix is verified only once `/run/ralphd/notes.md` "
-    "itself inlines all 19 stale (record, sha) pairs the fix retires, not "
-    "merely points to the artifact file that already lists them."
+    "This task's landed fix is not accepted while "
+    + V015_TASK_001_RECOVERED_NOTES_CONTENT_CLAUSE
+    + "."
 )
 
 UNSCOPED_SHA_OCCURRENCE_CRITERIA = (
@@ -405,20 +475,106 @@ def _declares_self_growing_output(criteria: str) -> bool:
     return False
 
 
-def _unscoped_occurrence_count_clause(criteria: str) -> str | None:
-    """None unless some clause demands an unscoped write-time occurrence
-    count of a string the task's own mandated output grows. A clause
-    already carrying the sha-scoped ``at `<sha>`: N`` form is legitimate,
-    and so is a STATIC count of something the task does not grow -- both
-    have must-pass siblings in `tests/test_stranding_lints.py`."""
-    if not _declares_self_growing_output(criteria):
-        return None
+# Task 013 third pass. Validation caught the two-cue test above missing the
+# plainest shape of all: the count clause names the counted STRING
+# ("four occurrences of `abc123`") and a NEIGHBOURING clause says the task's
+# own mandated output carries that same string ("this task's mandated output
+# is a new line in that report containing `abc123`") -- self-growth stated
+# without a growth verb anywhere near a counted noun, so
+# `_GROWTH_OF_COUNTED_RE` never fired. The token-identity route below covers
+# it: the counted string must literally reappear in a clause that both
+# claims the output as the task's OWN and says that output carries/produces
+# it. A static count stays legitimate, because a static count names no
+# string the task's own output contains (must-pass siblings in
+# `tests/test_stranding_lints.py`).
+_COUNTED_STRING_TOKEN_RE = re.compile(
+    r"`([^`\n]{2,80})`" r"|'([^'\n]{2,80})'" r"|\"([^\"\n]{2,80})\""
+)
+
+# How far from the count phrase a backticked/quoted literal may sit and still
+# be read as the string being counted.
+_COUNTED_TOKEN_WINDOW = 60
+
+_OWN_OUTPUT_CARRIES_RE = re.compile(
+    r"\b(?:contain\w*|includ\w*|carr(?:y|ies|ying)|mention\w*|nam(?:e|es|ing)"
+    r"|append\w*|add\w*|writ\w*|record\w*|grow\w*|increment\w*|repeat\w*"
+    r"|further|another|additional)\b"
+    r"|\bnew\s+(?:line|lines|entry|entries|row|rows|occurrence|occurrences"
+    r"|mention|mentions|section)\b",
+    re.IGNORECASE,
+)
+
+
+def _counted_string_tokens(clause: str) -> list[str]:
+    """Every backticked or quoted literal sitting NEXT TO a count phrase in
+    `clause` -- the candidate strings whose occurrences are being counted.
+    Proximity matters: a criterion long enough to be useful also names
+    directories, modules and shas that have nothing to do with the count
+    (`artifacts/reports/`, `tests/foo.py`), and treating those as the
+    counted string turned an ordinary sha-scoped criterion into a false
+    positive when its boilerplate notification clause happened to mention
+    the same directory. Only literals within
+    `_COUNTED_TOKEN_WINDOW` characters of the count phrase count, and a
+    literal that is plainly a directory prefix (trailing `/`) never does."""
+    tokens: list[str] = []
+    windows = [
+        (max(0, m.start() - _COUNTED_TOKEN_WINDOW), m.end() + _COUNTED_TOKEN_WINDOW)
+        for m in _OCCURRENCE_COUNT_RE.finditer(clause)
+    ]
+    if not windows:
+        return tokens
+    for m in _COUNTED_STRING_TOKEN_RE.finditer(clause):
+        token = next((g for g in m.groups() if g), "").strip()
+        if not token or token.endswith("/"):
+            continue
+        if any(m.start() < end and m.end() > start for start, end in windows):
+            tokens.append(token)
+    return tokens
+
+
+def _counted_token_is_in_own_output(criteria: str, count_clause: str) -> bool:
+    """True if a string counted by `count_clause` reappears in a clause of
+    the same criteria that claims the task's OWN output and says that output
+    carries or produces it -- "a count of a string the task's own mandated
+    output contains", stated without any growth verb."""
+    tokens = _counted_string_tokens(count_clause)
+    if not tokens:
+        return False
     for clause in _CLAUSE_SPLIT_RE.split(criteria):
         stripped = clause.strip()
         if not stripped:
             continue
-        if _OCCURRENCE_COUNT_RE.search(stripped) and not _SHA_SCOPED_FIGURE_RE.search(stripped):
-            return stripped
+        if not _OWN_OUTPUT_CUE_RE.search(stripped):
+            continue
+        if not _OWN_OUTPUT_CARRIES_RE.search(stripped):
+            continue
+        lowered = stripped.lower()
+        if any(token.lower() in lowered for token in tokens):
+            return True
+    return False
+
+
+def _unscoped_occurrence_count_clause(criteria: str) -> str | None:
+    """None unless some clause demands an unscoped write-time occurrence
+    count of a string the task's own mandated output grows or contains. A
+    clause already carrying the sha-scoped ``at `<sha>`: N`` form is
+    legitimate, and so is a STATIC count of something the task does not
+    grow -- both have must-pass siblings in
+    `tests/test_stranding_lints.py`."""
+    count_clauses = [
+        stripped
+        for stripped in (c.strip() for c in _CLAUSE_SPLIT_RE.split(criteria))
+        if stripped
+        and _OCCURRENCE_COUNT_RE.search(stripped)
+        and not _SHA_SCOPED_FIGURE_RE.search(stripped)
+    ]
+    if not count_clauses:
+        return None
+    if _declares_self_growing_output(criteria):
+        return count_clauses[0]
+    for clause in count_clauses:
+        if _counted_token_is_in_own_output(criteria, clause):
+            return clause
     return None
 
 
@@ -428,7 +584,17 @@ def _unscoped_occurrence_count_clause(criteria: str) -> str | None:
 # caught this cue set accepting explicit content demands on other concrete
 # out-of-tree paths (`/tmp/handoff.txt`, `/run/ralphd/tasks.json`), so any
 # absolute path rooted in a filesystem directory that cannot be inside the
-# repository tree now counts as untracked run state on its own.
+# repository tree now counts as untracked run state on its own. Task 013
+# THIRD pass: validation caught the fixed root list still missing roots it
+# never enumerated (`/srv/ralphd-handoff.txt`, `/data/run-handoff.txt`) and
+# missing parent-escape relative paths (`../run-handoff.txt`) entirely. Two
+# general cues replace the enumeration's role: ANY absolute path whose last
+# component looks like a file (a dotted extension), and ANY `../` escape --
+# neither can name a tracked path inside this repository. `/workspace/...`,
+# the checkout itself, is deliberately excluded, and a URL path (`GET
+# /repos/n-orlov/ralphd/issues/114`, `POST .../notify`) matches nothing here:
+# it carries no file extension and its leading slash is preceded by a word
+# character or is a bare single component.
 _UNTRACKED_PATH_CUE_RE = re.compile(
     r"/run/ralphd/notes\.md"
     r"|handoff notes"
@@ -437,7 +603,11 @@ _UNTRACKED_PATH_CUE_RE = re.compile(
     r"|\buntracked run state\b"
     r"|\brun (?:state )?director(?:y|ies)\b"
     r"|outside (?:the )?repo(?:sitory)?(?:\s+tree)?"
-    r"|(?<![\w./])/(?:run|tmp|var|etc|home|root|proc|sys|dev|mnt|opt|usr)/",
+    r"|(?<![\w./])/(?!workspace/)(?:run|tmp|var|etc|home|root|proc|sys|dev"
+    r"|mnt|opt|usr|srv|data|media|lib|boot)/"
+    r"|(?<![\w./])/(?!workspace/)[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*"
+    r"[A-Za-z0-9_-]\.[A-Za-z0-9]{1,6}\b"
+    r"|(?<![\w.])\.\./[A-Za-z0-9_./-]+",
     re.IGNORECASE,
 )
 
@@ -451,6 +621,13 @@ _UNTRACKED_PATH_CUE_RE = re.compile(
 # the banned shape and "must list" was not in it. Every modal + content
 # verb pairing now counts; existence and pointer wording ("must exist",
 # "need only point to") deliberately does not.
+# Task 013 THIRD pass: validation caught a FORMAT condition slipping through
+# whole -- "The handoff notes are required to use valid JSON." -- because
+# neither "use" nor any format-language noun was a cue. Format verbs
+# (use/follow/conform/be valid/be written in/parse) and explicit
+# format-language ("valid JSON", "JSON-formatted") are cues now, since
+# contract rule 1 bans conditioning on the FORMAT of untracked run state
+# just as squarely as on its content.
 _CONTENT_OR_FORMAT_DEMAND_RE = re.compile(
     r"\binlin\w*\b"
     r"|\bverbatim\b"
@@ -458,9 +635,13 @@ _CONTENT_OR_FORMAT_DEMAND_RE = re.compile(
     r"|are required to|only once)\s+(?:also\s+|itself\s+|already\s+|still\s+)?"
     r"(?:show|read|contain|contains|list|record|include|name|state|enumerate"
     r"|say|mention|carry|spell|match|reproduce|duplicate|quote|end|begin"
-    r"|start|be\s+formatted)\b"
+    r"|start|use|uses|reuse|employ|adopt|follow|conform|adhere|parse"
+    r"|hold|store|reflect|restate|repeat|copy|mirror|summari[sz]e"
+    r"|be\s+valid\w*|be\s+written|be\s+in|be\s+parse?able|be\s+formatted)\b"
     r"|\bcontains?\b"
-    r"|\bformat\b"
+    r"|\bformat\w*\b"
+    r"|\bvalid\s+(?:JSON|YAML|TOML|CSV|markdown|ND?JSON)\b"
+    r"|\b(?:JSON|YAML|TOML|CSV)[- ]formatted\b"
     r"|\bduplicat\w*\b"
     r"|\bquote\w*\b",
     re.IGNORECASE,
@@ -535,7 +716,7 @@ def lint_proposal(payload: dict) -> list[str]:
             )
 
         for ref_clause, ref_id in _forward_task_commit_refs(criteria):
-            ref_index = id_to_index.get(ref_id)
+            ref_index = _resolve_task_index(id_to_index, ref_id)
             if ref_index is not None and ref_index > i:
                 errors.append(
                     f"task {tid!r}: successCriteria requires the commit sha "
