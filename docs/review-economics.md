@@ -20,6 +20,14 @@ including the engine-side mechanisms (structured findings with `severity` and
 petition adjudication) this fragment's *contract* text was prototyped
 alongside.
 
+**Second instance:** `docs/prds/v0.16-a-petition-is-not-a-postmortem.md`
+cites this document by reference for its rubric, petition protocol and
+late-cure rule (its own `## The contract` section says so explicitly), and
+is the wave that adds the mid-run adjudication and criteria-amendment
+mechanisms documented below — moving *when* the judge speaks (immediately
+on a filed declaration, not only at approach-end) without loosening *how
+strictly* it speaks.
+
 ## Materiality rubric
 
 Review computes its verdict from **blocking** findings only; **residual**
@@ -52,9 +60,10 @@ is the fallback when a contract states no rubric at all.
 
 If a run believes a contract obligation is unachievable, it may file an
 **impossibility petition**: one petition per obligation, with a type
-(`environmental | temporal | contradictory-clauses | external`) and evidence,
-in that wave's own `artifacts/reports/<wave>-petitions.md`. Review adjudicates
-every open petition as part of its verdict:
+(`environmental | temporal | contradictory-clauses | external | self-referential`)
+and evidence, in that wave's own `artifacts/reports/<wave>-petitions.md` (see
+[`petition-format.md`](petition-format.md) for the full five-type table).
+Review adjudicates every open petition as part of its verdict:
 
 - **CONFIRMED** converts that obligation to a disclosed residual for the
   remainder of the run — every approach, not just the current one.
@@ -64,8 +73,58 @@ every open petition as part of its verdict:
 already has one — whether or not the first was adjudicated, and including a
 petition already adjudicated REFUTED — is itself a blocking finding, not a
 second attempt at the same claim. The full file format (required fields,
-where the file lives, the four types) is spelled out in
+where the file lives, the five types) is spelled out in
 [`petition-format.md`](petition-format.md).
+
+## Mid-run adjudication
+
+An impossibility declaration does not have to wait for approach-end review.
+The moment a worker names an obligation, or its own task's criterion clause,
+as unachievable — with a type and evidence, filed through the same
+once-per-obligation channel as any other petition — the engine schedules one
+**bounded adjudication episode** with the **review-hat model** (the model
+`config` resolves for the review hat, never the worker's own model), scoped
+to that petition and to any other still-open ones, and runs it before the
+affected task's next validation attempt. The verdict uses the same
+vocabulary as an approach-end adjudication:
+
+- **CONFIRMED** converts the obligation into a disclosed residual for the
+  remainder of the run — persisted at run scope exactly as an approach-end
+  CONFIRMED is, so no later approach re-litigates it.
+- **REFUTED** states concretely what would satisfy the obligation, and the
+  affected task's validation ladder keeps running rather than stopping.
+
+A task whose validation ladder exhausts while an obligation is still open
+does not fall straight to a bare `failed`. Its last-attempt handoff becomes
+the petition body, the task moves to a **`petitioned`** status, and that
+status is itself adjudicated — by a still-scheduled mid-run episode if one
+is pending, otherwise by the next approach-end review. `petitioned` is a
+waypoint toward an adjudicated outcome, not a verdict in its own right: a
+CONFIRMED `petitioned` task counts as accepted-with-residual like any other
+CONFIRMED obligation, and a REFUTED one becomes `failed` with the
+refutation recorded. A contract that predates this mechanism, or declares no
+petition protocol at all, keeps the plain `failed` routing it always had —
+this section adds a path, it narrows none.
+
+## Criteria amendment
+
+A CONFIRMED adjudication — mid-run or approach-end — whose petition names a
+task's own `successCriteria` (never the PRD, never a Definition-of-done
+item, never another task, and never anything under `/config`) may carry a
+replacement criteria text for that **one** task, authored by the
+adjudicating judge and by no one else: not the worker who filed the
+petition, not the planner who wrote the original text, not the run acting
+on its own initiative. Applying it is recorded, never silent: a
+`task.criteria_amended` event captures the old text, the new text and the
+adjudication that authorized it; the task's `criteriaFingerprint` is
+recomputed over the new text; and the amendment plus its authorizing
+adjudication are disclosed in the closing report. Everything else about the
+task — its status, its other fields — is untouched by the amendment itself.
+An edit to `successCriteria` that does not arrive from an adjudicating judge
+through this path — a worker's own rewrite, a planner's revision outside
+plan-ingestion, anything that targets a task other than the one the
+petition named — is refused and is itself a blocking finding, the same
+tamper-evidence treatment already applied to adjudication records.
 
 ## Late-cure rule
 
