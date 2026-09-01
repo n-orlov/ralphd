@@ -6621,21 +6621,54 @@ class LoopSupervisor:
                             "signal", signal="tierLadderExhausted",
                             taskId=tid, tier=state.task_effective_tier(t))
                 if attempts >= VALIDATION_ATTEMPT_LIMIT:
-                    # Task 024 (#33): the engine forcing `failed` here means
-                    # ONE thing -- the validation rounds are used up -- and it
-                    # says so on the record, because the same status is also
-                    # what an agent writes when it judges a requirement
-                    # unmeetable. Without the label the two are indistinguish-
-                    # able to every later reader (operator, review prompt,
-                    # `ralphctl tasks`), and the run's routing (see
-                    # `_unresolved_failures`) would have to guess.
-                    t["status"] = "failed"
-                    t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
-                    log.warning(
-                        "task %s consumed all %d validation attempts "
-                        "(failureKind=%s); this records the rounds spent, not "
-                        "a judgement that the requirement is unmeetable",
-                        tid, attempts, TASK_FAILURE_VALIDATION_EXHAUSTED)
+                    # Task 009 (requirement C.1, #114): a contract that
+                    # carries a petition protocol -- detected the same
+                    # default-safe way requirement A.3 (#110) detects a
+                    # materiality rubric: by what is actually PRESENT
+                    # (there, a rubric heading in the contract text; here,
+                    # at least one `<wave>-petitions.md` file the run's own
+                    # workspace already carries) rather than a flag nobody
+                    # would remember to set -- routes exhaustion to
+                    # `petitioned`, filing the last-attempt handoff already
+                    # written into `validationNotes` above as the petition's
+                    # evidence (`petitions.file_exhaustion_petition`), INSTEAD
+                    # of forcing `failed`. A contract with no petitions file
+                    # at all (backward compatibility, requirement C.3) falls
+                    # straight through to the `failed` branch below, exactly
+                    # as it always has; so does a filing `file_exhaustion_
+                    # petition` itself refuses (a duplicate obligation) --
+                    # exhaustion must always land the task SOMEWHERE, never
+                    # nowhere, and `failed` is the safe fallback either way.
+                    petition_errors = (
+                        petitions.file_exhaustion_petition(self.workspace, t)
+                        if petitions.discover_petition_files(self.workspace)
+                        else ["no petition protocol: no <wave>-petitions.md "
+                              "file exists under artifacts/reports/"])
+                    if not petition_errors:
+                        t["status"] = "petitioned"
+                        log.warning(
+                            "task %s consumed all %d validation attempts; "
+                            "contract carries a petition protocol, so the "
+                            "last-attempt handoff is filed as a petition and "
+                            "the task routes to 'petitioned' for adjudication "
+                            "rather than 'failed'", tid, attempts)
+                    else:
+                        # Task 024 (#33): the engine forcing `failed` here
+                        # means ONE thing -- the validation rounds are used
+                        # up -- and it says so on the record, because the
+                        # same status is also what an agent writes when it
+                        # judges a requirement unmeetable. Without the label
+                        # the two are indistinguishable to every later reader
+                        # (operator, review prompt, `ralphctl tasks`), and the
+                        # run's routing (see `_unresolved_failures`) would
+                        # have to guess.
+                        t["status"] = "failed"
+                        t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
+                        log.warning(
+                            "task %s consumed all %d validation attempts "
+                            "(failureKind=%s); this records the rounds spent, not "
+                            "a judgement that the requirement is unmeetable",
+                            tid, attempts, TASK_FAILURE_VALIDATION_EXHAUSTED)
                 break
         self.run.write_tasks(tasks_data)
         self._emit_task_changes()

@@ -4843,7 +4843,8 @@ def _append_run_event(rdir: Path, type_: str, **data) -> dict:
 
 
 _TASK_STATUSES = ("pending", "in-progress", "awaiting-validation", "validated",
-                  "completed", "validation-failed", "failed", "skipped")
+                  "completed", "validation-failed", "failed", "skipped",
+                  "petitioned")
 # Task 019 (requirement F, #60 pillar 3): now SEVEN statuses plus `pending`
 # -- `awaiting-validation` (the vigilant worker's claim state) and
 # `validated` (the vigilant verifier-granted terminal) joined the five

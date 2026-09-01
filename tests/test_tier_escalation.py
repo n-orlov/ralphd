@@ -94,9 +94,14 @@ def test_no_new_lifecycle_edge_in_the_declared_task_status_table():
     non_vigilant = transitions.task_status_table_for(False)
     vigilant = transitions.task_status_table_for(True)
     assert non_vigilant == transitions.task_status_table_for(False)
+    # Task 009 (#114) adds `petitioned` to the vocabulary (a later wave's
+    # requirement, not this task's) -- the enumeration below tracks the
+    # full set as it stands today, exactly as it already absorbed
+    # `awaiting-validation`/`validated` from task 019; this test's own
+    # claim (no new EDGE from task 014) is the second assertion below.
     assert set(transitions.TASK_STATUSES) == {
         "pending", "in-progress", "awaiting-validation", "validated",
-        "validation-failed", "completed", "failed", "skipped"}
+        "validation-failed", "completed", "failed", "skipped", "petitioned"}
     assert vigilant["validation-failed"] == ("in-progress", "failed", "skipped")
 
 

@@ -2695,7 +2695,15 @@ def tasks_doc_excluding_new_entries(tasks_doc: dict, known_ids: set, *,
 # own escape hatches (carve a new task, or relabel `skipped`) are what turn
 # it into forward progress on a LATER iteration, not this gate holding the
 # run open until that happens.
-TASK_TERMINAL_STATUSES = ("validated", "completed", "failed", "skipped")
+# Task 009 (requirement C.1, #114): `petitioned` joins this tuple --
+# nothing further moves a petitioned task on its own either, until an
+# adjudication (mid-run or approach-end review, task 010's scope) resolves
+# it one way or the other. Deliberately NOT added to `TASK_COMPLETION_
+# STATUSES` or `TASK_DEPENDENCY_SATISFIED_STATUSES`/`_DEAD_STATUSES` here --
+# whether an un-adjudicated `petitioned` task counts as done or as doomed
+# for a dependent task is task 010's `plan_complete` scope, not this one's.
+TASK_TERMINAL_STATUSES = ("validated", "completed", "failed", "skipped",
+                          "petitioned")
 
 
 def task_is_terminal(task: dict) -> bool:

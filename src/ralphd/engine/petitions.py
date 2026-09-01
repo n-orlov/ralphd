@@ -278,6 +278,58 @@ def file_worker_petition(workspace: Path, obligation: str, ptype: str,
     return []
 
 
+# Task 009 (requirement C.1, #114): the engine's own default classification
+# for a petition it files itself, on EXHAUSTION, never on a worker's own
+# typed claim (that is `file_worker_petition`'s `ptype` argument, supplied
+# by the worker's own declaration, task 004). A spent validation ladder is,
+# structurally, closest to `self-referential`'s own definition -- "a
+# criterion that can only be verified using a state the criterion's own
+# satisfaction would have to create" -- which is exactly what three failed
+# attempts against the same criteria text demonstrate, without the engine
+# ever having to guess at `environmental`/`temporal`/`external` facts it has
+# no way to check on its own. A later adjudicator (mid-run or approach-end
+# review) may retype or REFUTE this filing exactly like any other.
+PETITION_TYPE_EXHAUSTION_DEFAULT = "self-referential"
+
+
+def file_exhaustion_petition(workspace: Path, task: dict) -> list[str]:
+    """File a petition on a task's behalf the moment its validation ladder
+    is exhausted (`state.VALIDATION_ATTEMPT_LIMIT`), carrying its
+    last-attempt handoff -- the text already written into
+    `task['validationNotes']` by the verifier's own rejection -- as the
+    petition's evidence (PRD v0.16 requirement C.1, #114: "v0.15 approach
+    4's task 001 handoff was a complete, well-argued petition that had
+    nowhere to go").
+
+    A SECOND writer of `<wave>-petitions.md`, beside the worker's own typed
+    declaration (`file_worker_petition`, task 004): the worker may never
+    have declared impossibility explicitly (it can simply keep trying and
+    losing to review), so by the time the ladder is spent there may be no
+    filed petition at all for this obligation -- this is what makes sure
+    exhaustion itself always produces one. Delegates entirely to
+    `file_worker_petition` for the write/duplicate-refusal logic (the same
+    one-petition-per-obligation rule applies to either writer): a normalized
+    obligation already on file, from either writer, is refused rather than
+    re-filed, and the caller
+    (`LoopSupervisor._verify_task`) folds a refusal into the ordinary
+    `failed` routing rather than losing the exhaustion silently.
+
+    The obligation is the task's own id + title (stable across the three
+    attempts that share it, and normalized before comparison, so a
+    worker's own earlier declaration against the SAME task -- filed with
+    the same id+title text -- is treated as the one filing this obligation
+    already has, not a fresh one).
+    """
+    tid = task.get("id", "?")
+    title = (task.get("title") or "").strip()
+    obligation = f"Task {tid}: {title}" if title else f"Task {tid}"
+    evidence = (task.get("validationNotes") or "").strip() or (
+        f"Task {tid} exhausted its validation ladder with no verifier "
+        "reason recorded on the last attempt.")
+    return file_worker_petition(workspace, obligation,
+                                PETITION_TYPE_EXHAUSTION_DEFAULT, evidence)
+
+
 def duplicate_petition_obligations(workspace: Path) -> list[dict]:
     """Every normalised obligation with MORE THAN ONE filed petition section
     across every `<wave>-petitions.md` file under `workspace` --

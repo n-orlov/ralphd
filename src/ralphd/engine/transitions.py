@@ -666,6 +666,7 @@ TASK_STATUSES: tuple[str, ...] = (
     "completed",
     "failed",
     "skipped",
+    "petitioned",
 )
 
 TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
@@ -686,6 +687,14 @@ TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
     "completed": (),
     "failed": (),
     "skipped": (),
+    # Task 009 (requirement C.1, #114): `petitioned` is likewise reachable
+    # only via the vigilant delta below (`_verify_task`'s exhaustion branch
+    # -- the only writer -- runs exclusively inside the vigilant verify
+    # sub-cycle); no move OUT of it is declared here yet (that is task
+    # 010's `plan_complete`/REFUTED-routing scope), so it is enumerable
+    # from the base table with no successors, exactly like the other
+    # terminal-shaped entries above.
+    "petitioned": (),
 }
 
 TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
@@ -695,10 +704,13 @@ TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
     # verify's own verdict: `validated` is the vigilant terminal, a
     # negative verdict loops to `validation-failed` for a retry, and an
     # exhausted validation budget (`state.VALIDATION_ATTEMPT_LIMIT`) may
-    # force straight to `failed` from here in one disk write (`_verify_
-    # task`'s own sequencing: `validation-failed` is set in memory first,
-    # then overwritten to `failed` before the single write lands).
-    "awaiting-validation": ("validated", "validation-failed", "failed"),
+    # force straight to `failed` -- or, when the contract carries a
+    # petition protocol (task 009, requirement C.1, #114), to `petitioned`
+    # instead -- from here in one disk write (`_verify_task`'s own
+    # sequencing: `validation-failed` is set in memory first, then
+    # overwritten to `failed`/`petitioned` before the single write lands).
+    "awaiting-validation": ("validated", "validation-failed", "failed",
+                            "petitioned"),
 }
 
 
