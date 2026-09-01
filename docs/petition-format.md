@@ -35,7 +35,7 @@ Every petition section states, at minimum:
 
 1. **Obligation** — the requirement letter or DoD item it claims is
    unachievable, quoted or cited precisely.
-2. **Type** — exactly one of the four values below.
+2. **Type** — exactly one of the five values below.
 3. **Evidence** — concrete, checkable support for the claim (a command's
    output, a missing capability in this sandbox, a contradiction between two
    named clauses, an external fact outside the run's control). A petition
@@ -46,7 +46,7 @@ A petition missing the obligation, the type, or evidence is not a valid
 filing — review treats an invalid filing as a finding against whichever
 requirement demanded the petition in the first place, not as a free pass.
 
-## The four types
+## The five types
 
 | Type | Meaning |
 |---|---|
@@ -54,6 +54,7 @@ requirement demanded the petition in the first place, not as a free pass.
 | `temporal` | The obligation is anchored to a moment that has already passed, or depends on a clock the run cannot rewind (a "the moment it happens" duty for an event that already happened without it). |
 | `contradictory-clauses` | Two clauses in the same contract cannot both be satisfied at once; satisfying one obligation necessarily violates another. |
 | `external` | The fact blocking the obligation lives outside the run's control entirely (a third-party service's behaviour, a state on a system the run cannot write to). |
+| `self-referential` | The obligation's own text refers to itself in a way that makes it unmeetable as written — a criterion that can only be verified using a state the criterion's own satisfaction would have to create, or that names its own not-yet-existing commit/sha. |
 
 ## Adjudication
 
@@ -91,6 +92,20 @@ those findings unconditionally in `_review_findings_channel` (whatever
 review's own `findings.json` says) and names the same fact in review's own
 prompt via `_duplicate_petitions_review_context`, joined at
 `_review_extra_context`.
+
+That pair is the POST-HOC pass, over whatever already landed in a
+`<wave>-petitions.md` file however it got there. A worker's own structured
+impossibility declaration (task 004, requirement A.1, #114 --
+`HAT_SCHEMAS["worker"]["properties"]["petition"]` in
+`engine/transitions.py`) never reaches that state in the first place: the
+ENGINE — never the worker — is the one thing that writes a filing to disk
+at all (`engine.petitions.file_worker_petition`), and it checks the same
+normalised-obligation match against every already-filed petition *before*
+writing, refusing a second declaration against an obligation already
+filed instead of filing it. A malformed declaration (a blank obligation or
+evidence field the schema's own `type: "string"` check cannot catch) is
+refused the same way, through the ordinary contract re-ask ladder, and
+never reaches the file either.
 
 `tests/test_duplicate_petition_findings.py` (12 tests) pins each case by
 name:

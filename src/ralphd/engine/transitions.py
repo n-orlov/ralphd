@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ralphd.engine import petitions
+
 # ---------------------------------------------------------------------------
 # States
 # ---------------------------------------------------------------------------
@@ -932,6 +934,33 @@ HAT_SCHEMAS: dict[str, dict] = {
             # v0.9 requirement H had to pin for "unsatisfiable" and pinned
             # the same way.
             "proposed_tasks": {"type": "array"},
+            # Task 004 (requirement A.1, #114): an OPTIONAL structured
+            # impossibility declaration -- a worker names the obligation
+            # (a requirement letter, a DoD item, or its own task's
+            # criterion clause), the petition TYPE (one of `petitions.
+            # PETITION_TYPES`, `self-referential` joining the original
+            # four this same task adds) and the EVIDENCE, and the ENGINE
+            # -- never the worker -- writes/validates the filing
+            # (`petitions.file_worker_petition`, the schema/semantic split
+            # every sibling channel in this module already uses; the
+            # semantic half is `worker_petition_report_errors` below).
+            # Deliberately independent of `verdict`: a worker may declare
+            # a petition alongside ANY verdict value (including
+            # "no_verdict" -- still working on the rest of the task while
+            # flagging one obligation as unachievable), the same way
+            # `proposed_tasks` above is a side channel rather than a
+            # verdict value of its own.
+            "petition": {
+                "type": "object",
+                "required": ["obligation", "type", "evidence"],
+                "properties": {
+                    "obligation": {"type": "string"},
+                    "type": {"type": "string",
+                              "enum": list(petitions.PETITION_TYPES)},
+                    "evidence": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
         },
         "additionalProperties": False,
     },
@@ -1097,6 +1126,43 @@ def worker_unsatisfiable_report_errors(payload: Any) -> list[str]:
     if not isinstance(reason, str) or not reason.strip():
         errors.append(
             "verdict 'unsatisfiable' requires a non-empty reason")
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Task 004 (requirement A.1, #114): the semantic half of the worker's
+# optional structured impossibility declaration -- the sibling split every
+# other channel in this module already uses. `HAT_SCHEMAS["worker"]
+# ["properties"]["petition"]` already enforces the object SHAPE (all three
+# fields present, all strings, `type` one of `petitions.PETITION_TYPES`);
+# this catches what that restricted schema engine cannot -- a field
+# present but blank/whitespace-only. Writing/validating the filing itself
+# (duplicate detection, appending to `<wave>-petitions.md`) is
+# `petitions.file_worker_petition`'s job, the ENGINE's own write path,
+# never this module's (this module owns the contract, not the write).
+# ---------------------------------------------------------------------------
+
+
+def worker_petition_report_errors(payload: Any) -> list[str]:
+    """Errors in a worker's optional `payload["petition"]` declaration, or
+    an empty list when there is none, or when the one present is
+    well-formed. A payload carrying no `petition` key at all is never in
+    violation here -- the same "nothing declared, nothing to check" shape
+    `worker_unsatisfiable_report_errors` above uses for a payload with no
+    `verdict: "unsatisfiable"`.
+    """
+    if not isinstance(payload, dict):
+        return []
+    petition = payload.get("petition")
+    if not isinstance(petition, dict):
+        return []
+    errors = []
+    obligation = petition.get("obligation")
+    if not isinstance(obligation, str) or not obligation.strip():
+        errors.append("petition.obligation must be a non-empty string")
+    evidence = petition.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        errors.append("petition.evidence must be a non-empty string")
     return errors
 
 

@@ -97,12 +97,13 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-# The four petition types `docs/petition-format.md` enumerates. A section
-# whose `Type` field is not one of these is not treated as a petition at
-# all -- this is what lets the file's own title/intro heading (which
-# names none of them) pass through unnoticed.
+# The five petition types `docs/petition-format.md` enumerates (task 004,
+# requirement A.1, #114 added `self-referential` to the original four). A
+# section whose `Type` field is not one of these is not treated as a
+# petition at all -- this is what lets the file's own title/intro heading
+# (which names none of them) pass through unnoticed.
 PETITION_TYPES = ("environmental", "temporal", "contradictory-clauses",
-                  "external")
+                  "external", "self-referential")
 
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S.*$", re.MULTILINE)
 _FIELD_RE = re.compile(
@@ -202,6 +203,79 @@ def open_petitions_in_workspace(workspace: Path) -> list[dict]:
             continue
         petitions.extend(open_petitions(text))
     return petitions
+
+
+def format_petition_section(obligation: str, ptype: str, evidence: str) -> str:
+    """Render one petition section in `docs/petition-format.md`'s exact
+    field shape -- a heading naming the obligation, then bolded
+    `**Obligation**`/`**Type**`/`**Evidence**` fields, one per line, the
+    same syntax `_FIELD_RE`/`parse_petitions` above already read back.
+    This is the engine's own WRITER for a format this module has, until
+    task 004 (requirement A.1, #114), only ever parsed.
+    """
+    heading = " ".join(obligation.split()).strip() or "Untitled obligation"
+    return (
+        f"\n## Petition: {heading}\n\n"
+        f"**Obligation**: {obligation.strip()}\n"
+        f"**Type**: {ptype.strip()}\n"
+        f"**Evidence**: {evidence.strip()}\n"
+    )
+
+
+def file_worker_petition(workspace: Path, obligation: str, ptype: str,
+                          evidence: str) -> list[str]:
+    """The ENGINE's own write path for a worker's structured impossibility
+    declaration (task 004, requirement A.1, #114) -- never the worker
+    itself: a worker's final-line payload only ever carries the three
+    plain strings a caller already ran through
+    `transitions.worker_petition_report_errors` (the schema/semantic
+    checks); this is the one place that turns them into a tracked filing,
+    in exactly `docs/petition-format.md`'s field shape, or refuses instead
+    of filing when the named obligation already has one -- the same
+    one-petition-per-obligation rule `duplicate_petition_obligations`
+    enforces POST-HOC for a filing that reached the file some other way;
+    this is the point where an ordinary declaration never reaches that
+    state at all.
+
+    Returns a list of error strings; empty means the petition was written.
+    A non-empty return means nothing was written to disk -- the caller (an
+    `extra_validate` hook, the same shape every other worker semantic
+    check in this tree already uses) folds these into the ordinary
+    contract re-ask ladder, so a refused declaration reaches the SAME
+    worker again rather than disappearing silently.
+    """
+    key = _normalize_obligation(obligation)
+    files = discover_petition_files(workspace)
+    for path in files:
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for p in parse_petitions(text):
+            if _normalize_obligation(p["obligation"]) == key:
+                return [
+                    "petition: an obligation already has a filed "
+                    f"petition ({p['obligation']!r}) -- a duplicate "
+                    "declaration for the same obligation is refused, not "
+                    "filed (docs/petition-format.md's one-petition-per-"
+                    "obligation rule)"
+                ]
+    if not files:
+        return [
+            "petition: no <wave>-petitions.md file exists under "
+            "artifacts/reports/ to file this declaration into"
+        ]
+    target = files[0] if len(files) == 1 else files[-1]
+    try:
+        existing = target.read_text()
+    except OSError:
+        existing = ""
+    section = format_petition_section(obligation, ptype, evidence)
+    if existing and not existing.endswith("\n"):
+        section = "\n" + section
+    with target.open("a", encoding="utf-8") as f:
+        f.write(section)
+    return []
 
 
 def duplicate_petition_obligations(workspace: Path) -> list[dict]:
