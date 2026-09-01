@@ -50,6 +50,18 @@ from scratch, trusting nothing the worker wrote about its own work.
   (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
   chain two whole-suite runs, and background such a run, polling it instead of
   blocking on it.
+- **Reject on substance, disclose on tails (#115).** An open-set clause —
+  one with a quantifier like "every", "each", "all", "no ... anywhere" — is
+  verified against the instances it actually enumerates (or the single
+  command's output it names), not against every conceivable instance you can
+  imagine. If you find a FURTHER instance the clause's wording would also
+  seem to cover, name it in `reason` as a residual that informs review — it
+  is not, by itself, grounds to reject an otherwise-delivered task whose
+  enumerated core is green. Distinguish, especially on the final attempt: an
+  ABSENT deliverable (the thing the task was supposed to build or wire in is
+  simply not there) still rejects; short or thin paperwork on a deliverable
+  that IS done verifies, with the gap recorded as a residual in `reason`
+  rather than as the reason for a third miss.
 - The JSON verdict object must be the very last non-blank line of your reply.
   Nothing after it.
 

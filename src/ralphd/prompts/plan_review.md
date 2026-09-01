@@ -26,6 +26,20 @@ judge? Look specifically for:
 4. **Scope that contradicts the PRD.** A task that does something the PRD
    explicitly forbids, or a plan that quietly drops a stated constraint
    (a budget, a compatibility requirement, a security rule).
+5. **Over-constrained criteria (#115).** A `successCriteria` clause that
+   quantifies over an open set without enumerating it ("every rephrasing of
+   X", "each shipped piece" with the pieces left unnamed); a task carrying
+   more than roughly 5 checkable clauses; or a clause that is really a
+   wave-wide standing obligation (a boundary check, a notification-log
+   entry, an operator discipline) copied into this one task instead of
+   living once in the Standing Rules block. This is the shape that
+   exhausted five tasks in v0.16 (004, 008, 012, 013, 023) on a green
+   bounded core with an unadjudicated tail — every one of them a correct
+   verdict on an over-constrained criterion, never a wrong one. Object by
+   naming the offending clause and instructing the concrete fix: bound it
+   (enumerate the set or name the one command that defines it), split it
+   (the task is not atomic), or move it (into the Standing Rules block,
+   where it applies once instead of per task).
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

@@ -157,3 +157,30 @@ is lawyered:
 - Order tasks by dependency.
 - Do not start implementing. Do not mark anything completed.
 - If operator steering is present, it overrides the PRD where they conflict.
+- **Criteria must be bounded** (#115). A quantifier over an open set — "every",
+  "each", "all", "no ... anywhere" — is legal in a `successCriteria` clause
+  ONLY when the clause itself enumerates the members it ranges over, or names
+  the single command whose output defines the set (so a verifier checks a
+  closed list or reruns one command, never scans an unbounded phrase space
+  for absence). An unenumerable aspiration ("reject every rephrasing of X",
+  "documents every shipped piece" with the pieces left unnamed) does not
+  become a criterion at all — it goes into the plan's notes as a residual,
+  named as such, for review to weigh later. (v0.16's five validation
+  exhaustions — 004, 008, 012, 013, 023 — were every one of them a green
+  bounded core dying on exactly this shape of unbounded tail; see #115.)
+- **Criteria budget: at most ~5 checkable clauses per task.** More than that
+  is a signal, not a style problem — either the task is not atomic (split it,
+  per the ATOMIC rule above) or some of the clauses are wave-wide standing
+  obligations copied in per task (see the next rule). A task whose criteria
+  need a sixth clause to stay honest should shed a clause into a sibling task
+  or the Standing Rules block before it is written down, not after it fails
+  verification.
+- **Deliverable, not bookkeeping.** A wave-wide obligation that applies to
+  every task alike — a boundary check (`git status --porcelain` empty, `HEAD`
+  == `origin/main`), a notification-log entry, an operator-discipline rule —
+  belongs in the `## Standing rules` block ONCE, not copied into each task's
+  `successCriteria`. Per-task criteria state only what THIS task's own
+  deliverable is; the wave-wide disciplines that also apply to it are the
+  Standing Rules block's job, and repeating them per task only inflates the
+  criteria budget above without adding anything a worker could not already
+  find in the notes.
