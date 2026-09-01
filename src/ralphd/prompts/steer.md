@@ -42,7 +42,9 @@ failure to do your job — not caution. If a tool refuses a call, it tells you
 why: fix the call and try again, do not hand the refusal back to the operator
 as if it were impossible.
 
-Each tool takes its arguments as one JSON object:
+Each tool takes its arguments as one JSON object, and the keys shown below
+ARE that tool's parameters — send them exactly as written, at the top level of
+the call. There is no wrapper field to stringify a payload into.
 
 - `task-insert` — add one task; it always lands `pending` and marked as
   steer-originated: `{"task": {"id": "037", "title": "...", "successCriteria": "...", "dependsOn": [], "priority": 5}}`

@@ -89,7 +89,9 @@ CONTEXT_WRITE_TOOL = "context-write"
 
 # One usage line per tool, rendered into both the generated extension's tool
 # description and `prompts/steer.md` (the prompt names each tool; this table
-# is what a caller reads to get the argument shape right).
+# is what a caller reads to get the argument shape right). The usage payload
+# is a JSON object whose TOP-LEVEL KEYS ARE the tool's parameter fields --
+# see `_TOOL_PARAMS` and `parameters_source` below.
 _TOOL_DOCS: dict[str, dict[str, str]] = {
     "task-insert": {
         "label": "Insert task",
@@ -149,17 +151,101 @@ _TOOL_DOCS: dict[str, dict[str, str]] = {
     },
 }
 
+# The parameter SCHEMA of each tool, declared beside its usage line so the
+# two cannot disagree. This replaced the defect task 033's second validation
+# attempt found: the generated extension used to register EVERY tool with a
+# single required string field named `args`, while the prompt and the table
+# above documented the real payload (`{"task": {...}}`, `{"taskId": ...}`),
+# so a hat that followed the documentation could not make a schema-valid
+# call at all. Each entry maps a TOP-LEVEL payload key to `(typebox source,
+# required)`, and `tests/test_steer_hat_tools_live.py` pins that a tool's
+# declared field names are EXACTLY the top-level keys of its documented
+# usage payload here and of its usage line in `prompts/steer.md`.
+_TASK_OBJECT = """Type.Object({
+        id: Type.String({ description: "The new task's id, unique in the table." }),
+        title: Type.Optional(Type.String()),
+        successCriteria: Type.Optional(Type.String()),
+        dependsOn: Type.Optional(Type.Array(Type.String())),
+        priority: Type.Optional(Type.Number()),
+        tier: Type.Optional(Type.String()),
+        notes: Type.Optional(Type.String()),
+      }, { additionalProperties: true })"""
+_CHANGES_OBJECT = """Type.Object({
+        title: Type.Optional(Type.String()),
+        successCriteria: Type.Optional(Type.String()),
+        dependsOn: Type.Optional(Type.Array(Type.String())),
+        priority: Type.Optional(Type.Number()),
+        notes: Type.Optional(Type.String()),
+        status: Type.Optional(Type.String({
+          description: "Routed through the engine's one status applier, which refuses an illegal transition.",
+        })),
+      }, { additionalProperties: true })"""
+
+
+def _string(description: str) -> str:
+    return f'Type.String({{ description: {json.dumps(description)} }})'
+
+
+_TOOL_PARAMS: dict[str, dict[str, tuple[str, bool]]] = {
+    "task-insert": {
+        "task": (_TASK_OBJECT, True),
+    },
+    "task-update": {
+        "taskId": (_string("The id of the task to change."), True),
+        "changes": (_CHANGES_OBJECT, True),
+    },
+    "task-delete": {
+        "taskId": (_string("The id of the task to remove."), True),
+    },
+    "standing-rules": {
+        "text": (_string("The full replacement standing-rules block."), True),
+    },
+    CONTEXT_READ_TOOL: {
+        "file": (_string("notes.md, standing-rules.md, tasks.json or "
+                         "prd.md."), True),
+    },
+    CONTEXT_WRITE_TOOL: {
+        "file": (_string("notes.md or standing-rules.md."), True),
+        "text": (_string("The file's full replacement contents."), True),
+        "steeringEntry": (_string("The steering entry file name that caused "
+                                  "this write."), False),
+    },
+}
+
 # THE declaration. Derived from `state.STEER_HAT_TOOLS` (never re-listed) so
 # a tool added there without a doc entry raises a loud KeyError at import
 # instead of shipping an undocumented tool, plus the two context-file tools
 # task 033 adds. `tests/test_steer_hat_tools_live.py` pins the whole set by
 # equality, the same shape `test_steer_hat_tool_surface.py` already pins
 # `STEER_HAT_TOOLS` itself.
-STEER_WIRED_TOOLS: dict[str, dict[str, str]] = {
-    name: _TOOL_DOCS[name]
+STEER_WIRED_TOOLS: dict[str, dict] = {
+    name: {**_TOOL_DOCS[name], "params": _TOOL_PARAMS[name]}
     for name in (*state_module.STEER_HAT_TOOLS, CONTEXT_READ_TOOL,
                  CONTEXT_WRITE_TOOL)
 }
+
+
+def usage_payload(tool: str) -> dict:
+    """The tool's documented usage line, parsed. Its top-level keys are
+    exactly the tool's parameter fields (`parameters_source`)."""
+    return json.loads(STEER_WIRED_TOOLS[tool]["usage"])
+
+
+def parameters_source(tool: str) -> str:
+    """Render `tool`'s typebox parameter object: one property per documented
+    top-level payload key, `Type.Optional` where the declaration says so. The
+    hat therefore calls the tool with EXACTLY the payload the prompt
+    documents -- there is no wrapper field to stringify a payload into, which
+    is the defect this replaced (a single required string field named `args`
+    against a prompt documenting `{"task": {...}}`: no schema-valid call
+    existed for the documented usage)."""
+    lines = ["Type.Object({"]
+    for field_name, (typebox, required) in STEER_WIRED_TOOLS[tool][
+            "params"].items():
+        rendered = typebox if required else f"Type.Optional({typebox})"
+        lines.append(f"      {field_name}: {rendered},")
+    lines.append("    })")
+    return "\n".join(lines)
 
 
 def context_files(run: RunDir) -> dict[str, tuple[Path, bool]]:
@@ -465,50 +551,51 @@ def main(argv: list[str] | None = None) -> int:
 
 def extension_source(run_root: Path, python_bin: str) -> str:
     """Render the steer hat's `pi` extension: one `pi.registerTool()` per
-    entry in `STEER_WIRED_TOOLS`, each executing by handing the call to the
-    engine through the spool above. The tool table is embedded as JSON
-    generated from that one declaration, so the registered set and the wired
-    set are the same set by construction."""
-    tools = [
-        {"name": name, "label": doc["label"],
-         "description": f"{doc['description']}\n\nArguments (JSON object): "
-                        f"{doc['usage']}"}
-        for name, doc in STEER_WIRED_TOOLS.items()
-    ]
-    table = json.dumps(tools, indent=2)
+    entry in `STEER_WIRED_TOOLS`, each declaring the SAME parameter object
+    its documented usage line shows (`parameters_source`) and executing by
+    handing that very object to the engine through the spool above. Both the
+    registered set and each tool's argument shape are generated from the one
+    declaration, so neither can drift from what the engine wired or from what
+    `prompts/steer.md` tells the hat to send."""
+    blocks = []
+    for name, doc in STEER_WIRED_TOOLS.items():
+        description = (f"{doc['description']}\n\nArguments (JSON object): "
+                       f"{doc['usage']}")
+        blocks.append(f'''  pi.registerTool({{
+    name: {json.dumps(name)},
+    label: {json.dumps(doc["label"])},
+    description: {json.dumps(description)},
+    parameters: {parameters_source(name)},
+    async execute(_id: string, params: Record<string, unknown>) {{
+      return callEngine({json.dumps(name)}, params);
+    }},
+  }});''')
+    registrations = "\n\n".join(blocks)
     return f'''// Generated by ralphd (engine/hat_tools.py) for the steer hat.
 // Every tool here EXECUTES IN THE ENGINE PROCESS: this extension only hands
 // the call over the run dir's request/response spool and reports the answer.
+// Each tool's parameters are the exact JSON payload documented in
+// prompts/steer.md -- the call the hat is told to make is the call the
+// schema accepts, and it is forwarded verbatim.
 import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
 import {{ Type }} from "typebox";
 import {{ spawnSync }} from "node:child_process";
 
 const RUN_DIR = {json.dumps(str(run_root))};
 const PYTHON = {json.dumps(str(python_bin))};
-const TOOLS = {table};
+
+function callEngine(tool: string, params: Record<string, unknown>) {{
+  const proc = spawnSync(PYTHON, ["-m", "ralphd.engine.hat_tools", tool], {{
+    input: JSON.stringify(params ?? {{}}),
+    encoding: "utf8",
+    env: {{ ...process.env, {json.dumps(RUN_DIR_ENV)}: RUN_DIR }},
+  }});
+  const text = (proc.stdout || "") + (proc.stderr || "");
+  return {{ content: [{{ type: "text" as const, text: text.trim() }}], details: {{}} }};
+}}
 
 export default function (pi: ExtensionAPI) {{
-  for (const tool of TOOLS) {{
-    pi.registerTool({{
-      name: tool.name,
-      label: tool.label,
-      description: tool.description,
-      parameters: Type.Object({{
-        args: Type.String({{
-          description: "The tool's arguments as a JSON object (see the description).",
-        }}),
-      }}),
-      async execute(_id: string, params: {{ args: string }}) {{
-        const proc = spawnSync(PYTHON, ["-m", "ralphd.engine.hat_tools", tool.name], {{
-          input: params.args ?? "{{}}",
-          encoding: "utf8",
-          env: {{ ...process.env, {json.dumps(RUN_DIR_ENV)}: RUN_DIR }},
-        }});
-        const text = (proc.stdout || "") + (proc.stderr || "");
-        return {{ content: [{{ type: "text", text: text.trim() }}], details: {{}} }};
-      }},
-    }});
-  }}
+{registrations}
 }}
 '''
 

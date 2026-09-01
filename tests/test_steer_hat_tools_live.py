@@ -15,7 +15,10 @@ set, and `task-update`'s routing through `apply_task_status_change`); this
 module pins the LIVE half:
 
 1. the steer phase registers exactly the wired tool set, and no other phase
-   is launched with it at all;
+   is launched with it at all -- and each registered tool's parameter schema
+   is exactly the payload its usage line (in the doc table AND in
+   `prompts/steer.md`) documents, so a hat that follows the documentation
+   makes a schema-valid call;
 2. a steer-hat `task-update` carrying a status change routes through the
    transition validator, and an illegal transition is refused with the
    applier's own documented diagnostic;
@@ -96,17 +99,103 @@ def test_no_budget_iteration_approach_or_deadline_tool_is_wired():
             assert bad not in name, name
 
 
+def _registered_blocks(source: str) -> dict[str, str]:
+    """The generated extension's `pi.registerTool({...})` blocks, by tool
+    name: everything up to that block's `async execute`, i.e. the declared
+    name/label/description/parameters."""
+    blocks: dict[str, str] = {}
+    for chunk in source.split("pi.registerTool({")[1:]:
+        name = re.search(r'name:\s*"([a-z-]+)"', chunk).group(1)
+        blocks[name] = chunk[:chunk.index("async execute")]
+    return blocks
+
+
+def _declared_param_fields(tool: str) -> list[str]:
+    """The top-level property names of `tool`'s rendered typebox parameter
+    object -- what the live `pi` tool's schema actually accepts."""
+    return re.findall(r"^      (\w+): ",
+                      hat_tools.parameters_source(tool), re.M)
+
+
+def _prompt_usage_payload(tool: str) -> dict:
+    """The JSON payload `prompts/steer.md`'s own usage line tells the hat to
+    send for `tool`, parsed."""
+    text = PROMPT.read_text()
+    line = next(ln for ln in text.splitlines()
+                if ln.strip().startswith(f"- `{tool}`"))
+    block = text[text.index(line):]
+    if "\n- " in block:
+        block = block[:block.index("\n- ")]
+    payloads = re.findall(r"`(\{.*?\})`", block, re.S)
+    assert payloads, f"no JSON usage payload on {tool}'s prompt line"
+    return json.loads(payloads[-1])
+
+
 def test_the_generated_extension_registers_exactly_the_wired_set(tmp_path):
     broker = _broker(tmp_path)
     path = broker.place()
     source = path.read_text()
-    registered = set(re.findall(r'"name":\s*"([a-z-]+)"', source))
-    assert registered == set(hat_tools.STEER_WIRED_TOOLS)
+    assert set(_registered_blocks(source)) == set(hat_tools.STEER_WIRED_TOOLS)
     # the tools execute in the ENGINE, through the spool -- the extension
     # only hands the call over and reports the answer back
     assert "ralphd.engine.hat_tools" in source
     assert "pi.registerTool" in source
     assert str(broker.run.root) in source
+
+
+def test_each_registered_tool_declares_the_fields_its_usage_payload_documents(
+        tmp_path):
+    """The defect this pins (found by task 033's second validation attempt):
+    the extension used to register EVERY tool with one required string field
+    named `args`, while the prompt and the doc table documented the real
+    payload (`{"task": {...}}`, `{"taskId": ...}`), so a hat that followed
+    the documentation could not make a schema-valid call at all. The declared
+    schema fields must BE the documented payload's top-level keys."""
+    source = _broker(tmp_path).place().read_text()
+    blocks = _registered_blocks(source)
+    for name in hat_tools.STEER_WIRED_TOOLS:
+        documented = set(hat_tools.usage_payload(name))
+        declared = set(_declared_param_fields(name))
+        assert declared, f"{name} declares no parameter fields"
+        assert declared == documented, (
+            f"{name}: schema fields {sorted(declared)} != documented payload "
+            f"keys {sorted(documented)}")
+        # the rendered object is what the registration actually carries, and
+        # the call is forwarded verbatim (no wrapper, no re-stringify)
+        assert hat_tools.parameters_source(name) in blocks[name], name
+        assert f'callEngine("{name}", params)' in source, name
+
+
+def test_no_registered_tool_hides_its_payload_behind_a_stringified_wrapper(
+        tmp_path):
+    source = _broker(tmp_path).place().read_text()
+    assert "params.args" not in source
+    for name in hat_tools.STEER_WIRED_TOOLS:
+        assert "args" not in _declared_param_fields(name), name
+
+
+def test_the_prompt_usage_line_and_the_live_schema_are_the_same_shape():
+    """Criterion 3's agreement, asserted against the prompt text itself: what
+    `prompts/steer.md` tells the hat to send is exactly what the registered
+    tool accepts, key for key."""
+    for name in hat_tools.STEER_WIRED_TOOLS:
+        prompt_keys = set(_prompt_usage_payload(name))
+        assert prompt_keys == set(_declared_param_fields(name)), name
+        assert prompt_keys == set(hat_tools.usage_payload(name)), name
+
+
+def test_the_engine_applies_every_documented_usage_payload_as_written(tmp_path):
+    """End of the same chain: each payload the PROMPT documents, handed to the
+    engine-side executor unchanged, is applied -- never bounced on shape."""
+    broker = _broker(tmp_path, [
+        {"id": "012", "title": "t", "status": "pending"},
+        {"id": "021", "title": "t", "status": "pending"},
+    ])
+    broker.run.notes_file.write_text("notes\n")
+    for name in hat_tools.STEER_WIRED_TOOLS:
+        response = broker.execute(name, _prompt_usage_payload(name))
+        assert response["ok"] is True, (name, response)
+        assert "needs" not in (response.get("error") or ""), (name, response)
 
 
 def test_the_steer_phase_is_the_only_phase_launched_with_the_extension(tmp_path):
