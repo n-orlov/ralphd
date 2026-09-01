@@ -123,3 +123,63 @@ def test_plan_review_md_has_no_stale_review_payload_description():
     a stale `{"verdict", "reason", "findings_path"}`-is-the-whole-channel
     claim about the review hat here either."""
     assert "findings_path" not in PLAN_REVIEW_MD
+
+
+# ---------------------------------------------------------------------------
+# Task 015 (requirement B, #114): review.md's description of the mid-run
+# adjudication episode's payload shape -- the scoped OPEN-petition set
+# (`LoopSupervisor._midrun_adjudication_extra`), the CONFIRMED/REFUTED
+# vocabulary (`transitions.HAT_SCHEMAS["review"]["petition_adjudications"]`),
+# the optional judge-authored `replacement_criteria` for EXACTLY ONE task
+# (`task_id`), and the narrow prohibition on amending the PRD, a
+# Definition-of-done item, another task's criteria or anything under
+# `/config`. Both peer gates (`verdict_gate.md`, `plan_review.md`) must
+# carry no claim that contradicts this -- neither hat's own schema has a
+# `petition_adjudications`/`replacement_criteria` field
+# (`transitions.HAT_SCHEMAS["verdict_gate"]`,
+# `transitions.HAT_SCHEMAS["plan_review"]`), so neither prompt may claim
+# that authority either. Pinned here, in the SAME module the existing
+# "no stale review payload description" test already lives in, so one
+# file is the one place a future edit to any of the three prompts is
+# checked for drift against this payload shape.
+# ---------------------------------------------------------------------------
+
+def test_review_md_describes_the_scoped_open_petition_set():
+    assert "## Impossibility petitions" in REVIEW_MD
+    assert "Open impossibility petitions" in REVIEW_MD
+    assert "adjudicate EVERY petition listed there" in REVIEW_MD
+
+
+def test_review_md_names_the_confirmed_refuted_vocabulary():
+    assert "`CONFIRMED`" in REVIEW_MD
+    assert "`REFUTED`" in REVIEW_MD
+    assert "petition_adjudications" in REVIEW_MD
+
+
+def test_review_md_describes_the_replacement_criteria_for_exactly_one_task():
+    assert "`task_id`" in REVIEW_MD
+    assert "`replacement_criteria`" in REVIEW_MD
+    assert "only the ONE task" in REVIEW_MD
+    assert "you, and only you, MAY re-scope" in REVIEW_MD
+
+
+def test_review_md_prohibits_amending_prd_dod_other_task_or_config():
+    assert "you cannot amend the PRD, a Definition-of-done item," in REVIEW_MD
+    assert "any OTHER task's criteria, or anything under `/config`" in REVIEW_MD
+
+
+def test_verdict_gate_md_claims_no_amendment_authority():
+    """`verdict_gate`'s own schema has no `petition_adjudications` field
+    (`transitions.HAT_SCHEMAS["verdict_gate"]`) -- this pins that its
+    prompt never claims the `replacement_criteria`/`task_id` amendment
+    authority review.md reserves to itself alone."""
+    assert "replacement_criteria" not in VERDICT_GATE_MD
+    assert "task_id" not in VERDICT_GATE_MD
+
+
+def test_plan_review_md_claims_no_amendment_authority():
+    """Same check for `plan_review`, whose own schema
+    (`transitions.HAT_SCHEMAS["plan_review"]`) also has no
+    `petition_adjudications`/`replacement_criteria` field."""
+    assert "replacement_criteria" not in PLAN_REVIEW_MD
+    assert "task_id" not in PLAN_REVIEW_MD
