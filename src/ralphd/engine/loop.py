@@ -5953,9 +5953,20 @@ class LoopSupervisor:
 
         Returns the ids of every task this call moved to `failed`, same
         as the petitions-module function it wraps.
+
+        Task 007 (requirement B, #114): ALSO calls `petitions.
+        record_refuted_adjudications` -- unconditionally, before the
+        tasks.json branch above, so the remedy is witnessed in
+        `events.jsonl` even for the common case this method's own
+        tasks.json mutation never touches: a REFUTED entry whose
+        obligation names no `petitioned` task at all (the mid-run
+        episode's usual shape, since a worker's own declaration never
+        moves the task off its ordinary status). A no-op call (nothing
+        REFUTED) records nothing, exactly like the tasks.json half.
         """
         if not adjudications:
             return []
+        petitions.record_refuted_adjudications(self.run, adjudications)
         tasks_doc = self.run.read_tasks()
         changed = petitions.apply_refuted_petition_adjudications(
             tasks_doc, adjudications)

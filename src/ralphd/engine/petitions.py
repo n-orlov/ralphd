@@ -685,6 +685,22 @@ ADJUDICATIONS_RECORDED_EVENT = "petition_adjudications_recorded"
 ADJUDICATIONS_TAMPERED_EVENT = "petition_adjudications_tampered"
 ADJUDICATIONS_UNAUTHENTICATED_EVENT = "petition_adjudications_unauthenticated"
 
+# Task 007 (requirement B, #114): the REFUTED counterpart's event type.
+# Unlike CONFIRMED, a REFUTED adjudication is never persisted at run scope
+# as an exemption (`docs/petition-format.md`: "is not something a later
+# approach inherits") -- there is nothing here for a later approach to
+# read back and no MAC to authenticate, because nothing downstream ever
+# TRUSTS this event the way `confirmed_obligations` is trusted to grant an
+# exemption. It exists purely so "what would satisfy the obligation" is
+# not lost the moment the adjudicating iteration ends, for the common case
+# (task 007) where the REFUTED entry names an obligation with no matching
+# `petitioned` task at all -- a worker's own mid-run declaration
+# (`file_worker_petition`, task 005 PART 1) never moves the task off its
+# ordinary status, so `apply_refuted_petition_adjudications`'s tasks.json
+# mutation (scoped to `petitioned` tasks only, task 010/C.2) has nothing to
+# touch and the remedy would otherwise vanish unrecorded.
+PETITION_REFUTED_EVENT = "petition_refuted"
+
 # Where a per-run MAC key MAY be persisted so that a record written by an
 # earlier engine episode still authenticates after a restart: a directory
 # OUTSIDE the (agent-owned) run dir, root-owned mode 0700, holding
@@ -1202,6 +1218,48 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications) -> list
                     "Petition REFUTED with no remedy stated.")
                 changed.append(t.get("id"))
     return changed
+
+
+def record_refuted_adjudications(run, adjudications) -> list[str]:
+    """Task 007 (requirement B, #114): emit one `PETITION_REFUTED_EVENT`
+    line per REFUTED entry in `adjudications` (review's/the mid-run
+    episode's own `petition_adjudications` verdict field), carrying the
+    obligation and the refutation's "what would satisfy it" text (its
+    `remedy` field) -- so that text is recorded on the run's own record
+    (`events.jsonl`, under `run.root`) EVEN WHEN no `petitioned` task
+    exists to carry it in `validationNotes`
+    (`apply_refuted_petition_adjudications` above only ever mutates a
+    `petitioned` task; the common mid-run-episode case is a task that
+    never reached that status at all -- task 005 PART 1's worker
+    declaration leaves the task's status untouched).
+
+    Deliberately the opposite of `record_confirmed_adjudications`: no
+    root-owned file, no MAC, no run-scope set anything reads back to grant
+    an exemption -- `docs/petition-format.md` is explicit that REFUTED
+    "is not something a later approach inherits", so this is a plain,
+    unauthenticated witness line, never a trust boundary. A no-op call
+    (nothing REFUTED, or an entry with a blank/non-string obligation)
+    emits nothing.
+
+    Returns the obligation text of every entry this call emitted for, in
+    payload order -- used by callers/tests to confirm something was
+    actually recorded rather than silently dropped.
+    """
+    if not adjudications:
+        return []
+    recorded: list[str] = []
+    for item in adjudications:
+        if not isinstance(item, dict) or item.get("adjudication") != "REFUTED":
+            continue
+        obligation = item.get("obligation")
+        if not isinstance(obligation, str) or not obligation.strip():
+            continue
+        remedy = item.get("remedy")
+        remedy_text = remedy.strip() if isinstance(remedy, str) else ""
+        _emit(run, PETITION_REFUTED_EVENT, obligation=obligation,
+              remedy=remedy_text)
+        recorded.append(obligation)
+    return recorded
 
 
 # ---------------------------------------------------------------------------
