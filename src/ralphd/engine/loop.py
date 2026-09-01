@@ -31,6 +31,7 @@ from typing import Callable
 from . import contract_enforcement
 from . import contracts
 from . import findings
+from . import hat_tools
 from . import petitions
 from . import plan_ingestion
 from . import router
@@ -238,6 +239,11 @@ class LoopSupervisor:
         # folded into the iterations_used seed above.
         self._infra_refunded, self._grace_refunded, self._steer_refunded = (
             self._seed_refunds())
+        # Task 033 (#114): the steer hat's live tool broker, non-None only
+        # while a steer iteration is in flight (`_run_hat_iteration`) -- it
+        # is what makes `_hat_extensions("steer")` non-empty, so no other
+        # phase can ever be launched with the steer tool surface.
+        self._steer_tool_broker: hat_tools.SteerToolBroker | None = None
         # Task 018 (requirement E, #60 pillar 2): sequence number for this
         # process's own router transcripts (`artifacts/router/NNNN.jsonl`) --
         # a plain counter, not an iteration slot: router calls are NEVER
@@ -1486,11 +1492,19 @@ class LoopSupervisor:
         # requirement F's rule that a task's status changes only at a
         # step transition, never while a hat is executing.
         try:
+            # Task 033 (#114): a phase-scoped `pi` extension list -- the
+            # steer hat's live tool surface and nothing for any other
+            # phase. Passed only when non-empty so every other phase's
+            # runner call is byte-for-byte what it always was.
+            extension_kw = {}
+            if exts := self._hat_extensions(phase):
+                extension_kw["extensions"] = exts
             result = await self.runner.run(
                 prompt, itdir / "output.jsonl", model=model,
                 thinking=bundle.thinking, effort=bundle.effort,
                 timeout_s=timeout,
-                extra_env=current_env(), startup_timeout_s=startup_timeout_s)
+                extra_env=current_env(), startup_timeout_s=startup_timeout_s,
+                **extension_kw)
         except BaseException as exc:
             # THE CONTAINMENT BOUNDARY for an iteration (task 011, #28).
             #
@@ -3058,6 +3072,71 @@ class LoopSupervisor:
         """
         return self._executor.advance(state, target, guard)
 
+    async def _run_hat_iteration(self, state: str, hat: str):
+        """Task 033 (operator-inserted scope, #114): run one generic hat's
+        iteration, with the steer hat's TOOLS LIVE for the duration of its
+        own iteration and for no other hat's.
+
+        `state.STEER_HAT_TOOLS` declared the steer hat's authority boundary
+        (task 010, requirement H, #98) as library functions nothing handed to
+        the hat, so the hat could only ever describe the task-table edits an
+        operator message required and ask the operator to apply them
+        host-side (this run did that three times, e.g.
+        `artifacts/steer-001-proposed-task-edits.json`). Here the same
+        callables become callable TOOLS: `hat_tools.SteerToolBroker.place()`
+        writes the generated `pi` extension the steer iteration alone is
+        launched with (`_hat_extensions`, below), and `broker.serve()` runs
+        as one asyncio task IN THIS PROCESS -- the uid that owns
+        `tasks.json` under the #60 privsep boundary -- for exactly as long
+        as the hat's own subprocess is alive. The hat's process writes a
+        request and reads an answer; the engine performs every write, so
+        every applier guarantee (`apply_task_status_change` for a status
+        move, `origin=steer`/`status=pending` on an insert, a delete refused
+        while another task's `dependsOn` names the target) is kept by
+        construction rather than re-implemented on the hat's side.
+
+        A final `serve_once()` after the iteration returns drains a request
+        the hat spooled in its last moments, so a call made just before the
+        subprocess exited is answered and applied rather than silently
+        dropped -- and, because it runs strictly after `run_iteration()`
+        returned, no tool write ever lands WHILE the hat executes past that
+        point either.
+        """
+        if state != "steer":
+            return await self.run_iteration(state, prompt_name=hat,
+                                            tier=tiers.DEFAULT_TIER)
+        broker = hat_tools.SteerToolBroker(
+            self.run, vigilant=bool(self.cfg.vigilant),
+            steering=tuple(p.name for p in self.run.pending_steering()))
+        broker.place()
+        self._steer_tool_broker = broker
+        serving = asyncio.create_task(broker.serve())
+        try:
+            return await self.run_iteration(state, prompt_name=hat,
+                                            tier=tiers.DEFAULT_TIER)
+        finally:
+            serving.cancel()
+            try:
+                await serving
+            except asyncio.CancelledError:
+                pass
+            broker.serve_once()
+            self._steer_tool_broker = None
+
+    def _hat_extensions(self, phase: str) -> list[str]:
+        """Task 033: the `pi` extensions THIS phase's subprocess is launched
+        with -- the steer hat's generated tool extension while a broker is
+        serving it, and nothing at all for every other phase. Scoped to the
+        phase rather than placed in the agent's global `~/.pi/agent/
+        extensions/` on purpose: the tool surface is the authority boundary
+        (PRD requirement H), so a worker/verify/review iteration must never
+        find these tools registered.
+        """
+        broker = getattr(self, "_steer_tool_broker", None)
+        if phase == "steer" and broker is not None:
+            return [str(broker.extension_file)]
+        return []
+
     async def _step_generic_hat(self, state: str, edges: tuple) -> tuple:
         """Task 015 (requirement B, #60 pillar 2): the ONE hardcoded
         fallback for any state `engine.transitions` declares that is not
@@ -3131,8 +3210,7 @@ class LoopSupervisor:
             # sites; a hypothetical future hat lands here) is never
             # task-scoped by construction -- its ladder's designated tier
             # is `tiers.DEFAULT_TIER`.
-            result = await self.run_iteration(state, prompt_name=hat,
-                                              tier=tiers.DEFAULT_TIER)
+            result = await self._run_hat_iteration(state, hat)
             if state == "steer":
                 # Task 014 (requirement J, #98): refund THIS attempt the
                 # instant it returns -- every pass through this while loop

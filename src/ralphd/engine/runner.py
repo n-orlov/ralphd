@@ -152,8 +152,18 @@ class PiRunner:
         timeout_s: int = 2700,
         extra_env: dict | None = None,
         startup_timeout_s: float | None = None,
+        extensions: list[str] | None = None,
     ) -> IterationResult:
         cmd = [self.pi_bin, "-p", "--mode", "json", "--no-session"]
+        # Task 033 (#114): phase-scoped extensions -- `pi -e <path>` per
+        # entry. The engine passes these for the steer hat's live tool
+        # surface only (`LoopSupervisor._hat_extensions`); every other
+        # phase's argv is unchanged, because an extension placed in the
+        # agent's global `~/.pi/agent/extensions/` would register those
+        # tools for EVERY hat and silently widen the authority boundary
+        # the tool surface exists to be (PRD requirement H).
+        for path in extensions or ():
+            cmd += ["-e", str(path)]
         if model:
             cmd += ["--model", model]
         # Task 007 (PRD requirement C): `thinking`/`effort` are the two
