@@ -247,6 +247,24 @@ class LoopSupervisor:
         # iteration budget. The *granted* set itself is deliberately still
         # per-process: see _seed_refunds().
         self._grace_review_granted: set[int] = set()
+        # Task 005 PART 2 (requirement A.2, #114): the normalised set of
+        # open-and-unconfirmed petition obligations the mid-run
+        # adjudication episode has ALREADY been given a bounded shot at
+        # (`petitions.open_unconfirmed_petitions`, normalised the same way
+        # `petitions._normalize_obligation` keys every other obligation
+        # comparison in this tree) -- so a petition whose own workspace
+        # filing never gains an `Adjudication` field (by that module's own
+        # design: only a run-scope CONFIRMED record, never the file
+        # itself, marks a petition settled) does not trigger a FRESH
+        # bounded episode on every later worker pass. The episode is
+        # scheduled again only once a genuinely NEW obligation appears in
+        # the open-and-unconfirmed set -- see
+        # `_maybe_run_midrun_adjudication_episode`. Deliberately
+        # per-process, like `_grace_review_granted`: a resumed engine
+        # simply re-derives it from scratch off the SAME workspace file
+        # and run-scope record, which is the safe direction (at worst one
+        # extra bounded episode after a restart, never a missed one).
+        self._petition_adjudication_seen: set[str] = set()
         # Descriptive note for the terminal `reason` when a grace review ran
         # but did NOT result in a VERIFIED verdict -- kept separate from
         # self._abort_reason so the terminal `state` (aborted vs failed)
@@ -3447,6 +3465,56 @@ class LoopSupervisor:
                       "marked skipped"))
         return []
 
+    def _apply_worker_petition_declaration(self, payload: dict) -> list[str]:
+        """Task 005 PART 1 (#114, closes task 004's residual gap -- see
+        004's `validationNotes`, operator steer 001): the production write
+        path for a worker's OPTIONAL structured impossibility declaration
+        (`payload["petition"]`), independently of `payload["verdict"]`'s
+        own value -- a worker may declare a petition alongside
+        `"no_verdict"`, `"unsatisfiable"`, `"complete"` or
+        `"plan_complete"` alike (`HAT_SCHEMAS["worker"]`'s own docstring).
+
+        Same two-layer split every sibling `_apply_*` method in this class
+        already uses: the SEMANTIC check first
+        (`transitions.worker_petition_report_errors` -- schema shape is
+        `contracts.validate_payload`'s job, already run by
+        `contract_enforcement.parse_response` before this hook is ever
+        called), then the engine's own write path
+        (`petitions.file_worker_petition`, never the worker itself) --
+        which is also where a duplicate declaration against an obligation
+        already filed is refused rather than filed (docs/petition-
+        format.md's one-petition-per-obligation rule). A payload carrying
+        no `petition` key at all is never in violation here, matching
+        every sibling check's "nothing declared, nothing to check" shape.
+
+        Called from `_step_worker` through `contract_enforcement.
+        enforce_contract`'s re-ask ladder exactly like
+        `_apply_unsatisfiable_report`/`_apply_worker_completion_report`:
+        a malformed declaration is carried back to the SAME worker and
+        re-asked rather than silently dropped or filed, and a duplicate
+        is refused the same way -- neither ever reaches
+        `petitions.file_worker_petition`'s write in that case, so nothing
+        new lands in the wave's `<wave>-petitions.md` for either failure
+        mode. A valid declaration is filed EXACTLY ONCE: this method is
+        the ONLY call site `_step_worker` gives `petitions.
+        file_worker_petition` for a worker's own declaration (as opposed
+        to `petitions.file_exhaustion_petition`, the SEPARATE writer
+        `_verify_task` already used for validation-ladder exhaustion
+        before this task, untouched by this change), and `enforce_
+        contract` calls its `extra_validate` hook at most once per
+        attempt, succeeding (and stopping) the first time it returns no
+        errors.
+        """
+        errors = transitions.worker_petition_report_errors(payload)
+        if errors:
+            return errors
+        petition = payload.get("petition")
+        if not isinstance(petition, dict):
+            return []
+        return petitions.file_worker_petition(
+            self.workspace, petition["obligation"], petition["type"],
+            petition["evidence"])
+
     def _worker_assignment_extra(self, task: dict | None) -> str:
         """Task 116 (#60 pillar 3, fact 9): the one thing a worker
         iteration needs told to it now that the HARNESS -- not the agent --
@@ -4431,6 +4499,52 @@ class LoopSupervisor:
             proposed_split_tasks = (
                 payload.get("proposed_tasks") if isinstance(payload, dict) else None)
             applied_this_iteration = False
+            # Task 005 PART 1 (requirement A.1/A.2, #114, closes task 004's
+            # residual gap -- operator steer 001): route EVERY worker
+            # payload carrying a `petition` field through the declaration
+            # schema + `transitions.worker_petition_report_errors` + the
+            # SAME re-ask ladder every other worker semantic channel in
+            # this method already uses -- INDEPENDENTLY of `verdict`'s own
+            # value (a petition may ride alongside `"no_verdict"` just as
+            # well as `"unsatisfiable"`/`"complete"`/`"plan_complete"`),
+            # so a malformed declaration is re-asked and never filed, a
+            # duplicate against an obligation already filed is refused and
+            # never filed, and a valid one is filed EXACTLY ONCE, through
+            # `petitions.file_worker_petition`, AFTER this ladder's own
+            # validation succeeds -- never before. Runs BEFORE the
+            # verdict-specific branches below so a petition riding beside
+            # `"unsatisfiable"`/`"complete"`/`"plan_complete"` is filed (or
+            # refused) before that verdict's own ladder ever starts.
+            if isinstance(payload, dict) and "petition" in payload:
+                event_loop = asyncio.get_running_loop()
+
+                def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                    if attempt == 0:
+                        return worker_final_text
+                    raw, _usage = asyncio.run_coroutine_threadsafe(
+                        self._ask_contract_fix("worker", prior_errors or []),
+                        event_loop).result()
+                    return last_nonblank_line(raw)
+
+                petition_enforcement = await asyncio.to_thread(
+                    contract_enforcement.enforce_contract,
+                    "worker", respond,
+                    max_retries=self.cfg.contract_retry_max,
+                    state=self.run,
+                    extra_validate=lambda p: self._apply_worker_petition_declaration(p),
+                )
+                if petition_enforcement.ok:
+                    stagnant = 0
+                    if petition_enforcement.payload is not None:
+                        payload = petition_enforcement.payload
+                        verdict = payload.get("verdict")
+                        worker_final_text = json.dumps(payload)
+                # Ladder exhausted: falls through to the SAME ordinary
+                # stagnation bookkeeping every other exhausted site in this
+                # method already takes -- no `_advance` call, no
+                # `self._abort_reason`, no early `return`. `enforce_
+                # contract` already emitted the `contract.violation`/
+                # `contract.agent_fault` events for the record.
             if verdict is not None:
                 schema_errors = contracts.validate_payload("worker", payload)
                 # Task 021 (requirement N, #102): `proposed_tasks` is an
@@ -4700,6 +4814,12 @@ class LoopSupervisor:
                     if t.get("status") == "awaiting-validation"
                 ]
                 if pending_verify:
+                    # Task 005 PART 2 (requirement A.2, #114): the bounded
+                    # mid-run adjudication episode, when one is due, runs
+                    # HERE -- strictly before this pass's own
+                    # `_verify_task` calls, i.e. before every one of these
+                    # tasks' NEXT validation attempt.
+                    await self._maybe_run_midrun_adjudication_episode()
                     self._advance("worker", "verify",
                                  "completed_task_pending_verification")
                     any_failed = False
@@ -6334,6 +6454,109 @@ class LoopSupervisor:
             lines.append(
                 f"\n- **task {e.get('taskId')}** ({kind}, recorded "
                 f"{e.get('ts')}): {e.get('text')}\n")
+        return "".join(lines)
+
+    async def _maybe_run_midrun_adjudication_episode(self) -> None:
+        """Task 005 PART 2 (requirement A.2, #114): before the engine ever
+        calls `_verify_task` again for any task, run exactly ONE bounded,
+        OFF-BUDGET adjudication iteration on the review-hat's OWN model
+        (`run_iteration("review", ...)`, which resolves through
+        `tiers.resolve_bundle`/`self.cfg.model_for("review")` -- NEVER the
+        worker's model), scoped to every impossibility petition currently
+        open-and-unconfirmed under this workspace
+        (`petitions.open_unconfirmed_petitions`) -- if, and only if, at
+        least one such obligation is both open AND not already given a
+        bounded episode by an earlier pass of THIS same process
+        (`self._petition_adjudication_seen`, updated at the end of this
+        method regardless of the episode's own outcome -- see that set's
+        own docstring in `__init__` for why re-asking forever would
+        otherwise be the default: a petition's workspace filing never
+        gains an `Adjudication` field by this module's own design).
+
+        A no-op in the overwhelming common case (no petition open at
+        all) -- this method is called unconditionally right before the
+        `pending_verify` loop in `_step_worker`, so "before the affected
+        task's next validation attempt" holds for every task about to be
+        handed to `_verify_task` this pass, not just the one that
+        happened to file the declaration.
+
+        Reuses `_review_verdict` for the ENGINE side effect an ordinary
+        review iteration already applies from the SAME `petition_
+        adjudications` payload field (fact 16/#65: one path, never a
+        second one) -- CONFIRMED entries persist at run scope
+        (`petitions.record_confirmed_adjudications`, surviving
+        `_archive_approach` exactly as an ordinary review's CONFIRMED call
+        does -- that file is never one of the three paths that method
+        copies away), REFUTED entries move any matching `petitioned` task
+        straight to `failed` carrying the remedy
+        (`petitions.apply_refuted_petition_adjudications`, via this
+        class's own `_apply_refuted_petition_adjudications`). This
+        episode's own `verdict` field (required by the `review` contract's
+        schema, `verified`/`rejected`) is NEVER treated as a real review
+        outcome here -- no `_advance`, no `_finish`, no terminal-success
+        side effect of any kind; only the `petition_adjudications` field's
+        side effect is what this episode exists for.
+
+        Off-budget by the SAME mechanism and persistence the grace review
+        already uses (`_refund_iteration("grace")`): a bonus iteration
+        granted outside the ordinary iteration budget, exactly like the
+        grace review is, so it never competes with (or is billed against)
+        either the run's iteration budget or a task's own
+        `validationAttempts` count.
+        """
+        open_petitions = petitions.open_unconfirmed_petitions(
+            self.workspace, self.run)
+        if not open_petitions:
+            return
+        obligations_now = {
+            petitions._normalize_obligation(p["obligation"])
+            for p in open_petitions}
+        if obligations_now <= self._petition_adjudication_seen:
+            return
+        await self._gate()
+        self.run.emit("phase", phase="review", approach=self._approach,
+                      midRunAdjudication=True)
+        result = await self.run_iteration(
+            "review", extra=self._midrun_adjudication_extra(open_petitions),
+            tier=state.run_level_verify_tier())
+        self._refund_iteration("grace")
+        self._petition_adjudication_seen |= obligations_now
+        if result is None:
+            return
+        result = await self._review_contract_ladder(result)
+        self._review_verdict(result)
+
+    def _midrun_adjudication_extra(self, open_petitions: list[dict]) -> str:
+        """The scoped prompt context for the mid-run adjudication episode
+        (`_maybe_run_midrun_adjudication_episode`) -- every open-and-
+        unconfirmed petition, and instructions that this reply's ONLY job
+        is to adjudicate them through the `review` contract's EXISTING
+        `petition_adjudications` field, in the SAME CONFIRMED/REFUTED
+        vocabulary `docs/petition-format.md` and every ordinary
+        run-ending review pass already use (`petitions.
+        petitions_review_context`'s own instruction text, restated here
+        for a call that is bounded and off-budget rather than run-ending).
+        `verdict` is required by the schema but carries NO terminal effect
+        for this call.
+        """
+        lines = [
+            "\n## Mid-run petition adjudication episode (task 005, "
+            "requirement A.2, #114)\n\n"
+            "This is a BOUNDED, OFF-BUDGET adjudication episode, not an "
+            "ordinary run-ending review -- your `verdict` field is "
+            "required by the `review` contract but has NO terminal effect "
+            "here. Your ONLY job this iteration is to adjudicate every "
+            "OPEN impossibility petition listed below, one entry per "
+            "petition, in your verdict payload's `petition_adjudications` "
+            "field: `CONFIRMED` (the obligation genuinely cannot be "
+            "satisfied as written) or `REFUTED` (state CONCRETELY, in "
+            "that entry's `remedy`, what would satisfy the obligation).\n",
+        ]
+        for p in open_petitions:
+            lines.append(
+                f"\n- **Obligation**: {p['obligation']}\n"
+                f"  **Type**: {p['type']}\n"
+                f"  **Evidence**: {p['evidence']}\n")
         return "".join(lines)
 
     def _petitions_review_context(self) -> str:

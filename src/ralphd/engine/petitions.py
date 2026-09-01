@@ -591,6 +591,33 @@ def _obligation_confirmed(obligation: str, confirmed: set[str]) -> bool:
     return bool(clause) and any(clause in c or c in clause for c in confirmed)
 
 
+def open_unconfirmed_petitions(workspace: Path, run=None) -> list[dict]:
+    """Every OPEN petition under `workspace` (`open_petitions_in_workspace`)
+    MINUS whatever a run-scope CONFIRMED adjudication (`confirmed_
+    obligations`) already excludes -- the exact filter `petitions_review_
+    context` below applies before rendering its prompt block, extracted
+    here so a SECOND caller can reuse it without re-deriving the rule
+    (fact 16/#65): `LoopSupervisor._maybe_run_midrun_adjudication_episode`
+    (task 005, requirement A.2, #114) scopes its bounded episode to
+    exactly this list -- the same 'genuinely still open' set review's own
+    prompt already restricts itself to, so the episode never re-asks
+    review to adjudicate an obligation already CONFIRMED at run scope.
+
+    `run=None` (every caller that existed before this task) returns
+    exactly `open_petitions_in_workspace(workspace)`, unfiltered and
+    byte-for-byte unchanged.
+    """
+    petitions_list = open_petitions_in_workspace(workspace)
+    if run is not None and petitions_list:
+        confirmed, tampered = confirmed_obligations(run)
+        if not tampered and confirmed:
+            petitions_list = [
+                p for p in petitions_list
+                if not _obligation_confirmed(p["obligation"], confirmed)
+            ]
+    return petitions_list
+
+
 def petitions_review_context(workspace: Path, run=None) -> str:
     """Render the review-prompt context block for every OPEN petition
     found under `workspace` -- the same treatment
@@ -616,14 +643,7 @@ def petitions_review_context(workspace: Path, run=None) -> str:
     a fresh adjudication, never towards trusting a record that might
     have been edited to manufacture a false exemption.
     """
-    petitions = open_petitions_in_workspace(workspace)
-    if run is not None and petitions:
-        confirmed, tampered = confirmed_obligations(run)
-        if not tampered and confirmed:
-            petitions = [
-                p for p in petitions
-                if not _obligation_confirmed(p["obligation"], confirmed)
-            ]
+    petitions = open_unconfirmed_petitions(workspace, run)
     if not petitions:
         return ""
     lines = [
