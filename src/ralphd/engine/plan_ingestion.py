@@ -321,14 +321,63 @@ UNSCOPED_SHA_OCCURRENCE_CRITERIA = (
     "sha."
 )
 
-# "N occurrences/instances/entries/pairs/times/matches" -- a write-time
-# count of how many times a string shows up. A bare mention of a count
-# with no occurrence-of-a-string language ("19 tasks remain") must not
-# match; neither must a count already scoped to a sha (below).
+# Task 013 second pass -- the first pass got BOTH directions of this lint
+# wrong and validation caught it: it fired on any "contains exactly N"
+# clause (a STATIC count like "the API response fixture must contain
+# exactly 4 entries" is perfectly verifiable and must pass), and it missed
+# a self-growing count written with a spelled-out number ("four
+# occurrences"). The criterion the contract actually bans is narrower than
+# "a count": it is *an unscoped write-time count of a string the task's own
+# mandated output contains*. So this lint now requires all three of:
+#   1. a count-of-a-string shape (digits OR a spelled-out number),
+#   2. no sha scope on that clause (`at \`<sha>\`: N` is the passing form),
+#   3. the criteria themselves declaring that the task's OWN output grows
+#      what is being counted -- an ownership cue and a growth-of-the-
+#      counted-thing verb inside one clause.
+# Without (3) the count is static and no re-write can strand it, which is
+# exactly why the static-count sibling must pass.
+
+# A number, in either notation. "all" counts too ("all 19 occurrences").
+_COUNT_NUM = (
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+    r"|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)"
+)
+
+_COUNTED_NOUN = (
+    r"(?:occurrences?|instances?|entries|entry|pairs?|times|matches|copies"
+    r"|mentions?|appearances?)"
+)
+
+# "N occurrences/instances/entries/...", "appears exactly N times",
+# "contains exactly N occurrences", "a count of N occurrences" -- a count of
+# how many times a string shows up. A bare mention of a count with no
+# occurrence-of-a-string language ("19 tasks remain") must not match.
 _OCCURRENCE_COUNT_RE = re.compile(
-    r"\b\d+\s+(?:occurrences?|instances?|entries|pairs|times|matches)\b"
-    r"|\bappears?\s+exactly\s+\d+\b"
-    r"|\bcontains?\s+exactly\s+\d+\b",
+    rf"\b(?:all\s+)?{_COUNT_NUM}\s+{_COUNTED_NOUN}\b"
+    rf"|\b(?:appears?|appear|occurs?|shows?\s+up)\s+(?:exactly\s+)?"
+    rf"{_COUNT_NUM}\s+times?\b"
+    rf"|\bcount\s+of\s+{_COUNT_NUM}\s+{_COUNTED_NOUN}\b",
+    re.IGNORECASE,
+)
+
+# The task claiming the counted output as its OWN.
+_OWN_OUTPUT_CUE_RE = re.compile(
+    r"\bthis (?:same )?task(?:'s)?\b"
+    r"|\bthe task's own\b"
+    r"|\bits own\b"
+    r"|\bown (?:commit|additions|output|mandated|entry|entries|record)\b",
+    re.IGNORECASE,
+)
+
+# ...growing the very thing being counted ("appends further occurrences",
+# "grow that count", "increments the number of entries"). A growth verb
+# with any other object ("this task's own commit adds the fixture") is not
+# self-growth of a count and must not make a static count trip.
+_GROWTH_OF_COUNTED_RE = re.compile(
+    r"\b(?:append\w*|add\w*|grow\w*|increment\w*|extend\w*|bump\w*)\b"
+    r"(?:\W+\w+){0,6}?\W+"
+    r"(?:occurrences?|counts?|entries|entry|instances?|pairs?|matches|times"
+    r"|figures?|lines?|mentions?|further|more)\b",
     re.IGNORECASE,
 )
 
@@ -341,11 +390,29 @@ _SHA_SCOPED_FIGURE_RE = re.compile(
 )
 
 
+def _declares_self_growing_output(criteria: str) -> bool:
+    """True if these criteria themselves say the task's OWN mandated output
+    grows the thing being counted -- the write-time half of lint (d). Both
+    cues must land in the same clause, so an unrelated "this task's own
+    commit" sentence elsewhere cannot turn a static count into a false
+    positive (must-pass sibling in `tests/test_stranding_lints.py`)."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        if _OWN_OUTPUT_CUE_RE.search(stripped) and _GROWTH_OF_COUNTED_RE.search(stripped):
+            return True
+    return False
+
+
 def _unscoped_occurrence_count_clause(criteria: str) -> str | None:
     """None unless some clause demands an unscoped write-time occurrence
-    count -- a clause already carrying the sha-scoped ``at `<sha>`: N``
-    form is legitimate and must not trip (must-pass sibling in
-    `tests/test_stranding_lints.py`)."""
+    count of a string the task's own mandated output grows. A clause
+    already carrying the sha-scoped ``at `<sha>`: N`` form is legitimate,
+    and so is a STATIC count of something the task does not grow -- both
+    have must-pass siblings in `tests/test_stranding_lints.py`."""
+    if not _declares_self_growing_output(criteria):
+        return None
     for clause in _CLAUSE_SPLIT_RE.split(criteria):
         stripped = clause.strip()
         if not stripped:
@@ -357,13 +424,20 @@ def _unscoped_occurrence_count_clause(criteria: str) -> str | None:
 
 # Untracked run state this contract's scratch-state rule names by example
 # (`/run/ralphd/notes.md`, handoff notes) or by category (anything outside
-# the repository tree, "scratch state").
+# the repository tree, "scratch state"). Task 013 second pass: validation
+# caught this cue set accepting explicit content demands on other concrete
+# out-of-tree paths (`/tmp/handoff.txt`, `/run/ralphd/tasks.json`), so any
+# absolute path rooted in a filesystem directory that cannot be inside the
+# repository tree now counts as untracked run state on its own.
 _UNTRACKED_PATH_CUE_RE = re.compile(
     r"/run/ralphd/notes\.md"
     r"|handoff notes"
     r"|\bnotes\.md\b"
     r"|\bscratch[- ]state\b"
-    r"|outside (?:the )?repo(?:sitory)?(?:\s+tree)?",
+    r"|\buntracked run state\b"
+    r"|\brun (?:state )?director(?:y|ies)\b"
+    r"|outside (?:the )?repo(?:sitory)?(?:\s+tree)?"
+    r"|(?<![\w./])/(?:run|tmp|var|etc|home|root|proc|sys|dev|mnt|opt|usr)/",
     re.IGNORECASE,
 )
 
@@ -372,10 +446,19 @@ _UNTRACKED_PATH_CUE_RE = re.compile(
 # clause that only asks the path to point at, or the artifact to exist,
 # never uses one of these (must-pass sibling in
 # `tests/test_stranding_lints.py`).
+# Task 013 second pass: validation caught the modal list here as far too
+# short -- "The handoff notes must list all 19 stale sha pairs" is exactly
+# the banned shape and "must list" was not in it. Every modal + content
+# verb pairing now counts; existence and pointer wording ("must exist",
+# "need only point to") deliberately does not.
 _CONTENT_OR_FORMAT_DEMAND_RE = re.compile(
     r"\binlin\w*\b"
     r"|\bverbatim\b"
-    r"|\bmust\s+(?:show|read|contain)\b"
+    r"|\b(?:must|shall|should|has to|have to|needs? to|is required to"
+    r"|are required to|only once)\s+(?:also\s+|itself\s+|already\s+|still\s+)?"
+    r"(?:show|read|contain|contains|list|record|include|name|state|enumerate"
+    r"|say|mention|carry|spell|match|reproduce|duplicate|quote|end|begin"
+    r"|start|be\s+formatted)\b"
     r"|\bcontains?\b"
     r"|\bformat\b"
     r"|\bduplicat\w*\b"

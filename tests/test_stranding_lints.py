@@ -314,6 +314,58 @@ def test_other_occurrence_count_phrasings_are_also_rejected():
     assert any("012" in e and "unscoped write-time occurrence count" in e for e in errors)
 
 
+def test_a_self_growing_count_written_with_a_spelled_out_number_is_rejected():
+    """Second pass (validation finding): the first cut of this lint only
+    understood digits, so `four occurrences` -- the same banned shape in
+    ordinary prose -- sailed through."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "018",
+                successCriteria=(
+                    "The closing report must show four occurrences of the "
+                    "launch sha, even though this task's own commit appends "
+                    "further occurrences of it to that same report."
+                ),
+            ),
+            _basic_task(
+                "019",
+                successCriteria=(
+                    "The notification log shows up nineteen times the phrase "
+                    "'sweep recorded'; this task's own entry increments that "
+                    "count."
+                ),
+            ),
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any("018" in e and "unscoped write-time occurrence count" in e for e in errors), errors
+    assert any("019" in e and "unscoped write-time occurrence count" in e for e in errors), errors
+
+
+def test_a_static_count_the_task_does_not_grow_is_accepted():
+    """Must-pass sibling, and the second pass's other validation finding: a
+    count of something the task's own mandated output does NOT grow is
+    static, verifiable and legitimate -- the banned shape is a *write-time*
+    count, not any count."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "020",
+                successCriteria="The API response fixture must contain exactly 4 entries.",
+            ),
+            _basic_task(
+                "021",
+                successCriteria=(
+                    "The API fixture must contain exactly 4 entries. This "
+                    "task's own commit adds the fixture."
+                ),
+            ),
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
 def test_a_sha_scoped_figure_is_accepted():
     """Must-pass sibling: 'at `<sha>`: N' is exactly the sha-scoped form
     the standing rules mandate for every figure in a tracked record
@@ -395,6 +447,35 @@ def test_other_untracked_state_content_demands_are_also_rejected():
     errors = pi.lint_proposal(payload)
     assert any("015" in e and "untracked run state" in e for e in errors)
     assert any("016" in e and "untracked run state" in e for e in errors)
+
+
+def test_content_demands_on_other_out_of_tree_paths_are_also_rejected():
+    """Second pass (validation finding): the first cut's path cues covered
+    `notes.md`/`handoff notes` but not other concrete paths that cannot be
+    inside the repository tree, and its demand cues left out the commonest
+    wording of all -- `must list`."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "022",
+                successCriteria="/tmp/handoff.txt must contain the full table.",
+            ),
+            _basic_task(
+                "023",
+                successCriteria=(
+                    "/run/ralphd/tasks.json must record this task's status "
+                    "before the closing report sends."
+                ),
+            ),
+            _basic_task(
+                "024",
+                successCriteria="The handoff notes must list all 19 stale sha pairs.",
+            ),
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    for tid in ("022", "023", "024"):
+        assert any(tid in e and "untracked run state" in e for e in errors), (tid, errors)
 
 
 def test_an_artifact_existence_pointer_is_accepted():
