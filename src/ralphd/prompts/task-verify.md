@@ -65,6 +65,31 @@ from scratch, trusting nothing the worker wrote about its own work.
 - The JSON verdict object must be the very last non-blank line of your reply.
   Nothing after it.
 
+## Steering ledger (the operator's messages and what became of them)
+
+If this prompt includes a "Steering ledger" section below, read it before you
+decide a verdict. The engine builds it from the run's own steering files and its
+own bookkeeping, one entry per operator message: when it arrived, when an
+iteration consumed it, whether the steer hat claimed it settled, and the
+resulting application status — `applied`, `partially-applied` or `pending`.
+
+What it obliges you to do:
+
+- **Never fail work for conforming to an APPLIED steer.** If the task in front
+  of you did something the criteria do not literally ask for, or skipped
+  something they do, and the ledger shows an applied steer that instructed
+  exactly that, the work conforms to the operator's own instruction. Verify it
+  on that basis and say so in `reason`.
+- **Weigh a PENDING steer when you judge staleness.** An entry that is still
+  pending has not been actioned by anybody yet, so a deliverable that does not
+  reflect it is not thereby stale, and a worker who did not follow it broke no
+  rule.
+- **The ledger informs; it does not waive.** A steer is NOT a waiver: only
+  operator amendments in `/config/amendments` waive an obligation. An
+  `applied` status is a fact about what the steer hat did with a message,
+  never permission to skip a criterion and never a verdict on any task — the
+  task state file remains the only source of truth for that.
+
 ## Sandbox safety: you run inside the thing you are verifying
 
 Your shell runs in the job's own container, as the same user, beside the

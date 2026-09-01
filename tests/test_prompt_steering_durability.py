@@ -17,6 +17,13 @@ prompt must say
 
 Patterns are matched only inside the `## Operator steering` section, so a rule
 that drifts out of it fails a named test instead of matching prose elsewhere.
+
+Task 034 extends this module to the OTHER half of steering's durability: the
+steering ledger the engine renders into every following iteration's prompt.
+The two validating hats' prompts (`task-verify.md`, `review.md`) must state
+the ledger's semantics themselves -- it informs, and a steer is NOT a waiver
+(only `/config/amendments` waives) -- so a validator reading only its own
+prompt still knows how to treat an applied or pending steer.
 """
 
 from __future__ import annotations
@@ -24,8 +31,20 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "src" / "ralphd" / "prompts"
 WORKER = PROMPTS_DIR / "worker.md"
+
+# Task 034: the ledger's not-a-waiver sentence, as `engine.loop.
+# STEERING_LEDGER_NOT_A_WAIVER` renders it, asserted in the prompts of the
+# two hats that judge other hats' work.
+NOT_A_WAIVER_PATTERNS = [
+    r"A steer is NOT a waiver",
+    r"only operator amendments in `/config/amendments`",
+    r"waive an obligation",
+]
+LEDGER_HATS = ("task-verify", "review")
 
 
 def _worker_text() -> str:
@@ -123,3 +142,43 @@ def test_the_rules_list_points_at_the_steering_section():
     assert re.search(r"`## Operator steering`", rules.group(1)), (
         "worker.md's steering bullet under '## Rules' must point at the "
         "'## Operator steering' section")
+
+
+# -- Task 034: the steering ledger's semantics in the validating prompts ----
+
+def _ledger_section(name: str) -> str:
+    """The text of `name`.md's steering-ledger section, whitespace-collapsed
+    so a reflowed line break can never fail a wording check."""
+    path = PROMPTS_DIR / f"{name}.md"
+    assert path.is_file(), f"missing prompt file {path}"
+    m = re.search(r"^##\s+Steering ledger\b.*?$(.*?)(?=^##\s|\Z)",
+                  path.read_text(), re.MULTILINE | re.DOTALL)
+    assert m, f"{name}.md has no '## Steering ledger' section"
+    return re.sub(r"\s+", " ", m.group(1))
+
+
+@pytest.mark.parametrize("name", LEDGER_HATS)
+def test_the_validating_prompts_have_a_steering_ledger_section(name):
+    assert _ledger_section(name).strip(), (
+        f"{name}.md's steering-ledger section is empty")
+
+
+@pytest.mark.parametrize("name", LEDGER_HATS)
+def test_the_not_a_waiver_sentence_is_in_both_validating_prompts(name):
+    section = _ledger_section(name)
+    missing = [p for p in NOT_A_WAIVER_PATTERNS
+               if not re.search(p, section, re.IGNORECASE | re.DOTALL)]
+    assert not missing, (
+        f"{name}.md's steering-ledger section is missing the 'a steer is not "
+        f"a waiver' rule; no match for: {missing}")
+
+
+@pytest.mark.parametrize("name", LEDGER_HATS)
+def test_the_validating_prompts_say_the_ledger_informs(name):
+    section = _ledger_section(name)
+    for pattern in (r"applied", r"partially-applied", r"pending",
+                    r"conforming to an APPLIED steer",
+                    r"[Ww]eigh a PENDING steer", r"stale"):
+        assert re.search(pattern, section, re.DOTALL), (
+            f"{name}.md's steering-ledger section must state the '{pattern}' "
+            "half of the ledger's semantics")

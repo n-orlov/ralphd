@@ -1044,6 +1044,21 @@ HAT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "settled": {"type": "boolean"},
             "notes": {"type": "string"},
+            # Task 034 (operator-inserted): the hat's OPTIONAL self-report
+            # of how much of this iteration's steering it actually applied,
+            # recorded per steering file in the run's steering ledger
+            # (`state.record_steering_settlement`, rendered into every
+            # following iteration's prompt by
+            # `LoopSupervisor._steering_ledger_context`). Optional on
+            # purpose: a hat that says nothing here keeps validating
+            # exactly as before, and the ledger derives `applied` from a
+            # `settled: true` claim and `partially-applied` from a
+            # `settled: false` one. `pending` is deliberately absent from
+            # the enum -- "pending" is the ABSENCE of a settlement record,
+            # never something a hat that just processed a message may claim
+            # about it.
+            "application": {"type": "string",
+                            "enum": ["applied", "partially-applied"]},
         },
         "additionalProperties": False,
     },

@@ -996,6 +996,167 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
     return out
 
 
+# Task 034 (operator-inserted): the STEERING LEDGER -- one run-scope,
+# engine-owned record per steering file, joining what the operator sent to
+# what the steer hat did with it.
+#
+# The gap it closes, observed in this run: `steering_entries` above knows
+# only two states (`pending`/`applied`), and "applied" there means merely
+# "some iteration finished cleanly with the file in its prompt". The steer
+# hat's own settlement claim (`settled` plus its `notes`, recorded by
+# `LoopSupervisor._step_generic_hat` as the `steer.settled` event and the
+# `steerSettled` status field) lived only in those two places, so a verify
+# or review hat had NO first-class view of what was steered, what the steer
+# hat applied, and what is still waiting -- and could fail work for
+# conforming to a steer it never saw.
+#
+# `steering/.ledger.json` holds the engine's own per-file bookkeeping
+# (consumption timestamp + iteration, the steer hat's settlement claim, its
+# application status and notes); `steering_ledger` JOINS it with the files
+# themselves, so a steering file that no steer iteration has touched yet
+# appears in the ledger as `pending` IMMEDIATELY -- the ledger never waits
+# for a record to exist before reporting a message.
+#
+# The application vocabulary lives here, in ONE place, exactly like
+# `STEERING_PENDING`/`STEERING_APPLIED` above.
+STEERING_LEDGER_FILE = ".ledger.json"
+STEER_APPLICATION_APPLIED = "applied"
+STEER_APPLICATION_PARTIAL = "partially-applied"
+STEER_APPLICATION_PENDING = "pending"
+STEER_APPLICATION_STATUSES: tuple[str, ...] = (
+    STEER_APPLICATION_APPLIED,
+    STEER_APPLICATION_PARTIAL,
+    STEER_APPLICATION_PENDING,
+)
+
+
+def steering_ledger_path(run_root: Path) -> Path:
+    return Path(run_root) / "steering" / STEERING_LEDGER_FILE
+
+
+def steering_ledger_records(run_root: Path) -> dict:
+    """The engine's raw per-file ledger bookkeeping, keyed by file name.
+
+    A missing or malformed file reads as `{}` -- the ledger is derived from
+    the steering files themselves (`steering_ledger` below), so losing this
+    record degrades the join to "nothing applied yet", never to a crash.
+    """
+    raw = read_json(steering_ledger_path(run_root), {})
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items()
+            if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _write_steering_ledger_records(run_root: Path, records: dict) -> None:
+    path = steering_ledger_path(run_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, records)
+
+
+def record_steering_consumption(run_root: Path, names, iteration: int) -> dict:
+    """Stamp the consumption timestamp of each name in `names`.
+
+    Called by `RunDir.consume_steering` -- the ONE writer of
+    `.consumed.json` -- so the ledger's `consumed` timestamp can never
+    disagree with the consumed set: both are written from the same call,
+    for the same freshly-consumed names.
+    """
+    records = steering_ledger_records(run_root)
+    ts = utcnow()
+    for name in names:
+        entry = dict(records.get(name) or {})
+        entry.setdefault("consumedAt", ts)
+        entry.setdefault("consumedIteration", iteration)
+        records[name] = entry
+    _write_steering_ledger_records(run_root, records)
+    return records
+
+
+def record_steering_settlement(run_root: Path, names, *, settled: bool,
+                               notes=None, application=None) -> dict:
+    """Record the steer hat's settlement payload against `names`.
+
+    `settled` and `notes` are the hat's own contract fields
+    (`transitions.HAT_SCHEMAS["steer"]`); `application` is its optional
+    self-report of HOW MUCH it applied. The per-entry application status is
+    derived here, in ONE place:
+
+      * an explicit `application` the hat declared, when it is one of
+        `STEER_APPLICATION_STATUSES`;
+      * else `applied` when the hat claimed `settled: true`;
+      * else `partially-applied` -- the hat processed the message and said
+        so, but did not claim it settled, which is exactly the state a
+        later hat must weigh rather than assume closed.
+
+    Never `pending`: `pending` is the absence of any settlement record,
+    which `steering_ledger` derives without a write.
+    """
+    if application in STEER_APPLICATION_STATUSES:
+        status = application
+    elif settled:
+        status = STEER_APPLICATION_APPLIED
+    else:
+        status = STEER_APPLICATION_PARTIAL
+    records = steering_ledger_records(run_root)
+    ts = utcnow()
+    for name in names:
+        entry = dict(records.get(name) or {})
+        entry["settled"] = bool(settled)
+        entry["application"] = status
+        entry["settledAt"] = ts
+        if notes is not None:
+            entry["notes"] = notes
+        records[name] = entry
+    _write_steering_ledger_records(run_root, records)
+    return records
+
+
+def steering_ledger(run_root: Path) -> list[dict]:
+    """The steering ledger of a run, oldest first -- one entry per file.
+
+    Keys, per entry:
+
+      `file`        the steering file name (the engine's own identifier),
+      `seq`/`name`  as `steering_entries` above spells them,
+      `received`    when the operator's message landed,
+      `consumed`    when an iteration finished cleanly with it in its
+                    prompt, or None when no such timestamp was recorded,
+      `state`       `pending` | `applied`, the consumption fact
+                    `steering_entries` reports from `.consumed.json`
+                    itself (so a file consumed before this record existed
+                    still reads as consumed, with no timestamp),
+      `consumedIteration` which iteration that was, when known,
+      `settled`     the steer hat's own settlement claim as a bool,
+      `application` `applied` | `partially-applied` | `pending`,
+      `notes`       the steer hat's settlement notes, when it wrote any.
+
+    A plain function over a path, like `steering_entries`/`prd_path`, so
+    the host side can read a registry run dir without constructing a
+    `RunDir` in somebody else's run dir.
+    """
+    records = steering_ledger_records(run_root)
+    out = []
+    for entry in steering_entries(run_root, bodies=False):
+        record = records.get(entry["file"]) or {}
+        application = record.get("application")
+        if application not in STEER_APPLICATION_STATUSES:
+            application = STEER_APPLICATION_PENDING
+        out.append({
+            "file": entry["file"],
+            "seq": entry.get("seq"),
+            "name": entry.get("name"),
+            "received": entry.get("ts"),
+            "consumed": record.get("consumedAt"),
+            "state": entry.get("state"),
+            "consumedIteration": record.get("consumedIteration"),
+            "settled": bool(record.get("settled")),
+            "application": application,
+            "notes": record.get("notes"),
+        })
+    return out
+
+
 # Task 028 (#26): the shape of an operator ruling ('amendment'), in ONE place.
 #
 # `<config_root>/amendments/NNN-<task-id>.md` holds an operator ruling review
@@ -5209,6 +5370,13 @@ class RunDir:
         reader the host side uses too (module-level `steering_entries`)."""
         return steering_entries(self.root, bodies=bodies)
 
+    def steering_ledger(self) -> list[dict]:
+        """Task 034: this run's steering LEDGER, through the ONE shared
+        reader (module-level `steering_ledger`) -- one entry per steering
+        file, joining the operator's message with the steer hat's own
+        settlement claim."""
+        return steering_ledger(self.root)
+
     def consume_steering(self, files: list[Path], iteration: int) -> None:
         """Mark `files` applied by iteration `iteration` (task 018, #34).
 
@@ -5230,5 +5398,11 @@ class RunDir:
             return
         consumed.extend(p.name for p in fresh)
         atomic_write_json(self.consumed_marker(), consumed)
+        # Task 034: the steering ledger's consumption timestamp is stamped
+        # from THIS call, for exactly the freshly-consumed names, so the
+        # ledger and `.consumed.json` cannot disagree about which files an
+        # iteration actioned or when.
+        record_steering_consumption(self.root, [p.name for p in fresh],
+                                    iteration)
         for p in fresh:
             self.emit("steering.consumed", file=p.name, iteration=iteration)

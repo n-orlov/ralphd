@@ -61,6 +61,29 @@ shape, any more than a verifier's own contract enforcement replaces yours over
 a worker's claim -- schema validation and independent verification are two
 different questions, and only this review answers the second one.
 
+## Steering ledger (the operator's messages and what became of them)
+
+If this prompt includes a "Steering ledger" section below, read it before you
+write findings. The engine builds it from the run's own steering files and its
+own bookkeeping, one entry per operator message: when it arrived, when an
+iteration consumed it, whether the steer hat claimed it settled, and the
+resulting application status — `applied`, `partially-applied` or `pending`.
+
+What it obliges you to do:
+
+- **Never reject work for conforming to an APPLIED steer.** Work that follows
+  an applied steer follows the operator's own instruction; account for it that
+  way in your findings instead of recording it as a deviation from the plan.
+- **Weigh a PENDING steer when you judge staleness or an omission.** Nobody has
+  actioned a pending entry yet, so a deliverable that does not reflect it is not
+  stale for that reason, and no hat broke a rule by not following it.
+- **The ledger informs; it does not waive.** A steer is NOT a waiver: only
+  operator amendments in `/config/amendments` waive an obligation — the
+  read-only channel the "Operator rulings" section above describes, and the
+  only one that can excuse an unmet criterion. An `applied` status says what
+  the steer hat did with a message; it is never a verdict on the tasks that
+  message produced, which the task state file alone carries.
+
 ## Impossibility petitions
 
 If this prompt includes an "Open impossibility petitions" section below,

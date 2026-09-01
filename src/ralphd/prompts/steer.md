@@ -115,6 +115,13 @@ End your reply's last non-blank line with exactly one JSON object:
   — include a `notes` field explaining why; a `false` claim with no
   explanation is refused as malformed, the same way a reviewer's `rejected`
   verdict with no `reason` is.
+- `application` is optional and says how much of this iteration's steering you
+  actually applied: `"applied"` or `"partially-applied"`. The engine records
+  your claim, per steering file, in the run's **steering ledger** and renders
+  that ledger into every following iteration's prompt for every hat — so your
+  `notes` are what a later verifier or reviewer reads to see what the operator
+  asked for and what you did about it. Write them for that reader. Omit
+  `application` and the ledger derives it from your `settled` claim.
 
 This contract is checked in addition to the actual `tasks.json`/standing-rules
 diff, never instead of it.

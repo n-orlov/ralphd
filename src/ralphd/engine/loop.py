@@ -52,6 +52,8 @@ from .pricing import resolve_pricing
 from .runner import IterationResult, PiRunner, last_nonblank_line
 from .skills import ambient_home, verify_placement_and_report
 from .state import (
+    STEERING_APPLIED,
+    STEER_APPLICATION_PENDING,
     TASK_FAILURE_VALIDATION_EXHAUSTED,
     TERMINATION_CLASS_OPERATOR,
     TERMINATION_CLASS_SELF,
@@ -63,6 +65,7 @@ from .state import (
     last_tool_call,
     prd_path,
     record_operator_termination,
+    record_steering_settlement,
     task_failure_kind,
     task_blocks_completion,
     task_is_actionable,
@@ -110,6 +113,32 @@ STEERING_ACTIONABLE_PHASES = {"planning", "worker", "steer"}
 STEERING_ECHO_HEADING = "## Recent operator messages (read-only context)"
 STEERING_ECHO_MAX_MESSAGES = 5
 STEERING_ECHO_MAX_BODY_CHARS = 2000
+
+# Task 034 (operator-inserted): the STEERING LEDGER's own prompt section --
+# carried in EVERY hat's prompt by `build_prompt`, exactly like the
+# recent-messages echo, and for the complementary reason. The echo carries
+# what the operator SAID; the ledger carries what the harness DID (received,
+# consumed, the steer hat's settlement claim and its application status),
+# which is the half a verify or review hat needs and had no view of: a
+# validator that cannot see an applied steer can fail work for conforming
+# to it, and one that cannot see a PENDING steer cannot judge staleness.
+#
+# Surfaced engine-side, like `_operator_amendment_review_context` and
+# `_petitions_review_context`, so no hat's prompt file has to remember to
+# ask for it and no hat can be forgotten.
+#
+# `STEERING_LEDGER_NOT_A_WAIVER` is the semantics sentence, stated in ONE
+# place and asserted verbatim in `prompts/task-verify.md` and
+# `prompts/review.md` by `tests/test_prompt_steering_durability.py`: the
+# ledger INFORMS, it does not waive. Only operator amendments in
+# `/config/amendments` waive an obligation -- unchanged by this section's
+# existence, and said out loud here so no hat can read "applied" as
+# "excused".
+STEERING_LEDGER_HEADING = "## Steering ledger (read-only context)"
+STEERING_LEDGER_NOT_A_WAIVER = (
+    "A steer is NOT a waiver: only operator amendments in "
+    "`/config/amendments` waive an obligation.")
+STEERING_LEDGER_MAX_NOTES_CHARS = 400
 
 # Task 022 (#30): how many earlier episode endings `status.json` keeps in
 # `previousEndings`. Bounded because status.json is rewritten in full on every
@@ -661,6 +690,7 @@ class LoopSupervisor:
                     f"Steering file(s) {names} are waiting for the operator's "
                     "instructions to be actioned by the next planning/worker "
                     "iteration. This phase does not consume or act on them.\n")
+        parts.append(self._steering_ledger_context())
         parts.append(self._recent_steering_echo())
         if extra:
             parts.append("\n" + extra)
@@ -732,6 +762,80 @@ class LoopSupervisor:
                      else "pending")
             lines.append(f"\n### {entry['file']} — {state}, received "
                          f"{entry.get('ts')}\n{body}\n")
+        return "".join(lines)
+
+    def _steering_ledger_context(self) -> str:
+        """The steering LEDGER section (task 034), carried in EVERY hat's
+        prompt -- worker, verify, review, planning and every other one --
+        beside the recent-messages echo (`_recent_steering_echo`).
+
+        One line per steering file of this run, whatever its state: when it
+        was received, when an iteration consumed it, whether the steer hat
+        claimed it settled, and the application status that claim produced
+        (`applied` | `partially-applied` | `pending`, the vocabulary
+        `state.STEER_APPLICATION_STATUSES` declares) plus the hat's own
+        settlement notes.
+
+        Derived, never asserted: `state.steering_ledger` joins the files on
+        disk with the engine's own `steering/.ledger.json` bookkeeping, so a
+        steering file nobody has processed yet appears here as `pending` in
+        the VERY NEXT iteration's prompt without waiting for a steer
+        iteration to write anything.
+
+        Semantics, stated in the text itself rather than left to be inferred:
+
+        * the ledger INFORMS -- a validator must not fail work for
+          conforming to an APPLIED steer, and must weigh a PENDING steer
+          when judging whether something is stale;
+        * it is NOT a waiver (`STEERING_LEDGER_NOT_A_WAIVER`): only
+          operator amendments in `/config/amendments` waive an obligation,
+          exactly as before this section existed;
+        * reading it consumes and settles nothing -- building a prompt
+          never does, here as in the recent-messages echo.
+
+        Surfaced from the engine, the same way
+        `_operator_amendment_review_context` and `_petitions_review_context`
+        surface their own facts: the hat prompts acknowledge the section,
+        they do not have to reconstruct it.
+        """
+        entries = self.run.steering_ledger()
+        if not entries:
+            return ""
+        lines = [f"\n{STEERING_LEDGER_HEADING}\n",
+                 f"One entry per operator steering file of this run "
+                 f"({len(entries)} total), oldest first: what the operator "
+                 f"sent, what the harness did with it, and what the steer "
+                 f"hat claimed.\n"
+                 "\nHow to read it: `applied` means the steer hat processed "
+                 "that message and claimed it settled; `partially-applied` "
+                 "means it processed the message without claiming that; "
+                 "`pending` means no steer iteration has settled it yet. "
+                 "The ledger INFORMS -- do not fail work for conforming to "
+                 "an APPLIED steer, and weigh a PENDING steer when judging "
+                 "whether a deliverable is stale. "
+                 f"{STEERING_LEDGER_NOT_A_WAIVER} An application status is "
+                 "never a verdict on the tasks a steer produced either -- "
+                 f"`{self.run.tasks_file}` is the single source of truth for "
+                 "that. Reading this section consumes and settles nothing.\n"]
+        for entry in entries:
+            consumed = entry.get("consumed")
+            if not consumed:
+                consumed = ("consumed (time unrecorded)"
+                            if entry.get("state") == STEERING_APPLIED
+                            else "not yet consumed")
+            else:
+                consumed = f"consumed {consumed}"
+            notes = (entry.get("notes") or "").strip()
+            if len(notes) > STEERING_LEDGER_MAX_NOTES_CHARS:
+                notes = notes[:STEERING_LEDGER_MAX_NOTES_CHARS] + " [truncated]"
+            lines.append(
+                f"\n- `{entry['file']}` — received {entry.get('received')}, "
+                f"{consumed}, settled: "
+                f"{'yes' if entry.get('settled') else 'no'}, application: "
+                f"{entry.get('application') or STEER_APPLICATION_PENDING}")
+            if notes:
+                lines.append(f"\n  - steer hat's settlement notes: {notes}")
+        lines.append("\n")
         return "".join(lines)
 
     def _workspace_note(self) -> str:
@@ -3210,6 +3314,15 @@ class LoopSupervisor:
             # sites; a hypothetical future hat lands here) is never
             # task-scoped by construction -- its ladder's designated tier
             # is `tiers.DEFAULT_TIER`.
+            #
+            # Task 034: which steering files THIS steer pass was handed,
+            # captured BEFORE the call -- `_run_iteration_once` marks them
+            # consumed once the iteration finishes cleanly, so by the time
+            # the hat's settlement payload is read below
+            # `pending_steering()` no longer names them. This list is what
+            # the settlement claim is recorded against in the ledger.
+            delivered_steering = ([p.name for p in self.run.pending_steering()]
+                                  if state == "steer" else [])
             result = await self._run_hat_iteration(state, hat)
             if state == "steer":
                 # Task 014 (requirement J, #98): refund THIS attempt the
@@ -3363,6 +3476,17 @@ class LoopSupervisor:
                 "at": utcnow(),
                 "notes": payload.get("notes"),
             })
+            # Task 034: the same claim, recorded PER STEERING FILE in the
+            # run-scope steering ledger, so every following iteration of
+            # every hat can see which message it applies to -- the
+            # `steerSettled` status field above is only ever the most
+            # recent claim, with no way to tell what it was about.
+            if delivered_steering:
+                record_steering_settlement(
+                    self.run.root, delivered_steering,
+                    settled=settled_claim,
+                    notes=payload.get("notes"),
+                    application=payload.get("application"))
         # Task 019 (requirement F, #60 pillar 3), cut over by v0.13 task 004
         # (#92 site 2): a hat's reported `task_status` for a specific
         # `task_id` is a proposed task-state CHANGE, applied by

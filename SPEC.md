@@ -1100,6 +1100,23 @@ is pending.
   (`STEERING_ACTIONABLE_PHASES`): they get a read-only note that steering is
   waiting for the next actionable phase. Marking it consumed there would record
   it as actioned and silently discard it.
+- The **steering ledger** (task 034) is the run-scope, engine-owned join of
+  those two halves: `state.steering_ledger` pairs every `steering/NNN-*.md`
+  file with the engine's own `steering/.ledger.json` bookkeeping (consumption
+  timestamp and iteration, the steer hat's `settled` claim, its settlement
+  `notes` and the resulting application status — `applied`,
+  `partially-applied` or `pending`, the `STEER_APPLICATION_STATUSES`
+  vocabulary). `LoopSupervisor._steering_ledger_context` renders it into
+  EVERY hat's prompt from `build_prompt`, the same engine-side surfacing
+  `_operator_amendment_review_context` and `_petitions_review_context` use, so
+  a verifier or reviewer can see what was steered, what was applied and what
+  is still pending. A steering file nobody has settled yet appears as
+  `pending` in the very next iteration's prompt, with no record written. The
+  semantics are stated in the rendered text and in `prompts/task-verify.md`
+  and `prompts/review.md`: the ledger INFORMS (never fail work for conforming
+  to an applied steer; weigh a pending steer when judging staleness), but a
+  steer is NOT a waiver — only operator amendments in `/config/amendments`
+  waive an obligation (§13.4).
 - A `VERIFIED` verdict is refused while the exit gate
   (`LoopSupervisor._terminal_success_blockers()`, the one predicate both
   `_step_review` and the grace review ask) names anything: an **unsettled**
@@ -1300,7 +1317,8 @@ strictly append-only.
 ├── .lock                    # exclusive flock held by the live engine; holds its pid
 ├── steering/
 │   ├── NNN-<name>.md        # one operator steering message
-│   └── .consumed.json       # names already actioned by an iteration
+│   ├── .consumed.json       # names already actioned by an iteration
+│   └── .ledger.json         # per-message ledger: consumption + the steer hat's settlement claim (§4.6)
 ├── iterations/
 │   └── NNNN/                # one iteration (§5.5)
 │       ├── meta.json        # what ran, how it ended, what it cost
