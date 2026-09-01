@@ -179,14 +179,17 @@ def _detect_cycles(tasks: list[dict]) -> list[str]:
 # stranding lints (PRD contract rule 3, `docs/prds/v0.16-a-petition-is-not-a-postmortem.md:79-84`):
 # relational sha anchors, single-commit demands on a deliverable whose own
 # criteria also mandate a separate disclosure/notification/record commit,
-# and forward citation of a task ordered later in the same plan. Each
-# mirrors `lint_own_terminal_state`'s #86/#76 discipline (below,
+# and forward citation of a task ordered later in the same plan. Task 013
+# (this block's continuation, below `_forward_task_commit_refs`) adds the
+# remaining two: an unscoped write-time occurrence count of a string the
+# task's own mandated output contains, and a criterion conditioning on the
+# content or format of untracked run state. Each mirrors
+# `lint_own_terminal_state`'s #86/#76 discipline (below,
 # `_depends_on_own_terminal_state`): matched against ONE clause
 # (`_CLAUSE_SPLIT_RE`), never the whole criteria string, so a criterion that
 # merely *mentions* a sha/commit/count outside the banned shape is never
 # flagged -- every lint below ships at least one must-pass sibling proving
-# exactly that in `tests/test_stranding_lints.py`. Task 013 adds the
-# remaining two lints (unscoped self-growing counts, scratch-state format).
+# exactly that in `tests/test_stranding_lints.py`.
 #
 # The must-catch fixture named by task 012's own success criteria -- "the
 # real v0.15 approach-3 task 004 `HEAD~1` clause" -- cannot be lifted
@@ -287,15 +290,124 @@ def _forward_task_commit_refs(criteria: str) -> list[tuple[str, str]]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# Task 013 (requirement D, #114): the remaining two of the plan's own five
+# stranding lints -- an unscoped write-time occurrence count of a string
+# the task's own mandated output contains (PRD lines 15-17: "a write-time
+# occurrence count of a sha that the task's own mandated additions
+# increment"), and a criterion conditioning on the content or format of
+# untracked run state (contract rule 1, PRD lines 71-74; the real v0.15
+# case is approach 4 task 001's notes.md demand, PRD lines 18-20 and 204).
+#
+# Neither fixture below is a byte-for-byte recovery of a v0.15 tasks.json
+# entry -- that run's own task table lived only in its own torn-down run
+# directory, the same loss `TASK_004_HEAD_ANCHOR_CRITERIA`'s comment
+# documents above. `TASK_001_NOTES_INLINE_CRITERIA` is a reconstruction
+# built from the PRD's own surviving description of that exact incident;
+# `UNSCOPED_SHA_OCCURRENCE_CRITERIA` instantiates the PRD's own generic
+# pattern description (no specific v0.15 task number survives for this
+# one) -- both checked against the tracked PRD file by
+# `tests/test_stranding_lints.py`, not merely asserted in a comment.
+TASK_001_NOTES_INLINE_CRITERIA = (
+    "This task's one-line fix is verified only once `/run/ralphd/notes.md` "
+    "itself inlines all 19 stale (record, sha) pairs the fix retires, not "
+    "merely points to the artifact file that already lists them."
+)
+
+UNSCOPED_SHA_OCCURRENCE_CRITERIA = (
+    "Once this task's own commit lands, the record must show that the sha "
+    "`abc1234` appears exactly 4 times, even though this same task's own "
+    "mandated additions to that record append further occurrences of that "
+    "sha."
+)
+
+# "N occurrences/instances/entries/pairs/times/matches" -- a write-time
+# count of how many times a string shows up. A bare mention of a count
+# with no occurrence-of-a-string language ("19 tasks remain") must not
+# match; neither must a count already scoped to a sha (below).
+_OCCURRENCE_COUNT_RE = re.compile(
+    r"\b\d+\s+(?:occurrences?|instances?|entries|pairs|times|matches)\b"
+    r"|\bappears?\s+exactly\s+\d+\b"
+    r"|\bcontains?\s+exactly\s+\d+\b",
+    re.IGNORECASE,
+)
+
+# The sha-scoped form the standing rules mandate for every figure in a
+# tracked record ("at `<sha>`: N") -- a clause carrying this marker is
+# already order-honest and must never trip `_OCCURRENCE_COUNT_RE` above.
+_SHA_SCOPED_FIGURE_RE = re.compile(
+    r"\bat\s+(?:commit\s+)?`?(?:[0-9a-f]{7,40}|<sha>)`?\s*:\s*\d+",
+    re.IGNORECASE,
+)
+
+
+def _unscoped_occurrence_count_clause(criteria: str) -> str | None:
+    """None unless some clause demands an unscoped write-time occurrence
+    count -- a clause already carrying the sha-scoped ``at `<sha>`: N``
+    form is legitimate and must not trip (must-pass sibling in
+    `tests/test_stranding_lints.py`)."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        if _OCCURRENCE_COUNT_RE.search(stripped) and not _SHA_SCOPED_FIGURE_RE.search(stripped):
+            return stripped
+    return None
+
+
+# Untracked run state this contract's scratch-state rule names by example
+# (`/run/ralphd/notes.md`, handoff notes) or by category (anything outside
+# the repository tree, "scratch state").
+_UNTRACKED_PATH_CUE_RE = re.compile(
+    r"/run/ralphd/notes\.md"
+    r"|handoff notes"
+    r"|\bnotes\.md\b"
+    r"|\bscratch[- ]state\b"
+    r"|outside (?:the )?repo(?:sitory)?(?:\s+tree)?",
+    re.IGNORECASE,
+)
+
+# Words that turn a mere mention of untracked run state into a content/
+# format demand on it -- "inline"/"verbatim"/"must show" are the trap; a
+# clause that only asks the path to point at, or the artifact to exist,
+# never uses one of these (must-pass sibling in
+# `tests/test_stranding_lints.py`).
+_CONTENT_OR_FORMAT_DEMAND_RE = re.compile(
+    r"\binlin\w*\b"
+    r"|\bverbatim\b"
+    r"|\bmust\s+(?:show|read|contain)\b"
+    r"|\bcontains?\b"
+    r"|\bformat\b"
+    r"|\bduplicat\w*\b"
+    r"|\bquote\w*\b",
+    re.IGNORECASE,
+)
+
+
+def _scratch_state_content_clause(criteria: str) -> str | None:
+    """None unless some clause both names untracked run state AND demands
+    something about its content or format, not merely its existence or a
+    pointer to a declared artifact (contract rule 1) -- the must-pass
+    sibling in `tests/test_stranding_lints.py`."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        if _UNTRACKED_PATH_CUE_RE.search(stripped) and _CONTENT_OR_FORMAT_DEMAND_RE.search(stripped):
+            return stripped
+    return None
+
+
 def lint_proposal(payload: dict) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
     requirement H's own-terminal-state rule -- that lint is task 012's
-    (kept separate, `lint_own_terminal_state`). It DOES enforce task 012's
-    OWN three stranding lints (relational sha anchors, single-commit
-    demands on a deliverable with a mandated second commit, forward
-    citation of a later task's commit sha) -- see the block comment
-    immediately above."""
+    (kept separate, `lint_own_terminal_state`). It DOES enforce all FIVE of
+    the contract's stranding lints (relational sha anchors; single-commit
+    demands on a deliverable with a mandated second commit; forward
+    citation of a later task's commit sha; unscoped write-time occurrence
+    counts; scratch-state content/format conditions) -- see the block
+    comments immediately above."""
     errors: list[str] = []
     tasks = payload.get("tasks", [])
     seen: dict[Any, int] = {}
@@ -350,6 +462,29 @@ def lint_proposal(payload: dict) -> list[str]:
                     f"runs), or move the citation into task {ref_id!r}'s "
                     "own criteria instead"
                 )
+
+        occurrence_clause = _unscoped_occurrence_count_clause(criteria)
+        if occurrence_clause is not None:
+            errors.append(
+                f"task {tid!r}: successCriteria requires an unscoped "
+                f"write-time occurrence count ({occurrence_clause!r}) -- a "
+                "count of a string the task's own mandated output contains "
+                "changes the moment that output is written, so an unscoped "
+                'figure is stale by construction; write the sha-scoped '
+                'form instead ("at `<sha>`: N")'
+            )
+
+        scratch_clause = _scratch_state_content_clause(criteria)
+        if scratch_clause is not None:
+            errors.append(
+                f"task {tid!r}: successCriteria conditions on the content "
+                f"or format of untracked run state ({scratch_clause!r}) -- "
+                "no criterion may condition on the content or format of "
+                "/run/ralphd/notes.md, handoff notes, or any path outside "
+                "the repository tree beyond the declared existence of an "
+                "artifact; require the artifact to exist and let a pointer "
+                "to it stand as sufficient evidence of its content instead"
+            )
 
     known_ids = set(seen)
     for t in tasks:
@@ -439,7 +574,20 @@ _PRECONDITION_CUES: tuple[str, ...] = (
 # precondition of its own completion. Scope the match to one clause -- a
 # terminal cue and a precondition cue only trip the guard when they occur in
 # the same sentence/clause, not merely the same criterion.
-_CLAUSE_SPLIT_RE = re.compile(r"[.!?;]+")
+#
+# Task 013: the lookahead restricts a split to a `.`/`!`/`?`/`;` that is
+# followed by whitespace or the end of the string -- a genuine sentence
+# boundary in ordinary prose. Without it, a literal dotted token inside a
+# single clause (`/run/ralphd/notes.md`, `notes.md`) would itself get cut
+# in two, which would silently defeat the two scratch-state/occurrence-
+# count lints below (both name `notes.md` in their own cue text) despite
+# never touching any existing fixture: every clause boundary already in
+# use elsewhere in this module is a real `. `/`.$`-style sentence end
+# (`status.json leaves` has no space after its dot either, and is matched
+# by `_LEAVES_RUNNING_RE` over the whole string, never through this split
+# at all), so this widens what stays inside one clause without narrowing
+# it -- the #86/#76 regression tests below are unaffected.
+_CLAUSE_SPLIT_RE = re.compile(r"[.!?;]+(?=\s|$)")
 
 
 def _depends_on_own_terminal_state(criteria: str) -> bool:

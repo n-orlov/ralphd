@@ -15,8 +15,10 @@ long enough to be useful will otherwise trip on an unrelated mention
 elsewhere in the same string. Every lint below ships at least one must-pass
 sibling proving exactly that.
 
-Task 013 adds the remaining two lints (unscoped self-growing counts,
-scratch-state format); this module is task 012's alone.
+Task 013 (this module's own continuation, sections (d) and (e) below) adds
+the remaining two: an unscoped write-time occurrence count of a string the
+task's own mandated output contains, and a criterion conditioning on the
+content or format of untracked run state.
 """
 
 from __future__ import annotations
@@ -250,3 +252,229 @@ def test_a_tasks_own_self_reference_is_never_a_forward_citation():
         ]
     }
     assert pi.lint_proposal(payload) == []
+
+
+# ---------------------------------------------------------------------------
+# (d) unscoped write-time occurrence count of a string the task's own
+#     mandated output contains
+# ---------------------------------------------------------------------------
+
+def test_the_prd_itself_describes_the_write_time_occurrence_count_pattern():
+    """No specific v0.15 task number survives for this pattern (unlike (a)'s
+    task 004) -- what survives, verifiably, is the PRD's own generic
+    description of the two generators that stranded v0.15's criteria,
+    checked directly against the tracked file rather than trusted in a
+    comment."""
+    import re
+    prd = Path(__file__).resolve().parents[1] / (
+        "docs/prds/v0.16-a-petition-is-not-a-postmortem.md"
+    )
+    normalised = re.sub(r"\s+", " ", prd.read_text())
+    assert (
+        "a write-time occurrence count of a sha that the task's own "
+        "mandated additions increment"
+    ) in normalised
+
+
+def test_the_reconstructed_unscoped_occurrence_count_criteria_is_rejected():
+    payload = {
+        "tasks": [
+            _basic_task("009", successCriteria=pi.UNSCOPED_SHA_OCCURRENCE_CRITERIA)
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any(
+        "009" in e and "unscoped write-time occurrence count" in e for e in errors
+    ), errors
+
+
+def test_other_occurrence_count_phrasings_are_also_rejected():
+    payload = {
+        "tasks": [
+            _basic_task(
+                "011",
+                successCriteria=(
+                    "The notification log must show the phrase 'petition "
+                    "filed' 12 instances, though this task's own commit "
+                    "appends further entries containing that phrase."
+                ),
+            ),
+            _basic_task(
+                "012",
+                successCriteria=(
+                    "The report contains exactly 4 entries naming the "
+                    "deviation, and this task's own additions grow that "
+                    "count."
+                ),
+            ),
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any("011" in e and "unscoped write-time occurrence count" in e for e in errors)
+    assert any("012" in e and "unscoped write-time occurrence count" in e for e in errors)
+
+
+def test_a_sha_scoped_figure_is_accepted():
+    """Must-pass sibling: 'at `<sha>`: N' is exactly the sha-scoped form
+    the standing rules mandate for every figure in a tracked record
+    (PRD contract rule 2) -- it must never trip this lint."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "013",
+                successCriteria=(
+                    "The record states, at `28f3a766`: 19 occurrences of "
+                    "the retired sha, discharged by this task's own commit."
+                ),
+            )
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+def test_a_bare_count_with_no_occurrence_language_is_accepted():
+    """Must-pass sibling: '19 tasks remain' names a count with no
+    occurrence-of-a-string language at all and must not trip."""
+    payload = {
+        "tasks": [
+            _basic_task("014", successCriteria="19 tasks remain pending in the plan.")
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+# ---------------------------------------------------------------------------
+# (e) conditioning on the content or format of untracked run state
+# ---------------------------------------------------------------------------
+
+def test_the_prd_itself_names_approach_4_task_001s_notes_md_demand():
+    """Proves the reconstruction's own premise against the tracked PRD
+    file: the PRD both describes the incident (lines 18-20) and names this
+    exact instance (line 204)."""
+    prd = Path(__file__).resolve().parents[1] / (
+        "docs/prds/v0.16-a-petition-is-not-a-postmortem.md"
+    )
+    text = prd.read_text()
+    assert "approach 4 task 001's notes.md demand" in text
+    assert "pointed to*" in text
+    assert "the artifact holding 19 stale-sha pairs instead of inlining them" in text
+
+
+def test_the_reconstructed_notes_inline_demand_is_rejected():
+    payload = {
+        "tasks": [
+            _basic_task("001", successCriteria=pi.TASK_001_NOTES_INLINE_CRITERIA)
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any(
+        "001" in e and "untracked run state" in e and "notes.md" in e for e in errors
+    ), errors
+
+
+def test_other_untracked_state_content_demands_are_also_rejected():
+    payload = {
+        "tasks": [
+            _basic_task(
+                "015",
+                successCriteria=(
+                    "The handoff notes must quote the closing report's "
+                    "figures verbatim before this task is considered done."
+                ),
+            ),
+            _basic_task(
+                "016",
+                successCriteria=(
+                    "A file outside the repository tree must contain the "
+                    "same table in the exact same format as the tracked "
+                    "artifact."
+                ),
+            ),
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any("015" in e and "untracked run state" in e for e in errors)
+    assert any("016" in e and "untracked run state" in e for e in errors)
+
+
+def test_an_artifact_existence_pointer_is_accepted():
+    """Must-pass sibling: requiring an artifact FILE to exist, with the
+    scratch-state path merely pointing at it, is exactly the pointer form
+    the contract's scratch-state rule declares sufficient -- it must never
+    trip."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "017",
+                successCriteria=(
+                    "artifacts/reports/v0.16-example.md must exist, listing "
+                    "the 19 stale-sha pairs; /run/ralphd/notes.md need only "
+                    "point to that artifact."
+                ),
+            )
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+# ---------------------------------------------------------------------------
+# End to end: the refusal reaches the operator through the existing plan
+# re-ask ladder, not just `lint_proposal` in isolation -- drives
+# `enforce_plan_ingestion` (pointer schema -> file read -> `_parse_proposal`
+# -> `lint_proposal`), same shape as
+# `test_plan_ingestion.py::test_a_lint_failure_reprompts_with_the_specific_error_then_recovers`.
+# ---------------------------------------------------------------------------
+
+def _pointer(path: str) -> str:
+    import json as _json
+    return _json.dumps({"proposal_path": path, "summary": "a plan"})
+
+
+def _write(tmp_path, name: str, doc) -> None:
+    import json as _json
+    text = doc if isinstance(doc, str) else _json.dumps(doc)
+    (tmp_path / name).write_text(text)
+
+
+def test_an_unscoped_occurrence_count_reprompts_then_recovers_end_to_end(tmp_path):
+    _write(tmp_path, "plan-proposal.json",
+           {"tasks": [_basic_task("009", successCriteria=pi.UNSCOPED_SHA_OCCURRENCE_CRITERIA)]})
+    attempts = []
+
+    def respond(attempt, prior_errors):
+        attempts.append(prior_errors)
+        if attempt == 1:
+            _write(tmp_path, "plan-proposal.json", {"tasks": [_basic_task("009")]})
+        return _pointer("plan-proposal.json")
+
+    result = pi.enforce_plan_ingestion(
+        respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
+    )
+    assert result.ok
+    assert result.attempts == 2
+    assert attempts[0] is None
+    assert attempts[1] and any(
+        "unscoped write-time occurrence count" in e for e in attempts[1]
+    )
+
+
+def test_a_scratch_state_content_demand_reprompts_then_recovers_end_to_end(tmp_path):
+    _write(tmp_path, "plan-proposal.json",
+           {"tasks": [_basic_task("001", successCriteria=pi.TASK_001_NOTES_INLINE_CRITERIA)]})
+    attempts = []
+
+    def respond(attempt, prior_errors):
+        attempts.append(prior_errors)
+        if attempt == 1:
+            _write(tmp_path, "plan-proposal.json", {"tasks": [_basic_task("001")]})
+        return _pointer("plan-proposal.json")
+
+    result = pi.enforce_plan_ingestion(
+        respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
+    )
+    assert result.ok
+    assert result.attempts == 2
+    assert attempts[0] is None
+    assert attempts[1] and any(
+        "untracked run state" in e for e in attempts[1]
+    )
