@@ -134,7 +134,30 @@ WAVE_PREFIX = "v0.14-"
 # `artifacts/reports/`) broke the report-only-tail bridge -- not because
 # any of those sweeps stopped being true, but because they now predate the
 # run that is checking them.
-LAUNCH_SHA = "db523208a9db0bf0a2166cc063d260b028fcb2c9"
+#
+# Task 002 (v0.16, #103, requirement A): same shape of staleness, one run
+# later. The constant still held v0.15's own launch sha
+# (`db523208a9db0bf0a2166cc063d260b028fcb2c9`) after v0.16 had already
+# launched from a later one (`28f3a766d26dac798d012cde125c23821733a528`,
+# the commit "docs: add the v0.16 PRD and its index row", the sha
+# `docs/prds/README.md`'s v0.16 row and `/run/ralphd/notes.md` both name as
+# this run's launch). Updated here to that real launch sha. The old value
+# (`db523208a9db0bf0a2166cc063d260b028fcb2c9`) is a genuine ancestor of the
+# new one (`git merge-base --is-ancestor db523208a9db0bf0a2166cc063d260b028fcb2c9
+# 28f3a766d26dac798d012cde125c23821733a528` exits 0) -- v0.16 shipped
+# strictly after v0.15 -- so this only widens which pre-launch shas the
+# ancestor check accepts; no record that passed before stops passing now.
+#
+# Unlike the two prior boundaries above, this one is NOT bridged with
+# `archived-sha`: the 19 stale (record, sha) declarations this bump exposed
+# (all v0.15's own, none rewritten or deleted) are retired with an explicit
+# `discharge-sha` record instead --
+# `artifacts/reports/v0.16-sweep-sha-discharge.md`, added in the commit
+# immediately after this one so its own diff stays report-only and the
+# report-only-tail rule can bridge the gap this LAUNCH_SHA-bump commit
+# itself opens (this commit touches `tests/sweep_sha_guard.py`, so it is
+# not report-only on its own).
+LAUNCH_SHA = "28f3a766d26dac798d012cde125c23821733a528"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
