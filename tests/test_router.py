@@ -106,6 +106,47 @@ def test_decide_accepts_a_valid_first_answer(two_edges):
     assert outcome.usage == {"totalTokens": 12}
 
 
+def test_decide_folds_caller_supplied_context_into_the_prompt_verbatim(two_edges):
+    """Task 015 (D.1, #117 half A): a caller-supplied opaque context block
+    reaches the model verbatim inside the router's one constrained
+    question -- `decide()` never parses or reshapes it, only hands it to
+    `_router_prompt`. The router still validates the answer against the
+    table exactly as every other test here asserts (`used_router` True,
+    one legal target accepted)."""
+    prompts_seen = []
+    evidence = ("peer raw reply: 'looks fine i guess'\n"
+                "parse errors: missing required field 'verdict'")
+
+    async def ask(prompt):
+        prompts_seen.append(prompt)
+        return '{"next_step": "review"}', {}
+
+    outcome = asyncio.run(router.decide(
+        AMBIGUOUS, False, ask=ask, fallback_guard="picked_worker",
+        retry_max=2, timeout_s=5.0, context=evidence))
+    assert outcome.used_router is True
+    assert outcome.used_fallback is False
+    assert outcome.target == "review"
+    assert len(prompts_seen) == 1
+    assert evidence in prompts_seen[0]
+
+
+def test_decide_without_context_never_mentions_it(two_edges):
+    """The default (`context=None`) reproduces the exact prompt every
+    pre-existing caller and fixture already asserts on -- no stray
+    'Context:' line appears when nothing was supplied."""
+    prompts_seen = []
+
+    async def ask(prompt):
+        prompts_seen.append(prompt)
+        return '{"next_step": "review"}', {}
+
+    asyncio.run(router.decide(
+        AMBIGUOUS, False, ask=ask, fallback_guard="picked_worker",
+        retry_max=2, timeout_s=5.0))
+    assert "Context:" not in prompts_seen[0]
+
+
 @pytest.mark.parametrize("bad_raw", [
     None, "", "not json", "42", '{"next_step": "not_a_legal_target"}',
     '{"wrong_field": "worker"}', '{"next_step": "worker", "extra": 1}',

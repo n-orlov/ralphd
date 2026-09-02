@@ -137,9 +137,20 @@ async def decide(
     retry_max: int,
     timeout_s: float,
     peer_plan_review: bool = False,
+    context: str | None = None,
 ) -> RouterOutcome:
     """Resolve `state`'s next edge, calling the model only if a genuine
     choice exists.
+
+    `context` (task 015, requirement D.1, #117 half A) is an opaque text
+    block a caller may supply -- the router never parses or inspects it,
+    only folds it verbatim into the prompt via `_router_prompt` so the
+    model sees whatever evidence made the state genuinely ambiguous (a
+    peer's raw reply, its parse errors, etc.) instead of the bare table.
+    `None` (the default) reproduces the exact prompt every pre-existing
+    caller and fixture test already asserts on -- this parameter changes
+    nothing about the deterministic-first behaviour above, the validation
+    in `validate_answer`, or the retry/fallback shape below.
 
     `ask` is called up to `retry_max + 1` times (the same N-then-give-up
     shape as `contract_enforcement.enforce_contract`, task 010) -- never
@@ -181,7 +192,7 @@ async def decide(
     attempts = 0
     for attempt_index in range(retry_max + 1):
         attempts = attempt_index + 1
-        prompt = _router_prompt(state, edges, error)
+        prompt = _router_prompt(state, edges, error, context)
         try:
             raw, usage = await asyncio.wait_for(ask(prompt), timeout=timeout_s)
         except asyncio.TimeoutError:
@@ -201,7 +212,8 @@ async def decide(
                          attempts=attempts, usage=last_usage)
 
 
-def _router_prompt(state: str, edges: tuple, error: str | None) -> str:
+def _router_prompt(state: str, edges: tuple, error: str | None,
+                    context: str | None = None) -> str:
     options = sorted({e.target for e in edges})
     lines = [
         f"Loop state {state!r} has more than one legal next step.",
@@ -211,4 +223,9 @@ def _router_prompt(state: str, edges: tuple, error: str | None) -> str:
     ]
     if error:
         lines.append(f"Your previous answer was rejected: {error}")
+    # Task 015 (D.1, #117 half A): whatever evidence the caller supplied
+    # (a peer's raw reply, its parse errors, ...) is folded in verbatim,
+    # never parsed or reshaped -- `decide()` treats it as opaque text.
+    if context:
+        lines.append(f"Context:\n{context}")
     return "\n".join(lines)
