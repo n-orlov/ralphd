@@ -3695,6 +3695,16 @@ class LoopSupervisor:
             for t in tasks_data.get("tasks", []):
                 if t.get("id") == task_id:
                     t["status"] = target
+                    # Task 009 (requirement C.1, #123): the one declared
+                    # move whose contract carries an extra payload field --
+                    # `transitions.task_status_report_errors` already
+                    # refused this call above unless `justification` is a
+                    # non-empty string, for exactly this move -- and the
+                    # harness (never the worker) is the one that writes it
+                    # to disk, into the task's own `notes` field, in the
+                    # SAME write this status flip already makes.
+                    if current == "failed" and target == "skipped":
+                        t["notes"] = payload.get("justification")
                     break
             self.run.write_tasks(tasks_data)
             self._emit_task_status(task_id, current, target)

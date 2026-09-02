@@ -685,7 +685,26 @@ TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
     "awaiting-validation": (),
     "validated": (),
     "completed": (),
-    "failed": (),
+    # Task 009 (requirement C.1, #123, option a): the sanctioned escape from
+    # a permanently `failed` task -- exhausted validation attempts, judged
+    # unmeetable, relabelled rather than left as a dead end that blocks
+    # `plan_complete` forever. Declared once, here, in the BASE table --
+    # the vigilant delta below never overrides this key, so both variants
+    # (`task_status_table_for(True)` and `task_status_table_for(False)`)
+    # carry it identically, matching the PRD's "both variants" wording.
+    # Carried by the SAME `task_status` contract channel every other move
+    # in this table already uses -- the harness applies it
+    # (`LoopSupervisor._apply_reported_task_status`), the worker never
+    # writes `tasks.json` directly. `task_status_report_errors` below adds
+    # the one extra semantic condition this specific move carries that no
+    # other declared move does: a non-empty `justification` in the same
+    # payload, which the harness then writes into the task's own `notes`
+    # field (never into `validationNotes`/`unsatisfiableReason` -- those
+    # are separate, pre-existing fields with their own writers). The
+    # caveat stands and stays documented, unchanged by this move existing
+    # at all: `skipped` is not in `TASK_DEPENDENCY_SATISFIED_STATUSES`, so
+    # relabelling a `failed` task never un-dooms whatever depends on it.
+    "failed": ("skipped",),
     "skipped": (),
     # Task 009 (requirement C.1, #114): `petitioned` is likewise reachable
     # only via the vigilant delta below (`_verify_task`'s exhaustion branch
@@ -764,6 +783,21 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool)
         return [f"task_status: {current_status!r} -> {target!r} is not a "
                 f"legal transition in the declared {variant} task-status "
                 "table"]
+    # Task 009 (requirement C.1, #123): the one declared move that carries
+    # an extra condition beyond "is this edge in the table" -- relabelling
+    # a permanently `failed` task `skipped` must explain itself. A real
+    # no-op report (`current_status == target`) is caught by `is_legal_
+    # task_status_transition`'s own equality bypass before this function
+    # is even reached from most call sites, but this check is written
+    # against `current_status == "failed" and target == "skipped"` (not
+    # `!=`) so it also fires correctly for the one caller
+    # (`_apply_reported_task_status`) that calls this on every report
+    # regardless of whether it turns out to be a no-op.
+    if current_status == "failed" and target == "skipped":
+        justification = payload.get("justification")
+        if not isinstance(justification, str) or not justification.strip():
+            return ["task_status: 'failed' -> 'skipped' requires a "
+                    "non-empty justification"]
     return []
 
 

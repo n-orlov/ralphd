@@ -100,9 +100,20 @@ def test_a_no_op_report_is_always_legal():
 
 
 def test_terminal_statuses_have_no_successors_either_variant():
-    for status in ("completed", "failed", "skipped", "validated"):
+    # `failed` is deliberately EXCLUDED here as of task 009 (C.1, #123,
+    # option a): it is no longer a dead end -- `failed -> skipped` is now
+    # a declared, sanctioned move (see
+    # tests/test_failed_to_skipped_status_task009.py), asserting the OLD
+    # invariant this test used to pin for that one status. The other three
+    # are still genuinely terminal with no successors at all.
+    for status in ("completed", "skipped", "validated"):
         assert tr.legal_next_task_statuses(status, True) == ()
         assert tr.legal_next_task_statuses(status, False) == ()
+
+
+def test_failed_has_exactly_one_declared_successor_skipped():
+    assert tr.legal_next_task_statuses("failed", True) == ("skipped",)
+    assert tr.legal_next_task_statuses("failed", False) == ("skipped",)
 
 
 def test_blocked_is_deliberately_not_a_status_in_this_table():
