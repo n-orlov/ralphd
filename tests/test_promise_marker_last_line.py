@@ -343,7 +343,19 @@ def test_a_review_that_mentions_the_verification_line_is_not_a_verdict(tmp_path)
                                               _signal_done),
                              "review": _steps(lambda s: _ok(withheld))})
     outcome = asyncio.run(sup._run_job_core())
-    assert sup.runner.phases.count("review") == 1
+    # Task 049 (#119): before the widened `_review_contract_ladder` entry
+    # (task 002 part (a)), this prose-only reply -- unparseable as a
+    # contract payload -- fell straight through to `_review_verdict`'s
+    # non-verified default with exactly one review call. The SAME reply
+    # now legitimately rides the widened ladder's `_ask_contract_fix`
+    # re-ask, and this scripted handler (correctly, for what it is
+    # testing) keeps repeating the identical near-miss text on every
+    # re-ask, so the ladder exhausts after `1 + cfg.contract_retry_max`
+    # calls instead of the old single one -- exhaustion still falls
+    # through to `_review_verdict`'s existing safe default unchanged
+    # (asserted below), which is the behaviour this test actually pins;
+    # only the call count differs from before task 002/049.
+    assert sup.runner.phases.count("review") == 1 + sup.cfg.contract_retry_max
     assert "mentioned the verification line but did not end with it" \
         in _log_messages(root)
     assert "VERIFIED" not in _signals(root)

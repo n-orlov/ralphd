@@ -256,19 +256,37 @@ def test_mutation_stops_discriminating_interrupt_is_read_as_ordinary_verdict(
     handlers = {
         "planning": [_plan],
         "worker": [_complete_task],
-        # A second entry: once the mutation removes the discrimination,
-        # the ordinary rejected-verdict path replans onto approach 2, whose
-        # `_step_planning` immediately finds the iteration budget already
-        # exhausted -- and since approach 1's worker already marked every
-        # task completed (tasks.json persists across the replan; nothing
-        # in this scripted scenario resets it), `_maybe_grace_review` (task
-        # 002) grants ONE off-budget review call before the job ends. An
-        # exhausted queue there would raise (steer 002's own trap, one
-        # level up: an unbounded infra-fault retry against a 0.0 backoff
-        # schedule that never accrues outage budget either) -- so the
-        # grace call needs an entry of its own, not because the test
-        # cares what it says.
+        # Task 049 (#119): a THIRD entry, not the original two. Before the
+        # widened `_review_contract_ladder` entry (task 002 part (a)), the
+        # mutated `_interrupted` result's prose final_text fell straight
+        # through to `_review_verdict`'s non-verified default with no
+        # re-ask at all, so the main review call and the grace call were
+        # the only two runner calls this scenario ever made -- the second
+        # queue entry existed purely for the grace call (see the comment
+        # that used to sit here). Now the SAME unparseable prose also rides
+        # the widened ladder's `_ask_contract_fix` re-ask *before*
+        # `_review_verdict` ever reads it, which consumes what used to be
+        # the grace call's reserved entry -- leaving the actual grace call
+        # (`_maybe_grace_review`, below) with an EMPTY queue for phase
+        # "review", which `_ScriptedAgent.run` turns into a loud
+        # `AssertionError`. That exception is caught by `run_iteration`'s
+        # own `except BaseException` boundary (loop.py's containment
+        # comment above `_run_iteration_once`) and classified as an infra
+        # fault -- exactly steer 002's own trap, one level up: retried
+        # forever against the `infra_retry_backoff_s: [0.0]` schedule,
+        # whose `no_backoff` stub reports each wait as fully "waited"
+        # without the outage-budget clock ever actually advancing, so the
+        # retry never gives up. That is the hang task 049 diagnosed (see
+        # `artifacts/reports/v0.17-review-battery-reconciliation.md`), not
+        # a new bug in the widened entry itself. Fixed by giving the ladder's
+        # re-ask its OWN answer (a schema-valid `rejected` payload with a
+        # reason -- no report/channel/findings-contradiction errors, so it
+        # is accepted on the re-ask's first attempt with no further calls)
+        # separate from the grace call's own answer.
         "review": [_interrupted,
+                  lambda sup, prompt: _ok("repaired on re-ask\n" +
+                                          json.dumps({"verdict": "rejected",
+                                                     "reason": "insufficient evidence"})),
                   lambda sup, prompt: _ok("grace review: still not enough\n" +
                                           json.dumps({"verdict": "rejected",
                                                      "reason": "insufficient evidence"}))],
