@@ -33,6 +33,23 @@ from env vars set by the test:
                       (verdict "rejected", a stub reason) instead of
                       approving (task 029, #130) -- unset is the plain-
                       approval scenario.
+  STUB_VERDICT_GATE_REJECT_COUNT  task 031 (G.3, #130): how many
+                      `verdict_gate` invocations reject before the next one
+                      approves (mirrors STUB_PLAN_REVIEW_OBJECTIONS's own
+                      "N times, then approve" shape one level up, with its
+                      own marker file). Takes precedence over the plain
+                      boolean STUB_VERDICT_GATE_REJECT when both are set, so
+                      a second, later approach's gate invocation can
+                      genuinely approve rather than rejecting forever. Every
+                      rejecting invocation writes BOTH the free-markdown
+                      `verdict-gate-findings.md` (`findings_path` in the
+                      payload) and the structured sidecar `verdict-gate-
+                      findings.json` -- one finding, matching `engine.
+                      findings.FINDING_SCHEMA`, deliberately with no
+                      `author` field set, so a test reading the archived
+                      copy back can prove the engine's own attribution
+                      (`findings.attribute_authorship`), not the hat's
+                      say-so, is what put `author: "verdict_gate"` there.
   STUB_STEER_TOOL_CALLS  task 030 (G.2, #130): a JSON array of
                       `{"tool": ..., "args": {...}}` objects. A `Role: Steer`
                       invocation issues each one through the REAL hat-side
@@ -958,16 +975,43 @@ elif "Role: Reviewer" in prompt:
                     tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Peer verdict gate (BLIND)" in prompt:
-    # Task 029 (#130): a single boolean knob is enough for this hat's
-    # coverage -- unlike plan_review's revision loop, the black-box
-    # scenarios this stub needs are just "approves" and "rejects", never a
-    # multi-call sequence within one approach.
-    if os.environ.get("STUB_VERDICT_GATE_REJECT"):
+    # Task 029 (#130): a single boolean knob (STUB_VERDICT_GATE_REJECT) was
+    # enough while the only scenarios were "approves" and "rejects" within
+    # a single approach. Task 031 (G.3, #130) adds a COUNTED knob,
+    # STUB_VERDICT_GATE_REJECT_COUNT, mirroring STUB_PLAN_REVIEW_OBJECTIONS'
+    # own "N times, then approve" shape, for the scenario where a SECOND
+    # approach's gate invocation must actually approve. Counted with its
+    # own marker file, independent of every other counter in this stub;
+    # takes precedence over the plain boolean when both are set.
+    _vg_reject_count = os.environ.get("STUB_VERDICT_GATE_REJECT_COUNT")
+    if _vg_reject_count is not None:
+        _vg_wanted = int(_vg_reject_count)
+        _vg_done = 0
+        if os.path.exists(marker("verdict-gate-count")):
+            _vg_done = int(open(marker("verdict-gate-count")).read())
+        open(marker("verdict-gate-count"), "w").write(str(_vg_done + 1))
+        _vg_reject_now = _vg_done < _vg_wanted
+    else:
+        _vg_reject_now = bool(os.environ.get("STUB_VERDICT_GATE_REJECT"))
+    if _vg_reject_now:
+        with open(os.path.join(run, "verdict-gate-findings.md"), "w") as f:
+            f.write("- finding from verdict gate rejection\n")
+        with open(os.path.join(run, "verdict-gate-findings.json"), "w") as f:
+            # No `author` field -- proves the ENGINE's own attribution
+            # (`findings.attribute_authorship`), not the hat's say-so, is
+            # what puts `author: "verdict_gate"` on the archived copy.
+            json.dump([{
+                "severity": "blocking",
+                "curable": True,
+                "clause": "stub verdict gate clause",
+                "evidence": "stub: verdict gate rejection",
+            }], f)
         emit_final(
             "the second opinion disagrees\n"
             + json.dumps({
                 "verdict": "rejected",
                 "reason": "stub: verdict gate rejection",
+                "findings_path": "verdict-gate-findings.md",
             }))
     else:
         emit_final("the second opinion agrees\n"
