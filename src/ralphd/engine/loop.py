@@ -4368,6 +4368,19 @@ class LoopSupervisor:
                     "log", level="error",
                     message=("planning produced no usable plan proposal: "
                               + "; ".join(ingestion.errors)))
+                # Task 012 (requirement C.2, #124): `ingestion.errors` is
+                # already a stable deduplicated list -- a natural blocker
+                # signature -- written to the SAME `blockerSignatures` map
+                # (`_record_stagnation_signature`) worker stagnation writes
+                # its own signature to (task 026, #61), keyed by the SAME
+                # approach number. `_step_replan`'s existing `repeated_
+                # blocker_signature` guard reads that map generically, so
+                # two consecutive approaches failing ingestion on the same
+                # normalized errors end the run there without any change to
+                # that guard -- exactly the reuse the PRD asks for, not a
+                # second lint-specific mechanism.
+                self._record_stagnation_signature(
+                    approach, self._ingestion_blocker_signature(ingestion.errors))
                 return ("advance", "replan", "empty_plan")
             self.run.write_tasks(ingestion.tasks_doc)
             # Task 107 (#60 pillar 3): pin the planner's `standing_rules`
@@ -5633,8 +5646,34 @@ class LoopSupervisor:
         text = (result.final_text or result.error_message or "").strip()
         if not text:
             return None
-        normalized = re.sub(r"\s+", " ", re.sub(r"[0-9]+", "N", text.lower()))
-        return normalized[:500]
+        return self._normalize_blocker_signature_text(text)
+
+    @staticmethod
+    def _normalize_blocker_signature_text(text: str) -> str:
+        """The normalisation shared by every blocker-signature site --
+        case-folded, digits stripped, whitespace collapsed, truncated --
+        factored out of `_blocker_signature` (task 026, #61) so the ingestion
+        signature (task 012, requirement C.2, #124) compares on the exact
+        same rule instead of a hand-copied second implementation drifting
+        from it later.
+        """
+        return re.sub(r"\s+", " ", re.sub(r"[0-9]+", "N", text.lower()))[:500]
+
+    def _ingestion_blocker_signature(self, errors: list[str]) -> str | None:
+        """A stable signature for a plan-ingestion exhaustion (task 012,
+        requirement C.2, #124), mirroring `_blocker_signature`'s shape for
+        worker stagnation: `ingestion.errors` is already a stable
+        deduplicated list (plan_ingestion's own contract), so joining and
+        normalising it the same way makes the SAME lint failure across two
+        approaches compare equal while genuinely distinct errors do not.
+        None when there is no usable text at all, for the same reason
+        `_blocker_signature` returns None on empty text: an absent signature
+        never matches anything, including another absent one.
+        """
+        text = "; ".join(errors).strip()
+        if not text:
+            return None
+        return self._normalize_blocker_signature_text(text)
 
     def _record_stagnation_signature(self, approach: int,
                                      signature: str | None) -> None:
