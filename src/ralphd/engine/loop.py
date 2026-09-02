@@ -7357,12 +7357,28 @@ class LoopSupervisor:
             return False
         title = task.get("title", "")
         criteria = task.get("successCriteria", "")
+        attempts = task.get("validationAttempts", 0)
         extra = (
             f"## Task under verification\n\n"
             f"- **id**: {tid}\n"
             f"- **title**: {title}\n"
             f"- **successCriteria**: {criteria}\n"
+            f"- **validationAttempts**: {attempts} of {VALIDATION_ATTEMPT_LIMIT}\n"
         )
+        # Task 004 (#121, requirement A.4): task-verify.md step 4 tells the
+        # verifier to recognise the LAST available attempt from
+        # `validationAttempts` itself -- name that condition explicitly here
+        # (one below the limit) instead of leaving the verifier to compute
+        # `VALIDATION_ATTEMPT_LIMIT - 1` from a bare number in prose. Absent
+        # at `attempts == 0` (and at every count that is not one below the
+        # limit) -- present ONLY on the last available attempt.
+        if attempts == VALIDATION_ATTEMPT_LIMIT - 1:
+            extra += (
+                f"- **FINAL ATTEMPT**: this is the LAST available "
+                f"validation attempt (`validationAttempts` is one below "
+                f"`VALIDATION_ATTEMPT_LIMIT`) -- a rejecting verdict now "
+                f"marks the task `failed`.\n"
+            )
 
         result: IterationResult | None = None
         verified = False

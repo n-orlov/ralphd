@@ -27,9 +27,11 @@ from scratch, trusting nothing the worker wrote about its own work.
      `validationNotes` in the same write.
    A `task_id` naming any task other than the one you were given to verify is
    refused as a contract violation, not silently redirected onto it.
-4. If this rejecting verdict is the task's LAST available attempt (the
-   injected task details show `validationAttempts` at 2, so a third miss
-   marks it `failed`), write `reason` as a handoff: name the residual gap in
+4. If this rejecting verdict is the task's LAST available attempt -- the
+   injected task details carry a `validationAttempts` line naming the count
+   against the limit, plus a **FINAL ATTEMPT** marker present precisely
+   when `validationAttempts` is one below the limit (so a third miss
+   marks it `failed`) -- write `reason` as a handoff: name the residual gap in
    one sentence, list which criteria DID verify and with what evidence, and
    propose a concrete follow-up task (title plus successCriteria) closing
    just that gap — so the next worker carves out the gap instead of the loop
