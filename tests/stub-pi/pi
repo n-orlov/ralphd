@@ -33,6 +33,29 @@ from env vars set by the test:
                       (verdict "rejected", a stub reason) instead of
                       approving (task 029, #130) -- unset is the plain-
                       approval scenario.
+  STUB_STEER_TOOL_CALLS  task 030 (G.2, #130): a JSON array of
+                      `{"tool": ..., "args": {...}}` objects. A `Role: Steer`
+                      invocation issues each one through the REAL hat-side
+                      client (`python -m ralphd.engine.hat_tools <tool>`,
+                      spawned as its OWN subprocess exactly as the generated
+                      `pi` extension's `callEngine()` does, with
+                      `RALPHD_HAT_TOOLS_RUN` pointed at the run dir) rather
+                      than importing `hat_tools` in-process -- the call
+                      crosses the same process boundary the engine's broker
+                      is serving on the OTHER side of the spool. Every
+                      response is collected and written to
+                      `.stub-steer-tool-responses.json` (a JSON array, same
+                      order) for the test to read.
+  STUB_STEER_MALFORMED_REQUEST  if set, a `Role: Steer` invocation ALSO
+                      drops one hand-written, deliberately-unparseable file
+                      straight into `<run>/hat-tools/requests/` (never
+                      through `hat_tools.call()`, which always writes valid
+                      JSON) -- the malformed-client shape
+                      `SteerToolBroker.serve_once()`'s `except (OSError,
+                      json.JSONDecodeError)` branch exists for. The request
+                      id is fixed (`stub-malformed`), so the test can read
+                      its answer straight out of
+                      `hat-tools/responses/stub-malformed.json` afterwards.
   STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
   STUB_WORKER_STALLS_BY_APPROACH  comma-separated stall texts, one per
                       approach (task 026, #61 -- structural-wall signature)
@@ -832,11 +855,50 @@ elif "Role: Steer" in prompt:
     if steering_marker in prompt:
         with open(marker("saw-steering"), "a") as f:
             f.write(prompt[prompt.rindex(steering_marker):][:2000])
-    # This stub has no adversarial steer-hat behaviour to offer (no test
-    # yet drives a tasks.json reshape through it) -- it settles every
-    # pending message with no plan change, which is enough to prove the
-    # routing/consumption plumbing end to end. `settled: true` is the
-    # WHOLE contract (`transitions.HAT_SCHEMAS["steer"]`).
+    # Task 030 (G.2, #130): STUB_STEER_TOOL_CALLS drives the REAL hat-side
+    # client, one subprocess per call, exactly as the generated `pi`
+    # extension's `callEngine()` would -- this crosses the SAME
+    # request/response spool the engine's own broker is serving from the
+    # other side, in the parent process (the engine, the sole writer of
+    # everything a tool call performs). Never imports `hat_tools` in THIS
+    # process: doing so would prove nothing about the cross-process spool
+    # the in-process broker tests (`tests/test_steer_hat_tools_live.py`)
+    # already cover -- the whole point here is a second real OS process.
+    _raw_calls = os.environ.get("STUB_STEER_TOOL_CALLS")
+    if _raw_calls:
+        import subprocess as _steer_subprocess
+        _responses = []
+        for _call in json.loads(_raw_calls):
+            _proc = _steer_subprocess.run(
+                [sys.executable, "-m", "ralphd.engine.hat_tools", _call["tool"]],
+                input=json.dumps(_call.get("args") or {}),
+                env={**os.environ, "RALPHD_HAT_TOOLS_RUN": run},
+                capture_output=True, text=True)
+            _stdout = _proc.stdout.strip()
+            try:
+                _responses.append(json.loads(_stdout))
+            except json.JSONDecodeError:
+                _responses.append({"ok": False,
+                                   "error": "stub: unparseable client stdout: "
+                                            + repr(_stdout) + " / " + repr(_proc.stderr)})
+        with open(os.path.join(run, ".stub-steer-tool-responses.json"), "w") as f:
+            f.write(json.dumps(_responses))
+    # STUB_STEER_MALFORMED_REQUEST: a hand-written, deliberately-unparseable
+    # request file dropped straight into the spool -- never through
+    # `hat_tools.call()`, which always writes valid JSON -- to prove the
+    # broker answers it (`ok: false`, `SteerToolBroker.serve_once()`'s
+    # `except (OSError, json.JSONDecodeError)` branch) instead of choking or
+    # ending the run. Fixed id, so the test can read the answer straight out
+    # of `hat-tools/responses/stub-malformed.json` afterwards.
+    if os.environ.get("STUB_STEER_MALFORMED_REQUEST"):
+        _reqdir = os.path.join(run, "hat-tools", "requests")
+        os.makedirs(_reqdir, exist_ok=True)
+        with open(os.path.join(_reqdir, "stub-malformed.json"), "w") as f:
+            f.write("{this is not valid json,,,")
+    # This stub has no OTHER adversarial steer-hat behaviour to offer -- it
+    # settles every pending message with no plan change, which is enough to
+    # prove the routing/consumption plumbing end to end. `settled: true` is
+    # the WHOLE contract (`transitions.HAT_SCHEMAS["steer"]`).
     emit_final("steering settled (stub: no plan change)\n"
               + json.dumps({"settled": True}))
 
