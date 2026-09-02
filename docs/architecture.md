@@ -2302,3 +2302,62 @@ way `tests/test_host_like_pytest_script.py` does for the environment-only
 script: a probe module executed through the script, its assertions read
 back from inside that subprocess, plus a check that the post-run survival
 report actually appears.
+
+## 12. Lexical-only pins (v0.17, G.6, #130; first cut)
+
+Most of this project's test suite is behavioral: it drives real code paths
+(the engine loop, the scheduler, a subprocess-driven stub-`pi`) and asserts
+on the outcome. A smaller set of tests instead asserts on the literal text
+of a prompt or prose file — they pin that specific words appear in a
+specific section, nothing about what any agent reading those words then
+does. Both kinds of test are real and both fail the build when broken, but
+they are not interchangeable evidence: a lexical pin proves the sentence is
+still there, not that the behavior it describes still works. This section
+names the pins that are lexical by construction, so a reader of a green
+suite never mistakes one for behavioral coverage of the thing it describes.
+
+- **Steering durability** — `worker.md`'s `## Operator steering` section
+  must state that a steering note is delivered to exactly one iteration,
+  that its durable part is copied into the notes file before acting on it,
+  and that the copy rule holds under either consumption semantics; the
+  ledger the engine renders into later prompts must be described as
+  informing, never waiving. Pinned by
+  `tests/test_prompt_steering_durability.py`, which regex-matches these
+  phrases inside `worker.md`'s own section text. No part of this module
+  drives a real steering delivery — that is `tests/test_e2e.py`'s and
+  `tests/test_steer_tool_spool_two_uid_docker_task030.py`'s job.
+- **Dependency-doom prose** — `worker.md`'s `## Completion signal` section
+  must say that neither failed-task resolution (carve a residual task;
+  relabel `skipped`) ever moves the original failed task into
+  `TASK_DEPENDENCY_SATISFIED_STATUSES`, and must tell the worker to report
+  the doomed dependent set and stop rather than declare victory. Pinned by
+  `tests/test_prompt_dependency_doom.py`, which also cross-checks the
+  `state.py` constant's actual value so a change there fails the same
+  module — but the scheduler's real blocking behavior for a dependent
+  naming a `failed`/`skipped` id is proven separately, by
+  `tests/test_scheduler.py` and the engine-subprocess tier, not by this
+  module.
+- **Peer-gate prompt shapes** — `review.md`, `plan_review.md` and
+  `verdict_gate.md` must each name the structured findings fields
+  (`severity`, `curable`, `clause`, `evidence`) and the blocking/residual
+  severities, and must not describe `{"verdict", "reason",
+  "findings_path"}` as the whole of a judging hat's payload shape. Pinned
+  by `tests/test_review_findings_prompt_shape.py`, asserting substring
+  presence in the three prompt files' raw text; the engine-side computation
+  those prompts describe (verdict derived from blocking findings only) is
+  pinned separately by `tests/test_structured_findings.py` and
+  `tests/test_review_verdict_findings.py`.
+- **Revision-history-free prompts** — no prompt file under
+  `src/ralphd/prompts/` may contain phrasing that only makes sense relative
+  to an earlier revision of itself (`previously`, `no longer`, `used to
+  be`, …), since a fresh-context agent has no notion of "before" the
+  current text. Pinned by `tests/test_prompt_lint.py`'s banned-pattern scan
+  over every prompt file; it does not run any prompt through an agent, so
+  it cannot detect a prompt that is confusing for reasons other than these
+  named phrases.
+
+A lexical pin is not behavioral coverage. It proves a sentence survived an
+edit; it does not exercise the loop, the scheduler, or an agent's response
+to the sentence. Treat a green lexical-pin module as "the prose is still
+there," and look to the named behavioral modules above for evidence that
+the thing the prose describes still works.
