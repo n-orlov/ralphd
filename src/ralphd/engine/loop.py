@@ -3911,7 +3911,6 @@ class LoopSupervisor:
         target = "awaiting-validation" if self.cfg.vigilant else "completed"
         return self._apply_reported_task_status(
             {"task_id": assigned_task_id, "task_status": target})
-        return []
 
     def _apply_worker_plan_complete_report(self, payload: dict,
                                             assigned_task_id: str | None,
