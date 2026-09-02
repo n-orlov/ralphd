@@ -3525,10 +3525,13 @@ class LoopSupervisor:
             return ("advance", edge.target, edge.guard)
         # Task 018: a genuine choice -- the router's one constrained
         # question. Task 019 (requirement M) moved the call itself into
-        # `_route_with_router` below so this generic dispatcher and
-        # `_step_plan_review` (the first PRODUCTION router caller) share
-        # ONE call site rather than two copies of the decide/log/record
-        # sequence.
+        # `_route_with_router` below, shared with `_step_plan_review`'s
+        # own call site of the time (`plan_review` was the first
+        # *declared* router-eligible state, a table entry with a genuine
+        # multi-edge choice on a real reply). Task 016 (requirement D.2,
+        # #117 half B) later replaced `_step_plan_review`'s call with a
+        # deterministic policy -- `_route_with_router` itself, and this
+        # generic dispatcher's use of it, are untouched.
         target, guard, _outcome = await self._route_with_router(state, edges)
         self._advance(state, target, guard)
         return ("advance", target, guard)
@@ -3608,12 +3611,14 @@ class LoopSupervisor:
 
         `guard_for_target` exists because the router answers with a TARGET
         STATE, and a state may declare two edges to the SAME target under
-        different guards (`plan_review` -> `worker` is both
-        `plan_review_approved` and `plan_review_revision_bound_reached`).
-        Where that is so, only the caller knows which guard truthfully
-        describes the move -- `_step_plan_review` maps `worker` to the
-        exhaustion guard, never to `plan_review_approved`, because nothing
-        approved the plan when the router had to be asked at all. The
+        different guards (`plan_review` -> `worker` was both
+        `plan_review_approved` and `plan_review_revision_bound_reached`
+        while `_step_plan_review` still called through here -- task 016,
+        requirement D.2, #117 half B, replaced that call site with a
+        deterministic policy, so no current production caller passes
+        `guard_for_target`, but the parameter stays for the next state
+        that needs the same disambiguation). Where it is used, only the
+        caller knows which guard truthfully describes the move -- the
         recorded decision carries the caller-resolved guard, so
         `artifacts/router/decisions.jsonl` can never disagree with the edge
         the run actually took.
@@ -4446,47 +4451,67 @@ class LoopSupervisor:
         (`plan_review_revision_bound_reached`) -- fail OPEN on a bounded
         gate, never a deadlocked or faulted run.
 
-        Task 019 (requirement M): an absent/malformed/schema-invalid reply,
-        or an `objected` verdict with no reason
-        (`transitions.plan_review_report_errors`), is the one case this
-        handler CANNOT decide from disk state alone -- the peer named no
-        verdict at all. Task 018 answered it by inventing one ("treated as
-        an implicit objection"); this task instead asks the harness's own
-        constrained question, `router.decide()` through
-        `_route_with_router`, over `plan_review`'s REAL edges
-        (`peer_plan_review=True`). This is the router's first production
-        call site in any shipped run. Two properties hold by construction:
+        Task 019 (requirement M) answered the undecidable case -- an
+        absent/malformed/schema-invalid reply, or an `objected` verdict
+        with no reason (`transitions.plan_review_report_errors`) -- by
+        asking the harness's own constrained question, `router.decide()`
+        through `_route_with_router`, over `plan_review`'s REAL edges.
+        That made `plan_review` the first *declared* router-eligible
+        state -- a table entry with a genuine multi-edge choice on a real
+        reply -- but it also meant the one production path that ever
+        reached a SECOND model for an uninformed decision was this one:
+        the peer's reply was garbage, not a vote for either edge, and
+        disk state (`revision_available`) already says whether `planning`
+        is even a legal move -- there was no genuine choice left to ask
+        about.
 
-        * Deterministic-first is untouched. A decidable verdict
-          (`approved`, or `objected` with a reason) never reaches the
-          router at all, and neither does an undecidable one once the
-          revision bound is spent -- with no revision left, `planning` is
-          not a move this gate may make, so there is no genuine choice to
-          ask about and `plan_review_revision_bound_reached` is taken
-          deterministically.
-        * A router-resolved move to `worker` is recorded under
-          `plan_review_revision_bound_reached`, NEVER
-          `plan_review_approved` (both edges name `worker`): nothing
-          approved this plan, so the honest guard is the exhaustion one --
-          which is also `transitions.ROUTER_FALLBACK["plan_review"]`, the
-          edge taken when the router itself cannot answer.
+        Task 016 (requirement D.2, #117 half B) replaces that call with
+        the deterministic policy the disk state already supports:
+        `payload is None and revision_available` -> spend the revision
+        directly, exactly the same move an `objected`-with-no-reason
+        verdict already takes just below. The revision re-prompt now
+        carries the peer's raw reply and its parse errors (task 019's
+        boilerplate "the router routed the plan back" is gone) so the
+        next planning attempt learns something concrete about what the
+        peer actually sent, not just that the harness gave up reading it.
+        The `plan_review_revision_bound_reached` fallback still bounds the
+        loop exactly as before: once the revision bound is spent,
+        `planning` is not a move this gate may make regardless of what the
+        reply says, decidable or not.
+
+        `router.decide()` and its fixture tests (`tests/test_router.py`)
+        stay -- the zero-call record here is the deterministic-first
+        contract holding, not the machinery going unused for good; a
+        genuinely ambiguous state still has somewhere real to call.
+        `_route_with_router` is untouched too -- `plan_review` simply
+        stops being one of its callers.
         """
         approach = self._approach
         if not self.budget_left():
             return ("tail",)
         self.run.emit("phase", phase="plan_review", approach=approach)
         result = await self.run_iteration("plan_review")
+        raw_reply = result.final_text or ""
+        parse_errors: list[str] = []
         try:
-            parsed = json.loads(last_nonblank_line(result.final_text))
-        except (json.JSONDecodeError, TypeError, AttributeError):
+            parsed = json.loads(last_nonblank_line(raw_reply))
+        except (json.JSONDecodeError, TypeError, AttributeError) as exc:
             parsed = None
+            parse_errors = [
+                f"could not parse a JSON object from the reply: {exc}"]
         payload = None
         if isinstance(parsed, dict):
             contract_errors = (
                 contracts.validate_payload("plan_review", parsed)
                 or transitions.plan_review_report_errors(parsed))
-            if not contract_errors:
+            if contract_errors:
+                parse_errors = list(contract_errors)
+            else:
                 payload = parsed
+        elif parsed is not None:
+            parse_errors = [
+                f"the reply parsed as {type(parsed).__name__}, not a JSON "
+                "object"]
         if payload is not None and payload.get("verdict") == "approved":
             return ("advance", "worker", "plan_review_approved")
 
@@ -4504,25 +4529,18 @@ class LoopSupervisor:
                     "plan_review_objected_revision_available")
 
         if payload is None and revision_available:
-            # Task 019 (requirement M): the router's first production call.
-            # The peer named no usable verdict, so this handler has a
-            # genuine choice between two DIFFERENT targets and no disk fact
-            # that picks one -- exactly what `engine.router` exists for.
-            edges = transitions.successors("plan_review", self.cfg.vigilant,
-                                           True)
-            target, guard, _outcome = await self._route_with_router(
-                "plan_review", edges, peer_plan_review=True,
-                guard_for_target=lambda t: (
-                    "plan_review_objected_revision_available"
-                    if t == "planning"
-                    else "plan_review_revision_bound_reached"))
-            if target == "planning":
-                return spend_revision(
-                    "the plan review hat's reply was unusable (no valid "
-                    "verdict payload); the router routed the plan back for "
-                    "one revision -- re-state the plan so a peer can judge "
-                    "it")
-            return ("advance", "worker", guard)
+            # Task 016 (requirement D.2, #117 half B): the peer named no
+            # usable verdict at all -- no vote for either edge to weigh --
+            # so the policy is the deterministic one disk state already
+            # decides, never a router call (see the docstring above).
+            errors_block = ("\n".join(f"- {e}" for e in parse_errors)
+                            or "- (no parse errors recorded)")
+            objection = (
+                "the plan review hat's reply named no usable verdict; "
+                "re-state the plan so a peer can judge it. The peer's raw "
+                f"reply was:\n{raw_reply.strip()}\n\nParse errors:\n"
+                f"{errors_block}")
+            return spend_revision(objection)
 
         if revision_available:
             return spend_revision(

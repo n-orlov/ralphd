@@ -4110,22 +4110,28 @@ def artifact_text(entry: dict) -> str:
 # `artifact_entries`/`cost_breakdown` are read-only shapings of files the
 # engine writes elsewhere.
 #
-# Task 019 (requirement M): `ROUTER_FALLBACK` now has exactly ONE real entry
-# (`plan_review`, the opt-in peer gate's own multi-edge state), so this file
-# is still empty for every run that leaves that gate off -- which is every
-# default run -- and non-empty only when an enabled gate got a reply it
-# could not decide from. See `artifacts/reports/router-calls-surface.md` for
-# the pre-gate claim's evidence.
+# Task 019 (requirement M): `ROUTER_FALLBACK` has exactly ONE real entry
+# (`plan_review`, the opt-in peer gate's own multi-edge state), which is why
+# this file was still empty for every run that leaves that gate off. Task
+# 016 (requirement D.2, #117 half B) then replaced `plan_review`'s own
+# undecidable-reply call with a deterministic policy, so this file is now
+# empty for EVERY shipped run, gate on or off -- `plan_review` stays the
+# first *declared* router-eligible state (its table entry is still the one
+# real multi-edge case), but no production caller reaches
+# `engine.router.decide()` any more. See
+# `artifacts/reports/router-calls-surface.md` for the pre-gate claim's
+# evidence.
 
 # `artifacts/router/decisions.jsonl`'s own filename, spelled once.
 ROUTER_DECISIONS_FILENAME = "decisions.jsonl"
 
 NO_ROUTER_CALLS = (
     "(no router calls this run -- every state this run reached decided its "
-    "own edge deterministically; the only router-ambiguous state shipped "
-    "today is the opt-in peer plan-review gate's own `plan_review`, and it "
-    "asks the router only for a reply it cannot decide from; see "
-    "artifacts/reports/router-calls-surface.md)"
+    "own edge deterministically; the only state whose table entry is "
+    "genuinely router-eligible today is the opt-in peer plan-review gate's "
+    "own `plan_review`, but its undecidable-reply branch now resolves "
+    "deterministically too (task 016) -- no shipped run currently asks the "
+    "router at all; see artifacts/reports/router-calls-surface.md)"
 )
 
 # Said on EVERY entry, not just in a header: a router call must never be

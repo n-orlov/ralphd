@@ -91,12 +91,17 @@ def validate_answer(raw: str | None,
 
     `peer_plan_review` defaults to False so every pre-existing caller keeps
     validating against exactly the same legal-target set as before. Task
-    019 (requirement M) adds the parameter so the FIRST real multi-edge
-    state (`plan_review`, only reachable on this axis) is validated against
-    its true edges -- both by the live tests and by the production call
-    site, `engine.loop.LoopSupervisor._step_plan_review`'s undecidable-reply
-    branch, which passes `peer_plan_review=True` -- without a second copy of
-    `transitions.successors`'s own variant-selection logic living here.
+    019 (requirement M) added the parameter so the FIRST real multi-edge
+    state (`plan_review`, only reachable on this axis) is validated
+    against its true edges -- exercised by the live tests
+    (`tests/test_router.py`) and, until task 016 (requirement D.2, #117
+    half B) replaced that call with a deterministic policy, by
+    `engine.loop.LoopSupervisor._step_plan_review`'s undecidable-reply
+    branch. `plan_review` stays the first *declared* router-eligible
+    state -- its table entry is still validated with
+    `peer_plan_review=True` here and in the fixture tests -- without a
+    second copy of `transitions.successors`'s own variant-selection logic
+    living here.
     """
     if raw is None or not raw.strip():
         return None, ["router: no payload produced (absent output)"]
@@ -122,12 +127,15 @@ def validate_answer(raw: str | None,
 # `validate_answer` above) defaults to False -- `_step_generic_hat`'s route
 # through `engine.loop.LoopSupervisor._route_with_router` passes only
 # `vigilant`, and stays byte-identical in behaviour. The parameter exists
-# for a caller that wants `plan_review`'s real (peer-gate-enabled) edges:
-# `_step_plan_review`, which asks this module which edge to take when the
-# peer's own reply named no usable verdict (the router's first production
-# call site), and `tests/test_router.py`'s live-path tests. Either way the
-# edges come from `transitions.successors` itself, never from a second,
-# hand-duplicated copy of its variant-selection logic.
+# for `plan_review`'s real (peer-gate-enabled) edges: `tests/test_router.py`'s
+# live-path tests exercise this module with `peer_plan_review=True` directly
+# -- `plan_review` is the first *declared* router-eligible state, a table
+# entry with a genuine multi-edge choice on a real reply, even though task
+# 016 (requirement D.2, #117 half B) replaced `_step_plan_review`'s own call
+# with a deterministic policy, so no shipped run reaches this module for
+# `plan_review` any more. Either way the edges come from
+# `transitions.successors` itself, never from a second, hand-duplicated
+# copy of its variant-selection logic.
 async def decide(
     state: str,
     vigilant: bool,
