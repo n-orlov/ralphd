@@ -7144,6 +7144,97 @@ class LoopSupervisor:
             return "was interrupted by a signal"
         return ""
 
+    async def _verify_contract_ladder(
+        self, tid: str, result: IterationResult
+    ) -> IterationResult:
+        """Task 001 (#119, requirement A.1): give a verify reply that is
+        NOT yet a valid, on-task `verify` contract payload
+        (`contract_enforcement.parse_response`'s three ordinary failure
+        shapes -- absent, malformed JSON, schema-wrong-shape -- plus the
+        two SEMANTIC checks this hat's payload must also clear,
+        `transitions.verify_report_errors` and the `task_id == tid`
+        cross-check `_verify_task` used to apply only AFTER the fact) the
+        SAME uncharged re-ask ladder (`contract_enforcement.
+        enforce_contract`) every other hat's payload already gets, instead
+        of `_verify_task` reading the broken payload once and immediately
+        burning a validation attempt on it.
+
+        Mirrors `_review_contract_ladder`'s shape: skipped entirely when
+        `_verify_no_verdict(result)` is non-empty -- ALL FOUR shapes it
+        recognises (an engine-side cutoff -- interrupted/timed_out/
+        no_traffic_timeout -- or pi's own in-band `error_message`, exit
+        code 0 but no traffic to judge) are not a hat mistake to repair,
+        they are `_verify_task`'s own bounded error-retry loop's job,
+        unchanged by this method's existence. A reply that is ALREADY a
+        valid, on-task payload -- whether `verified` or a genuinely
+        `rejected` verdict with a `reason` -- also skips the ladder and
+        comes back unchanged: there is nothing to repair, and a real
+        negative verdict is not a mistake.
+
+        The first ladder attempt reuses THIS already-completed, charged
+        verify iteration's own final line -- no extra hat call, no
+        double-charge (the caller captures `verify_iter_n` BEFORE calling
+        this). Every further attempt is an uncharged
+        `_ask_contract_fix("verify", ...)` re-ask, exactly like every other
+        contract site -- `iterations_used` never advances for it, and its
+        usage is accounted separately under `usage.byPhase["contract"]`.
+
+        On ladder exhaustion, `result` (and therefore its `final_text`)
+        comes back byte-for-byte unchanged, so `_verify_task`'s own
+        parse-and-record block below sees exactly the original broken
+        payload and produces exactly today's verdict-miss/validation-
+        failed outcome -- this method never decides that outcome itself,
+        only whether there was something to repair first.
+        """
+        if self._verify_no_verdict(result):
+            return result
+        try:
+            parsed = json.loads(last_nonblank_line(result.final_text))
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict) and not contracts.validate_payload("verify", parsed):
+            errors = transitions.verify_report_errors(parsed)
+            if not errors and parsed.get("task_id") != tid:
+                errors = [
+                    f"'verify' contract reported task_id "
+                    f"{parsed.get('task_id')!r} but task {tid!r} is "
+                    "the one under verification"]
+            if not errors:
+                return result
+
+        first_attempt_text = last_nonblank_line(result.final_text)
+        event_loop = asyncio.get_running_loop()
+
+        def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+            if attempt == 0:
+                return first_attempt_text
+            raw, _usage = asyncio.run_coroutine_threadsafe(
+                self._ask_contract_fix("verify", prior_errors or [],
+                                       final_text=result.final_text),
+                event_loop).result()
+            return last_nonblank_line(raw)
+
+        def extra_validate(payload: dict) -> list[str]:
+            errors = transitions.verify_report_errors(payload)
+            if not errors and payload.get("task_id") != tid:
+                errors = [
+                    f"'verify' contract reported task_id "
+                    f"{payload.get('task_id')!r} but task {tid!r} is "
+                    "the one under verification"]
+            return errors
+
+        enforcement = await asyncio.to_thread(
+            contract_enforcement.enforce_contract,
+            "verify", respond,
+            max_retries=self.cfg.contract_retry_max,
+            state=self.run,
+            extra_validate=extra_validate,
+        )
+        if enforcement.ok:
+            return dataclasses.replace(
+                result, final_text=json.dumps(enforcement.payload))
+        return result
+
     async def _verify_task(self, task: dict) -> bool:
         """Run one verify iteration (with bounded retry on transient agent/
         provider errors) for a newly-completed task.
@@ -7205,6 +7296,11 @@ class LoopSupervisor:
                                                prompt_name="task-verify",
                                                tier=state.task_verify_tier(task))
             verify_iter_n = self.iterations_used  # captured after run_iteration increments it
+            # Task 001 (#119, requirement A.1): give a not-yet-valid verify
+            # payload the SAME uncharged re-ask ladder every other hat
+            # already gets, before the parse below ever burns a validation
+            # attempt on something a repaired re-ask would have fixed.
+            result = await self._verify_contract_ladder(tid, result)
 
             try:
                 parsed = json.loads(last_nonblank_line(result.final_text))
