@@ -157,7 +157,22 @@ WAVE_PREFIX = "v0.14-"
 # report-only-tail rule can bridge the gap this LAUNCH_SHA-bump commit
 # itself opens (this commit touches `tests/sweep_sha_guard.py`, so it is
 # not report-only on its own).
-LAUNCH_SHA = "28f3a766d26dac798d012cde125c23821733a528"
+#
+# Task 038 (v0.17-a-slip-is-not-a-verdict, requirement H): same shape of
+# staleness, one run later. The constant still held v0.16's own launch sha
+# (`28f3a766d26dac798d012cde125c23821733a528`) after v0.17 had already
+# launched from a later one (`39a46852f371b9c4fa680c87888c902d3dea108d`,
+# the commit "docs: commit the v0.17 PRD (a slip is not a verdict) ahead
+# of its launch, with its not-started index row", the sha
+# `docs/prds/README.md`'s v0.17 row and `/run/ralphd/notes.md` both name as
+# this run's launch). Updated here to that real launch sha. The old value
+# (`28f3a766d26dac798d012cde125c23821733a528`) is a genuine ancestor of the
+# new one -- confirmed with `git merge-base --is-ancestor
+# 28f3a766d26dac798d012cde125c23821733a528
+# 39a46852f371b9c4fa680c87888c902d3dea108d`, which exits 0 -- v0.17 shipped
+# strictly after v0.16, so this only widens which pre-launch shas the
+# ancestor check accepts; no record that passed before stops passing now.
+LAUNCH_SHA = "39a46852f371b9c4fa680c87888c902d3dea108d"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
