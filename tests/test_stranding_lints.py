@@ -836,3 +836,185 @@ def test_the_newly_caught_shapes_also_reach_the_operator_end_to_end(tmp_path):
     assert any(
         "033" in e and "untracked run state" in e for e in attempts[1]
     ), attempts[1]
+
+
+# ---------------------------------------------------------------------------
+# Task 023 (requirement E.2, #116 section 1): the seven evasion strings
+# #116 names verbatim as future fixtures for this module, recorded here
+# word for word (fetched fresh from the issue body this iteration -- not
+# reconstructed). Each is labelled MUST-CATCH (the lint, as shipped after
+# task 013's later passes, already flags it -- #116's own parenthetical
+# names the ORIGINAL gap, since closed) or DOCUMENTED-AND-ACCEPTED (still
+# out of the lint's lexical reach as shipped, reason given per fixture).
+# The open-ended "reject every rephrasing" standard #116 section 3 restates
+# is ruled unmeetable by a lexical lint -- these seven are the enumerated
+# instances the contract actually asks for, not a claim that every future
+# rephrasing of a banned shape is now caught.
+# ---------------------------------------------------------------------------
+
+
+def test_the_prd_itself_restates_the_reject_every_rephrasing_ruling():
+    """Recovered verbatim from the tracked PRD, not reconstructed: the
+    ruling this whole section labels fixtures against."""
+    tracked = _flattened("docs/prds/v0.17-a-slip-is-not-a-verdict.md")
+    assert (
+        'documented-and-accepted where the fix is judged out of lexical '
+        'reach (state which, per fixture, in the test file; "reject every '
+        'rephrasing" stays ruled unmeetable).'
+    ) in tracked
+
+
+# --- #116 fixture 1 -- MUST-CATCH ------------------------------------------
+# Word-order sensitivity was task 012's own residual gap; task 013's third
+# pass fixed it (`_SEPARATE_RECORD_COMMIT_RE` now understands noun-first
+# phrasing too). This exact issue string is caught today.
+ISSUE_116_FIXTURE_1_SINGLE_COMMIT_WORD_ORDER = (
+    "Ship the deliverable in a single commit. The notification must land "
+    "in a separate commit."
+)
+
+
+def test_issue_116_fixture_1_single_commit_word_order_is_caught():
+    payload = {
+        "tasks": [
+            _basic_task(
+                "040", successCriteria=ISSUE_116_FIXTURE_1_SINGLE_COMMIT_WORD_ORDER
+            )
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any("040" in e and "single commit" in e for e in errors), errors
+
+
+# --- #116 fixture 2 -- MUST-CATCH ------------------------------------------
+# A non-numeric task id (`alpha`) citing "the commit sha of task `beta`"
+# where `beta` is a non-numeric id ordered later. The numeric-only id
+# token was task 012's residual gap (b); task 013's third pass widened
+# `_TASK_ID_TOKEN` off `\d+`, so this is caught today.
+ISSUE_116_FIXTURE_2_NON_NUMERIC_FORWARD_CITATION = (
+    "This task cannot be closed without citing the commit sha of task beta."
+)
+
+
+def test_issue_116_fixture_2_non_numeric_forward_citation_is_caught():
+    payload = {
+        "tasks": [
+            _basic_task(
+                "alpha",
+                successCriteria=ISSUE_116_FIXTURE_2_NON_NUMERIC_FORWARD_CITATION,
+            ),
+            _basic_task("beta"),
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any("alpha" in e and "beta" in e and "LATER" in e for e in errors), errors
+
+
+# --- #116 fixture 3 -- DOCUMENTED-AND-ACCEPTED, out of lexical reach -------
+# The unscoped-occurrence-count lint's token-identity route
+# (`_counted_string_tokens`) only reads a counted string out of a
+# backticked or quoted literal (`_COUNTED_STRING_TOKEN_RE`). This exact
+# issue fixture names the string bare, with no delimiter (`abc123`, not
+# `` `abc123` ``), and no growth verb sits near the count phrase either, so
+# neither of `_unscoped_occurrence_count_clause`'s two routes fires.
+# Catching every bare-identifier count would mean treating any token near a
+# count phrase as a candidate, reintroducing exactly the false-positive
+# risk task 013's second pass (the static-count must-pass sibling) ruled
+# out -- this is the "reject every rephrasing" shape, out of reach for a
+# lexical lint.
+ISSUE_116_FIXTURE_3_BARE_IDENTIFIER_COUNT = (
+    "The report must show four occurrences of abc123. This task's "
+    "mandated output is a new line in that report containing abc123."
+)
+
+
+def test_issue_116_fixture_3_bare_identifier_count_is_documented_and_accepted():
+    payload = {
+        "tasks": [
+            _basic_task(
+                "041", successCriteria=ISSUE_116_FIXTURE_3_BARE_IDENTIFIER_COUNT
+            )
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+# --- #116 fixture 4 -- DOCUMENTED-AND-ACCEPTED, out of lexical reach -------
+# The untracked-path cue (`_UNTRACKED_PATH_CUE_RE`) recognizes an absolute
+# path as out-of-tree via one of two general routes: a known filesystem
+# root (`run`/`tmp`/`var`/.../`srv`/`data`/...) or a dotted file
+# extension. `/custom-root/handoff` is neither -- an unenumerated root with
+# no extension -- so it is not recognized as a filesystem path at all.
+# Enumerating every conceivable root name is the same open-ended shape
+# section 3's ruling puts out of scope for a lexical lint.
+ISSUE_116_FIXTURE_4_UNENUMERATED_ROOT = (
+    "/custom-root/handoff must contain the complete table."
+)
+
+
+def test_issue_116_fixture_4_unenumerated_root_is_documented_and_accepted():
+    payload = {
+        "tasks": [
+            _basic_task("042", successCriteria=ISSUE_116_FIXTURE_4_UNENUMERATED_ROOT)
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+# --- #116 fixture 5 -- DOCUMENTED-AND-ACCEPTED, out of lexical reach -------
+# `/srv/...` IS a recognized out-of-tree path (`_UNTRACKED_PATH_CUE_RE`
+# enumerates `srv`), but the content/format demand cue
+# (`_CONTENT_OR_FORMAT_DEMAND_RE`) has no "identical to" phrasing -- its
+# modal-verb route (`must`/`shall`/... plus a content verb) and its
+# bare-verb route (`contains?`, `duplicat\w*`, `quote\w*`) both miss the
+# copula construction "are identical to". Every rephrasing of
+# "matches byte-for-byte" is exactly the unmeetable standard section 3
+# names.
+ISSUE_116_FIXTURE_5_IDENTICAL_TO_COPULA = (
+    "The contents of /srv/handoff.txt are identical to the tracked report."
+)
+
+
+def test_issue_116_fixture_5_identical_to_copula_is_documented_and_accepted():
+    payload = {
+        "tasks": [
+            _basic_task("043", successCriteria=ISSUE_116_FIXTURE_5_IDENTICAL_TO_COPULA)
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+# --- #116 fixture 6 -- DOCUMENTED-AND-ACCEPTED, out of lexical reach -------
+# `/srv/...` is recognized the same way as fixture 5 above, but
+# "has JSON syntax" trips neither the modal-verb route (bare "has" is not
+# "has to") nor the explicit-phrasing route (`valid JSON`,
+# `JSON-formatted`); "JSON syntax" names neither. Same unmeetable standard.
+ISSUE_116_FIXTURE_6_HAS_JSON_SYNTAX = "/srv/handoff.txt has JSON syntax."
+
+
+def test_issue_116_fixture_6_has_json_syntax_is_documented_and_accepted():
+    payload = {
+        "tasks": [
+            _basic_task("044", successCriteria=ISSUE_116_FIXTURE_6_HAS_JSON_SYNTAX)
+        ]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+# --- #116 fixture 7 -- DOCUMENTED-AND-ACCEPTED, already resolved -----------
+# #116 named the self-labelled RECONSTRUCTION fixture standing in for the
+# real v0.15 approach-3 task-004 relational-sha clause. That gap is
+# CLOSED, not merely documented: `V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE`
+# / `TASK_004_HEAD_ANCHOR_CRITERIA` above are RECOVERED verbatim from the
+# tracked `artifacts/reports/v0.15-operator-notifications.md` record, and
+# `test_the_v015_task_004_relational_sha_clause_is_recovered_verbatim`
+# earlier in this module checks the recovery itself, not merely a claim of
+# it.
+def test_issue_116_fixture_7_reconstruction_gap_is_already_closed():
+    assert (
+        pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE
+        in pi.TASK_004_HEAD_ANCHOR_CRITERIA
+    )
+    tracked = _flattened(pi.V015_TASK_004_RECOVERED_CLAUSE_SOURCE)
+    assert pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE in tracked
+
