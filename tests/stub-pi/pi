@@ -19,6 +19,18 @@ from env vars set by the test:
                       through the planner's contract (which task 120's
                       lint now refuses outright).
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
+  STUB_REVIEW_MALFORMED_COUNT  task 033 (G.5, #130): like
+                      STUB_REVIEW_FAILS's own "N times, then verify" shape
+                      but with NO parseable `review` contract payload at
+                      all (prose, no JSON), so it trips the engine's own
+                      uncharged re-ask ladder instead of the well-formed
+                      `rejected` verdict STUB_REVIEW_FAILS emits -- checked
+                      first, against the SAME `review-count` marker index,
+                      so combining the two knobs is well-defined but no
+                      test in this tree needs to. The ladder's re-asks fall
+                      to this stub's `else` branch (no `Role: Reviewer`
+                      marker in the re-ask prompt) and are also
+                      unparseable, so it exhausts naturally.
   STUB_PLAN_REVIEW_OBJECTIONS  how many `plan_review` invocations object
                       (verdict "objected", a stub reason) before the next one
                       approves (default 0) -- task 029 (#130): 0 is the
@@ -50,6 +62,17 @@ from env vars set by the test:
                       copy back can prove the engine's own attribution
                       (`findings.attribute_authorship`), not the hat's
                       say-so, is what put `author: "verdict_gate"` there.
+  STUB_VERDICT_GATE_MALFORMED_COUNT  task 033 (G.5, #130): how many of the
+                      FIRST `Role: Peer verdict gate (BLIND)` invocations
+                      reply with NO parseable `verdict_gate` contract
+                      payload at all (prose, no JSON) -- its own marker
+                      file, checked BEFORE STUB_VERDICT_GATE_REJECT_COUNT/
+                      STUB_VERDICT_GATE_REJECT, so a later invocation (e.g.
+                      a second approach's own gate call) can still approve
+                      normally. The ladder's re-asks fall to this stub's
+                      `else` branch (no `Role: Peer verdict gate` marker in
+                      the re-ask prompt) and are also unparseable, so it
+                      exhausts naturally.
   STUB_STEER_TOOL_CALLS  task 030 (G.2, #130): a JSON array of
                       `{"tool": ..., "args": {...}}` objects. A `Role: Steer`
                       invocation issues each one through the REAL hat-side
@@ -110,6 +133,29 @@ from env vars set by the test:
   STUB_VERIFY_FAILS   number of verify invocations to fail before passing
                       (default 0; each failed invocation writes validation-failed
                       to tasks.json and does NOT emit the sentinel)
+  STUB_VERIFY_MALFORMED_COUNT  task 033 (G.5, #130): how many of the FIRST
+                      `Role: Verifier` invocations reply with NO parseable
+                      `verify` contract payload at all (prose, no JSON) --
+                      checked BEFORE STUB_VERIFY_ERRORS/STUB_VERIFY_FAILS,
+                      its own `verify-call-count` marker index. Unlike
+                      STUB_VERIFY_FAILS (a well-formed `rejected` verdict,
+                      never touching the ladder), this trips the engine's
+                      own uncharged re-ask ladder
+                      (`contract_enforcement.enforce_contract` /
+                      `_ask_contract_fix`) -- and since the re-ask prompt
+                      carries no `Role: Verifier` marker, it falls to this
+                      stub's own `else` branch below and is ALSO
+                      unparseable, so the ladder exhausts naturally after
+                      `1 + contract_retry_max` total stub invocations with
+                      no extra stub logic needed to answer a re-ask.
+  STUB_VERIFY_MALFORMED_FENCED  if set (together with
+                      STUB_VERIFY_MALFORMED_COUNT), the malformed reply
+                      above is prose followed by a fenced ```json block
+                      that already carries a VALID `verify` payload --
+                      task 032's fenced-payload rescue
+                      (`_extract_validated_fenced_payload`) settles this on
+                      the very first attempt with ZERO re-ask model calls,
+                      never reaching the ladder's exhaustion path at all.
   STUB_REWRITE_CRITERIA  if set, a worker iteration that picks up a
                       validation-failed task rewrites its successCriteria
                       (appending " (rewritten by worker)") before marking it
@@ -956,7 +1002,18 @@ elif "Role: Reviewer" in prompt:
         tool_call, thinking_text = emit_rich_preamble(
             tool_name="bash", tool_args={"command": "git diff --stat"},
             thinking_text="Checking whether the reviewed requirements are met.")
-    if done < fails_wanted:
+    malformed_wanted = int(os.environ.get("STUB_REVIEW_MALFORMED_COUNT", "0"))
+    if done < malformed_wanted:
+        # Task 033 (G.5, #130): no parseable `review` contract payload at
+        # all -- the ladder's own re-asks land on this stub's `else`
+        # branch (no `Role: Reviewer` marker in the re-ask prompt) and are
+        # also unparseable, so the ladder exhausts naturally after
+        # `1 + contract_retry_max` total stub invocations, with the
+        # engine's own safe default (`rejected_approach_left`) applying.
+        emit_final(
+            "still weighing whether the reviewed requirements truly hold",
+            tool_call=tool_call, thinking_text=thinking_text)
+    elif done < fails_wanted:
         with open(os.path.join(run, "review-findings.md"), "w") as f:
             f.write(f"- finding from review #{done + 1}\n")
         # Task 119 (#60 pillar 3, fact 9): report through the `review`
@@ -983,39 +1040,64 @@ elif "Role: Peer verdict gate (BLIND)" in prompt:
     # approach's gate invocation must actually approve. Counted with its
     # own marker file, independent of every other counter in this stub;
     # takes precedence over the plain boolean when both are set.
-    _vg_reject_count = os.environ.get("STUB_VERDICT_GATE_REJECT_COUNT")
-    if _vg_reject_count is not None:
-        _vg_wanted = int(_vg_reject_count)
-        _vg_done = 0
-        if os.path.exists(marker("verdict-gate-count")):
-            _vg_done = int(open(marker("verdict-gate-count")).read())
-        open(marker("verdict-gate-count"), "w").write(str(_vg_done + 1))
-        _vg_reject_now = _vg_done < _vg_wanted
+    # Task 033 (G.5, #130): STUB_VERDICT_GATE_MALFORMED_COUNT takes
+    # precedence over both -- its own marker file, checked first, so a
+    # LATER invocation (e.g. a second approach's own gate call) can still
+    # fall through to genuine approval/rejection once the malformed count
+    # is spent.
+    _vg_malformed_wanted = int(os.environ.get("STUB_VERDICT_GATE_MALFORMED_COUNT", "0"))
+    _vg_malformed_now = False
+    if _vg_malformed_wanted:
+        _vg_malformed_marker = marker("verdict-gate-malformed-count")
+        _vg_mseen = 0
+        if os.path.exists(_vg_malformed_marker):
+            _vg_mseen = int(open(_vg_malformed_marker).read())
+        open(_vg_malformed_marker, "w").write(str(_vg_mseen + 1))
+        _vg_malformed_now = _vg_mseen < _vg_malformed_wanted
+
+    if _vg_malformed_now:
+        # No parseable `verdict_gate` contract payload at all -- the
+        # ladder's own re-asks land on this stub's `else` branch (no
+        # `Role: Peer verdict gate` marker in the re-ask prompt) and are
+        # also unparseable, so the ladder exhausts naturally after
+        # `1 + contract_retry_max` total stub invocations, with the
+        # engine's own safe default (`approved=False, payload=None`)
+        # applying.
+        emit_final("the second opinion is still weighing the evidence, no verdict yet")
     else:
-        _vg_reject_now = bool(os.environ.get("STUB_VERDICT_GATE_REJECT"))
-    if _vg_reject_now:
-        with open(os.path.join(run, "verdict-gate-findings.md"), "w") as f:
-            f.write("- finding from verdict gate rejection\n")
-        with open(os.path.join(run, "verdict-gate-findings.json"), "w") as f:
-            # No `author` field -- proves the ENGINE's own attribution
-            # (`findings.attribute_authorship`), not the hat's say-so, is
-            # what puts `author: "verdict_gate"` on the archived copy.
-            json.dump([{
-                "severity": "blocking",
-                "curable": True,
-                "clause": "stub verdict gate clause",
-                "evidence": "stub: verdict gate rejection",
-            }], f)
-        emit_final(
-            "the second opinion disagrees\n"
-            + json.dumps({
-                "verdict": "rejected",
-                "reason": "stub: verdict gate rejection",
-                "findings_path": "verdict-gate-findings.md",
-            }))
-    else:
-        emit_final("the second opinion agrees\n"
-                   + json.dumps({"verdict": "verified"}))
+        _vg_reject_count = os.environ.get("STUB_VERDICT_GATE_REJECT_COUNT")
+        if _vg_reject_count is not None:
+            _vg_wanted = int(_vg_reject_count)
+            _vg_done = 0
+            if os.path.exists(marker("verdict-gate-count")):
+                _vg_done = int(open(marker("verdict-gate-count")).read())
+            open(marker("verdict-gate-count"), "w").write(str(_vg_done + 1))
+            _vg_reject_now = _vg_done < _vg_wanted
+        else:
+            _vg_reject_now = bool(os.environ.get("STUB_VERDICT_GATE_REJECT"))
+        if _vg_reject_now:
+            with open(os.path.join(run, "verdict-gate-findings.md"), "w") as f:
+                f.write("- finding from verdict gate rejection\n")
+            with open(os.path.join(run, "verdict-gate-findings.json"), "w") as f:
+                # No `author` field -- proves the ENGINE's own attribution
+                # (`findings.attribute_authorship`), not the hat's say-so, is
+                # what puts `author: "verdict_gate"` on the archived copy.
+                json.dump([{
+                    "severity": "blocking",
+                    "curable": True,
+                    "clause": "stub verdict gate clause",
+                    "evidence": "stub: verdict gate rejection",
+                }], f)
+            emit_final(
+                "the second opinion disagrees\n"
+                + json.dumps({
+                    "verdict": "rejected",
+                    "reason": "stub: verdict gate rejection",
+                    "findings_path": "verdict-gate-findings.md",
+                }))
+        else:
+            emit_final("the second opinion agrees\n"
+                       + json.dumps({"verdict": "verified"}))
 
 elif "Role: Verifier" in prompt:
     # Extract task id from the injected section: "- **id**: XXX"
@@ -1048,6 +1130,32 @@ elif "Role: Verifier" in prompt:
                 "usage": {"input": 10, "output": 0, "totalTokens": 10},
             },
         }))
+        sys.exit(0)
+
+    malformed_wanted = int(os.environ.get("STUB_VERIFY_MALFORMED_COUNT", "0"))
+    if call_n < malformed_wanted:
+        if os.environ.get("STUB_VERIFY_MALFORMED_FENCED"):
+            # Task 033 (G.5, #130): a prose reply whose LAST fenced
+            # ```json block already carries a VALID `verify` payload --
+            # task 032's fenced-payload rescue
+            # (`_extract_validated_fenced_payload`) settles this on the
+            # very first attempt with ZERO re-ask model calls, never
+            # reaching the ladder's exhaustion path at all.
+            emit_final(
+                f"stub verifier: thinking out loud about task {task_id} "
+                "before settling on a verdict\n```json\n"
+                + json.dumps({"task_id": task_id, "verdict": "verified"})
+                + "\n```\n")
+        else:
+            # No parseable `verify` contract payload at all -- the
+            # ladder's own re-asks land on this stub's `else` branch (no
+            # `Role: Verifier` marker in the re-ask prompt) and are also
+            # unparseable, so the ladder exhausts naturally after
+            # `1 + contract_retry_max` total stub invocations, with the
+            # engine's own safe default (validation-failed) applying.
+            emit_final(
+                f"stub verifier: still weighing whether task {task_id} is "
+                "really done, no verdict yet")
         sys.exit(0)
 
     fails_wanted = int(os.environ.get("STUB_VERIFY_FAILS", "0"))
