@@ -5816,6 +5816,13 @@ class LoopSupervisor:
         reached when a base channel exists (the `path.exists()` guard
         above) -- by task 004 review.md always produces one, so this is
         not a live gap in practice.
+
+        Task 024 (requirement E.3, #116 section 2): APPENDs, the same
+        unconditional way, one more engine-detected `severity: "blocking"`
+        finding per task carrying a truthy `criteriaEditedAfterValidation
+        Failure` marker (`findings.flagged_criteria_findings`) -- the
+        engine-enforced half of the criteria-tamper authority boundary
+        task 008/009 only surfaced to review as a prompt instruction.
         """
         path = self.run.findings_json_file
         if not path.exists():
@@ -5830,7 +5837,16 @@ class LoopSupervisor:
         if tampered:
             confirmed = set()
         downgraded = petitions.downgrade_confirmed_findings(findings_list, confirmed)
-        return downgraded + petitions.duplicate_petition_findings(self.workspace), []
+        # Task 024 (requirement E.3, #116 section 2): append one
+        # engine-detected blocking finding per task flagged
+        # criteriaEditedAfterValidationFailure -- unconditionally, exactly
+        # like the duplicate-petition append just above -- so a review
+        # payload's own `verdict: "verified"` claim over a worker/planner
+        # criteria rewrite is refused by the same contradiction check,
+        # never merely surfaced as a prompt instruction it can ignore.
+        tampered_tasks = self.run.read_tasks().get("tasks", [])
+        return (downgraded + petitions.duplicate_petition_findings(self.workspace)
+                + findings.flagged_criteria_findings(tampered_tasks)), []
 
     def _review_findings(self) -> list[dict] | None:
         """The valid findings list for the review just run, or `None` when
@@ -7115,15 +7131,26 @@ class LoopSupervisor:
         """Task 008: compare each task's current successCriteria against its
         stored criteriaFingerprint. A task seen for the first time (no
         stored fingerprint, e.g. a task discovered mid-run) just gets a
-        baseline recorded -- never flagged. A change observed while
-        validationAttempts is still 0 (no validation failure has ever
-        happened yet) silently updates the baseline -- also not flagged,
-        per the negative case in task 008's successCriteria. Only a change
-        observed once validationAttempts >= 1 sets the persistent
-        criteriaEditedAfterValidationFailure marker, which -- once set --
-        is never cleared (a worker doing this even once is the signal task
-        009's review re-verification exists to catch, however the criteria
-        keep evolving afterwards)."""
+        baseline recorded -- never flagged.
+
+        Task 024 (requirement E.3, #116 section 2): a change is now
+        flagged UNCONDITIONALLY -- including while validationAttempts is
+        still 0 -- closing the gap where a worker/planner rewrite made
+        before any validation failure was silently accepted as a
+        legitimate new baseline with no record at all (task 008's
+        original, now-superseded negative case). The persistent
+        criteriaEditedAfterValidationFailure marker, once set, is never
+        cleared (a worker/planner doing this even once is the signal task
+        009's review re-verification exists to catch, and task 024's own
+        engine-forced blocking finding -- `findings.
+        flagged_criteria_findings`, wired into `_review_findings_channel`
+        -- exists to enforce, however the criteria keep evolving
+        afterwards). The ONE legal way to change a task's own
+        successCriteria remains the judge-authored amendment path
+        (`_apply_criteria_amendments`), which recomputes this SAME
+        fingerprint together with the replacement text in one atomic
+        step, so a legitimate amendment is never mistaken for one of
+        these unauthorized rewrites."""
         changed = False
         for t in tasks_data.get("tasks", []):
             current = self._criteria_fingerprint(t.get("successCriteria", ""))
@@ -7133,8 +7160,7 @@ class LoopSupervisor:
                 changed = True
                 continue
             if stored != current:
-                if (t.get("validationAttempts", 0) >= 1
-                        and not t.get("criteriaEditedAfterValidationFailure")):
+                if not t.get("criteriaEditedAfterValidationFailure"):
                     t["criteriaEditedAfterValidationFailure"] = True
                 t["criteriaFingerprint"] = current
                 changed = True

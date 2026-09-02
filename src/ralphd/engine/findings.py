@@ -152,6 +152,61 @@ def attribute_authorship(items: list[dict], author: str) -> list[dict]:
     return [dict(item, author=author) for item in items]
 
 
+def flagged_criteria_findings(tasks: list[dict]) -> list[dict]:
+    """Task 024 (requirement E.3, #116 section 2): one engine-detected
+    `severity: "blocking"` finding, shaped exactly like `FINDING_SCHEMA`,
+    per task carrying a truthy `criteriaEditedAfterValidationFailure`
+    marker (`engine.loop.LoopSupervisor._check_criteria_edits`, task 008)
+    -- the same unconditional-append discipline `engine.petitions.
+    duplicate_petition_findings` already uses for its own structurally
+    detected violation.
+
+    A worker/planner rewrite of a task's own `successCriteria` has no
+    authority: the ONE legal amendment path is the judge-authored one, on
+    a CONFIRMED petition, through `engine.petitions.criteria_amendment_
+    candidates` / `LoopSupervisor._apply_criteria_amendments` (task 006,
+    requirement B.1/B.2, #114). Before this task, that fact was only
+    SURFACED to the review model as a prompt instruction
+    (`LoopSupervisor._flagged_criteria_review_context`, task 009) --
+    review had to voluntarily obey it. This closes the engine-side gap:
+    the finding this function returns is appended to the SAME findings
+    list `LoopSupervisor._review_findings_channel` hands every caller, so
+    a review payload claiming `verdict: "verified"` over a flagged task
+    now contradicts its own (engine-augmented) findings channel and is
+    refused by the identical `transitions.review_verdict_findings_errors`
+    contradiction check every other engine-detected finding already rides
+    -- never a new, parallel enforcement path.
+
+    `curable` is `True`: nothing about the underlying fact (an
+    unauthorized rewrite once happened) is incurable in the sense
+    requirement B is about -- a fresh approach that never edits the
+    criteria again does not repeat the violation. The
+    `criteriaEditedAfterValidationFailure` marker itself is never cleared
+    once set (`_check_criteria_edits`'s own documented contract), so a
+    task that was ever tampered with keeps producing this finding on
+    every later review pass too -- a disclosed, deliberately conservative
+    consequence of that pre-existing "once set, never cleared" design,
+    not something this function changes.
+    """
+    out = []
+    for t in tasks:
+        if not t.get("criteriaEditedAfterValidationFailure"):
+            continue
+        out.append({
+            "severity": "blocking",
+            "curable": True,
+            "clause": (f"task {t.get('id')} successCriteria authority "
+                       "(#116 section 2)"),
+            "evidence": (
+                f"task {t.get('id')}'s successCriteria was rewritten by a "
+                "worker or planner with no amendment authority -- the ONE "
+                "legal path is a judge-authored amendment on a CONFIRMED "
+                "petition (docs/petition-format.md); current text: "
+                f"{t.get('successCriteria', '')!r}"),
+        })
+    return out
+
+
 def compute_verdict(findings: list[dict]) -> str:
     """Task 002 (requirement A.2, #110): the verdict the ENGINE computes
     from a findings list's severities ALONE -- `"rejected"` iff at least

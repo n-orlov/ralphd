@@ -55,10 +55,13 @@ def test_unchanged_criteria_never_flagged(tmp_path):
     assert "criteriaEditedAfterValidationFailure" not in on_disk["tasks"][0]
 
 
-def test_criteria_change_before_any_failure_not_flagged(tmp_path):
-    """Negative case: criteria changed while validationAttempts is still 0
-    (no failure has ever happened yet) is a silent baseline update, not a
-    violation."""
+def test_criteria_change_before_any_failure_is_now_flagged_task024(tmp_path):
+    """Task 024 (requirement E.3, #116 section 2) supersedes task 008's
+    original negative case here: a criteria change observed while
+    validationAttempts is still 0 is NO LONGER a silent, unflagged
+    baseline update -- the engine now refuses to accept a worker/planner
+    rewrite regardless of how many validation failures (if any) preceded
+    it, so the marker is set even at validationAttempts 0."""
     sup = _supervisor(tmp_path)
     _write_tasks(sup.run, [
         {"id": "001", "title": "t1", "status": "in-progress",
@@ -73,8 +76,11 @@ def test_criteria_change_before_any_failure_not_flagged(tmp_path):
     sup._check_criteria_edits(sup.run.read_tasks())
     on_disk = sup.run.read_tasks()
     t = on_disk["tasks"][0]
-    assert "criteriaEditedAfterValidationFailure" not in t
-    # baseline was silently updated to the new text
+    assert t["criteriaEditedAfterValidationFailure"] is True
+    assert t.get("validationAttempts", 0) == 0
+    # the fingerprint still tracks the current text forward -- refusal is
+    # enforced at review time (findings.flagged_criteria_findings), not by
+    # ever reverting successCriteria itself.
     assert t["criteriaFingerprint"] == sup._criteria_fingerprint("do X, revised")
 
 
