@@ -178,6 +178,22 @@ def test_start_allow_docker_non_socket_path_exits_2(ctl, tmp_path):
     assert "not a socket" in res.stderr
 
 
+def test_start_job_container_has_ulimit_core_zero(ctl):
+    """Task 027 (#118): job containers are created with RLIMIT_CORE=0 so
+    in-container crashes stop producing host coredumps. `--ulimit core=0`
+    must survive alongside the existing `--init` flag and the mount args."""
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "tst-core")
+    assert res.returncode == 0, res.stderr
+    argv = docker_run_argv(ctl)
+
+    ui = argv.index("--ulimit")
+    assert argv[ui + 1] == "core=0"
+    # survives alongside --init and any mount (-v) arguments
+    assert "--init" in argv
+    assert argv.count("-v") >= 1
+
+
 def test_stop_reaps_labeled_siblings(ctl):
     run_dir = ctl.registry / "runs" / "tst-stop"
     run_dir.mkdir(parents=True)

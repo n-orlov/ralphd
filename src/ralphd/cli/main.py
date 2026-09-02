@@ -1853,7 +1853,7 @@ def cmd_start(args):
     env_args += ["-e", f"RALPHD_CONTROL_TOKEN={control_token}"]
 
     cmd = [DOCKER, "run", "-d", "--name", job_container_name(run_id),
-           "--init", *port_args,
+           "--init", "--ulimit", "core=0", *port_args,
            *docker_args, *mounts, *env_args, args.image]
     res = sh(cmd)
     if res.returncode != 0:
@@ -2412,7 +2412,7 @@ def cmd_resume(args):
     if ws_named:
         env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
 
-    cmd = [DOCKER, "run", "-d", "--name", name, "--init", *port_args,
+    cmd = [DOCKER, "run", "-d", "--name", name, "--init", "--ulimit", "core=0", *port_args,
            *docker_args, *mounts, *env_args, args.image]
     res = sh(cmd)
     if res.returncode != 0:
