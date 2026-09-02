@@ -170,12 +170,20 @@ def flagged_criteria_findings(tasks: list[dict]) -> list[dict]:
     (`LoopSupervisor._flagged_criteria_review_context`, task 009) --
     review had to voluntarily obey it. This closes the engine-side gap:
     the finding this function returns is appended to the SAME findings
-    list `LoopSupervisor._review_findings_channel` hands every caller, so
-    a review payload claiming `verdict: "verified"` over a flagged task
-    now contradicts its own (engine-augmented) findings channel and is
-    refused by the identical `transitions.review_verdict_findings_errors`
-    contradiction check every other engine-detected finding already rides
-    -- never a new, parallel enforcement path.
+    list `LoopSupervisor._review_findings_channel` hands every caller (and
+    persisted into that same channel on disk by `_record_flagged_criteria_
+    findings`, so the blocking finding is a record and not just a return
+    value), so a review payload claiming `verdict: "verified"` over a
+    flagged task now contradicts its own (engine-augmented) findings
+    channel and is refused by the identical `transitions.review_verdict_
+    findings_errors` contradiction check every other engine-detected
+    finding already rides -- never a new, parallel enforcement path.
+
+    The rewrite ITSELF is undone at detection time, not here:
+    `_check_criteria_edits` restores `successCriteria` from the verbatim
+    `criteriaOfRecord` copy the engine keeps beside the fingerprint. This
+    function is the record of the fact that it happened, which is why the
+    marker it reads is deliberately sticky.
 
     `curable` is `True`: nothing about the underlying fact (an
     unauthorized rewrite once happened) is incurable in the sense

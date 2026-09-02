@@ -278,10 +278,17 @@ def test_other_task_fields_are_otherwise_untouched(tmp_path):
     assert amended["title"] == "a task whose own criteria are unmeetable"
     assert amended["dependsOn"] == ["0"]
     assert amended["tier"] == "hard"
-    # Exhaustive: the ONLY keys the amendment may differ on are the three
+    # Exhaustive: the ONLY keys the amendment may differ on are the four
     # it is authorized to write. Every other key -- present, absent, or
     # newly invented -- must match the pre-amendment record exactly.
-    amendable = {"successCriteria", "criteriaFingerprint", "validationAttempts"}
+    # `criteriaOfRecord` joined that set in task 024 (requirement E.3,
+    # #116 section 2): the engine now keeps the authoritative criteria text
+    # verbatim beside its hash so an UNauthorized rewrite can be restored,
+    # and a legitimate judge-authored amendment must move that copy forward
+    # in the same atomic step as the hash -- otherwise the next
+    # `_check_criteria_edits` pass would revert the amendment itself.
+    amendable = {"successCriteria", "criteriaFingerprint",
+                 "validationAttempts", "criteriaOfRecord"}
     assert set(amended) - amendable == set(before) - amendable
     for key in set(before) - amendable:
         assert amended[key] == before[key], key

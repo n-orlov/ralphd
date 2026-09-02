@@ -55,13 +55,15 @@ def test_unchanged_criteria_never_flagged(tmp_path):
     assert "criteriaEditedAfterValidationFailure" not in on_disk["tasks"][0]
 
 
-def test_criteria_change_before_any_failure_is_now_flagged_task024(tmp_path):
+def test_criteria_change_before_any_failure_is_now_refused_task024(tmp_path):
     """Task 024 (requirement E.3, #116 section 2) supersedes task 008's
     original negative case here: a criteria change observed while
     validationAttempts is still 0 is NO LONGER a silent, unflagged
-    baseline update -- the engine now refuses to accept a worker/planner
-    rewrite regardless of how many validation failures (if any) preceded
-    it, so the marker is set even at validationAttempts 0."""
+    baseline update -- the engine refuses a worker/planner rewrite
+    regardless of how many validation failures (if any) preceded it, so
+    the marker is set even at validationAttempts 0 AND the rewrite is
+    undone from the verbatim criteria-of-record the engine keeps beside
+    the hash."""
     sup = _supervisor(tmp_path)
     _write_tasks(sup.run, [
         {"id": "001", "title": "t1", "status": "in-progress",
@@ -78,16 +80,20 @@ def test_criteria_change_before_any_failure_is_now_flagged_task024(tmp_path):
     t = on_disk["tasks"][0]
     assert t["criteriaEditedAfterValidationFailure"] is True
     assert t.get("validationAttempts", 0) == 0
-    # the fingerprint still tracks the current text forward -- refusal is
-    # enforced at review time (findings.flagged_criteria_findings), not by
-    # ever reverting successCriteria itself.
-    assert t["criteriaFingerprint"] == sup._criteria_fingerprint("do X, revised")
+    # the rewrite does not stand: successCriteria is restored and the
+    # stored fingerprint still names the authoritative text (task 024
+    # supersedes task 008's "track the new text forward" behaviour, which
+    # now survives only for a task carrying no criteria-of-record --
+    # tests/test_criteria_tamper_refusal_task024.py pins both halves).
+    assert t["successCriteria"] == "do X"
+    assert t["criteriaFingerprint"] == sup._criteria_fingerprint("do X")
 
 
-def test_criteria_change_after_failure_flags_and_survives(tmp_path):
+def test_criteria_change_after_failure_flags_and_is_reverted(tmp_path):
     """Positive case: task fails validation, then its successCriteria is
     rewritten and it's re-marked completed -- the flag must be set and
-    persist in tasks.json."""
+    persist in tasks.json, and (task 024) the rewrite itself must not
+    stand, while nothing else on the record is touched."""
     sup = _supervisor(tmp_path)
     _write_tasks(sup.run, [
         {"id": "001", "title": "t1", "status": "pending",
@@ -116,11 +122,15 @@ def test_criteria_change_after_failure_flags_and_survives(tmp_path):
     assert t["criteriaEditedAfterValidationFailure"] is True
     assert t["status"] == "completed"
     assert t["validationAttempts"] == 1
-    assert t["criteriaFingerprint"] == sup._criteria_fingerprint(
-        "do X (rewritten by worker)")
+    assert t["successCriteria"] == "do X"
+    assert t["criteriaFingerprint"] == sup._criteria_fingerprint("do X")
 
 
 def test_flag_persists_once_set_even_if_criteria_changes_again(tmp_path):
+    """A task carrying a fingerprint but no verbatim criteria-of-record (a
+    run resumed from before task 024) cannot have its rewrite undone -- a
+    sha256 is one-way -- so task 008's flag-and-track-forward behaviour
+    stands there, and the flag persists."""
     sup = _supervisor(tmp_path)
     _write_tasks(sup.run, [
         {"id": "001", "title": "t1", "status": "completed",

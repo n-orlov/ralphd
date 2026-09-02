@@ -5822,11 +5822,30 @@ class LoopSupervisor:
         finding per task carrying a truthy `criteriaEditedAfterValidation
         Failure` marker (`findings.flagged_criteria_findings`) -- the
         engine-enforced half of the criteria-tamper authority boundary
-        task 008/009 only surfaced to review as a prompt instruction.
+        task 008/009 only surfaced to review as a prompt instruction --
+        PERSISTS it into the sidecar (`_record_flagged_criteria_findings`,
+        so the blocking finding is a record on disk and not just this
+        return value), and reports it EVEN IN the no-channel-at-all first
+        case above: a missing review sidecar must not be a way to get a
+        `verified` claim over a criteria rewrite trusted.
         """
         path = self.run.findings_json_file
+        # Task 024 (requirement E.3, #116 section 2): the engine-forced
+        # blocking finding for a criteria-tamper marker is derived BEFORE
+        # the no-channel early return below, because an absent channel
+        # must not be an escape hatch from it: with review's own sidecar
+        # missing, `(None, [])` would make every caller trust a `verdict:
+        # "verified"` claim over a task whose criteria a worker or planner
+        # rewrote. So when any task is flagged, this method reports a
+        # findings LIST (the engine's own finding) even with no review
+        # channel on disk at all -- failing towards refusal, the same
+        # direction the present-but-unreadable case already fails.
+        flagged = findings.flagged_criteria_findings(
+            self.run.read_tasks().get("tasks", []))
+        if flagged:
+            self._record_flagged_criteria_findings(flagged)
         if not path.exists():
-            return None, []
+            return (flagged, []) if flagged else (None, [])
         try:
             findings_list = findings.read_findings_json(path)
         except ValueError as exc:
@@ -5837,16 +5856,65 @@ class LoopSupervisor:
         if tampered:
             confirmed = set()
         downgraded = petitions.downgrade_confirmed_findings(findings_list, confirmed)
-        # Task 024 (requirement E.3, #116 section 2): append one
-        # engine-detected blocking finding per task flagged
-        # criteriaEditedAfterValidationFailure -- unconditionally, exactly
-        # like the duplicate-petition append just above -- so a review
-        # payload's own `verdict: "verified"` claim over a worker/planner
-        # criteria rewrite is refused by the same contradiction check,
-        # never merely surfaced as a prompt instruction it can ignore.
-        tampered_tasks = self.run.read_tasks().get("tasks", [])
+        # Task 024: append the flagged-criteria findings derived above --
+        # unconditionally, exactly like the duplicate-petition append just
+        # below -- so a review payload's own `verdict: "verified"` claim
+        # over a worker/planner criteria rewrite is refused by the same
+        # contradiction check, never merely surfaced as a prompt
+        # instruction it can ignore. Deduplicated by `clause` against the
+        # channel already on disk, because `_record_flagged_criteria_
+        # findings` PERSISTS these into that same sidecar: without this
+        # filter, every later read of the channel would report the same
+        # engine finding twice.
+        seen = {f.get("clause") for f in downgraded}
         return (downgraded + petitions.duplicate_petition_findings(self.workspace)
-                + findings.flagged_criteria_findings(tampered_tasks)), []
+                + [f for f in flagged if f.get("clause") not in seen]), []
+
+    def _record_flagged_criteria_findings(self, flagged: list[dict]) -> None:
+        """Task 024 (requirement E.3, #116 section 2): PERSIST the
+        engine-forced criteria-tamper findings into review's own structured
+        findings sidecar (`RunDir.findings_json_file`) and witness each
+        newly recorded one with its own `review.criteria_tamper_finding`
+        event.
+
+        Without this, the engine's finding would exist only inside one
+        in-memory return value: the run would refuse the contradicting
+        `verified` claim but leave NO record of why on disk, and an
+        operator reading the findings channel afterwards would see an
+        empty list. Recording it makes the blocking finding part of the
+        same channel every other finding is read from.
+
+        Idempotent, and deliberately narrow:
+        * an entry whose `clause` is already present in the channel is
+          neither re-appended nor re-announced, so the re-ask ladder's
+          repeated reads (and repeated review passes) cannot grow the file
+          or spam the event log;
+        * a channel that exists but does not validate is left completely
+          untouched -- `_review_findings_channel`'s own third case already
+          refuses that payload, and overwriting a malformed channel would
+          destroy the very evidence a re-ask has to repair;
+        * a channel that does not exist yet is created holding exactly
+          these findings.
+        """
+        if not flagged:
+            return
+        path = self.run.findings_json_file
+        existing: list[dict] = []
+        if path.exists():
+            try:
+                existing = findings.read_findings_json(path)
+            except ValueError:
+                return
+        seen = {f.get("clause") for f in existing}
+        fresh = [f for f in flagged if f.get("clause") not in seen]
+        if not fresh:
+            return
+        findings.write_findings_json(path, existing + fresh)
+        for f in fresh:
+            self.run.emit(
+                "review.criteria_tamper_finding", severity=f.get("severity"),
+                clause=f.get("clause"), evidence=f.get("evidence"),
+                curable=f.get("curable"))
 
     def _review_findings(self) -> list[dict] | None:
         """The valid findings list for the review just run, or `None` when
@@ -6794,6 +6862,13 @@ class LoopSupervisor:
             new = cand["new_criteria"]
             task["successCriteria"] = new
             task["criteriaFingerprint"] = self._criteria_fingerprint(new)
+            # Task 024 (requirement E.3, #116 section 2): move the verbatim
+            # criteria-of-record forward together with the hash, in the
+            # SAME atomic step -- otherwise `_check_criteria_edits` would
+            # see a legitimate judge-authored amendment as a rewrite away
+            # from the old recorded text and restore it, undoing the one
+            # legal amendment path.
+            task["criteriaOfRecord"] = new
             task["validationAttempts"] = 0
             changed.append(task.get("id"))
             self.run.emit(
@@ -7117,12 +7192,33 @@ class LoopSupervisor:
         successCriteria text) if it doesn't already have one -- true for a
         freshly planned task, and also backfills a run resumed from before
         this feature existed. Never flags anything: there is nothing yet to
-        compare a first-sight fingerprint against."""
+        compare a first-sight fingerprint against.
+
+        Task 024 (requirement E.3, #116 section 2): records the same
+        baseline text VERBATIM beside the hash, as `criteriaOfRecord` --
+        the authoritative copy `_check_criteria_edits` RESTORES a task's
+        `successCriteria` from when it catches a worker- or
+        planner-authored rewrite. A hash alone can only ever detect such
+        a rewrite, never undo it, which is exactly why task 008's version
+        of this could do no more than flag the edit and track the new
+        text forward. Backfilled for a task that already carries a
+        fingerprint only when that fingerprint still matches the task's
+        CURRENT text -- if it does not, an unauthorized rewrite is
+        already on disk and the pre-rewrite text is unrecoverable, so
+        nothing is recorded and `_check_criteria_edits`'s documented
+        legacy branch (flag, track forward, no restore) handles it.
+        """
         data = self.run.read_tasks()
         changed = False
         for t in data.get("tasks", []):
+            current = self._criteria_fingerprint(t.get("successCriteria", ""))
             if "criteriaFingerprint" not in t:
-                t["criteriaFingerprint"] = self._criteria_fingerprint(t.get("successCriteria", ""))
+                t["criteriaFingerprint"] = current
+                t["criteriaOfRecord"] = t.get("successCriteria", "")
+                changed = True
+            elif ("criteriaOfRecord" not in t
+                    and t.get("criteriaFingerprint") == current):
+                t["criteriaOfRecord"] = t.get("successCriteria", "")
                 changed = True
         if changed:
             self.run.write_tasks(data)
@@ -7150,19 +7246,49 @@ class LoopSupervisor:
         (`_apply_criteria_amendments`), which recomputes this SAME
         fingerprint together with the replacement text in one atomic
         step, so a legitimate amendment is never mistaken for one of
-        these unauthorized rewrites."""
+        these unauthorized rewrites.
+
+        The refusal is not merely a marker: when the task carries a
+        `criteriaOfRecord` (the verbatim authoritative text recorded
+        beside the hash by `_ensure_criteria_baseline` / this method's own
+        first-sight branch / `_apply_criteria_amendments`), the rewrite
+        DOES NOT STAND -- `successCriteria` is restored to that text, the
+        stored fingerprint is left exactly as it was, and the refusal is
+        witnessed with its own `task.criteria_edit_refused` event carrying
+        both the refused and the restored text. The one case that cannot
+        be undone is a task whose recorded text is missing or no longer
+        matches its stored hash (a run resumed from before task 024, where
+        the pre-rewrite text was never recorded and a sha256 cannot be
+        inverted): there the pre-existing task 008 behaviour stands --
+        flag, track the new text forward -- and the engine-forced blocking
+        finding below is the whole of the enforcement."""
         changed = False
         for t in tasks_data.get("tasks", []):
             current = self._criteria_fingerprint(t.get("successCriteria", ""))
             stored = t.get("criteriaFingerprint")
             if stored is None:
                 t["criteriaFingerprint"] = current
+                t.setdefault("criteriaOfRecord", t.get("successCriteria", ""))
                 changed = True
                 continue
             if stored != current:
                 if not t.get("criteriaEditedAfterValidationFailure"):
                     t["criteriaEditedAfterValidationFailure"] = True
-                t["criteriaFingerprint"] = current
+                of_record = t.get("criteriaOfRecord")
+                restorable = (isinstance(of_record, str)
+                              and self._criteria_fingerprint(of_record) == stored)
+                if restorable:
+                    refused = t.get("successCriteria", "")
+                    t["successCriteria"] = of_record
+                    self.run.emit(
+                        "task.criteria_edit_refused", taskId=t.get("id"),
+                        refusedCriteria=refused, restoredCriteria=of_record,
+                        reason=("a worker- or planner-authored successCriteria "
+                                "rewrite has no authority: the ONE legal path "
+                                "is a judge-authored amendment on a CONFIRMED "
+                                "petition (task 006, #114)"))
+                else:
+                    t["criteriaFingerprint"] = current
                 changed = True
         if changed:
             self.run.write_tasks(tasks_data)
