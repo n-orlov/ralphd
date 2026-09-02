@@ -3710,6 +3710,44 @@ class LoopSupervisor:
             self._emit_task_status(task_id, current, target)
         return []
 
+    def _apply_worker_task_status_report(self, payload: dict,
+                                         assigned_task_id: str | None) -> list[str]:
+        """Task 011 (requirement C.1, #123): the semantic half of a
+        WORKER's `task_status` report -- the channel worker.md's failed-task
+        escape instructs -- layered on `_apply_reported_task_status` just
+        above rather than replacing it (one applier, one writer).
+
+        The one thing this wrapper adds over the generic hat channel: a
+        worker may never report a `task_status` for the task the HARNESS
+        assigned it this iteration. That task's own status is the verdict
+        channel's business (`verdict: "complete"`/`"unsatisfiable"`, whose
+        target the harness picks itself -- `_apply_worker_completion_
+        report`), and a payload carrying BOTH for the same id is a
+        contradiction ("this task is done" + "this task is skipped") that
+        must be refused and re-asked, never half-applied in whichever
+        order the branches happen to run. Nothing legitimate is lost: the
+        escape is by construction about a DIFFERENT task -- a `failed` one,
+        which `scheduler.select_next_task` never assigns (`failed` is not
+        in `state.TASK_ACTIONABLE_STATUSES`).
+
+        Everything else -- unknown `task_id`, an edge the declared table
+        for this variant does not carry, the missing-`justification`
+        condition on `failed -> skipped`, and the write of that
+        justification into the task's own `notes` -- is `_apply_reported_
+        task_status`/`transitions.task_status_report_errors`' business,
+        unchanged and not re-derived here.
+        """
+        task_id = payload.get("task_id")
+        if not task_id:
+            return ["task_status: reported with no task_id naming the task "
+                    "to move"]
+        if assigned_task_id is not None and task_id == assigned_task_id:
+            return [f"task_status: task {task_id!r} is the task assigned to "
+                    "this iteration -- report its own outcome through "
+                    "`verdict` instead; the task_status channel is for "
+                    "resolving a different, already-failed task"]
+        return self._apply_reported_task_status(payload)
+
     def _apply_unsatisfiable_report(self, payload: dict) -> list[str]:
         """Task 025 (requirement H, #63): apply a worker's `verdict:
         "unsatisfiable"` report -- a task's criteria cannot be satisfied as
@@ -4979,6 +5017,71 @@ class LoopSupervisor:
                 # `self._abort_reason`, no early `return`. `enforce_
                 # contract` already emitted the `contract.violation`/
                 # `contract.agent_fault` events for the record.
+            # Task 011 (requirement C.1, #123): the worker-side half of
+            # task 009's sanctioned `failed -> skipped` escape. Task 010
+            # rewrote worker.md to report that move through the
+            # `task_status` contract channel ("carry {"task_status":
+            # "skipped", "task_id": "<id>", "justification": "<text>"}
+            # alongside your ordinary verdict in the same JSON reply")
+            # instead of writing `tasks.json` by hand -- but until this
+            # site existed `_step_worker` had NO application path for such
+            # a report, so the escape the shipped prompt instructs was
+            # unreachable in production and a `failed` task with a
+            # dependent could still only be resolved by an operator
+            # editing the record. Routed through exactly the same
+            # `contract_enforcement.enforce_contract` ladder + `extra_
+            # validate` semantic hook `_step_generic_hat`'s own
+            # `task_status_extra_validate` (task 004, requirement F, #92
+            # site 2) already uses for every other hat, and applied by the
+            # SAME single applier (`_apply_reported_task_status` -> the
+            # declared table -> `RunState.write_tasks`) -- never a second
+            # mechanism, and never a direct write. Placed BEFORE the
+            # verdict-specific branches and independent of `verdict`'s own
+            # value, exactly like the `petition` side channel just above,
+            # so the escape rides alongside `"no_verdict"` (the usual
+            # case: the worker resolves a DIFFERENT, already-failed task
+            # while its own assigned task continues) as readily as any
+            # other verdict.
+            if isinstance(payload, dict) and "task_status" in payload:
+                event_loop = asyncio.get_running_loop()
+
+                def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                    if attempt == 0:
+                        return worker_final_text
+                    raw, _usage = asyncio.run_coroutine_threadsafe(
+                        self._ask_contract_fix("worker", prior_errors or [],
+                            final_text=result.final_text),
+                        event_loop).result()
+                    return last_nonblank_line(raw)
+
+                status_enforcement = await asyncio.to_thread(
+                    contract_enforcement.enforce_contract,
+                    "worker", respond,
+                    max_retries=self.cfg.contract_retry_max,
+                    state=self.run,
+                    extra_validate=lambda p: self._apply_worker_task_status_report(
+                        p, assigned_id),
+                )
+                if status_enforcement.ok:
+                    if status_enforcement.payload is not None:
+                        payload = status_enforcement.payload
+                        verdict = payload.get("verdict")
+                        worker_final_text = json.dumps(payload)
+                        proposed_split_tasks = (
+                            payload.get("proposed_tasks")
+                            if isinstance(payload, dict) else None)
+                    # The applier may have just written tasks.json; every
+                    # branch below (and this pass's own stagnation diff)
+                    # must see that write rather than the pre-report
+                    # snapshot -- so an applied escape registers as the
+                    # genuine plan progress it is, exactly like an applied
+                    # `"complete"`/`"unsatisfiable"` report does.
+                    tasks_after = self.run.read_tasks()
+                # Ladder exhausted: same fall-through as the petition site
+                # above -- nothing was applied, no `_advance`, no
+                # `_abort_reason`, no early `return`; `enforce_contract`
+                # already emitted the `contract.violation`/`contract.
+                # agent_fault` events for the record.
             if verdict is not None:
               # Task 008 (requirement B.2, #128): the generic schema site
               # (the `elif schema_errors:` branch below) used to have no

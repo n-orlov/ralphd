@@ -980,6 +980,29 @@ HAT_SCHEMAS: dict[str, dict] = {
             # v0.9 requirement H had to pin for "unsatisfiable" and pinned
             # the same way.
             "proposed_tasks": {"type": "array"},
+            # Task 011 (requirement C.1, #123): the two fields worker.md's
+            # failed-task escape actually instructs -- `task_status` (the
+            # target status for the task named by `task_id`) and
+            # `justification` (required by `task_status_report_errors`
+            # above for the one declared `failed -> skipped` move). Task
+            # 010 rewrote worker.md to route that escape through THIS
+            # contract channel instead of a direct `tasks.json` write, but
+            # this schema still had `additionalProperties: False` and no
+            # such properties -- so the very payload the shipped prompt
+            # asks for was refused as `unexpected field(s)
+            # ['justification', 'task_status']` and the escape was
+            # unreachable in production. Declared OPTIONAL and
+            # deliberately independent of `verdict` (a status report rides
+            # ALONGSIDE the ordinary verdict, exactly like `petition` and
+            # `proposed_tasks` above -- worker.md: "carry ... alongside
+            # your ordinary verdict in the same JSON reply"). `type`
+            # `string` with no enum: WHICH moves are legal is the declared
+            # task-status table's business (`task_status_table_for`,
+            # applied per-task against its CURRENT status by
+            # `LoopSupervisor._apply_reported_task_status`), never a
+            # second, drifting copy of that table pinned here.
+            "task_status": {"type": "string"},
+            "justification": {"type": "string"},
             # Task 004 (requirement A.1, #114): an OPTIONAL structured
             # impossibility declaration -- a worker names the obligation
             # (a requirement letter, a DoD item, or its own task's
