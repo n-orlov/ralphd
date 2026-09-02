@@ -1749,6 +1749,89 @@ lint half (a plan-time bound restricting criteria to enumerable shapes), and #11
 stranding-lint future fixtures, task 008's criteria-tamper residual, the plan-time criteria
 bound — filed BY the run as its own backlog).
 
+## v0.17 — a slip is not a verdict
+
+Full PRD: [`docs/prds/v0.17-a-slip-is-not-a-verdict.md`](prds/v0.17-a-slip-is-not-a-verdict.md).
+This wave wires the existing uncharged contract re-ask ladder into the three judging hats
+(verify, review, verdict_gate), which previously burned a validation attempt, archived an
+approach, or discarded a VERIFIED approach on one malformed final line; makes an honest
+steer `settled: false` redeliver instead of being silently consumed and applies a repaired
+worker verdict instead of discarding it; legalizes `failed -> skipped` as a declared contract
+move, writes blocker signatures at plan-ingestion exhaustion, makes the resume buckets honor
+`priority`, and removes a dead `return []`; gives the router's undecidable branch caller
+evidence and a deterministic policy, both peer gates start flags and `effective()`
+visibility, and verdict_gate its own findings path; adds a sixth plan-time criteria lint
+plus #116's seven named evasion fixtures and refuses worker/planner criteria rewrites
+engine-side; widens reflect's self-improvement scope to all eight hat prompts and stops job
+containers from dumping core files on the host; and closes the coverage debt named by #130
+with black-box e2e for both peer gates. Requirement letters below are the PRD's own, A-I.
+**This block is written while the run is still going** — `docs/prds/README.md`'s own row for
+this wave still reads `not started — committed ahead of its launch` as of this commit — so
+every mark below states what has landed AS OF ITS OWN COMMIT and nothing more; it is not a
+promise that a later commit keeps it current.
+
+- **A — the judges get the ladder (#119, #120, #121).** Landed. Verify's payload parse is
+  wrapped in `enforce_contract` at `bde5e7b5` (task 001); review's ladder entry widened to
+  unparseable/schema-invalid payloads at `2d9e56ff` (task 002), reconciled with the
+  pre-existing review battery at task 049; the ladder pushed inside `_verdict_gate_verdict` so
+  both gate sites inherit it at `606c7904` (task 003); `validationAttempts`/final-attempt
+  marker injected into verify's context and `task-verify.md` pinned to it at `571ad229` (task
+  004); the `task_id`-mismatch guard tested at the in-process `LoopSupervisor` tier at
+  `7421fcf1` (task 005). No safe default changed; existing tests pass unmodified.
+- **B — a claim means something (#122, #128).** Landed. A `settled: false` steer message is
+  left deliverable, bounded by a per-message redelivery counter, at `dffee746`/`8b2c5fb7`
+  (tasks 006-007); a repaired worker verdict re-enters the dispatch exactly once at
+  `8c474430`/`bb745c57` (task 008).
+- **C — legal paths and honest bookkeeping (#123, #124, #127, #129).** Partly landed as of
+  this commit. `failed -> skipped` sanctioned through the contract channel and driven end to
+  end with a dependent present at `45ee0fc9`/`1d77ec60`/`5b6537b8`/`f324164f` (tasks 009-011,
+  requirement C.1); the resume buckets honor `priority` at `09dec0cc` (task 013, requirement
+  C.3); the dead `return []` removed at `df6c73f1` (task 014, requirement C.4). Task 012
+  (requirement C.2, #124, blocker signatures at plan-ingestion exhaustion) exhausted its
+  validation ladder `failed` on a `degraded`-health distinction the validator demanded beyond
+  its criteria's literal text; it blocks no dependent task and stands as history, its residual
+  disclosed in the closing report rather than carved into a new task as of this commit.
+- **D — the second judge becomes real (#117, #125).** Landed. The router's `decide()` folds
+  caller-supplied evidence into its prompt at `d8d0b633` (task 015); plan_review's undecidable
+  branch gets a declared deterministic policy at `ee7685c9` (task 016); both peer gates gain
+  `ralphctl start` flags and `effective()` visibility at `3a034f6b` (task 017), with a stale
+  `ROUTER_FALLBACK` claim corrected at `09d5c848` (task 018); verdict_gate gets its own
+  findings path with per-finding authorship at `bcde29cc` (task 019); a peek past
+  verdict_gate's blindness is detected and recorded at `64eaef0f` (task 020), with the
+  honor-system limit documented in SPEC.md at `c8715300` (task 021).
+- **E — the plan-time criteria bound (#115 lint half, #116).** Landed. The sixth ingestion
+  lint for unenumerated quantifiers and clause-count overruns at `2e5b2cff` (task 022); #116's
+  seven named evasion fixtures at `0f575f57`/`5b4c621c` (task 023); worker/planner
+  `successCriteria` rewrites refused engine-side, including at zero attempts, at
+  `ca898ecd`/`8ae02676` (task 024); the pinned standing rules named in verify's context and
+  contract at `4dda490a` (task 025).
+- **F — the loop sees itself, the host stays clean (#126, #118).** Landed. Reflect's
+  improvement scope widened to the whole shipped prompt surface at `3d9a2c5e` (task 026); job
+  containers created with `--ulimit core=0` at `d9939693` (task 027); the SIGQUIT-sender
+  investigation recorded (sender not in the job's own process tree) at `5c15f0f4` (task 028).
+- **G — the coverage debt (#130).** Landed, first cut. Engine-subprocess e2e for both peer
+  gates at `f232114b` (task 029); the steer tool spool proven across the real uid boundary at
+  `467cc989`/`101fecaa` (task 030); verdict_gate rejection into a second approach and a pass at
+  `bc75a3a4` (task 031); run-level coverage for composed gate variants at `9d504020` (task
+  032); ladder exhaustion with budget remaining above the unit tier at `bd2de75a` (task 033);
+  the lexical-only pins named at `de4c0c73` (task 034).
+- **H — the version, the roadmap, the row.** Partly landed as of this commit. `0.17.0` landed
+  in `pyproject.toml` and `src/ralphd/__init__.py` at `bc98a3ef` (task 035); this `## v0.17`
+  block is added by the present commit (task 036), leaving the `## v0.16` block above
+  untouched. Outstanding as of this commit: this wave's own index row (task 037) and the
+  `LAUNCH_SHA` bump (task 038).
+- **I — the evidence, the closure, and the record.** Outstanding as of this commit in full:
+  closing #119, #120, #121, #122, #123, #124, #127, #128, #129 (task 039) and #117, #125,
+  #115, #116, #126, #118, #130 (task 040) with evidence; the v0.17 petitions record (task
+  041); the fast/docker/browser/dev-layout sweeps (tasks 042-045); the closing report walking
+  A-I (task 046); the terminal summary (task 047); and the final guard-subset re-verification
+  as the true last commit (task 048).
+
+No cut has been taken on requirements A, B, D, E, F or G as of this commit. C's only
+residual is task 012's uncarved gap, disclosed above and not yet a further reduction of scope
+decided by the operator. Any further cut is not yet decided and will be announced by
+notification if taken.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
