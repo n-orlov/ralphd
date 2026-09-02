@@ -4609,6 +4609,7 @@ class LoopSupervisor:
         result = await self.run_iteration(
             "verdict_gate", tier=state.run_level_verify_tier())
         approved, payload = await self._verdict_gate_verdict(result)
+        self._record_verdict_gate_peek(approach)
         if approved:
             self._advance("verdict_gate", "finishing", "verdict_gate_approved")
             self.run.emit("signal", signal="VERIFIED")
@@ -4722,6 +4723,47 @@ class LoopSupervisor:
         payload = enforcement.payload
         approved = payload.get("verdict") == "verified"
         return approved, payload
+
+    def _record_verdict_gate_peek(self, approach: int) -> list[dict]:
+        """Task 020 (D.5, #125 A): a post-hoc, honor-system check over the
+        `verdict_gate` iteration that JUST FINISHED -- called from both of
+        the peer gate's two call sites (`_step_verdict_gate`,
+        `_grace_verdict_gate`) strictly AFTER `_verdict_gate_verdict` has
+        already decided `approved`/`payload`, so nothing this method finds
+        can reach back into that decision (see `state.
+        detect_verdict_gate_peek`'s own docstring for why this ordering is
+        the whole point, not incidental).
+
+        `self.run.max_iteration_number()` names the iteration this call
+        just wrote (its `meta.json` already carries `endedAt` by the time
+        `run_iteration` returns) -- the SAME iteration `_verdict_gate_
+        verdict`'s `result` came from, never a stale or future one, since
+        the engine runs one iteration at a time.
+
+        A clean iteration (the overwhelming, intended case) records
+        nothing at all -- no event, no status write -- so an operator who
+        never sees `verdictGatePeeks` on `GET /status` knows the honor
+        system held for every gate call so far, not merely that nobody
+        looked. A flagged one gets exactly one `verdict_gate_peek` event
+        (`events.jsonl`) and one entry appended to the `verdictGatePeeks`
+        list on the run's status document (`GET /status` surfaces it
+        automatically, since that endpoint just augments `read_status()`).
+        """
+        number = self.run.max_iteration_number()
+        flagged = state.detect_verdict_gate_peek(self.run.root, number)
+        if not flagged:
+            return flagged
+        self.run.emit("verdict_gate_peek", approach=approach, iteration=number,
+                      calls=flagged)
+        existing = self.run.read_status().get("verdictGatePeeks") or []
+        self.run.update_status(
+            verdictGatePeeks=existing + [{"approach": approach,
+                                          "iteration": number,
+                                          "calls": flagged}])
+        log.warning(
+            "verdict_gate iteration %d (approach %d) read past its "
+            "blindness contract: %s", number, approach, flagged)
+        return flagged
 
     def _step_replan(self) -> tuple:
         """The `replan` state: the approach boundary as a transition with a
@@ -6909,6 +6951,7 @@ class LoopSupervisor:
             "verdict_gate", tier=state.run_level_verify_tier())
         self._refund_iteration("grace")
         approved, payload = await self._verdict_gate_verdict(result)
+        self._record_verdict_gate_peek(approach)
         if approved:
             return True
         reason = (payload or {}).get("reason")

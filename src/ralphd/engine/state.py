@@ -665,6 +665,91 @@ def format_last_tool_call(evidence: dict | None) -> str:
             f"({evidence.get('transcript')})")
 
 
+# Task 020 (D.5, #125 A): the three path fragments a genuinely BLIND
+# verdict_gate iteration must never read -- any of them, anywhere in a tool
+# call's rendered arguments, means the hat reached outside the finished
+# workspace it is supposed to judge on its own and read another iteration's
+# transcript, the run's own event stream, or a raw output transcript
+# instead. Spelled once so the detector and its tests never drift on the
+# three literals.
+# `OUTPUT_FILENAME` (imported above from `..log_merge`, the ONE module
+# allowed to spell the transcript file's name -- tests/test_log_merge.py's
+# `test_no_duplicate_merge_implementation` grep-guards it) is used here
+# instead of the literal string, so this pattern list names the file
+# without becoming a second place the literal is spelled.
+VERDICT_GATE_PEEK_PATTERNS: tuple[str, ...] = (
+    "iterations/", "events.jsonl", OUTPUT_FILENAME)
+
+
+def detect_verdict_gate_peek(
+        run_root: Path, number: int,
+        patterns: tuple[str, ...] = VERDICT_GATE_PEEK_PATTERNS) -> list[dict]:
+    """Task 020 (D.5, #125 A): a post-hoc, honor-system check over ONE
+    `verdict_gate` iteration's OWN transcript for a tool call that reached
+    past the blindness contract `prompts/verdict_gate.md` states in words --
+    a `bash`/`read`/etc. call whose rendered arguments mention any of
+    `VERDICT_GATE_PEEK_PATTERNS` (`iterations/`, `events.jsonl`, and the
+    per-iteration transcript filename `..log_merge.OUTPUT_FILENAME` names)
+    -- the three paths that would let the peer see review's own
+    reasoning/verdict or any other iteration's raw transcript instead of
+    judging the finished workspace on its own.
+
+    This is a RECORDED OBSERVATION, never a verdict override: nothing in
+    `LoopSupervisor._verdict_gate_verdict` consults this function, and no
+    caller may let its result change `approved`/`payload` -- see
+    `LoopSupervisor._record_verdict_gate_peek`, which calls this strictly
+    AFTER the verdict is already decided, at both of the two call sites the
+    peer gate has (`_step_verdict_gate`, the off-budget `_grace_verdict_
+    gate`).
+
+    Scans the WHOLE transcript, not just the tail `last_tool_call` reads
+    (which truncates to its newest `TERMINATION_EVIDENCE_TAIL_BYTES`): a
+    peek can happen at any point in a single iteration's tool-call
+    sequence, not only at its very end, and one gate iteration's own
+    transcript is never the many-megabyte, many-iteration size that tail
+    truncation exists to bound.
+
+    Returns one dict per flagged call -- `tool`, `args` (rendered, scrubbed
+    and truncated the same way `last_tool_call` truncates evidence) and
+    `matched` (which of `patterns` fired) -- `[]` for a clean iteration.
+    Absent/unreadable transcript -> `[]`: like `last_tool_call`, this is
+    diagnostic, never a reason to raise.
+    """
+    path = iteration_output_path(run_root, number)
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    flagged: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line or "tool_execution_start" not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or \
+                event.get("type") != "tool_execution_start":
+            continue
+        args = event.get("args") or event.get("arguments") or {}
+        try:
+            rendered = json.dumps(args, sort_keys=True)
+        except (TypeError, ValueError):
+            rendered = str(args)
+        matched = [p for p in patterns if p in rendered]
+        if not matched:
+            continue
+        scrubbed = scrub_text(rendered)
+        if len(scrubbed) > TERMINATION_EVIDENCE_ARGS_MAX:
+            scrubbed = scrubbed[:TERMINATION_EVIDENCE_ARGS_MAX] + "..."
+        flagged.append({"tool": str(event.get("toolName") or "?"),
+                        "args": scrubbed, "matched": matched})
+    return flagged
+
+
 # Task 036 (#20 H4): the host's record of WHICH IMAGE a run's container was
 # started from -- written into the run dir's `host.json` by `ralphctl
 # start`/`resume`, read from here by everything that reports or reproduces it.
