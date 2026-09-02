@@ -4463,7 +4463,7 @@ class LoopSupervisor:
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self.run_iteration(
             "verdict_gate", tier=state.run_level_verify_tier())
-        approved, payload = self._verdict_gate_verdict(result)
+        approved, payload = await self._verdict_gate_verdict(result)
         if approved:
             self._advance("verdict_gate", "finishing", "verdict_gate_approved")
             self.run.emit("signal", signal="VERIFIED")
@@ -4486,7 +4486,7 @@ class LoopSupervisor:
                      "verdict_gate_rejected_no_approach_left")
         return ("tail",)
 
-    def _verdict_gate_verdict(self, result) -> tuple[bool, dict | None]:
+    async def _verdict_gate_verdict(self, result) -> tuple[bool, dict | None]:
         """Task 020 (requirement L, #101): the ONE parser of a
         `verdict_gate` hat reply, consulted by BOTH sites that can let the
         peer gate bless a run -- the ordinary `_step_verdict_gate` state
@@ -4494,6 +4494,44 @@ class LoopSupervisor:
         makes (the same single-predicate discipline task 013 imposed on
         `_terminal_success_blockers`, for the same reason: two hand-rolled
         copies of a gate's parsing rules drift).
+
+        Task 003 (requirement A.3, #119): the uncharged re-ask ladder
+        every other contract site already has
+        (`contract_enforcement.enforce_contract`) now lives INSIDE this
+        parser itself, rather than a separate `_verdict_gate_contract_
+        ladder` method a caller would have to remember to invoke first
+        (the shape `_review_contract_ladder`/`_verify_contract_ladder`
+        use). Pushing it down one level means BOTH call sites inherit the
+        ladder the moment they `await` this method -- exactly the way both
+        already inherit its safe default -- with no second copy of "call
+        the ladder, then parse" for a future third call site to forget.
+        This is why the method is now `async` (it was sync before this
+        task): both call sites already `await`ed the coroutine that
+        produced `result`, so making this one `await`able too is a
+        one-line change at each site, not a new coroutine-plumbing
+        problem.
+
+        Skips the ladder entirely, going straight to today's parse, for a
+        reply that is ALREADY a schema-valid dict clean of
+        `verdict_gate_report_errors` -- a genuine `verified` verdict, or a
+        `rejected` one with a `reason` -- there is nothing to repair, same
+        exemption `_review_contract_ladder` and `_verify_contract_ladder`
+        both apply. An absent/unparseable reply, a schema violation, or a
+        `rejected` verdict with no `reason` gets one uncharged first
+        re-ask that reuses THIS already-completed iteration's own final
+        line (no extra hat call, no double-charge -- mirrors `_verify_
+        contract_ladder`'s `first_attempt_text` reuse), then up to
+        `cfg.contract_retry_max` further uncharged `_ask_contract_fix(
+        "verdict_gate", ...)` re-asks. `result is None` (defensive; no
+        current caller passes it) short-circuits to the safe default
+        before any of that, since there is no final line to parse or
+        repair.
+
+        On ladder exhaustion this returns the exact SAME safe default it
+        always has -- `approved=False`, `payload=None` -- never a
+        run-ending contract violation and never a rewritten default: the
+        ladder only ever gives a genuinely repaired payload a chance to be
+        READ, it does not manufacture one.
 
         Returns `(approved, payload)`. `approved` is True only for a
         well-formed payload whose `verdict` is `verified`; an absent,
@@ -4504,18 +4542,40 @@ class LoopSupervisor:
         with `payload` None so the caller's log says "no usable
         verdict_gate payload" rather than inventing a reason.
         """
+        if result is None:
+            return False, None
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError, AttributeError):
             parsed = None
-        payload = None
-        if isinstance(parsed, dict):
-            contract_errors = (
-                contracts.validate_payload("verdict_gate", parsed)
-                or transitions.verdict_gate_report_errors(parsed))
-            if not contract_errors:
-                payload = parsed
-        approved = payload is not None and payload.get("verdict") == "verified"
+        if isinstance(parsed, dict) and not contracts.validate_payload("verdict_gate", parsed):
+            if not transitions.verdict_gate_report_errors(parsed):
+                approved = parsed.get("verdict") == "verified"
+                return approved, parsed
+
+        first_attempt_text = last_nonblank_line(result.final_text)
+        event_loop = asyncio.get_running_loop()
+
+        def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+            if attempt == 0:
+                return first_attempt_text
+            raw, _usage = asyncio.run_coroutine_threadsafe(
+                self._ask_contract_fix("verdict_gate", prior_errors or [],
+                                       final_text=result.final_text),
+                event_loop).result()
+            return last_nonblank_line(raw)
+
+        enforcement = await asyncio.to_thread(
+            contract_enforcement.enforce_contract,
+            "verdict_gate", respond,
+            max_retries=self.cfg.contract_retry_max,
+            state=self.run,
+            extra_validate=transitions.verdict_gate_report_errors,
+        )
+        if not enforcement.ok:
+            return False, None
+        payload = enforcement.payload
+        approved = payload.get("verdict") == "verified"
         return approved, payload
 
     def _step_replan(self) -> tuple:
@@ -6551,7 +6611,7 @@ class LoopSupervisor:
         result = await self.run_iteration(
             "verdict_gate", tier=state.run_level_verify_tier())
         self._refund_iteration("grace")
-        approved, payload = self._verdict_gate_verdict(result)
+        approved, payload = await self._verdict_gate_verdict(result)
         if approved:
             return True
         reason = (payload or {}).get("reason")
