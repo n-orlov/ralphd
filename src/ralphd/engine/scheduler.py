@@ -18,9 +18,11 @@ prose) and `tests/stub-pi/pi`'s existing emulation of it
 branch) -- this is the ONE place that logic is decided in engine code,
 rather than a third independent copy in a new location:
 
-1. Any task at `validation-failed` -- the first one in plan (list) order.
-2. Otherwise any task at `in-progress` -- the first one in plan order (a
-   resumed, still-open claim; picking it again is idempotent).
+1. Any task at `validation-failed` -- the highest `priority` wins (missing
+   `priority` counts as 0), ties broken by plan (list) order.
+2. Otherwise any task at `in-progress` -- the highest `priority` wins (same
+   default-0/list-order tie rule; a resumed, still-open claim, picking it
+   again is idempotent).
 3. Otherwise the pending-task scheduler: consider only `pending` tasks whose
    `dependsOn` entries (if the field is present at all) are ALL satisfied --
    `state.TASK_DEPENDENCY_SATISFIED_STATUSES`, the same pair
@@ -58,14 +60,23 @@ def select_next_task(tasks: list) -> dict | None:
     """
     entries = [t for t in tasks if isinstance(t, dict)]
 
+    def _highest_priority_first(bucket: list) -> Any | None:
+        """Highest `priority` wins (missing -> 0); ties keep list order.
+        `enumerate` gives a stable secondary key so `max()` never needs to
+        fall back to comparing the dicts themselves."""
+        if not bucket:
+            return None
+        return max(enumerate(bucket),
+                    key=lambda pair: (pair[1].get("priority", 0), -pair[0]))[1]
+
     validation_failed = [t for t in entries
                           if t.get("status") == "validation-failed"]
     if validation_failed:
-        return validation_failed[0]
+        return _highest_priority_first(validation_failed)
 
     in_progress = [t for t in entries if t.get("status") == "in-progress"]
     if in_progress:
-        return in_progress[0]
+        return _highest_priority_first(in_progress)
 
     status_by_id: dict[str, Any] = {
         str(t.get("id")): t.get("status", "pending")

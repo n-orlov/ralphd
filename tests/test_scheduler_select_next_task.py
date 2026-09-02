@@ -159,3 +159,89 @@ def test_returns_the_same_object_not_a_copy():
     picked = select_next_task(tasks)
     picked["status"] = "in-progress"
     assert tasks[0]["status"] == "in-progress"
+
+
+# Task 013 (C.3, #127): the validation-failed and in-progress buckets honor
+# `priority` (highest wins, missing -> 0, ties by list order) the same way
+# the pending-task scheduler already did -- rather than always the first
+# entry in list order.
+
+
+def test_validation_failed_bucket_honors_priority():
+    tasks = [
+        _task("001", status="validation-failed", priority=1),
+        _task("002", status="validation-failed", priority=5),
+        _task("003", status="validation-failed", priority=2),
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "002"
+
+
+def test_validation_failed_bucket_priority_ties_break_by_list_order():
+    tasks = [
+        _task("001", status="validation-failed", priority=3),
+        _task("002", status="validation-failed", priority=3),
+        _task("003", status="validation-failed"),  # priority 0, loses
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "001"
+
+
+def test_in_progress_bucket_honors_priority():
+    tasks = [
+        _task("001", status="in-progress", priority=1),
+        _task("002", status="in-progress", priority=5),
+        _task("003", status="in-progress", priority=2),
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "002"
+
+
+def test_in_progress_bucket_priority_ties_break_by_list_order():
+    tasks = [
+        _task("001", status="in-progress"),  # implicit priority 0
+        _task("002", status="in-progress", priority=-1),
+        _task("003", status="in-progress"),
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "001"  # 001 and 003 tie at 0, 001 is first
+
+
+def test_degenerate_no_priority_anywhere_is_unchanged():
+    # No task in the whole plan carries a `priority` key at all -- every
+    # bucket must still degenerate to plain first-in-list-order, exactly
+    # as before this task (all-zero priorities, ties broken by position).
+    tasks = [
+        _task("001", status="validation-failed"),
+        _task("002", status="validation-failed"),
+    ]
+    assert select_next_task(tasks)["id"] == "001"
+
+    tasks = [
+        _task("001", status="in-progress"),
+        _task("002", status="in-progress"),
+    ]
+    assert select_next_task(tasks)["id"] == "001"
+
+    tasks = [_task("001"), _task("002"), _task("003")]
+    assert select_next_task(tasks)["id"] == "001"
+
+
+def test_bucket_precedence_is_unchanged_even_with_priority_set():
+    # validation-failed still wins over in-progress and pending regardless
+    # of priority, and in-progress still wins over pending regardless of
+    # priority -- priority only orders WITHIN a bucket, never across them.
+    tasks = [
+        _task("001", status="pending", priority=100),
+        _task("002", status="in-progress", priority=1),
+        _task("003", status="validation-failed", priority=1),
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "003"
+
+    tasks = [
+        _task("001", status="pending", priority=100),
+        _task("002", status="in-progress", priority=1),
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "002"
