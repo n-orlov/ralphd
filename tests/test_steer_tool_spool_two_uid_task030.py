@@ -25,15 +25,23 @@ inside the engine's process) ever answers it or touches `tasks.json`.
 
 Both engine and hat-side client processes run under the same uid here (this
 container's own test suite has no root to separate from -- `tests/
-test_engine_uid_boundary.py`'s documented limit), so the property under
-test is the PROCESS boundary and the spool protocol crossing it, not the
-kernel `kill(2)`/file-ownership rule `test_engine_uid_docker.py` proves
-separately; "the agent uid" and "the owner of tasks.json" name the SAME
-uid here, exactly as they do in every fast-lane test in this suite. What
-this tier adds over the in-process one is that the call gets there via
-TWO REAL OS PROCESS BOUNDARIES (steer-hat subprocess -> hat-tools-client
-subprocess -> spool files -> engine's own process) rather than a same-
-process broker call or a worker thread.
+test_engine_uid_boundary.py`'s documented limit), so the property THIS
+module tests is the PROCESS boundary and the spool protocol crossing it:
+"the agent uid" and "the owner of tasks.json" name the SAME uid here,
+exactly as they do in every fast-lane test in this suite. What this tier
+adds over the in-process one is that the call gets there via TWO REAL OS
+PROCESS BOUNDARIES (steer-hat subprocess -> hat-tools-client subprocess ->
+spool files -> engine's own process) rather than a same-process broker
+call or a worker thread.
+
+The ownership half -- the hat's uid genuinely UNABLE to write `tasks.json`,
+the engine performing the write as that file's root owner -- needs a real
+container, and is its own module at the docker tier:
+`tests/test_steer_tool_spool_two_uid_docker_task030.py`, which runs this
+same spool inside the shipped `container/Dockerfile` (engine started as
+root, `pi` dropped to uid 1000, `tasks.json` root-owned per task 105 / #60
+requirement D) and asserts the EACCES the hat gets when it tries the write
+itself. Read the two together: neither tier alone covers requirement G.2.
 """
 
 from __future__ import annotations

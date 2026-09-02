@@ -46,6 +46,16 @@ from env vars set by the test:
                       response is collected and written to
                       `.stub-steer-tool-responses.json` (a JSON array, same
                       order) for the test to read.
+                      Every `Role: Steer` invocation ALSO writes
+                      `.stub-steer-uid.json` unconditionally: the uid/euid/gid
+                      the hat's own process actually runs as, plus the errno of
+                      a NON-destructive `open(<run>/tasks.json, "r+")` probe
+                      (`tasksOpenRwErrno`, null when the open succeeded -- the
+                      file is never written or truncated by the probe). Under
+                      the real container boundary that errno is EACCES: the hat
+                      uid cannot write the task record at all, which is the
+                      whole reason the spool exists (see
+                      `tests/test_steer_tool_spool_two_uid_docker_task030.py`).
   STUB_STEER_MALFORMED_REQUEST  if set, a `Role: Steer` invocation ALSO
                       drops one hand-written, deliberately-unparseable file
                       straight into `<run>/hat-tools/requests/` (never
@@ -864,6 +874,22 @@ elif "Role: Steer" in prompt:
     # process: doing so would prove nothing about the cross-process spool
     # the in-process broker tests (`tests/test_steer_hat_tools_live.py`)
     # already cover -- the whole point here is a second real OS process.
+    # Who this process IS, and whether it could write `tasks.json` itself --
+    # recorded unconditionally, because it is the premise of every spool
+    # test rather than a scenario of its own. The probe opens the file "r+"
+    # (no write, no truncation: `open(..., "w")` would destroy the run's
+    # task record on any host where the hat uid CAN write it, e.g. this
+    # repo's own fast lane) purely to collect the kernel's permission answer.
+    _probe_errno = None
+    try:
+        with open(os.path.join(run, "tasks.json"), "r+"):
+            pass
+    except OSError as _probe_exc:
+        _probe_errno = _probe_exc.errno
+    with open(os.path.join(run, ".stub-steer-uid.json"), "w") as f:
+        f.write(json.dumps({"uid": os.getuid(), "euid": os.geteuid(),
+                            "gid": os.getgid(), "egid": os.getegid(),
+                            "tasksOpenRwErrno": _probe_errno}))
     _raw_calls = os.environ.get("STUB_STEER_TOOL_CALLS")
     if _raw_calls:
         import subprocess as _steer_subprocess
