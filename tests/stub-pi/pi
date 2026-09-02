@@ -19,6 +19,20 @@ from env vars set by the test:
                       through the planner's contract (which task 120's
                       lint now refuses outright).
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
+  STUB_PLAN_REVIEW_OBJECTIONS  how many `plan_review` invocations object
+                      (verdict "objected", a stub reason) before the next one
+                      approves (default 0) -- task 029 (#130): 0 is the
+                      plain-approval scenario, >=1 is the objection-then-
+                      revision scenario (the engine routes an `objected`
+                      reply with revision budget left back to `planning`,
+                      which re-invokes this same stub's `Role: Planner`
+                      branch, so the next `plan_review` invocation is the
+                      one that approves). Counted with its own marker file,
+                      independent of every other counter in this stub.
+  STUB_VERDICT_GATE_REJECT  if set, every `verdict_gate` invocation rejects
+                      (verdict "rejected", a stub reason) instead of
+                      approving (task 029, #130) -- unset is the plain-
+                      approval scenario.
   STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
   STUB_WORKER_STALLS_BY_APPROACH  comma-separated stall texts, one per
                       approach (task 026, #61 -- structural-wall signature)
@@ -626,6 +640,26 @@ if "Role: Planner" in prompt:
         {"proposal_path": proposal_name, "summary": "planning done",
          "standing_rules": "## Standing rules\n- stub-supplied convention\n"}))
 
+elif "Role: Peer plan review" in prompt:
+    # Task 029 (#130): STUB_PLAN_REVIEW_OBJECTIONS objections, then an
+    # approval -- mirrors STUB_REVIEW_FAILS's own "fails, then verifies"
+    # shape one level up. Counted with its own marker file so this knob
+    # never interferes with STUB_REVIEW_FAILS's `review-count` marker.
+    objections_wanted = int(os.environ.get("STUB_PLAN_REVIEW_OBJECTIONS", "0"))
+    _pr_done = 0
+    if os.path.exists(marker("plan-review-count")):
+        _pr_done = int(open(marker("plan-review-count")).read())
+    open(marker("plan-review-count"), "w").write(str(_pr_done + 1))
+    if _pr_done < objections_wanted:
+        emit_final(
+            "the plan needs another pass\n"
+            + json.dumps({
+                "verdict": "objected",
+                "reason": f"stub: plan review objection #{_pr_done + 1}",
+            }))
+    else:
+        emit_final("the plan looks sound\n" + json.dumps({"verdict": "approved"}))
+
 elif "Role: Worker" in prompt:
     if os.environ.get("STUB_HUGE_LINE") and not os.path.exists(marker("huge-sent")):
         open(marker("huge-sent"), "w").write("1")
@@ -834,6 +868,22 @@ elif "Role: Reviewer" in prompt:
     else:
         emit_final("all requirements hold\n" + json.dumps({"verdict": "verified"}),
                     tool_call=tool_call, thinking_text=thinking_text)
+
+elif "Role: Peer verdict gate (BLIND)" in prompt:
+    # Task 029 (#130): a single boolean knob is enough for this hat's
+    # coverage -- unlike plan_review's revision loop, the black-box
+    # scenarios this stub needs are just "approves" and "rejects", never a
+    # multi-call sequence within one approach.
+    if os.environ.get("STUB_VERDICT_GATE_REJECT"):
+        emit_final(
+            "the second opinion disagrees\n"
+            + json.dumps({
+                "verdict": "rejected",
+                "reason": "stub: verdict gate rejection",
+            }))
+    else:
+        emit_final("the second opinion agrees\n"
+                   + json.dumps({"verdict": "verified"}))
 
 elif "Role: Verifier" in prompt:
     # Extract task id from the injected section: "- **id**: XXX"
