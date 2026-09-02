@@ -237,6 +237,12 @@ class LoopSupervisor:
         self._last_fault_class: str | None = None
         self._last_fault_error: str = ""
         self._instant_failure_streak = 0
+        # Task 008 (requirement B.2, #128): how many times the LAST worker
+        # pass through `_step_worker`'s verdict dispatch re-entered itself
+        # with a repaired payload from the generic schema site (0 or 1 --
+        # never more; see the dispatch loop's own comment). Read back by
+        # tests only; the engine itself never branches on it.
+        self._last_worker_dispatch_reentries = 0
         # Task 123 (#60): task ids the harness has already written a
         # dead-dependency blocked note for (`_step_worker`), so a plan that
         # stays blocked across several worker iterations in a row does not
@@ -4964,6 +4970,30 @@ class LoopSupervisor:
                 # contract` already emitted the `contract.violation`/
                 # `contract.agent_fault` events for the record.
             if verdict is not None:
+              # Task 008 (requirement B.2, #128): the generic schema site
+              # (the `elif schema_errors:` branch below) used to have no
+              # way to re-dispatch a successfully-repaired payload into
+              # the branch that actually owns its verdict -- "fact
+              # 16/#65" in that branch's own pre-existing comment.
+              # `reentries` bounds that re-dispatch to AT MOST ONE extra
+              # pass through this inner loop per worker iteration --
+              # never a second retry LADDER (each branch below still
+              # owns its own `enforce_contract` ladder exactly as
+              # before; this only lets the OUTCOME of the schema-site
+              # ladder be re-routed once). `dispatch_outcome` carries
+              # what the matched branch decided the ENCLOSING `while
+              # self.budget_left():` loop should do -- `None` (fall
+              # through to this pass's ordinary stagnation bookkeeping
+              # below, unchanged), `"continue"`, or `"break"` -- applied
+              # via a real `continue`/`break` placed OUTSIDE this inner
+              # loop (directly in the outer loop's own body, a few
+              # lines below) so it targets the OUTER loop, never this
+              # one. Every branch below falls through to this loop's own
+              # unconditional trailing `break` except the reentry path
+              # itself, which `continue`s this inner loop instead.
+              reentries = 0
+              dispatch_outcome = None
+              while True:
                 schema_errors = contracts.validate_payload("worker", payload)
                 # Task 021 (requirement N, #102): `proposed_tasks` is an
                 # optional side channel, independent of which verdict this
@@ -5017,10 +5047,11 @@ class LoopSupervisor:
                                for t in tasks_after.get("tasks", [])):
                             self._advance("worker", "worker",
                                          "unsatisfiable_targeted_replan")
-                            continue
-                        verdict_ready = True
-                        guard_ready = "unsatisfiable_and_nothing_left"
-                        break
+                            dispatch_outcome = "continue"
+                        else:
+                            verdict_ready = True
+                            guard_ready = "unsatisfiable_and_nothing_left"
+                            dispatch_outcome = "break"
                     # Task 005 (requirement C, qualified as task 003 settled
                     # it -- but here the ladder's exhaustion is NEVER read
                     # as the reason this run ends, budget or not, because
@@ -5149,7 +5180,7 @@ class LoopSupervisor:
                         verdict_ready = True
                         guard_ready = "verdict_ready"
                         self.run.emit("signal", signal="COMPLETE")
-                        break
+                        dispatch_outcome = "break"
                     # Ladder exhausted: falls through to the SAME ordinary
                     # stagnation bookkeeping every other exhausted site
                     # already takes -- no `_advance` call, no early
@@ -5197,16 +5228,52 @@ class LoopSupervisor:
                         max_retries=self.cfg.contract_retry_max,
                         state=self.run,
                     )
-                    # Whether `enforcement.ok` or the ladder exhausted: no
-                    # `_advance` call, no `self._abort_reason`, no early
-                    # `return` -- this falls through to the SAME ordinary
-                    # stagnation bookkeeping below that a genuine
-                    # "no_verdict" reply already takes, exactly as tasks
-                    # 005/006 reasoned for sites 3/4's own exhaustion path.
-                    # `enforce_contract` already emitted the
-                    # `contract.violation`/`contract.agent_fault` events
-                    # for the record.
+                    # Task 008 (requirement B.2, #128): a REPAIR here --
+                    # `enforcement.ok` and this is still the first pass
+                    # (`reentries < 1`) -- is re-dispatched into the SAME
+                    # if/elif chain above, once, with the repaired
+                    # payload/verdict in hand, so a repaired `"complete"`/
+                    # `"unsatisfiable"`/`"plan_complete"` is applied by the
+                    # branch that actually owns it (each of those branches
+                    # keeps its own cross-checks -- this does not bypass
+                    # any of them). `proposed_split_tasks` is re-derived
+                    # from the repaired payload too, so a split proposal
+                    # carried on the CORRECTED reply is still honoured
+                    # (it could not have been on the first pass -- that
+                    # pass's `payload` was schema-invalid, so the
+                    # `not schema_errors and proposed_split_tasks` guard
+                    # above never fired for it). Bounded to exactly one
+                    # re-dispatch: `reentries` is never incremented a
+                    # second time, so a repaired payload that is ITSELF
+                    # schema-invalid (defensive only -- `enforce_contract`
+                    # already validated the schema before setting `.ok`)
+                    # cannot loop. Ladder EXHAUSTION here (`not
+                    # enforcement.ok`) takes the unconditional trailing
+                    # `break` below instead -- no `_advance` call, no
+                    # `self._abort_reason`, no early `return` -- falling
+                    # through to the SAME ordinary stagnation bookkeeping
+                    # every other exhausted site already takes, exactly as
+                    # tasks 005/006 reasoned for sites 3/4's own
+                    # exhaustion path. `enforce_contract` already emitted
+                    # the `contract.violation`/`contract.agent_fault`
+                    # events for the record either way.
+                    if (enforcement.ok and reentries < 1
+                            and enforcement.payload is not None):
+                        reentries += 1
+                        payload = enforcement.payload
+                        verdict = payload.get("verdict")
+                        worker_final_text = json.dumps(payload)
+                        proposed_split_tasks = (
+                            payload.get("proposed_tasks")
+                            if isinstance(payload, dict) else None)
+                        continue
                 # verdict == "no_verdict": nothing to apply this iteration.
+                break
+              self._last_worker_dispatch_reentries = reentries
+              if dispatch_outcome == "continue":
+                  continue
+              if dispatch_outcome == "break":
+                  break
 
             if self.cfg.vigilant:
                 # Task 020 (requirement F bullet 4): the vigilant claim
