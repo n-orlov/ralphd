@@ -846,6 +846,14 @@ def test_the_newly_caught_shapes_also_reach_the_operator_end_to_end(tmp_path):
 # task 013's later passes, already flags it -- #116's own parenthetical
 # names the ORIGINAL gap, since closed) or DOCUMENTED-AND-ACCEPTED (still
 # out of the lint's lexical reach as shipped, reason given per fixture).
+# Five of the seven (1, 3, 4, 5, 6) #116 states as complete quoted
+# sentences and they appear here character for character. The remaining
+# two (2 and 7) #116 states as DESCRIBED shapes rather than full quoted
+# sentences -- item 2 quotes only the fragment "the commit sha of task
+# `beta`" inside a prose description of the id shape, and item 7 names a
+# fixture in this module by reference -- so for those the issue's own
+# quoted fragment / named fixture is what is reproduced verbatim, embedded
+# in the minimal criteria string that exercises the described shape.
 # The open-ended "reject every rephrasing" standard #116 section 3 restates
 # is ruled unmeetable by a lexical lint -- these seven are the enumerated
 # instances the contract actually asks for, not a claim that every future
@@ -891,8 +899,13 @@ def test_issue_116_fixture_1_single_commit_word_order_is_caught():
 # where `beta` is a non-numeric id ordered later. The numeric-only id
 # token was task 012's residual gap (b); task 013's third pass widened
 # `_TASK_ID_TOKEN` off `\d+`, so this is caught today.
+# #116's quoted fragment for this item is "the commit sha of task `beta`",
+# backticks included; it is embedded verbatim below.
+ISSUE_116_FIXTURE_2_QUOTED_FRAGMENT = "the commit sha of task `beta`"
 ISSUE_116_FIXTURE_2_NON_NUMERIC_FORWARD_CITATION = (
-    "This task cannot be closed without citing the commit sha of task beta."
+    "This task cannot be closed without citing "
+    + ISSUE_116_FIXTURE_2_QUOTED_FRAGMENT
+    + "."
 )
 
 
@@ -908,6 +921,12 @@ def test_issue_116_fixture_2_non_numeric_forward_citation_is_caught():
     }
     errors = pi.lint_proposal(payload)
     assert any("alpha" in e and "beta" in e and "LATER" in e for e in errors), errors
+    # The issue's own quoted fragment, backticks and all, is what the
+    # fixture carries -- not a paraphrase of it.
+    assert (
+        ISSUE_116_FIXTURE_2_QUOTED_FRAGMENT
+        in ISSUE_116_FIXTURE_2_NON_NUMERIC_FORWARD_CITATION
+    )
 
 
 # --- #116 fixture 3 -- DOCUMENTED-AND-ACCEPTED, out of lexical reach -------
