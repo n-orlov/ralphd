@@ -1667,6 +1667,13 @@ def cmd_start(args):
         "on_complete": args.on_complete,
         "on_complete_cmd": args.on_complete_cmd,
         "reflect": args.reflect,
+        # Task 017 (D.3, #117 side finding): forwarded exactly like
+        # `vigilant`/`reflect` above -- omitted from job.yaml entirely when
+        # the flag is absent (the `if v is not None` filter a few lines
+        # below this dict), so the engine's own `JobConfig` default (False)
+        # applies unconditionally-off, same as the two flags it sits beside.
+        "peer_plan_review": args.peer_plan_review,
+        "peer_verdict_gate": args.peer_verdict_gate,
         "model": args.model or (llm_profile.get("model") if llm_profile else None),
         # Task 006 (#60 pillar 4 cleanup): `fast_model`/`model_strategy` are
         # retired job.yaml keys -- a named LLM profile may still declare its
@@ -6338,6 +6345,24 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run one extra 'reflect' iteration after the job "
                         "reaches a terminal state, proposing prompt/skill "
                         "improvements to artifacts/reflection/")
+    # Task 017 (D.3, #117 side finding): the opt-in peer gates
+    # (`JobConfig.peer_plan_review`/`peer_verdict_gate`, both OFF by
+    # default) become launchable from the CLI, not just hand-edited into
+    # job.yaml -- same `action="store_true", default=None` shape as
+    # `--vigilant`/`--reflect` above so an unset flag stays out of job.yaml
+    # entirely (the `if v is not None` filter at the write below) and the
+    # engine's own `JobConfig` default applies. `resume` has no equivalent
+    # flag for the same reason `--vigilant`/`--reflect` don't: neither is a
+    # live-override knob on an existing job.yaml, only a `start`-time
+    # choice that then persists via the value `resume` replays unchanged.
+    s.add_argument("--peer-plan-review", action="store_true", default=None,
+                   help="opt-in peer plan-review gate (PRD requirement K, "
+                        "#101): a peer model approves or objects to the "
+                        "plan before work starts")
+    s.add_argument("--peer-verdict-gate", action="store_true", default=None,
+                   help="opt-in, genuinely blind peer verdict gate (PRD "
+                        "requirement L, #101): a second peer model "
+                        "re-verifies completed work before terminal success")
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
     s.add_argument("--model-for", action="append", metavar="HAT=REF",
                    help="per-hat model override (repeatable), e.g. "

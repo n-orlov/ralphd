@@ -630,6 +630,14 @@ class JobConfig:
                 "onComplete": self.on_complete,
                 "onCompleteCmd": self.on_complete_cmd,
                 "reflect": self.reflect,
+                # Task 017 (D.3, #117 side finding): both opt-in peer gates
+                # (task 018/020, PRD requirements K/L) surfaced next to the
+                # flags they sit beside on `JobConfig` and are launched
+                # alongside from `ralphctl start` -- so `GET /config` shows
+                # an operator whether either gate is live for this run,
+                # not just `vigilant`.
+                "peerPlanReview": self.peer_plan_review,
+                "peerVerdictGate": self.peer_verdict_gate,
             },
             # Task 010: the response-contract re-prompt policy (requirement
             # C). `retryMax` is re-prompts granted after the first attempt

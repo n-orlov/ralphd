@@ -770,7 +770,7 @@ contents, no LLM env values):
               "infraStartupTimeoutS": 150.0, "infraRetryBackoffS": [2, 5, 15, 30, 60, 120, 300],
               "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0,
               "routerTimeoutS": 60.0},
-  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false},
+  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false},
   "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
   "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null,
              "thinkingOverrides": {}},
@@ -790,6 +790,16 @@ after `model.overrides.router` and before falling back to `model` directly
 — see `routerTimeoutS` below for the router's latency budget and
 `usage.byPhase.router` for how its cost is accounted, folded in alongside the
 five hat phases without ever counting as a work iteration.
+
+`flags.peerPlanReview`/`flags.peerVerdictGate` (`job.yaml` keys
+`peer_plan_review`/`peer_verdict_gate`, `ralphctl start --peer-plan-review`/
+`--peer-verdict-gate`) are the two opt-in peer gates (task 018/020, PRD
+requirements K/L, both OFF by default): the first inserts a peer model's
+approval/objection between `planning` and `worker`; the second inserts a
+second, blind peer's re-verification between `review`'s `verified` edge and
+terminal success. Neither has a `resume` flag — like `vigilant`/`reflect`,
+they are a `start`-time choice only, replayed unchanged by `job.yaml` on
+every later `resume`.
 
 `model.overrides` (`model_overrides:`/`models:` in `job.yaml`) is the per-hat
 model table keyed by `planning`/`worker`/`review`/`verify`/`reflect`/`router`

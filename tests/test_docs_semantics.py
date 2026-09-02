@@ -343,7 +343,8 @@ def test_the_documented_config_shape_has_the_effective_configs_own_keys():
 def test_the_config_shape_check_would_catch_the_missing_flags():
     doc = API_DOC.read_text().replace(
         '"flags": {"vigilant": false, "onComplete": "idle", '
-        '"onCompleteCmd": null, "reflect": false},',
+        '"onCompleteCmd": null, "reflect": false, "peerPlanReview": false, '
+        '"peerVerdictGate": false},',
         '"flags": {"vigilant": false, "onComplete": "idle"},')
     documented = _documented_config_shape(doc)
     assert set(documented["flags"]) != set(
