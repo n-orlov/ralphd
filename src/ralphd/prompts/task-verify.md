@@ -64,6 +64,14 @@ from scratch, trusting nothing the worker wrote about its own work.
   simply not there) still rejects; short or thin paperwork on a deliverable
   that IS done verifies, with the gap recorded as a residual in `reason`
   rather than as the reason for a third miss.
+- **Standing rules are not per-task criteria (#115, second cut).** The notes
+  file's harness-pinned `## Standing rules` block (task 107 -- commit title
+  format, branch and push target, commit identity, credential paths, the
+  measured test commands, prohibitions) binds the whole run, but enforcing
+  it wave-wide, over the finished approach, is `review`'s job, not this
+  per-task pass. Do not reject a task for drifting from a standing rule its
+  own `successCriteria` does not name -- that drift is `review`'s finding to
+  raise, not a verify-time rejection.
 - The JSON verdict object must be the very last non-blank line of your reply.
   Nothing after it.
 
