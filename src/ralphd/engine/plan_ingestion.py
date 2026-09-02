@@ -662,16 +662,141 @@ def _scratch_state_content_clause(criteria: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Task 022 (requirement E.1, #115 lint half): the plan's SIXTH lint -- the
+# criteria-maximalism bound `plan_review.md` already states for the peer
+# reviewer ("a `successCriteria` clause that quantifies over an open set
+# without enumerating it", "more than roughly 5 checkable clauses") now
+# also gates ingestion itself, so a proposal never even reaches a worker
+# before a human -- or the peer gate -- has to catch it by hand. Two
+# independent checks, both #86-disciplined (scoped to ONE clause via
+# `_CLAUSE_SPLIT_RE`, never the whole criteria string, exactly like every
+# lint above):
+#
+#   (f) an unenumerated universal quantifier -- "every/each/all/no ...
+#       anywhere" ranging over a set whose members are never named and no
+#       single defining command/file bounds it. v0.16's real casualties,
+#       both recovered verbatim from tracked files rather than
+#       reconstructed: task 023's "each shipped piece" (the exact phrase
+#       `plan_review.md:31`'s own "over-constrained criteria" rubric line
+#       names by example), and tasks 012/013's "every rephrasing of X"
+#       (`planning.md:165`'s own "an unenumerable aspiration" example,
+#       `plan_review.md:30`'s "quantifies over an open set" example). The
+#       must-pass sibling this
+#       task's own criteria names by example -- "every test in
+#       tests/test_x.py passes" -- is bounded because it names the single
+#       file that DEFINES the set being quantified over; naming the members
+#       explicitly ("each of tasks 001, 002 and 003") bounds it the other
+#       way.
+#   (g) a clause-count overrun -- more than `_MAX_CHECKABLE_CLAUSES` (~5)
+#       checkable clauses in one task's criteria, the other half of the
+#       same `plan_review.md` rubric line.
+#
+# `tests/test_criteria_bound_lint.py` is this task's new module.
+
+# Quantifier words that range over a SET rather than naming one thing --
+# deliberately NOT "any"/"some", which do not claim universality.
+_UNIVERSAL_QUANTIFIER_WORD_RE = re.compile(r"\b(?:every|each|all)\b", re.IGNORECASE)
+
+# The PRD's fourth quantifier shape is two words apart: "no ... anywhere" --
+# matched only within one clause (never across a `_CLAUSE_SPLIT_RE`
+# boundary, since the split already happens before this pattern runs).
+_NO_QUANTIFIER_ANYWHERE_RE = re.compile(
+    r"\bno\b[^.!?;]*\banywhere\b", re.IGNORECASE,
+)
+
+# What bounds a quantified set well enough to pass: a single defining
+# command/file (a backticked span, or a bare path with a file extension --
+# "tests/test_x.py", "src/foo/bar.py") named IN THE SAME CLAUSE as the
+# quantifier. `pytest` alone also counts -- it is itself a single defining
+# command with no path required.
+_DEFINING_COMMAND_RE = re.compile(
+    r"`[^`\n]{1,80}`"
+    r"|\b[\w.-]+(?:/[\w.-]+)+\.[A-Za-z0-9]{1,8}\b"
+    r"|\bpytest\b",
+    re.IGNORECASE,
+)
+
+# What bounds a quantified set the OTHER way: the members are enumerated
+# right there in the clause -- an explicit id/number list ("tasks 001, 002
+# and 003"), a parenthetical/braced list, or an enumeration-announcing word.
+_ENUMERATED_SET_RE = re.compile(
+    r"\bnamely\b"
+    r"|\bspecifically\b"
+    r"|\benumerated\b"
+    r"|\bsuch as\b"
+    r"|\bthe following\b"
+    r"|[({][^()]*,[^()]*[)}]"
+    r"|\b\d{1,4}\s*(?:,\s*(?:and\s+)?\d{1,4}\s*)+(?:and\s+\d{1,4})?\b"
+    r"|\b\d{1,4}\s+and\s+\d{1,4}\b",
+    re.IGNORECASE,
+)
+
+
+def _is_bounded_quantifier_clause(clause: str) -> bool:
+    """True if `clause` names either a single defining command/file that
+    bounds the quantified set, or enumerates the set's members explicitly
+    -- either escape the PRD's rule allows."""
+    return bool(_DEFINING_COMMAND_RE.search(clause) or _ENUMERATED_SET_RE.search(clause))
+
+
+def _unenumerated_quantifier_clause(criteria: str) -> str | None:
+    """None unless some clause carries a universal quantifier
+    (every/each/all/"no ... anywhere") over a set that is neither
+    enumerated nor bounded by a single named defining command -- must-catch
+    fixtures: v0.16 task 023's "each shipped piece", tasks 012/013's "every
+    rephrasing of X" (both recovered verbatim in
+    `tests/test_criteria_bound_lint.py`); must-pass sibling: "every test in
+    tests/test_x.py passes"."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        if not (
+            _UNIVERSAL_QUANTIFIER_WORD_RE.search(stripped)
+            or _NO_QUANTIFIER_ANYWHERE_RE.search(stripped)
+        ):
+            continue
+        if not _is_bounded_quantifier_clause(stripped):
+            return stripped
+    return None
+
+
+# The PRD's own "more than roughly 5 checkable clauses" bound
+# (`plan_review.md:32`, `docs/prds/v0.17-a-slip-is-not-a-verdict.md:274`).
+_MAX_CHECKABLE_CLAUSES = 5
+
+
+def _checkable_clauses(criteria: str) -> list[str]:
+    """Every non-empty clause of `criteria`, split exactly like every other
+    lint's per-clause scan (`_CLAUSE_SPLIT_RE`) -- the same granularity, so
+    a criterion this lint counts at N clauses is the same N clauses the
+    quantifier lint above and the five stranding lints each scan one at a
+    time."""
+    return [c.strip() for c in _CLAUSE_SPLIT_RE.split(criteria) if c.strip()]
+
+
+def _clause_count_overrun(criteria: str) -> tuple[int, str] | None:
+    """None unless `criteria` carries more than `_MAX_CHECKABLE_CLAUSES`
+    checkable clauses; otherwise the total count and the first clause past
+    the bound (the offending clause named in the refusal text)."""
+    clauses = _checkable_clauses(criteria)
+    if len(clauses) <= _MAX_CHECKABLE_CLAUSES:
+        return None
+    return len(clauses), clauses[_MAX_CHECKABLE_CLAUSES]
+
+
 def lint_proposal(payload: dict) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
     requirement H's own-terminal-state rule -- that lint is task 012's
-    (kept separate, `lint_own_terminal_state`). It DOES enforce all FIVE of
-    the contract's stranding lints (relational sha anchors; single-commit
+    (kept separate, `lint_own_terminal_state`). It DOES enforce all SIX of
+    the contract's plan-time lints (relational sha anchors; single-commit
     demands on a deliverable with a mandated second commit; forward
     citation of a later task's commit sha; unscoped write-time occurrence
-    counts; scratch-state content/format conditions) -- see the block
-    comments immediately above."""
+    counts; scratch-state content/format conditions; unenumerated universal
+    quantifiers and clause-count overruns) -- see the block comments
+    immediately above."""
     errors: list[str] = []
     tasks = payload.get("tasks", [])
     seen: dict[Any, int] = {}
@@ -748,6 +873,33 @@ def lint_proposal(payload: dict) -> list[str]:
                 "the repository tree beyond the declared existence of an "
                 "artifact; require the artifact to exist and let a pointer "
                 "to it stand as sufficient evidence of its content instead"
+            )
+
+        quantifier_clause = _unenumerated_quantifier_clause(criteria)
+        if quantifier_clause is not None:
+            errors.append(
+                f"task {tid!r}: successCriteria quantifies over an "
+                f"unenumerated set ({quantifier_clause!r}) -- an "
+                "every/each/all/\"no ... anywhere\" clause must either name "
+                "every member explicitly (e.g. \"each of tasks 001, 002 and "
+                "003\") or name the single defining command/file that "
+                'bounds the set (e.g. "every test in tests/test_x.py '
+                'passes"), never an open-ended quantifier with the members '
+                "left unnamed"
+            )
+
+        overrun = _clause_count_overrun(criteria)
+        if overrun is not None:
+            clause_count, overflow_clause = overrun
+            errors.append(
+                f"task {tid!r}: successCriteria carries {clause_count} "
+                f"checkable clauses, past the ~{_MAX_CHECKABLE_CLAUSES}-"
+                f"clause bound (first clause past the bound: "
+                f"{overflow_clause!r}) -- split this task into smaller "
+                "ones, or move any wave-wide obligation this criteria "
+                "repeats (a boundary check, a notification-log entry, an "
+                "operator discipline) into the Standing Rules block once "
+                "instead of copying it per task"
             )
 
     known_ids = set(seen)
