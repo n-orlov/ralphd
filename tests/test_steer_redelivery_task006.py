@@ -79,7 +79,7 @@ def _redeliveries(sup: LoopSupervisor) -> dict:
 # 1. settled: false leaves the message unconsumed and deliverable
 # ---------------------------------------------------------------------------
 
-def test_a_settled_false_steer_leaves_the_message_unconsumed_and_pending(
+def test_a_settled_false_steer_leaves_the_message_unconsumed_and_outstanding(
         tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, {"steer": [_steer_unsettled("half done")]})
@@ -96,7 +96,12 @@ def test_a_settled_false_steer_leaves_the_message_unconsumed_and_pending(
         "an honest settled: false must leave the note genuinely pending")
     entry = _entry(sup, name)
     assert entry["consumed"] is None, "the consumption stamp must be cleared"
-    assert entry["state"] == state.STEERING_PENDING
+    # Task 007 (#122) widens the vocabulary this test pins: a message that
+    # HAS been delivered and judged `settled: false` -- distinct from one no
+    # iteration has ever touched -- now reads `outstanding`, not the bare
+    # `pending` this test asserted before task 007 gave that case its own
+    # word (`state.STEERING_OUTSTANDING`, `state.steering_entries`).
+    assert entry["state"] == state.STEERING_OUTSTANDING
     assert entry["settled"] is False
     assert entry["settledByExhaustion"] is False
     assert _redeliveries(sup) == {name: 1}

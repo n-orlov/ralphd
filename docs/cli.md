@@ -3107,8 +3107,9 @@ JSON endpoints served under `/api/`:
 - `GET /api/runs/<id>/steering` — the run's steering history, for the hub's
   steering panel (task 016, issue #17): `{"live": bool, "entries": [...],
   "notice": ""}`. Each entry is one `steering/NNN-<slug>.md` message with
-  `file`, `seq`, `name`, `ts` (arrival time), `state` (`pending`/`applied`),
-  `consumed`, `bytes`/`hasBody` and `body` — the exact shape the engine's own
+  `file`, `seq`, `name`, `ts` (arrival time), `state`
+  (`pending`/`outstanding`/`applied` — task 007, #122), `consumed`,
+  `bytes`/`hasBody` and `body` — the exact shape the engine's own
   `GET /steering` returns (docs/api.md), because both sides read it with the
   same helper, `ralphd.engine.state.steering_entries` — plus `tsLocal`, that
   arrival time rendered server-side by the shared

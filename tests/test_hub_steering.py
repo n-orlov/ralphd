@@ -41,9 +41,11 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import (
     STEERING_APPLIED,
     STEERING_CONSUMED_FILE,
+    STEERING_OUTSTANDING,
     STEERING_PENDING,
     RunDir,
     format_local_time,
+    record_steering_settlement,
     steering_entries,
 )
 
@@ -174,6 +176,33 @@ def test_engine_get_steering_serves_the_full_entries(tmp_path):
         [("001-a.md", True), ("002-b.md", False)]
 
 
+def test_engine_get_steering_reports_a_not_settled_message_as_outstanding(
+        tmp_path):
+    """Task 007 (#122): a message that has already been delivered and
+    judged `settled: false` by the steer hat -- task 006's redelivery loop,
+    unconsumed again and awaiting the next pass -- is not the same fact as
+    a message no iteration has ever looked at. `GET /steering` (this is the
+    engine's own route, `state.steering_entries` underneath) must say so
+    with its own word, `outstanding`, never fall back to the ambiguous
+    `pending` and never claim `applied` (the file is genuinely NOT consumed
+    on disk)."""
+    _seed_steering(tmp_path, {"001-a.md": ONE, "002-b.md": TWO}, consumed=[])
+    # `002-b.md` was delivered once, the steer hat said `settled: false`,
+    # and task 006 already unconsumed it -- exactly the ledger shape
+    # `LoopSupervisor._handle_unsettled_steering` leaves behind while a
+    # message is still under the redelivery cap.
+    record_steering_settlement(tmp_path, ["002-b.md"], settled=False,
+                               notes="half of it needs another pass")
+
+    body = _engine_get(tmp_path, "/steering")
+    by_file = {e["file"]: e for e in body}
+    assert by_file["001-a.md"]["state"] == STEERING_PENDING, (
+        "never delivered at all -- plain pending")
+    assert by_file["002-b.md"]["state"] == STEERING_OUTSTANDING
+    assert by_file["002-b.md"]["consumed"] is False
+    assert body == steering_entries(tmp_path)
+
+
 # -- the hub endpoint -----------------------------------------------------
 
 
@@ -212,6 +241,28 @@ def test_hub_falls_back_to_disk_for_a_dead_run(tmp_path, ui):
     assert body["entries"] == _hub_entries(run_dir)
     assert [e["state"] for e in body["entries"]] == [STEERING_APPLIED] * 2
     assert [e["body"] for e in body["entries"]] == [ONE, TWO]
+
+
+def test_hub_disk_fallback_reports_a_not_settled_message_as_outstanding(
+        tmp_path, ui):
+    """Task 007 (#122): the hub's on-disk fallback for a dead run must say
+    the same word `GET /steering` does -- both read `state.steering_entries`
+    (through `ui_server.steering_list`'s disk branch, tested here directly)
+    so there is exactly one vocabulary, never a live-only distinction."""
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-outstanding", state="failed")
+    _seed_steering(run_dir, {"001-a.md": ONE, "002-b.md": TWO}, consumed=[])
+    record_steering_settlement(run_dir, ["002-b.md"], settled=False,
+                               notes="the operator asked for more than fit")
+
+    server = ui(registry)
+    code, body = server.get("/api/runs/run-outstanding/steering")
+    assert code == 200 and body["live"] is False
+    by_file = {e["file"]: e for e in body["entries"]}
+    assert by_file["001-a.md"]["state"] == STEERING_PENDING
+    assert by_file["002-b.md"]["state"] == STEERING_OUTSTANDING
+    assert by_file["002-b.md"]["consumed"] is False
+    assert body["entries"] == _hub_entries(run_dir)
 
 
 def test_live_and_on_disk_answers_are_the_same_entries(tmp_path, ui):

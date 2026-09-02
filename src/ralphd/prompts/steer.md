@@ -115,6 +115,30 @@ End your reply's last non-blank line with exactly one JSON object:
   — include a `notes` field explaining why; a `false` claim with no
   explanation is refused as malformed, the same way a reviewer's `rejected`
   verdict with no `reason` is.
+
+### `settled: false` is redelivered, bounded (task 006/007, #122)
+
+An honest `settled: false` does not silently consume the message anyway. The
+engine leaves it genuinely deliverable: the very next actionable iteration is
+handed the same message again (steer still takes absolute priority over any
+pending task), and a per-message counter tracks how many times that has
+happened. Every surface that lists steering — `GET /steering`, the hub panel,
+`ralphctl steer <run> --list` — reports such a message as **`outstanding`**,
+a third state distinct from both `pending` (no iteration has ever looked at
+it yet) and `applied` (settled for good): `outstanding` means it has already
+been delivered and judged `settled: false`, and is waiting for the next pass.
+
+The redelivery counter is bounded by the configured **redelivery cap**
+(`JobConfig.steer_redelivery_max`, default 3). Once a message has been
+redelivered that many times without ever earning a `settled: true` claim, the
+engine stops redelivering it: it is recorded settled **by exhaustion** (never
+by your own claim — `settled` itself is left exactly as you last reported it,
+almost always `false`) and stays consumed for good, reported as `applied`
+from then on. Do not rely on infinite redeliveries to eventually finish a
+message piecemeal — if a message genuinely needs more than the cap's worth of
+passes, split it into first-class tasks (this hat's whole job) on an earlier
+pass rather than reporting `settled: false` indefinitely and hoping a later
+pass gets further.
 - `application` is optional and says how much of this iteration's steering you
   actually applied: `"applied"` or `"partially-applied"`. The engine records
   your claim, per steering file, in the run's **steering ledger** and renders

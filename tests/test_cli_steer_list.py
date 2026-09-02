@@ -36,7 +36,13 @@ from test_cli_ui import StubEngineApi, UiServer, _write_run_with_api, ui
 
 from ralphd.cli.main import _STEER_SNAPSHOT_NOTICE, _steer_preview
 from ralphd.cli.ui_server import NO_STEERING
-from ralphd.engine.state import STEERING_APPLIED, STEERING_CONSUMED_FILE, STEERING_PENDING
+from ralphd.engine.state import (
+    STEERING_APPLIED,
+    STEERING_CONSUMED_FILE,
+    STEERING_OUTSTANDING,
+    STEERING_PENDING,
+    record_steering_settlement,
+)
 from tests.conftest import RALPHCTL
 
 __all__ = ["UiServer", "ctl", "ui", "unix_sock"]
@@ -177,6 +183,31 @@ def test_an_entry_whose_body_is_empty_still_gets_a_row(ctl: Ctl):
     (row,) = _rows(res.stdout)
     assert row[:2] == ["1", STEERING_PENDING]
     assert row[-1] == "oops"  # nothing in MESSAGE, so NAME ends the row
+
+
+def test_a_not_settled_message_lists_as_outstanding_not_applied(ctl: Ctl):
+    """Task 007 (#122): the terminal listing must say the same third word
+    the hub does (`test_hub_steering.py`'s twin of this test) for a message
+    task 006's redelivery loop has delivered-and-unconsumed-again -- never
+    the bare `pending` a virgin message gets, and never `applied` (the file
+    genuinely is not consumed on disk)."""
+    rdir, _ = _seed_run(ctl, "st-outstanding")
+    _seed_steering(rdir, {"001-fresh.md": ONE, "002-retried.md": TWO},
+                   consumed=[])
+    record_steering_settlement(rdir, ["002-retried.md"], settled=False,
+                               notes="ran out of iteration time")
+
+    res = ralphctl(ctl.registry, "steer", "st-outstanding", "--list")
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    rows = _rows(res.stdout)
+    assert [r[1] for r in rows] == [STEERING_PENDING, STEERING_OUTSTANDING]
+
+    json_res = ralphctl(ctl.registry, "--json", "steer", "st-outstanding",
+                        "--list")
+    _, entries = _cli_entries(json_res)
+    by_file = {e["file"]: e for e in entries}
+    assert by_file["002-retried.md"]["state"] == STEERING_OUTSTANDING
+    assert by_file["002-retried.md"]["consumed"] is False
 
 
 # --------------------------------------------------------------------------

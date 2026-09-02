@@ -926,6 +926,23 @@ STEERING_GLOB = "[0-9][0-9][0-9]-*.md"
 STEERING_CONSUMED_FILE = ".consumed.json"
 STEERING_PENDING = "pending"
 STEERING_APPLIED = "applied"
+# Task 007 (requirement B.1, #122): a THIRD state, distinct from both.
+# `pending` means "no iteration has ever delivered this message";
+# `applied` means "consumed for good" -- either because the steer hat
+# claimed `settled: true`, or because task 006's redelivery cap gave up on
+# it (settled-by-exhaustion, which forces `application` to `applied` and
+# leaves the file in `.consumed.json` on purpose). Before task 006/007, a
+# clean steer iteration that honestly reported `settled: false` still left
+# a THIRD, unrepresented case once it was redelivered: the message had
+# been delivered and judged (the ledger holds a `settled: false` record for
+# it), it is not consumed on disk (task 006 already unconsumed it so it is
+# genuinely deliverable again), yet plain pending/applied has no word for
+# "already tried, still not settled, waiting for the next pass" -- it read
+# exactly like a message no iteration has ever touched. `outstanding` is
+# that word: reported for a file that is not currently consumed AND whose
+# steering ledger record (`steering_ledger_records`) says `settled: False`
+# without `settledByExhaustion` -- i.e. a redelivery still in flight.
+STEERING_OUTSTANDING = "outstanding"
 
 
 def steering_consumed_names(run_root: Path) -> set[str]:
@@ -949,10 +966,19 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
                `utcnow()` format (the file is written once, atomically, by
                `add_steering`, so its mtime *is* its arrival time; no
                separate index to drift out of sync),
-      `state`  `pending` or `applied` -- the vocabulary lives here, so the
-               CLI, the hub and the API all say the same word,
-      `consumed` the same fact as a bool, kept because the pre-v0.6
-               `GET /steering` answered with exactly that key,
+      `state`  `pending`, `outstanding` or `applied` -- the vocabulary
+               lives here, so the CLI, the hub and the API all say the
+               same word. `applied` means consumed for good (a `settled:
+               true` claim, or task 006's redelivery cap giving up on it);
+               `outstanding` (task 007, #122) means the message has been
+               delivered and judged `settled: false` by the steering
+               ledger, is not currently consumed on disk, and is waiting
+               to be redelivered -- distinct from `pending`, which is a
+               message no iteration has ever looked at yet;
+      `consumed` the same disk fact as a bool (kept because the pre-v0.6
+               `GET /steering` answered with exactly that key) -- `False`
+               for BOTH `pending` and `outstanding`, since neither is
+               consumed on disk; only the ledger tells them apart,
       `body`   the message text (omit with `bodies=False` for list views
                that only need the header line; `hasBody` is always there).
 
@@ -968,6 +994,7 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
     except OSError:
         return []
     consumed = steering_consumed_names(run_root)
+    ledger_records = steering_ledger_records(run_root)
     out = []
     for p in files:
         try:
@@ -980,12 +1007,20 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
         seq = int(m.group(1)) if m else None
         name = (m.group(2) if m else stem) or stem
         applied = p.name in consumed
+        if applied:
+            entry_state = STEERING_APPLIED
+        else:
+            record = ledger_records.get(p.name) or {}
+            if record.get("settled") is False and not record.get("settledByExhaustion"):
+                entry_state = STEERING_OUTSTANDING
+            else:
+                entry_state = STEERING_PENDING
         entry = {
             "file": p.name,
             "seq": seq,
             "name": name,
             "ts": utc_from_epoch(st.st_mtime),
-            "state": STEERING_APPLIED if applied else STEERING_PENDING,
+            "state": entry_state,
             "consumed": applied,
             "bytes": st.st_size,
             "hasBody": bool(text.strip()),

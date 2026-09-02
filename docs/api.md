@@ -692,7 +692,7 @@ Lists this run's steering messages, oldest first — one entry per
 | `seq` | the engine-assigned sequence number, as an int |
 | `name` | the operator-supplied slug (the file stem without its sequence prefix) |
 | `ts` | when the message arrived (the file's mtime — it is written once, atomically) |
-| `state` | `pending` or `applied` |
+| `state` | `pending` \| `outstanding` \| `applied` (task 007, #122): `applied` is consumed for good (`settled: true`, or task 006's redelivery cap giving up on it); `outstanding` is a message that HAS been delivered and judged `settled: false` (task 006's `steerRedeliveries` above) and is not currently consumed on disk, waiting for the next actionable iteration; `pending` is a message no iteration has ever looked at yet |
 | `consumed` | the same fact as a bool (the pre-v0.6 key, unchanged) |
 | `bytes` / `hasBody` | size, and whether there is any non-blank text |
 | `body` | the message text |
