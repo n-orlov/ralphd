@@ -1112,6 +1112,79 @@ def record_steering_settlement(run_root: Path, names, *, settled: bool,
     return records
 
 
+def unconsume_steering_names(run_root: Path, names) -> list[str]:
+    """Task 006 (requirement B.1, #122): undo `RunDir.consume_steering`'s
+    marker write for `names`, so a message a clean steer iteration honestly
+    reported `settled: false` on stays genuinely deliverable rather than
+    merely reported `pending` while secretly already consumed.
+
+    By the time the steer hat's own payload is read (`_step_generic_hat`,
+    strictly after `run_iteration()` returned), `_run_iteration_once`
+    already banked the file it delivered -- a clean exit
+    (`fault_class is None`) is exactly the condition it consumes on, and it
+    has no way to know what the hat's payload will say. This function is
+    the one place that reverses that write, once the payload is known.
+
+    Returns the subset of `names` that were actually removed (already-
+    unconsumed names are a no-op, exactly like `consume_steering`'s own
+    idempotence). Also clears each removed name's `consumedAt`/
+    `consumedIteration` ledger stamps, so a LATER genuine consumption
+    re-stamps fresh values instead of `record_steering_consumption`'s
+    `setdefault` silently skipping a value that is now a lie.
+    """
+    root = Path(run_root)
+    marker = root / "steering" / STEERING_CONSUMED_FILE
+    raw = read_json(marker, [])
+    consumed = [n for n in raw if isinstance(n, str)] if isinstance(raw, list) else []
+    names_set = {n for n in names}
+    removed = [n for n in consumed if n in names_set]
+    if not removed:
+        return []
+    remaining = [n for n in consumed if n not in names_set]
+    atomic_write_json(marker, remaining)
+    records = steering_ledger_records(root)
+    changed = False
+    for name in removed:
+        entry = dict(records.get(name) or {})
+        if "consumedAt" in entry or "consumedIteration" in entry:
+            entry.pop("consumedAt", None)
+            entry.pop("consumedIteration", None)
+            records[name] = entry
+            changed = True
+    if changed:
+        _write_steering_ledger_records(root, records)
+    return removed
+
+
+def mark_steering_settled_by_exhaustion(run_root: Path, names, *,
+                                        reason: str) -> dict:
+    """Task 006 (requirement B.1, #122): the per-message redelivery
+    counter's (`steerRedeliveries` in status.json) fail-closed outcome.
+
+    Once a message has been redelivered past `JobConfig.
+    steer_redelivery_max` without ever earning a `settled: true` claim, it
+    stops being redelivered -- `unconsume_steering_names` is never called
+    for it again -- and is instead recorded here as settled BY EXHAUSTION,
+    never by the hat's own claim: `settledByExhaustion`/`exhaustionReason`/
+    `exhaustionAt` are new, distinct fields (never overwriting `settled`,
+    which stays exactly what the hat last claimed -- almost always False --
+    because exhaustion is the harness giving up on redelivery, not the hat
+    pretending it finished). `application` is forced to `applied` so a
+    later hat's ledger read stops weighing this as a live, still-open ask.
+    """
+    records = steering_ledger_records(run_root)
+    ts = utcnow()
+    for name in names:
+        entry = dict(records.get(name) or {})
+        entry["settledByExhaustion"] = True
+        entry["exhaustionReason"] = reason
+        entry["exhaustionAt"] = ts
+        entry["application"] = STEER_APPLICATION_APPLIED
+        records[name] = entry
+    _write_steering_ledger_records(run_root, records)
+    return records
+
+
 def steering_ledger(run_root: Path) -> list[dict]:
     """The steering ledger of a run, oldest first -- one entry per file.
 
@@ -1130,6 +1203,12 @@ def steering_ledger(run_root: Path) -> list[dict]:
       `settled`     the steer hat's own settlement claim as a bool,
       `application` `applied` | `partially-applied` | `pending`,
       `notes`       the steer hat's settlement notes, when it wrote any.
+      `settledByExhaustion` task 006 (#122): True once the per-message
+                    redelivery cap (`steerRedeliveries`, status.json) was
+                    reached without a `settled: true` claim -- distinct
+                    from `settled` itself, which stays the hat's own last
+                    claim (almost always False when this fires).
+      `exhaustionReason` the reason recorded at that moment, or None.
 
     A plain function over a path, like `steering_entries`/`prd_path`, so
     the host side can read a registry run dir without constructing a
@@ -1150,6 +1229,8 @@ def steering_ledger(run_root: Path) -> list[dict]:
             "consumed": record.get("consumedAt"),
             "state": entry.get("state"),
             "consumedIteration": record.get("consumedIteration"),
+            "settledByExhaustion": bool(record.get("settledByExhaustion")),
+            "exhaustionReason": record.get("exhaustionReason"),
             "settled": bool(record.get("settled")),
             "application": application,
             "notes": record.get("notes"),
@@ -5406,3 +5487,33 @@ class RunDir:
                                     iteration)
         for p in fresh:
             self.emit("steering.consumed", file=p.name, iteration=iteration)
+
+    def unconsume_steering(self, names) -> list[str]:
+        """Task 006 (requirement B.1, #122): reverse `consume_steering`'s
+        marker write for `names` (through the module-level
+        `unconsume_steering_names`), so a message a clean steer iteration
+        honestly reported `settled: false` on is redelivered rather than
+        silently kept applied. Emits `steering.redelivered` per name
+        actually removed -- a no-op name (already unconsumed) is neither
+        re-removed nor re-announced, mirroring `consume_steering`'s own
+        idempotence.
+        """
+        removed = unconsume_steering_names(self.root, names)
+        for name in removed:
+            self.emit("steering.redelivered", file=name)
+        return removed
+
+    def mark_steering_settled_by_exhaustion(self, names, *,
+                                            reason: str) -> dict:
+        """Task 006 (requirement B.1, #122): the redelivery cap's
+        fail-closed outcome (through the module-level
+        `mark_steering_settled_by_exhaustion`) -- `names` stop being
+        redelivered and are recorded settled BY EXHAUSTION, with `reason`,
+        never by the hat's own claim. Emits `steering.settled_by_exhaustion`
+        per name.
+        """
+        records = mark_steering_settled_by_exhaustion(self.root, names,
+                                                       reason=reason)
+        for name in names:
+            self.emit("steering.settled_by_exhaustion", file=name, reason=reason)
+        return records

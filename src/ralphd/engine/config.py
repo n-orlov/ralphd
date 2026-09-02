@@ -387,6 +387,18 @@ class JobConfig:
     # in this task's own commit message and `artifacts/reports/task-020-
     # requirement-l-rejection-semantics.md`.
     peer_verdict_gate: bool = False
+    # Task 006 (PRD requirement B.1, #122): an explicit NUMBER -- the
+    # maximum number of times ONE steering message may be redelivered
+    # (unconsumed and handed back to a following steer iteration) after a
+    # clean iteration honestly claims `settled: false` for it, before the
+    # message stops being redelivered and is instead marked
+    # settled-by-exhaustion in the steering ledger. Counted per message
+    # name in status.json's `steerRedeliveries[<name>]`, the same
+    # disk-backed, survives-a-resume shape `peer_plan_review_max_revisions`
+    # /`planReviewRevisions` above already uses for its own bounded loop.
+    # `settled: true` never touches this counter at all -- it consumes
+    # exactly once, as before this task.
+    steer_redelivery_max: int = 3
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
     # any pi "provider/model" ref; the plain fallback every hat resolves to

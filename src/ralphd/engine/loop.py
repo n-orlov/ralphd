@@ -3487,6 +3487,15 @@ class LoopSupervisor:
                     settled=settled_claim,
                     notes=payload.get("notes"),
                     application=payload.get("application"))
+                # Task 006 (requirement B.1, #122): `_run_iteration_once`
+                # already banked `delivered_steering` as consumed the
+                # instant this iteration finished cleanly -- it has no way
+                # to know, at that point, what the hat's own payload will
+                # say. An honest `settled: false` here must not leave the
+                # message silently applied anyway, so it is UNDONE now,
+                # bounded by a per-message redelivery counter.
+                if not settled_claim:
+                    self._handle_unsettled_steering(delivered_steering)
         # Task 019 (requirement F, #60 pillar 3), cut over by v0.13 task 004
         # (#92 site 2): a hat's reported `task_status` for a specific
         # `task_id` is a proposed task-state CHANGE, applied by
@@ -3517,6 +3526,56 @@ class LoopSupervisor:
         target, guard, _outcome = await self._route_with_router(state, edges)
         self._advance(state, target, guard)
         return ("advance", target, guard)
+
+    def _handle_unsettled_steering(self, names: list[str]) -> None:
+        """Task 006 (requirement B.1, #122): a clean steer iteration whose
+        payload honestly reports `settled: false` must not leave the
+        message it names silently consumed anyway.
+
+        `_run_iteration_once` already banked `names` as applied the moment
+        this iteration finished cleanly (`fault_class is None` is the ONLY
+        thing it checks -- it runs strictly before the payload is even
+        parsed, so it cannot know what `settled` will say). This method is
+        the one place that reverses that write once the payload IS known,
+        bounded by a per-message redelivery counter
+        (`steerRedeliveries[<name>]` in status.json, disk-backed and
+        survives a resume, the same shape `planReviewRevisions` already
+        uses for `peer_plan_review_max_revisions`'s own bounded loop):
+
+          * below `self.cfg.steer_redelivery_max` redeliveries so far for a
+            given name -- unconsume it (`RunDir.unconsume_steering`), so
+            `pending_steering()` names it again and the next actionable
+            iteration (steer takes ABSOLUTE priority over worker, task 012)
+            is handed it again;
+          * at the cap already -- stop redelivering it. It is instead
+            recorded settled-by-exhaustion in the steering ledger, with the
+            reason, through `RunDir.mark_steering_settled_by_exhaustion`,
+            and stays consumed for good: fail-closed on a bounded loop,
+            never redelivered forever.
+
+        `settled: true` never reaches this method at all -- the ordinary
+        consumption inside `_run_iteration_once` is untouched and still
+        applies exactly once, as before this task.
+        """
+        redeliveries = dict(
+            self.run.read_status().get("steerRedeliveries") or {})
+        for name in names:
+            used = int(redeliveries.get(name, 0))
+            if used < self.cfg.steer_redelivery_max:
+                redeliveries[name] = used + 1
+                self.run.unconsume_steering([name])
+            else:
+                reason = (
+                    f"{name!r} was redelivered {used} time(s) after a "
+                    "clean steer iteration without ever claiming "
+                    "settled: true, reaching the declared cap "
+                    f"(steer_redelivery_max={self.cfg.steer_redelivery_max}) "
+                    "-- marked settled-by-exhaustion rather than "
+                    "redelivered forever")
+                self.run.mark_steering_settled_by_exhaustion(
+                    [name], reason=reason)
+                self.run.emit("log", level="warning", message=reason)
+        self.run.update_status(steerRedeliveries=redeliveries)
 
     async def _route_with_router(
             self, state: str, edges: tuple, *,
