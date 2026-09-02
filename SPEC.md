@@ -540,7 +540,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/prompts/reflect.md` | Post-terminal self-reflection: analyse the run and write a report plus an optional prompt/skill diff to `artifacts/reflection/`, touching nothing else, reporting through the `reflect` response contract (task 121) instead of a bare `<promise>REFLECTED</promise>` sentinel. Builtin-only — not in `PROMPT_NAMES`, so not overridable via the prompts API. |
 | `src/ralphd/prompts/steer.md` | v0.14 requirement G (#98, task 009): the `steer` hat's prompt. Reshapes state (inserts/updates/deletes tasks, amends the standing rules) in response to unsettled operator steering; writes no code, holds absolute top priority over any pending/validation-failed task, and reports `{"settled": ..., "notes": ...}` -- never a claim about whether the tasks it touched will pass. Builtin-only, like `reflect.md`. |
 | `src/ralphd/prompts/plan_review.md` | v0.14 requirement K (#101, task 018): the opt-in (`peer_plan_review: false` by default) peer plan-review gate's prompt -- runs once after planning, before the worker touches a task, and either approves the fresh plan or objects with findings that route back into a bounded planning revision (`peer_plan_review_max_revisions`, default `2`). Builtin-only. |
-| `src/ralphd/prompts/verdict_gate.md` | v0.14 requirement L (#101, task 020): the opt-in (`peer_verdict_gate: false` by default), genuinely BLIND peer verdict gate's prompt -- runs once per approach after review's own `verified` verdict, handed only the finished work and the PRD, never the reviewer's reasoning or verdict, and either approves the run's exit or rejects it back into a new approach. Builtin-only. The blindness is an HONOR-SYSTEM limit, not a technical wall: nothing stops the agent subprocess from reading `iterations/`, `events.jsonl` or `output.jsonl` anyway, so v0.17 requirement D.5 (#125 A) adds a post-hoc check (`state.detect_verdict_gate_peek`, called from `LoopSupervisor._record_verdict_gate_peek` at both call sites) that flags a tool call whose arguments mention any of those three paths as a `verdict_gate_peek` event plus a `verdictGatePeeks` entry on the run's status document -- a RECORDED OBSERVATION, never a verdict override; see `tests/test_verdict_gate_peek_task020.py`. |
+| `src/ralphd/prompts/verdict_gate.md` | v0.14 requirement L (#101, task 020): the opt-in (`peer_verdict_gate: false` by default), genuinely BLIND peer verdict gate's prompt -- runs once per approach after review's own `verified` verdict, handed only the finished work and the PRD, never the reviewer's reasoning or verdict, and either approves the run's exit or rejects it back into a new approach. Builtin-only. The blindness is an HONOR-SYSTEM limit, not a technical wall: nothing stops the agent subprocess from reading `iterations/`, `events.jsonl` or `output.jsonl` anyway, and nothing in the harness prevents that read before it happens -- so v0.17 requirement D.5 (#125 A) adds a post-hoc check instead (`state.detect_verdict_gate_peek`, called from `LoopSupervisor._record_verdict_gate_peek` at both call sites) that flags a tool call whose arguments mention any of those three paths as a `verdict_gate_peek` event plus a `verdictGatePeeks` entry on the run's status document: a peek is DETECTED after the fact, never PREVENTED, and the flag is a RECORDED OBSERVATION, never a verdict override; see `tests/test_verdict_gate_peek_task020.py`. |
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
 | `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); per-hat model resolution (`model_for`, `MODEL_HATS`) and the retired-knob migration (`_migrate_legacy_model_config`, task 006). |
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
@@ -1307,6 +1307,8 @@ strictly append-only.
 ├── standing-rules.md        # harness-pinned copy of notes.md's "## Standing rules" block (§4.3)
 ├── review-findings.md       # the reviewer's unmet-requirement list, when rejected
 ├── review-findings.json     # the same findings, structured: severity/curable/clause/evidence (task 001, #110)
+├── verdict-gate-findings.md # verdict_gate's own free-markdown findings, when it rejects (task 019, requirement D.4, #125)
+├── verdict-gate-findings.json # the same findings, structured with per-finding authorship (task 019, requirement D.4, #125)
 ├── petition-adjudications.json # run-scope CONFIRMED impossibility-petition adjudications, survives approach archiving (task 011, requirement C.3, #112)
 ├── vigilant-verified.json   # engine-owned ids of tasks that passed verification
 ├── operator-termination.json # the operator's abort/stop intent (§4.6), when recorded
@@ -1385,6 +1387,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `updatedAt` | string | last write of any field |
 | `deadlineAt` | string | wall-clock deadline, extended by every infra wait |
 | `blockerSignatures` | object | `{"<approach>": "<signature>"}` — per-approach worker-stagnation blocker signature (task 101, #61), written the moment an approach fails on stagnation; `_step_replan`'s `repeated_blocker_signature` guard compares the entry for the approach that just failed against its immediate predecessor's, and a genuine match ends the run rather than spending another approach on the identical structural wall. Absent for a run that has never stagnated |
+| `steerRedeliveries` | object | `{"<name>": <count>}` — per-message redelivery counter (task 006, requirement B.1, #122) `_reverse_stale_steer_settlement` maintains, disk-backed and surviving a resume, the same shape `planReviewRevisions` already uses: a clean steer iteration that honestly reports `settled: false` gets the message unconsumed and redelivered while its count stays below `steer_redelivery_max`, and is instead marked settled-by-exhaustion once it reaches the cap. Absent for a run that has never had a `settled: false` steer payload |
 | `verdictGatePeeks` | array | v0.17 requirement D.5 (#125 A): one `{approach, iteration, calls}` entry per `verdict_gate` iteration (either call site) whose own transcript held a tool call reading past the gate's honor-system blindness — `iterations/`, `events.jsonl`, or the per-iteration transcript file (`state.detect_verdict_gate_peek`). A recorded observation only: never consulted by `_verdict_gate_verdict`, so it never changes `verdict`. Absent for a run with `peer_verdict_gate: false` or one whose gate iterations never peeked |
 
 Cost fields deserve their own contract, because **a missing price is not a
@@ -1577,7 +1580,20 @@ eventually replans the wave against an already-finished repo — the `043d`
 incident, four iterations and two steering notes, resolved only by an operator
 hand-editing the record. The worker's two honest resolutions (carve the residual
 gap into a new task, or relabel `skipped` with a justification that does not
-claim the criteria were met) are in `worker.md`, and both change `tasks.json`. So
+claim the criteria were met) are in `worker.md`, and both change `tasks.json`.
+The `failed -> skipped` relabel is itself a DECLARED CONTRACT-CHANNEL move, not
+a direct edit: the worker reports `{"task_status": "skipped", "task_id": ...,
+"justification": ...}` alongside its ordinary verdict in the same last-line JSON
+reply, and the harness -- never the worker -- applies the move and writes the
+justification into that task's own `notes` field in the same write, exactly as
+the per-task and whole-plan claims above go through `_apply_reported_task_status`
+rather than a raw `tasks.json` write. Relabelling to `skipped` never manufactures
+an unmet dependency's satisfaction: `skipped` is not in
+`TASK_DEPENDENCY_SATISFIED_STATUSES` (`completed`, `validated`) any more than
+`failed` was, so every task whose `dependsOn` names the relabelled id stays
+blocked exactly as before the relabel -- clearing that requires repointing the
+dependent's `dependsOn` or a planning/replan pass, never another guess from a
+worker iteration. So
 the engine gives the worker exactly one iteration to apply one of them and then
 acts itself: `LoopSupervisor._unresolved_failures()` reports the `failed` tasks of
 a plan with nothing actionable left in it, and the worker loop routes to `review`
@@ -3540,6 +3556,8 @@ returns immediately.
 | `--iterations N` | `25` | iteration budget |
 | `--max-approaches N` | `3` | distinct approaches before the job gives up |
 | `--vigilant` | off | stricter review posture |
+| `--peer-plan-review` | off | opt-in peer plan-review gate (PRD requirement K, #101): a peer model approves or objects to the plan before work starts; `JobConfig.peer_plan_review`, unset stays out of `job.yaml` entirely so the engine's own default applies |
+| `--peer-verdict-gate` | off | opt-in, genuinely blind peer verdict gate (PRD requirement L, #101): a second peer model re-verifies completed work before terminal success; `JobConfig.peer_verdict_gate`, same unset-stays-out-of-`job.yaml` shape as `--peer-plan-review` above |
 | `--reflect` | off | one extra post-terminal `reflect` iteration into `artifacts/reflection/` |
 | `--model REF` | unset | `pi` model ref used by any hat with no per-hat override |
 | `--model-for HAT=REF` | none | per-hat model override (repeatable), e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`; merges into the job's `models:` table over the `--template`'s and the registry's own `models:`/`model_overrides:` key -- see docs/cli.md |
