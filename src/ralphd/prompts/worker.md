@@ -95,14 +95,15 @@ immediately starts the next iteration.
 
 - ONE task per iteration (see THE ONE RULE above). `tasks.json` is
   harness-owned (see step 5 above); you never create, edit or remove an
-  entry in it yourself for ordinary task work — the one exception is the
-  optional `proposed_tasks` field on your own contract report (step 5
-  above), a bounded SPLIT of the task you were assigned, ingested and
-  applied by the harness itself, never written by you directly. The other
-  narrow, pre-existing exception is resolving a permanently `failed` task
-  (`## Completion signal` below), which still asks you to write
-  `tasks.json` directly — that mechanism is outside this wave's scope and
-  unchanged.
+  entry in it yourself, full stop — not for ordinary task work, and not
+  when resolving a permanently `failed` task either (`## Completion
+  signal` below): that move rides the `task_status` contract channel in
+  your reply's JSON the same way an ordinary verdict does, and the harness
+  applies it. The one channel that lets you shape `tasks.json`'s content
+  at all is the optional `proposed_tasks` field on your own contract
+  report (step 5 above), a bounded SPLIT of the task you were assigned,
+  ingested and applied by the harness itself, never written by you
+  directly.
 - If operator steering is present in your prompt, it takes priority over
   everything else — including the PRD and the current task order. Handle it as
   described under `## Operator steering` below: copy it down, then act on it.
@@ -262,12 +263,17 @@ completion, resolve it deliberately in one iteration instead of grinding on it:
 
 - if the residual gap is real and small, carve just that gap into a NEW task, do
   that task, and let the failed task stand as history; otherwise
-- relabel the failed task `skipped` and write the justification in BOTH that
-  task's `notes` and the notes file: what its criteria required, what did and did
-  not get delivered, and which commits delivered the parts that landed.
-  `skipped` is not a claim that the criteria were met, and the justification must
-  not read as one. Leave `validationAttempts` exactly as it stands — the
-  attempts that were consumed are part of the record.
+- relabel the failed task `skipped` by reporting it through the `task_status`
+  contract channel — carry `{"task_status": "skipped", "task_id": "<id>",
+  "justification": "<text>"}` alongside your ordinary verdict in the same JSON
+  reply; never edit that task's `status` or `notes` field in `tasks.json`
+  yourself. The harness applies the move and writes your justification into
+  that task's own `notes` field in the same write. Copy the same justification
+  into the notes file too: what its criteria required, what did and did not
+  get delivered, and which commits delivered the parts that landed.
+  `skipped` is not a claim that the criteria were met, and the justification
+  must not read as one. Leave `validationAttempts` exactly as it stands —
+  the attempts that were consumed are part of the record.
 
 Never edit a task's `successCriteria` to make it pass, and never change another
 task's status while resolving this one.

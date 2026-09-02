@@ -4,11 +4,12 @@ otherwise write ``tasks.json``.
 
 Tasks 118-121 moved verify/review/planning/reflect off writing the task file
 directly, and task 116 already did the same for worker.md's ordinary-task-
-completion path (worker.md keeps exactly one narrow, pre-existing, explicitly
-documented exception: resolving a permanently ``failed`` task via the
-"unsatisfiable" report, which is deliberately unchanged and out of scope --
-this check is written to accept that one wording without accepting anything
-broader).
+completion path. Task 010 finished the job: worker.md's one remaining
+exception -- resolving a permanently ``failed`` task by relabelling it
+``skipped`` -- now rides the same `task_status` contract channel as every
+other move instead of instructing a direct edit, so there is no lexical
+carve-out left to grant; the scanner below accepts nothing that a plain
+read would call an instruction to write ``tasks.json``.
 
 The scanner below is deliberately simple (no real NLP): it looks for an
 imperative write-ish verb ("write", "edit", "save", "modify", "update",
@@ -17,7 +18,7 @@ string ``tasks.json``, then checks whether the verb is negated (preceded
 close enough by "not"/"never"/"n't"/"cannot"/"without"/"no longer") -- a
 negated occurrence is the desired READ-ONLY language ("you never write to
 it", "do not modify tasks.json"), not an instruction. Anything left over
-after the accepted-exception carve-out is a real violation.
+is a real violation.
 """
 
 from __future__ import annotations
@@ -38,13 +39,11 @@ NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The one narrow, documented, out-of-scope exception left in worker.md by
-# task 116/123's own design: resolving a permanently `failed` task by writing
-# tasks.json directly. Matched as a literal substring (not a regex) so a
-# mutation that merely *resembles* it in shape does not slip through.
-ACCEPTED_EXCEPTION_SUBSTRINGS = (
-    "still asks you to write `tasks.json` directly",
-)
+# Task 010 removed worker.md's last lexical carve-out: resolving a
+# permanently `failed` task now rides the `task_status` contract channel
+# like every other move, so no accepted-exception wording is granted here
+# any more -- anything the scanner flags is a real violation.
+ACCEPTED_EXCEPTION_SUBSTRINGS: tuple[str, ...] = ()
 
 
 def _preceding_window(text: str, start: int, width: int = 40) -> str:
