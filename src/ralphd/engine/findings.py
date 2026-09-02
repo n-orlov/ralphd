@@ -64,6 +64,20 @@ FINDING_SCHEMA: dict = {
         "clause": {"type": "string"},
         # What was observed — the concrete evidence behind the finding.
         "evidence": {"type": "string"},
+        # Task 019 (requirement D.4, #125): which independent judging hat
+        # produced this finding -- e.g. `"review"` or `"verdict_gate"`.
+        # Deliberately OPTIONAL here (existing findings written before this
+        # task, and every fixture in `tests/test_structured_findings.py`/
+        # `tests/test_review_verdict_findings.py`, carry no such field and
+        # must keep validating unchanged); `attribute_authorship` below is
+        # the one place that actually FILLS it in, and it does so from the
+        # engine's own knowledge of which fixed channel a findings list
+        # came from, never from a value the hat itself wrote -- the same
+        # "asserted by exactly one party" discipline `curable` documents
+        # for itself, just with the engine as that one party instead of
+        # the hat, because which channel a file IS is an engine-side fact,
+        # not a judgement call.
+        "author": {"type": "string"},
     },
     "additionalProperties": False,
 }
@@ -112,6 +126,30 @@ def write_findings_json(path: Path, findings: list[dict]) -> None:
         raise ValueError(
             "refusing to write an invalid findings channel: " + "; ".join(errors))
     atomic_write_json(path, list(findings))
+
+
+def attribute_authorship(items: list[dict], author: str) -> list[dict]:
+    """Task 019 (requirement D.4, #125): return a COPY of `items` with
+    every entry's `author` field set to `author`, unconditionally --
+    overwriting whatever value (if any) the entry already carried.
+
+    This is deliberately an overwrite, not a fill-only-if-absent: `author`
+    records which of the run's independent judging hats produced a
+    finding, and the ENGINE already knows that unambiguously from which
+    fixed-path channel (`RunDir.findings_json_file` vs `RunDir.
+    verdict_gate_findings_json_file`) the list was read from -- the same
+    reason `_review_findings_channel`'s `duplicate_petition_findings`
+    append is unconditional rather than "only if review didn't already
+    say so": a fact the engine can derive on its own is never left to a
+    hat's own (possibly wrong, possibly absent) say-so. Callers pass the
+    channel-appropriate literal (`"review"` or `"verdict_gate"`), never a
+    value read out of the payload itself.
+
+    Never mutates the dicts in `items` -- each entry is shallow-copied
+    first, so a caller holding a reference to the original list (as
+    `_review_findings_channel`'s callers do) is unaffected.
+    """
+    return [dict(item, author=author) for item in items]
 
 
 def compute_verdict(findings: list[dict]) -> str:

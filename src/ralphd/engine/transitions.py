@@ -1162,15 +1162,19 @@ HAT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "verdict": {"type": "string", "enum": ["verified", "rejected"]},
             "reason": {"type": "string"},
-            # Same optional file-borne findings channel `review`'s own
-            # schema already uses (`findings_path`) -- a `rejected`
-            # verdict's OWN findings, written to the SAME fixed path
-            # (`RunDir.findings_file`, `review-findings.md`) so the
-            # existing `_archive_approach`/`_write_composite_prd`
-            # machinery folds them into the next approach's composite PRD
-            # exactly the way `review`'s own rejection findings already
-            # are -- no second mechanism, no engine-side change needed
-            # beyond calling the same two methods.
+            # Same optional file-borne findings channel review's own
+            # schema already uses (findings_path) -- a rejected verdict's
+            # OWN findings, written to the gate's OWN fixed path
+            # (RunDir.verdict_gate_findings_file, verdict-gate-
+            # findings.md, task 019 requirement D.4 #125 -- deliberately
+            # NOT review's own review-findings.md, so the two
+            # independent judges' findings can never overwrite one
+            # another) so the existing _archive_approach/_write_
+            # composite_prd machinery folds them into the next approach's
+            # composite PRD, with authorship attributed, exactly the way
+            # review's own rejection findings already are -- no second
+            # mechanism, no engine-side change needed beyond calling the
+            # same two methods.
             "findings_path": {"type": "string"},
             "notes": {"type": "string"},
         },

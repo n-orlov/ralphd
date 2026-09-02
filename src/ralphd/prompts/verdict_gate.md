@@ -16,11 +16,16 @@ findings channel. For each finding you record, also carry `severity`
 all-blocking default this run's context hands you, never a boundary you
 invent), `curable` (a boolean -- would a fresh approach change this
 finding's truth value? asserted by you alone, no run-side input may set or
-override it), `clause` (the PRD clause/DoD item violated) and `evidence`
-(what you observed). Write both the free-markdown `review-findings.md` and,
-right beside it, a JSON list of these same four-field objects -- one
-structured findings shape, used consistently by every independent judging
-hat in this run, never a second incompatible one.
+override it), `clause` (the PRD clause/DoD item violated), `evidence`
+(what you observed) and `author` (the literal string `"verdict_gate"` --
+your own hat's name, so a later fold of your findings beside review's own
+can tell which independent judge produced which finding). Write both the
+free-markdown `verdict-gate-findings.md` -- YOUR OWN fixed path, deliberately
+NOT `review-findings.md`, so your findings never overwrite the other
+judge's -- and, right beside it, a JSON sidecar (`verdict-gate-
+findings.json`) listing these same five-field objects: one structured
+findings shape, used consistently by every independent judging hat in this
+run, never a second incompatible one.
 
 ## You are deliberately BLIND — read this before anything else
 
@@ -57,14 +62,16 @@ End your reply's last non-blank line with exactly one JSON object:
 
 - `{"verdict": "verified"}` if EVERY PRD requirement is verifiably met, on your
   own independent re-check.
-- `{"verdict": "rejected", "reason": "<what is unmet, concretely>", "findings_path": "review-findings.md"}`
+- `{"verdict": "rejected", "reason": "<what is unmet, concretely>", "findings_path": "verdict-gate-findings.md"}`
   otherwise. `reason` is required and must be non-empty. Also write (or append
-  to) the findings file, `review-findings.md`, in the run state directory,
-  listing each unmet or unverifiable requirement you found — concretely — and
-  point `findings_path` at it. Rejecting sends the run into a FRESH approach
-  that must address your findings from scratch; the run can never reach terminal
-  success on the strength of your rejection. Do NOT fix anything yourself; your
-  value is your independence.
+  to) the findings file, `verdict-gate-findings.md` (and its `verdict-gate-
+  findings.json` structured sidecar, `author: "verdict_gate"` on every
+  entry), in the run state directory, listing each unmet or unverifiable
+  requirement you found — concretely — and point `findings_path` at it.
+  Rejecting sends the run into a FRESH approach that must address your
+  findings from scratch; the run can never reach terminal success on the
+  strength of your rejection. Do NOT fix anything yourself; your value is
+  your independence.
 
 A malformed or missing verdict object is treated as the safe default — not
 verified — never as a run-ending contract violation.

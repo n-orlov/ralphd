@@ -4587,10 +4587,12 @@ class LoopSupervisor:
         safe default above) folds the peer's own findings into a FRESH
         approach -- `_archive_approach`/`_write_composite_prd`, the exact
         machinery `review`'s own rejection already uses, so the peer's
-        `review-findings.md` (same fixed path, written by the hat itself
-        per `prompts/verdict_gate.md`) is what the next approach's
-        composite PRD folds in -- `replan` when an approach is still
-        available (`verdict_gate_rejected_approach_left`), `finishing`
+        `verdict-gate-findings.md`/`.json` (task 019, requirement D.4,
+        #125: its OWN fixed path, distinct from review's, written by the
+        hat itself per `prompts/verdict_gate.md`) is what the next
+        approach's composite PRD folds in, with authorship attributed --
+        `replan` when an approach is still available (`verdict_gate_
+        rejected_approach_left`), `finishing`
         (fail OPEN, never a deadlocked run) once the budget is spent
         (`verdict_gate_rejected_no_approach_left`). This is the DECIDED
         rejection semantics (a NEW approach, never a targeted worker
@@ -7995,24 +7997,108 @@ class LoopSupervisor:
         return tasks_data
 
     def _archive_approach(self, approach: int) -> None:
+        """Archive this approach's handoff artifacts into `approaches/NN/`
+        before a fresh approach overwrites the run root's own copies.
+
+        Task 019 (requirement D.4, #125): beside the three files this
+        always archived (`tasks_file`, `notes_file`, review's own
+        `findings_file`), also archives the peer verdict gate's OWN
+        markdown findings (`verdict_gate_findings_file`) -- a no-op copy
+        when the gate is off or approved (the file was never written),
+        exactly like `findings_file` itself is a no-op copy on a run that
+        never rejected. Both structured JSON sidecars
+        (`findings_json_file`, `verdict_gate_findings_json_file`) are
+        archived separately by `_archive_findings_json` below, which
+        ATTRIBUTES authorship on the way rather than copying byte-for-
+        byte -- `_write_composite_prd` below is what later reads these
+        archived copies back to fold both judges' findings, with
+        authorship, into the next approach's composite PRD.
+        """
         dest = self.run.root / "approaches" / f"{approach:02d}"
         dest.mkdir(parents=True, exist_ok=True)
-        for f in (self.run.tasks_file, self.run.notes_file, self.run.findings_file):
+        for f in (self.run.tasks_file, self.run.notes_file,
+                 self.run.findings_file, self.run.verdict_gate_findings_file):
             if f.exists():
                 shutil.copy2(f, dest / f.name)
+        self._archive_findings_json(self.run.findings_json_file, dest, "review")
+        self._archive_findings_json(
+            self.run.verdict_gate_findings_json_file, dest, "verdict_gate")
+
+    def _archive_findings_json(self, src: Path, dest_dir: Path, author: str) -> None:
+        """Task 019 (requirement D.4, #125): archive one structured
+        findings sidecar (`src`) into `dest_dir`, attributing `author` to
+        every finding on the way (`findings.attribute_authorship`) -- the
+        archived copy always carries an `author` field, even when the hat
+        that wrote `src` omitted one, because the engine derives it from
+        which of the two fixed channels `src` IS, not from anything the
+        hat claimed.
+
+        A no-op when `src` does not exist (the ordinary case for the
+        gate's own sidecar on a gate-off run, or for either sidecar before
+        a live hat has ever written one). A present but UNREADABLE
+        sidecar (`findings.read_findings_json` raises) is archived byte-
+        for-byte instead of silently dropped -- the same "never invisible"
+        posture `_review_findings_channel` documents for a present-but-
+        invalid channel -- there is simply nothing to attribute
+        authorship to in that case.
+        """
+        if not src.exists():
+            return
+        try:
+            items = findings.read_findings_json(src)
+        except ValueError:
+            shutil.copy2(src, dest_dir / src.name)
+            return
+        attributed = findings.attribute_authorship(items, author)
+        findings.write_findings_json(dest_dir / src.name, attributed)
 
     def _write_composite_prd(self, approach: int) -> None:
+        """Fold every archived approach's handoff artifacts into the next
+        approach's composite PRD.
+
+        Task 019 (requirement D.4, #125): beside review's own markdown/
+        JSON findings (already folded before this task), also folds the
+        peer verdict gate's own markdown (`verdict_gate_findings_file`,
+        `verdict-gate-findings.md`) and its structured JSON sidecar
+        (already attributed `author: "verdict_gate"` by
+        `_archive_findings_json` above) -- the two judges' findings are
+        distinguishable in the composite text both by NAME (the markdown
+        section headers and JSON sidecar filenames name which channel
+        each came from) and by the `author` field carried by every
+        structured entry.
+        """
         parts = [self.run.prd_file.read_text(),
                  "\n\n---\n\n# Previous attempt history\n"]
         for adir in sorted((self.run.root / "approaches").iterdir()):
-            findings = adir / "review-findings.md"
+            review_md = adir / state.FINDINGS_FILE
+            gate_md = adir / state.VERDICT_GATE_FINDINGS_FILE
             notes = adir / "notes.md"
             parts.append(f"\n## Approach {adir.name}\n")
             if notes.exists():
                 parts.append(f"\n### Final notes\n{notes.read_text()}\n")
-            if findings.exists():
-                parts.append(f"\n### Review findings (unmet requirements)\n"
-                             f"{findings.read_text()}\n")
+            if review_md.exists():
+                parts.append(
+                    f"\n### Review findings (unmet requirements, `{state.FINDINGS_FILE}`) "
+                    "-- author: review\n"
+                    f"{review_md.read_text()}\n")
+            if gate_md.exists():
+                parts.append(
+                    f"\n### Peer verdict-gate findings (unmet requirements, "
+                    f"`{state.VERDICT_GATE_FINDINGS_FILE}`) "
+                    "-- author: verdict_gate\n"
+                    f"{gate_md.read_text()}\n")
+            for json_path in (adir / state.FINDINGS_JSON_FILE,
+                              adir / state.VERDICT_GATE_FINDINGS_JSON_FILE):
+                if not json_path.exists():
+                    continue
+                try:
+                    items = findings.read_findings_json(json_path)
+                except ValueError:
+                    continue
+                if items:
+                    parts.append(
+                        f"\n### Structured findings ({json_path.name})\n"
+                        + json.dumps(items, indent=2) + "\n")
         parts.append("\nAddress ALL review findings above in this new attempt. "
                      "Do not blindly repeat the previous approach.\n")
         from .state import atomic_write

@@ -776,6 +776,15 @@ FINDINGS_FILE = "review-findings.md"
 # human-readable findings markdown above -- a JSON list of structured
 # findings (`engine.findings.FINDING_SCHEMA`), never a replacement for it.
 FINDINGS_JSON_FILE = "review-findings.json"
+# Task 019 (requirement D.4, #125): the peer verdict gate's OWN findings
+# channel, deliberately a DIFFERENT fixed path from `FINDINGS_FILE`/
+# `FINDINGS_JSON_FILE` above -- review and the gate are two independent
+# judges (requirement L), and folding their findings into one composite
+# PRD (`LoopSupervisor._write_composite_prd`) must be able to tell which
+# artifact came from which judge by NAME alone, not only by the `author`
+# field the same task adds to `engine.findings.FINDING_SCHEMA`.
+VERDICT_GATE_FINDINGS_FILE = "verdict-gate-findings.md"
+VERDICT_GATE_FINDINGS_JSON_FILE = "verdict-gate-findings.json"
 # Task 107 (#60 pillar 3): the notes' `## Standing rules` block, pinned by
 # the harness rather than trusted to worker.md's "preserve verbatim"
 # convention. This file is the SOURCE OF TRUTH the planner's `standing_rules`
@@ -5021,6 +5030,22 @@ class RunDir:
     @property
     def findings_json_file(self) -> Path:
         return self.root / FINDINGS_JSON_FILE
+
+    @property
+    def verdict_gate_findings_file(self) -> Path:
+        """Task 019 (requirement D.4, #125): the peer verdict gate's own
+        free-markdown findings channel, `verdict-gate-findings.md` --
+        never the same path `findings_file`/`FINDINGS_FILE` names, so a
+        run whose gate rejects never overwrites review's own findings
+        with the gate's."""
+        return self.root / VERDICT_GATE_FINDINGS_FILE
+
+    @property
+    def verdict_gate_findings_json_file(self) -> Path:
+        """The structured sidecar beside `verdict_gate_findings_file`
+        above -- same shape `findings_json_file` uses for review's own
+        channel (`engine.findings.FINDING_SCHEMA`)."""
+        return self.root / VERDICT_GATE_FINDINGS_JSON_FILE
 
     @property
     def petition_adjudications_file(self) -> Path:
