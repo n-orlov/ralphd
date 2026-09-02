@@ -5564,17 +5564,37 @@ class LoopSupervisor:
         `_run_review_iteration`'s return and `_maybe_grace_review`'s own
         `run_iteration` call are the two sites.
 
-        Deliberately narrow: skips the ladder entirely (returns `result`
-        unchanged) unless the payload is ALREADY schema-valid and
-        `review_report_errors`-clean and genuinely contradicts a present
-        findings list -- an absent/malformed payload, a plain schema
-        violation, or a `rejected` verdict with no reason fall straight
-        through to `_review_verdict`'s existing (unchanged) non-verified
-        default, exactly as they always have; only the ONE NEW
-        contradiction this task adds gets a re-ask. Also never re-asks
-        over a `rejected` verdict whose findings are all residual -- that
-        is `_review_verdict`'s own honest recomputation, not a hat mistake
-        to refuse.
+        Task 002 (requirement A.2, #119) widens the entry condition
+        again, on top of the above: a review reply with NO parseable
+        contract payload at all (absent output, malformed JSON, or valid
+        JSON that is not even a dict) and a reply that IS a dict but fails
+        `review`'s own schema now also enter this same ladder, exactly
+        like every other hat's ordinary parse/schema failures already do
+        via `contract_enforcement.parse_response` -- there is nothing
+        review-specific to add for those two shapes, `enforce_contract`
+        already re-prompts on them unconditionally once given the chance.
+        Before this task those two shapes fell straight through to
+        `_review_verdict`'s non-verified default with no re-ask at all,
+        the same silent-miss gap task 001 (#119) already closed for
+        verify's own ladder entry (`_verify_contract_ladder`) -- this is
+        that same fix, mirrored onto review. A prose-only final line is
+        the concrete case this exists for: it now gets a genuine chance to
+        repair itself into a valid payload on re-ask, rather than being
+        read as an unspoken rejection that archives the approach and
+        writes a composite PRD for a successor that need not exist.
+
+        Still skips the ladder entirely (returns `result` unchanged) for a
+        reply that is ALREADY a schema-valid dict, `review_report_errors`-
+        clean, and raises no findings-channel contradiction -- a genuine
+        `rejected` verdict with a reason, or a `verified` verdict that
+        does not contradict a present findings list, is not a mistake to
+        re-ask over. A `rejected` verdict with no reason (`review_report_
+        errors`) also still falls straight through unchanged -- that
+        exemption is untouched by this task. Never re-asks over a
+        `rejected` verdict whose findings are all residual either -- that
+        is `_review_verdict`'s own honest recomputation
+        (`review_verdict_findings_errors`, unchanged by this diff), not a
+        hat mistake to refuse.
 
         One case beyond the plain contradiction rides the same ladder: a
         findings channel PRESENT on disk that does not re-validate
@@ -5583,25 +5603,28 @@ class LoopSupervisor:
         holds, so it is re-asked here too -- and `extra_validate` below
         re-reads the channel on every attempt, so a hat that rewrites the
         sidecar correctly recovers on its own.
+
+        On exhaustion (every re-ask attempt still fails), `result` comes
+        back byte-for-byte unchanged -- exactly like `_verify_contract_
+        ladder`'s own exhaustion path -- so `_review_verdict` still reads
+        the original broken payload and produces today's ordinary
+        non-verified outcome: the approach is still archived and a
+        composite PRD is still written for a genuinely-exhausted case,
+        unchanged by this task.
         """
         if result is None or self._review_interrupted(result):
             return result
         findings_list, channel_errors = self._review_findings_channel()
-        if findings_list is None and not channel_errors:
-            return result
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
-            return result
-        if not isinstance(parsed, dict):
-            return result
-        if contracts.validate_payload("review", parsed):
-            return result
-        if transitions.review_report_errors(parsed):
-            return result
-        if not (channel_errors or transitions.review_verdict_findings_errors(
-                parsed, findings_list)):
-            return result
+            parsed = None
+        if isinstance(parsed, dict) and not contracts.validate_payload("review", parsed):
+            if transitions.review_report_errors(parsed):
+                return result
+            if not (channel_errors or transitions.review_verdict_findings_errors(
+                    parsed, findings_list)):
+                return result
 
         def extra_validate(payload: dict) -> list[str]:
             # Re-read the channel on every attempt: the hat's re-ask answer
