@@ -92,6 +92,32 @@ def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory):
         return d if any(t["status"] == "in-progress" for t in tasks) else None
 
     _wait_for(task_in_progress, timeout=30)
+
+    def second_iteration_dir_exists():
+        d = e1.run_dir / "iterations"
+        if not d.exists():
+            return None
+        dirs = sorted(d.iterdir())
+        return dirs if len(dirs) >= 2 else None
+
+    # Task 006: the harness flips tasks.json to in-progress strictly BEFORE
+    # `run_iteration` creates this worker pass's own `iterations/NNNN` dir
+    # (see `_step_worker` in loop.py: `self.run.write_tasks(tasks_before)`
+    # happens before `await self.run_iteration("worker", ...)`). Under an
+    # idle machine that gap is microseconds and `task_in_progress()`'s 20ms
+    # poll interval never catches it, but inside a loaded whole-tier run the
+    # engine process can be starved right after the flip, before it gets
+    # around to creating its own iteration dir -- observed at launch sha
+    # 39a4685: `len(iters_before) >= 2` failed below (only the planning
+    # iteration existed yet) inside a full fast-tier run; the assertion
+    # passed again, unmodified, at ce85e6e. Wait for the second iteration
+    # dir too, not just the tasks.json flip, before pulling the trigger --
+    # this closes the race deterministically (retried, not weakened): the
+    # kill still lands mid-worker-iteration, on a task that is genuinely
+    # `in-progress` with its own iteration dir already on disk but not yet
+    # finished, exactly the scenario under test.
+    _wait_for(second_iteration_dir_exists, timeout=15)
+
     # kill THIS specific pid, right in the middle of the worker's 5s sleep
     # (the task has already been flipped to in-progress and persisted, but
     # the iteration is nowhere near finishing).

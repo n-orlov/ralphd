@@ -48,7 +48,14 @@ def _sha(path: Path) -> str:
 def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_factory):
     e = engine_factory(job={"reflect": True, "iterations": 6, "on_complete": "exit"},
                        stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.5"})
-    e.wait_api()
+    # Task 006: under a loaded whole-tier run, `wait_api()`'s stock 15 s
+    # budget is not always enough for this specific engine subprocess to
+    # get scheduled and bind its port -- observed failing with "engine API
+    # never came up" 15 s in, inside the ~883 s fast-tier run at ce85e6e
+    # (log `/run/ralphd/artifacts/plan-a2-fast.log`). Lengthened, not
+    # retried differently: same polling loop, just more real wall-clock
+    # room for a starved process to answer /healthz.
+    e.wait_api(timeout=60)
 
     # STUB_SLEEP delays every non-worker phase (incl. reflect) so we get a
     # real window between "job reached terminal state" and "reflect finished
