@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -1684,6 +1685,26 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
         if task is None:
             return {"updated": False, "reason": "no matching task",
                     "taskId": task_id, "statusResult": status_result}
+        # Fix #132: a steer-tool edit to successCriteria is operator-origin
+        # and just as legal as a judge-authored criteria amendment
+        # (`LoopSupervisor._apply_criteria_amendments`, loop.py:6891-6898).
+        # Move criteriaFingerprint and criteriaOfRecord forward atomically
+        # with the text, in this SAME write_tasks call -- otherwise
+        # `_check_criteria_edits` (loop.py:7253-7321) sees the mismatch on
+        # the very next pass, RESTORES the old text, emits
+        # `task.criteria_edit_refused` and sets the sticky
+        # `criteriaEditedAfterValidationFailure` marker, undoing the edit
+        # and dooming the approach on every later review. The digest here
+        # is computed with the literal same formula as
+        # `LoopSupervisor._criteria_fingerprint` (loop.py:7213-7215,
+        # `sha256((text or "").encode("utf-8")).hexdigest()`) -- not
+        # imported from loop.py, which imports this module and would make
+        # the import circular.
+        if "successCriteria" in changes:
+            new_criteria = changes["successCriteria"]
+            changes["criteriaFingerprint"] = hashlib.sha256(
+                (new_criteria or "").encode("utf-8")).hexdigest()
+            changes["criteriaOfRecord"] = new_criteria
         task.update(changes)
         run.write_tasks(data)
     return {"updated": True, "taskId": task_id, "statusResult": status_result}
