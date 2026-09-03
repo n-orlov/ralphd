@@ -1020,15 +1020,21 @@ def test_issue_116_fixture_6_has_json_syntax_is_documented_and_accepted():
     assert pi.lint_proposal(payload) == []
 
 
-# --- #116 fixture 7 -- DOCUMENTED-AND-ACCEPTED, already resolved -----------
+# --- #116 fixture 7 -- MUST-CATCH ------------------------------------------
 # #116 named the self-labelled RECONSTRUCTION fixture standing in for the
-# real v0.15 approach-3 task-004 relational-sha clause. That gap is
-# CLOSED, not merely documented: `V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE`
-# / `TASK_004_HEAD_ANCHOR_CRITERIA` above are RECOVERED verbatim from the
+# real v0.15 approach-3 task-004 relational-sha clause -- a fixture named
+# by reference to THIS module rather than quoted whole, per the section
+# preamble above. That gap is CLOSED, not merely documented:
+# `V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE` /
+# `TASK_004_HEAD_ANCHOR_CRITERIA` above are RECOVERED verbatim from the
 # tracked `artifacts/reports/v0.15-operator-notifications.md` record, and
-# `test_the_v015_task_004_relational_sha_clause_is_recovered_verbatim`
-# earlier in this module checks the recovery itself, not merely a claim of
-# it.
+# the fixture is squarely IN the lint's lexical reach: it is the exact
+# clause `test_v015_approach3_task004s_recovered_head_anchor_is_rejected`
+# (earlier in this module) already asserts the relational-sha lint catches
+# via a `HEAD~1` anchor. Fixture 7 is therefore MUST-CATCH, not
+# DOCUMENTED-AND-ACCEPTED -- unlike fixtures 3-6, there is no lexical gap
+# to document here, only a recovery to pin and a catch to assert directly,
+# both below, with the pre-existing recovery/containment assertions kept.
 def test_issue_116_fixture_7_reconstruction_gap_is_already_closed():
     assert (
         pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE
@@ -1036,4 +1042,13 @@ def test_issue_116_fixture_7_reconstruction_gap_is_already_closed():
     )
     tracked = _flattened(pi.V015_TASK_004_RECOVERED_CLAUSE_SOURCE)
     assert pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE in tracked
+    payload = {
+        "tasks": [
+            _basic_task("045", successCriteria=pi.TASK_004_HEAD_ANCHOR_CRITERIA)
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any(
+        "045" in e and "relational sha" in e and "HEAD~1" in e for e in errors
+    ), errors
 
