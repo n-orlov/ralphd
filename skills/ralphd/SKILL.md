@@ -83,6 +83,45 @@ Read these together, not one at a time:
   behaviour more than one way before reporting it missing (an HTTP call may be
   `curl` in one iteration and `python3 urllib.request` in the next).
 
+## PRD patterns that make acceptance unreachable — DO NOT
+
+Review enforces the PRD's **letter**, findings default to blocking, and one
+rejection costs a whole approach. Each pattern below has burned entire
+approach budgets on real runs:
+
+- **DO NOT anchor an audit clause on a range the run cannot make clean.** A
+  clause like "the audit range `<pre-prd-sha>..HEAD` must show **zero**
+  commits touching protected paths" is unsatisfiable the moment the PRD-cut
+  commit itself sits inside that range — a forward-only run can never empty
+  history, review marks the finding `curable: false`, and every fresh approach
+  dies on the same rock. Anchor guards at the PRD commit itself
+  (`<prd-sha>..HEAD`) or exempt named shas inside the clause's own command.
+- **DO NOT rely on nearby prose to soften a literal command.** A carve-out
+  sentence next to the clause ("operator commits are not this run's problem")
+  does not override the mandated command's literal output — review enforces
+  the command. If an exemption matters, put it in the check itself, not
+  around it.
+- **DO NOT omit a materiality rubric.** Review's default is "no materiality
+  rubric was supplied, so every finding is blocking" — one stale documentation
+  line then costs a full approach and a full replan. State which finding
+  classes are blocking, which are curable-in-place, which advisory.
+- **DO NOT demand self-referential finals.** "The final record must cite the
+  commits that made the final record" and "the guard must be green at HEAD as
+  the last commit" are fixed-point chases: every cure creates a new HEAD to
+  cure. Define the termination protocol explicitly (e.g. a report-only tail
+  commit is exempt from re-verification).
+- **DO NOT time-anchor an obligation without a cure path.** "Send it the moment
+  it happens" plus "no reconciliation" turns one missed send into a permanent
+  rejection of every later approach. Write the late-cure into the PRD and
+  assume the operator was asleep when the moment passed.
+
+Operator corollary: when `review-findings.md` marks a blocking finding
+**`curable: false`**, the engine does not stop — it replans and burns the
+remaining approaches on the same rock. Amend (`ralphctl amend`) or abort the
+moment you see one. And a task-level `--waive` clears one task's criteria only;
+review still enforces the PRD requirement behind it — waive the obligation,
+not just the task.
+
 ## Launching
 
 ```bash
