@@ -342,20 +342,31 @@ never reached a verdict and names what ended it.
 
 ### Criteria fingerprinting and edited-after-failure detection (task 008)
 
-Every task gets a `criteriaFingerprint` (sha256 of its `successCriteria` text)
-recorded in `tasks.json`: a baseline on first sight (right after planning, or
-on first observation for a task discovered mid-run), silently refreshed on
-any subsequent edit -- *unless* the task already has `validationAttempts >= 1`
-at the moment the text is observed to differ from the stored fingerprint, in
-which case the engine also sets a persistent `criteriaEditedAfterValidationFailure:
-true` marker on the task before refreshing the fingerprint. This catches a
-worker that quietly rewrites the bar it just failed instead of doing the work,
-without flagging ordinary criteria refinement that happens before any failure
-or a task's untouched criteria. The marker, once set, is never cleared. Task
-009 feeds the list of flagged tasks to the review prompt so at least one
-independent re-verification of the new text happens before a `VERIFIED`
-verdict, closing the gap where `_verify_task`'s `validationAttempts >= 3` skip
-would otherwise let repeatedly-rewritten criteria dodge every check.
+Every task gets a `criteriaFingerprint` (sha256 of its `successCriteria`
+text) recorded in `tasks.json`, alongside the verbatim baseline text as
+`criteriaOfRecord`: set on first sight (right after planning, or on first
+observation for a task discovered mid-run). Any subsequent edit is flagged
+UNCONDITIONALLY -- including while `validationAttempts` is still 0 --
+setting a persistent `criteriaEditedAfterValidationFailure: true` marker
+(once set, never cleared) and, when the task carries a recoverable
+`criteriaOfRecord`, RESTORING `successCriteria` to that recorded text rather
+than letting the rewrite stand; the restore is witnessed with its own
+`task.criteria_edit_refused` event carrying both the refused and the
+restored text. (A run resumed from before this recording existed, where the
+pre-rewrite text was never captured, falls back to the pre-existing
+flag-and-track-forward behaviour, with the engine-forced blocking finding
+below as the whole of the enforcement.) This catches a worker or planner
+that quietly rewrites the bar it just failed instead of doing the work.
+There are exactly two legal ways to move a task's criteria forward, each of
+which advances the fingerprint and `criteriaOfRecord` atomically with the
+replacement text so a legitimate change is never mistaken for one of these
+unauthorized rewrites: a judge-authored amendment on a CONFIRMED petition
+(`_apply_criteria_amendments`), and an operator-issued steer `task-update`
+naming `successCriteria` (`steer_task_update`, #132). Task 009 feeds the
+list of flagged tasks to the review prompt so at least one independent
+re-verification of the new text happens before a `VERIFIED` verdict,
+closing the gap where `_verify_task`'s `validationAttempts >= 3` skip would
+otherwise let repeatedly-rewritten criteria dodge every check.
 
 ### Feeding flagged tasks into the review prompt (task 009)
 

@@ -974,12 +974,22 @@ distinction on disk: `verifyOutcome: "error"` means no verdict was reached,
 
 Independently of vigilant mode, every worker pass fingerprints success criteria:
 `_ensure_criteria_baseline()` stores a `criteriaFingerprint` (sha256 of
-`successCriteria`) per task and `_check_criteria_edits()` compares it afterwards.
-A rewrite seen while `validationAttempts` is still 0 just re-baselines; a
-rewrite seen after at least one validation failure sets the sticky
-`criteriaEditedAfterValidationFailure` marker, and every subsequent `review`
-prompt gains a section naming those tasks and demanding an explicit per-task
-pass/fail conclusion against the *current* criteria text. Otherwise a worker
+`successCriteria`) per task and `_check_criteria_edits()` compares it
+afterwards. A rewrite is flagged unconditionally -- including at
+`validationAttempts: 0` -- which sets the sticky
+`criteriaEditedAfterValidationFailure` marker (never cleared) and restores
+`successCriteria` from the task's recorded `criteriaOfRecord`; the restore
+is witnessed with its own `task.criteria_edit_refused` event, and the
+engine-authored blocking finding (`findings.flagged_criteria_findings`)
+recurs on every later `review` pass until the task is resolved, alongside
+the standing section naming flagged tasks and demanding an explicit
+per-task pass/fail conclusion against the *current* criteria text. There
+are exactly two legal ways to move a task's criteria forward, each of
+which advances `criteriaFingerprint`/`criteriaOfRecord` atomically with the
+replacement text so it is never mistaken for one of these unauthorized
+rewrites: a judge-authored amendment on a CONFIRMED petition
+(`_apply_criteria_amendments`), and an operator-issued steer `task-update`
+naming `successCriteria` (`steer_task_update`, #132). Otherwise a worker
 could dodge every automated check by moving the bar after failing it.
 
 ### 4.5 Budgets, deadlines and timeouts
