@@ -233,7 +233,26 @@ def _give_up(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
 
 
 def _verify_miss(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    return _ok("criterion 2 does not hold: no test asserts it")
+    # Task 001 (#119, requirement A.1) widened `_verify_contract_ladder` to
+    # re-ask ANY not-yet-valid verify payload (absent, malformed JSON, or a
+    # schema violation) instead of letting `_verify_task` burn a validation
+    # attempt on it directly -- this fixture used to return bare prose,
+    # which is now exactly that shape and legitimately re-asks. This stub's
+    # phase-dispatching `_steps` counter has no way to tell an uncharged
+    # re-ask from an ordinary scripted call, so a re-ask silently consumes
+    # the NEXT step of whatever `_steps(...)` sequence is wired to "verify"
+    # for a caller that uses one (see
+    # test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted,
+    # which relied on exactly one verify call per round). Returning an
+    # already-valid `rejected` verdict -- the shape `_verify_contract_
+    # ladder`'s own skip condition names verbatim -- keeps this fixture's
+    # meaning ("verification does not agree yet") while never entering the
+    # ladder at all, matching what every other test in this module already
+    # assumed about it.
+    m = re.search(r"\*\*id\*\*: (\S+)", prompt)
+    tid = m.group(1) if m else TASK_ID
+    return _ok(json.dumps({"task_id": tid, "verdict": "rejected",
+                          "reason": "criterion 2 does not hold: no test asserts it"}))
 
 
 def _verify_pass(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
