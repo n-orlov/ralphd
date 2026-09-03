@@ -4384,7 +4384,8 @@ class LoopSupervisor:
                 # that guard -- exactly the reuse the PRD asks for, not a
                 # second lint-specific mechanism.
                 self._record_stagnation_signature(
-                    approach, self._ingestion_blocker_signature(ingestion.errors))
+                    approach, self._ingestion_blocker_signature(ingestion.errors),
+                    origin="ingestion")
                 return ("advance", "replan", "empty_plan")
             self.run.write_tasks(ingestion.tasks_doc)
             # Task 107 (#60 pillar 3): pin the planner's `standing_rules`
@@ -4782,7 +4783,8 @@ class LoopSupervisor:
         # for any other reason (review rejection, empty plan, ...) never
         # wrote one for `self._approach`, so this guard is silently absent
         # there by construction, not by a special case for those paths.
-        signatures = self.run.read_status().get("blockerSignatures") or {}
+        status = self.run.read_status()
+        signatures = status.get("blockerSignatures") or {}
         this_sig = signatures.get(str(self._approach))
         prev_sig = signatures.get(str(self._approach - 1))
         if this_sig is not None and this_sig == prev_sig:
@@ -4790,6 +4792,18 @@ class LoopSupervisor:
                 f"approach {self._approach} stagnated on the same "
                 f"structural blocker as approach {self._approach - 1} "
                 f"(#61): {this_sig}")
+            # Task 012 (requirement C.2, #124): only an ingestion-origin
+            # repeat -- BOTH approaches' signatures written by the
+            # `empty_plan` boundary, never an ordinary worker-stagnation
+            # (#61) repeat -- marks the run degraded. Checked against the
+            # SAME `blockerSignatureOrigins` map `_record_stagnation_
+            # signature` writes, keyed the same way as `blockerSignatures`
+            # itself, so a mixed pair (one ingestion, one stagnation) is
+            # never mistaken for either kind of pure repeat.
+            origins = status.get("blockerSignatureOrigins") or {}
+            if (origins.get(str(self._approach)) == "ingestion"
+                    and origins.get(str(self._approach - 1)) == "ingestion"):
+                self.run.update_status(health="degraded")
             self._advance("replan", "finishing", "repeated_blocker_signature")
             return ("tail",)
         if self._approach < self.cfg.max_approaches:
@@ -5737,7 +5751,8 @@ class LoopSupervisor:
         return self._normalize_blocker_signature_text(text)
 
     def _record_stagnation_signature(self, approach: int,
-                                     signature: str | None) -> None:
+                                     signature: str | None,
+                                     origin: str = "stagnation") -> None:
         """Persist `signature` for `approach` on status.json's
         `blockerSignatures` map -- disk, not memory, so the signature
         survives both the approach boundary and a process restart (#61:
@@ -5748,13 +5763,25 @@ class LoopSupervisor:
         already reads as "never stagnated with usable text", which is
         exactly the fact a missing entry should carry -- no separate null
         marker needed.
+
+        `origin` (task 012, requirement C.2, #124) is recorded in the
+        parallel `blockerSignatureOrigins` map so `_step_replan` can tell
+        an ingestion-exhaustion repeat from an ordinary #61 worker-
+        stagnation repeat -- the two share the same map and guard by
+        design (the reuse the PRD asks for), but only a repeat where BOTH
+        approaches' signatures originated from ingestion failure should
+        ever mark the run `health="degraded"`; an ordinary stagnation
+        repeat keeps `health="ok"` exactly as it did before this task.
         """
         if signature is None:
             return
         status = self.run.read_status()
         signatures = dict(status.get("blockerSignatures") or {})
         signatures[str(approach)] = signature
-        self.run.update_status(blockerSignatures=signatures)
+        origins = dict(status.get("blockerSignatureOrigins") or {})
+        origins[str(approach)] = origin
+        self.run.update_status(blockerSignatures=signatures,
+                               blockerSignatureOrigins=origins)
 
     def _review_findings_channel(self) -> tuple[list[dict] | None, list[str]]:
         """Task 002 (requirement A.2, #110): read the structured findings

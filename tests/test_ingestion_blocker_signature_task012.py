@@ -141,6 +141,11 @@ def test_two_approaches_with_the_same_ingestion_errors_end_on_repeated_blocker_s
     assert status["verdict"] == "unverified"
     # Ended AT approach 2 -- never entered a third planning attempt.
     assert status["approach"] == 2
+    # Task 012 (requirement C.2, #124): a repeated INGESTION-origin
+    # signature is a degraded run, not merely an ordinary #61 stagnation
+    # repeat -- both approaches here failed the SAME lint at ingestion,
+    # never a worker-stagnation signature, so `health` moves off "ok".
+    assert status.get("health") == "degraded"
     signatures = status.get("blockerSignatures") or {}
     assert signatures.get("1") == signatures.get("2")
     assert signatures["1"] is not None
