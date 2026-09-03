@@ -352,10 +352,14 @@ setting a persistent `criteriaEditedAfterValidationFailure: true` marker
 `criteriaOfRecord`, RESTORING `successCriteria` to that recorded text rather
 than letting the rewrite stand; the restore is witnessed with its own
 `task.criteria_edit_refused` event carrying both the refused and the
-restored text. (A run resumed from before this recording existed, where the
-pre-rewrite text was never captured, falls back to the pre-existing
-flag-and-track-forward behaviour, with the engine-forced blocking finding
-below as the whole of the enforcement.) This catches a worker or planner
+restored text. The marker is also what makes the refusal outlast the pass
+that caught it: the engine-authored blocking finding it feeds
+(`findings.flagged_criteria_findings`) RECURS on every later `review` pass
+until the task is resolved, so one rewrite keeps blocking acceptance instead
+of being noticed once and forgotten. (A run resumed from before this
+recording existed, where the pre-rewrite text was never captured, falls back
+to the pre-existing flag-and-track-forward behaviour, with that recurring
+engine-forced blocking finding as the whole of the enforcement.) This catches a worker or planner
 that quietly rewrites the bar it just failed instead of doing the work.
 There are exactly two legal ways to move a task's criteria forward, each of
 which advances the fingerprint and `criteriaOfRecord` atomically with the
