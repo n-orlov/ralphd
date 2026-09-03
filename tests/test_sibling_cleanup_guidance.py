@@ -92,7 +92,13 @@ def test_sibling_run_example_carries_both_labels(engine):
 
 def test_no_cleanup_guidance_without_docker_access(engine):
     e = engine()
-    e.proc.wait(timeout=60)
+    # Task 017: under a loaded whole-lane sweep (dev-layout `unset` mode,
+    # sha dc4ace67), the stock 60 s budget was not always enough for this
+    # specific real `ralphd-engine` subprocess to get scheduled and exit --
+    # observed as `subprocess.TimeoutExpired` at exactly 60 s. Widened, not
+    # retried differently, same as task 006's precedent for this class of
+    # flake (tests/test_reflection.py, tests/test_crash_consistency.py).
+    e.proc.wait(timeout=120)
     for p in _prompts(e):
         assert "Docker siblings" not in p
         assert "ralphd.role=sibling" not in p
