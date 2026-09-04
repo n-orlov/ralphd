@@ -19,15 +19,25 @@ immediately above `_LATER_FINAL_LAST_COMMIT_RE` for the full account):
       `artifacts/reports/v0.17-a3-closing-report.md` (task 014's own
       successCriteria clause 2 parenthetical).
   (j) a record citing the commit that writes it -- the impossibility
-      `v0.17-a3-closing-report.md` states in so many words; issue #143
-      attributes the concrete recurrence to `deck-3i-2`, a sibling run
-      whose files this sandbox cannot reach -- disclosed as such, exactly
-      like `TASK_042_SUCCESS_CRITERIA` already discloses for v0.8 task 042.
-  (k) an empty git range -- issue #143's own account of `deck-3h`/`3i-2`/
-      `spike`, likewise unreachable from this sandbox; modelled on that
-      account, disclosed as modelled, not recovered.
-  (l) an "exactly once" commit count -- issue #143's own account of
-      `deck-spike`, same disclosure as (k).
+      `v0.17-a3-closing-report.md` states in so many words, AND the
+      `deck-3i-2` clause verbatim as issue #143 renders it ("a record row
+      must cite the commit that writes the row"), pinned below against
+      `tests/data/issue-143-body.md`.
+  (k) an empty git range -- the `deck-3h`/`3i-2`/`spike` clause verbatim as
+      issue #143 renders it ("a protected-path audit range that begins
+      before the PRD/plan commit itself"), pinned the same way.
+  (l) an "exactly once" commit count -- the `deck-spike` clause verbatim as
+      issue #143 renders it ("commit exactly once" combined with "correct
+      the report the review faulted"), pinned the same way.
+
+  The `deck-3h` / `deck-3i-2` / `deck-spike` run directories belong to a
+  different product and are not reachable from this sandbox, so the
+  verbatim source for (j)/(k)/(l) is issue #143's own text, which quotes
+  those runs' clauses directly. That text is now tracked verbatim at
+  `tests/data/issue-143-body.md` (fetched live from
+  `GET /repos/n-orlov/ralphd/issues/143` during this task), so every
+  fixture string below is a checkable substring of a tracked file, exactly
+  like the v0.14/v0.15/v0.17 recoveries.
   (m) notification/HTTP-status clause -- recovered verbatim from
       `artifacts/reports/v0.17-a4-closing-report.md` Finding 2's own
       quoted clause.
@@ -81,6 +91,15 @@ V014_RECOVERED_LAST_COMMIT_CLAUSE = (
 V015_V017_RECOVERED_LAST_COMMIT_CLAUSE = (
     "The final guard subset at the true final sha, recorded as the last commit,"
 )
+
+# Issue #143's own verbatim quotations of the `deck-3h` / `deck-3i-2` /
+# `deck-spike` clauses, tracked at `tests/data/issue-143-body.md`.
+DECK_3I2_ISSUE_143_CLAUSE = "a record row must cite the commit that writes the row"
+DECK_3H_ISSUE_143_CLAUSE = (
+    "a protected-path audit range that begins before the PRD/plan commit itself"
+)
+DECK_SPIKE_ISSUE_143_CLAUSE = "commit exactly once"
+DECK_SPIKE_ISSUE_143_SECOND_HALF = "correct the report the review faulted"
 
 
 def test_the_v014_last_commit_clause_is_recovered_verbatim():
@@ -142,6 +161,24 @@ def test_other_last_final_later_commit_phrasings_are_also_rejected():
     errors = pi.lint_proposal(payload)
     assert any("003" in e and "structurally unsatisfiable" in e for e in errors)
     assert any("004" in e and "structurally unsatisfiable" in e for e in errors)
+
+
+def test_a_final_sha_reference_without_the_word_commit_is_rejected():
+    """The same shape made through the *sha* rather than the commit: a
+    report required to contain "the final sha" names a value that cannot be
+    known until the run's last commit exists. These are the exact clauses
+    task 013's first two validation rounds faulted as linting clean."""
+    for task_id, criteria in (
+        ("003a", "The report must contain the final sha."),
+        ("003b", "The closing record quotes the run's last sha."),
+        ("003c", "The row names the sha of the final commit."),
+        ("003d", "The guard subset runs at the true final sha."),
+    ):
+        payload = {"tasks": [_basic_task(task_id, successCriteria=criteria)]}
+        errors = pi.lint_proposal(payload)
+        assert any(
+            task_id in e and "structurally unsatisfiable" in e for e in errors
+        ), (criteria, errors)
 
 
 def test_the_code_sha_this_task_lands_is_accepted():
@@ -269,19 +306,23 @@ def test_a_record_required_to_cite_the_commit_that_writes_it_is_rejected():
     assert any("010" in e and "structurally unsatisfiable" in e for e in errors), errors
 
 
-def test_deck_3i_2_shaped_row_naming_its_own_writing_commit_is_rejected():
-    """Modelled on issue #143's own account of `deck-3i-2` (x2) -- disclosed
-    as modelled/not recovered, since that run's files are not reachable
-    from this sandbox (a different product's run directory, never
-    committed here); the ISSUE ITSELF is a tracked, checkable source
-    (`GET /repos/n-orlov/ralphd/issues/143`)."""
+def test_the_deck_3i_2_clause_is_recovered_verbatim_from_issue_143():
+    assert DECK_3I2_ISSUE_143_CLAUSE in _flattened("tests/data/issue-143-body.md")
+
+
+def test_deck_3i_2_row_naming_its_own_writing_commit_is_rejected():
+    """Issue #143's verbatim rendering of the `deck-3i-2` recurrence (x2),
+    used as the fixture clause itself and pinned against the tracked issue
+    body by the test immediately above -- that run's own files are a
+    different product's run directory and are not reachable here."""
     payload = {
         "tasks": [
             _basic_task(
                 "011",
                 successCriteria=(
-                    "The audit-trail row this task appends names the "
-                    "commit that writes it as its own sha."
+                    "The audit trail this task appends satisfies the shape "
+                    + DECK_3I2_ISSUE_143_CLAUSE
+                    + "."
                 ),
             )
         ]
@@ -313,10 +354,32 @@ def test_citing_the_report_state_sha_the_parent_of_head_is_accepted():
 # ---------------------------------------------------------------------------
 
 
+def test_the_deck_3h_clause_is_recovered_verbatim_from_issue_143():
+    assert DECK_3H_ISSUE_143_CLAUSE in _flattened("tests/data/issue-143-body.md")
+
+
+def test_the_deck_3h_protected_path_audit_range_clause_is_rejected():
+    """Issue #143's verbatim rendering of the `deck-3h` (x2) / `3i-2` (x4) /
+    `spike` (x3) recurrence, used as the fixture clause itself and pinned
+    against the tracked issue body above. A protected-path audit range
+    beginning before the plan's own first commit is a range whose emptiness
+    is demanded as a standing invariant -- the (k) shape."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "012a",
+                successCriteria=(
+                    "This task's evidence is " + DECK_3H_ISSUE_143_CLAUSE + "."
+                ),
+            )
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any("012a" in e and "structurally unsatisfiable" in e for e in errors), errors
+
+
 def test_a_git_log_range_required_to_be_empty_is_rejected():
-    """Modelled on issue #143's own account of `deck-3h`/`deck-3i-2`/
-    `deck-spike`'s protected-path audit ranges -- disclosed as modelled,
-    not recovered, for the same reason as (j) above."""
+    """The same (k) shape spelled out as a concrete `git log` demand."""
     payload = {
         "tasks": [
             _basic_task(
@@ -386,17 +449,25 @@ def test_a_relational_sha_diff_stat_clause_is_not_double_counted_here():
 # ---------------------------------------------------------------------------
 
 
+def test_the_deck_spike_clause_is_recovered_verbatim_from_issue_143():
+    body = _flattened("tests/data/issue-143-body.md")
+    assert DECK_SPIKE_ISSUE_143_CLAUSE in body
+    assert DECK_SPIKE_ISSUE_143_SECOND_HALF in body
+
+
 def test_an_exactly_once_commit_count_is_rejected():
-    """Modelled on issue #143's own account of `deck-spike` (x4) --
-    disclosed as modelled, not recovered, for the same reason as (j)/(k)
-    above."""
+    """Issue #143's verbatim rendering of the `deck-spike` recurrence (x4),
+    both halves of it, used as the fixture clause itself and pinned against
+    the tracked issue body above."""
     payload = {
         "tasks": [
             _basic_task(
                 "017",
                 successCriteria=(
-                    "The fix for the report the review faulted commits "
-                    "exactly once, correcting only that report."
+                    DECK_SPIKE_ISSUE_143_CLAUSE.capitalize()
+                    + ", and "
+                    + DECK_SPIKE_ISSUE_143_SECOND_HALF
+                    + "."
                 ),
             )
         ]
@@ -458,15 +529,72 @@ def test_a_notification_ledger_entry_clause_is_rejected():
                 "020",
                 successCriteria=(
                     "This task's own successCriteria requires a "
-                    "notification ledger entry: "
-                    + V017_A4_RECOVERED_NOTIFICATION_HTTP_STATUS_CLAUSE
-                    + "."
+                    "notification ledger entry."
                 ),
             )
         ]
     }
     errors = pi.lint_proposal(payload)
     assert any("020" in e and "structurally unsatisfiable" in e for e in errors), errors
+
+
+def test_the_verbatim_v017_a4_clause_is_rejected_unmodified():
+    """The recovered v0.17-a4 clause used EXACTLY as recovered -- no
+    prefix, no added cue. Task 013's validation rounds faulted the earlier
+    fixture for prefixing 'notification ledger entry' to make it trip, and
+    for the lint firing only the older unenumerated-quantifier error on the
+    clause itself. Both errors are asserted here: the quantifier lint AND
+    the seventh lint's structural refusal."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "020a",
+                successCriteria=V017_A4_RECOVERED_NOTIFICATION_HTTP_STATUS_CLAUSE,
+            )
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any(
+        "020a" in e and "structurally unsatisfiable" in e for e in errors
+    ), errors
+
+
+def test_the_same_clause_scoped_to_one_task_is_rejected():
+    """The same clause with the open quantifier removed, so the seventh
+    lint is the ONLY thing that can refuse it -- the second clause task
+    013's validation rounds faulted as linting clean."""
+    payload = {
+        "tasks": [
+            _basic_task(
+                "020b",
+                successCriteria=(
+                    "Task 001 appends endpoint, substance, and observed "
+                    "HTTP status."
+                ),
+            )
+        ]
+    }
+    errors = pi.lint_proposal(payload)
+    assert any(
+        "020b" in e and "structurally unsatisfiable" in e for e in errors
+    ), errors
+
+
+def test_a_notification_send_obligation_is_rejected():
+    """A criterion that requires a SEND at all -- the third clause task
+    013's validation rounds faulted as linting clean. Sends are
+    engine-recorded and best-effort; no criterion may mention one."""
+    for task_id, criteria in (
+        ("021a", "Task 001 sends a completion notification."),
+        ("021b", "A notification is sent to the operator at task start."),
+        ("021c", "The task notifies the operator when the lane finishes."),
+        ("021d", "The starting notification was posted before the work began."),
+    ):
+        payload = {"tasks": [_basic_task(task_id, successCriteria=criteria)]}
+        errors = pi.lint_proposal(payload)
+        assert any(
+            task_id in e and "structurally unsatisfiable" in e for e in errors
+        ), (criteria, errors)
 
 
 def test_a_modal_http_status_demand_is_rejected():
@@ -486,9 +614,10 @@ def test_the_notification_is_logged_bare_mention_is_accepted():
     """Must-pass sibling, and the exact regression this lint must avoid:
     `tests/test_criteria_bound_lint.py`'s own clause-count fixtures use
     'The notification is logged.' as an ordinary filler clause and must
-    keep returning `[]` from `lint_proposal` -- this lint is scoped to
-    'notification ledger'/'ledger entry'/'notification inventory'/a modal
-    HTTP-status demand, never the bare word 'notification'."""
+    keep returning `[]` from `lint_proposal` -- the send half of this lint
+    is scoped to a sending verb ('sends', 'is sent', 'posted', 'notifies
+    the operator') beside the notification, never the bare word
+    'notification' as a fact about something already recorded."""
     payload = {
         "tasks": [
             _basic_task("022", successCriteria="The notification is logged.")
@@ -497,30 +626,25 @@ def test_the_notification_is_logged_bare_mention_is_accepted():
     assert pi.lint_proposal(payload) == []
 
 
-def test_an_observed_http_status_quoted_from_a_tracked_record_is_accepted():
-    """Must-pass sibling, and the exact regression this lint must avoid:
-    `tests/test_stranding_lints.py` already has two must-pass fixtures
-    (ids 029, 035) quoting 'endpoint, substance and observed HTTP status'
-    and 'records its observed HTTP status' as evidence ALREADY recorded in
-    a tracked artifact, not a live per-task obligation -- this lint must
-    not turn those green fixtures red."""
+def test_an_existing_tracked_artifact_and_a_past_sha_are_accepted():
+    """Must-pass sibling for this shape, in the two forms this task's own
+    successCriteria names: an existing tracked artifact and a past sha.
+    (The earlier version of this fixture quoted 'observed HTTP status' from
+    a tracked record and expected acceptance; task 013's validation rounds
+    correctly faulted that as the very shape the PRD bans -- an HTTP status
+    named in a criterion at all -- so the acceptance side is now carried by
+    the artifact/sha citation, without a status or a send.)"""
     payload = {
         "tasks": [
             _basic_task(
                 "023",
                 successCriteria=(
-                    "This task's entry appended to "
+                    "The tracked record "
                     "`artifacts/reports/v0.16-operator-notifications.md` "
-                    "carries endpoint, substance and observed HTTP status."
+                    "already exists at commit `8db9739`, and this task "
+                    "appends its own row to it."
                 ),
-            ),
-            _basic_task(
-                "024",
-                successCriteria=(
-                    "The notification `POST http://100.71.162.65:8090/notify` "
-                    "records its observed HTTP status."
-                ),
-            ),
+            )
         ]
     }
     assert pi.lint_proposal(payload) == []

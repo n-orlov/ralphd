@@ -691,21 +691,23 @@ def _scratch_state_content_clause(criteria: str) -> str | None:
 #       impossibility `artifacts/reports/v0.17-a3-closing-report.md` states
 #       in so many words ("A file cannot contain the sha of the commit that
 #       writes it -- the hash is computed from the tree the commit
-#       produces"); issue #143 attributes the concrete recurrence of this
-#       shape to `deck-3i-2` (x2), a sibling run whose own files this
-#       sandbox cannot reach (a different product's run directory, never
-#       committed here) -- disclosed exactly as `TASK_042_SUCCESS_CRITERIA`
-#       below already discloses the same limitation for v0.8's task 042,
-#       rather than claimed as a local recovery it is not.
-#   (k) a git range required to be empty -- issue #143's own account: "a
-#       protected-path audit range that begins before the PRD/plan commit
-#       itself (deck-3h x2, 3i-2 x4, spike x3)", again a sibling run's own
-#       material, not reachable from this sandbox; the fixture below is
-#       modelled on that account (a `git log`/`git diff` range demanded to
-#       be empty/show no commits) and disclosed as modelled, not recovered.
-#   (l) an "exactly once" commit count -- issue #143: "'commit exactly
-#       once' combined with 'correct the report the review faulted'
-#       (deck-spike x4)", same disclosure as (k).
+#       produces"); the concrete recurrence issue #143 attributes to
+#       `deck-3i-2` (x2) is used VERBATIM as the issue itself renders that
+#       run's clause -- "a record row must cite the commit that writes the
+#       row" -- pinned against `tests/data/issue-143-body.md`, the issue
+#       body tracked verbatim in this repository for exactly that purpose
+#       (the deck runs' own directories belong to a different product and
+#       are not reachable from this sandbox, so #143's text IS the
+#       verbatim source of record for them).
+#   (k) a git range required to be empty -- issue #143's verbatim clause
+#       for `deck-3h` (x2) / `3i-2` (x4) / `spike` (x3): "a protected-path
+#       audit range that begins before the PRD/plan commit itself", used
+#       verbatim as a must-catch fixture and pinned the same way, beside
+#       the spelled-out `git log`/`git diff` form of the same demand.
+#   (l) an "exactly once" commit count -- issue #143's verbatim clause for
+#       `deck-spike` (x4): "commit exactly once" combined with "correct the
+#       report the review faulted", both halves used verbatim and pinned
+#       the same way.
 #   (m) a notification or HTTP-status clause -- recovered verbatim from
 #       `artifacts/reports/v0.17-a4-closing-report.md` Finding 2's own
 #       quoted clause: "every task appends endpoint, substance, and
@@ -717,10 +719,26 @@ def _scratch_state_content_clause(criteria: str) -> str | None:
 # -- neither states a later event or an impossible relation, both are
 # ordinary evidence citations. `tests/test_seventh_lint_task013.py` is this
 # task's new fixture module, in both directions for every shape.
+#
+# Scope note for (m): the PRD's prohibition is absolute -- "no criterion
+# may mention a send, a ledger entry or an HTTP status" -- so an "observed
+# HTTP status" is refused whether or not a modal demands it, and two
+# older must-pass fixtures in `tests/test_stranding_lints.py` (ids 029,
+# 035) that quoted one had their assertions narrowed to their OWN lint's
+# route rather than global emptiness. Their fixture text is unchanged.
 
 _LATER_FINAL_LAST_COMMIT_RE = re.compile(
     r"\b(?:the\s+)?(?:last|final|later|next|subsequent)\s+commit\b"
-    r"|\bcommit\s+(?:that\s+)?(?:comes|lands|is\s+made)\s+after\b",
+    r"|\bcommit\s+(?:that\s+)?(?:comes|lands|is\s+made)\s+after\b"
+    # ... and the same reference made through the *sha* instead of the
+    # commit: "the final sha", "the true final sha", "the run's last sha",
+    # "the sha of the final commit", "the last commit's sha". Task 013's
+    # first two validation rounds faulted exactly this gap: `The report
+    # must contain the final sha.` linted clean because only the word
+    # "commit" was cued.
+    r"|\b(?:true\s+)?(?:last|final|later|next|subsequent)\s+sha\b"
+    r"|\bsha\s+of\s+the\s+(?:true\s+)?(?:last|final|later|next|subsequent)\s+commit\b"
+    r"|\b(?:last|final)\s+commit'?s\s+sha\b",
     re.IGNORECASE,
 )
 
@@ -742,7 +760,16 @@ _RECORD_CITES_OWN_WRITING_COMMIT_RE = re.compile(
 _EMPTY_GIT_RANGE_RE = re.compile(
     r"git\s+(?:log|diff)\b[^.;!?]{0,80}\b(?:empty|no\s+commits?|zero\s+commits?)\b"
     r"|\ban?\s+empty\s+(?:git\s+)?range\b"
-    r"|\brange\b[^.;!?]{0,40}\b(?:must\s+be|is|shows?)\s+empty\b",
+    r"|\brange\b[^.;!?]{0,40}\b(?:must\s+be|is|shows?)\s+empty\b"
+    # The concrete recurrence issue #143 records for `deck-3h`/`3i-2`/
+    # `spike` is this same shape worded as an audit: "a protected-path
+    # audit range that begins before the PRD/plan commit itself" -- a
+    # range whose emptiness is the standing invariant. The PRD's own
+    # prohibition list names "a protected-path clause" and "an audit
+    # range" for exactly this reason.
+    r"|\baudit\s+range\b"
+    r"|\bprotected[-\s]paths?\b"
+    r"|\brange\b[^.;!?]{0,60}\bbegins?\s+before\b",
     re.IGNORECASE,
 )
 
@@ -756,7 +783,20 @@ _NOTIFICATION_OR_HTTP_STATUS_RE = re.compile(
     r"\bnotification\s+ledger\b"
     r"|\bledger\s+entry\b"
     r"|\bnotification\s+inventory\b"
-    r"|\b(?:must|shall|is\s+required\s+to|needs?\s+to|has\s+to)\b[^.;!?]{0,40}\bHTTP\s+status\b",
+    # Any mention of an HTTP status at all, modal or not: the verbatim
+    # v0.17-a4 clause "every task appends endpoint, substance, and
+    # observed HTTP status" carries no modal, and task 013's validation
+    # rounds faulted the modal-only form as materially underinclusive.
+    r"|\bHTTP\s+status\b"
+    # ... and a *send* obligation, however worded. Scoped to a sending
+    # verb beside the notification, so the bare factual mention "The
+    # notification is logged." (a filler clause several existing
+    # must-pass fixtures rely on) still lints clean.
+    r"|\b(?:sends?|sending|sent|posts?|posted|deliver(?:s|ed)?"
+    r"|dispatch(?:es|ed)?|emits?|emitted)\b[^.;!?]{0,40}\bnotification\b"
+    r"|\bnotification\b[^.;!?]{0,40}\b(?:is|are|was|were|must\s+be"
+    r"|has\s+been|have\s+been)\s+(?:sent|posted|delivered|dispatched|emitted)\b"
+    r"|\bnotif(?:y|ies|ied)\s+the\s+operator\b",
     re.IGNORECASE,
 )
 

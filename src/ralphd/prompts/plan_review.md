@@ -47,17 +47,20 @@ judge? Look specifically for:
    is close enough to one of these shapes that the lint's own regexes miss
    it but a human reader would not:
    - a reference to a later/final/last commit or its sha ("the last
-     commit", "recorded as the last commit");
+     commit", "recorded as the last commit", "the final sha", "the true
+     final sha", "the sha of the final commit");
    - a predeclared event state ("none newly filed", "no approach
      rejected", "all petitions REFUTED") that a later event can falsify;
    - a record required to cite the commit that writes it (impossible by
      construction — a commit's hash is computed from the tree it
      produces);
-   - a git range required to be empty;
+   - a git range required to be empty (including a protected-path or
+     audit range that begins before the plan's own first commit);
    - an "exactly once" commit count;
    - a notification or HTTP-status clause (sends are engine-recorded and
-     best-effort; no criterion may mention a send, a ledger entry or an
-     HTTP status).
+     best-effort; no criterion may mention a send — "sends a
+     notification", "a notification is sent", "notifies the operator" — a
+     ledger entry, or an HTTP status, observed or otherwise).
    A criterion naming a *past* sha, an existing tracked artifact, or "the
    code sha this task lands" is fine — object only when a clause actually
    matches one of the six shapes above, naming the clause and a

@@ -474,7 +474,15 @@ def test_a_count_beside_an_unrelated_path_mention_is_accepted():
     clause ("this task's entry appended to artifacts/reports/...") names the
     same directory, is NOT a count of a string the task's own output grows.
     Directory prefixes are never the counted string, and only literals
-    beside the count phrase are candidates at all."""
+    beside the count phrase are candidates at all.
+
+    Task 013 (requirement E, #143) note: this fixture's notification clause
+    names an "observed HTTP status", which the seventh lint added by that
+    task now refuses outright (the PRD bans an HTTP status in a criterion
+    at all). The fixture text is kept verbatim -- it is the recovered
+    false positive this test exists for -- so the assertion is narrowed to
+    THIS lint's own route: no write-time-count error, whatever the seventh
+    lint says about the notification clause."""
     payload = {
         "tasks": [
             _basic_task(
@@ -489,7 +497,9 @@ def test_a_count_beside_an_unrelated_path_mention_is_accepted():
             )
         ]
     }
-    assert pi.lint_proposal(payload) == []
+    assert [
+        e for e in pi.lint_proposal(payload) if "structurally unsatisfiable" not in e
+    ] == []
 
 
 def test_a_static_count_the_task_does_not_grow_is_accepted():
@@ -693,7 +703,12 @@ def test_a_url_path_is_never_read_as_an_out_of_tree_file_path_is_accepted():
     (`GET /repos/n-orlov/ralphd/issues/114`, `POST .../notify`) is not a
     filesystem path, and a criterion quoting its observed response in a
     TRACKED record is exactly this wave's own closure shape -- it must never
-    trip."""
+    trip.
+
+    Task 013 (requirement E, #143) note: as with fixture 029 above, the
+    clause's "observed HTTP status" is refused by the seventh lint that
+    task added, so the assertion here is narrowed to THIS lint's own route
+    (no out-of-tree-path error) while the fixture text stays verbatim."""
     payload = {
         "tasks": [
             _basic_task(
@@ -708,7 +723,9 @@ def test_a_url_path_is_never_read_as_an_out_of_tree_file_path_is_accepted():
             )
         ]
     }
-    assert pi.lint_proposal(payload) == []
+    assert [
+        e for e in pi.lint_proposal(payload) if "structurally unsatisfiable" not in e
+    ] == []
 
 
 def test_an_artifact_existence_pointer_is_accepted():
