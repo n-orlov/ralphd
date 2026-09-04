@@ -871,6 +871,26 @@ FINDINGS_JSON_FILE = "review-findings.json"
 # field the same task adds to `engine.findings.FINDING_SCHEMA`.
 VERDICT_GATE_FINDINGS_FILE = "verdict-gate-findings.md"
 VERDICT_GATE_FINDINGS_JSON_FILE = "verdict-gate-findings.json"
+# Task 035 (requirement B.1, cure for task 006): the ENGINE's own record of
+# what each judge decided, per approach -- written by `record_approach_verdict`
+# below at the moment a verdict is settled, never by a hat's process, and
+# NEVER derived from the two optional findings sidecars above. The sidecars
+# are review's/the gate's own deliverable and may be missing, empty or
+# unreadable; this file always carries the verdict word plus an EXPLICIT
+# `blocking`/`residual` array per channel, so `run_record.build_approach_
+# history` can report what a judge decided even for an approach whose sidecar
+# was never written. Like `petition-adjudications.json` (and unlike
+# `tasks.json`/`notes.md`/the findings files) it is NOT copied into
+# `approaches/NN/` by `_archive_approach`: it stays at the run root keyed by
+# approach number, which is what lets one file answer for the live approach
+# and every archived one at once.
+APPROACH_METADATA_FILE = "approach-metadata.json"
+# The two judge channels this metadata records, spelled once. `review` is
+# review's own verdict (`LoopSupervisor._review_verdict`); `verdictGate` is the
+# opt-in peer gate's (`LoopSupervisor._verdict_gate_verdict`) -- the same two
+# keys `run_record`'s approach-history entries use, so metadata and record can
+# never name a channel two different ways.
+APPROACH_METADATA_CHANNELS = ("review", "verdictGate")
 # Task 107 (#60 pillar 3): the notes' `## Standing rules` block, pinned by
 # the harness rather than trusted to worker.md's "preserve verbatim"
 # convention. This file is the SOURCE OF TRUTH the planner's `standing_rules`
@@ -3969,6 +3989,88 @@ def archived_approach_summary(run_root: Path, approach: int) -> dict | None:
             "summary": format_task_counts(counts), **res.contract}
 
 
+def approach_metadata_path(run_root: Path) -> Path:
+    """Task 035 (requirement B.1): where the engine keeps its own per-approach
+    verdict metadata (`APPROACH_METADATA_FILE`) -- the run root, never an
+    archive dir, so a single file answers for every approach the run planned."""
+    return Path(run_root) / APPROACH_METADATA_FILE
+
+
+def read_approach_metadata(run_root: Path) -> dict:
+    """The whole engine-owned approach metadata document, `{"approaches":
+    {"1": {...}}}` -- an empty shell when the file was never written (a run
+    from before this task, or one whose judges have not run yet) or when it
+    is unreadable, so every caller can index into `["approaches"]` without a
+    guard and nothing here can raise into a terminal write path."""
+    doc = read_json(approach_metadata_path(run_root), {})
+    if not isinstance(doc, dict):
+        return {"approaches": {}}
+    approaches = doc.get("approaches")
+    if not isinstance(approaches, dict):
+        approaches = {}
+    return {**doc, "approaches": approaches}
+
+
+def approach_metadata_entry(run_root: Path, approach: int) -> dict:
+    """Everything the engine recorded about ONE approach's judges -- `{}` when
+    no judge ever settled a verdict for it."""
+    entry = read_approach_metadata(run_root)["approaches"].get(str(approach))
+    return entry if isinstance(entry, dict) else {}
+
+
+def approach_metadata_channel(run_root: Path, approach: int,
+                              channel: str) -> dict | None:
+    """One judge channel's recorded verdict for one approach, or `None` when
+    that judge never settled a verdict for it (a gate-off run has no
+    `verdictGate` entry) -- never a fabricated empty verdict, the same
+    "absent channel is not a verified one" discipline `run_record.
+    _findings_channel` documents for the sidecars."""
+    got = approach_metadata_entry(run_root, approach).get(channel)
+    return got if isinstance(got, dict) else None
+
+
+def record_approach_verdict(run_root: Path, approach: int, channel: str, *,
+                            verdict: str, findings: list[dict] | None = None,
+                            reason: str | None = None) -> dict:
+    """Task 035 (requirement B.1, cure for task 006): PERSIST one judge's
+    settled verdict for one approach into the engine-owned metadata above,
+    and return the entry written.
+
+    Called at the moment the judge's verdict is decided
+    (`LoopSupervisor._review_verdict`, `LoopSupervisor._verdict_gate_verdict`)
+    -- not at `finishing`, and not from the findings sidecars: `findings` may
+    be `None` (no sidecar at all, or one that did not re-validate) and the
+    entry is still written, with `blocking` and `residual` as EXPLICIT empty
+    lists and `findingsChannel: false` saying why they are empty. That is the
+    whole point of this record: "the judge rejected this approach" survives a
+    missing sidecar.
+
+    Idempotent per (approach, channel): a re-recorded verdict (a resumed
+    process re-reviewing the same approach, requirement F.3) overwrites that
+    channel's entry and leaves every other approach and channel untouched.
+    """
+    items = findings if isinstance(findings, list) else None
+    entry = {
+        "channel": channel,
+        "verdict": verdict,
+        "reason": reason,
+        "recordedAt": utcnow(),
+        "findingsChannel": items is not None,
+        "blocking": [f for f in (items or []) if f.get("severity") == "blocking"],
+        "residual": [f for f in (items or []) if f.get("severity") == "residual"],
+    }
+    doc = read_approach_metadata(run_root)
+    approaches = dict(doc["approaches"])
+    existing = approaches.get(str(approach))
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged[channel] = entry
+    merged["approach"] = approach
+    approaches[str(approach)] = merged
+    atomic_write_json(approach_metadata_path(run_root),
+                      {**doc, "approaches": approaches})
+    return entry
+
+
 def archived_approaches_list(run_root: Path) -> dict:
     """Every archived approach's summary, in order -- the payload `ralphctl
     tasks --all` (task 019) prints and the hub's approach-history panel
@@ -5324,6 +5426,25 @@ class RunDir:
         above -- same shape `findings_json_file` uses for review's own
         channel (`engine.findings.FINDING_SCHEMA`)."""
         return self.root / VERDICT_GATE_FINDINGS_JSON_FILE
+
+    @property
+    def approach_metadata_file(self) -> Path:
+        """Task 035 (requirement B.1): this run's engine-owned per-approach
+        verdict metadata (`APPROACH_METADATA_FILE`). At `self.root` beside
+        `petition_adjudications_file` and, for the same reason, NOT one of the
+        files `_archive_approach` copies into `approaches/NN/`: it is keyed by
+        approach number and answers for all of them at once."""
+        return approach_metadata_path(self.root)
+
+    def record_approach_verdict(self, approach: int, channel: str, *,
+                                verdict: str,
+                                findings: list[dict] | None = None,
+                                reason: str | None = None) -> dict:
+        """Bound form of `record_approach_verdict` -- what the supervisor
+        calls, so no caller has to know where the file lives."""
+        return record_approach_verdict(self.root, approach, channel,
+                                        verdict=verdict, findings=findings,
+                                        reason=reason)
 
     @property
     def petition_adjudications_file(self) -> Path:

@@ -70,6 +70,51 @@ def _findings_channel(json_path: Path) -> dict | None:
     }
 
 
+def _metadata_channel(run: "state.RunDir", approach: int,
+                      channel: str) -> dict | None:
+    """Task 035 (requirement B.1, cure for task 006): one judge channel's
+    verdict as the ENGINE recorded it when that judge ran
+    (`state.approach_metadata_channel` <- `LoopSupervisor.
+    _record_approach_verdict`), shaped exactly like `_findings_channel`'s
+    return above plus `source`/`recordedAt`/`findingsChannel`, so a reader of
+    the record does not have to know which of the two origins answered.
+
+    `None` when that judge never settled a verdict for this approach -- the
+    caller then falls back to the judge's optional sidecar, which is all a run
+    from before this task ever had.
+    """
+    entry = state.approach_metadata_channel(run.root, approach, channel)
+    if entry is None:
+        return None
+    return {
+        "verdict": entry.get("verdict"),
+        "blocking": entry.get("blocking") or [],
+        "residual": entry.get("residual") or [],
+        "reason": entry.get("reason"),
+        "recordedAt": entry.get("recordedAt"),
+        "findingsChannel": bool(entry.get("findingsChannel")),
+        "source": "engine-metadata",
+    }
+
+
+def _channel(run: "state.RunDir", approach: int, channel: str,
+             sidecar: Path) -> dict | None:
+    """The verdict for one judge channel of one approach: the engine's own
+    metadata first (authoritative -- written when the judge ran, task 035),
+    the judge's optional findings sidecar only as a FALLBACK for an approach
+    that has no metadata entry (every approach judged before this task
+    existed). A sidecar-sourced channel is labelled `source:
+    "findings-sidecar"` so the two can never be mistaken for each other.
+    """
+    from_meta = _metadata_channel(run, approach, channel)
+    if from_meta is not None:
+        return from_meta
+    from_sidecar = _findings_channel(sidecar)
+    if from_sidecar is None:
+        return None
+    return {**from_sidecar, "source": "findings-sidecar"}
+
+
 def _approach_history_entry(run: "state.RunDir", approach: int, adir: Path,
                             archived: bool) -> dict:
     if archived:
@@ -90,8 +135,8 @@ def _approach_history_entry(run: "state.RunDir", approach: int, adir: Path,
         "archivedDir": rel_dir if archived else None,
         "archived": archived,
         "taskTally": counts,
-        "review": _findings_channel(review_json),
-        "verdictGate": _findings_channel(gate_json),
+        "review": _channel(run, approach, "review", review_json),
+        "verdictGate": _channel(run, approach, "verdictGate", gate_json),
     }
 
 
@@ -99,18 +144,31 @@ def build_approach_history(run: "state.RunDir") -> list[dict]:
     """Every approach this run has planned, oldest first: each archived
     approach (`approaches/NN/`) plus, when the current approach was never
     archived (the run succeeded, or is still open), one more live entry
-    read off the run root -- never both for the same approach number."""
+    read off the run root -- never both for the same approach number.
+
+    Task 035 (requirement B.1): an approach the engine recorded a verdict for
+    (`state.read_approach_metadata`) is listed EVEN IF it was neither archived
+    nor the live approach -- a judged approach can never fall out of the
+    history because its archive dir is missing. Both the live and the archived
+    entries take their verdicts from that same metadata (`_channel`).
+    """
     archived_numbers = state.archived_approach_numbers(run.root)
-    history = [
-        _approach_history_entry(
-            run, n, state.archived_approach_dir(run.root, n), archived=True)
-        for n in archived_numbers
-    ]
     current = run.read_status().get("approach") or 1
-    if current not in archived_numbers:
-        history.append(_approach_history_entry(run, current, run.root,
-                                                archived=False))
-    return history
+    judged = []
+    for key in state.read_approach_metadata(run.root)["approaches"]:
+        try:
+            judged.append(int(key))
+        except (TypeError, ValueError):
+            continue
+    numbers = sorted({*archived_numbers, *judged, current})
+    return [
+        _approach_history_entry(
+            run, n,
+            state.archived_approach_dir(run.root, n) if n in archived_numbers
+            else run.root,
+            archived=n in archived_numbers)
+        for n in numbers
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +232,34 @@ def build_usage_section(status: dict) -> dict:
 # The whole record.
 # ---------------------------------------------------------------------------
 
+# Task 035 (requirement B.1, cure for task 006): every top-level key
+# `build_run_record` writes, and which markdown section renders it. This is
+# not decoration -- `render_run_record_markdown` walks it, and
+# `tests/test_run_record_approach_metadata_task035.py` asserts the record's
+# own key set equals this mapping's, so a field added to the JSON without a
+# renderer for it fails a test instead of quietly going unrendered (which is
+# exactly how `usage`'s input/output token fields and its byPhase/byApproach/
+# byTier breakdowns went missing from `run-record.md`).
+RECORD_SECTIONS: dict[str, str] = {
+    "runId": "header",
+    "generatedAt": "header",
+    "state": "header",
+    "verdict": "header",
+    "reason": "header",
+    "approach": "header",
+    "maxApproaches": "header",
+    "startedAt": "header",
+    "endedAt": "header",
+    "iterationsUsed": "header",
+    "usage": "Usage",
+    "approaches": "Approach history",
+    "petitions": "Petitions",
+    "steersConsumed": "Steers consumed",
+    "operatorRulings": "Operator rulings",
+    "notifications": "Notifications",
+}
+
+
 def build_run_record(run: "state.RunDir", *, run_id: str,
                      max_approaches: int | None,
                      config_root: Path) -> dict[str, Any]:
@@ -213,14 +299,73 @@ def _finding_line(kind: str, f: dict) -> str:
 
 def _render_channel(name: str, channel: dict | None) -> list[str]:
     if channel is None:
-        return [f"- **{name}**: no channel recorded"]
+        return [f"- **{name}**: no verdict recorded"]
     if "error" in channel:
         return [f"- **{name}**: {channel['error']}"]
-    lines = [f"- **{name}**: verdict `{channel.get('verdict')}`"]
-    for f in channel.get("blocking") or []:
+    # Task 035 (requirement B.1): say WHERE this verdict came from (the
+    # engine's own approach metadata, or the judge's optional findings
+    # sidecar), whether a findings channel backed it at all, and the reason
+    # the judge gave -- the metadata carries all three and the markdown used
+    # to render none of them.
+    lines = [f"- **{name}**: verdict `{channel.get('verdict')}`"
+             + (f" (source: {channel['source']})" if channel.get("source") else "")]
+    if channel.get("reason"):
+        lines.append(f"  - reason: {channel['reason']}")
+    if channel.get("recordedAt"):
+        lines.append(f"  - recorded: {channel['recordedAt']}")
+    if "findingsChannel" in channel:
+        lines.append(
+            "  - structured findings channel: "
+            + ("present" if channel.get("findingsChannel") else
+               "none (verdict recorded by the engine regardless)"))
+    blocking = channel.get("blocking") or []
+    residual = channel.get("residual") or []
+    lines.append(f"  - blocking: {len(blocking)}, residual: {len(residual)}")
+    for f in blocking:
         lines.append(_finding_line("blocking", f))
-    for f in channel.get("residual") or []:
+    for f in residual:
         lines.append(_finding_line("residual", f))
+    return lines
+
+
+def _usage_bucket_lines(label: str, buckets: dict | None) -> list[str]:
+    """Task 035 (requirement B.1): one of `usage`'s three breakdowns
+    (`byPhase`/`byApproach`/`byTier`, written by `LoopSupervisor.
+    _accumulate_usage`) rendered as a labelled block -- `(none)` when the run
+    never accumulated that bucket, so the section is always present and a
+    reader can tell "nothing spent here" from "this record does not say".
+    Bucket keys are rendered through `state.cost_bucket`'s own display
+    strings, the same wording `ralphctl cost` prints.
+    """
+    lines = [f"- {label}:"]
+    if not isinstance(buckets, dict) or not buckets:
+        lines.append("  - (none)")
+        return lines
+    for key in sorted(buckets, key=lambda k: str(k)):
+        bucket = state.cost_bucket(buckets.get(key), str(key))
+        lines.append(
+            f"  - `{key}`: {bucket.get('costDisplay')}"
+            f", {bucket.get('tokensDisplay')}")
+    return lines
+
+
+def _usage_lines(usage: dict) -> list[str]:
+    """The whole `usage` section: the per-direction token counters
+    (`input`/`output`/`cacheRead`/`cacheWrite`/`totalTokens` --
+    `state.COST_TOKEN_KEYS`), the money fields and cost status, then all three
+    breakdowns. Task 035 (requirement B.1): task 006's render stopped at
+    `totalTokens`/`costUSD`, which is the gap this restores.
+    """
+    lines = ["", "## Usage"]
+    for key in state.COST_TOKEN_KEYS:
+        lines.append(f"- {key}: {usage.get(key)}")
+    for key in ("costUSD", "costDerivedUSD", "costStatus", "costFree"):
+        lines.append(f"- {key}: {usage.get(key)}")
+    lines.append(f"- tokens: {state.format_tokens(usage) if usage else state.USAGE_NONE}")
+    lines.append(f"- cost: {state.format_cost(usage, decimals=4)}")
+    lines += _usage_bucket_lines("byPhase", usage.get("byPhase"))
+    lines += _usage_bucket_lines("byApproach", usage.get("byApproach"))
+    lines += _usage_bucket_lines("byTier", usage.get("byTier"))
     return lines
 
 
@@ -237,15 +382,7 @@ def render_run_record_markdown(record: dict) -> str:
         f"- generated: {record.get('generatedAt')}",
         f"- iterationsUsed: {record.get('iterationsUsed')}",
     ]
-    usage = record.get("usage") or {}
-    lines += [
-        "",
-        "## Usage",
-        f"- totalTokens: {usage.get('totalTokens')}",
-        f"- costUSD: {usage.get('costUSD')}",
-        f"- costDerivedUSD: {usage.get('costDerivedUSD')}",
-        f"- costStatus: {usage.get('costStatus')}",
-    ]
+    lines += _usage_lines(record.get("usage") or {})
 
     lines += ["", "## Approach history"]
     for entry in record.get("approaches") or []:

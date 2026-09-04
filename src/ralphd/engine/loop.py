@@ -4780,6 +4780,7 @@ class LoopSupervisor:
         result = await self.run_iteration(
             "verdict_gate", tier=state.run_level_verify_tier())
         approved, payload = await self._verdict_gate_verdict(result)
+        self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
             self._advance("verdict_gate", "finishing", "verdict_gate_approved")
@@ -4894,6 +4895,32 @@ class LoopSupervisor:
         payload = enforcement.payload
         approved = payload.get("verdict") == "verified"
         return approved, payload
+
+    def _record_gate_approach_verdict(self, approach: int, approved: bool,
+                                      payload: dict | None) -> None:
+        """Task 035 (requirement B.1): the peer verdict gate's half of
+        `_record_approach_verdict` -- called from BOTH sites that can settle a
+        gate verdict (`_step_verdict_gate`, `_grace_verdict_gate`), the same
+        two `_record_verdict_gate_peek` is called from, strictly after
+        `_verdict_gate_verdict` has returned.
+
+        The gate's own structured sidecar is read here only as a SOURCE of
+        blocking/residual detail, never as a precondition: an absent or
+        unreadable `verdict_gate_findings_json_file` (the ordinary case for an
+        approving gate, which writes no findings at all) still records the
+        verdict, with explicit empty arrays and `findingsChannel: false`.
+        """
+        path = self.run.verdict_gate_findings_json_file
+        items: list[dict] | None = None
+        if path.exists():
+            try:
+                items = findings.read_findings_json(path)
+            except ValueError:
+                items = None
+        self._record_approach_verdict(
+            approach, "verdictGate",
+            verdict="verified" if approved else "rejected",
+            reason=(payload or {}).get("reason"), findings_list=items)
 
     def _record_verdict_gate_peek(self, approach: int) -> list[dict]:
         """Task 020 (D.5, #125 A): a post-hoc, honor-system check over the
@@ -6123,6 +6150,42 @@ class LoopSupervisor:
         """
         return self._review_findings_channel()[0]
 
+    def _record_approach_verdict(self, approach: int, channel: str, *,
+                                 verdict: str, reason: str | None,
+                                 findings_list: list[dict] | None) -> dict:
+        """Task 035 (requirement B.1, cure for task 006): PERSIST one judge's
+        settled verdict for `approach` into the engine's OWN per-approach
+        metadata (`state.record_approach_verdict` ->
+        `RunDir.approach_metadata_file`) at the moment that judge's verdict is
+        decided -- not at `finishing`, and not conditional on the judge's
+        optional structured findings sidecar existing.
+
+        Why the engine keeps its own copy at all: the two sidecars
+        (`findings_json_file`, `verdict_gate_findings_json_file`) are the
+        JUDGE's deliverable. They can be absent (a hat that wrote only prose),
+        present-but-unreadable (`_review_findings_channel`'s third case) or
+        wiped by a later approach's own review, and an archived approach only
+        has one if that approach's judge happened to write one. Reading the
+        record back off them alone therefore loses the one fact the run record
+        must never lose -- WHAT EACH JUDGE DECIDED. `findings_list` is passed
+        through as whatever the channel gave this verdict (`None` for "no
+        usable channel"), and `state.record_approach_verdict` writes explicit
+        `blocking`/`residual` arrays plus `findingsChannel` either way.
+
+        Also emits one `approach.verdict_recorded` event per settled verdict,
+        so the fact is witnessed on the event stream and not only in a file a
+        later phase reads.
+        """
+        entry = self.run.record_approach_verdict(
+            approach, channel, verdict=verdict, findings=findings_list,
+            reason=reason)
+        self.run.emit("approach.verdict_recorded", approach=approach,
+                      channel=channel, verdict=verdict,
+                      findingsChannel=entry["findingsChannel"],
+                      blocking=len(entry["blocking"]),
+                      residual=len(entry["residual"]))
+        return entry
+
     def _review_success_verdict_label(self) -> str:
         """Task 012 (requirement D.3, #56 successor): the exact string a
         terminal-success write records as `status.json`'s `verdict` for
@@ -6277,6 +6340,18 @@ class LoopSupervisor:
                 claimed_verdict="rejected", computed_verdict="verified",
                 residual_count=len(residual), residual_findings=residual)
             verified = True
+        # Task 035 (requirement B.1): the settled review verdict goes into the
+        # engine's own approach metadata right here, the moment the judge's
+        # verdict is decided -- `mid_run` excluded, because a mid-run
+        # adjudication episode (task 014, requirement F.1) scores no approach
+        # verdict at all and its legal `"adjudicated"` reply must not be
+        # recorded as a rejection of the approach it ran inside.
+        if not mid_run:
+            self._record_approach_verdict(
+                self._approach, "review",
+                verdict="verified" if verified else "rejected",
+                reason=(payload or {}).get("reason"),
+                findings_list=findings_list)
         return verified, payload, contract_errors
 
     async def _review_contract_ladder(
@@ -7506,6 +7581,7 @@ class LoopSupervisor:
             "verdict_gate", tier=state.run_level_verify_tier())
         self._refund_iteration("grace")
         approved, payload = await self._verdict_gate_verdict(result)
+        self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
             return True
