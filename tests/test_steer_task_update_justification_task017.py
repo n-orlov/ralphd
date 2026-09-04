@@ -18,7 +18,9 @@ carries BOTH an explicit `justification` AND a distinct `changes["notes"]`
 used to lose the justification, because `steer_task_update`'s plain
 dict-merge of `changes` ran AFTER the applier's own `notes` write and
 overwrote it. The justification is now appended to the requested notes as
-their authoritative tail, never replaced by them.
+their authoritative tail, never replaced by them -- and the test for
+"already there" is a TAIL test, not a substring test, so notes that merely
+mention the justification mid-sentence still get it appended.
 
 This is the `hat_tools` unit tier: it drives `hat_tools.SteerToolBroker.
 execute("task-update", ...)` directly -- the real dispatch a served
@@ -160,6 +162,70 @@ def test_a_justification_equal_to_changes_notes_is_not_duplicated(tmp_path):
     })
     assert response["ok"] is True, response
     assert _task(broker, "019")["notes"] == "superseded by task 038"
+
+
+def test_notes_that_merely_mention_the_justification_still_get_it_appended(
+        tmp_path):
+    """Task 038's own residual gap: the suppression test is a TAIL test, not
+    a substring test. Requested notes that mention the justification inside
+    a longer sentence are not the authoritative tail of the move's record,
+    so the justification is still appended after them."""
+    broker = _broker(tmp_path, [
+        {"id": "023", "title": "t", "status": "failed"},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "023",
+        "changes": {"status": "skipped",
+                    "notes": "The reason is GAP, with additional context."},
+        "justification": "GAP",
+    })
+    assert response["ok"] is True, response
+    notes = _task(broker, "023")["notes"]
+    assert notes.endswith("GAP")
+    assert notes == "The reason is GAP, with additional context.\n\nGAP"
+
+
+def test_a_justification_that_is_a_suffix_word_is_still_appended(tmp_path):
+    """A requested notes value that merely ENDS with the justification's
+    characters as part of a longer word (`"the megaGAP"` for `"GAP"`) is not
+    this function's own appended tail either -- only the exact separator +
+    justification it writes itself suppresses a second append."""
+    broker = _broker(tmp_path, [
+        {"id": "024", "title": "t", "status": "failed"},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "024",
+        "changes": {"status": "skipped", "notes": "the megaGAP"},
+        "justification": "GAP",
+    })
+    assert response["ok"] is True, response
+    assert _task(broker, "024")["notes"] == "the megaGAP\n\nGAP"
+
+
+def test_applying_the_append_twice_is_a_no_op(tmp_path):
+    """Idempotence over the function's OWN output: feeding an already
+    appended notes value back in (the shape a second steer pass would see)
+    appends nothing further."""
+    broker = _broker(tmp_path, [
+        {"id": "025", "title": "t", "status": "failed"},
+        {"id": "026", "title": "t", "status": "failed"},
+    ])
+    first = broker.execute("task-update", {
+        "taskId": "025",
+        "changes": {"status": "skipped",
+                    "notes": "see the petition file"},
+        "justification": "unmeetable here",
+    })
+    assert first["ok"] is True, first
+    once = _task(broker, "025")["notes"]
+    second = broker.execute("task-update", {
+        "taskId": "026",
+        "changes": {"status": "skipped", "notes": once},
+        "justification": "unmeetable here",
+    })
+    assert second["ok"] is True, second
+    assert _task(broker, "026")["notes"] == once
+    assert once.count("unmeetable here") == 1
 
 
 def test_a_blank_changes_notes_does_not_shadow_the_justification(tmp_path):

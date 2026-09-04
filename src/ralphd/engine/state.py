@@ -1721,6 +1721,12 @@ def steer_task_delete(run: "RunDir", task_id: str) -> dict:
     return {"deleted": True, "taskId": task_id}
 
 
+# The one separator `steer_task_update` appends a transition justification
+# with. Named because the suppression test below has to recognize its OWN
+# earlier output to stay idempotent (task 038).
+_JUSTIFICATION_SEPARATOR = "\n\n"
+
+
 def steer_task_update(run: "RunDir", task_id: str, changes: dict,
                       vigilant: bool, *, justification: str | None = None
                       ) -> dict:
@@ -1756,6 +1762,17 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
     requested field update still lands, and when no explicit
     justification was supplied (the default-to-`notes` case above) the
     text is already the notes' own and nothing is appended twice.
+
+    The suppression test for that last case is a TAIL test, not a
+    substring test (task 038's own residual gap): requested notes that
+    merely MENTION the justification inside a longer sentence (`"The
+    reason is GAP, with additional context."` for justification `"GAP"`)
+    still get the justification appended, because a mention buried
+    mid-sentence is not the authoritative tail the move's record needs.
+    Only two shapes suppress the append -- notes that ARE the
+    justification (the default-to-`notes` case, left byte-identical) and
+    notes that already end with the exact separator + justification this
+    function itself would append (so applying the rule twice is a no-op).
     """
     changes = dict(changes)
     target_status = changes.pop("status", None)
@@ -1776,8 +1793,12 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
             justification_to_keep = (effective_justification or "").strip()
     if justification_to_keep and "notes" in changes:
         requested = (changes.get("notes") or "").strip()
-        if justification_to_keep not in requested:
-            changes["notes"] = "\n\n".join(
+        already_the_tail = (
+            requested == justification_to_keep
+            or requested.endswith(_JUSTIFICATION_SEPARATOR
+                                  + justification_to_keep))
+        if not already_the_tail:
+            changes["notes"] = _JUSTIFICATION_SEPARATOR.join(
                 part for part in (requested, justification_to_keep) if part)
     if changes:
         data = run.read_tasks()
