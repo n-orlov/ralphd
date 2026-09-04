@@ -238,6 +238,23 @@ def compute_verdict(findings: list[dict]) -> str:
         f.get("severity") == "blocking" for f in findings) else "verified"
 
 
+def has_residual_findings(findings: list[dict]) -> bool:
+    """Task 012 (requirement D.3): does `findings` carry at least one
+    `severity: "residual"` entry? The one place that question is answered
+    -- `engine/loop.py`'s success-verdict labelling (`_review_success_
+    verdict_label`) calls this rather than re-deriving the same scan
+    inline, the same discipline `compute_verdict`/`all_blocking_findings_
+    incurable` already document for themselves.
+
+    Deliberately does not care about `severity: "blocking"` entries at
+    all -- a caller must already know the list computes `"verified"`
+    (via `compute_verdict`) before this answer means anything; a
+    blocking-and-residual mix is `"rejected"` and never reaches the
+    caller this function serves in the first place.
+    """
+    return any(f.get("severity") == "residual" for f in findings)
+
+
 def all_blocking_findings_incurable(findings: list[dict]) -> bool:
     """Task 005 (requirement B, #111): are this rejection's BLOCKING
     findings ALL incurable? The one place this question is answered --

@@ -86,6 +86,10 @@ a { color: var(--accent); }
 }
 
 .pill-succeeded, .pill-completed, .pill-verified, .pill-ok, .pill-validated { color: var(--ok); border-color: var(--ok); }
+/* Task 012 (requirement D.3): a review VERIFIED verdict that still carries
+   residual findings -- a success, but a caution-flavoured one, same colour
+   the other "look at this" pills already use. */
+.pill-verified-with-residuals { color: var(--warn); border-color: var(--warn); }
 .pill-failed, .pill-error { color: var(--err); border-color: var(--err); }
 .pill-running, .pill-in-progress { color: var(--accent); border-color: var(--accent); }
 .pill-pending, .pill-unknown, .pill-paused, .pill-awaiting-validation { color: var(--warn); border-color: var(--warn); }

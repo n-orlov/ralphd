@@ -2484,7 +2484,7 @@ def cmd_resume(args):
 # `ralphctl runs --sort <key>` gets the same order, not a second dialect.
 RUN_STATE_ORDER = ["starting", "running", "finishing", "succeeded", "failed",
                   "aborted"]
-RUN_VERDICT_ORDER = ["", "unverified", "verified"]
+RUN_VERDICT_ORDER = ["", "unverified", "verified", "verified-with-residuals"]
 # Keys whose *natural* first direction is descending (biggest/newest first),
 # mirroring app.js `toggleRunSort`'s first-click rule. `--reverse` flips
 # whichever direction the key starts with.

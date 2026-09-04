@@ -4679,7 +4679,7 @@ class LoopSupervisor:
         if approved:
             self._advance("verdict_gate", "finishing", "verdict_gate_approved")
             self.run.emit("signal", signal="VERIFIED")
-            self._finish("succeeded", "verified",
+            self._finish("succeeded", self._review_success_verdict_label(),
                         **self._unconsumed_steering_patch())
             return ("done", "succeeded")
         reason = (payload or {}).get("reason") if payload else None
@@ -6018,6 +6018,39 @@ class LoopSupervisor:
         """
         return self._review_findings_channel()[0]
 
+    def _review_success_verdict_label(self) -> str:
+        """Task 012 (requirement D.3, #56 successor): the exact string a
+        terminal-success write records as `status.json`'s `verdict` for
+        review's own VERIFIED edge -- `"verified-with-residuals"` when the
+        findings channel this verdict was computed from carries at least
+        one `severity: "residual"` finding (`findings.has_residual_
+        findings`), `"verified"` otherwise (no channel at all, or a
+        channel with no residual entries).
+
+        Called from every site that is about to write `_finish("succeeded",
+        ...)` off the back of a review verdict that resolved VERIFIED --
+        `_step_review`'s own direct success, the ordinary (non-grace) peer
+        verdict-gate approval in `_step_verdict_gate`, and the off-budget
+        grace review's success in `_maybe_grace_review` -- each re-reads
+        the channel independently via `_review_findings_channel` rather
+        than threading a value through `_review_verdict`'s own return
+        shape, exactly the same independence `_review_incurable_rejection`/
+        `_review_contract_ladder` already keep from each other: the
+        channel is immutable disk state by the time a verdict has already
+        settled VERIFIED, so re-reading it here costs nothing and never
+        depends on which caller's copy of the findings list is passed
+        around.
+
+        Never itself decides curability/blocking-ness -- only whether a
+        genuinely VERIFIED outcome still has residual findings worth
+        naming in the record a human or script reads first, so a clean
+        approach still gets the plain `"verified"` word it always has.
+        """
+        findings_list, _errors = self._review_findings_channel()
+        if findings_list and findings.has_residual_findings(findings_list):
+            return "verified-with-residuals"
+        return "verified"
+
     def _review_verdict(self, result: IterationResult) -> tuple[bool, dict | None, list[str]]:
         """Task 119 (#60 pillar 3, fact 9): parse the review hat's final
         line as a `review` contract payload (`{"verdict": "verified"|
@@ -6502,7 +6535,7 @@ class LoopSupervisor:
                         "verified_peer_verdict_gate_enabled")
             self._advance("review", "finishing", "verified")
             self.run.emit("signal", signal="VERIFIED")
-            self._finish("succeeded", "verified",
+            self._finish("succeeded", self._review_success_verdict_label(),
                         **self._unconsumed_steering_patch())
             return ("done", "succeeded")
         self.run.emit("log", message=f"review rejected approach {approach}")
@@ -7236,7 +7269,8 @@ class LoopSupervisor:
                     "gate did not")
                 return False
             self.run.emit("signal", signal="VERIFIED")
-            self._finish("succeeded", "verified", graceReview=True,
+            self._finish("succeeded", self._review_success_verdict_label(),
+                        graceReview=True,
                         reason=("budget exhausted with all tasks completed; "
                                 "the grace review ran and VERIFIED"),
                         **self._unconsumed_steering_patch())

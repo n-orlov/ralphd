@@ -103,7 +103,7 @@ The one-call summary. Response:
   "iterationsBudget": 50,
   "iterationsUsed": 7,
   "iterationsRefunded": {"infra": 2, "grace": 0, "steer": 0},  // earned refunds; survives a resume
-  "verdict": null,                 // "verified" | "unverified" | null while running -- settled (non-null) once `state` reaches `finishing`, task 012/#56
+  "verdict": null,                 // "verified" | "verified-with-residuals" | "unverified" | null while running -- settled (non-null) once `state` reaches `finishing`, task 012/#56; "verified-with-residuals" (requirement D.3) is a review VERIFIED verdict whose structured findings channel still carries one or more `severity: "residual"` entries
   "reason": null,                  // why a non-succeeded run ended (also the grace-review note)
   "onComplete": "idle",
   "createdAt": "2026-08-08T13:08:09Z",
