@@ -10,6 +10,14 @@ discipline every earlier lint in that module already follows.
 Provenance, per shape (see `plan_ingestion.py`'s own block comment
 immediately above `_LATER_FINAL_LAST_COMMIT_RE` for the full account):
 
+Task 037 (cure for this task's requirement E) adds the two must-catch
+fixtures the verifier found missing: the (h) shape recovered verbatim from
+the two tracked RUN RECORDS under `artifacts/reports/` that the requirement
+names -- `v0.14-a3-final-guard-tail.md`'s clause ending `which is the last
+commit of the approach` and `v0.15-a2-final-guard-subset.md`'s clause
+beginning `Task 014 lands the plan's last commit`. See the task 037 section
+at the bottom of this module.
+
   (h) later/final/last commit -- recovered verbatim from this repository's
       own tracked PRDs (v0.14's non-negotiable 12; v0.15's/v0.17's
       identical "recorded as the last commit" requirement-list bullet,
@@ -710,6 +718,201 @@ def test_ingestion_level_proposal_carrying_a_banned_shape_is_rejected(tmp_path):
     assert result.agent_fault is True
     assert any(
         "026" in e and "structurally unsatisfiable" in e for e in result.errors
+    ), result.errors
+
+
+# ---------------------------------------------------------------------------
+# Task 037 (cure for task 013, requirement E): the two must-catch fixtures
+# taken VERBATIM from tracked artifacts under `artifacts/reports/`.
+#
+# Task 013's verifier faulted the (h) fixtures above for being recovered
+# from the tracked PRDs (`docs/prds/...`) rather than from the two run
+# records the requirement names, so neither
+# `artifacts/reports/v0.14-a3-final-guard-tail.md` nor
+# `artifacts/reports/v0.15-a2-final-guard-subset.md` was pinned at all.
+# Both are pinned here, each as a whole clause of its source record (the
+# lint scopes every check to ONE clause, `_CLAUSE_SPLIT_RE`, so a fixture
+# must be a clause to be a fair fixture):
+#
+#   * the v0.14-a3 final-guard-tail clause ENDING `which is the last commit
+#     of the approach` -- that record's own declaration that its second,
+#     report-only commit is the approach's last commit;
+#   * the v0.15-a2 final-guard-subset clause BEGINNING `Task 014 lands the
+#     plan's last commit` -- that record's discharge section reasoning
+#     about a commit that had not landed when the clause was written.
+#
+# For each: the constant is a substring of its named source file, and
+# `lint_proposal()` refuses it, quoting the clause back and naming a
+# satisfiable alternative.
+# ---------------------------------------------------------------------------
+
+V014_A3_FINAL_GUARD_TAIL_CLAUSE = (
+    "This record then self-discharges its own declared sha in a second, "
+    "report-only commit below, which is the last commit of the approach"
+)
+V014_A3_FINAL_GUARD_TAIL_SOURCE = "artifacts/reports/v0.14-a3-final-guard-tail.md"
+
+V015_A2_FINAL_GUARD_SUBSET_CLAUSE = (
+    "Task 014 lands the plan's last commit, which necessarily moves `HEAD` "
+    "one commit past `ab7bfbfe7e8cfb10fc2ebce2845d3e183b06af7d` (this "
+    "record's own add commit) and therefore past the parent-of-HEAD "
+    "self-anchoring fixed point above"
+)
+V015_A2_FINAL_GUARD_SUBSET_SOURCE = (
+    "artifacts/reports/v0.15-a2-final-guard-subset.md"
+)
+
+# (fixture constant, its named tracked source file, the tail/head words the
+# requirement pins it by)
+TASK_037_VERBATIM_ARTIFACT_FIXTURES = (
+    (
+        "037a",
+        V014_A3_FINAL_GUARD_TAIL_CLAUSE,
+        V014_A3_FINAL_GUARD_TAIL_SOURCE,
+        "which is the last commit of the approach",
+    ),
+    (
+        "037b",
+        V015_A2_FINAL_GUARD_SUBSET_CLAUSE,
+        V015_A2_FINAL_GUARD_SUBSET_SOURCE,
+        "Task 014 lands the plan's last commit",
+    ),
+)
+
+
+def test_the_v014_a3_and_v015_a2_clauses_are_verbatim_substrings_of_their_sources():
+    """Each fixture constant is a substring of the tracked artifact it names
+    -- the pin that makes it a *recovered* clause rather than an invented
+    one. (`_flattened` only rejoins wrapped lines and strips markdown
+    emphasis; it changes no word of the clause.)"""
+    for _tid, clause, source, pinned_words in TASK_037_VERBATIM_ARTIFACT_FIXTURES:
+        assert pinned_words in clause, (source, pinned_words)
+        assert clause in _flattened(source), (source, clause)
+
+
+def test_the_v014_a3_clause_ends_with_the_pinned_words():
+    assert V014_A3_FINAL_GUARD_TAIL_CLAUSE.endswith(
+        "which is the last commit of the approach"
+    )
+
+
+def test_the_v015_a2_clause_begins_with_the_pinned_words():
+    assert V015_A2_FINAL_GUARD_SUBSET_CLAUSE.startswith(
+        "Task 014 lands the plan's last commit"
+    )
+
+
+def test_the_verbatim_artifact_clauses_are_refused_quoted_with_an_alternative():
+    """Both recovered clauses are refused by `lint_proposal()`; each error
+    quotes the offending clause verbatim AND names the satisfiable
+    alternative the lint recommends for this shape."""
+    for tid, clause, source, _pinned in TASK_037_VERBATIM_ARTIFACT_FIXTURES:
+        payload = {"tasks": [_basic_task(tid, successCriteria=clause + ".")]}
+        errors = pi.lint_proposal(payload)
+        shape_errors = [
+            e for e in errors if tid in e and "structurally unsatisfiable" in e
+        ]
+        assert shape_errors, (source, errors)
+        error = shape_errors[0]
+        # the clause is quoted back, verbatim, inside the error
+        assert repr(clause) in error, (source, error)
+        # ... and a satisfiable alternative is named
+        assert "names a later/final/last commit or its sha" in error, (source, error)
+        assert 'name "the code sha this task lands" once it exists' in error, (
+            source,
+            error,
+        )
+        assert "or a past sha this task can already read" in error, (source, error)
+
+
+def test_the_verbatim_artifact_clauses_are_refused_inside_a_longer_criteria():
+    """The same two clauses embedded beside an ordinary, satisfiable clause:
+    the lint is clause-scoped, so the recovered clause is still the one
+    quoted back."""
+    for tid, clause, source, _pinned in TASK_037_VERBATIM_ARTIFACT_FIXTURES:
+        payload = {
+            "tasks": [
+                _basic_task(
+                    tid + "-long",
+                    successCriteria=(
+                        "The guard subset is green at the code sha this task "
+                        "lands. " + clause + "."
+                    ),
+                )
+            ]
+        }
+        errors = pi.lint_proposal(payload)
+        assert any(
+            tid + "-long" in e
+            and "structurally unsatisfiable" in e
+            and repr(clause) in e
+            for e in errors
+        ), (source, errors)
+
+
+def test_the_must_pass_siblings_are_still_accepted_beside_the_new_fixtures():
+    """The three must-pass sibling forms this cure task names -- a past sha,
+    an existing tracked artifact, and `the code sha this task lands` --
+    still lint clean, separately and together, so the new fixtures widened
+    nothing."""
+    siblings = (
+        ("037p1", "At commit `8db9739`, the guard subset was green."),
+        (
+            "037p2",
+            "The existing tracked artifact "
+            "`artifacts/reports/v0.14-a3-final-guard-tail.md` records that "
+            "run's guard subset.",
+        ),
+        ("037p3", "The record cites the code sha this task lands."),
+        (
+            "037p4",
+            "At commit `8db9739`, the existing tracked artifact "
+            "`artifacts/reports/v0.15-a2-final-guard-subset.md` already "
+            "exists, and the new row names the code sha this task lands.",
+        ),
+    )
+    for tid, criteria in siblings:
+        payload = {"tasks": [_basic_task(tid, successCriteria=criteria)]}
+        assert pi.lint_proposal(payload) == [], (tid, criteria)
+    # ... and all four in one proposal, so no cross-task interaction widens
+    # or narrows the result either
+    payload = {
+        "tasks": [_basic_task(tid, successCriteria=c) for tid, c in siblings]
+    }
+    assert pi.lint_proposal(payload) == []
+
+
+def test_ingestion_level_proposal_carrying_a_verbatim_artifact_clause_is_rejected(
+    tmp_path,
+):
+    """The refusal reaches the operator through the existing plan re-ask
+    ladder for the recovered artifact clauses too, not just the synthetic
+    ones."""
+    proposal = {
+        "tasks": [
+            _basic_task(
+                "037c",
+                successCriteria=V015_A2_FINAL_GUARD_SUBSET_CLAUSE + ".",
+            )
+        ]
+    }
+    (tmp_path / "plan-proposal.json").write_text(__import__("json").dumps(proposal))
+
+    def respond(attempt, prior_errors):
+        return '{"proposal_path": "plan-proposal.json", "summary": "x"}'
+
+    result = pi.enforce_plan_ingestion(
+        respond,
+        max_retries=0,
+        read_proposal=pi.file_reader(tmp_path),
+    )
+    assert result.ok is False
+    assert result.agent_fault is True
+    assert any(
+        "037c" in e
+        and "structurally unsatisfiable" in e
+        and repr(V015_A2_FINAL_GUARD_SUBSET_CLAUSE) in e
+        for e in result.errors
     ), result.errors
 
 
