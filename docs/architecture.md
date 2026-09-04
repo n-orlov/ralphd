@@ -175,6 +175,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `replan` | `rejected_approach_left` |
 | `review` | review | both | `review` | `rejected_incurable` |
 | `review` | review | both | `worker` | `rejected_curable_pass_available` |
+| `review` | review | both | `review` | `rejected_last_approach` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
 | `review` | review | both | `review` | `review_interrupted` |
 | `review` | review | both | `finishing` | `review_unjudged_at_budget_end` |

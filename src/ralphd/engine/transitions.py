@@ -247,6 +247,23 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # rejection in the same approach back onto the ordinary
         # `rejected_approach_left` edge below.
         T("worker", "rejected_curable_pass_available"),
+        # Task 011 (PRD requirement D.1, #142): on the FINAL approach
+        # (`approach == max_approaches`), a rejection whose blocking
+        # findings are ALL curable but whose one cure pass for this
+        # approach is already spent (`rejected_curable_pass_available`
+        # above already took it when it was still available -- this edge
+        # only fires once that is no longer true) must not spend the
+        # nonexistent next approach on paperwork: it self-loops back to
+        # `review`, exactly like `rejected_incurable` does, generalising
+        # `_pause_and_escalate_incurable_rejection` into `_pause_and_
+        # escalate_last_approach_rejection` -- `operator_escalation` with
+        # `reason: rejected_last_approach`, the EXISTING pause machinery
+        # (`self.pause()`), and the approach left unarchived (`resume`
+        # after an `amend`/`--waive` re-runs review over the SAME
+        # approach, never a fresh one). A rejection with any incurable
+        # blocking finding on the last approach still falls through to
+        # `rejected_no_approach_left` below (requirement D.2).
+        T("review", "rejected_last_approach"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -462,6 +479,12 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # REJECTED branch too, entirely before the (VERIFIED-only) peer
         # verdict gate is ever consulted.
         T("worker", "rejected_curable_pass_available"),
+        # Task 011 (PRD requirement D.1, #142): carried over byte-for-byte
+        # from `TABLE["review"]` above -- same reasoning as `rejected_
+        # incurable`/`rejected_curable_pass_available` just above: this
+        # check runs on the REJECTED branch too, entirely before the
+        # (VERIFIED-only) peer verdict gate is ever consulted.
+        T("review", "rejected_last_approach"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),

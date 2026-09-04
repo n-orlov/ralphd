@@ -2218,6 +2218,32 @@ class LoopSupervisor:
             return False
         return iteration_start_id is None or iteration_start_id < escalation_id
 
+    def _paused_awaiting_last_approach_ruling(self, approach: int) -> bool:
+        """Task 011 (PRD requirement D.1, #142): the exact same shape as
+        `_paused_awaiting_incurable_ruling` just above (a crashed/
+        restarted episode still sitting paused on an `operator_escalation`
+        with no `iteration.start` recorded since), for the `rejected_
+        last_approach` reason instead of `rejected_incurable` -- the last-
+        approach pause is exactly as resumable, and for exactly the same
+        reasons: `worker` has nothing actionable, and landing anywhere
+        other than `review` risks reaching `replan` over a NONEXISTENT
+        approach the run's own budget has already refused to grant.
+        """
+        escalation_id = None
+        iteration_start_id = None
+        for ev in state.read_events(
+                self.run.root,
+                types=("operator_escalation", "iteration.start")):
+            if ev.get("type") == "operator_escalation":
+                if (ev.get("reason") == "rejected_last_approach"
+                        and ev.get("approach") == approach):
+                    escalation_id = ev.get("id")
+            else:
+                iteration_start_id = ev.get("id")
+        if escalation_id is None:
+            return False
+        return iteration_start_id is None or iteration_start_id < escalation_id
+
     def _resume_point(self) -> tuple[int, bool, str]:
         """Where run_job() should start on this engine invocation (PRD req
         16). A fresh run dir (no tasks.json yet, or no completed
@@ -2290,6 +2316,17 @@ class LoopSupervisor:
                     "directly into review (never a fresh approach) so any "
                     "ruling recorded while paused is seen by the next review "
                     "iteration"))
+            return approach, False, "review"
+        if self._paused_awaiting_last_approach_ruling(approach):
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "was paused on a rejected_last_approach escalation with "
+                    "no operator resume ever reaching this episode; resuming "
+                    "directly into review (never a fresh, nonexistent "
+                    "approach) so any ruling recorded while paused is seen "
+                    "by the next review iteration"))
             return approach, False, "review"
         self.run.emit(
             "log",
@@ -6492,6 +6529,21 @@ class LoopSupervisor:
             self._take_cure_pass(approach)
             self._advance("review", "worker", "rejected_curable_pass_available")
             return ("advance", "worker", "rejected_curable_pass_available")
+        # Task 011 (PRD requirement D.1, #142): on the FINAL approach, a
+        # rejection whose blocking findings are ALL curable but whose one
+        # cure pass for this approach is already spent (the branch just
+        # above already took it while it was still available) must not
+        # end the run `failed` on paperwork a fresh approach cannot even
+        # be granted to fix -- checked AFTER the cure-pass branch (so a
+        # still-available cure pass always wins, requirement D.1's own
+        # "if a cure pass is available, take it") and BEFORE the ordinary
+        # archive/replan-or-fail below, so the approach is never archived
+        # on this branch (`resume` re-reviews the SAME approach).
+        if (approach == self.cfg.max_approaches
+                and self._review_last_approach_curable_rejection(approach)):
+            self._pause_and_escalate_last_approach_rejection(approach)
+            self._advance("review", "review", "rejected_last_approach")
+            return ("advance", "review", "rejected_last_approach")
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:
@@ -6560,6 +6612,80 @@ class LoopSupervisor:
         self.run.emit("approach.cure_pass", approach=approach,
                       curePasses=new_count, taskIds=inserted,
                       findings=blocking)
+
+    def _review_last_approach_curable_rejection(self, approach: int) -> bool:
+        """Task 011 (PRD requirement D.1, #142): does this rejection,
+        already established to be on the FINAL approach
+        (`approach == self.cfg.max_approaches`, checked by the caller), and
+        already established to have exhausted this approach's own cure
+        pass (`_review_cure_pass_available` already returned `False`, also
+        checked by the caller, ahead of this call), deserve the `rejected_
+        last_approach` pause-and-escalate edge rather than falling through
+        to the ordinary archive/`rejected_no_approach_left` branch? True
+        only when a structured findings channel exists (`_review_
+        findings`, `None` falls back to the ordinary path exactly like
+        `_review_incurable_rejection`/`_review_cure_pass_available` already
+        do), the findings actually compute to `"rejected"` (`findings.
+        compute_verdict`), AND every blocking finding in it is curable
+        (`findings.all_blocking_findings_curable` -- requirement D.2's own
+        complement: ANY `curable: false` blocking finding here means this
+        returns `False` and the caller falls through to `rejected_no_
+        approach_left` -> `failed` instead, exactly as it does today).
+        """
+        findings_list = self._review_findings()
+        if findings_list is None:
+            return False
+        if findings.compute_verdict(findings_list) != "rejected":
+            return False
+        return findings.all_blocking_findings_curable(findings_list)
+
+    def _last_approach_rejection_escalation_text(
+        self, approach: int, blocking: list[dict]
+    ) -> str:
+        """The operator-facing escalation body for a `rejected_last_
+        approach` pause -- the same shape as `_incurable_rejection_
+        escalation_text` (each blocking finding plus the exact `ralphctl
+        amend` invocation that would resolve it), worded for the case this
+        edge actually covers: every finding IS curable, but there is no
+        approach budget left to spend a fresh worker pass on them, so the
+        run pauses for an operator ruling instead of failing on paperwork.
+        """
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: review rejected "
+            "this, the LAST available approach, and every blocking finding "
+            "is curable -- but this approach's own cure pass is already "
+            "spent and there is no fresh approach left to grant. The run "
+            "has been paused (existing pause machinery) rather than ended "
+            "`failed` on paperwork; it will not proceed until an operator "
+            "ruling is recorded and the run is resumed "
+            f"(`ralphctl resume {self.cfg.run_id}`).",
+            "",
+        ]
+        for index, finding in enumerate(blocking, start=1):
+            lines.append(f"Finding {index} (blocking, curable):")
+            lines.append(f"  clause: {finding.get('clause', '')}")
+            lines.append(f"  evidence: {finding.get('evidence', '')}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_last_approach_rejection(self, approach: int) -> None:
+        """Task 011 (PRD requirement D.1, #142): pause the run through the
+        EXISTING pause machinery, generalising `_pause_and_escalate_
+        incurable_rejection` to this edge's own reason -- same seam
+        (`self.pause()`, `self.notifier`, an `operator_escalation` event
+        always emitted to `events.jsonl` regardless of whether a notifier
+        is wired in), just a different `reason` and escalation body.
+        """
+        findings_list = self._review_findings() or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        text = self._last_approach_rejection_escalation_text(approach, blocking)
+        self.run.emit("operator_escalation", approach=approach,
+                      reason="rejected_last_approach", findings=blocking,
+                      escalation=text)
+        self.pause()
+        if self.notifier is not None:
+            self.notifier(text)
 
     def _review_incurable_rejection(self) -> bool:
         """Task 006 (requirement B.2, #111): does the review just run

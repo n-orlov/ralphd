@@ -13,9 +13,11 @@ itself) to prove, independently of task 009's own tests, that:
 
 1. a SECOND `rejected` review over the same approach -- even with every
    blocking finding curable -- takes the ordinary `rejected_approach_left`
-   replan edge (or requirement D's `rejected_no_approach_left` last-
-   approach edge once the budget is spent), never a second cure pass, and
-   never appends a second batch of cure tasks;
+   replan edge (or, once the budget is spent on the last approach, task
+   011's `rejected_last_approach` pause-and-escalate edge, superseding
+   this module's own original pin of `rejected_no_approach_left` there --
+   see that test's own docstring), never a second cure pass, and never
+   appends a second batch of cure tasks;
 2. `rejected_incurable` keeps its precedence over the cure pass on that
    SECOND rejection too, exactly as it does on the first;
 3. a brand-new `LoopSupervisor` instance constructed over the SAME on-disk
@@ -139,12 +141,18 @@ def test_second_rejection_same_approach_takes_the_ordinary_replan_edge(
     assert sup.run.composite_prd_file.exists()
 
 
-def test_second_rejection_with_no_approach_left_takes_requirement_ds_edge(
+def test_second_rejection_with_no_approach_left_takes_task011s_pause_edge(
         tmp_path):
-    """Requirement D: once the approach budget is spent, the second
-    rejection (still all-curable, cure already spent) takes
-    `rejected_no_approach_left`, never a second cure pass and never the
-    ordinary mid-run replan edge either."""
+    """Task 011 (PRD requirement D.1, #142) supersedes this test's
+    original pin: once the approach budget is spent, a SECOND rejection
+    (still all-curable, cure already spent) no longer ends the run
+    `failed` on `rejected_no_approach_left` -- it takes the new `rejected_
+    last_approach` pause-and-escalate edge instead (never a second cure
+    pass, never the ordinary mid-run replan edge either), exactly as
+    `test_bounded_cure_pass_task010.py`'s sibling module documents its own
+    precedent for updating an already-passing pinned test to match a real,
+    intended behaviour change (task 009's notes, re: `test_peer_verdict_
+    gate.py`/`test_criteria_amendment_authority.py`)."""
     root = tmp_path / "run"
     sup = _cure_once(root, approach=1, max_approaches=1)
 
@@ -154,13 +162,20 @@ def test_second_rejection_with_no_approach_left_takes_requirement_ds_edge(
     reviewer.sup = sup  # type: ignore[attr-defined]
     sup.runner.run = reviewer  # type: ignore[method-assign]
 
+    assert sup._pause.is_set() is True  # not paused yet
+
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("tail",)
+    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert sup._pause.is_set() is False  # paused, not failed
     status = sup.run.read_status()
     assert status.get("state") != "succeeded"
+    assert status.get("state") != "failed"  # requirement D.1: never failed on paperwork
     assert status.get("curePasses") == {"1": 1}
     assert len(_cure_tasks(sup.run)) == 1
+    # the approach is never archived on this edge -- resume re-reviews the
+    # SAME approach.
+    assert not (root / "approaches" / "01").exists()
 
 
 # ---------------------------------------------------------------------------
