@@ -113,7 +113,9 @@ _TOOL_DOCS: dict[str, dict[str, str]] = {
             "top-level `justification` string (defaulting to "
             "`changes.notes` when omitted) -- refused, with the "
             "applier's own diagnostic, when neither is given -- and that "
-            "justification is written into the task's own `notes`."
+            "justification is written into the task's own `notes`, "
+            "appended after (never overwritten by) a distinct "
+            "`changes.notes` in the same call."
         ),
         "usage": '{"taskId": "012", "changes": {"successCriteria": "...", '
                  '"dependsOn": [], "priority": 9}, '
@@ -202,7 +204,9 @@ _TOOL_PARAMS: dict[str, dict[str, tuple[str, bool]]] = {
         "justification": (_string(
             "Required (non-empty) when changes.status moves a 'failed' "
             "task to 'skipped'; defaults to changes.notes when omitted. "
-            "Written into the task's own notes on that one move."), False),
+            "Written into the task's own notes on that one move, appended "
+            "after a distinct changes.notes rather than replaced by it."),
+            False),
     },
     "task-delete": {
         "taskId": (_string("The id of the task to remove."), True),

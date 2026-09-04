@@ -1743,10 +1743,24 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
     already does. When the hat's call carries no explicit `justification`,
     it defaults to `changes.get("notes")` -- the steer's own stated reason
     for the change, when it wrote one into the same call.
+
+    Task 038 (the cure for task 017's residual gap, same requirement F.4):
+    a call that carries BOTH an explicit `justification` AND a distinct
+    `changes["notes"]` used to lose the justification -- the applier wrote
+    it into `notes`, and the plain dict-merge below then overwrote that
+    field with `changes["notes"]`, leaving the record of an applied
+    `failed -> skipped` move with no justification in it at all. The
+    justification is now APPENDED to the requested notes (never
+    overwritten by them) in the same merge, as the last segment, so it is
+    the authoritative tail of the task's final `notes`; every other
+    requested field update still lands, and when no explicit
+    justification was supplied (the default-to-`notes` case above) the
+    text is already the notes' own and nothing is appended twice.
     """
     changes = dict(changes)
     target_status = changes.pop("status", None)
     status_result = None
+    justification_to_keep = None
     if target_status is not None:
         effective_justification = justification
         if not effective_justification:
@@ -1754,6 +1768,17 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
         status_result = apply_task_status_change(
             run, task_id, target_status, vigilant, source="steer",
             justification=effective_justification or "")
+        if (status_result.get("applied")
+                and status_result.get("previous") == "failed"
+                and target_status == "skipped"):
+            # the applier just wrote this into `notes`; keep it there
+            # through the merge below (task 038).
+            justification_to_keep = (effective_justification or "").strip()
+    if justification_to_keep and "notes" in changes:
+        requested = (changes.get("notes") or "").strip()
+        if justification_to_keep not in requested:
+            changes["notes"] = "\n\n".join(
+                part for part in (requested, justification_to_keep) if part)
     if changes:
         data = run.read_tasks()
         tasks = data.get("tasks", [])

@@ -12,6 +12,14 @@ declared legal since task 009 -- and never ran
 move (a non-empty justification), so a `failed -> skipped` steer never
 required one and never wrote anything to `notes`.
 
+Task 038 (the operator-steered cure for task 017's one residual gap, same
+requirement F.4) closes the case the first attempt missed: a call that
+carries BOTH an explicit `justification` AND a distinct `changes["notes"]`
+used to lose the justification, because `steer_task_update`'s plain
+dict-merge of `changes` ran AFTER the applier's own `notes` write and
+overwrote it. The justification is now appended to the requested notes as
+their authoritative tail, never replaced by them.
+
 This is the `hat_tools` unit tier: it drives `hat_tools.SteerToolBroker.
 execute("task-update", ...)` directly -- the real dispatch a served
 request goes through -- with no subprocess and no `pi` stub, mirroring
@@ -94,6 +102,95 @@ def test_justification_defaults_to_changes_notes_when_omitted(tmp_path):
     assert task["notes"] == "superseded by task 020, carved gap landed"
 
 
+# -- task 038: an explicit justification survives a distinct changes.notes
+
+def test_explicit_justification_survives_a_distinct_changes_notes(tmp_path):
+    """Task 038 (the cure for task 017's residual gap, requirement F.4):
+    when the SAME call carries both a top-level `justification` and a
+    different `changes["notes"]`, the justification used to be written by
+    the applier and then silently overwritten by the plain dict-merge of
+    `changes`. It is now appended to the requested notes -- as the last
+    segment, never replaced by them -- and every other requested field
+    update still lands."""
+    broker = _broker(tmp_path, [
+        {"id": "018", "title": "t", "status": "failed",
+         "successCriteria": "do Z", "priority": 3},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "018",
+        "changes": {"status": "skipped",
+                    "notes": "see artifacts/reports/v0.18-petitions.md",
+                    "priority": 9},
+        "justification": "criteria unmeetable in this sandbox; "
+                         "residual disclosed",
+    })
+    assert response["ok"] is True, response
+    task = _task(broker, "018")
+    assert task["status"] == "skipped"
+    notes = task["notes"]
+    # BOTH texts are present ...
+    assert "see artifacts/reports/v0.18-petitions.md" in notes
+    assert ("criteria unmeetable in this sandbox; residual disclosed"
+            in notes)
+    # ... and the justification is the authoritative tail, appended after
+    # the requested notes rather than overwritten by them.
+    assert notes.endswith(
+        "criteria unmeetable in this sandbox; residual disclosed")
+    assert notes != "see artifacts/reports/v0.18-petitions.md"
+    # other requested field updates are preserved
+    assert task["priority"] == 9
+    assert task["successCriteria"] == "do Z"
+    events = _events(broker, "amendment_status_applied")
+    assert len(events) == 1
+    assert events[0]["justification"] == (
+        "criteria unmeetable in this sandbox; residual disclosed")
+
+
+def test_a_justification_equal_to_changes_notes_is_not_duplicated(tmp_path):
+    """The append is idempotent: a caller that passes the same text in both
+    places (or lets `justification` default to `changes.notes`) gets it
+    exactly once, not twice."""
+    broker = _broker(tmp_path, [
+        {"id": "019", "title": "t", "status": "failed"},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "019",
+        "changes": {"status": "skipped", "notes": "superseded by task 038"},
+        "justification": "superseded by task 038",
+    })
+    assert response["ok"] is True, response
+    assert _task(broker, "019")["notes"] == "superseded by task 038"
+
+
+def test_a_blank_changes_notes_does_not_shadow_the_justification(tmp_path):
+    broker = _broker(tmp_path, [
+        {"id": "020", "title": "t", "status": "failed"},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "020",
+        "changes": {"status": "skipped", "notes": "   "},
+        "justification": "gap carved into task 041",
+    })
+    assert response["ok"] is True, response
+    assert _task(broker, "020")["notes"] == "gap carved into task 041"
+
+
+def test_only_failed_to_skipped_appends_the_justification(tmp_path):
+    """The extra condition -- and so the notes rule that carries it -- is
+    declared for exactly one edge; any other move writes the requested
+    `notes` verbatim."""
+    broker = _broker(tmp_path, [
+        {"id": "021", "title": "t", "status": "validation-failed"},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "021",
+        "changes": {"status": "skipped", "notes": "operator call"},
+        "justification": "not required on this edge",
+    })
+    assert response["ok"] is True, response
+    assert _task(broker, "021")["notes"] == "operator call"
+
+
 # -- refused: no justification anywhere, status stays put -----------------
 
 def test_missing_justification_is_refused_with_the_appliers_own_diagnostic(
@@ -130,6 +227,27 @@ def test_missing_justification_with_blank_notes_is_still_refused(tmp_path):
     assert response["ok"] is False, response
     task = _task(broker, "016")
     assert task["status"] == "failed"
+
+
+def test_the_refusal_still_surfaces_the_diagnostic_beside_other_changes(
+        tmp_path):
+    """Task 038: the refused-without-justification case is unchanged by the
+    append rule -- the status stays `failed`, the applier's own diagnostic
+    reaches the caller, and nothing writes a justification into `notes`."""
+    broker = _broker(tmp_path, [
+        {"id": "022", "title": "t", "status": "failed", "priority": 2},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "022",
+        "changes": {"status": "skipped", "priority": 7},
+    })
+    assert response["ok"] is False, response
+    assert "requires a non-empty justification" in (response["error"] or "")
+    assert response["detail"]["statusResult"]["applied"] is False
+    task = _task(broker, "022")
+    assert task["status"] == "failed"
+    assert "notes" not in task
+    assert _events(broker, "amendment_status_applied") == []
 
 
 # -- an unaffected transition is untouched by the new check ---------------
