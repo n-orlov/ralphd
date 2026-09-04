@@ -3053,6 +3053,107 @@ def insert_worker_split_tasks(run: "RunDir", proposed_tasks: list,
     return inserted
 
 
+# Task 009 (PRD requirement C.1, #141): the sibling marker for a task the
+# ENGINE inserted from a curable rejection's blocking findings
+# (`insert_cure_tasks` below) -- same reasoning as `TASK_ORIGIN_STEER`/
+# `TASK_ORIGIN_WORKER`: a plan reader must be able to tell a task review's
+# own rejection produced from one the planner reasoned about, or one a
+# worker split off its own assignment, or one an operator steered in.
+# `insert_cure_tasks` is the only writer, and it writes this value
+# unconditionally, exactly as the other two origins always do.
+TASK_ORIGIN_REVIEW_CURE = "review-cure"
+
+
+def is_review_cure_origin(task: dict) -> bool:
+    """True for a task `insert_cure_tasks` created -- the sibling
+    predicate to `is_steering_origin`/`is_worker_origin`, called by the
+    same surfaces."""
+    return isinstance(task, dict) and task.get("origin") == TASK_ORIGIN_REVIEW_CURE
+
+
+# The same clause boundary `plan_ingestion._CLAUSE_SPLIT_RE` uses --
+# duplicated here (not imported) for the same reason `_WORKER_SPLIT_
+# PASSTHROUGH_FIELDS` above is duplicated rather than imported: this
+# module must not depend on `plan_ingestion` (the reverse dependency
+# already exists).
+_CURE_CLAUSE_SPLIT_RE = re.compile(r"[.!?;]+(?=\s|$)")
+
+
+def _cure_task_success_criteria(finding: dict) -> str:
+    """Task 009 (requirement C.1, #141): build a cure task's
+    `successCriteria` from a single blocking finding's own `clause` and
+    `evidence`, split at the same sentence/clause boundary a planner's
+    own criteria are held to and bounded to at most 5 clauses -- so an
+    engine-generated cure task's criteria stays inside the same shape a
+    planner-authored one must, never an unbounded dump of a verbose
+    finding's full prose.
+    """
+    clause = str(finding.get("clause") or "").strip()
+    evidence = str(finding.get("evidence") or "").strip()
+    parts: list[str] = []
+    for text in (clause, evidence):
+        if not text:
+            continue
+        for piece in _CURE_CLAUSE_SPLIT_RE.split(text):
+            piece = piece.strip()
+            if piece:
+                parts.append(piece)
+    if not parts:
+        parts = ["resolve the review finding"]
+    return "; ".join(parts[:5])
+
+
+def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
+    """Task 009 (PRD requirement C.1, #141): the one cure task built from
+    a single BLOCKING, curable finding a `rejected` review just returned
+    -- `title` from the finding's own `clause`, `successCriteria` built
+    from that same `clause` plus its `evidence` (`_cure_task_success_
+    criteria` above), `origin: "review-cure"` always. `id` is
+    deterministic from `(approach, index)` -- `f"cure-{approach:02d}-
+    {index:02d}"` -- so every cure task this run ever creates has a
+    unique, human-legible id without reading the rest of `tasks.json`
+    first; `index` is 1-based within THIS append (one per blocking
+    finding, in finding order).
+    """
+    clause = str(finding.get("clause") or "finding").strip() or "finding"
+    return {
+        "id": f"cure-{approach:02d}-{index:02d}",
+        "title": clause,
+        "successCriteria": _cure_task_success_criteria(finding),
+        "status": "pending",
+        "origin": TASK_ORIGIN_REVIEW_CURE,
+        "dependsOn": [],
+        "tier": "normal",
+    }
+
+
+def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
+    """Task 009 (PRD requirement C.1, #141): append one cure task per
+    entry of `blocking` (in finding order) to `tasks.json`, skipping any
+    id already present -- `cure_task_from_finding`'s id is deterministic
+    per `(approach, index)` and `LoopSupervisor._step_review` only ever
+    calls this once per approach (guarded by `curePasses[approach] == 0`
+    before the call), but every other insert helper in this module keeps
+    the same defensive skip against a hand-edited or resumed-mid-write
+    `tasks.json` that already carries the id, so this one does too.
+    Returns the ids actually inserted, in order.
+    """
+    data = run.read_tasks()
+    tasks = data.setdefault("tasks", [])
+    existing_ids = {t.get("id") for t in tasks if isinstance(t, dict)}
+    inserted: list = []
+    for index, finding in enumerate(blocking, start=1):
+        new_task = cure_task_from_finding(approach, index, finding)
+        if new_task["id"] in existing_ids:
+            continue
+        tasks.append(new_task)
+        existing_ids.add(new_task["id"])
+        inserted.append(new_task["id"])
+    if inserted:
+        run.write_tasks(data)
+    return inserted
+
+
 def tasks_doc_excluding_new_entries(tasks_doc: dict, known_ids: set, *,
                                     origin: str) -> dict:
     """Requirement N (#102): a view of `tasks_doc` with any task whose

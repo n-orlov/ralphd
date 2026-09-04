@@ -206,8 +206,21 @@ def test_worker_authored_edit_forces_a_blocking_finding_and_is_refused(tmp_path)
 
     # Honouring the mandate is what "refused" means: a real rejection edge,
     # never `verified` -- the unauthorized rewrite bought the task nothing.
-    assert outcome == ("advance", "replan", "rejected_approach_left")
+    # Task 009 (PRD requirement C.1, #141) changed WHICH rejection edge a
+    # curable blocking finding takes on its first pass over an approach:
+    # the engine-forced tamper finding is always `curable: True`
+    # (`findings.flagged_criteria_findings`), so this first rejection is a
+    # cure pass, not a replan -- `rejected_approach_left` is still what a
+    # SECOND rejection of the same approach would take (task 010's scope),
+    # never reached here.
+    assert outcome == ("advance", "worker", "rejected_curable_pass_available")
     assert on_disk["successCriteria"] == new_text  # nothing silently reverted
+    # a cure task was appended for the tamper finding instead of an
+    # ordinary archive-and-replan.
+    cure_tasks = [t for t in sup.run.read_tasks()["tasks"]
+                 if t.get("origin") == "review-cure"]
+    assert len(cure_tasks) == 1
+    assert cure_tasks[0]["status"] == "pending"
 
 
 # ---------------------------------------------------------------------------

@@ -6481,6 +6481,17 @@ class LoopSupervisor:
             self._pause_and_escalate_incurable_rejection(approach)
             self._advance("review", "review", "rejected_incurable")
             return ("advance", "review", "rejected_incurable")
+        # Task 009 (PRD requirement C.1, #141): a rejection whose blocking
+        # findings are ALL curable, with this approach's own cure pass
+        # still unspent, is a cure pass -- not a replan. Checked AFTER the
+        # incurable branch above (requirement C.2: an all-incurable
+        # rejection keeps its pause-and-escalate precedence) and BEFORE
+        # the ordinary archive/replan below, so a curable rejection never
+        # burns the approach it could instead be cured inside of.
+        if self._review_cure_pass_available(approach):
+            self._take_cure_pass(approach)
+            self._advance("review", "worker", "rejected_curable_pass_available")
+            return ("advance", "worker", "rejected_curable_pass_available")
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:
@@ -6488,6 +6499,67 @@ class LoopSupervisor:
             return ("advance", "replan", "rejected_approach_left")
         self._advance("review", "finishing", "rejected_no_approach_left")
         return ("tail",)
+
+    def _cure_passes_for_approach(self, approach: int) -> int:
+        """Task 009 (requirement C.1, #141): `curePasses[approach]` as
+        recorded on status.json right now -- disk, not memory, the same
+        `_record_stagnation_signature` shape, so a resumed process sees
+        exactly the count a crashed one already persisted. Absence (never
+        cured, or a run from before this task) reads as `0`, same as
+        `_blocker_signature`'s own missing-entry default.
+        """
+        cure_passes = self.run.read_status().get("curePasses") or {}
+        try:
+            return int(cure_passes.get(str(approach), 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _review_cure_pass_available(self, approach: int) -> bool:
+        """Task 009 (requirement C.1, #141): does this rejection deserve
+        the cure-pass edge (`rejected_curable_pass_available`) rather than
+        the ordinary replan? True only when a structured findings channel
+        exists (`_review_findings`, `None` falls back to the ordinary
+        replan path exactly like `_review_incurable_rejection` does),
+        the findings actually compute to `"rejected"` (`findings.compute_
+        verdict`), EVERY blocking finding is curable (`findings.all_
+        blocking_findings_curable` -- requires `curable is True` across
+        the whole blocking set), AND this approach has not already spent
+        its one cure pass (`curePasses[approach] == 0`).
+        """
+        findings_list = self._review_findings()
+        if findings_list is None:
+            return False
+        if findings.compute_verdict(findings_list) != "rejected":
+            return False
+        if not findings.all_blocking_findings_curable(findings_list):
+            return False
+        return self._cure_passes_for_approach(approach) == 0
+
+    def _take_cure_pass(self, approach: int) -> None:
+        """Task 009 (requirement C.1, #141): the consequence of taking the
+        cure-pass edge -- append one cure task per blocking finding to
+        THIS approach's `tasks.json` (`state.insert_cure_tasks`),
+        increment and persist `curePasses[approach]` on status.json (so
+        it survives resume, the same disk-not-memory shape `_record_
+        stagnation_signature` already uses), and emit `approach.cure_
+        pass` naming the approach, the new count and the inserted task
+        ids. The caller (`_step_review`) is what actually routes to
+        `worker` -- this method only performs the append/counter/event
+        side effects, mirroring how `_pause_and_escalate_incurable_
+        rejection` only performs ITS side effects and leaves the edge
+        itself to `_step_review`.
+        """
+        findings_list = self._review_findings() or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        inserted = state.insert_cure_tasks(self.run, approach, blocking)
+        status = self.run.read_status()
+        cure_passes = dict(status.get("curePasses") or {})
+        new_count = self._cure_passes_for_approach(approach) + 1
+        cure_passes[str(approach)] = new_count
+        self.run.update_status(curePasses=cure_passes)
+        self.run.emit("approach.cure_pass", approach=approach,
+                      curePasses=new_count, taskIds=inserted,
+                      findings=blocking)
 
     def _review_incurable_rejection(self) -> bool:
         """Task 006 (requirement B.2, #111): does the review just run

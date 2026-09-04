@@ -232,6 +232,21 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # budget is spent (checked first in `_step_review`, ahead of this
         # edge, so an exhausted budget never pauses instead of ending).
         T("review", "rejected_incurable"),
+        # Task 009 (PRD requirement C.1, #141): a rejection whose blocking
+        # findings are ALL curable (`findings.compute_verdict` says
+        # "rejected" AND `findings.all_blocking_findings_curable` says
+        # `True`) takes THIS edge -- back to `worker`, never `replan` --
+        # exactly once per approach (`curePasses[approach] == 0`,
+        # checked by `LoopSupervisor._step_review` AFTER the incurable
+        # check above so `rejected_incurable` keeps its precedence when
+        # every blocking finding is incurable, requirement C.2). The
+        # engine appends one cure task per blocking finding to THIS
+        # approach's `tasks.json` (`state.insert_cure_tasks`), increments
+        # `curePasses` on status.json and emits `approach.cure_pass`
+        # before taking this edge; task 010 is what bounds a SECOND
+        # rejection in the same approach back onto the ordinary
+        # `rejected_approach_left` edge below.
+        T("worker", "rejected_curable_pass_available"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -441,6 +456,12 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # branch) is consulted, so this edge's meaning is identical
         # whether or not the gate is on.
         T("review", "rejected_incurable"),
+        # Task 009 (PRD requirement C.1, #141): the cure-pass edge, also
+        # carried over byte-for-byte -- same reasoning as
+        # `rejected_incurable` just above: the cure-pass check runs on the
+        # REJECTED branch too, entirely before the (VERIFIED-only) peer
+        # verdict gate is ever consulted.
+        T("worker", "rejected_curable_pass_available"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),

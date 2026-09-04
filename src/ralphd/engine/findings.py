@@ -282,6 +282,35 @@ def all_blocking_findings_incurable(findings: list[dict]) -> bool:
     return all(f.get("curable") is False for f in blocking)
 
 
+def all_blocking_findings_curable(findings: list[dict]) -> bool:
+    """Task 009 (PRD requirement C.1, #141): are this rejection's BLOCKING
+    findings ALL curable? The strict complement of
+    `all_blocking_findings_incurable` above -- that function asks "is
+    every blocking finding's `curable` explicitly `False`", this one asks
+    "is every blocking finding's `curable` explicitly `True`" -- the two
+    are not simply negations of each other precisely because a malformed
+    or absent `curable` value must fail towards the SAME default both
+    ways: towards the ordinary replan path, never towards a run-changing
+    edge (a pause on this function's caller's opposite number, a cure
+    pass here) on a finding whose curability was never actually asserted.
+    A finding missing `curable` (should never happen past `validate_
+    findings`) therefore reads as NOT curable here (only an explicit
+    `curable is True` counts), the mirror image of how it reads as
+    curable (not incurable) in `all_blocking_findings_incurable`.
+
+    Reads ONLY `severity`/`curable`, exactly like `all_blocking_findings_
+    incurable` -- curability stays asserted by review alone, no run-side
+    input reaches this function either. Residual findings never enter the
+    scan. An empty blocking set answers `True` (vacuously "all curable",
+    the same shape `all()` gives any empty iterable) -- same caveat as
+    `all_blocking_findings_incurable`'s own empty-set case: a caller must
+    first confirm `compute_verdict(findings) == "rejected"` before acting
+    on this answer.
+    """
+    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    return all(f.get("curable") is True for f in blocking)
+
+
 def read_findings_json(path: Path) -> list[dict]:
     """Read the machine-readable sidecar back from `path`, re-validating
     every finding through the same schema engine on the way out — a file

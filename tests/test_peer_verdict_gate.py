@@ -92,6 +92,12 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # table (now including this edge), not to a pre-task-006 snapshot
         # of it.
         tr.T("review", "rejected_incurable"),
+        # Task 009 (PRD requirement C.1, #141): the cure-pass edge, added
+        # to the base table beside `rejected_incurable` -- present here
+        # too for the same reason: gate-off is byte-identical to TODAY's
+        # table (now including this edge), not to a pre-task-009 snapshot
+        # of it.
+        tr.T("worker", "rejected_curable_pass_available"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),
