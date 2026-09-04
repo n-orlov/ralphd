@@ -23,7 +23,16 @@ that run's final `status.json`, which is why the marker is what the checks in
 A PRD that wants the review-economics contract fragment (the materiality
 rubric, the impossibility-petition protocol, the late-cure rule — see
 [`../review-economics.md`](../review-economics.md)) includes it by reference
-rather than retyping it. The petition half of that fragment has its own file
+rather than retyping it. **Three adoption forms work** (that document's own
+§ "Using this fragment from a PRD" is the normative list, resolved by
+`findings.resolve_materiality_rubric`): an inline `## Materiality rubric`
+heading in the PRD's own contract text; a prose reference line ("the
+materiality rubric … of `docs/review-economics.md` applies"); or an explicit
+`<!-- rubric: docs/review-economics.md -->` marker. **All-blocking is no
+longer the fallback** for a contract that supplies none of the three — the
+engine's own default is that document's product-blocking/residual boundary
+(`findings.DEFAULT_RUBRIC`, task 004, requirement A.2, #139). The petition
+half of that fragment has its own file
 format spelled out in [`../petition-format.md`](../petition-format.md): one
 petition per obligation,
 typed `environmental | temporal | contradictory-clauses | external`, evidence

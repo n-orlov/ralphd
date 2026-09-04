@@ -6,6 +6,17 @@ payload, and the WINDOW'S TERMINAL RECORD came out `state: failed`,
 `verdict: unverified` for a run whose work had 25/30 tasks validated and five
 issues closed. The reflect *contract* failure became the *run's* outcome.
 
+SUPERSEDED IN PART by task 016 (v0.18, PRD requirement F.3, #146): the work's
+own terminal `verdict` this module drives via the `_interrupted` review
+handler (`test_review_interrupted_not_rejection`'s own fixture) is, as of
+that task, the dedicated `"unreviewed"` value instead of `"unverified"` --
+see `tests/test_review_deadline_unreviewed_task016.py` for the new value's
+own pinning, and `tests/test_deadline_beat_verdict_task006.py`'s own
+SUPERSEDED note for the sibling fix this module never received until now.
+The `state`/`reason`/`deadlineBeatVerdict` machinery and the reflect-failure
+classification below are entirely unaffected -- only the three `"unverified"`
+literals produced by the interrupted-review setup change to `"unreviewed"`.
+
 This module drives that exact shape end to end, entirely through
 `LoopSupervisor` with `sup.runner` stubbed (never `_run_iteration_once`,
 per this run's standing rule):
@@ -100,7 +111,9 @@ def test_a_deadline_fired_garbage_reflect_leaves_the_works_outcome_intact(tmp_pa
     # `state` on disk (task 012, #56): the reflect window is still ahead.
     assert mid_status["state"] == "finishing"
     assert mid_status["pendingTerminalState"] == "failed"
-    assert mid_status["verdict"] == "unverified"
+    # task 016, #146 SUPERSEDED: this run's review is cut short by an
+    # interrupted iteration, which writes the dedicated "unreviewed" verdict.
+    assert mid_status["verdict"] == "unreviewed"
     marker = mid_status.get("deadlineBeatVerdict")
     assert isinstance(marker, dict) and marker.get("deadline"), (
         "the work's own terminal record must carry requirement B's marker "
@@ -114,7 +127,7 @@ def test_a_deadline_fired_garbage_reflect_leaves_the_works_outcome_intact(tmp_pa
     # -- 3. the work's own outcome is untouched -----------------------------
     final_status = sup.run.read_status()
     assert final_status["state"] == "failed"
-    assert final_status["verdict"] == "unverified"
+    assert final_status["verdict"] == "unreviewed"
     assert final_status.get("pendingTerminalState") is None
     assert final_status["deadlineBeatVerdict"] == marker
     assert final_status["reason"] == mid_status["reason"]
@@ -130,7 +143,7 @@ def test_a_deadline_fired_garbage_reflect_leaves_the_works_outcome_intact(tmp_pa
     assert f"class: {LoopSupervisor.REFLECT_FAULT_DEGRADED}" in tombstone
     # names the work's state, does not (and structurally cannot) change it
     assert "terminal state: failed" in tombstone
-    assert "verdict unverified" in tombstone
+    assert "verdict unreviewed" in tombstone
     assert final_status["state"] == "failed"  # re-checked after reading FAILED.md
 
 

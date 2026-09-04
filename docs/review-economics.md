@@ -32,8 +32,10 @@ strictly* it speaks.
 
 Review computes its verdict from **blocking** findings only; **residual**
 findings are recorded and surfaced but never reject. A contract that supplies
-no rubric of its own defaults to *every finding blocking* — the rubric never
-weakens a contract, it only lets one loosen the boundary explicitly.
+no rubric of its own defaults to **this section's own boundary** — the
+engine's `findings.DEFAULT_RUBRIC` (task 004, requirement A.2, #139) — never
+to *every finding blocking*; the rubric never weakens a contract, it only
+lets one narrow the boundary explicitly (never widen it past all-blocking).
 
 **Blocking** — any of: a red test at the shipped sha; an unmet requirement of
 the contract; a false claim in a tracked artifact that changes what a reader
@@ -51,10 +53,12 @@ notification gap that has been cured under the late-cure rule below.
 Residual findings are recorded, must be listed in the closing report, and do
 not reject.
 
-The boundary above is this fragment's own default text; a citing PRD may
-restate or narrow it (never widen it past all-blocking), but the recomputed
-verdict is always over blocking findings only, and "every finding blocking"
-is the fallback when a contract states no rubric at all.
+The boundary above is this fragment's own default text and the **engine's**
+own fallback: a citing PRD may restate or narrow it (never widen it past
+all-blocking), but the recomputed verdict is always over blocking findings
+only, and a contract that states no rubric at all — inline or by reference —
+still gets this boundary, never "every finding blocking"; all-blocking is
+no longer the fallback for any contract (task 004, requirement A.2, #139).
 
 ## Petition protocol
 
@@ -148,11 +152,62 @@ never beats grinding an approach to rejection over it.
 
 A PRD that wants this contract fragment includes it by reference — see the
 note in [`prds/README.md`](prds/README.md) — rather than retyping the rubric,
-protocol and rule above. State plainly that the rubric/protocol/rule are
-inherited from this document, and note any narrowing the PRD makes to the
-default (never a widening past all-blocking, and never a version of the
-petition or late-cure text that drops the "once per obligation" or "cured,
-not waived" guarantees).
+protocol and rule above. **Three adoption forms work**, resolved by
+`findings.resolve_materiality_rubric` in this precedence order (task 002/003,
+requirement A.1/A.3, #110):
+
+1. an **inline** `## Materiality rubric` heading in the PRD's own contract
+   text — always wins, even when either reference form below is also
+   present;
+2. a **prose reference line**, e.g. "the materiality rubric … of
+   `docs/review-economics.md` applies" (case-insensitive, one line, a
+   backticked path);
+3. an explicit **HTML-comment marker**, `<!-- rubric: docs/review-economics.md -->`.
+
+State plainly that the rubric/protocol/rule are inherited from this document
+(via one of the two reference forms above, or by restating the section
+inline), and note any narrowing the PRD makes to the default (never a
+widening past all-blocking, and never a version of the petition or late-cure
+text that drops the "once per obligation" or "cured, not waived"
+guarantees). **All-blocking is no longer the fallback.** A contract that
+adopts this fragment by any of the three forms above, or that names no
+rubric at all, is handed the same product-blocking/residual boundary either
+way — the engine's own default (`findings.DEFAULT_RUBRIC`, task 004,
+requirement A.2, #139) — never the old collapse-everything-to-blocking
+placeholder a pre-0.18 engine used.
+
+## v0.18 addendum (#139–#147)
+
+[`prds/v0.18-the-run-can-finish.md`](prds/v0.18-the-run-can-finish.md) bans a
+set of success-criterion and record shapes that sank earlier runs on
+paperwork rather than product defects (its "What this PRD deliberately does
+not ask" section, and requirement E's lint that refuses them at plan-ingestion
+time). Restated here so a later PRD adopting this fragment inherits the list
+without retyping it:
+
+- **No "last commit" rule.** Nothing may require being "the last commit".
+  The final guard subset runs **at the final code sha** — the last commit
+  that touches anything outside `artifacts/reports/`, `docs/roadmap.md` and
+  `docs/prds/README.md` — never "the last commit"; a report-only commit may
+  follow it freely, and the guard's own report-only-gap allowance
+  (`docs/sweep-records.md`) covers exactly that gap.
+- **No record about its own future.** No report, record or criterion states
+  what a later event will be, or must record events after the sha it names
+  ("none newly filed", "every petition and its adjudication", "the terminal
+  send", a later commit's sha).
+- **No per-task notification ledger.** Sends are best-effort and advisory;
+  no criterion mentions a send, a ledger entry or an HTTP status.
+- **No sha-scoped-count rule.** A count names the sha it was computed at
+  when that is cheap; a missing sha is residual, never blocking.
+- **No sweep-sha declaration rule beyond the existing guard.** A record
+  declares `sweep-sha` exactly as `docs/sweep-records.md` already requires;
+  its own rules (report-only gap allowed, discharge pairs) are the whole
+  obligation.
+- **No audit range, no "commit exactly once", no protected-path clause.**
+- **No self-referential criterion** — a task whose criterion names the sha
+  of a later commit, or a row that must cite the commit writing it (the
+  fifth petition type above covers the case where a criterion is already
+  written this way).
 
 ## Provenance
 
