@@ -1494,3 +1494,60 @@ def tamper_review_context(tampered: bool) -> str:
         "write: no previously CONFIRMED obligation counts as confirmed for "
         "the remainder of this run, and any petition an approach still needs "
         "must be adjudicated afresh, on its own evidence.\n")
+
+
+# ---------------------------------------------------------------------------
+# Task 014 (requirement F.1, #144): adjudicated petitions are CLOSED by the
+# engine -- rendered to review as HISTORY, never as open or re-filed.
+# ---------------------------------------------------------------------------
+
+def adjudicated_petitions_review_context(run) -> str:
+    """The review-prompt context block naming every obligation already
+    CONFIRMED at run scope (`read_confirmed_adjudications(run)` --
+    `petitions.record_confirmed_adjudications`'s own persisted record,
+    `run.petition_adjudications_file`) -- rendered as SETTLED HISTORY, a
+    fact of the run's own record, never as something still open for a
+    fresh hearing.
+
+    This is deliberately a SEPARATE block from `petitions_review_context`
+    above (the OPEN petitions list): an obligation appearing here has
+    already been excluded from that OPEN list (`open_unconfirmed_
+    petitions` already filters on the same `confirmed_obligations(run)`
+    set) -- this function's whole job is to state the settled fact
+    explicitly, in-prompt, rather than leaving review to infer "not
+    listed as open" as its only evidence that the obligation is closed.
+    Without this, review sees no textual anchor at all for `review.md`'s
+    own re-file rule ("a duplicate filing against an obligation that
+    already has one ... is itself a BLOCKING finding") to be scoped
+    against -- this block is that anchor: it tells review, per obligation,
+    "this is closed; a NEW filing against it is the violation the rule
+    describes, not this entry's own continued appearance here."
+
+    Returns `''` when the record is empty or tampered (`read_confirmed_
+    adjudications` already returns `entries=[]` for a tampered record --
+    fail towards surfacing the obligation again for a fresh adjudication,
+    never towards rendering an untrusted record as settled history), the
+    overwhelming common case for any run that has confirmed nothing yet.
+    """
+    entries, tampered = read_confirmed_adjudications(run)
+    if tampered or not entries:
+        return ""
+    lines = [
+        "\n## Adjudicated petitions -- history, not open (task 014, "
+        "requirement F.1, #144)\n\n"
+        "The obligation(s) below are ALREADY CONFIRMED at run scope (see "
+        "`docs/petition-format.md`) and are rendered here purely as "
+        "SETTLED HISTORY for context -- they are NOT open, NOT awaiting a "
+        "hearing, and MUST NOT be adjudicated again: do not include any "
+        "of them in your verdict's `petition_adjudications` field. "
+        "`review.md`'s re-file prohibition (a duplicate/re-filed petition "
+        "is itself a BLOCKING finding, not a second hearing) concerns a "
+        "*NEW* filing made against one of these obligations AFTER it "
+        "already carries this adjudication -- never the mere fact that "
+        "the obligation continues to appear here, in this history block, "
+        "on every later review pass.\n",
+    ]
+    for entry in entries:
+        obligation = entry.get("obligation", "") if isinstance(entry, dict) else ""
+        lines.append(f"\n- **Obligation**: {obligation} -- CONFIRMED\n")
+    return "".join(lines)

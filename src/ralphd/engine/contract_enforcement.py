@@ -38,7 +38,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
-from ralphd.engine.contracts import validate_payload
+from ralphd.engine.contracts import validate_against, validate_payload
 
 # Event types this module emits -- named once so a caller (or a test) can
 # recognise them without restating the literal strings.
@@ -56,6 +56,7 @@ class EventSink(Protocol):
 def parse_response(
     hat: str, raw: str | None,
     *, extra_validate: "Callable[[dict], list[str]] | None" = None,
+    schema: dict | None = None,
 ) -> tuple[dict | None, list[str]]:
     """Turn one attempt's raw hat output into `(payload, errors)`.
 
@@ -81,6 +82,22 @@ def parse_response(
     (`transitions.is_legal_task_status_transition`) forbids is the concrete
     case this exists for, but the hook itself knows nothing about task
     statuses -- the caller supplies the check.
+
+    `schema` (task 014, requirement F.1, #144) is an optional OVERRIDE of
+    the schema the wrong-shape check above validates against: when given,
+    `contracts.validate_against(schema, payload)` runs instead of
+    `contracts.validate_payload(hat, payload)` -- the same generic entry
+    point `engine.router`'s own answer shape already uses for a shape with
+    no `HATS` entry, still routed through `engine.contracts` and nothing
+    else (fact 16/#65 holds: no second validator is introduced, only a
+    second SCHEMA the one validator may be pointed at). This is what lets
+    a `midRunAdjudication: true` review episode's re-ask ladder validate
+    every attempt -- not merely a compliant first one -- against
+    `transitions.MIDRUN_REVIEW_SCHEMA` rather than the stricter
+    `HAT_SCHEMAS["review"]` the SAME `hat="review"` string would otherwise
+    select. `hat` is still used for `extra_validate`'s own callers and
+    every other caller that passes no `schema` at all, whose behaviour is
+    byte-for-byte unchanged.
     """
     if raw is None or not raw.strip():
         return None, ["response: no payload produced (absent output)"]
@@ -88,7 +105,8 @@ def parse_response(
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         return None, [f"response: malformed JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"]
-    errors = validate_payload(hat, payload)
+    errors = (validate_against(schema, payload) if schema is not None
+              else validate_payload(hat, payload))
     if errors:
         return None, errors
     if extra_validate is not None:
@@ -146,6 +164,7 @@ def enforce_contract(
     max_retries: int,
     state: EventSink | None = None,
     extra_validate: "Callable[[dict], list[str]] | None" = None,
+    schema: dict | None = None,
 ) -> ContractResult:
     """Validate a hat's response, re-prompting on failure.
 
@@ -168,6 +187,15 @@ def enforce_contract(
     as task 010 handles any other" is true by construction: there is no
     second retry loop, only a second reason `parse_response` can hand back
     a non-empty `errors` list.
+
+    `schema` (task 014, requirement F.1, #144) is forwarded to
+    `parse_response` unchanged too -- an optional override of the schema
+    every attempt (not merely a compliant first one) is validated against,
+    letting a caller keep the SAME `hat` string (for `respond`'s own
+    re-prompt text and this function's own event bookkeeping) while
+    checking every attempt against a different, caller-supplied schema.
+    `None` (every pre-existing caller) keeps this function's behaviour
+    byte-for-byte unchanged.
     """
     if max_retries < 0:
         raise ValueError("max_retries must be >= 0")
@@ -176,7 +204,8 @@ def enforce_contract(
     errors: list[str] = []
     for attempt in range(max_retries + 1):
         raw = respond(attempt, prior_errors)
-        payload, errors = parse_response(hat, raw, extra_validate=extra_validate)
+        payload, errors = parse_response(hat, raw, extra_validate=extra_validate,
+                                          schema=schema)
         if not errors:
             return ContractResult(ok=True, payload=payload, attempts=attempt + 1,
                                    agent_fault=False, errors=[])

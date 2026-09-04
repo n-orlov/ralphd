@@ -6051,7 +6051,9 @@ class LoopSupervisor:
             return "verified-with-residuals"
         return "verified"
 
-    def _review_verdict(self, result: IterationResult) -> tuple[bool, dict | None, list[str]]:
+    def _review_verdict(
+        self, result: IterationResult, mid_run: bool = False
+    ) -> tuple[bool, dict | None, list[str]]:
         """Task 119 (#60 pillar 3, fact 9): parse the review hat's final
         line as a `review` contract payload (`{"verdict": "verified"|
         "rejected", "reason": ..., "findings_path": ...}`,
@@ -6117,6 +6119,18 @@ class LoopSupervisor:
         the refutation's remedy recorded, and the change is written back
         immediately so `_outstanding_for_completion`/`plan_complete` and
         every other reader see it from this point on.
+
+        Task 014 (requirement F.1, #144): `mid_run` (default `False`,
+        every pre-existing caller unaffected) is `True` only for
+        `_maybe_run_midrun_adjudication_episode`'s own bounded, off-budget
+        episode -- it swaps the schema this method validates `payload`
+        against from `HAT_SCHEMAS["review"]` (verdict required,
+        `verified`/`rejected` only) to `transitions.MIDRUN_REVIEW_SCHEMA`
+        (verdict optional, plus the legal value `"adjudicated"`), so a
+        reply with nothing terminal to claim is never read as a contract
+        violation. The ordinary, run-ending review path's own schema is
+        untouched by this parameter -- the safe default at ladder
+        exhaustion is unchanged.
         """
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
@@ -6132,8 +6146,12 @@ class LoopSupervisor:
         findings_list, channel_errors = self._review_findings_channel()
         if isinstance(parsed, dict):
             payload = parsed
+            schema_errors = (
+                contracts.validate_against(
+                    transitions.MIDRUN_REVIEW_SCHEMA, payload)
+                if mid_run else contracts.validate_payload("review", payload))
             contract_errors = (
-                contracts.validate_payload("review", payload)
+                schema_errors
                 or transitions.review_report_errors(payload)
                 or channel_errors
                 or transitions.review_verdict_findings_errors(
@@ -6157,7 +6175,7 @@ class LoopSupervisor:
         return verified, payload, contract_errors
 
     async def _review_contract_ladder(
-        self, result: IterationResult | None
+        self, result: IterationResult | None, mid_run: bool = False
     ) -> IterationResult | None:
         """Task 002 (requirement A.2, #110): give a review payload that
         CONTRADICTS its own structured findings (`verdict: "verified"`
@@ -6219,6 +6237,22 @@ class LoopSupervisor:
         non-verified outcome: the approach is still archived and a
         composite PRD is still written for a genuinely-exhausted case,
         unchanged by this task.
+
+        Task 014 (requirement F.1, #144): `mid_run` (default `False`,
+        every pre-existing caller unaffected) is `True` only for
+        `_maybe_run_midrun_adjudication_episode`'s own bounded, off-budget
+        episode. It swaps the schema this method's own early-exit check
+        validates the FIRST attempt against from `HAT_SCHEMAS["review"]`
+        to `transitions.MIDRUN_REVIEW_SCHEMA` (verdict optional, plus the
+        legal value `"adjudicated"`) -- so a compliant mid-run reply
+        (the overwhelming common case: the episode's own reply on its
+        first attempt) is accepted right here and never even reaches
+        `enforce_contract`'s retry ladder, let alone burns an attempt or
+        emits `contract.agent_fault` over a `verdict` value the ordinary
+        review contract would reject but this episode's own contract
+        explicitly permits. The ordinary run-ending review path (`mid_run`
+        left at its default) validates against the SAME strict schema it
+        always has -- the safe default at ladder exhaustion is unchanged.
         """
         if result is None or self._review_interrupted(result):
             return result
@@ -6227,7 +6261,10 @@ class LoopSupervisor:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
             parsed = None
-        if isinstance(parsed, dict) and not contracts.validate_payload("review", parsed):
+        schema_errors = [] if not isinstance(parsed, dict) else (
+            contracts.validate_against(transitions.MIDRUN_REVIEW_SCHEMA, parsed)
+            if mid_run else contracts.validate_payload("review", parsed))
+        if isinstance(parsed, dict) and not schema_errors:
             if transitions.review_report_errors(parsed):
                 return result
             if not (channel_errors or transitions.review_verdict_findings_errors(
@@ -6263,6 +6300,7 @@ class LoopSupervisor:
             max_retries=self.cfg.contract_retry_max,
             state=self.run,
             extra_validate=extra_validate,
+            schema=transitions.MIDRUN_REVIEW_SCHEMA if mid_run else None,
         )
         if enforcement.ok:
             return dataclasses.replace(
@@ -7800,8 +7838,8 @@ class LoopSupervisor:
         self._petition_adjudication_seen |= obligations_now
         if result is None:
             return
-        result = await self._review_contract_ladder(result)
-        self._review_verdict(result)
+        result = await self._review_contract_ladder(result, mid_run=True)
+        self._review_verdict(result, mid_run=True)
 
     def _midrun_adjudication_extra(self, open_petitions: list[dict]) -> str:
         """The scoped prompt context for the mid-run adjudication episode
@@ -7814,15 +7852,24 @@ class LoopSupervisor:
         petitions_review_context`'s own instruction text, restated here
         for a call that is bounded and off-budget rather than run-ending).
         `verdict` is required by the schema but carries NO terminal effect
-        for this call.
+        for this call. Task 014 (requirement F.1, #144): `verdict:
+        "adjudicated"` (or omitting `verdict` altogether) is a legal
+        answer for THIS episode specifically -- `transitions.
+        MIDRUN_REVIEW_SCHEMA` is what this call's own contract ladder
+        (`_review_contract_ladder(..., mid_run=True)`) validates against,
+        never the stricter `HAT_SCHEMAS["review"]` an ordinary run-ending
+        review answers to.
         """
         lines = [
             "\n## Mid-run petition adjudication episode (task 005, "
             "requirement A.2, #114)\n\n"
             "This is a BOUNDED, OFF-BUDGET adjudication episode, not an "
-            "ordinary run-ending review -- your `verdict` field is "
-            "required by the `review` contract but has NO terminal effect "
-            "here. Your ONLY job this iteration is to adjudicate every "
+            "ordinary run-ending review -- your `verdict` field has NO "
+            "terminal effect here, and unlike an ordinary review you may "
+            "answer `\"verdict\": \"adjudicated\"` (naming what this reply "
+            "actually is) or omit `verdict` entirely; neither is a "
+            "contract violation for THIS episode. Your ONLY job this "
+            "iteration is to adjudicate every "
             "OPEN impossibility petition listed below, one entry per "
             "petition, in your verdict payload's `petition_adjudications` "
             "field: `CONFIRMED` (the obligation genuinely cannot be "
@@ -7898,6 +7945,20 @@ class LoopSupervisor:
         """
         _confirmed, tampered = petitions.confirmed_obligations(self.run)
         return petitions.tamper_review_context(tampered)
+
+    def _adjudicated_petitions_review_context(self) -> str:
+        """Task 014 (requirement F.1, #144): render every obligation
+        already CONFIRMED at run scope (`self.run.petition_adjudications_
+        file`) as SETTLED HISTORY, not an open petition -- the review-
+        prompt anchor that scopes `review.md`'s re-file prohibition to a
+        *new* filing against an obligation that already has one, rather
+        than to this entry's own continued appearance across every later
+        review pass of the same run. Thin render call into `engine.
+        petitions.adjudicated_petitions_review_context`; returns '' in
+        the common case (nothing confirmed yet, or a tampered record --
+        `read_confirmed_adjudications` already reads that as empty).
+        """
+        return petitions.adjudicated_petitions_review_context(self.run)
 
     def _duplicate_petitions_review_context(self) -> str:
         """Task 012 (requirement C.1, #112): tell review, in-prompt, about
@@ -8027,9 +8088,11 @@ class LoopSupervisor:
         always-present statement of which parts of the run's history are
         its own terminal record (task 008, requirement B.2, #140), any
         recorded operator ruling (task 028, #26), then every OPEN
-        impossibility petition (task 010, requirement C, #112), then any
-        duplicate/re-filed petition already detected and turned into a
-        blocking finding engine-side (task 012, requirement C.1, #112).
+        impossibility petition (task 010, requirement C, #112), then every
+        ALREADY-CONFIRMED petition rendered as settled history (task 014,
+        requirement F.1, #144), then any duplicate/re-filed petition
+        already detected and turned into a blocking finding engine-side
+        (task 012, requirement C.1, #112).
         All but the rubric and terminal-record contexts return '' in the
         common case, so review prompts are unaffected beyond those two
         fixed hand-offs until one of the other mechanisms actually fires.
@@ -8040,6 +8103,7 @@ class LoopSupervisor:
                 self._terminal_record_review_context() +
                 self._operator_amendment_review_context() +
                 self._petitions_review_context() +
+                self._adjudicated_petitions_review_context() +
                 self._duplicate_petitions_review_context() +
                 self._petition_adjudications_tamper_context())
 

@@ -1228,6 +1228,45 @@ HAT_SCHEMAS: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
+# Task 014 (requirement F.1, #144): a `midRunAdjudication: true` review
+# episode's own answer shape -- deliberately NOT an entry in `HAT_SCHEMAS`
+# (it names no hat of its own; the episode still runs `run_iteration(
+# "review", ...)`, the review hat's own model/prompt) and NOT wired through
+# `contracts.validate_payload`, which only ever resolves a *hat* name to
+# `HAT_SCHEMAS[hat]` (fact 16/#65's one schema validator, keyed by hat).
+# Validated instead through `contracts.validate_against(MIDRUN_REVIEW_
+# SCHEMA, payload)` -- the same generic entry point `engine.router`'s own
+# answer shape already uses for a shape with no `HATS` entry.
+#
+# The ordinary `review` schema above requires `verdict` and restricts it to
+# `"verified"`/`"rejected"` -- exactly right for a run-ending review, and
+# left byte-for-byte unchanged here (the safe default at ladder exhaustion
+# is the PRD's own explicit "unchanged" for this requirement). A bounded,
+# off-budget adjudication episode is judging PETITIONS, not the approach --
+# its `verdict` field is required by the ordinary contract but "has NO
+# terminal effect" (`LoopSupervisor._midrun_adjudication_extra`'s own
+# prompt text) -- so this schema makes `verdict` OPTIONAL and widens its
+# enum with a third, legal value, `"adjudicated"`, naming exactly what the
+# episode's reply is answering when it has nothing terminal to claim. A
+# reply that omits `verdict` entirely, or spells it `"adjudicated"`, is
+# schema-valid here and therefore never reaches `contract_enforcement.
+# enforce_contract`'s retry ladder at all -- no attempt is burned, no
+# `contract.agent_fault` is emitted -- while the exact same reply against
+# the ordinary `review` schema above still fails it, unchanged.
+MIDRUN_REVIEW_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string",
+                    "enum": ["verified", "rejected", "adjudicated"]},
+        "reason": {"type": "string"},
+        "findings_path": {"type": "string"},
+        "petition_adjudications": {"type": "array"},
+    },
+    "additionalProperties": False,
+}
+
+
+# ---------------------------------------------------------------------------
 # Task 025 (requirement H, #63): the worker's "criteria cannot be satisfied
 # as written" report -- the semantic half layered ON TOP OF a hat's schema
 # validation (`contracts.validate_payload`, the only SCHEMA validator, fact

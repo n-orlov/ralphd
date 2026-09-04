@@ -101,6 +101,19 @@ earlier REFUTED against the same obligation, is itself a BLOCKING finding,
 not a second hearing -- do not adjudicate a duplicate/re-filed petition as
 though it were a first hearing.
 
+**Scope of the re-file rule (task 014, requirement F.1, #144).** The rule
+above concerns a *NEW* filing made against an obligation that already
+carries an adjudication -- a fresh `## Petition: ...` section appearing in
+a `<wave>-petitions.md` file for an obligation this run has already ruled
+on. It is never triggered by the mere fact that an already-adjudicated
+obligation continues to be visible to you: if this prompt includes an
+"Adjudicated petitions -- history, not open" section below, every
+obligation listed there is CLOSED, rendered purely as settled history for
+context. Do not adjudicate anything listed there again, do not include it
+in your `petition_adjudications` field, and its appearance there is not
+itself a duplicate/re-filed petition -- only a genuinely NEW filing against
+one of those obligations is.
+
 ### Criteria amendment authority (task 006, requirement B.1, #114)
 
 When you adjudicate a petition CONFIRMED and its `Type` is `contradictory-
@@ -203,6 +216,18 @@ exactly one JSON object:
   described under "Criteria amendment authority" above -- add them only on a
   CONFIRMED, `contradictory-clauses`/`self-referential` entry whose obligation
   is that task's own `successCriteria`; omit both on every other entry.
+
+**Mid-run adjudication episodes (task 014, requirement F.1, #144).** If this
+prompt tells you this iteration is a bounded, off-budget mid-run petition
+adjudication episode (`midRunAdjudication: true`), your `verdict` field has
+NO terminal effect on the approach -- your ONLY job is the
+`petition_adjudications` field above. For that episode, and that episode
+only, you may answer `{"verdict": "adjudicated", ...}` (a legal value naming
+exactly what you are doing) or omit `verdict` entirely; both are accepted
+without being treated as a contract violation. Every ORDINARY, run-ending
+review call (no `midRunAdjudication` marker) still requires `verdict` to be
+`verified` or `rejected` exactly as above -- the safe default at ladder
+exhaustion is unchanged.
 
 Be strict. "Probably fine" is not verified. If you cannot check something, that is
 a finding, not a pass.
