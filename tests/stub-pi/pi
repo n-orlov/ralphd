@@ -19,6 +19,31 @@ from env vars set by the test:
                       through the planner's contract (which task 120's
                       lint now refuses outright).
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
+  STUB_REVIEW_CURABLE_REJECT_COUNT  task 023 (C.3, #141): how many `review`
+                      invocations reject with an all-curable BLOCKING
+                      findings channel before the next one verifies
+                      (mirrors STUB_VERDICT_GATE_REJECT_COUNT's own "N
+                      times, then approve" shape, with its own marker
+                      file and its own counter, so it composes with
+                      STUB_REVIEW_FAILS/STUB_REVIEW_MALFORMED_COUNT
+                      without disturbing either). Checked BEFORE
+                      STUB_REVIEW_FAILS (but AFTER STUB_REVIEW_MALFORMED_
+                      COUNT, same precedence order as the malformed knob's
+                      own comment describes), so a test that only sets
+                      this one gets exactly "reject once with curable
+                      findings, then verify" -- the cure-pass scenario
+                      `_review_cure_pass_available` exists for. Every
+                      rejecting invocation writes BOTH the free-markdown
+                      `review-findings.md` (`findings_path` in the
+                      payload) and the structured sidecar `review-
+                      findings.json` -- one BLOCKING, `curable: true`
+                      finding, matching `engine.findings.FINDING_SCHEMA`.
+                      Once the count is spent, the next (verifying)
+                      invocation removes any `review-findings.json` this
+                      knob wrote, so the engine's own "a verified claim
+                      may never contradict a still-present blocking
+                      finding" check (`_review_verdict`) never refuses it
+                      for a channel that is no longer true.
   STUB_REVIEW_MALFORMED_COUNT  task 033 (G.5, #130): like
                       STUB_REVIEW_FAILS's own "N times, then verify" shape
                       but with NO parseable `review` contract payload at
@@ -1003,6 +1028,14 @@ elif "Role: Reviewer" in prompt:
             tool_name="bash", tool_args={"command": "git diff --stat"},
             thinking_text="Checking whether the reviewed requirements are met.")
     malformed_wanted = int(os.environ.get("STUB_REVIEW_MALFORMED_COUNT", "0"))
+    curable_wanted = int(os.environ.get("STUB_REVIEW_CURABLE_REJECT_COUNT", "0"))
+    curable_seen = 0
+    if curable_wanted:
+        curable_marker = marker("review-curable-count")
+        if os.path.exists(curable_marker):
+            curable_seen = int(open(curable_marker).read())
+        open(curable_marker, "w").write(str(curable_seen + 1))
+    curable_reject_now = bool(curable_wanted) and curable_seen < curable_wanted
     if done < malformed_wanted:
         # Task 033 (G.5, #130): no parseable `review` contract payload at
         # all -- the ladder's own re-asks land on this stub's `else`
@@ -1012,6 +1045,29 @@ elif "Role: Reviewer" in prompt:
         # engine's own safe default (`rejected_approach_left`) applying.
         emit_final(
             "still weighing whether the reviewed requirements truly hold",
+            tool_call=tool_call, thinking_text=thinking_text)
+    elif curable_reject_now:
+        # Task 023 (C.3, #141): a rejection whose blocking findings are
+        # ALL curable -- both the free-markdown pointer and the
+        # structured JSON sidecar `_review_cure_pass_available` actually
+        # reads, mirroring STUB_VERDICT_GATE_REJECT_COUNT's own shape one
+        # hat over.
+        with open(os.path.join(run, "review-findings.md"), "w") as f:
+            f.write(f"- curable finding from review #{curable_seen + 1}\n")
+        with open(os.path.join(run, "review-findings.json"), "w") as f:
+            json.dump([{
+                "severity": "blocking",
+                "curable": True,
+                "clause": "stub curable review clause",
+                "evidence": f"stub: curable review rejection #{curable_seen + 1}",
+            }], f)
+        emit_final(
+            "requirements unmet, but curable\n"
+            + json.dumps({
+                "verdict": "rejected",
+                "reason": f"stub: curable review rejection #{curable_seen + 1}",
+                "findings_path": "review-findings.md",
+            }),
             tool_call=tool_call, thinking_text=thinking_text)
     elif done < fails_wanted:
         with open(os.path.join(run, "review-findings.md"), "w") as f:
@@ -1028,6 +1084,16 @@ elif "Role: Reviewer" in prompt:
             }),
             tool_call=tool_call, thinking_text=thinking_text)
     else:
+        if curable_wanted:
+            # The cure pass is spent (or was never triggered this round):
+            # drop the structured sidecar this knob wrote so a genuine
+            # verify claim is never refused for contradicting a blocking
+            # finding that no longer holds -- `_review_verdict`'s own
+            # contradiction check reads this file fresh on every review
+            # invocation.
+            _stale_json = os.path.join(run, "review-findings.json")
+            if os.path.exists(_stale_json):
+                os.remove(_stale_json)
         emit_final("all requirements hold\n" + json.dumps({"verdict": "verified"}),
                     tool_call=tool_call, thinking_text=thinking_text)
 
