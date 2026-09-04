@@ -35,6 +35,7 @@ from . import hat_tools
 from . import petitions
 from . import plan_ingestion
 from . import router
+from . import run_record
 from . import scheduler
 from . import state
 from . import tiers
@@ -2386,7 +2387,31 @@ class LoopSupervisor:
         else:
             self.run.update_status(state=state, verdict=verdict, phase=None,
                                    **fields)
+        self._write_run_record()
         return state
+
+    def _write_run_record(self) -> None:
+        """Task 006 (PRD requirement B.1, #140): write/rewrite `run-
+        record.md` + `run-record.json` into `artifacts/` from the run's
+        own engine-owned records -- called from `_finish()` (every entry
+        to `finishing`, reflect on or off) and from `_promote_finishing_
+        state()`/`_promote_recorded_finishing_state()` (the later terminal
+        transition that rewrites both, per PRD requirement B.1). Reads
+        `CONFIG_DIR` fresh on every call, exactly like `_operator_
+        amendment_review_context()` does, so a test can monkeypatch
+        `loop_mod.CONFIG_DIR` the same way. Best-effort: a run dir the
+        record write cannot reach (a read-only mount, a concurrent delete)
+        logs and moves on rather than taking the whole terminal write
+        down with it -- the status.json write this accompanies has
+        already happened by the time this runs.
+        """
+        try:
+            run_record.write_run_record(
+                self.run, run_id=self.cfg.run_id,
+                max_approaches=self.cfg.max_approaches,
+                config_root=CONFIG_DIR)
+        except OSError as exc:
+            log.warning("could not write run-record.md/.json: %s", exc)
 
     def _promote_finishing_state(self) -> None:
         """After `_run_reflection()` returns (whether it ran, failed, or was
@@ -2405,6 +2430,7 @@ class LoopSupervisor:
         self._pending_terminal = None
         self.run.update_status(state=state, verdict=verdict, phase=None,
                                pendingTerminalState=None, **fields)
+        self._write_run_record()
 
     def _promote_recorded_finishing_state(self, status: dict) -> str:
         """`run_job()`'s resume-time counterpart to `_promote_finishing_state`:
@@ -2435,6 +2461,7 @@ class LoopSupervisor:
                 endedAt=utcnow(),
                 reason=("resumed a `finishing` run dir with no valid "
                         f"recorded pendingTerminalState ({state!r})"))
+            self._write_run_record()
             return "failed"
         self.run.emit(
             "log",
@@ -2443,6 +2470,7 @@ class LoopSupervisor:
                      "redoing any of the job (task 012, #56)"))
         self.run.update_status(state=state, verdict=verdict, phase=None,
                                pendingTerminalState=None)
+        self._write_run_record()
         return state
 
     # Task 018 (#5): the post-terminal reflect iteration's own outage budget
