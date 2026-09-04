@@ -344,6 +344,18 @@ class LoopSupervisor:
         # at the shared terminal-write call site the way
         # `_unconsumed_steering_patch()` is. Empty for every other tail exit.
         self._deadline_beat_verdict_extra: dict = {}
+        # Task 016 (requirement F.3, #146): True iff the terminal `("tail",)`
+        # exit this episode is about to write is specifically "the deadline
+        # took the last review attempt before it could speak" -- set by
+        # `_review_unjudged_at_budget_end` (ordinary self-loop exhaustion)
+        # and by `_maybe_grace_review`'s own interrupted-grace-attempt
+        # branch, the two and only two call sites that positively know
+        # review itself was cut short by the ENGINE rather than having
+        # rendered (or failed to render) a real verdict. `_finish_tail_
+        # unverified` reads this to write `verdict: "unreviewed"` /
+        # `reason: "deadline during review"` instead of the ordinary
+        # `unverified` outcome -- never set for any other tail exit.
+        self._review_deadline_unreviewed: bool = False
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -2244,6 +2256,40 @@ class LoopSupervisor:
             return False
         return iteration_start_id is None or iteration_start_id < escalation_id
 
+    def _unreviewed_awaiting_resume(self, approach: int) -> bool:
+        """Task 016 (PRD requirement F.3, #146): the same crashed/restarted-
+        episode shape as `_paused_awaiting_incurable_ruling`/`_paused_
+        awaiting_last_approach_ruling` just above, keyed off the
+        `review_deadline_unreviewed` event `_review_unjudged_at_budget_end`
+        and `_maybe_grace_review`'s own interrupted-grace branch each emit
+        the instant they positively know the deadline, not a rejection,
+        ended review for `approach` -- True iff the most recent such event
+        for THIS approach has no `iteration.start` recorded since (i.e. no
+        later episode has already re-entered review over it).
+
+        A resumed episode landing here goes straight to `review` -- never
+        `worker` (there is nothing new for the worker to do: every task was
+        already completed, that is what got the run to review in the first
+        place) and never `replan` (the approach was never archived, so
+        replanning it would spend a fresh approach the deadline, not a
+        verdict, took) -- so `ralphctl resume` with a fresh iteration/wall-
+        clock window asks review again over the SAME approach, exactly the
+        PRD's own words for #146.
+        """
+        unreviewed_id = None
+        iteration_start_id = None
+        for ev in state.read_events(
+                self.run.root,
+                types=("review_deadline_unreviewed", "iteration.start")):
+            if ev.get("type") == "review_deadline_unreviewed":
+                if ev.get("approach") == approach:
+                    unreviewed_id = ev.get("id")
+            else:
+                iteration_start_id = ev.get("id")
+        if unreviewed_id is None:
+            return False
+        return iteration_start_id is None or iteration_start_id < unreviewed_id
+
     def _resume_point(self) -> tuple[int, bool, str]:
         """Where run_job() should start on this engine invocation (PRD req
         16). A fresh run dir (no tasks.json yet, or no completed
@@ -2281,6 +2327,17 @@ class LoopSupervisor:
         `replan` -- a FRESH approach -- over findings a fresh approach was
         already shown incapable of curing, which is the exact waste the
         `rejected_incurable` edge exists to avoid in the first place.
+
+        A sixth case (task 016, requirement F.3, #146): the prior episode
+        ended this approach `unreviewed` because the deadline took the
+        last review attempt (ordinary self-loop exhaustion or the
+        off-budget grace attempt) before it could speak (see `_unreviewed_
+        awaiting_resume`) -- the dispatch loop must land at `review`
+        directly too, for the same reason as the fourth/fifth cases
+        (nothing actionable for `worker`, and the approach was never
+        archived so `replan` would spend a fresh one the deadline, not a
+        verdict, took): a resume with a fresh window asks review again
+        over the SAME approach.
 
         Returns (start_approach, skip_planning_for_start_approach,
         start_step).
@@ -2327,6 +2384,18 @@ class LoopSupervisor:
                     "directly into review (never a fresh, nonexistent "
                     "approach) so any ruling recorded while paused is seen "
                     "by the next review iteration"))
+            return approach, False, "review"
+        if self._unreviewed_awaiting_resume(approach):
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "ended unreviewed -- the deadline took review before it "
+                    "could speak, not a rejection -- with no later episode "
+                    "having re-entered review since; resuming directly "
+                    "into review (never worker, never a fresh approach) so "
+                    "review is asked again over the SAME approach "
+                    "(requirement F.3, #146)"))
             return approach, False, "review"
         self.run.emit(
             "log",
@@ -2380,6 +2449,17 @@ class LoopSupervisor:
         no-op unless its own condition actually holds.
         """
         final_state = "aborted" if self._abort_reason else "failed"
+        # Task 016 (requirement F.3, #146): a deadline that lands mid-
+        # review (ordinary self-loop exhaustion or the off-budget grace
+        # attempt) is `unreviewed`, not `unverified` -- never overrides an
+        # actual operator abort, which keeps its own reason and verdict
+        # unchanged.
+        if self._review_deadline_unreviewed and not self._abort_reason:
+            self._finish(final_state, "unreviewed",
+                        reason="deadline during review",
+                        **self._unconsumed_steering_patch(),
+                        **self._deadline_beat_verdict_extra)
+            return final_state
         self._finish(final_state, "unverified",
                     reason=self._abort_reason or self._terminal_reason_note,
                     **self._unconsumed_steering_patch(),
@@ -6438,6 +6518,17 @@ class LoopSupervisor:
             "no budget or wall clock left to ask again; no verdict was "
             "ever scored, so the approach was not archived and no "
             "rejection was recorded (requirement A, #72)")
+        # Task 016 (requirement F.3, #146): this is the ordinary-path call
+        # site that positively knows the deadline, not a rejection, is what
+        # ended review this approach -- `_finish_tail_unverified` reads the
+        # flag to write `verdict: "unreviewed"` / `reason: "deadline
+        # during review"` instead of the ordinary `unverified` outcome.
+        # The event lets a later episode's `_resume_point()` find this
+        # approach again on disk (`_unreviewed_awaiting_resume`) without
+        # relying on status.json, which the very next episode's own
+        # `running` write rebases before `_resume_point()` ever runs.
+        self._review_deadline_unreviewed = True
+        self.run.emit("review_deadline_unreviewed", approach=approach)
         self._deadline_beat_verdict_extra = self._deadline_beat_verdict_patch()
         return ("tail",)
 
@@ -7290,6 +7381,29 @@ class LoopSupervisor:
         # iteration budget (same mechanism, and since task 023/#32 the same
         # persistence, as the infra-retry refund).
         self._refund_iteration("grace")
+        # Task 016 (requirement F.3, #146): the grace attempt is a single
+        # off-budget shot -- there is no budget left to self-loop on an
+        # engine-cut-short attempt the way `_run_review_iteration`'s
+        # ordinary path does, so an interrupted/timed-out grace review
+        # must land on the SAME `unreviewed` outcome as the ordinary path's
+        # own budget-exhaustion case, never fall through to the rejected-
+        # verdict ladder below (which would misread the engine's own
+        # cutoff as review's judgement, exactly the mistake requirement A,
+        # #72 already fixed for the ordinary path).
+        if self._review_interrupted(result):
+            self._review_deadline_unreviewed = True
+            self._terminal_reason_note = (
+                f"the off-budget grace review (approach {approach}) was "
+                "itself interrupted by the engine with no budget left to "
+                "ask again; no verdict was ever scored (requirement F.3, "
+                "#146)")
+            self.run.emit("review_deadline_unreviewed", approach=approach)
+            self.run.emit(
+                "log",
+                message=(f"grace review (approach {approach}) was "
+                         "interrupted by the engine; ending unreviewed, "
+                         "not rejected (requirement F.3, #146)"))
+            return False
         result = await self._review_contract_ladder(result)
         verified, _payload, _errors = self._review_verdict(result)
         # Task 013 (requirement I, #98): the SAME single exit-gate

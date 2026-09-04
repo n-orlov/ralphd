@@ -4,11 +4,12 @@ the clock -- the terminal-record half of the fix (requirement A, tasks
 at budget end; this is about what the terminal write itself then says).
 
 Chosen design (the other two rejected, and why, live in
-`artifacts/reports/task-006-deadline-beat-verdict-design.md`): keep
-`state: failed` / `verdict: unverified` exactly as `_run_job_core`'s tail
-exit already writes them -- `verdict: verified` stays grantable by the
-review hat alone, the operator's one non-negotiable ruling (PRD requirement
-B) -- and add a dedicated, structured `deadlineBeatVerdict` field (modelled
+`artifacts/reports/task-006-deadline-beat-verdict-design.md`): at the time
+of this task, keep `state: failed` / `verdict: unverified` exactly as
+`_run_job_core`'s tail exit already wrote them for every other tail exit
+-- `verdict: verified` stays grantable by the review hat alone, the
+operator's one non-negotiable ruling (PRD requirement B) -- and add a
+dedicated, structured `deadlineBeatVerdict` field (modelled
 on `_unconsumed_steering_patch`'s own precedent) naming both the deadline
 (`deadline`) and the honoured COMPLETE (`completeHonouredAt`) whenever BOTH
 hold: every task in the record is done, and an actual `signal: "COMPLETE"`
@@ -19,6 +20,18 @@ tail exit the way `_unconsumed_steering_patch` is: a genuinely REJECTED last
 approach leaves an indistinguishable trace (completed tasks, a past
 COMPLETE signal) once `_archive_approach` has copied it without resetting
 anything, so computing this generically would misreport a real rejection.
+
+SUPERSEDED IN PART by task 016 (PRD requirement F.3, #146): the verdict
+text this module pins as `"unverified"` below is, as of that task, written
+as the dedicated `"unreviewed"` value instead -- for BOTH call sites that
+reach `_review_unjudged_at_budget_end`/the interrupted-grace branch of
+`_maybe_grace_review`, regardless of whether the `deadlineBeatVerdict`
+marker itself fires. The invariant this module's own tests still hold --
+`verdict: "verified"` stays grantable by the review hat alone -- is
+unchanged; only the specific non-`"verified"` string changed, and the
+assertions below were updated in the same commit to say so. See
+`tests/test_review_deadline_unreviewed_task016.py` for the new value's own
+coverage.
 
 Tests:
 
@@ -35,7 +48,9 @@ Tests:
    is not vacuous.
 3. `test_path_never_writes_verdict_verified` -- `verdict: verified` stays
    the review hat's alone to grant (the operator's ruling); this path must
-   write `unverified` whether or not the marker itself fires.
+   never write `verified`, whether or not the marker itself fires (it
+   writes `unreviewed` since task 016, requirement F.3, #146 -- see the
+   SUPERSEDED note above).
 4. `test_ordinary_failed_fixture_unaffected_byte_for_byte` -- a fixture
    where tasks are NOT all completed (no COMPLETE ever earned) drives the
    exact same finishing write and gets the pre-existing record back with no
@@ -80,8 +95,11 @@ def test_v09_iteration_183_regression_status_carries_the_marker(tmp_path):
 
     assert state == "failed"
     status = sup.run.read_status()
-    assert status["verdict"] == "unverified"
-
+    # Task 016 (requirement F.3, #146): this specific path -- review cut
+    # short at budget end -- writes the dedicated "unreviewed" verdict, not
+    # the ordinary "unverified" this file was written against; the marker
+    # assertions below (this task's own subject) are unaffected.
+    assert status["verdict"] == "unreviewed"
     marker = status.get("deadlineBeatVerdict")
     assert isinstance(marker, dict), (
         "status.json must carry a deadlineBeatVerdict marker when every "
@@ -128,7 +146,7 @@ def test_path_never_writes_verdict_verified(tmp_path):
 
     assert state == "failed"
     status = sup.run.read_status()
-    assert status["verdict"] == "unverified"
+    assert status["verdict"] == "unreviewed"
     assert status["verdict"] != "verified"
     assert isinstance(status.get("deadlineBeatVerdict"), dict)
 
@@ -142,7 +160,7 @@ def test_path_never_writes_verdict_verified(tmp_path):
 
     assert state2 == "failed"
     status2 = sup2.run.read_status()
-    assert status2["verdict"] == "unverified"
+    assert status2["verdict"] == "unreviewed"
     assert status2["verdict"] != "verified"
     assert status2.get("deadlineBeatVerdict") is None
 
