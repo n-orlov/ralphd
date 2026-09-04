@@ -36,6 +36,7 @@ below are thin callers of `contracts.validate_against`, the same pattern
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -374,3 +375,139 @@ def materiality_rubric_context(contract_text: str) -> str:
             "any other source -- to decide each finding's `severity`.\n")
         lines.append(f"\n{rubric}\n")
     return "".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Task 002 (requirement A.1, #110), resolver half: a contract need not carry
+# its materiality rubric inline -- it may instead ADOPT ONE BY REFERENCE,
+# naming another in-checkout document (typically `docs/review-economics.md`,
+# the reusable fragment) whose own `## Materiality rubric` section applies
+# here. Task 003 (wiring half) is the one that makes
+# `LoopSupervisor._review_materiality_rubric_context` call the resolver
+# below instead of `extract_materiality_rubric` directly; this module only
+# has to make the resolution itself exist, correct and self-contained.
+#
+# Two reference shapes are recognised, both requiring a backticked path:
+#   - a PROSE line: "...the materiality rubric ... of `<path>` applies..."
+#     (case-insensitive, one line -- `.` does not cross a newline by
+#     default, which is exactly the restriction a *sentence* needs);
+#   - an explicit HTML-comment MARKER: `<!-- rubric: <path> -->`, for a
+#     contract that would rather not rely on prose-matching at all.
+# An INLINE `## Materiality rubric` heading in the contract text always
+# wins over either reference shape -- `resolve_materiality_rubric` checks
+# `extract_materiality_rubric` first and only falls through to reference
+# resolution when that returns `None`.
+# ---------------------------------------------------------------------------
+
+_RUBRIC_MARKER_RE = re.compile(
+    r"<!--\s*rubric:\s*(\S+?)\s*-->", re.IGNORECASE)
+
+_RUBRIC_PROSE_REFERENCE_RE = re.compile(
+    r"the materiality rubric\b.{0,200}?\bof\s+`([^`]+)`.{0,200}?\bapplies\b",
+    re.IGNORECASE | re.DOTALL)
+
+
+@dataclass(frozen=True)
+class RubricResolution:
+    """The result of `resolve_materiality_rubric` below.
+
+    `rubric` is the resolved section text (verbatim, heading included) or
+    `None` when the contract supplies no rubric at all -- inline or by
+    reference -- or names a reference this checkout cannot resolve.
+    `source_path` is the reference string as it appeared in the contract
+    (e.g. `"docs/review-economics.md"`) when -- and only when -- the rubric
+    text came from a resolved reference; it stays `None` for an inline
+    rubric and for the no-rubric case alike, so a caller can tell "this text
+    is the contract's own" apart from "this text was adopted from
+    elsewhere" without re-parsing anything. `log_events` carries zero or
+    more dicts shaped as `run.emit("log", **event)` kwargs (`level`,
+    `message`) -- this module has no `RunDir` to emit through itself, so it
+    hands the event back for the caller (task 003's engine call site) to
+    emit; the ordinary case (no reference, or a reference that resolved) is
+    an empty tuple.
+    """
+
+    rubric: str | None
+    source_path: str | None = None
+    log_events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+
+
+def _find_rubric_reference(contract_text: str) -> str | None:
+    """Return the referenced path named by either recognised reference
+    shape (marker checked first, purely because it is the more explicit,
+    less ambiguous of the two -- both are equally authoritative), or
+    `None` when neither appears."""
+    marker = _RUBRIC_MARKER_RE.search(contract_text or "")
+    if marker is not None:
+        return marker.group(1).strip()
+    prose = _RUBRIC_PROSE_REFERENCE_RE.search(contract_text or "")
+    if prose is not None:
+        return prose.group(1).strip()
+    return None
+
+
+def resolve_materiality_rubric(
+        contract_text: str, workspace_root: str | Path) -> RubricResolution:
+    """Resolve THE materiality rubric that applies to `contract_text`,
+    inline or by reference, resolving any referenced path against
+    `workspace_root` (the checkout root).
+
+    Precedence, in order:
+      1. an inline `## Materiality rubric` heading in `contract_text` --
+         via `extract_materiality_rubric`, unchanged -- always wins;
+      2. failing that, a reference (prose or marker, see above) naming
+         another in-checkout document, whose own `## Materiality rubric`
+         section (again via `extract_materiality_rubric`, run against the
+         REFERENCED document's text) is inlined here;
+      3. failing that -- no inline heading and no reference, or a
+         reference naming a path that does not resolve to a readable file
+         under `workspace_root`, or that resolves but itself carries no
+         rubric heading -- the no-rubric result (`rubric=None`), same as
+         `extract_materiality_rubric` returning `None` today. A reference
+         that fails to resolve additionally carries one `log` event naming
+         the unresolved path, so the run's own event log records *why*
+         review ends up with no rubric rather than leaving that silent.
+    """
+    inline = extract_materiality_rubric(contract_text)
+    if inline is not None:
+        return RubricResolution(rubric=inline)
+
+    reference = _find_rubric_reference(contract_text)
+    if reference is None:
+        return RubricResolution(rubric=None)
+
+    root = Path(workspace_root)
+    candidate = root / reference
+    try:
+        referenced_text = candidate.read_text()
+    except OSError:
+        return RubricResolution(
+            rubric=None,
+            log_events=(
+                {
+                    "level": "warning",
+                    "message": (
+                        "materiality rubric reference "
+                        f"{reference!r} did not resolve to a readable "
+                        f"file under {root}"
+                    ),
+                },
+            ),
+        )
+
+    resolved = extract_materiality_rubric(referenced_text)
+    if resolved is None:
+        return RubricResolution(
+            rubric=None,
+            log_events=(
+                {
+                    "level": "warning",
+                    "message": (
+                        f"materiality rubric reference {reference!r} "
+                        f"resolved to {candidate} but that document has "
+                        "no '## Materiality rubric' section"
+                    ),
+                },
+            ),
+        )
+    return RubricResolution(rubric=resolved, source_path=reference)

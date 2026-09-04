@@ -190,5 +190,118 @@ def test_a_rubric_bearing_contract_still_lets_a_finding_be_classified_residual(
     assert "Residual" in context
 
 
+# ---------------------------------------------------------------------------
+# Task 002 (requirement A.1, #110), resolver half:
+# `findings.resolve_materiality_rubric` -- a rubric adopted BY REFERENCE
+# (prose or an explicit `<!-- rubric: ... -->` marker), resolved against the
+# checkout root, one test per recognised shape: inline, prose reference,
+# marker reference, inline-plus-reference (inline wins), unresolvable
+# reference (no-rubric result plus a `log` event naming the unresolved
+# path).
+# ---------------------------------------------------------------------------
+
+REFERENCED_RUBRIC_DOCUMENT = """# Review economics
+
+## Materiality rubric
+
+**Blocking** -- a red test at the shipped sha.
+
+**Residual** -- a stale snapshot label.
+
+## Petition protocol
+
+Irrelevant section that must not be swept into the rubric text above.
+"""
+
+PROSE_REFERENCE_CONTRACT = """# Some PRD
+
+## The contract
+
+This run adopts the shared fragment: the materiality rubric, petition
+protocol and late-cure rule of `docs/review-economics.md` applies to this
+contract in full.
+"""
+
+MARKER_REFERENCE_CONTRACT = """# Some PRD
+
+<!-- rubric: docs/review-economics.md -->
+
+## Goal
+
+Ship the thing.
+"""
+
+UNRESOLVABLE_REFERENCE_CONTRACT = """# Some PRD
+
+<!-- rubric: docs/does-not-exist.md -->
+"""
+
+
+def _checkout_with_referenced_document(tmp_path: Path) -> Path:
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "docs" / "review-economics.md").write_text(
+        REFERENCED_RUBRIC_DOCUMENT)
+    return tmp_path
+
+
+def test_resolve_materiality_rubric_inline_wins_with_no_reference(tmp_path):
+    root = _checkout_with_referenced_document(tmp_path)
+    resolution = findings.resolve_materiality_rubric(
+        RUBRIC_BEARING_CONTRACT, root)
+    assert resolution.rubric is not None
+    assert resolution.rubric.lower().startswith("### materiality rubric")
+    assert resolution.source_path is None
+    assert resolution.log_events == ()
+
+
+def test_resolve_materiality_rubric_follows_a_prose_reference(tmp_path):
+    root = _checkout_with_referenced_document(tmp_path)
+    resolution = findings.resolve_materiality_rubric(
+        PROSE_REFERENCE_CONTRACT, root)
+    assert resolution.rubric is not None
+    assert "Blocking" in resolution.rubric and "Residual" in resolution.rubric
+    assert "Petition protocol" not in resolution.rubric
+    assert resolution.source_path == "docs/review-economics.md"
+    assert resolution.log_events == ()
+
+
+def test_resolve_materiality_rubric_follows_a_marker_reference(tmp_path):
+    root = _checkout_with_referenced_document(tmp_path)
+    resolution = findings.resolve_materiality_rubric(
+        MARKER_REFERENCE_CONTRACT, root)
+    assert resolution.rubric is not None
+    assert "Blocking" in resolution.rubric and "Residual" in resolution.rubric
+    assert resolution.source_path == "docs/review-economics.md"
+    assert resolution.log_events == ()
+
+
+def test_resolve_materiality_rubric_inline_wins_over_a_reference(tmp_path):
+    root = _checkout_with_referenced_document(tmp_path)
+    contract = RUBRIC_BEARING_CONTRACT + (
+        "\n\nAdditionally, the materiality rubric of "
+        "`docs/review-economics.md` applies (superseded by the inline "
+        "section above).\n"
+    )
+    resolution = findings.resolve_materiality_rubric(contract, root)
+    assert resolution.rubric is not None
+    # The CONTRACT's own inline heading, not the referenced document's.
+    assert resolution.rubric.lower().startswith("### materiality rubric")
+    assert "a red test at the shipped sha" in resolution.rubric
+    assert resolution.source_path is None
+    assert resolution.log_events == ()
+
+
+def test_resolve_materiality_rubric_reports_an_unresolvable_reference(
+        tmp_path):
+    root = _checkout_with_referenced_document(tmp_path)
+    resolution = findings.resolve_materiality_rubric(
+        UNRESOLVABLE_REFERENCE_CONTRACT, root)
+    assert resolution.rubric is None
+    assert resolution.source_path is None
+    assert len(resolution.log_events) == 1
+    event = resolution.log_events[0]
+    assert "docs/does-not-exist.md" in event["message"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
