@@ -87,8 +87,9 @@ The one-call summary. Response:
 {
   "runId": "brisk-otter-1408",
   "schemaVersion": 1,              // run-dir schema this state was written under
-  "state": "running",              // starting|running|finishing|succeeded|failed|aborted
+  "state": "running",              // starting|running|paused|finishing|succeeded|failed|aborted
   "phase": "worker",               // planning|worker|verify|review|null; never "paused"
+  "pauseReason": null,             // why an ENGINE-recorded pause is held, task 036; null unless `state` is `paused`
   "approach": 1,
   "maxApproaches": 3,           // approach denominator; null for a pre-v0.6 run dir
   "model": "amazon-bedrock/eu.anthropic.claude-opus-5",  // model observed in use
@@ -175,11 +176,18 @@ keys with no section of their own below:
 | `workerSplitProposals` | per-approach worker split-proposal counter (task 021, PRD requirement N, #102) — `{"<approach>": <count>}`, the running total of tasks a worker's optional `proposed_tasks` contract field (`transitions.HAT_SCHEMAS["worker"]`) has actually inserted for that approach; `LoopSupervisor._apply_worker_proposed_tasks` refuses a proposal whole (never partially) once accepting it would push the total past `worker_split_budget_per_approach` (default 3). Absent for a run that has never had an accepted split proposal |
 | `steerRedeliveries` | per-MESSAGE steering redelivery counter (task 006, PRD requirement B.1, #122) — `{"<steering-file-name>": <count>}`, incremented each time a clean `steer` iteration honestly reports `settled: false` for that message: `LoopSupervisor._handle_unsettled_steering` UNCONSUMES the file (`RunDir.unconsume_steering`) so it is genuinely redelivered to the next actionable iteration, up to `steer_redelivery_max` (default 3) redeliveries. Once a message's count reaches the cap it stops being redelivered and is instead recorded settled-BY-EXHAUSTION, with the reason, in the internal steering ledger that `state.steering_ledger` renders into every following hat's prompt (`settledByExhaustion`/`exhaustionReason` entries — not fields of this endpoint's own payload). `settled: true` never touches this counter — it consumes exactly once, as before this task. Absent for a run that has never had a `settled: false` steer reply |
 | `verdictGatePeeks` | v0.17 requirement D.5 (#125 A): a list of `{approach, iteration, calls}` entries, one per `verdict_gate` iteration (either call site -- the ordinary `_step_verdict_gate` or the off-budget `_grace_verdict_gate`) whose OWN transcript contained a tool call reading past the gate's honor-system blindness (`iterations/`, `events.jsonl` or the per-iteration transcript file -- `state.detect_verdict_gate_peek`). A RECORDED OBSERVATION only: it never changes `verdict`, and a run can reach `succeeded` with a non-empty list here. Absent for a run with `peer_verdict_gate: false` or one whose gate iterations never peeked |
+| `pauseReason` | v0.18 requirement D.1/D.2 (#142, task 036): why the ENGINE paused itself, recorded together with `state: "paused"` the moment the decision is made and cleared (back to `null`, with `state` back to `running`) by `POST /resume`. The only value the engine writes today is `"rejected_last_approach"` — the last approach was rejected on blocking findings that are all `curable: true` with its one cure pass already spent, so there is no approach budget left to cure them in and the run holds for an operator ruling instead of ending `failed` on paperwork. The approach is **not** archived and `approach`/`phase` are left untouched, so `resume` re-enters `review` over the SAME approach. `null` (or absent) for every other run — an operator `POST /pause` records neither this field nor a `state` change |
 | `curePasses` | v0.18 requirement C.1/C.2 (#141) — per-approach cure-pass counter, `{"<approach>": <count>}`, bounded to at most one per approach: taken when review's verdict is `rejected`, every blocking finding is `curable: true`, and the entry for that approach reads `0`; incrementing it routes `review -> worker` over the SAME approach with cure tasks appended (`origin: "review-cure"`) instead of replanning. A second `rejected` in the same approach, or an incurable finding, takes the ordinary replan/pause edge regardless of this counter. Disk-backed and survives a resume. Absent for a run that has never taken a cure pass |
 
-There is no `paused` value anywhere in this payload: `POST /pause` holds the
-loop at the next iteration boundary without changing `state` or `phase` (see
-`POST /pause` below). The full `status.json` field table is SPEC §5.
+`state` reaches the value `paused` for exactly one reason, and it is never an
+operator pause: the engine pausing ITSELF on the `rejected_last_approach`
+escalation edge (v0.18 requirement D.1/D.2, task 036) records `state:
+"paused"` plus `pauseReason` so a host can see that the run is parked waiting
+for a human ruling rather than working. `POST /pause` records nothing at all —
+it holds the loop at the next iteration boundary without changing `state` or
+`phase` (see `POST /pause` below). There is no `paused` **phase** in either
+case: `phase` keeps naming the phase that ran last. The full `status.json`
+field table is SPEC §5.
 
 `usage.byPhase` breaks the same running totals down by iteration phase
 (`planning`/`worker`/`verify`/`review`), `usage.byApproach` by approach
@@ -329,9 +337,11 @@ engine mid-run (see docs/cli.md).
 
 #### `health` and `infraWait`
 
-`state`'s values are `starting|running|finishing|succeeded|failed|aborted`
-(task 012, #56, adds `finishing`) — there is **no**
-`degraded` state value, because that would break every consumer's
+`state`'s values are
+`starting|running|paused|finishing|succeeded|failed|aborted` (task 012, #56,
+adds `finishing`; task 036, #142, adds `paused` for the engine's own
+`rejected_last_approach` escalation hold — never for an operator `POST /pause`)
+— there is **no** `degraded` state value, because that would break every consumer's
 terminal-state logic (`ralphctl watch` included). A run that is sitting out an
 infra outage says so with two dedicated fields instead:
 
@@ -726,13 +736,28 @@ interrupt.
 Pause finishes the current iteration, then holds before the next one; resume
 releases it. `200 {"paused": true}` / `200 {"resumed": true}`.
 
-A pause is deliberately **not** a state: `state` stays `running` and `phase`
-keeps naming the phase that ran last — there is no `phase: "paused"`, for the
-same reason there is no `state: "degraded"` (it would break every consumer's
-terminal-state logic). What is observable is the `log` event the pause emits
-(`paused at next iteration boundary`, then `resumed`), in `GET /events` and
-`events.jsonl`. `POST /pause` is `409` on a finished run; `POST /resume` is
-always accepted (releasing a run that was never paused is a no-op).
+An operator pause is deliberately **not** a state: `state` stays `running` and
+`phase` keeps naming the phase that ran last — there is no `phase: "paused"`,
+for the same reason there is no `state: "degraded"` (it would break every
+consumer's terminal-state logic). What is observable is the `log` event the
+pause emits (`paused at next iteration boundary`, then `resumed`), in
+`GET /events` and `events.jsonl`. `POST /pause` is `409` on a finished run;
+`POST /resume` is always accepted (releasing a run that was never paused is a
+no-op).
+
+An **engine-initiated** hold is different, and it is the one case that does
+record a lifecycle value (v0.18 requirement D.1/D.2, task 036): when review
+rejects the LAST approach on blocking findings that are all curable and its
+cure pass is already spent, the engine takes the `rejected_last_approach` edge,
+emits `operator_escalation` and pauses itself — writing both
+`state: "paused"` and `pauseReason: "rejected_last_approach"` to status.json at
+that moment, because nobody typed the pause and nothing else would tell the
+host the run is waiting for a ruling. `paused` is non-terminal (`state.NONTERMINAL_STATES`): a live
+engine still owns the run, so no destructive action opens on it and a killed
+engine leaves it dangling like any other non-terminal run. `POST /resume`
+clears both fields (`state` back to `running`, `pauseReason` back to `null`)
+and leaves `approach` and `phase` alone, so the run re-enters `review` over the
+same, still-unarchived approach.
 
 ### `POST /retry`
 Wakes an infra backoff wait immediately instead of waiting for

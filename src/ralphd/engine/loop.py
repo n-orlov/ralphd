@@ -53,6 +53,7 @@ from .pricing import resolve_pricing
 from .runner import IterationResult, PiRunner, last_nonblank_line
 from .skills import ambient_home, verify_placement_and_report
 from .state import (
+    PAUSED_STATE,
     STEERING_APPLIED,
     STEER_APPLICATION_PENDING,
     TASK_FAILURE_VALIDATION_EXHAUSTED,
@@ -539,13 +540,98 @@ class LoopSupervisor:
             self._operator_interrupted = True
         return delivered
 
-    def pause(self) -> None:
+    def pause(self, reason: str = "") -> None:
+        """Hold the loop at the next iteration boundary (task 015's
+        `pause`/`resume` seam, `POST /pause`).
+
+        `reason` (task 036, requirement D.1/D.2, #142) is what tells an
+        ENGINE-initiated pause apart from an operator one, and it is the
+        only thing that makes the pause persistent:
+
+        * `POST /pause` calls this with NO reason and keeps the pre-task-036
+          contract exactly -- no status field changes at all, the pause is
+          observable through the `log` event alone. An operator who paused a
+          run knows they paused it, and treating that as a recorded lifecycle
+          state would change what every consumer sees on a routine
+          look-at-the-logs pause (docs/api.md `POST /pause`).
+        * The engine pausing ITSELF on an escalation edge passes its edge
+          name (`rejected_last_approach`), and that pause is persisted to
+          status.json by `_persist_pause` below -- nobody typed it, so
+          nothing else would tell the host the run is parked waiting for a
+          human ruling rather than working.
+        """
         self._pause.clear()
         self.run.emit("log", message="paused at next iteration boundary")
+        if reason:
+            self._persist_pause(reason)
+
+    def _persist_pause(self, reason: str) -> None:
+        """Record an engine-initiated pause on status.json IMMEDIATELY (task
+        036, requirement D.1/D.2, #142): `state: "paused"` plus
+        `pauseReason: "<the edge that paused>"`, written at the escalation
+        site itself rather than at the boundary the loop later parks on, so
+        a host reading status.json (or `ralphctl status`, or the hub) sees
+        the pause the moment the decision is made instead of only after the
+        review iteration finishes unwinding.
+
+        Deliberately narrow in three ways:
+
+        * `phase` and `approach` are NOT touched -- requirement D.1's
+          "leaves the approach unarchived" is the whole point of this edge,
+          and `resume` must re-enter review over the SAME approach. There is
+          still no `phase: "paused"` (docs/api.md; the loop parks between
+          iterations, `phase` keeps naming the phase that ran last).
+        * a run whose outcome is already settled (`finishing` or a terminal
+          state) is never rewritten -- `POST /abort` on a paused run calls
+          `resume()` to unblock the wind-down, and nothing after the verdict
+          is settled may reopen a non-terminal state.
+        * the reason is recorded as its own field rather than encoded into
+          `state`, so `state`'s value set stays a small enum every consumer
+          can switch on (`state.NONTERMINAL_STATES`, which `paused` joins
+          for the same liveness reason `finishing` is in it).
+        """
+        status = self.run.read_status()
+        current = status.get("state")
+        if current == "finishing" or current in TERMINAL_STATES:
+            return
+        self.run.update_status(state=PAUSED_STATE, pauseReason=reason)
+        self.run.emit("log", message=(
+            f"run state recorded `{PAUSED_STATE}` on status.json "
+            f"(pauseReason: {reason}); `ralphctl resume {self.cfg.run_id}` "
+            "clears it"))
 
     def resume(self) -> None:
+        """Release the loop (`POST /resume`), and clear an engine-recorded
+        pause if there is one (task 036, requirement D.1/D.2, #142)."""
         self._pause.set()
+        self._clear_persisted_pause()
         self.run.emit("log", message="resumed")
+
+    def _clear_persisted_pause(self) -> None:
+        """Undo `_persist_pause`'s status.json write (task 036, requirement
+        D.1/D.2, #142): `state` back to `running` and `pauseReason` back to
+        `null`, leaving `approach` and `phase` exactly as they were -- the
+        run resumes the SAME approach in the review phase the escalation
+        paused it in (`_step_review`'s `rejected_last_approach` edge is a
+        `review -> review` self-loop, and across a process restart
+        `_resume_point`'s `_paused_awaiting_last_approach_ruling` case lands
+        the fresh episode back on `review` over the same approach too).
+
+        A no-op unless `state` is actually the recorded pause: an operator
+        pause records no state (see `pause` above), so a `POST /resume` on
+        one -- or on a run that was never paused at all, which the API
+        accepts as a no-op -- must not rewrite `state` to `running` and
+        resurrect a `finishing`/terminal run.
+        """
+        status = self.run.read_status()
+        if status.get("state") != PAUSED_STATE:
+            return
+        reason = status.get("pauseReason")
+        self.run.update_status(state="running", pauseReason=None)
+        self.run.emit("log", message=(
+            f"recorded pause cleared (pauseReason was: {reason}); resuming "
+            f"approach {status.get('approach')} in the "
+            f"`{status.get('phase')}` phase"))
 
     def retry_now(self) -> bool:
         """Operator-requested "try the endpoint again right now" (task 015,
@@ -3206,6 +3292,18 @@ class LoopSupervisor:
                                infraWaitTotalS=round(self._infra_wait_total_s, 3),
                                pausedTotalS=round(self._paused_wait_total_s, 3),
                                health="ok", infraWait=None,
+                               # Task 036 (requirement D.1/D.2, #142): a fresh
+                               # episode is not parked on anything -- an
+                               # engine-recorded pause belongs to the process
+                               # that was holding `self._pause`, and leaving
+                               # its reason behind beside `state: "running"`
+                               # would strand a stale ruling-wanted marker on
+                               # a run that is working again. (The pause is
+                               # not lost: `_resume_point`'s
+                               # `_paused_awaiting_last_approach_ruling` case
+                               # still routes this episode back into review
+                               # over the same approach.)
+                               pauseReason=None,
                                iterationsBudget=self.cfg.iterations,
                                maxApproaches=self.cfg.max_approaches,
                                onComplete=self.cfg.on_complete, verdict=None,
@@ -6945,7 +7043,14 @@ class LoopSupervisor:
         self.run.emit("operator_escalation", approach=approach,
                       reason="rejected_last_approach", findings=blocking,
                       escalation=text)
-        self.pause()
+        # Task 036 (requirement D.1/D.2, #142): the reason argument is what
+        # makes this pause observable from the host -- status.json carries
+        # `state: "paused"` / `pauseReason: "rejected_last_approach"` from
+        # this moment until an operator's `resume` clears it. The edge name
+        # and the `pauseReason` are deliberately the same string: the
+        # `operator_escalation` event above and the persisted status agree
+        # without a second vocabulary to map between.
+        self.pause(reason="rejected_last_approach")
         if self.notifier is not None:
             self.notifier(text)
 

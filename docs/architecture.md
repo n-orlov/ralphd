@@ -1318,6 +1318,29 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `test_resume_without_any_ruling_still_lands_on_review_and_rejects_again`
   is its no-ruling control. All of them reach the paused state through an
   already-paused fixture and never await an unscheduled operator.
+- **Resuming a run paused by `rejected_last_approach`, and seeing that pause
+  from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
+  final approach's all-curable rejection takes its own `review -> review`
+  edge and parks the run on the same `self._pause` event; `_resume_point()`'s
+  `_paused_awaiting_last_approach_ruling(approach)` case routes a restarted
+  episode straight back to **`review`** over the SAME (never archived)
+  approach, for the same reasons as the `rejected_incurable` case above plus
+  one more: there is no fresh approach left to route to at all.
+  Task 036 adds the half that makes the hold *legible off the run dir*: an
+  engine-initiated pause passes its edge name to `pause(reason=...)`, which
+  persists `state: "paused"` plus `pauseReason: "rejected_last_approach"` to
+  `status.json` at the escalation site itself, and `resume()` clears exactly
+  that pair (back to `running`/`null`) while leaving `approach` and `phase`
+  untouched. Nobody typed that pause, so unlike an operator `POST /pause` --
+  which still records no status field at all -- there would otherwise be
+  nothing on disk telling a host the run is waiting for a ruling rather than
+  working. `paused` is therefore part of `state.NONTERMINAL_STATES`: a live
+  engine still owns the run, no destructive action may open on it, and an
+  engine killed while parked leaves it dangling like any other non-terminal
+  run. Tests: `tests/test_last_approach_pause_task011.py` (the edge) and
+  `tests/test_last_approach_pause_persisted_task036.py` (the persisted pause,
+  the resume that clears it over the same approach, and the operator pause
+  that still records nothing).
 - Tests: `tests/test_resume.py` (no Docker, real `ralphd-engine` twice over
   the same run dir via `test_e2e.py`'s `engine_factory` fixture).
 - **Vigilant-mode verification across a crash (task 052).** Resuming into an

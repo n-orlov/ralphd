@@ -1143,7 +1143,13 @@ is pending.
 
 Pause takes effect at iteration boundaries only: `pause()` clears an event that
 `_gate()` awaits before each iteration, so the running agent finishes undisturbed,
-and `resume()` releases it. Interrupt is `SIGINT` to the agent's process group —
+and `resume()` releases it. An operator pause changes no status field; an
+engine-initiated one (`pause(reason=...)`, taken today only by the
+`rejected_last_approach` escalation edge, v0.18 requirement D.1/D.2) also
+persists `state: "paused"` and `pauseReason` on status.json immediately, and
+`resume()` clears that pair back to `running`/`null` while leaving `approach`
+and `phase` alone — nobody typed that pause, so the host has to be able to read
+it (§5.2). Interrupt is `SIGINT` to the agent's process group —
 the subprocess runs in its own session precisely so the signal cannot hit the
 engine — and ends the current iteration and nothing else. Abort is sticky:
 `abort(reason)` records the reason, interrupts the agent, and makes
@@ -1363,7 +1369,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | field | type | meaning |
 |---|---|---|
 | `runId` | string | the run id |
-| `state` | string | `starting` \| `running` \| `finishing` \| `succeeded` \| `failed` \| `aborted` (task 012, #56 adds `finishing`: the outcome is settled, the post-terminal `reflect` iteration has not run yet -- see §12.2) |
+| `state` | string | `starting` \| `running` \| `paused` \| `finishing` \| `succeeded` \| `failed` \| `aborted` (task 012, #56 adds `finishing`: the outcome is settled, the post-terminal `reflect` iteration has not run yet -- see §12.2; v0.18 task 036, #142, adds `paused`: an ENGINE-initiated hold on the `rejected_last_approach` escalation edge, never an operator `POST /pause` -- see `pauseReason` below) |
 | `schemaVersion` | int | run-dir schema this state was written under (§5.7) |
 | `health` | string | `ok` \| `degraded` — degraded while sitting out an infra outage |
 | `infraWait` | object \| null | the backoff wait in progress: `since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`; `null` whenever nothing is being waited on |
@@ -1402,6 +1408,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `blockerSignatureOrigins` | object | `{"<approach>": "stagnation"|"ingestion"}` — per-approach origin of the matching `blockerSignatures` entry (task 012, requirement C.2, #124), written alongside it by `_record_stagnation_signature`; the `repeated_blocker_signature` guard reads it back, keyed the same way as `blockerSignatures`, to tell an ingestion-exhaustion repeat from an ordinary #61 worker-stagnation repeat — only a repeat where BOTH approaches' signatures originated from ingestion failure marks the run `health="degraded"`. Absent for a run that has never stagnated |
 | `steerRedeliveries` | object | `{"<name>": <count>}` — per-message redelivery counter (task 006, requirement B.1, #122) `_reverse_stale_steer_settlement` maintains, disk-backed and surviving a resume, the same shape `planReviewRevisions` already uses: a clean steer iteration that honestly reports `settled: false` gets the message unconsumed and redelivered while its count stays below `steer_redelivery_max`, and is instead marked settled-by-exhaustion once it reaches the cap. Absent for a run that has never had a `settled: false` steer payload |
 | `verdictGatePeeks` | array | v0.17 requirement D.5 (#125 A): one `{approach, iteration, calls}` entry per `verdict_gate` iteration (either call site) whose own transcript held a tool call reading past the gate's honor-system blindness — `iterations/`, `events.jsonl`, or the per-iteration transcript file (`state.detect_verdict_gate_peek`). A recorded observation only: never consulted by `_verdict_gate_verdict`, so it never changes `verdict`. Absent for a run with `peer_verdict_gate: false` or one whose gate iterations never peeked |
+| `pauseReason` | string \| null | v0.18 requirement D.1/D.2 (#142, task 036) -- why the engine paused ITSELF, written together with `state: "paused"` at the escalation site the moment the decision is made, and cleared back to `null` (with `state` back to `running`) by `POST /resume`. The one value the engine writes is `"rejected_last_approach"`: the last approach was rejected on blocking findings that are all `curable: true` with its single cure pass already spent, so the run holds for an operator ruling instead of ending `failed` on paperwork. `approach` and `phase` are left untouched and the approach is not archived, so a resume re-enters `review` over the SAME approach. Absent/`null` for an operator `POST /pause`, which records no status field at all |
 | `curePasses` | object | `{"<approach>": <count>}` — v0.18 requirement C.1/C.2 (#141) per-approach cure-pass counter, bounded to at most one per approach: a `rejected` review whose blocking findings are all `curable: true` and whose entry for that approach reads `0` takes the `review -> worker` cure-pass edge (cure tasks appended, `origin: "review-cure"`) instead of replanning; a second `rejected` in the same approach, or any incurable finding, takes the ordinary replan/pause edge regardless. Disk-backed and survives a resume. Absent for a run that has never taken a cure pass |
 
 Cost fields deserve their own contract, because **a missing price is not a
@@ -3099,10 +3106,12 @@ whether a figure is partial or derived.
 ### 8.7 Vanished containers, repair and doctor
 
 A run whose recorded state is non-terminal (`NONTERMINAL_STATES` is
-`("starting", "running", "finishing")` -- task 012, #56, adds `finishing`:
-an engine that dies mid-reflect leaves a dangling run exactly like one
-that dies mid-worker) while **no container is running for it** is a
-dangling run. It is the shape a host reboot, an OOM kill or a `docker rm`
+`("starting", "running", "paused", "finishing")` -- task 012, #56, adds
+`finishing`: an engine that dies mid-reflect leaves a dangling run exactly like
+one that dies mid-worker; v0.18 task 036, #142, adds `paused` for the same
+reason, since an engine parked on the `rejected_last_approach` escalation still
+owns the run through an in-process `asyncio.Event`) while **no container is
+running for it** is a dangling run. It is the shape a host reboot, an OOM kill or a `docker rm`
 leaves behind, and the run dir alone cannot distinguish it from a run that is
 working normally.
 
@@ -4096,8 +4105,9 @@ yields. Keys sort on raw payload values, not rendered cell text:
 on the bare counter rather than on the rendered `10/12`, `tasks` on the
 **completion ratio** so `5/7` outranks `100/250`, `startedAt`
 on the parsed instant so ISO values with different UTC offsets order correctly,
-and `state`/`verdict` in lifecycle order (`starting → running → finishing →
-succeeded → failed → aborted`, and no-verdict → `unverified` → `verified`). Missing values
+and `state`/`verdict` in lifecycle order (`starting → running → paused →
+finishing → succeeded → failed → aborted`, and
+no-verdict → `unverified` → `verified`). Missing values
 sort last, and the run id breaks ties so the order is total and stable.
 `startedAt`, `iterationsUsed` and `approach` start descending; `--reverse`
 flips whichever direction the key starts with. A run with no plan at all has no

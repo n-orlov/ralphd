@@ -169,7 +169,7 @@ let runSort = { key: "startedAt", dir: -1 };
 // Mirrors `main.py`'s `_STATUS_STATES` / the verdict progression in
 // docs/api.md (no verdict yet -> unverified -> verified -> verified-with-
 // residuals, requirement D.3).
-const RUN_STATE_ORDER = ["starting", "running", "finishing", "succeeded", "failed", "aborted"];
+const RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "succeeded", "failed", "aborted"];
 const RUN_VERDICT_ORDER = ["", "unverified", "verified", "verified-with-residuals"];
 
 function lifecycleRank(order, value) {

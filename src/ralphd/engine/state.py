@@ -459,7 +459,21 @@ def read_json(path: Path, default: Any = None) -> Any:
 # how status.json carries the settled verdict and the pending terminal state
 # across the window, and how a resumed process promotes it without redoing
 # any of the job.
-NONTERMINAL_STATES = ("starting", "running", "finishing")
+#
+# Task 036 (v0.18 requirement D.1/D.2, #142) adds "paused": when the ENGINE
+# pauses itself on an escalation edge (`rejected_last_approach` -- the last
+# approach was rejected on findings that are all curable with no approach
+# budget left to cure them in), the pause is not a passing hiccup an operator
+# will release in seconds: the run sits there until a human records a ruling,
+# and that has to be observable from the HOST (`ralphctl status`, the hub, a
+# plain read of status.json) rather than only inferrable from a `log` event in
+# events.jsonl. It is non-terminal for exactly the reason `finishing` is: a
+# live engine still owns the run (`self._pause` is an in-process
+# `asyncio.Event`), an engine killed while parked leaves a dangling run, and
+# no destructive action may open on it. An OPERATOR pause (`POST /pause`)
+# still records no state at all -- see `LoopSupervisor.pause`.
+PAUSED_STATE = "paused"
+NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE, "finishing")
 
 # Task 030 (#19): its complement -- the recorded `state` values that mean "no
 # engine owns this run any more", i.e. the ONE gate a destructive action may
