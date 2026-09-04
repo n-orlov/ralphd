@@ -6,8 +6,8 @@ this default explicitly as something never to weaken).
 `engine.findings.extract_materiality_rubric` finds the contract's own
 "Materiality rubric" heading (if any) and returns its text verbatim;
 `materiality_rubric_context` turns that into the review-prompt context
-block, falling back to the explicit `ALL_BLOCKING_DEFAULT_NOTICE` when no
-heading exists. `LoopSupervisor._review_materiality_rubric_context` is the
+block, falling back to the engine's own `DEFAULT_RUBRIC` plus
+`NO_RUBRIC_NOTICE` when no heading exists. `LoopSupervisor._review_materiality_rubric_context` is the
 engine call site that reads the run's own PRD/composite-PRD file (the same
 file `build_prompt` already names "the PRD file") and is wired into
 `_review_extra_context`, so every review-phase prompt carries this hand-off.
@@ -91,23 +91,28 @@ def test_extract_materiality_rubric_stops_before_the_next_same_level_heading():
 # the rubric-bearing hand-off.
 # ---------------------------------------------------------------------------
 
-def test_a_contract_with_no_rubric_yields_the_explicit_all_blocking_default():
-    """DoD predicate 2: a contract with no rubric yields all-blocking
-    behaviour -- pinned directly against the explicit notice text, not
-    inferred."""
+def test_a_contract_with_no_rubric_yields_the_engine_default_rubric():
+    """DoD predicate 2 (task 004 revision): a contract with no rubric
+    yields the engine's own product-blocking/residual rubric
+    (`DEFAULT_RUBRIC`), preceded by the explicit `NO_RUBRIC_NOTICE`
+    sentence -- pinned directly against both texts, not inferred."""
     context = findings.materiality_rubric_context(NO_RUBRIC_CONTRACT)
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE in context
-    assert "every finding is blocking" in findings.ALL_BLOCKING_DEFAULT_NOTICE
+    assert findings.NO_RUBRIC_NOTICE in context
+    assert findings.DEFAULT_RUBRIC in context
+    assert "no rubric supplied; the engine default applies" in context
+    assert "Blocking" in context and "Residual" in context
 
 
-def test_an_empty_contract_also_yields_the_all_blocking_default():
+def test_an_empty_contract_also_yields_the_engine_default_rubric():
     context = findings.materiality_rubric_context("")
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE in context
+    assert findings.NO_RUBRIC_NOTICE in context
+    assert findings.DEFAULT_RUBRIC in context
 
 
 def test_a_rubric_bearing_contract_is_handed_the_rubric_text_verbatim():
     context = findings.materiality_rubric_context(RUBRIC_BEARING_CONTRACT)
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE not in context
+    assert findings.NO_RUBRIC_NOTICE not in context
+    assert findings.DEFAULT_RUBRIC not in context
     assert "Materiality rubric" in context
     assert "Blocking" in context and "Residual" in context
     assert "Petition protocol" not in context
@@ -125,14 +130,15 @@ def _supervisor(root: Path) -> LoopSupervisor:
     return LoopSupervisor(cfg, run, root)
 
 
-def test_the_engine_call_site_defaults_to_all_blocking_with_no_prd_file(
+def test_the_engine_call_site_defaults_to_the_engine_default_rubric_with_no_prd_file(
         tmp_path):
     sup = _supervisor(tmp_path)
     # No PRD file has been written at all -- the ordinary "very early in
     # planning" case, must not raise and must still hand review the
-    # explicit default rather than omitting the context.
+    # engine's own default rubric rather than omitting the context.
     context = sup._review_materiality_rubric_context()
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE in context
+    assert findings.NO_RUBRIC_NOTICE in context
+    assert findings.DEFAULT_RUBRIC in context
 
 
 def test_the_engine_call_site_surfaces_a_rubric_from_the_run_s_own_prd_file(
@@ -140,7 +146,7 @@ def test_the_engine_call_site_surfaces_a_rubric_from_the_run_s_own_prd_file(
     sup = _supervisor(tmp_path)
     sup.run.prd_file.write_text(RUBRIC_BEARING_CONTRACT)
     context = sup._review_materiality_rubric_context()
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE not in context
+    assert findings.NO_RUBRIC_NOTICE not in context
     assert "Blocking" in context and "Residual" in context
 
 
@@ -150,7 +156,7 @@ def test_the_engine_call_site_prefers_the_composite_prd_when_present(
     sup.run.prd_file.write_text(NO_RUBRIC_CONTRACT)
     sup.run.composite_prd_file.write_text(RUBRIC_BEARING_CONTRACT)
     context = sup._review_materiality_rubric_context()
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE not in context
+    assert findings.NO_RUBRIC_NOTICE not in context
     assert "Blocking" in context and "Residual" in context
 
 
@@ -325,7 +331,7 @@ def test_the_engine_call_site_follows_a_reference_from_the_plain_prd_file(
     sup, root = _checkout_supervisor_with_referenced_document(tmp_path)
     sup.run.prd_file.write_text(PROSE_REFERENCE_CONTRACT)
     context = sup._review_materiality_rubric_context()
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE not in context
+    assert findings.NO_RUBRIC_NOTICE not in context
     assert "Blocking" in context and "Residual" in context
     # The rendered block names the resolved source document path.
     assert "docs/review-economics.md" in context
@@ -340,7 +346,7 @@ def test_the_engine_call_site_follows_a_reference_from_the_composite_prd_file(
     sup.run.prd_file.write_text(NO_RUBRIC_CONTRACT)
     sup.run.composite_prd_file.write_text(MARKER_REFERENCE_CONTRACT)
     context = sup._review_materiality_rubric_context()
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE not in context
+    assert findings.NO_RUBRIC_NOTICE not in context
     assert "Blocking" in context and "Residual" in context
     assert "docs/review-economics.md" in context
 
@@ -350,10 +356,11 @@ def test_the_engine_call_site_emits_a_log_event_for_an_unresolvable_reference(
     sup, root = _checkout_supervisor_with_referenced_document(tmp_path)
     sup.run.prd_file.write_text(UNRESOLVABLE_REFERENCE_CONTRACT)
     context = sup._review_materiality_rubric_context()
-    # No rubric resolved -- the explicit all-blocking default, same as the
+    # No rubric resolved -- the engine's own default rubric, same as the
     # plain no-rubric case, and one warning `log` event was emitted for the
     # unresolved path via `self.run.emit`.
-    assert findings.ALL_BLOCKING_DEFAULT_NOTICE in context
+    assert findings.NO_RUBRIC_NOTICE in context
+    assert findings.DEFAULT_RUBRIC in context
     lines = (sup.run.root / "events.jsonl").read_text().splitlines()
     events = [json.loads(line) for line in lines]
     assert any(e.get("type") == "log"

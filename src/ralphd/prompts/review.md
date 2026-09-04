@@ -131,10 +131,10 @@ machine-checked before your verdict is trusted:
 - `severity`: `"blocking"` or `"residual"`. A contract may hand you its own
   materiality rubric (a `### Materiality rubric` section in the PRD/context
   above) describing what counts as which; when none is supplied you receive
-  an explicit all-blocking default notice instead, and every finding is
-  blocking under it. Read whichever one you were handed — never invent your
-  own blocking/residual boundary, and never reclassify a finding to force a
-  verdict.
+  the engine's own default rubric instead (its own blocking/residual
+  boundary, prefixed "no rubric supplied; the engine default applies").
+  Read whichever one you were handed — never invent your own boundary,
+  and never reclassify a finding to force a verdict.
 - `curable`: a boolean — would a FRESH approach change this finding's truth
   value? A temporal miss (a deadline that has passed, an environment fact
   that will not change) is not curable; a fixable false claim, a missing

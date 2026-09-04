@@ -299,10 +299,13 @@ def read_findings_json(path: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Task 003 (requirement A.3, #110): the materiality rubric comes from the
-# contract; the engine's own default when a contract supplies none is
-# today's behaviour, unchanged -- every finding is blocking. Non-negotiable
-# #2 names this default explicitly as something never to weaken.
+# Task 003/004 (requirements A.3/A.2, #110): the materiality rubric comes
+# from the contract; when a contract supplies none, the engine's own
+# default is no longer "every finding is blocking" -- it is this fragment's
+# own product-blocking/residual boundary (`docs/review-economics.md`'s
+# "## Materiality rubric" section), kept here as the single copy in the
+# source tree so review always has a real boundary to classify against,
+# never a placeholder that collapses every finding to blocking.
 # ---------------------------------------------------------------------------
 
 # A markdown heading (any level "#" through "######") whose text is
@@ -314,13 +317,43 @@ def read_findings_json(path: Path) -> list[dict]:
 _RUBRIC_HEADING_RE = re.compile(
     r"^(#{1,6})[ \t]+materiality rubric\b.*$", re.IGNORECASE | re.MULTILINE)
 
-# The explicit, quotable statement of the default this module falls back to
-# when `extract_materiality_rubric` finds nothing -- reused verbatim by
-# `materiality_rubric_context` below and by the pinning test, so the two
-# never drift apart.
-ALL_BLOCKING_DEFAULT_NOTICE = (
-    "This contract supplies no materiality rubric. Default: every finding "
-    "is blocking (today's behaviour, unchanged)."
+# The explicit, quotable statement handed to review whenever no rubric is
+# found -- reused verbatim by `materiality_rubric_context` below, by
+# `LoopSupervisor._review_materiality_rubric_context`, and by the pinning
+# test, so the three never drift apart.
+NO_RUBRIC_NOTICE = "no rubric supplied; the engine default applies"
+
+# The engine's own default materiality rubric (task 004, requirement A.2,
+# #139): the product-blocking/residual boundary text of
+# `docs/review-economics.md`'s "## Materiality rubric" section, quoted here
+# as the single copy in the source tree. This is a REAL rubric -- review
+# still classifies each finding blocking or residual against it -- not the
+# old collapse-everything-to-blocking placeholder the engine used to fall
+# back to (removed by task 004). A citing PRD may
+# still narrow this boundary explicitly (an inline `## Materiality rubric`
+# heading, or a reference resolved by `resolve_materiality_rubric` below);
+# this constant is only what applies when a contract supplies neither.
+DEFAULT_RUBRIC = (
+    "## Materiality rubric\n"
+    "\n"
+    "Review computes its verdict from **blocking** findings only; "
+    "**residual** findings are recorded and surfaced but never reject.\n"
+    "\n"
+    "**Blocking** \u2014 any of: a red test at the shipped sha; an unmet "
+    "requirement of the contract; a false claim in a tracked artifact "
+    "that changes what a reader believes landed or its result (a wrong "
+    "commit attributed for a change that shipped differently than "
+    "described, a test result misstated, an issue state misreported, an "
+    "invented notification); a missing required declaration (e.g. a "
+    "sweep's `sweep-sha`); an issue closed without evidence; a secret "
+    "exposed; a stated Definition-of-done predicate evaluating false.\n"
+    "\n"
+    "**Residual** \u2014 everything else, including: imprecision or "
+    "infelicity in prose; a stale snapshot that is labelled as a "
+    "snapshot; a missing cross-reference; formatting; an inaccuracy in a "
+    "record *about another record* whose correction would not change "
+    "what a reader believes shipped; a notification gap that has been "
+    "cured under the late-cure rule.\n"
 )
 
 
@@ -332,8 +365,8 @@ def extract_materiality_rubric(contract_text: str) -> str | None:
     when no such heading exists, which is the ordinary case for a contract
     written before this convention existed; the caller
     (`materiality_rubric_context`) is the one place that turns `None` into
-    the explicit all-blocking default -- this function itself makes no
-    default decision, it only answers "is one there".
+    the engine's own default rubric (`DEFAULT_RUBRIC`) -- this function
+    itself makes no default decision, it only answers "is one there".
 
     A restricted heading match (not a generic keyword search): the rubric
     is a *section* review must read as a whole, not a sentence that happens
@@ -358,16 +391,18 @@ def extract_materiality_rubric(contract_text: str) -> str | None:
 def materiality_rubric_context(contract_text: str) -> str:
     """Render the review-prompt context block that hands review the
     contract's own materiality rubric -- or, when the contract supplies
-    none, the explicit all-blocking default (`ALL_BLOCKING_DEFAULT_NOTICE`)
-    instead. Requirement A.3 (#110): "review reads the PRD's materiality
-    rubric; the engine defaults to all-blocking when none is present" --
-    this is that hand-off, always present so review is never left to guess
-    which case it is in.
+    none, the engine's own default rubric (`DEFAULT_RUBRIC`) plus the
+    explicit `NO_RUBRIC_NOTICE` sentence, so review is told which case it
+    is in and still receives a real blocking/residual boundary to classify
+    findings against. Requirement A.3/A.2 (#110/#139): "review reads the
+    PRD's materiality rubric; the engine defaults to its own
+    product-blocking/residual boundary when none is present" -- this is
+    that hand-off, always present so review is never left to guess.
     """
     rubric = extract_materiality_rubric(contract_text)
     lines = ["\n## Materiality rubric (task 003, requirement A.3, #110)\n"]
     if rubric is None:
-        lines.append(f"\n{ALL_BLOCKING_DEFAULT_NOTICE}\n")
+        lines.append(f"\n{NO_RUBRIC_NOTICE}\n\n{DEFAULT_RUBRIC}\n")
     else:
         lines.append(
             "\nThe contract below is this run's own materiality rubric "

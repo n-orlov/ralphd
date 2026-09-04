@@ -7653,13 +7653,15 @@ class LoopSupervisor:
         return petitions.duplicate_petitions_review_context(self.workspace)
 
     def _review_materiality_rubric_context(self) -> str:
-        """Task 003 (requirement A.3, #110, wiring half): hand review the
-        contract's own materiality rubric -- inline OR adopted by
-        reference (task 002's `findings.resolve_materiality_rubric`) -- or,
-        when the contract supplies neither, the explicit all-blocking
-        default (`findings.ALL_BLOCKING_DEFAULT_NOTICE`), so review never
-        has to guess which case it is in and the default stays
-        engine-declared rather than merely assumed.
+        """Task 003/004 (requirement A.3/A.2, #110/#139, wiring half): hand
+        review the contract's own materiality rubric -- inline OR adopted
+        by reference (task 002's `findings.resolve_materiality_rubric`) --
+        or, when the contract supplies neither, the engine's own default
+        rubric (`findings.DEFAULT_RUBRIC`) plus `findings.NO_RUBRIC_NOTICE`,
+        so review never has to guess which case it is in and the default
+        stays engine-declared -- a real blocking/residual boundary, never a
+        collapse-everything-to-blocking placeholder -- rather than merely
+        assumed.
 
         Reads the same file `build_prompt` already names as "the PRD file"
         (`prd_path(self.run.root) or self.run.prd_file` -- composite when
@@ -7668,8 +7670,8 @@ class LoopSupervisor:
         (a run that has not written one yet, e.g. very early in planning)
         costs nothing more than itself: `findings.resolve_materiality_
         rubric` is called with `""`, which contains no rubric heading and
-        no reference, so review still receives the explicit all-blocking
-        default rather than this method raising or silently omitting the
+        no reference, so review still receives the engine's own default
+        rubric rather than this method raising or silently omitting the
         context.
 
         Unlike `findings.materiality_rubric_context` (still used verbatim
@@ -7688,7 +7690,9 @@ class LoopSupervisor:
             self.run.emit("log", **event)
         lines = ["\n## Materiality rubric (task 003, requirement A.3, #110)\n"]
         if resolution.rubric is None:
-            lines.append(f"\n{findings.ALL_BLOCKING_DEFAULT_NOTICE}\n")
+            lines.append(
+                f"\n{findings.NO_RUBRIC_NOTICE}\n\n"
+                f"{findings.DEFAULT_RUBRIC}\n")
         else:
             if resolution.source_path is not None:
                 lines.append(
@@ -7714,9 +7718,9 @@ class LoopSupervisor:
         *is* the run's PRD). '' when there is no PRD file yet (very early in
         planning, or a stub run dir): every caller treats absence as "the
         contract says nothing", which is the default-safe direction for both
-        readers -- the materiality rubric falls back to all-blocking
-        (requirement A.3, #110) and exhaustion falls back to the pre-wave
-        `failed` routing (requirement C.3, #114).
+        readers -- the materiality rubric falls back to the engine default
+        rubric (requirement A.2/A.3, #110/#139) and exhaustion falls back
+        to the pre-wave `failed` routing (requirement C.3, #114).
         """
         prd = prd_path(self.run.root) or self.run.prd_file
         try:
@@ -7727,8 +7731,8 @@ class LoopSupervisor:
     def _review_extra_context(self) -> str:
         """Everything appended to a review-phase prompt beyond the PRD and
         tasks.json themselves: flagged-criteria re-verification (task 009),
-        the contract's materiality rubric or the all-blocking default
-        (task 003, requirement A.3, #110), any recorded operator ruling
+        the contract's materiality rubric or the engine default rubric
+        (task 003/004, requirement A.3/A.2, #110/#139), any recorded operator ruling
         (task 028, #26), then every OPEN impossibility petition (task 010,
         requirement C, #112), then any duplicate/re-filed petition already
         detected and turned into a blocking finding engine-side (task 012,
