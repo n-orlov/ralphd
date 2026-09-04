@@ -163,6 +163,18 @@ nothing here reduces what steps 1-7 above already require you to check or
 weakens the distrust this prompt's Operator rulings section and the closing
 paragraph below already demand.
 
+## The engine owns the terminal record (task 008, requirement B.2, #140)
+
+Petition/adjudication accounting, steer and ruling history, approach history,
+terminal tallies and notification accounting are the engine's record --
+written into `run-record.md`/`run-record.json` at `finishing`, never a
+closing report's job to reconstruct. A closing report is never faulted for
+omitting or predating them.
+
+A closing report's obligations are exactly: what shipped per requirement, its
+evidence (commit, test node ids), and the residuals it knows of, at the code
+sha it names.
+
 ## Verdict
 
 Report your verdict through the contract -- this is the only way your

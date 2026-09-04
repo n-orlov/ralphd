@@ -7680,6 +7680,37 @@ class LoopSupervisor:
         """
         return petitions.duplicate_petitions_review_context(self.workspace)
 
+    def _terminal_record_review_context(self) -> str:
+        """Task 008 (requirement B.2, #140): tell review, in every review
+        prompt, which parts of the run's history are the ENGINE's own
+        record -- never review's job to reconstruct, and never a gap in a
+        closing report worth a finding over. Mirrors, in the dynamic
+        review-prompt context, the same sentence `review.md` itself now
+        carries statically (task 008 also edits that file) so the
+        guarantee reaches review whether or not the run's own prompt
+        overlay still has the current `review.md` text.
+
+        This is pure prose hand-off, unconditional (always returned, never
+        gated on a run fact) -- unlike `_petitions_review_context` or
+        `_operator_amendment_review_context`, there is no 'common case:
+        empty' here; the guarantee applies to every review pass, so the
+        text is always present in `_review_extra_context`'s output.
+        """
+        return (
+            "\n## The engine owns the terminal record (task 008, "
+            "requirement B.2, #140)\n\n"
+            "Petition/adjudication accounting, steer and ruling history, "
+            "approach history, terminal tallies and notification "
+            "accounting are the engine's record -- written into "
+            "`run-record.md`/`run-record.json` at `finishing` (task "
+            "006/007, requirement B.1), never a closing report's job to "
+            "reconstruct. A closing report is never faulted for omitting "
+            "or predating them.\n\n"
+            "A closing report's obligations are exactly: what shipped per "
+            "requirement, its evidence (commit, test node ids), and the "
+            "residuals it knows of, at the code sha it names.\n"
+        )
+
     def _review_materiality_rubric_context(self) -> str:
         """Task 003/004 (requirement A.3/A.2, #110/#139, wiring half): hand
         review the contract's own materiality rubric -- inline OR adopted
@@ -7760,18 +7791,21 @@ class LoopSupervisor:
         """Everything appended to a review-phase prompt beyond the PRD and
         tasks.json themselves: flagged-criteria re-verification (task 009),
         the contract's materiality rubric or the engine default rubric
-        (task 003/004, requirement A.3/A.2, #110/#139), any recorded operator ruling
-        (task 028, #26), then every OPEN impossibility petition (task 010,
-        requirement C, #112), then any duplicate/re-filed petition already
-        detected and turned into a blocking finding engine-side (task 012,
-        requirement C.1, #112). All return '' (or, for the rubric
-        context, the fixed default text) in the common case, so review
-        prompts are unaffected beyond the rubric hand-off itself until one
-        of the other mechanisms actually fires. One helper, used at every
-        call site that builds a review prompt, so a future context source
-        has exactly one place to join in."""
+        (task 003/004, requirement A.3/A.2, #110/#139), the engine's
+        always-present statement of which parts of the run's history are
+        its own terminal record (task 008, requirement B.2, #140), any
+        recorded operator ruling (task 028, #26), then every OPEN
+        impossibility petition (task 010, requirement C, #112), then any
+        duplicate/re-filed petition already detected and turned into a
+        blocking finding engine-side (task 012, requirement C.1, #112).
+        All but the rubric and terminal-record contexts return '' in the
+        common case, so review prompts are unaffected beyond those two
+        fixed hand-offs until one of the other mechanisms actually fires.
+        One helper, used at every call site that builds a review prompt,
+        so a future context source has exactly one place to join in."""
         return (self._flagged_criteria_review_context() +
                 self._review_materiality_rubric_context() +
+                self._terminal_record_review_context() +
                 self._operator_amendment_review_context() +
                 self._petitions_review_context() +
                 self._duplicate_petitions_review_context() +
