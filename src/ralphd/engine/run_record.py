@@ -34,8 +34,13 @@ from . import findings as findings_mod
 from . import petitions as petitions_mod
 from . import state
 
-RUN_RECORD_JSON_FILE = "run-record.json"
-RUN_RECORD_MD_FILE = "run-record.md"
+# Canonical in `engine.state` (task 007, B.1) -- that module's `RUN_DOCUMENTS`/
+# `ARTIFACT_ALIASES` give both files a well-known key on `ralphctl docs`/
+# `ralphctl artifacts` and the hub's panels, and importing them back here
+# rather than redeclaring means this writer and those listings can never name
+# the file two different ways.
+RUN_RECORD_JSON_FILE = state.RUN_RECORD_JSON_FILE
+RUN_RECORD_MD_FILE = state.RUN_RECORD_MD_FILE
 
 
 # ---------------------------------------------------------------------------

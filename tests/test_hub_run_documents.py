@@ -198,6 +198,32 @@ def test_document_view_text_is_what_ralphctl_docs_prints(tmp_path):
         assert printed.rstrip("\n") == view["text"].rstrip("\n"), key
 
 
+# ------------------------------------------------- the run record (task 007)
+def test_hub_documents_panel_lists_and_serves_the_run_record(tmp_path):
+    """Task 007 (B.1): the run page's document panel is a generic renderer of
+    `state.run_documents` (`document_list`/`document_view` above), so once
+    `run-record.md`/`run-record.json` are `RUN_DOCUMENTS` rows the hub links
+    them with no dedicated wiring -- this pins that the link is really there,
+    not merely that the shaping supports it."""
+    registry = tmp_path / "registry"
+    run_dir = _seed_docs(registry)
+    (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+    md = "# Run record\n\nrun: hub-docs\nstate: succeeded\n"
+    js = json.dumps({"runId": "hub-docs", "state": "succeeded"})
+    (run_dir / "artifacts" / "run-record.md").write_text(md)
+    (run_dir / "artifacts" / "run-record.json").write_text(js)
+
+    payload = document_list(registry, "hub-docs")
+    docs = {d["key"]: d for d in payload["documents"]}
+    assert docs["run-record"]["exists"] is True
+    assert docs["run-record-json"]["exists"] is True
+
+    view = document_view(registry, "hub-docs", "run-record")
+    assert view is not None and view["text"].endswith(md)
+    view_json = document_view(registry, "hub-docs", "run-record.json")
+    assert view_json is not None and js in view_json["text"]
+
+
 def test_document_view_accepts_the_file_name_as_an_alias(tmp_path):
     registry = tmp_path / "registry"
     _seed_docs(registry)

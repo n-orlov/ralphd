@@ -175,6 +175,34 @@ def test_artifact_list_is_what_ralphctl_artifacts_ls_reports(tmp_path):
     assert [_with_artifact_display(e) for e in cli] == hub
 
 
+# ------------------------------------------------- the run record (task 007)
+def test_hub_artifacts_panel_lists_and_serves_the_run_record(tmp_path):
+    """Task 007 (B.1): `artifact_list`/`artifact_view` above already walk the
+    whole `artifacts/` tree generically, so `run-record.md`/`run-record.json`
+    -- written by `run_record.write_run_record` -- are listed and servable
+    the moment they exist on disk, with the well-known key/title an
+    `ARTIFACT_ALIASES` row now gives them; this pins that the hub link is
+    really there, not merely that the generic walk would allow it."""
+    registry = tmp_path / "registry"
+    run_dir = _seed_artifacts(registry)
+    md = "# Run record\n\nrun: hub-arts\nstate: succeeded\n"
+    js = json.dumps({"runId": "hub-arts", "state": "succeeded"})
+    (run_dir / "artifacts" / "run-record.md").write_text(md)
+    (run_dir / "artifacts" / "run-record.json").write_text(js)
+
+    listing = artifact_list(registry, "hub-arts")["artifacts"]
+    by_path = {e["path"]: e for e in listing}
+    assert by_path["run-record.md"]["exists"] is True
+    assert by_path["run-record.md"]["key"] == "run-record"
+    assert by_path["run-record.json"]["exists"] is True
+    assert by_path["run-record.json"]["key"] == "run-record-json"
+
+    view = artifact_view(registry, "hub-arts", "run-record")
+    assert view is not None and view["text"].endswith(md)
+    view_json = artifact_view(registry, "hub-arts", "run-record.json")
+    assert view_json is not None and js in view_json["text"]
+
+
 # ---------------------------------------------------------------- one artifact
 
 

@@ -3548,10 +3548,25 @@ def format_task_column(counts: dict, *, stale: bool = False) -> str:
 # `job.yaml` is REDACTED, mechanically, by `redact.redact_job_yaml` -- see that
 # function for why name-masking and value-scrubbing are both needed.
 
-# Where a document lives: the run dir, or the run's job config dir (which the
-# CLI/hub know as `<registry>/configs/<run-id>` and the engine as `/config`).
+# Where a document lives: the run dir, the run's job config dir (which the
+# CLI/hub know as `<registry>/configs/<run-id>` and the engine as `/config`),
+# or the run's `artifacts/` dir.
 DOC_IN_RUN = "run"
 DOC_IN_CONFIG = "config"
+DOC_IN_ARTIFACTS = "artifacts"
+
+# Task 006 (#140)'s run record, canonical HERE -- `run_record.py` imports these
+# back (`from . import state` -> `state.RUN_RECORD_MD_FILE`) rather than
+# redeclaring them, so the writer and this module's listings/aliases below can
+# never name the file two different ways. `artifact_entries` already walks the
+# whole `artifacts/` tree generically, so the pair is servable by `ralphctl
+# artifacts`/the hub's artifacts panel with no further wiring; the two
+# `RUN_DOCUMENTS` rows below and the `ARTIFACT_ALIASES` rows further down
+# (task 007, B.1) give both files a well-known key and a description on both
+# surfaces (`ralphctl docs`/`ralphctl artifacts`, and the hub panels reading
+# the same dicts).
+RUN_RECORD_MD_FILE = "run-record.md"
+RUN_RECORD_JSON_FILE = "run-record.json"
 
 # `(key, file name, where, what it is)`. The key is what an operator types
 # (`ralphctl docs <run> notes`) and what the hub's dialog buttons carry; the
@@ -3565,6 +3580,10 @@ RUN_DOCUMENTS: tuple[tuple[str, str, str, str], ...] = (
      "the PRD text the agent works from (written when an approach restarts)"),
     ("job", JOB_CONFIG_FILE, DOC_IN_CONFIG,
      "effective job config as inlined at start, secret values redacted"),
+    ("run-record", RUN_RECORD_MD_FILE, DOC_IN_ARTIFACTS,
+     "the engine's own terminal record, human-rendered (task 006, B.1)"),
+    ("run-record-json", RUN_RECORD_JSON_FILE, DOC_IN_ARTIFACTS,
+     "the JSON `run-record.md` renders from (task 006, B.1)"),
 )
 
 # Wordings, server-side and shared (the `NO_PRD`/`NO_TRANSCRIPT` discipline): a
@@ -3639,7 +3658,12 @@ def run_documents(run_root: Path, config_dir: Path | None = None, *,
     cdir = Path(config_dir) if config_dir is not None else None
     out = []
     for key, filename, where, title in RUN_DOCUMENTS:
-        base = root if where == DOC_IN_RUN else cdir
+        if where == DOC_IN_RUN:
+            base = root
+        elif where == DOC_IN_ARTIFACTS:
+            base = root / ARTIFACTS_DIR_NAME
+        else:
+            base = cdir
         entry = {"key": key, "name": filename, "where": where, "title": title,
                  "available": base is not None, "exists": False, "bytes": 0,
                  "redacted": False}
@@ -3706,9 +3730,9 @@ def format_run_document_listing(docs: list[dict]) -> list[str]:
     """The "which documents exist" table as text lines, worded ONCE: `ralphctl
     docs <run>` prints these and the hub's document panel (task 022) labels its
     buttons from the very same fields."""
-    lines = [f"{'DOCUMENT':<14}{'FILE':<20}{'SIZE':>13}  DESCRIPTION"]
+    lines = [f"{'DOCUMENT':<18}{'FILE':<20}{'SIZE':>13}  DESCRIPTION"]
     for doc in docs:
-        lines.append(f"{doc.get('key', ''):<14}{doc.get('name', ''):<20}"
+        lines.append(f"{doc.get('key', ''):<18}{doc.get('name', ''):<20}"
                      f"{format_run_document_size(doc):>13}  {doc.get('title', '')}")
     return lines
 
@@ -3863,6 +3887,10 @@ ARTIFACT_ALIASES: tuple[tuple[str, str, str], ...] = (
      "`ralphctl suggestions <run> apply --yes`)"),
     ("reflect-failed", "reflection/FAILED.md",
      "why the reflect phase left no report"),
+    ("run-record", RUN_RECORD_MD_FILE,
+     "the engine's own terminal record, human-rendered (task 006, B.1)"),
+    ("run-record-json", RUN_RECORD_JSON_FILE,
+     "the JSON `run-record.md` renders from (task 006, B.1)"),
 )
 
 # This run produced no artifacts at all -- the `NO_PRD`/`RUN_DOCUMENT_ABSENT`

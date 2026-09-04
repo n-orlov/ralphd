@@ -1352,6 +1352,8 @@ it was launched with (task 021, #18.2):
 | `findings` | `review-findings.md` (run dir) | the reviewer's findings that sent the run into another approach |
 | `composite-prd` | `composite-prd.md` (run dir) | the PRD text the agent works from once an approach restarts |
 | `job` | `job.yaml` (config dir) | effective job config as inlined at `start`, **secret values redacted** |
+| `run-record` | `run-record.md` (`artifacts/`) | the engine's own terminal record, human-rendered (task 006, B.1) |
+| `run-record-json` | `run-record.json` (`artifacts/`) | the JSON `run-record.md` renders from (task 006, B.1) |
 
 ```
 ralphctl docs <run-id>            # which documents exist, with sizes
@@ -1385,6 +1387,10 @@ on_complete_cmd: "curl -H 'Authorization: Bearer [REDACTED:github.env:GITHUB_TOK
 model: "amazon-bedrock/eu.anthropic.claude-opus-5"
 price_strategy: "aws"
 ```
+
+The listing also carries `run-record`/`run-record-json` rows once the run has
+reached `finishing` (task 006, B.1) -- absent before that, same
+`(not written)` wording as `composite-prd` above.
 
 - **`job.yaml` is redacted mechanically, on two independent bounds**, because
   the alternative — remembering not to `cat` it — has already failed twice in
@@ -1905,6 +1911,8 @@ ralphctl artifacts <run-id> pull ./out/    # copy the tree out (default: ./artif
 | `report` | `reflection/report.md` | the reflect phase's post-mortem report |
 | `suggestions` | `reflection/suggestions.diff` | the prompt/skill diff the reflect phase proposes (applied only by `ralphctl suggestions <run> apply --yes`) |
 | `reflect-failed` | `reflection/FAILED.md` | why the reflect phase left no report |
+| `run-record` | `run-record.md` | the engine's own terminal record, human-rendered (task 006, B.1) |
+| `run-record-json` | `run-record.json` | the JSON `run-record.md` renders from (task 006, B.1) |
 
 `reflect-failed` is listed only while the file is on disk, and the engine
 removes it the moment a reflect attempt succeeds (task 017, issue #43): a run
@@ -1933,6 +1941,10 @@ size:      844 bytes
 -...
 +...
 ```
+
+The same tree can also carry `run-record.md`/`run-record.json` once the run
+reaches `finishing` (task 006, B.1) -- generic tree entries like the two above
+until then, well-known ones (`run-record`/`run-record-json`) once written.
 
 - **One resolver, one traversal guard.** `report`,
   `reflection/report.md` and `artifacts/reflection/report.md` are the same

@@ -51,6 +51,8 @@ from ralphd.engine.state import (
     RUN_DOCUMENT_ABSENT,
     RUN_DOCUMENT_EMPTY,
     RUN_DOCUMENT_REDACTED_NOTICE,
+    RUN_RECORD_JSON_FILE,
+    RUN_RECORD_MD_FILE,
     format_run_document_listing,
     run_document,
     run_document_body,
@@ -69,6 +71,12 @@ SECRET = "ghp_liveTokenValue0123456789"
 NOTES = "# Handoff notes\n\n- state: 3/7 done\n- next: task 004\n"
 FINDINGS = "# Review findings\n\nApproach 1 missed requirement C.\n"
 COMPOSITE = "# Composite PRD\n\nOriginal PRD plus findings.\n"
+# A minimal stand-in for what `run_record.write_run_record` actually writes
+# (task 006, B.1) -- this module does not exercise the writer itself
+# (`tests/test_run_record.py` does), only that `ralphctl docs`/`ralphctl
+# artifacts` and the hub can list and serve the pair once they exist.
+RUN_RECORD_MD = "# Run record\n\nrun: docs-run\nstate: succeeded\n"
+RUN_RECORD_JSON = json.dumps({"runId": "docs-run", "state": "succeeded"})
 
 
 def _ctl(registry: Path, *argv: str, timeout: int = 60):
@@ -96,7 +104,8 @@ JOB = {
 
 def _seed(tmp: Path, run_id: str = "docs-run", *, notes: bool = True,
           findings: bool = True, composite: bool = False,
-          job: dict | None = None, creds: bool = True) -> Path:
+          job: dict | None = None, creds: bool = True,
+          run_record: bool = False) -> Path:
     """A registry holding one run dir + its config dir, container long gone."""
     registry = tmp / "registry"
     rdir = registry / "runs" / run_id
@@ -111,6 +120,10 @@ def _seed(tmp: Path, run_id: str = "docs-run", *, notes: bool = True,
         (rdir / "review-findings.md").write_text(FINDINGS)
     if composite:
         (rdir / "composite-prd.md").write_text(COMPOSITE)
+    if run_record:
+        (rdir / "artifacts").mkdir(parents=True, exist_ok=True)
+        (rdir / "artifacts" / RUN_RECORD_MD_FILE).write_text(RUN_RECORD_MD)
+        (rdir / "artifacts" / RUN_RECORD_JSON_FILE).write_text(RUN_RECORD_JSON)
     (cdir / JOB_CONFIG_FILE).write_text(_job_yaml(JOB if job is None else job))
     if creds:
         (cdir / "creds").mkdir()
@@ -124,7 +137,8 @@ def test_run_documents_lists_every_known_document_present_or_not(tmp_path):
     docs = run_documents(registry / "runs" / "docs-run",
                          registry / "configs" / "docs-run")
     assert [d["key"] for d in docs] == run_document_keys() == [
-        "notes", "findings", "composite-prd", "job"]
+        "notes", "findings", "composite-prd", "job", "run-record",
+        "run-record-json"]
     by_key = {d["key"]: d for d in docs}
     assert by_key["notes"]["exists"] and by_key["notes"]["body"] == NOTES
     assert by_key["notes"]["bytes"] == len(NOTES)
@@ -147,7 +161,7 @@ def test_run_documents_without_a_config_dir_says_out_of_reach_not_missing(tmp_pa
 
 
 def test_bodies_false_omits_every_body(tmp_path):
-    registry = _seed(tmp_path, composite=True)
+    registry = _seed(tmp_path, composite=True, run_record=True)
     docs = run_documents(registry / "runs" / "docs-run",
                          registry / "configs" / "docs-run", bodies=False)
     assert all("body" not in d for d in docs)
@@ -199,6 +213,42 @@ def test_listing_marks_absent_documents_and_names_every_key(tmp_path):
     composite = next(x for x in lines if x.startswith("composite-prd"))
     assert RUN_DOCUMENT_ABSENT in composite
     assert next(x for x in lines if x.startswith("notes")).split()[2] == f"{len(NOTES):,}"
+
+
+# ------------------------------------------------- unit: the run record (007)
+def test_run_record_files_are_listed_documents_under_artifacts(tmp_path):
+    """Task 007 (B.1): `run-record.md`/`run-record.json` -- written by
+    `run_record.write_run_record` into `artifacts/`, not the run root --
+    are two more `RUN_DOCUMENTS` rows, resolved from `artifacts/` rather than
+    the run dir directly, and each column stays aligned once the row's key
+    (`run-record-json`, 16 chars) is longer than every other key."""
+    registry = _seed(tmp_path, run_record=True)
+    docs = {d["key"]: d for d in run_documents(
+        registry / "runs" / "docs-run", registry / "configs" / "docs-run")}
+    assert docs["run-record"]["exists"] and docs["run-record"]["body"] == RUN_RECORD_MD
+    assert docs["run-record"]["path"].endswith("artifacts/" + RUN_RECORD_MD_FILE)
+    assert docs["run-record-json"]["exists"]
+    assert docs["run-record-json"]["body"] == RUN_RECORD_JSON
+    assert docs["run-record-json"]["path"].endswith(
+        "artifacts/" + RUN_RECORD_JSON_FILE)
+    lines = format_run_document_listing(
+        run_documents(registry / "runs" / "docs-run", bodies=False))
+    md_row = next(x for x in lines if x.startswith("run-record "))
+    json_row = next(x for x in lines if x.startswith("run-record-json"))
+    assert RUN_RECORD_MD_FILE in md_row and str(len(RUN_RECORD_MD)) in \
+        md_row.split()
+    assert RUN_RECORD_JSON_FILE in json_row
+
+
+def test_run_record_absent_before_the_run_reaches_finishing(tmp_path):
+    """A run that never wrote it is a listed row saying so, same as any
+    other document -- `docs.RUN_DOCUMENT_ABSENT`, never a dropped row."""
+    registry = _seed(tmp_path)
+    docs = {d["key"]: d for d in run_documents(
+        registry / "runs" / "docs-run", registry / "configs" / "docs-run")}
+    assert docs["run-record"]["exists"] is False
+    assert docs["run-record-json"]["exists"] is False
+    assert docs["run-record"]["available"] is True
 
 
 # ------------------------------------------------------------ unit: redaction
@@ -303,13 +353,18 @@ def test_docs_lists_the_documents_of_a_dead_run(tmp_path):
 
 
 def test_docs_prints_one_document_body(tmp_path):
-    registry = _seed(tmp_path, composite=True)
-    for name, body in (("notes", NOTES), ("findings", FINDINGS),
-                       ("composite-prd", COMPOSITE), ("notes.md", NOTES)):
+    registry = _seed(tmp_path, composite=True, run_record=True)
+    for name, body in (
+            ("notes", NOTES), ("findings", FINDINGS),
+            ("composite-prd", COMPOSITE), ("notes.md", NOTES),
+            ("run-record", RUN_RECORD_MD), ("run-record.md", RUN_RECORD_MD),
+            ("run-record-json", RUN_RECORD_JSON),
+            ("run-record.json", RUN_RECORD_JSON)):
         res = _ctl(registry, "docs", "docs-run", name)
         assert res.returncode == 0, res.stderr
         assert res.stdout.startswith("run:       docs-run\ndocument:  ")
-        assert res.stdout.endswith(body)
+        expected = body if body.endswith("\n") else body + "\n"
+        assert res.stdout.endswith(expected)
 
 
 def test_docs_job_yaml_never_prints_a_staged_secret(tmp_path):
@@ -341,7 +396,8 @@ def test_docs_json_listing_carries_every_row_without_bodies(tmp_path):
     assert [d["key"] for d in doc["documents"]] == run_document_keys()
     assert all("body" not in d for d in doc["documents"])
     assert {d["key"]: d["exists"] for d in doc["documents"]} == {
-        "notes": True, "findings": True, "composite-prd": False, "job": True}
+        "notes": True, "findings": True, "composite-prd": False, "job": True,
+        "run-record": False, "run-record-json": False}
 
 
 def test_docs_absent_document_exits_1_naming_what_is_on_disk(tmp_path):

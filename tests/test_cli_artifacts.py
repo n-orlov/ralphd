@@ -96,7 +96,8 @@ def _empty_registry(tmp: Path, run_id: str = "bare-run") -> Path:
 
 # ------------------------------------------------------------- unit: resolver
 def test_well_known_names_resolve_to_their_paths_both_spellings():
-    assert artifact_names() == ["report", "suggestions", "reflect-failed"]
+    assert artifact_names() == ["report", "suggestions", "reflect-failed",
+                                "run-record", "run-record-json"]
     assert artifact_relpath("report") == "reflection/report.md"
     assert artifact_relpath("suggestions") == "reflection/suggestions.diff"
     assert artifact_relpath("reflect-failed") == "reflection/FAILED.md"
@@ -120,7 +121,7 @@ def test_arbitrary_paths_resolve_and_illegal_names_do_not():
         assert artifact_relpath(bad) is None, bad
 
 
-def test_every_alias_path_lives_under_reflection_and_is_unique():
+def test_every_alias_path_is_unique_and_has_a_purpose():
     keys = [k for k, _, _ in ARTIFACT_ALIASES]
     paths = [p for _, p, _ in ARTIFACT_ALIASES]
     assert len(set(keys)) == len(keys) and len(set(paths)) == len(paths)
@@ -270,6 +271,37 @@ def test_show_prints_the_suggested_diff_by_key_and_by_path(tmp_path):
                     "artifacts/reflection/suggestions.diff")
     assert by_key.returncode == 0 and DIFF in by_key.stdout
     assert by_key.stdout == by_path.stdout == with_dir.stdout
+
+
+# ------------------------------------------------- the run record (task 007)
+def test_ls_and_show_serve_the_run_record_pair(tmp_path):
+    """Task 007 (B.1): `run-record.md`/`run-record.json` -- written by
+    `run_record.write_run_record` straight into `artifacts/` -- are servable
+    the same way any other artifact is, by their well-known key OR their
+    plain file name, with no special-casing beyond the `ARTIFACT_ALIASES`
+    row `engine.state` already carries for them."""
+    md = "# Run record\n\nrun: art-run\nstate: succeeded\n"
+    js = json.dumps({"runId": "art-run", "state": "succeeded"})
+    registry = _seed(tmp_path, extra={"run-record.md": md,
+                                      "run-record.json": js})
+    ls = _ctl(registry, "artifacts", "art-run", "ls")
+    assert ls.returncode == 0, ls.stderr
+    assert "run-record.md" in ls.stdout and "run-record.json" in ls.stdout
+    assert "run-record" in ls.stdout and "run-record-json" in ls.stdout
+
+    by_key = _ctl(registry, "artifacts", "art-run", "show", "run-record")
+    by_name = _ctl(registry, "artifacts", "art-run", "show", "run-record.md")
+    assert by_key.returncode == by_name.returncode == 0
+    assert by_key.stdout == by_name.stdout
+    assert md.rstrip("\n") in by_key.stdout
+
+    json_by_key = _ctl(registry, "artifacts", "art-run", "show",
+                       "run-record-json")
+    json_by_name = _ctl(registry, "artifacts", "art-run", "show",
+                        "run-record.json")
+    assert json_by_key.returncode == json_by_name.returncode == 0
+    assert json_by_key.stdout == json_by_name.stdout
+    assert js in json_by_key.stdout
 
 
 def test_show_json_carries_body_and_the_same_text(tmp_path):
