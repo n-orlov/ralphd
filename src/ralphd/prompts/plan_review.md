@@ -40,6 +40,28 @@ judge? Look specifically for:
    (enumerate the set or name the one command that defines it), split it
    (the task is not atomic), or move it (into the Standing Rules block,
    where it applies once instead of per task).
+6. **Structurally unsatisfiable criteria (#143).** `plan_ingestion.lint_proposal()`
+   already refuses a `successCriteria` clause carrying one of six banned
+   shapes, and rejects the plan before it ever reaches you if one slips
+   through; treat this checklist item as the same list, in case a clause
+   is close enough to one of these shapes that the lint's own regexes miss
+   it but a human reader would not:
+   - a reference to a later/final/last commit or its sha ("the last
+     commit", "recorded as the last commit");
+   - a predeclared event state ("none newly filed", "no approach
+     rejected", "all petitions REFUTED") that a later event can falsify;
+   - a record required to cite the commit that writes it (impossible by
+     construction — a commit's hash is computed from the tree it
+     produces);
+   - a git range required to be empty;
+   - an "exactly once" commit count;
+   - a notification or HTTP-status clause (sends are engine-recorded and
+     best-effort; no criterion may mention a send, a ledger entry or an
+     HTTP status).
+   A criterion naming a *past* sha, an existing tracked artifact, or "the
+   code sha this task lands" is fine — object only when a clause actually
+   matches one of the six shapes above, naming the clause and a
+   satisfiable alternative.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

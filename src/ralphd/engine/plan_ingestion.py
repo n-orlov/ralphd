@@ -663,6 +663,163 @@ def _scratch_state_content_clause(criteria: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Task 013 (requirement E, #143): the plan's SEVENTH lint -- criteria that
+# cannot be satisfied by construction, the class the operator's own
+# completion analysis (#139-#147) found responsible for 37 of 118 blocking
+# findings across 11 failed selfdev/deck runs (issue #143's own body, fetched
+# from the tracked GitHub issue rather than reconstructed prose). Six shapes,
+# each scoped to ONE clause via `_CLAUSE_SPLIT_RE`, never the whole criteria
+# string (the #86 lesson every earlier lint in this module already follows):
+#
+#   (h) a reference to a later/final/last commit or its sha -- recovered
+#       verbatim from this repository's own tracked PRDs: v0.14's non-
+#       negotiable 12 ('"The last commit is followed by requirement B's
+#       guard subset", green, recorded.'), v0.15's/v0.17's identical
+#       requirement-list bullet ('"The final guard subset at the true final
+#       sha", recorded as the last commit,'), the exact clause
+#       `artifacts/reports/v0.17-a3-closing-report.md`'s Finding 1 quotes
+#       from the v0.17 PRD when it rejected approach 3 on it.
+#   (i) a predeclared event state ('none newly filed', 'no approach
+#       rejected', 'all petitions REFUTED') -- recovered verbatim from
+#       `artifacts/reports/v0.17-a3-closing-report.md` (and reprinted
+#       identically in the a4 report): the task-014 successCriteria clause
+#       2 parenthetical "its petition state (both prior petitions REFUTED,
+#       none newly filed)", later CONFIRMED unsatisfiable by that same run's
+#       own mid-run adjudication (#143's own account of why this shape is
+#       banned, not a claim invented here).
+#   (j) a record required to cite the commit that writes it -- the exact
+#       impossibility `artifacts/reports/v0.17-a3-closing-report.md` states
+#       in so many words ("A file cannot contain the sha of the commit that
+#       writes it -- the hash is computed from the tree the commit
+#       produces"); issue #143 attributes the concrete recurrence of this
+#       shape to `deck-3i-2` (x2), a sibling run whose own files this
+#       sandbox cannot reach (a different product's run directory, never
+#       committed here) -- disclosed exactly as `TASK_042_SUCCESS_CRITERIA`
+#       below already discloses the same limitation for v0.8's task 042,
+#       rather than claimed as a local recovery it is not.
+#   (k) a git range required to be empty -- issue #143's own account: "a
+#       protected-path audit range that begins before the PRD/plan commit
+#       itself (deck-3h x2, 3i-2 x4, spike x3)", again a sibling run's own
+#       material, not reachable from this sandbox; the fixture below is
+#       modelled on that account (a `git log`/`git diff` range demanded to
+#       be empty/show no commits) and disclosed as modelled, not recovered.
+#   (l) an "exactly once" commit count -- issue #143: "'commit exactly
+#       once' combined with 'correct the report the review faulted'
+#       (deck-spike x4)", same disclosure as (k).
+#   (m) a notification or HTTP-status clause -- recovered verbatim from
+#       `artifacts/reports/v0.17-a4-closing-report.md` Finding 2's own
+#       quoted clause: "every task appends endpoint, substance, and
+#       observed HTTP status" (the missing approach-03 task-004
+#       notification ledger entry finding).
+#
+# Two must-pass shapes recur across all six: an existing tracked artifact
+# (a path, a record) named as evidence, and "the code sha this task lands"
+# -- neither states a later event or an impossible relation, both are
+# ordinary evidence citations. `tests/test_seventh_lint_task013.py` is this
+# task's new fixture module, in both directions for every shape.
+
+_LATER_FINAL_LAST_COMMIT_RE = re.compile(
+    r"\b(?:the\s+)?(?:last|final|later|next|subsequent)\s+commit\b"
+    r"|\bcommit\s+(?:that\s+)?(?:comes|lands|is\s+made)\s+after\b",
+    re.IGNORECASE,
+)
+
+_PREDECLARED_EVENT_STATE_RE = re.compile(
+    r"none\s+newly\s+filed"
+    r"|no\s+approach\s+(?:was\s+|were\s+)?rejected"
+    r"|(?:both|all)\s+(?:prior\s+)?petitions?\s+(?:were\s+)?REFUTED"
+    r"|(?:both|all)\s+(?:prior\s+)?petitions?\s+(?:were\s+)?CONFIRMED",
+    re.IGNORECASE,
+)
+
+_RECORD_CITES_OWN_WRITING_COMMIT_RE = re.compile(
+    r"cites?\s+the\s+(?:sha\s+of\s+the\s+)?commit\s+that\s+writes\s+it"
+    r"|the\s+commit\s+that\s+writes\s+(?:it|this|the\s+row|that\s+row)"
+    r"|names?\s+the\s+(?:sha\s+of\s+the\s+)?commit\s+that\s+(?:writes|adds)\s+it",
+    re.IGNORECASE,
+)
+
+_EMPTY_GIT_RANGE_RE = re.compile(
+    r"git\s+(?:log|diff)\b[^.;!?]{0,80}\b(?:empty|no\s+commits?|zero\s+commits?)\b"
+    r"|\ban?\s+empty\s+(?:git\s+)?range\b"
+    r"|\brange\b[^.;!?]{0,40}\b(?:must\s+be|is|shows?)\s+empty\b",
+    re.IGNORECASE,
+)
+
+_EXACTLY_ONCE_COMMIT_COUNT_RE = re.compile(
+    r"commit(?:s|ted)?\s+exactly\s+once\b"
+    r"|exactly\s+once\b[^.;!?]{0,40}\bcommit",
+    re.IGNORECASE,
+)
+
+_NOTIFICATION_OR_HTTP_STATUS_RE = re.compile(
+    r"\bnotification\s+ledger\b"
+    r"|\bledger\s+entry\b"
+    r"|\bnotification\s+inventory\b"
+    r"|\b(?:must|shall|is\s+required\s+to|needs?\s+to|has\s+to)\b[^.;!?]{0,40}\bHTTP\s+status\b",
+    re.IGNORECASE,
+)
+
+_UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str], ...] = (
+    (
+        _LATER_FINAL_LAST_COMMIT_RE,
+        "names a later/final/last commit or its sha, which cannot be "
+        'known until that commit lands -- name "the code sha this task '
+        'lands" once it exists, or a past sha this task can already read',
+    ),
+    (
+        _PREDECLARED_EVENT_STATE_RE,
+        "predeclares an event state (a petition/approach outcome) that a "
+        "later event in this same run can falsify -- require the record "
+        "to state whatever the TRUE outcome turns out to be, not a "
+        "specific outcome named in advance",
+    ),
+    (
+        _RECORD_CITES_OWN_WRITING_COMMIT_RE,
+        "requires a record to cite the sha of the commit that writes it, "
+        "which is impossible by construction (the hash is computed from "
+        "the tree the commit produces) -- cite the record's own "
+        "report-state sha (its commit's parent) instead, the convention "
+        "`docs/sweep-records.md` already documents",
+    ),
+    (
+        _EMPTY_GIT_RANGE_RE,
+        "requires a git log/diff range to be empty -- name the specific "
+        "paths and the sha the range is measured from instead of "
+        "demanding an empty range as a standing invariant",
+    ),
+    (
+        _EXACTLY_ONCE_COMMIT_COUNT_RE,
+        'demands an "exactly once" commit count -- require the '
+        "deliverable to land, verified by its own evidence, not a count "
+        "of how many commits it took",
+    ),
+    (
+        _NOTIFICATION_OR_HTTP_STATUS_RE,
+        "requires a per-task notification ledger entry or HTTP-status "
+        "record -- sends are engine-recorded and best-effort; no "
+        "criterion may mention a send, a ledger entry or an HTTP status",
+    ),
+)
+
+
+def _unsatisfiable_shape_clause(criteria: str) -> tuple[str, str] | None:
+    """None unless some clause of `criteria` matches one of the six banned
+    shapes above; otherwise `(clause, satisfiable_alternative_text)` for the
+    FIRST shape (in the order above) that matches the FIRST clause it
+    matches -- the offending clause is quoted and a satisfiable alternative
+    is named, exactly like every other lint in this module."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        for pattern, alternative in _UNSATISFIABLE_SHAPE_CHECKS:
+            if pattern.search(stripped):
+                return stripped, alternative
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Task 022 (requirement E.1, #115 lint half): the plan's SIXTH lint -- the
 # criteria-maximalism bound `plan_review.md` already states for the peer
 # reviewer ("a `successCriteria` clause that quantifies over an open set
@@ -795,8 +952,12 @@ def lint_proposal(payload: dict) -> list[str]:
     demands on a deliverable with a mandated second commit; forward
     citation of a later task's commit sha; unscoped write-time occurrence
     counts; scratch-state content/format conditions; unenumerated universal
-    quantifiers and clause-count overruns) -- see the block comments
-    immediately above."""
+    quantifiers and clause-count overruns) plus the SEVENTH (task 013,
+    requirement E, #143): the six structurally-unsatisfiable shapes --
+    later/final/last commit references, predeclared event states, a record
+    citing the commit that writes it, an empty git range, an "exactly
+    once" commit count, and a notification/HTTP-status clause -- see the
+    block comments immediately above."""
     errors: list[str] = []
     tasks = payload.get("tasks", [])
     seen: dict[Any, int] = {}
@@ -900,6 +1061,15 @@ def lint_proposal(payload: dict) -> list[str]:
                 "repeats (a boundary check, a notification-log entry, an "
                 "operator discipline) into the Standing Rules block once "
                 "instead of copying it per task"
+            )
+
+        shape_match = _unsatisfiable_shape_clause(criteria)
+        if shape_match is not None:
+            offending_clause, alternative = shape_match
+            errors.append(
+                f"task {tid!r}: successCriteria is structurally "
+                f"unsatisfiable ({offending_clause!r}) -- this clause "
+                f"{alternative}"
             )
 
     known_ids = set(seen)
