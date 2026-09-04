@@ -41,7 +41,13 @@ immediately starts the next iteration.
    dead dependency) the moment the dependency reaches `failed`/`skipped` —
    you do not have to notice or record it yourself**, and the scheduler
    never assigns such a task to you in the first place.
-3. Do the work in the workspace for the assigned task.
+3. Do the work in the workspace for the assigned task. **If your prompt carries a
+   `## Why the previous attempt was rejected` block** (only present when this is a
+   retry, `validationAttempts > 0`), that block's `validationNotes` is the verifier's
+   own account of why the last attempt missed — read it before you touch anything and
+   make sure this attempt actually addresses what it says, criterion by criterion; if
+   you believe a criterion it faults you on cannot be met as written, petition or
+   report `unsatisfiable` instead of re-attempting the same thing unchanged.
 4. Verify your own work against the task's `successCriteria` (actually run the
    commands / check the files — do not assume).
 5. **Report your outcome through the contract — this is the only way your

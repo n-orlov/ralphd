@@ -3935,6 +3935,12 @@ class LoopSupervisor:
         was selectable at all (an empty/fully-resolved plan, or the #33
         "nothing actionable but something failed" case) -- worker.md's own
         "say so and stop" path, not a task_id to guess at.
+
+        Task 015 (requirement F.2, #145): when `task` is a re-dispatch at
+        `validationAttempts > 0`, the returned text also carries a
+        "## Why the previous attempt was rejected" block with the attempt
+        count and `validationNotes` verbatim -- absent entirely at
+        `validationAttempts == 0` (see below).
         """
         if not isinstance(task, dict):
             return (
@@ -3944,12 +3950,31 @@ class LoopSupervisor:
                 "dependencies). Read tasks.json and the notes file to "
                 "understand why and report back -- do not invent a "
                 "task_id.\n")
-        return (
+        block = (
             "## Task assigned this iteration\n\n"
             f"- **id**: {task.get('id', '')}\n"
             f"- **title**: {task.get('title', '')}\n"
             f"- **status**: {task.get('status', '')}\n"
             f"- **successCriteria**: {task.get('successCriteria', '')}\n")
+        # Task 015 (requirement F.2, #145): a re-dispatch at
+        # `validationAttempts > 0` is a RETRY, not a fresh pick -- the
+        # worker needs told, in its own prompt, exactly what the verifier
+        # rejected last time, not just the task's unchanged
+        # `successCriteria`. Carry `validationNotes` VERBATIM (never
+        # summarised or truncated -- the worker, not this method, is the
+        # one that judges whether the notes are addressed or petitioned)
+        # under a heading naming the requirement's own wording. Absent
+        # entirely at `validationAttempts == 0` (a first dispatch, or a
+        # task dict with no such key) so the block's mere presence is
+        # itself the signal a lexical test can pin.
+        attempts = task.get("validationAttempts", 0)
+        if attempts:
+            notes = task.get("validationNotes", "")
+            block += (
+                "\n## Why the previous attempt was rejected\n\n"
+                f"- **validationAttempts**: {attempts}\n"
+                f"- **validationNotes**: {notes}\n")
+        return block
 
     def _apply_worker_completion_report(self, payload: dict,
                                          assigned_task_id: str | None) -> list[str]:
