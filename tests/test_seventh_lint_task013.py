@@ -15,8 +15,11 @@ fixtures the verifier found missing: the (h) shape recovered verbatim from
 the two tracked RUN RECORDS under `artifacts/reports/` that the requirement
 names -- `v0.14-a3-final-guard-tail.md`'s clause ending `which is the last
 commit of the approach` and `v0.15-a2-final-guard-subset.md`'s clause
-beginning `Task 014 lands the plan's last commit`. See the task 037 section
-at the bottom of this module.
+beginning `Task 014 lands the plan's last commit`. Both are pinned in the
+strict form -- `clause in Path(source).read_text()`, raw tracked bytes on
+both sides, source line breaks included in the constant -- so no
+normalisation helper stands between the fixture and its source. See the task
+037 section at the bottom of this module.
 
   (h) later/final/last commit -- recovered verbatim from this repository's
       own tracked PRDs (v0.14's non-negotiable 12; v0.15's/v0.17's
@@ -741,22 +744,28 @@ def test_ingestion_level_proposal_carrying_a_banned_shape_is_rejected(tmp_path):
 #     plan's last commit` -- that record's discharge section reasoning
 #     about a commit that had not landed when the clause was written.
 #
-# For each: the constant is a substring of its named source file, and
-# `lint_proposal()` refuses it, quoting the clause back and naming a
-# satisfiable alternative.
+# For each: the constant is a LITERAL substring of its named source file --
+# `clause in Path(source).read_text()`, the source bytes exactly as tracked,
+# including that file's own line breaks, with no flattening, re-wrapping or
+# emphasis-stripping of any kind -- and `lint_proposal()` refuses it,
+# quoting the clause back and naming a satisfiable alternative.
 # ---------------------------------------------------------------------------
 
+# NOTE: every embedded "\n" below is a line break present in the tracked
+# source file at that exact position; the constants are byte-for-byte slices
+# of those files, not reflowed paraphrases of them.
 V014_A3_FINAL_GUARD_TAIL_CLAUSE = (
-    "This record then self-discharges its own declared sha in a second, "
-    "report-only commit below, which is the last commit of the approach"
+    "This record then\n"
+    "self-discharges its own declared sha in a second, report-only commit below,\n"
+    "which is the last commit of the approach"
 )
 V014_A3_FINAL_GUARD_TAIL_SOURCE = "artifacts/reports/v0.14-a3-final-guard-tail.md"
 
 V015_A2_FINAL_GUARD_SUBSET_CLAUSE = (
-    "Task 014 lands the plan's last commit, which necessarily moves `HEAD` "
-    "one commit past `ab7bfbfe7e8cfb10fc2ebce2845d3e183b06af7d` (this "
-    "record's own add commit) and therefore past the parent-of-HEAD "
-    "self-anchoring fixed point above"
+    "Task 014 lands the plan's last commit, which necessarily moves `HEAD` one\n"
+    "commit past `ab7bfbfe7e8cfb10fc2ebce2845d3e183b06af7d` (this record's own\n"
+    "add commit) and therefore past the parent-of-HEAD self-anchoring fixed point\n"
+    "above"
 )
 V015_A2_FINAL_GUARD_SUBSET_SOURCE = (
     "artifacts/reports/v0.15-a2-final-guard-subset.md"
@@ -781,13 +790,30 @@ TASK_037_VERBATIM_ARTIFACT_FIXTURES = (
 
 
 def test_the_v014_a3_and_v015_a2_clauses_are_verbatim_substrings_of_their_sources():
-    """Each fixture constant is a substring of the tracked artifact it names
-    -- the pin that makes it a *recovered* clause rather than an invented
-    one. (`_flattened` only rejoins wrapped lines and strips markdown
-    emphasis; it changes no word of the clause.)"""
+    """Each fixture constant is a LITERAL substring of the tracked artifact it
+    names -- checked against `Path(source).read_text()` itself, the raw source
+    text with its own line breaks intact, with no flattening, re-wrapping or
+    emphasis-stripping applied to either side. That is the pin that makes it a
+    *recovered* clause rather than an invented one."""
     for _tid, clause, source, pinned_words in TASK_037_VERBATIM_ARTIFACT_FIXTURES:
         assert pinned_words in clause, (source, pinned_words)
-        assert clause in _flattened(source), (source, clause)
+        raw = (REPO_ROOT / source).read_text()
+        assert clause in raw, (source, clause)
+
+
+def test_the_verbatim_artifact_fixtures_use_no_normalisation_helper():
+    """Regression guard for the exact weakening task 037's first attempt was
+    faulted for: the two artifact fixtures must survive the strict
+    `constant in read_text()` form, so neither may be routed through
+    `_flattened()` (or any other normaliser) to pass."""
+    for _tid, clause, source, _pinned in TASK_037_VERBATIM_ARTIFACT_FIXTURES:
+        raw = (REPO_ROOT / source).read_text()
+        assert clause in raw
+        # the clause really does span source line breaks -- i.e. the strict
+        # check above is the substantive one, not trivially equal to a
+        # flattened comparison
+        assert "\n" in clause, clause
+        assert clause not in _flattened(source), (source, clause)
 
 
 def test_the_v014_a3_clause_ends_with_the_pinned_words():
