@@ -57,7 +57,13 @@ current job state · `130` follow interrupted by Ctrl+C (see `logs -f` below).
 ### `ralphctl start`
 
 Create and launch a job container. Prints the run ID (and with `--json`: run ID,
-container ID, API URL, token presence).
+container ID, API URL, token presence). Before that, it prints exactly one
+`rubric: ...` line (task 005, PRD requirement A.3) naming which materiality
+rubric this PRD resolves to -- `rubric: inline`, `rubric: by reference
+(<path>)` or `rubric: engine default` (`findings.resolve_materiality_rubric`,
+the same resolver review uses at review time, [architecture.md](architecture.md));
+a referenced rubric path this checkout cannot resolve is warned on stderr
+instead of silently falling back.
 
 ```
 ralphctl start --prd <file|-> [options]
@@ -2673,6 +2679,11 @@ Preflight checks (`checks` in `--json` output; overall `ok` is the AND of all
 of them, exit code `0`/`1` accordingly):
 
 - `docker` — the docker daemon is reachable.
+- `--prd <file>` (optional) — also prints the same `rubric: ...` line
+  `start` prints (task 005, PRD requirement A.3), resolved against the
+  current directory, for a PRD file this checkout can read; silently
+  omitted when `--prd` is absent or unreadable. Warns on stderr on a
+  referenced rubric path that does not resolve, exactly like `start`.
 - `image` — the job image is **available**: present on this daemon, or
   something ralphd can build from this source tree. (Before v0.6 this was
   bare presence, which failed a fresh checkout for an image `start` would

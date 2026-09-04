@@ -43,6 +43,7 @@ from ..engine.config import (
     PRICE_STRATEGIES,
     JobConfig,
 )
+from ..engine import findings
 from ..engine.tiers import TIERS
 from ..engine.transitions import TASK_STATUSES
 from ..engine.state import (
@@ -1588,6 +1589,30 @@ def _apply_template(args) -> Path | None:
     return tdir
 
 
+def _print_rubric_status(prd_text: str, workspace_root: Path) -> None:
+    """Print which materiality rubric applies to `prd_text` (task 005,
+    requirement A.3): exactly one line -- `rubric: inline`, `rubric: by
+    reference (<path>)` or `rubric: engine default` -- mirroring
+    `findings.resolve_materiality_rubric` (the same resolver
+    `LoopSupervisor._review_materiality_rubric_context` uses at review
+    time, task 003), so a PRD reports the same rubric before and after the
+    run starts. Warns on stderr, once per unresolved reference, using that
+    resolver's own `log_events` (a referenced rubric path that does not
+    resolve to a readable file, or that resolves but carries no rubric
+    section of its own).
+    """
+    resolution = findings.resolve_materiality_rubric(prd_text, workspace_root)
+    if resolution.rubric is None:
+        line = "rubric: engine default"
+    elif resolution.source_path is not None:
+        line = f"rubric: by reference ({resolution.source_path})"
+    else:
+        line = "rubric: inline"
+    print(line)
+    for event in resolution.log_events:
+        print(f"ralphctl: warning: {event['message']}", file=sys.stderr)
+
+
 def cmd_start(args):
     _apply_template(args)
     # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
@@ -1748,6 +1773,14 @@ def cmd_start(args):
             ws_named[name] = path
         if ws_named:
             env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
+    # Task 005 (A.3): which rubric this run's PRD resolves to, printed
+    # exactly once -- resolved against the workspace that will actually be
+    # mounted at /workspace (the single unnamed one, else the first named
+    # one, else the CLI's own cwd when no --workspace was given at all, so
+    # a rubric-by-reference PRD with no workspace still gets an honest
+    # warning instead of a silent skip).
+    _print_rubric_status(prd, ws if ws is not None else
+                          (next(iter(ws_named.values())) if ws_named else Path.cwd()))
 
     # ralphd.run reaps the whole run; ralphd.role distinguishes THIS
     # container from siblings the job starts, so cleanup guidance handed to
@@ -5999,6 +6032,17 @@ def _run_image_staleness(source_hash: str | None) -> list[dict]:
 
 def cmd_doctor(args):
     checks = {}
+    # Task 005 (A.3): report-only, before the ordinary checks -- absent
+    # entirely when --prd is omitted or unreadable (the criterion only
+    # covers "a --prd file it can read"); resolved against the current
+    # directory, mirroring `start`'s own workspace-root resolution above.
+    if getattr(args, "prd", None):
+        try:
+            prd_text = Path(args.prd).read_text()
+        except OSError:
+            prd_text = None
+        if prd_text is not None:
+            _print_rubric_status(prd_text, Path.cwd())
     checks["docker"] = sh([DOCKER, "version", "--format", "{{.Server.Version}}"]) \
         .returncode == 0
     reg = registry()
@@ -6787,6 +6831,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_suggestions)
 
     s = sub.add_parser("doctor", help="preflight checks")
+    s.add_argument("--prd", default=None, metavar="PATH",
+                   help="also print which materiality rubric this PRD file "
+                        "resolves to (task 005, A.3): inline, by reference, "
+                        "or the engine default; warns on a referenced rubric "
+                        "path that does not resolve, relative to the current "
+                        "directory")
     s.add_argument("--image", default=None, metavar="REF",
                    help="report on this image reference instead of the one "
                         "this host would run (RALPHD_IMAGE, the registry's "
