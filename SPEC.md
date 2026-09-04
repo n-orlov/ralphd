@@ -865,6 +865,23 @@ claim is `{"verdict": "verified"|"rejected", "reason": ..., "findings_path":
 the harness decides `succeeded`/`verified` or archives the approach from this
 payload alone, never from the retired `<promise>VERIFIED</promise>` sentinel.
 
+**A third, mid-run legal reply that never ends a run at all (task 014,
+requirement F.1, #144).** Before the engine hands any task back to `verify`,
+it runs at most one bounded, off-budget adjudication iteration on the
+review hat's own model whenever a workspace impossibility petition is open
+and unconfirmed (`_maybe_run_midrun_adjudication_episode`) -- its ONLY job is
+to settle every open petition's `petition_adjudications` entry
+(CONFIRMED/REFUTED, the same vocabulary an ordinary review answers with),
+and its `verdict` field carries no terminal effect: no `_advance`, no
+`_finish`, no approach scored. Because the ordinary `review` schema requires
+`verdict` to be `"verified"`/`"rejected"` only, this call validates against
+a separate, wider schema instead (`transitions.MIDRUN_REVIEW_SCHEMA`) that
+adds the third legal value `"adjudicated"` -- naming exactly what a reply
+with nothing terminal to claim is answering -- and also accepts `verdict`
+being omitted entirely. `"adjudicated"` is illegal everywhere else: an
+ordinary run-ending review or grace review that answers it is a contract
+violation like any other malformed `verdict`.
+
 `COMPLETE` is matched in `engine/runner.py` (`IterationResult.saw_complete`) as
 before, but see the diagnostic-only demotion just above: the retired `VERIFIED`
 sentinel is still matched too (`saw_verified`), for the same "mentioned but
@@ -1387,7 +1404,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `maxApproaches` | int | configured approach ceiling, so every surface can render `approach 2/3` rather than a bare number |
 | `model` | string \| null | the model reference the run's iterations actually reported, `provider/model`; `null` until an iteration observes one |
 | `modelRaw` | string \| null | the provider's own id when it differs from the resolved reference (a gateway-local spelling); `null` when it does not |
-| `verdict` | string \| null | `verified` \| `unverified`; `null` until terminal |
+| `verdict` | string \| null | `verified` \| `verified-with-residuals` \| `unverified` \| `unreviewed`; `null` until terminal -- `verified-with-residuals` (task 012, requirement D.3) is review's own VERIFIED edge written instead of plain `verified` when the settled findings channel carries at least one `severity: "residual"` finding (`LoopSupervisor._review_success_verdict_label`), so a clean approach still reads `verified`; `unverified` is the ordinary negative (review ran and rejected with no approach/budget left, or the run was aborted); `unreviewed` (task 016, requirement F.3, #146) is the narrower case where the deadline took the run mid-review -- self-loop exhaustion or the off-budget grace attempt -- before review produced any contract payload at all, so `reason` reads `"deadline during review"` rather than a real rejection reason (never overrides an actual operator abort, which keeps `unverified`) |
 | `pendingTerminalState` | string | present only while `state` is `finishing`: the terminal state this run is going to become once the reflect window closes (§12.2) |
 | `reason` | string | why a non-succeeded run ended, or the grace-review note; **episode-scoped** like `endedAt` |
 | `termination` | object \| null | present once the run was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null` |
@@ -4442,22 +4459,58 @@ distinguish "missing" from "empty". Because the whole run dir is bind-mounted at
 `~/.ralphd/runs/<run-id>/artifacts/` the instant it is written, while the job is
 still running.
 
-**The agent owns it; the engine writes exactly one file there.** Every phase
+**The agent owns it; the engine writes two things there.** Every phase
 prompt carries the path in its `Job context` block (`- Artifacts directory:
 <path>`), and the worker prompt states the rule from both sides — "Do not touch
 the run state directory except tasks.json, the notes file, and the artifacts
 directory" and "Put anything the operator should see (reports, screenshots,
-logs) in the artifacts directory". The only engine-written file under
-`artifacts/` is `reflection/FAILED.md` (§12.2).
+logs) in the artifacts directory". The engine-written files under
+`artifacts/` are `reflection/FAILED.md` (§12.2) and the run-record pair below
+(v0.18 requirement B.1, #140).
 
 | path | writer | content |
 | --- | --- | --- |
 | `artifacts/reflection/report.md` | reflect iteration | the post-mortem; its existence is the reflect phase's success condition |
 | `artifacts/reflection/suggestions.diff` | reflect iteration | a unified diff of proposed prompt/skill edits, never applied by the loop — only ever by an operator's explicit `ralphctl suggestions <id> apply --yes` (§10.1) |
 | `artifacts/reflection/FAILED.md` | engine | written only when the reflect phase produced no report, and removed again as soon as an attempt produces one (§12.2) |
+| `artifacts/run-record.json` | engine | the run's own terminal record, machine-readable (below) |
+| `artifacts/run-record.md` | engine | the SAME record, rendered for a human (below) |
 | `artifacts/reports/*.md` | agent | evidence the PRD asked for, ideally machine-checked (§12.3) |
 | `artifacts/screenshots/**` | agent | browser-driven verification of a UI change |
 | anything else | agent | logs, samples, gate records — free-form by design |
+
+**The run record (`run_record.py`, v0.18 requirement B.1, #140).** Neither
+file is agent-produced, and neither is faulted for omitting or predating
+anything a closing report claims (requirement B.2) -- it is the engine's own
+account of the run, built only from files the engine itself owns
+(`status.json`, `approach-metadata.json`, `petition-adjudications.json`, the
+steering ledger, `CONFIG_DIR/amendments/`, the archived `approaches/NN/`
+findings sidecars) and never from a hat's live reasoning. `write_run_record()`
+writes both files together, atomically, at every entry to `finishing`
+(`LoopSupervisor._finish()`) and again on the later terminal transition that
+promotes a recorded `finishing` write (`_promote_finishing_state()`/
+`_promote_recorded_finishing_state()`), so a run that dies between `finishing`
+and its true terminal state still leaves a record matching whichever write
+actually landed. `build_run_record()` returns the JSON shape (identical to
+`run-record.json`); `render_run_record_markdown()` renders the SAME record
+for a human, one markdown section per entry in `RECORD_SECTIONS` so a field
+added to the JSON without a renderer for it fails a test rather than quietly
+going unrendered. Its top-level sections:
+
+| section | content |
+| --- | --- |
+| header (`runId`/`generatedAt`/`state`/`verdict`/`reason`/`approach`/`maxApproaches`/`startedAt`/`endedAt`) | the run's own identity and terminal facts, lifted straight off `status.json` |
+| `usage` | `iterationsUsed` plus the full usage block: per-direction token fields and the `byPhase`/`byApproach`/`byTier` breakdowns (task 035, requirement B.1), never recomputed here -- `LoopSupervisor._accumulate_usage` is the one place that adds anything up |
+| `approaches` | one entry per approach the run ever planned, oldest first: task tally, and each judge channel's (`review`/`verdictGate`) verdict with explicit `blocking`/`residual` arrays. Every entry reads the engine-owned per-approach metadata in `approach-metadata.json` FIRST (task 035) -- written the moment that judge's verdict was decided, so it survives approach archiving -- and falls back to the judge's optional findings sidecar (`review-findings.json`/`verdict-gate-findings.json`) ONLY for an approach judged before that metadata existed; each entry's `source` field (`"engine-metadata"` vs `"findings-sidecar"`) says which |
+| `petitions` | every CONFIRMED impossibility-petition adjudication this run recorded (`petition-adjudications.json`), plus a `tampered` flag |
+| `steersConsumed` | every steering message this run actually consumed (§4.6) |
+| `operatorRulings` | every ruling found under `<config_root>/amendments/` |
+| `notifications` | every `notification.sent` event the run emitted -- correct and empty until the B.3 `notify` tool lands |
+
+Tests: `tests/test_run_record.py` (the module's own unit tests, one per
+section-builder) and `tests/test_run_record_approach_metadata_task035.py`
+(a succeeded run and a run with an archived rejected approach, asserting the
+record's own key set equals `RECORD_SECTIONS` and that every section renders).
 
 Host-side access is a plain filesystem read, never an API call:
 

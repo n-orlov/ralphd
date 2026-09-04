@@ -647,6 +647,118 @@ budget exhausts) is unaffected: `_maybe_grace_review()` returns
 immediately without touching anything, and the job fails exactly as
 before this feature.
 
+### Verdict values beyond plain verified/unverified (v0.18 requirements D.3/F.3/F.1)
+
+SPEC §5.2 documents `status.json`'s `verdict` field contract; this section is
+the design rationale for the two extra terminal values and the one legal
+mid-run non-terminal value that is never written to `status.json` at all.
+
+- **`verified-with-residuals` (task 012, requirement D.3).** A `verified`
+  review that CONTRADICTS its own structured findings (`{"verdict":
+  "verified"}` alongside a `severity: "blocking"` finding) is already a
+  contract violation the ladder above rejects; a `verified` review whose
+  findings channel carries `severity: "residual"` findings ONLY is not a
+  violation at all -- residual findings are, by the rubric's own vocabulary,
+  things that do not block a pass. Writing that run's terminal `verdict` as
+  plain `verified` would silently drop them from the one field every
+  surface (`ralphctl status`, the hub's run list, `run-record.md`'s own
+  header) reads first. `LoopSupervisor._review_success_verdict_label()` is
+  the ONE place that decides between the two words, called from every site
+  about to write `_finish("succeeded", ...)` off a VERIFIED outcome (the
+  ordinary review pass, the peer verdict-gate approval, and the grace
+  review) -- it never itself decides curability or blocking-ness, only
+  whether a genuinely verified approach still has something worth naming.
+- **`unreviewed` (task 016, requirement F.3, #146).** Before this task, a
+  deadline that took the last budgeted attempt while `review` was still
+  mid-flight -- the ordinary self-loop's own exhaustion, or the off-budget
+  grace attempt -- landed on the SAME `unverified` verdict a genuine
+  rejection or an operator abort would, so a run a reviewer never actually
+  looked at read identically to one a reviewer looked at and rejected.
+  `_review_deadline_unreviewed` (an instance flag set the moment the
+  deadline is detected mid-review, alongside a `review_deadline_unreviewed`
+  event) is read by the tail of `_finish_tail_unverified()`: when it is set
+  and this was not an operator abort, the terminal write is `verdict:
+  "unreviewed"` with `reason: "deadline during review"` instead of
+  `unverified`. Resume routes back into `review` over the same approach
+  (`_unreviewed_awaiting_resume`) rather than treating the abandoned
+  attempt as a rejection to replan away from.
+- **`"adjudicated"` (task 014, requirement F.1, #144) is a MID-RUN reply
+  value, never a `status.json` verdict.** The bounded, off-budget petition
+  adjudication episode (`_maybe_run_midrun_adjudication_episode`, next
+  section) answers the review contract's `verdict` field but scores no
+  approach and writes no terminal state; `transitions.MIDRUN_REVIEW_SCHEMA`
+  is the separate, wider schema this one call's contract ladder validates
+  against (never `HAT_SCHEMAS["review"]`), adding `"adjudicated"` as a
+  third legal value and making `verdict` itself optional -- so a reply with
+  nothing terminal to claim about the approach is never read as a contract
+  violation the way it would be from an ordinary run-ending review.
+
+### Mid-run petition adjudication: settling an impossibility petition without waiting for the run to end (v0.18 requirement F.1, task 014, #144)
+
+An impossibility petition (`docs/petition-format.md`) filed against a task
+can sit OPEN for the rest of an approach with no ordinary review in sight --
+review only runs once the worker loop as a whole signals completion, and a
+petitioned task's own `validationAttempts` keep burning against a verify
+ladder that will never resolve favourably while the petition stays
+unadjudicated. `LoopSupervisor._maybe_run_midrun_adjudication_episode()`
+runs, unconditionally, right before `_step_worker`'s own `pending_verify`
+loop hands any task back to `verify` -- a no-op in the overwhelming common
+case (no petition open at all), and otherwise exactly ONE bounded, review-
+hat-model iteration per set of newly-open obligations
+(`self._petition_adjudication_seen`, so the SAME open petition is never
+re-asked forever just because it stays open). The episode reuses
+`_review_verdict(..., mid_run=True)` for the ENGINE side effect an ordinary
+review iteration already applies from the identical `petition_adjudications`
+payload field -- CONFIRMED entries persist at run scope
+(`petitions.record_confirmed_adjudications`), REFUTED entries move the
+matching `petitioned` task straight to `failed` carrying the remedy -- but
+never `_advance`s a state, never `_finish`es, and is refunded through the
+same off-budget `grace` channel the grace review already uses, so it never
+competes with the run's iteration budget or a task's own
+`validationAttempts`. See the verdict-values section above for the
+`"adjudicated"` reply value this episode alone may use.
+
+### The run's own terminal record: run-record.md/.json (v0.18 requirement B.1, #140, cured by task 035)
+
+Every closing report a worker or reviewer writes is the AGENT's account of
+the run; nothing stops it from omitting an inconvenient rejection or citing
+an approach that never happened. Requirement B.1 asks for a second, engine-
+authored account that cannot make that mistake because nothing in it is agent
+prose: `src/ralphd/engine/run_record.py` builds a record entirely out of
+files the engine itself already owns and writes -- `status.json`,
+`approach-metadata.json`, `petition-adjudications.json`, the steering ledger,
+`CONFIG_DIR/amendments/`, and (only as a fallback for an approach judged
+before task 035 existed) the archived `approaches/NN/` findings sidecars --
+and renders it two ways: `build_run_record()` for `artifacts/run-record.json`,
+`render_run_record_markdown()` for the identical record as `artifacts/
+run-record.md`. `write_run_record()` writes both together, called from
+`LoopSupervisor._write_run_record()` at every entry to `finishing`
+(`_finish()`) and rewritten on the later terminal transition that promotes a
+recorded `finishing` write (`_promote_finishing_state()`/
+`_promote_recorded_finishing_state()`), so the pair on disk always reflects
+the most recent terminal decision even across a container restart mid-
+`finishing`.
+
+**Why the per-approach judge verdicts live in their own engine-owned file
+rather than being read off the findings sidecars alone (task 035, cure for
+task 006).** `review-findings.json`/`verdict-gate-findings.json` are written
+by the JUDGE hat's own process, are optional (a judge that verifies clean
+writes no sidecar at all), and are cleared/archived by the SAME approach-
+archiving step the run record has to describe -- so a record built only from
+them cannot tell "this approach verified with nothing to say" apart from
+"this approach's judge never ran a sidecar-writing pass at all", and loses
+the distinction entirely once an approach is archived without one.
+`state.record_approach_verdict()` fixes this by persisting the ENGINE's own
+copy of each judge channel's verdict -- explicit `blocking`/`residual`
+arrays, `findingsChannel: bool`, `recordedAt` -- into `approach-metadata.json`
+at the run root the MOMENT that judge's verdict is decided
+(`LoopSupervisor._review_verdict`/`_verdict_gate_verdict`, never a mid-run
+adjudication episode, which scores no approach verdict), independent of
+approach archiving. `run_record.build_approach_history()` reads that
+metadata FIRST for every approach it lists (live or archived) and only falls
+back to a findings sidecar for an approach this engine-owned file has no
+entry for at all -- a run entirely on this side of task 035.
+
 ### Model resolution
 
 Each hat resolves its model independently: per-hat override (`models:`/
@@ -1318,6 +1430,34 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `test_resume_without_any_ruling_still_lands_on_review_and_rejects_again`
   is its no-ruling control. All of them reach the paused state through an
   already-paused fixture and never await an unscheduled operator.
+- **The cure pass: one chance to fix curable findings before spending a
+  fresh approach (v0.18 requirement C.1/C.2, #141, tasks 009/010).** A
+  `rejected` review whose blocking findings are ALL `curable: true`
+  (`findings.all_blocking_findings_curable`) does not automatically take the
+  ordinary `rejected_approach_left` edge into a brand-new `planning` pass --
+  it takes `rejected_curable_pass_available` back into `worker` instead,
+  **exactly once per approach**: `LoopSupervisor._step_review` checks
+  `status.json`'s `curePasses["<approach>"]` (absent reads as `0`) AFTER the
+  `rejected_incurable` check above, so an incurable finding keeps its
+  precedence even when curable findings are also present. Taking the edge
+  appends one cure task per blocking finding to the SAME approach's
+  `tasks.json` (`state.insert_cure_tasks`, `origin: "review-cure"`, so a
+  cure task is visibly distinct from the planner's own), increments
+  `curePasses[approach]` to `1`, and emits `approach.cure_pass` -- a second
+  `rejected` verdict in that same approach, curable or not, falls through to
+  the ordinary `rejected_approach_left`/`rejected_incurable`/
+  `rejected_last_approach` edges regardless, because the counter is already
+  spent. `curePasses` is disk-backed (survives a resume) and is never reset
+  by anything short of a fresh approach (it is keyed by approach number, and
+  archiving one leaves the next approach's own entry, if any, absent). This
+  is what makes `rejected_last_approach` below reachable on the LAST
+  approach specifically: a final-approach rejection that is all-curable
+  takes the cure pass FIRST (same as any other approach) and only pauses on
+  a SECOND all-curable rejection, once that approach's one cure pass is
+  already spent. Tests: `tests/test_cure_pass_task009.py` (the edge and the
+  appended tasks) and `tests/test_bounded_cure_pass_task010.py` (the
+  one-per-approach bound, incurable precedence, and that the counter
+  survives a resume).
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
   from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
   final approach's all-curable rejection takes its own `review -> review`
