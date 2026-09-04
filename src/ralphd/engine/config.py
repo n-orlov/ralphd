@@ -399,6 +399,18 @@ class JobConfig:
     # `settled: true` never touches this counter at all -- it consumes
     # exactly once, as before this task.
     steer_redelivery_max: int = 3
+    # Task 022 (PRD requirement B.3, #140): the endpoint the engine-owned
+    # `notify` hat tool (`engine/hat_tools.py`) POSTs to, from the engine
+    # process itself -- available to the worker and steer hats through the
+    # same request/response spool the steer hat's task-table tools already
+    # use. `None` (the default: no `notifier_url:` in job.yaml and no
+    # `RALPHD_NOTIFIER_URL`) means unconfigured -- the tool still answers
+    # (and still records a `notification.sent` event) rather than raising,
+    # it just reports "no notifier URL configured" and never sends. Kept
+    # OUT of `effective()`/`GET /config`, the same way `api_token` is: an
+    # operator-supplied endpoint, not a secret exactly, but not part of
+    # this task's scope to also surface on the control-plane API.
+    notifier_url: str | None = None
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
     # any pi "provider/model" ref; the plain fallback every hat resolves to
@@ -598,6 +610,8 @@ class JobConfig:
             cfg.router_model = v
         if v := os.environ.get("RALPHD_ROUTER_TIMEOUT_S"):
             cfg.router_timeout_s = float(v)
+        if v := os.environ.get("RALPHD_NOTIFIER_URL"):
+            cfg.notifier_url = v
         return cfg
 
     def effective(self) -> dict:

@@ -47,15 +47,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import state as state_module
+from .run_record import NOTIFICATION_SENT_EVENT
 from .state import RunDir, atomic_write
 
 # -- the spool -------------------------------------------------------------
@@ -86,6 +90,14 @@ EVENT_CONTEXT_WRITE = "steer.context_write"
 
 CONTEXT_READ_TOOL = "context-read"
 CONTEXT_WRITE_TOOL = "context-write"
+
+# Task 022 (PRD requirement B.3, #140): a plain send -- available to BOTH
+# the steer hat (through `STEER_WIRED_TOOLS` below) and the worker hat
+# (through a `SteerToolBroker` restricted to just this one tool,
+# `LoopSupervisor._run_worker_iteration`) -- never the task-table/standing-
+# rules tools, which stay steer-only (PRD requirement H, the authority
+# boundary the tool surface itself enforces).
+NOTIFY_TOOL = "notify"
 
 # One usage line per tool, rendered into both the generated extension's tool
 # description and `prompts/steer.md` (the prompt names each tool; this table
@@ -157,6 +169,20 @@ _TOOL_DOCS: dict[str, dict[str, str]] = {
         "usage": '{"file": "notes.md", "text": "...", '
                  '"steeringEntry": "003-do-x.md"}',
     },
+    NOTIFY_TOOL: {
+        "label": "Notify the operator",
+        "description": (
+            "POST text to the configured notifier URL, from the engine "
+            "side. Prefer this over the telegram-notify skill's own direct "
+            "HTTP push when this tool is present -- it records a "
+            "`notification.sent` event (ts, endpoint, textSha256, "
+            "httpStatus) and the same entry in the run record's "
+            "notifications section either way, succeed or fail. A failed "
+            "send is answered with an error and never fails the calling "
+            "task."
+        ),
+        "usage": '{"text": "..."}',
+    },
 }
 
 # The parameter SCHEMA of each tool, declared beside its usage line so the
@@ -224,6 +250,9 @@ _TOOL_PARAMS: dict[str, dict[str, tuple[str, bool]]] = {
         "steeringEntry": (_string("The steering entry file name that caused "
                                   "this write."), False),
     },
+    NOTIFY_TOOL: {
+        "text": (_string("The text to send to the operator."), True),
+    },
 }
 
 # THE declaration. Derived from `state.STEER_HAT_TOOLS` (never re-listed) so
@@ -235,8 +264,14 @@ _TOOL_PARAMS: dict[str, dict[str, tuple[str, bool]]] = {
 STEER_WIRED_TOOLS: dict[str, dict] = {
     name: {**_TOOL_DOCS[name], "params": _TOOL_PARAMS[name]}
     for name in (*state_module.STEER_HAT_TOOLS, CONTEXT_READ_TOOL,
-                 CONTEXT_WRITE_TOOL)
+                 CONTEXT_WRITE_TOOL, NOTIFY_TOOL)
 }
+
+# Task 022: the worker hat's own, much narrower tool surface -- just the
+# send, never a task-table/standing-rules/context tool. A `SteerToolBroker`
+# constructed with `tools=frozenset(WORKER_WIRED_TOOLS)` generates an
+# extension registering exactly this one tool.
+WORKER_WIRED_TOOLS: dict[str, dict] = {NOTIFY_TOOL: STEER_WIRED_TOOLS[NOTIFY_TOOL]}
 
 
 def usage_payload(tool: str) -> dict:
@@ -295,6 +330,29 @@ class SteerToolBroker:
     vigilant: bool = False
     steering: tuple[str, ...] = ()
     served: list[dict] = field(default_factory=list)
+    # Task 022: `tools=None` (every existing caller, unchanged) keeps this
+    # broker's full historical set (`STEER_WIRED_TOOLS`) -- the steer hat's
+    # authority boundary. `LoopSupervisor._run_worker_iteration` passes
+    # `tools=frozenset(WORKER_WIRED_TOOLS)` to get a broker that serves
+    # `notify` and refuses everything else, both in the generated
+    # extension (nothing else is even registered) and defensively in
+    # `_execute` (a raw spooled request naming an unwired tool is refused
+    # the same way an unknown tool name always was).
+    tools: "frozenset[str] | None" = None
+    # The URL the `notify` tool POSTs to; `None` means unconfigured (the
+    # tool still answers and still records the event, it just never sends).
+    notifier_url: str | None = None
+    # Named on every `steer.tool_call` audit event this broker emits --
+    # "steer" for the steer hat (unchanged default), "worker" for the
+    # worker hat's own narrower broker.
+    source: str = "steer"
+
+    def wired_tools(self) -> dict[str, dict]:
+        """This broker's own tool set -- `STEER_WIRED_TOOLS` unless `tools`
+        narrows it (the worker hat's broker)."""
+        if self.tools is None:
+            return STEER_WIRED_TOOLS
+        return {k: v for k, v in STEER_WIRED_TOOLS.items() if k in self.tools}
 
     @property
     def base_dir(self) -> Path:
@@ -320,7 +378,8 @@ class SteerToolBroker:
         self.requests_dir.mkdir(parents=True, exist_ok=True)
         self.responses_dir.mkdir(parents=True, exist_ok=True)
         atomic_write(self.extension_file,
-                     extension_source(self.run.root, sys.executable))
+                     extension_source(self.run.root, sys.executable,
+                                      tools=self.wired_tools()))
         return self.extension_file
 
     # -- execution -------------------------------------------------------
@@ -332,20 +391,22 @@ class SteerToolBroker:
         hat can read and correct."""
         record = self._execute(tool, args)
         self.run.emit(EVENT_TOOL_CALL, tool=tool, ok=record.get("ok", False),
-                      source="steer", steering=list(self.steering),
+                      source=self.source, steering=list(self.steering),
                       detail=record.get("detail"),
                       error=record.get("error"))
         self.served.append({"tool": tool, "args": args, "response": record})
         return record
 
     def _execute(self, tool: str, args: dict) -> dict:
-        if tool not in STEER_WIRED_TOOLS:
+        if tool not in self.wired_tools():
             return {"ok": False, "error": f"unknown tool {tool!r}",
                     "detail": None}
         if not isinstance(args, dict):
             return {"ok": False, "error": "args must be a JSON object",
                     "detail": None}
         try:
+            if tool == NOTIFY_TOOL:
+                return self._notify(args)
             if tool == "task-insert":
                 task = args.get("task")
                 if not isinstance(task, dict) or not task.get("id"):
@@ -455,7 +516,18 @@ class SteerToolBroker:
         entries = ([steering_entry] if steering_entry
                    else list(self.steering))
         self.run.emit(EVENT_CONTEXT_WRITE, file=name, bytes=size,
-                      source="steer", steering=entries)
+                      source=self.source, steering=entries)
+
+    def _notify(self, args: dict) -> dict:
+        """Task 022 (PRD requirement B.3, #140): the `notify` tool's own
+        execution -- `send_notification` does the actual work (and the
+        actual `notification.sent` event), this just validates the shape
+        the hat sent."""
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return {"ok": False, "detail": None,
+                    "error": 'notify needs {"text": "..."}'}
+        return send_notification(self.run, text, self.notifier_url)
 
     # -- serving ---------------------------------------------------------
 
@@ -496,6 +568,67 @@ class SteerToolBroker:
         while True:
             self.serve_once()
             await asyncio.sleep(interval)
+
+
+# -- notifications (PRD requirement B.3, #140, task 022) ------------------
+
+def _http_post_text(url: str, text: str,
+                    timeout_s: float) -> tuple[int | None, str | None]:
+    """The real POST -- `{"text": text}`, matching the telegram-notify
+    skill's own `/notify` shape exactly, so the same notifier serves either
+    caller. Returns `(status, error)`: `error` is set only when no HTTP
+    status came back at all (connection refused, DNS, timeout) -- a 4xx/5xx
+    is returned as its own status, same as a 2xx, with `error` left `None`
+    (the caller derives "failed" from the status range, not from this)."""
+    body = json.dumps({"text": text}).encode()
+    request = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as resp:
+            return resp.status, None
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return None, str(exc)
+
+
+def send_notification(run: RunDir, text: str, url: str | None, *,
+                      poster=None, timeout_s: float = 15.0) -> dict:
+    """POST `text` to `url` (the engine's own configured notifier -- PRD
+    requirement B.3) and record a `notification.sent` event carrying
+    EXACTLY the field set the requirement names: `ts` (the event's own,
+    from `RunDir.emit`), `endpoint`, `textSha256`, `httpStatus` -- never an
+    `ok`/`error` field on the persisted event itself, so a reader of the
+    run record sees the same four fields whether the send succeeded or not.
+
+    Never raises: an unconfigured URL, a connection error, and a non-2xx
+    status are all answered the same way -- the event is written either
+    way, and `{"ok": False, ...}` carries an `error` string back to
+    whatever called this (the `notify` tool's response, read by the hat;
+    never a reason to fail the calling task/iteration).
+
+    `poster` is `(url, text, timeout_s) -> (status, error)`, defaulting to
+    the real `_http_post_text` -- the one seam a test stubs to cover a
+    success and a failure without a real network call.
+    """
+    poster = poster or _http_post_text
+    text_sha256 = hashlib.sha256(text.encode()).hexdigest()
+    if not url:
+        record = {"endpoint": None, "textSha256": text_sha256,
+                  "httpStatus": None}
+        run.emit(NOTIFICATION_SENT_EVENT, **record)
+        return {"ok": False, "detail": record,
+                "error": "no notifier URL configured"}
+    status, error = poster(url, text, timeout_s)
+    record = {"endpoint": url, "textSha256": text_sha256,
+              "httpStatus": status}
+    run.emit(NOTIFICATION_SENT_EVENT, **record)
+    ok = status is not None and 200 <= status < 300
+    if ok:
+        return {"ok": True, "detail": record, "error": None}
+    return {"ok": False, "detail": record,
+            "error": error or f"notifier responded {status}"}
 
 
 # -- the hat-side client ---------------------------------------------------
@@ -564,16 +697,21 @@ def main(argv: list[str] | None = None) -> int:
 # -- the generated `pi` extension -----------------------------------------
 
 
-def extension_source(run_root: Path, python_bin: str) -> str:
-    """Render the steer hat's `pi` extension: one `pi.registerTool()` per
-    entry in `STEER_WIRED_TOOLS`, each declaring the SAME parameter object
-    its documented usage line shows (`parameters_source`) and executing by
-    handing that very object to the engine through the spool above. Both the
-    registered set and each tool's argument shape are generated from the one
-    declaration, so neither can drift from what the engine wired or from what
+def extension_source(run_root: Path, python_bin: str,
+                     tools: dict[str, dict] | None = None) -> str:
+    """Render a `pi` extension: one `pi.registerTool()` per entry in
+    `tools` (default `STEER_WIRED_TOOLS`, the steer hat's full set -- the
+    worker hat's broker passes its own narrower `wired_tools()` so the
+    generated extension registers `notify` and nothing else), each
+    declaring the SAME parameter object its documented usage line shows
+    (`parameters_source`) and executing by handing that very object to the
+    engine through the spool above. Both the registered set and each
+    tool's argument shape are generated from the one declaration, so
+    neither can drift from what the engine wired or from what
     `prompts/steer.md` tells the hat to send."""
+    tools = STEER_WIRED_TOOLS if tools is None else tools
     blocks = []
-    for name, doc in STEER_WIRED_TOOLS.items():
+    for name, doc in tools.items():
         description = (f"{doc['description']}\n\nArguments (JSON object): "
                        f"{doc['usage']}")
         blocks.append(f'''  pi.registerTool({{

@@ -59,6 +59,10 @@ the call. There is no wrapper field to stringify a payload into.
 - `context-write` — replace one writable run-context file (`notes.md`,
   `standing-rules.md`); name the steering entry that caused it so the audit
   trail carries it: `{"file": "notes.md", "text": "...", "steeringEntry": "003-do-x.md"}`
+- `notify` — send text to the operator's configured notifier from the
+  engine side (never fails the iteration; a failed send is still recorded):
+  `{"text": "..."}`. Prefer this over the telegram-notify skill's own
+  direct HTTP push when it is present.
 
 A `status` key inside `task-update`'s `changes` is routed through the
 harness's one status applier, which refuses an illegal transition and tells

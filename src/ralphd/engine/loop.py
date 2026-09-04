@@ -281,6 +281,13 @@ class LoopSupervisor:
         # is what makes `_hat_extensions("steer")` non-empty, so no other
         # phase can ever be launched with the steer tool surface.
         self._steer_tool_broker: hat_tools.SteerToolBroker | None = None
+        # Task 022 (PRD requirement B.3, #140): the worker hat's own,
+        # much narrower broker -- non-None only while a worker iteration is
+        # in flight (`_run_worker_iteration`), serving `notify` alone (see
+        # `hat_tools.WORKER_WIRED_TOOLS`) -- never the task-table/standing-
+        # rules/context tools the steer broker above carries, keeping the
+        # worker's authority boundary (requirement H) exactly what it was.
+        self._worker_tool_broker: hat_tools.SteerToolBroker | None = None
         # Task 018 (requirement E, #60 pillar 2): sequence number for this
         # process's own router transcripts (`artifacts/router/NNNN.jsonl`) --
         # a plain counter, not an iteration slot: router calls are NEVER
@@ -3460,7 +3467,8 @@ class LoopSupervisor:
                                             tier=tiers.DEFAULT_TIER)
         broker = hat_tools.SteerToolBroker(
             self.run, vigilant=bool(self.cfg.vigilant),
-            steering=tuple(p.name for p in self.run.pending_steering()))
+            steering=tuple(p.name for p in self.run.pending_steering()),
+            notifier_url=self.cfg.notifier_url)
         broker.place()
         self._steer_tool_broker = broker
         serving = asyncio.create_task(broker.serve())
@@ -3479,16 +3487,52 @@ class LoopSupervisor:
     def _hat_extensions(self, phase: str) -> list[str]:
         """Task 033: the `pi` extensions THIS phase's subprocess is launched
         with -- the steer hat's generated tool extension while a broker is
-        serving it, and nothing at all for every other phase. Scoped to the
+        serving it, and nothing at all for every other phase but `worker`
+        (task 022, PRD requirement B.3: the worker's own, much narrower
+        `notify`-only extension while ITS broker is serving). Scoped to the
         phase rather than placed in the agent's global `~/.pi/agent/
         extensions/` on purpose: the tool surface is the authority boundary
-        (PRD requirement H), so a worker/verify/review iteration must never
-        find these tools registered.
+        (PRD requirement H), so a verify/review/reflect/planning iteration
+        must never find any of these tools registered, and worker never
+        finds the steer hat's task-table/standing-rules/context tools.
         """
         broker = getattr(self, "_steer_tool_broker", None)
         if phase == "steer" and broker is not None:
             return [str(broker.extension_file)]
+        worker_broker = getattr(self, "_worker_tool_broker", None)
+        if phase == "worker" and worker_broker is not None:
+            return [str(worker_broker.extension_file)]
         return []
+
+    async def _run_worker_iteration(self, extra: str, tier: str | None):
+        """Task 022 (PRD requirement B.3, #140): wire the `notify` tool
+        live for exactly the duration of one worker iteration, the same
+        seam `_run_hat_iteration` already uses for the steer hat -- a
+        `hat_tools.SteerToolBroker` restricted to `hat_tools.
+        WORKER_WIRED_TOOLS` (just `notify`; never task-insert/update/
+        delete/standing-rules, which stay the steer hat's alone) served by
+        an asyncio task alive in this process for exactly as long as the
+        worker's own subprocess is, plus one final `serve_once()` drain
+        after it returns so a call made in the iteration's last moments is
+        still answered.
+        """
+        broker = hat_tools.SteerToolBroker(
+            self.run, vigilant=bool(self.cfg.vigilant),
+            tools=frozenset(hat_tools.WORKER_WIRED_TOOLS),
+            notifier_url=self.cfg.notifier_url, source="worker")
+        broker.place()
+        self._worker_tool_broker = broker
+        serving = asyncio.create_task(broker.serve())
+        try:
+            return await self.run_iteration("worker", extra=extra, tier=tier)
+        finally:
+            serving.cancel()
+            try:
+                await serving
+            except asyncio.CancelledError:
+                pass
+            broker.serve_once()
+            self._worker_tool_broker = None
 
     async def _step_generic_hat(self, state: str, edges: tuple) -> tuple:
         """Task 015 (requirement B, #60 pillar 2): the ONE hardcoded
@@ -5295,7 +5339,7 @@ class LoopSupervisor:
             # same as any other non-task dispatch.
             worker_tier = (state.task_effective_tier(selected)
                           if isinstance(selected, dict) else tiers.DEFAULT_TIER)
-            result = await self.run_iteration("worker", extra=extra, tier=worker_tier)
+            result = await self._run_worker_iteration(extra, worker_tier)
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)

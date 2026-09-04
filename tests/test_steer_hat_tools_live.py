@@ -88,7 +88,7 @@ def test_the_wired_set_is_the_library_set_plus_the_two_context_tools():
     library set with: a tool wired later that is not in this declaration
     fails here instead of silently widening the hat's authority."""
     assert set(hat_tools.STEER_WIRED_TOOLS) == set(STEER_HAT_TOOLS) | {
-        "context-read", "context-write"}
+        "context-read", "context-write", "notify"}
     assert set(STEER_HAT_TOOLS) == {"task-insert", "task-update",
                                     "task-delete", "standing-rules"}
 
@@ -184,7 +184,8 @@ def test_the_prompt_usage_line_and_the_live_schema_are_the_same_shape():
         assert prompt_keys == set(hat_tools.usage_payload(name)), name
 
 
-def test_the_engine_applies_every_documented_usage_payload_as_written(tmp_path):
+def test_the_engine_applies_every_documented_usage_payload_as_written(
+        tmp_path, monkeypatch):
     """End of the same chain: each payload the PROMPT documents, handed to the
     engine-side executor unchanged, is applied -- never bounced on shape."""
     broker = _broker(tmp_path, [
@@ -192,6 +193,14 @@ def test_the_engine_applies_every_documented_usage_payload_as_written(tmp_path):
         {"id": "021", "title": "t", "status": "pending"},
     ])
     broker.run.notes_file.write_text("notes\n")
+    # `notify`'s documented payload (`{"text": "..."}`) says nothing about
+    # a notifier URL -- unlike every other tool here it depends on runtime
+    # config, so this one entry is stubbed to a configured URL and a
+    # successful POST, the same way `test_notify_hat_tool.py` (task 022)
+    # stubs the send for its own success/failure cases.
+    broker.notifier_url = "http://example.invalid/notify"
+    monkeypatch.setattr(hat_tools, "_http_post_text",
+                        lambda *a, **k: (200, None))
     for name in hat_tools.STEER_WIRED_TOOLS:
         response = broker.execute(name, _prompt_usage_payload(name))
         assert response["ok"] is True, (name, response)
