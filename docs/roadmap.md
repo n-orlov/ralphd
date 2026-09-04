@@ -1905,6 +1905,90 @@ names (retry prompts for task 013 carried neither the verifier's reason nor
 ruling applies only at the engine's next load, so task 013's row still read `failed` at the
 end).
 
+## v0.18 — the run can finish
+
+Full PRD: [`docs/prds/v0.18-the-run-can-finish.md`](prds/v0.18-the-run-can-finish.md). This wave
+addresses issues #139–#147: a materiality rubric that reaches zero reviews when a PRD only
+adopts it by reference; a terminal record that makes the run author claims about its own
+future; a cure unit that is a whole new approach instead of a bounded pass over the same one;
+a last approach with no exit but `failed` on paperwork; criteria that are structurally
+unsatisfiable and reach a worker anyway; and four ladder-hygiene gaps (a re-filed adjudicated
+petition, a worker retry blind to why it was rejected, a mid-review deadline logged as a
+rejection, and the steer hat unable to skip a dead task). Requirement letters are the PRD's
+own, A–H. **This entry is written while the run is still going** (`docs/prds/README.md`'s row
+reads `in-flight`); it records the evidence landed so far and is not a terminal account.
+
+- **A — the rubric is real (#139).** Landed. `findings` resolves a by-reference rubric (prose
+  line or `<!-- rubric: ... -->` marker, inline wins when both are present, a missing file
+  falls back to A.2 with a `log` event) at `25ef7e5` (task 002); `LoopSupervisor` hands that
+  resolution to review for both the plain-PRD and composite-PRD contract paths at `2487d28`
+  (task 003); the all-blocking fallback is replaced by `findings.DEFAULT_RUBRIC` — the product-
+  blocking/residual text of `docs/review-economics.md` kept as the single copy — at `edd5184`
+  (task 004); `ralphctl start`/`doctor` print the `rubric: inline` / `rubric: by reference
+  (<path>)` / `rubric: engine default` line, warning on an unresolved reference, at `2532de5`
+  (task 005); the three adoption forms and the dropped all-blocking fallback are documented in
+  `docs/review-economics.md` and `docs/prds/README.md` at `086a708` (task 018).
+- **B — the harness owns the terminal record (#140).** B.1 landed on its cure after task 006's
+  first attempt exhausted its ladder on one residual gap (the petition/adjudication and
+  usage-breakdown detail review's own contract named): `run-record.md`/`.json` are written at
+  `finishing` and rewritten on promotion at `b320b28` (task 006), surfaced through `ralphctl
+  docs`/`artifacts` and the hub at `f9ca52e` (task 007), then the full render — every
+  review/verdict-gate verdict persisted in engine-owned approach metadata the moment the judge
+  runs, `run_record.build_run_record` reading it for both the live and archived approach
+  history, `run-record.md` rendering every `run-record.json` section including the
+  byPhase/byApproach/byTier token breakdowns — landed at `4d8f69e` (task 035, the cure). B.2
+  (`review.md` and the contract context state the engine's ownership) landed at `2cea504`
+  (task 008). B.3 (the `notify` hat tool) is still open (task 022, pending). B.4 (the
+  `docs/review-economics.md` v0.18 addendum) landed alongside B.2's docs at `086a708`
+  (task 018).
+- **C — a curable rejection is a cure pass (#141).** C.1/C.2 landed: the `review -> cure` edge
+  and the engine's cure-task append at `318128b` (task 009); the one-cure-pass-per-approach
+  bound and the incurable edge's precedence at `742736c` (task 010). C.3 (the black-box e2e
+  over a stub `pi`) is still open (task 023, pending; the in-process tier from tasks 009-010
+  already covers the append/route/replan/resume paths named in C.3's own pin list).
+- **D — the last approach cannot end `failed` on paperwork (#142).** D.3 landed first, standing
+  alone: `verdict: verified-with-residuals` recorded when review verifies over residual
+  findings at `65ccc38` (task 012). D.1/D.2 landed on their cure after task 011's first attempt
+  exhausted its ladder on the pause not surviving `resume`: the initial `review -> paused` edge
+  landed at `e2ecead` (task 011), then the cure made the pause a persisted, resumable state —
+  `rejected_last_approach` recorded in `status.json` so a restart re-enters the same pause
+  rather than losing it — at `b2b6ebf` (task 036, the cure). D.4 (the resume-from-paused
+  in-process pin) is still open (task 024, pending).
+- **E — criteria that cannot be satisfied are refused (#143).** Landed on its cure after task
+  013's first attempt exhausted its ladder on missing verbatim must-catch fixtures: the seventh
+  `lint_proposal()` lint refusing the banned successCriteria shapes (later/final-commit
+  references, predeclared event state, self-citing records, empty git ranges, "exactly once"
+  counts, notification/HTTP-status clauses), widened to sha/send/audit-range cues, at
+  `ac484b3`/`f7fb583` (task 013); the cure pinned the verbatim v0.14-a3 and v0.15-a2 must-catch
+  fixtures as literal source substrings at `43b7329`/`1b02be1` (task 037).
+- **F — ladder hygiene (#144, #145, #146, #147).** Landed. F.1 (#144): adjudicated petitions
+  render as history, never re-filed, and the mid-run adjudication episode gets the legal
+  verdict value `adjudicated` at `b85b108` (task 014). F.2 (#145): the worker's retry prompt
+  carries `validationNotes` verbatim under "Why the previous attempt was rejected" at
+  `fb484e7` (task 015). F.3 (#146): a deadline landing mid-review ends `unreviewed`, never
+  logs a rejection, and `resume` re-reviews the same approach, at `a148926` (task 016). F.4
+  (#147) landed on its cure after task 017's first attempt exhausted its ladder on dropping the
+  justification when a steer `task-update` also supplied `changes.notes`: the steer
+  `failed -> skipped` move threading a justification into `notes` landed at `b8814e7`
+  (task 017), the cure keeping that justification appended (unless already the notes' own
+  tail) even when `changes.notes` is given at `01e9726`/`2bbd29a` (task 038).
+- **G — the version, the roadmap, the row.** `0.18.0` in `pyproject.toml` and
+  `src/ralphd/__init__.py`, and the sweep-sha guard's `LAUNCH_SHA` bumped to this wave's launch
+  sha `1c61b32`, at `8db9739` (task 001); this wave's in-flight index row in
+  `docs/prds/README.md` at `06d9c9a` (task 020); this block itself (task 021).
+- **H — the evidence, the closure, and the record.** Still open: closing #139–#147 with
+  fresh-`GET`-verified evidence (tasks 025-027), the six lanes swept and recorded (tasks
+  028-033), the closing report (task 034), one terminal summary send. None of these has run
+  yet as of this entry's own commit.
+
+All four of this approach's `failed` tasks (006, 011, 013, 017) were cured on the same
+approach by steer-inserted tasks (035, 036, 037, 038 respectively) rather than costing a
+second approach, per the operator steer that inserted them — an early, human-driven instance
+of the cure-pass shape requirement C itself ships. Carried so far: B.3, C.3 and D.4 are named
+in the PRD's own cut order as the first two things to drop if the clock bites; nothing else
+has been cut. This block will be revised again as the remaining tasks land and the run
+reaches a terminal state.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
