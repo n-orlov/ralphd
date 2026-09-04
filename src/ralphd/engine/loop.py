@@ -7653,23 +7653,58 @@ class LoopSupervisor:
         return petitions.duplicate_petitions_review_context(self.workspace)
 
     def _review_materiality_rubric_context(self) -> str:
-        """Task 003 (requirement A.3, #110): hand review the contract's own
-        materiality rubric, or -- when the contract supplies none -- the
-        explicit all-blocking default (`findings.ALL_BLOCKING_DEFAULT_
-        NOTICE`), so review never has to guess which case it is in and the
-        default stays engine-declared rather than merely assumed.
+        """Task 003 (requirement A.3, #110, wiring half): hand review the
+        contract's own materiality rubric -- inline OR adopted by
+        reference (task 002's `findings.resolve_materiality_rubric`) -- or,
+        when the contract supplies neither, the explicit all-blocking
+        default (`findings.ALL_BLOCKING_DEFAULT_NOTICE`), so review never
+        has to guess which case it is in and the default stays
+        engine-declared rather than merely assumed.
 
         Reads the same file `build_prompt` already names as "the PRD file"
         (`prd_path(self.run.root) or self.run.prd_file` -- composite when
         the engine has written one, the original otherwise; task 056/#1's
         single decision of which file *is* the run's PRD). A missing file
         (a run that has not written one yet, e.g. very early in planning)
-        costs nothing more than itself: `findings.materiality_rubric_context`
-        is called with `""`, which contains no rubric heading, so review
-        still receives the explicit all-blocking default rather than this
-        method raising or silently omitting the context.
+        costs nothing more than itself: `findings.resolve_materiality_
+        rubric` is called with `""`, which contains no rubric heading and
+        no reference, so review still receives the explicit all-blocking
+        default rather than this method raising or silently omitting the
+        context.
+
+        Unlike `findings.materiality_rubric_context` (still used verbatim
+        by other callers/tests), this method resolves references itself so
+        it can (a) name the resolved source document path in the rendered
+        block when the rubric text came from a reference rather than the
+        contract's own inline heading, and (b) emit any `log_events` the
+        resolver hands back (an unresolved or rubric-less reference) via
+        `self.run.emit("log", **event)` -- the resolver has no `RunDir` of
+        its own, so this call site is where that log line actually reaches
+        the run's event log.
         """
-        return findings.materiality_rubric_context(self._contract_text())
+        resolution = findings.resolve_materiality_rubric(
+            self._contract_text(), self.workspace)
+        for event in resolution.log_events:
+            self.run.emit("log", **event)
+        lines = ["\n## Materiality rubric (task 003, requirement A.3, #110)\n"]
+        if resolution.rubric is None:
+            lines.append(f"\n{findings.ALL_BLOCKING_DEFAULT_NOTICE}\n")
+        else:
+            if resolution.source_path is not None:
+                lines.append(
+                    "\nThis run's own materiality rubric is adopted by "
+                    f"reference from `{resolution.source_path}` (resolved "
+                    "under the workspace root, quoted verbatim below). Use "
+                    "it -- not any other source -- to decide each finding's "
+                    "`severity`.\n")
+            else:
+                lines.append(
+                    "\nThe contract below is this run's own materiality "
+                    "rubric (quoted verbatim from the PRD/composite PRD). "
+                    "Use it -- not any other source -- to decide each "
+                    "finding's `severity`.\n")
+            lines.append(f"\n{resolution.rubric}\n")
+        return "".join(lines)
 
     def _contract_text(self) -> str:
         """THE run's contract text, read from the same file `build_prompt`

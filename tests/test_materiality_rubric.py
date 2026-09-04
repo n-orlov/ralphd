@@ -23,6 +23,7 @@ contract's findings can still carry `severity: "residual"` and verify.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -301,6 +302,63 @@ def test_resolve_materiality_rubric_reports_an_unresolvable_reference(
     assert len(resolution.log_events) == 1
     event = resolution.log_events[0]
     assert "docs/does-not-exist.md" in event["message"]
+
+
+
+# ---------------------------------------------------------------------------
+# Task 003 (requirement A.1, #110), wiring half:
+# `LoopSupervisor._review_materiality_rubric_context` calls the task-002
+# resolver (`findings.resolve_materiality_rubric`) itself, rather than the
+# older `findings.materiality_rubric_context`, so a rubric adopted BY
+# REFERENCE reaches the review prompt too -- for the plain-PRD contract
+# text and for the composite-PRD contract text alike -- and the rendered
+# block names the resolved source document path.
+# ---------------------------------------------------------------------------
+
+def _checkout_supervisor_with_referenced_document(tmp_path: Path):
+    root = _checkout_with_referenced_document(tmp_path / "run")
+    return _supervisor(root), root
+
+
+def test_the_engine_call_site_follows_a_reference_from_the_plain_prd_file(
+        tmp_path):
+    sup, root = _checkout_supervisor_with_referenced_document(tmp_path)
+    sup.run.prd_file.write_text(PROSE_REFERENCE_CONTRACT)
+    context = sup._review_materiality_rubric_context()
+    assert findings.ALL_BLOCKING_DEFAULT_NOTICE not in context
+    assert "Blocking" in context and "Residual" in context
+    # The rendered block names the resolved source document path.
+    assert "docs/review-economics.md" in context
+
+
+def test_the_engine_call_site_follows_a_reference_from_the_composite_prd_file(
+        tmp_path):
+    sup, root = _checkout_supervisor_with_referenced_document(tmp_path)
+    # The plain PRD carries no reference at all; only the composite PRD
+    # (the one `_contract_text` prefers when present, per task 056/#1)
+    # adopts the rubric by reference.
+    sup.run.prd_file.write_text(NO_RUBRIC_CONTRACT)
+    sup.run.composite_prd_file.write_text(MARKER_REFERENCE_CONTRACT)
+    context = sup._review_materiality_rubric_context()
+    assert findings.ALL_BLOCKING_DEFAULT_NOTICE not in context
+    assert "Blocking" in context and "Residual" in context
+    assert "docs/review-economics.md" in context
+
+
+def test_the_engine_call_site_emits_a_log_event_for_an_unresolvable_reference(
+        tmp_path):
+    sup, root = _checkout_supervisor_with_referenced_document(tmp_path)
+    sup.run.prd_file.write_text(UNRESOLVABLE_REFERENCE_CONTRACT)
+    context = sup._review_materiality_rubric_context()
+    # No rubric resolved -- the explicit all-blocking default, same as the
+    # plain no-rubric case, and one warning `log` event was emitted for the
+    # unresolved path via `self.run.emit`.
+    assert findings.ALL_BLOCKING_DEFAULT_NOTICE in context
+    lines = (sup.run.root / "events.jsonl").read_text().splitlines()
+    events = [json.loads(line) for line in lines]
+    assert any(e.get("type") == "log"
+               and "docs/does-not-exist.md" in e.get("message", "")
+               for e in events)
 
 
 if __name__ == "__main__":
