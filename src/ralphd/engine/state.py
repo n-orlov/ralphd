@@ -1496,7 +1496,8 @@ def amendment_entries(config_root: Path) -> list[dict]:
 
 def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
                              vigilant: bool, *, source: str,
-                             reason: str = "", file: str | None = None) -> dict:
+                             reason: str = "", file: str | None = None,
+                             justification: str = "") -> dict:
     """Task 010 (PRD requirement H, #98): THE one place that decides
     whether a task's `status` may move, writes it when it may, and emits
     the audit event -- extracted from `apply_amendment_status_rulings`
@@ -1517,19 +1518,36 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
       effect;
     - a LEGAL transition (`transitions.is_legal_task_status_transition`,
       the SAME declared `TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA`
-      every other status move in the engine is checked against) writes the
-      new `status` via `run.write_tasks` (the one authorized writer, task
-      013) and emits an `amendment_status_applied` audit event;
-    - an ILLEGAL transition is refused: nothing is written, and the
-      returned record says why.
+      every other status move in the engine is checked against) is then
+      run through `transitions.task_status_report_errors` -- the SAME
+      semantic check the worker/review contract channel's own
+      `_apply_reported_task_status` already applies (task 011/#123) -- so
+      the one declared move with an extra condition (`failed -> skipped`
+      requires a non-empty justification) is enforced on THIS caller too,
+      not just the hat-report channel. `justification` defaults to
+      `reason` when the caller passes no explicit one (the operator
+      path's `reason` IS its own stated justification for an amendment
+      ruling); a caller with neither is refused exactly like a hat report
+      with none. A transition that clears both checks writes the new
+      `status` via `run.write_tasks` (the one authorized writer, task
+      013), and for `failed -> skipped` ALSO writes `justification` into
+      the task's own `notes` field in that SAME write -- never into
+      `validationNotes`/`unsatisfiableReason` -- then emits an
+      `amendment_status_applied` audit event;
+    - an ILLEGAL transition, or a `failed -> skipped` move with no
+      justification, is refused: nothing is written, and the returned
+      record says why.
 
     `validationAttempts`, `tierLadderExhausted` and `successCriteria` are
-    never touched here -- only the one field, `status`, ever moves (PRD
-    requirement E: a status change is not a claim the criteria were met).
+    never touched here -- only `status` (and, for `failed -> skipped`
+    only, `notes`) ever move (PRD requirement E: a status change is not a
+    claim the criteria were met).
 
     Returns `{"taskId", "status", "previous", "applied", "reason"}` --
     `reason` is `""` when applied, and one of `"no matching task"` /
-    `"already at that status"` / `"illegal transition"` otherwise.
+    `"already at that status"` / `"illegal transition"` / the transition
+    check's own `"task_status: 'failed' -> 'skipped' requires a non-empty
+    justification"` diagnostic otherwise.
     """
     data = run.read_tasks()
     tasks = data.get("tasks", [])
@@ -1547,11 +1565,20 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
     if not transitions.is_legal_task_status_transition(current, target_status, vigilant):
         record.update(applied=False, reason="illegal transition")
         return record
+    effective_justification = justification or reason
+    status_errors = transitions.task_status_report_errors(
+        {"task_status": target_status, "justification": effective_justification},
+        current, vigilant)
+    if status_errors:
+        record.update(applied=False, reason=status_errors[0])
+        return record
     task["status"] = target_status
+    if current == "failed" and target_status == "skipped":
+        task["notes"] = effective_justification
     run.write_tasks(data)
     run.emit("amendment_status_applied", taskId=task_id, field="status",
             previous=current, status=target_status, source=source,
-            file=file, reason=reason)
+            file=file, reason=reason, justification=effective_justification)
     record.update(applied=True, reason="")
     return record
 
@@ -1661,7 +1688,8 @@ def steer_task_delete(run: "RunDir", task_id: str) -> dict:
 
 
 def steer_task_update(run: "RunDir", task_id: str, changes: dict,
-                      vigilant: bool) -> dict:
+                      vigilant: bool, *, justification: str | None = None
+                      ) -> dict:
     """Update one task's fields. THE status-changing tool (PRD requirement
     H): a `status` key in `changes` is NEVER written directly here -- it is
     routed through `apply_task_status_change`, the same applier
@@ -1670,13 +1698,28 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
     preserves `validationAttempts`/`tierLadderExhausted`. Every other key
     (`title`, `successCriteria`, `dependsOn`, `priority`, ...) is a plain
     dict-merge write with no transition to validate.
+
+    Task 017 (PRD requirement F.4, #147): `justification` -- the caller's
+    top-level argument, distinct from any `changes["notes"]` key -- is
+    threaded to `apply_task_status_change` so the ONE declared move that
+    carries an extra condition (`failed -> skipped` requires a non-empty
+    justification, `transitions.task_status_report_errors`) is actually
+    enforced on this tool, and lands in the task's own `notes` the same
+    way the worker contract channel's `_apply_reported_task_status`
+    already does. When the hat's call carries no explicit `justification`,
+    it defaults to `changes.get("notes")` -- the steer's own stated reason
+    for the change, when it wrote one into the same call.
     """
     changes = dict(changes)
     target_status = changes.pop("status", None)
     status_result = None
     if target_status is not None:
+        effective_justification = justification
+        if not effective_justification:
+            effective_justification = changes.get("notes")
         status_result = apply_task_status_change(
-            run, task_id, target_status, vigilant, source="steer")
+            run, task_id, target_status, vigilant, source="steer",
+            justification=effective_justification or "")
     if changes:
         data = run.read_tasks()
         tasks = data.get("tasks", [])

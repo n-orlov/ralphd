@@ -49,7 +49,7 @@ the call. There is no wrapper field to stringify a payload into.
 - `task-insert` — add one task; it always lands `pending` and marked as
   steer-originated: `{"task": {"id": "037", "title": "...", "successCriteria": "...", "dependsOn": [], "priority": 5}}`
 - `task-update` — change one task's fields, including `successCriteria`,
-  `dependsOn`, `priority`, `title`, `notes`: `{"taskId": "012", "changes": {"successCriteria": "...", "dependsOn": []}}`
+  `dependsOn`, `priority`, `title`, `notes`: `{"taskId": "012", "changes": {"successCriteria": "...", "dependsOn": []}, "justification": "why (needed for failed -> skipped)"}`
 - `task-delete` — remove one task, refused while another task's `dependsOn`
   names it: `{"taskId": "021"}`
 - `standing-rules` — replace the pinned standing-rules block every following
@@ -63,7 +63,12 @@ the call. There is no wrapper field to stringify a payload into.
 A `status` key inside `task-update`'s `changes` is routed through the
 harness's one status applier, which refuses an illegal transition and tells
 you so; the task table itself is written only by the harness, never by your
-own process, and the three `task-*` tools are its only writers.
+own process, and the three `task-*` tools are its only writers. Moving a
+`failed` task to `skipped` also needs a non-empty `justification` — the
+top-level argument on that same call, defaulting to `changes.notes` when you
+don't pass one separately — refused (with the applier's own diagnostic) when
+neither is given; the applier writes it into the task's own `notes`, the same
+way the worker's own escape does.
 
 ## What to do
 

@@ -108,10 +108,16 @@ _TOOL_DOCS: dict[str, dict[str, str]] = {
             "Change one existing task's fields (title, successCriteria, "
             "dependsOn, priority, notes, ...). A `status` key inside "
             "`changes` is routed through the engine's one status applier, "
-            "which refuses an illegal transition and says so."
+            "which refuses an illegal transition and says so. Moving "
+            "`status` from `failed` to `skipped` also requires a "
+            "top-level `justification` string (defaulting to "
+            "`changes.notes` when omitted) -- refused, with the "
+            "applier's own diagnostic, when neither is given -- and that "
+            "justification is written into the task's own `notes`."
         ),
         "usage": '{"taskId": "012", "changes": {"successCriteria": "...", '
-                 '"dependsOn": [], "priority": 9}}',
+                 '"dependsOn": [], "priority": 9}, '
+                 '"justification": "why (needed for failed -> skipped)"}',
     },
     "task-delete": {
         "label": "Delete task",
@@ -193,6 +199,10 @@ _TOOL_PARAMS: dict[str, dict[str, tuple[str, bool]]] = {
     "task-update": {
         "taskId": (_string("The id of the task to change."), True),
         "changes": (_CHANGES_OBJECT, True),
+        "justification": (_string(
+            "Required (non-empty) when changes.status moves a 'failed' "
+            "task to 'skipped'; defaults to changes.notes when omitted. "
+            "Written into the task's own notes on that one move."), False),
     },
     "task-delete": {
         "taskId": (_string("The id of the task to remove."), True),
@@ -349,7 +359,8 @@ class SteerToolBroker:
                             "error": 'task-update needs {"taskId": ..., '
                                      '"changes": {...}}'}
                 result = state_module.STEER_HAT_TOOLS["task-update"](
-                    self.run, task_id, changes, self.vigilant)
+                    self.run, task_id, changes, self.vigilant,
+                    justification=args.get("justification"))
                 status_result = result.get("statusResult")
                 ok = bool(result.get("updated"))
                 error = result.get("reason")
