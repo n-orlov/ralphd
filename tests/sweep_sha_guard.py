@@ -172,7 +172,29 @@ WAVE_PREFIX = "v0.14-"
 # 39a46852f371b9c4fa680c87888c902d3dea108d`, which exits 0 -- v0.17 shipped
 # strictly after v0.16, so this only widens which pre-launch shas the
 # ancestor check accepts; no record that passed before stops passing now.
-LAUNCH_SHA = "39a46852f371b9c4fa680c87888c902d3dea108d"
+#
+# Task 001 (v0.18-the-run-can-finish, #103, requirement G): same shape of
+# staleness, one run later. The constant still held v0.17's own launch sha
+# (`39a46852f371b9c4fa680c87888c902d3dea108d`) after v0.18 had already
+# launched from a later one (`1c61b32c854aa6ab7f46f9ff820695126a38ee27`,
+# the commit "docs: commit the v0.18 PRD (the run can finish) ahead of its
+# launch, with its not-started index row", the sha `docs/prds/README.md`'s
+# v0.18 row and `/run/ralphd/notes.md` both name as this run's launch).
+# Updated here to that real launch sha. The old value
+# (`39a46852f371b9c4fa680c87888c902d3dea108d`) is a genuine ancestor of the
+# new one -- confirmed with `git merge-base --is-ancestor
+# 39a46852f371b9c4fa680c87888c902d3dea108d
+# 1c61b32c854aa6ab7f46f9ff820695126a38ee27`, which exits 0 -- v0.18 shipped
+# strictly after v0.17, so this only widens which pre-launch shas the
+# ancestor check accepts; no record that passed before stops passing now.
+# Every v0.15/v0.16/v0.17 record whose `sweep-sha` declaration's discharge
+# chain to `HEAD` no longer held once this wave's own tail commits
+# (`docs/`, not just `artifacts/reports/`) broke the report-only-tail
+# bridge took `archived-sha` in the same commit as this constant update,
+# for the identical reason every prior wave boundary above needed it -- not
+# because any of those sweeps stopped being true, but because they now
+# predate the run that is checking them.
+LAUNCH_SHA = "1c61b32c854aa6ab7f46f9ff820695126a38ee27"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
