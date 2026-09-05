@@ -34,6 +34,58 @@ class InvalidSkillTar(ValueError):
     """Raised when a PUT tar body doesn't contain SKILL.md."""
 
 
+# Task 003 (finding 3, PRD B.3): the live `telegram-notify` skill pi actually
+# reads is `$HOME/.pi/agent/skills/telegram-notify/SKILL.md`, placed by
+# `place_skills()` from a host-supplied, untracked mounted directory --
+# `examples/skills/telegram-notify/SKILL.md` in THIS repo is a vendored copy
+# that is never itself live-mounted anywhere, so hand-editing it can never
+# reach the copy pi actually loads. The only repo-owned lever is engine code
+# that runs AT placement time, so `place_skills()` injects this instruction
+# into any placed `telegram-notify/SKILL.md` that doesn't already carry it,
+# leaving every other byte -- and every other skill entirely -- untouched.
+NOTIFY_PREFERENCE_MARKER = "Prefer the engine's own `notify` tool when it is present"
+
+NOTIFY_PREFERENCE_INSTRUCTION = (
+    "## Prefer the engine's own `notify` tool when it is present\n"
+    "\n"
+    "If a live `notify` tool is registered for this iteration (the\n"
+    "`hat_tools` spool's own send, wired for the worker and steer hats --\n"
+    "see `engine/hat_tools.py`), **call that tool instead of POSTing\n"
+    "directly**:\n"
+    "\n"
+    "```json\n"
+    '{"text": "...your message..."}\n'
+    "```\n"
+    "\n"
+    "The engine performs the POST itself from its own process, records a\n"
+    "`notification.sent` event (`ts`, `endpoint`, `textSha256`,\n"
+    "`httpStatus`) and the same entry in `run-record.json`'s notifications\n"
+    "section, and answers a failed send with an error rather than raising --\n"
+    "the calling task is never failed by a bad or missing notifier. That\n"
+    "accounting is the whole reason to prefer it: a direct HTTP push from\n"
+    "inside the agent leaves no such record behind.\n"
+    "\n"
+    "**Fall back to the direct HTTP push below only when no `notify` tool\n"
+    "is registered** (a phase this run does not wire it for, or a `pi`\n"
+    "invocation outside this harness entirely).\n"
+    "\n"
+    "_(This section was added by the engine's `skills.place_skills()` at\n"
+    "placement time -- task 003, finding 3 -- because it is not present in\n"
+    "the mounted source and no tracked file can edit that source.)_\n"
+)
+
+
+def _inject_notify_preference(text: str) -> str:
+    """Return `text` with `NOTIFY_PREFERENCE_INSTRUCTION` appended, unless
+    it already contains the marker -- in which case `text` is returned
+    completely unchanged. Never touches anything before the append point:
+    the whole point is that the rest of the placed file stays byte-for-byte
+    identical to its source."""
+    if NOTIFY_PREFERENCE_MARKER in text:
+        return text
+    return text.rstrip("\n") + "\n\n" + NOTIFY_PREFERENCE_INSTRUCTION
+
+
 def tar_dir(src: Path) -> bytes:
     """Tar up a skill directory's *contents* at the archive root (no
     wrapping folder), for GET /config/skills/{name}."""
@@ -96,6 +148,31 @@ def deleted_dir() -> Path:
 
 def _pi_skills_dir(home: Path | None = None) -> Path:
     return (home or _home()) / ".pi" / "agent" / "skills"
+
+
+def _notify_preference_staging_dir(home: Path) -> Path:
+    """Scratch area (inside `home`, alongside the placement target itself,
+    never inside it) where the materialized `telegram-notify` copy lives.
+    `place_skills()` symlinks the placed name AT this directory instead of
+    at the mounted/api source directly, so `verify_placement()`'s
+    'is a symlink to a readable directory' check keeps working unchanged."""
+    return home / ".pi" / "agent" / ".skills-notify-preference"
+
+
+def _materialize_telegram_notify(src: Path, home: Path) -> Path:
+    """Rebuild a real (non-symlink) copy of `src` under `home`'s staging
+    dir, with `SKILL.md` carrying `NOTIFY_PREFERENCE_INSTRUCTION` if it
+    didn't already. Every other file -- and every byte of `SKILL.md`
+    that existed in `src` -- is copied unchanged. Returns the staging
+    directory `place_skills()` should symlink the placed name at."""
+    staging = _notify_preference_staging_dir(home)
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(src, staging)
+    skill_md = staging / "SKILL.md"
+    if skill_md.is_file():
+        skill_md.write_text(_inject_notify_preference(skill_md.read_text()))
+    return staging
 
 
 def clear_tombstone(name: str) -> None:
@@ -249,6 +326,14 @@ def place_skills(config_dir: Path, *, home: Path) -> list[str]:
     `ValueError` instead of a placement built from the wrong source tree.
     Both checks run before any write to `home`, so refusal never touches
     the caller's real $HOME.
+
+    Task 003 (finding 3, PRD B.3): `telegram-notify` gets one extra step
+    before it is symlinked -- `_materialize_telegram_notify()` rebuilds a
+    real (non-symlink) copy of its source with `SKILL.md` carrying
+    `NOTIFY_PREFERENCE_INSTRUCTION` (unless already present), and
+    `target/telegram-notify` is symlinked at THAT copy instead of at the
+    mounted/api source directly. Every other name is still symlinked
+    straight at its source, unchanged.
     """
     if config_dir != CONFIG_DIR:
         raise ValueError(
@@ -270,7 +355,10 @@ def place_skills(config_dir: Path, *, home: Path) -> list[str]:
     placed = []
     for name in names:
         src = api.get(name) or mounted[name]
-        (target / name).symlink_to(src, target_is_directory=True)
+        link_target = src
+        if name == "telegram-notify":
+            link_target = _materialize_telegram_notify(src, home)
+        (target / name).symlink_to(link_target, target_is_directory=True)
         placed.append(name)
     if placed:
         log.info("placed skills: %s", ", ".join(placed))

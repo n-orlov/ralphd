@@ -15,7 +15,15 @@ from `/config/skills/telegram-notify` — read-only, host-supplied, and not
 tracked in this repo. This copy exists (task 022, PRD requirement B.3, #140)
 so the fallback described below has a source-controlled home alongside
 `examples/skills/toolchain-sibling/SKILL.md`; it is not itself live-mounted
-anywhere, and editing it does not change what the mounted skill says.
+anywhere, so a hand-edit here alone would never reach what pi actually
+reads. Instead, `skills.place_skills()` (task 003, finding 3) injects the
+"Prefer the engine's own `notify` tool" instruction below into the placed
+`~/.pi/agent/skills/telegram-notify/SKILL.md` at placement time, in engine
+code, whenever the mounted/api source lacks it — leaving every other byte
+of that file, and every other skill's placement, untouched. This vendored
+copy already carries the instruction, so placing it verbatim is a no-op for
+the injection; the mechanism exists for whatever host-supplied copy does
+not yet say this.
 
 ## Prefer the engine's own `notify` tool when it is present
 
