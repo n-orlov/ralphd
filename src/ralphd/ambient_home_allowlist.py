@@ -132,8 +132,15 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     # caller to inherit from in the first place.
     {
         "path": "engine/skills.py",
-        "line": "76",
-        "reason": ("backs `ambient_home()` (task 002): the ONE designated "
+        # Was line 76 (the read inline inside `ambient_home()` itself) when
+        # this entry was written. Task 003 (requirement B.3, notify-
+        # preference injection) factored the read out into a private
+        # `_home()` helper that `ambient_home()` now calls -- same read,
+        # same reason, new line; line numbers drift with unrelated edits,
+        # exactly as this module's own docstring warns.
+        "line": "128",
+        "reason": ("backs `ambient_home()` (task 002) via its `_home()` "
+                   "helper (task 003 refactor): the ONE designated "
                    "entry point every real caller (engine/api.py, engine/"
                    "main.py, engine/loop.py) already uses to say, at its own "
                    "call site, \"yes, this process's real ambient $HOME, on "
@@ -174,12 +181,15 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Was line 733 when this entry was written; tasks 032/033/034's engine
         # work shifted `loop.py` below it and task 027's sweep caught the
         # stale citation, corrected to 866, then task 001 (this wave) to 872.
-        # Task 039 re-derived every citation in this file from a fresh scan
+        # Task 041 re-derived every citation in this file from a fresh scan
         # after the B/C/D/E engine work of tasks 006-013 and the cure tasks
         # 035-038 shifted both `loop.py` and `cli/main.py`: this read is now
         # at 978 -- same method, same read, same reason; line numbers drift
         # with unrelated edits, exactly as this module's own docstring warns.
-        "line": "978",
+        # Task 007 (approach 02, D.1, notifier wiring) shifted `_creds_note`
+        # again -- this read is now at 1021, same method, same read, same
+        # reason.
+        "line": "1021",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
