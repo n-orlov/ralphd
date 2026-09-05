@@ -178,8 +178,48 @@ def build_approach_history(run: "state.RunDir") -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def build_petitions_section(run: "state.RunDir") -> dict:
+    """Every adjudicated petition, CONFIRMED and REFUTED alike (review
+    finding 2, approach 02 task 002): `petitions.record_confirmed_
+    adjudications` deliberately drops REFUTED entries from its trusted,
+    tamper-checked store -- a REFUTED adjudication is "not something a
+    later approach inherits" (`docs/petition-format.md`) -- so that store
+    alone is the wrong read for a RENDER of what review actually decided.
+    This function does not touch that store or its tamper/MAC semantics
+    at all: CONFIRMED entries (and the `tampered` flag) still come
+    straight from `read_confirmed_adjudications`, unchanged. REFUTED
+    entries are merged in from the plain, unauthenticated witness log
+    `petitions.record_refuted_adjudications` already writes -- one
+    `PETITION_REFUTED_EVENT` per REFUTED verdict, carrying the obligation
+    and the remedy text ("what would satisfy it") -- so a REFUTED
+    obligation and its remedy appear in the run record even though it was
+    never eligible for the exemption store.
+
+    An obligation present in BOTH channels (a petition REFUTED once and
+    later re-adjudicated CONFIRMED, or a duplicate event) is rendered
+    once, as CONFIRMED -- the trusted store wins.
+    """
     entries, tampered = petitions_mod.read_confirmed_adjudications(run)
-    return {"entries": entries, "tampered": tampered}
+    confirmed_keys = {
+        petitions_mod._normalize_obligation(e["obligation"]) for e in entries
+        if isinstance(e, dict) and isinstance(e.get("obligation"), str)}
+    refuted: dict[str, dict] = {}
+    for ev in state.read_events(
+            run.root, types=[petitions_mod.PETITION_REFUTED_EVENT]):
+        obligation = ev.get("obligation")
+        if not isinstance(obligation, str) or not obligation.strip():
+            continue
+        key = petitions_mod._normalize_obligation(obligation)
+        if key in confirmed_keys:
+            continue
+        remedy = ev.get("remedy")
+        refuted[key] = {
+            "obligation": obligation.strip(),
+            "adjudication": "REFUTED",
+            "remedy": remedy.strip() if isinstance(remedy, str) else "",
+        }
+    merged = list(entries) + sorted(refuted.values(),
+                                    key=lambda e: e["obligation"])
+    return {"entries": merged, "tampered": tampered}
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +443,11 @@ def render_run_record_markdown(record: dict) -> str:
     if not entries:
         lines.append("- (none)")
     for e in entries:
-        lines.append(f"- {e.get('obligation')} -- {e.get('adjudication')}")
+        line = f"- {e.get('obligation')} -- {e.get('adjudication')}"
+        remedy = e.get("remedy")
+        if isinstance(remedy, str) and remedy.strip():
+            line += f" (remedy: {remedy.strip()})"
+        lines.append(line)
 
     lines += ["", "## Steers consumed"]
     steers = record.get("steersConsumed") or []
