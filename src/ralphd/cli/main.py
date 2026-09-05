@@ -1596,10 +1596,19 @@ def _print_rubric_status(prd_text: str, workspace_root: Path) -> None:
     `findings.resolve_materiality_rubric` (the same resolver
     `LoopSupervisor._review_materiality_rubric_context` uses at review
     time, task 003), so a PRD reports the same rubric before and after the
-    run starts. Warns on stderr, once per unresolved reference, using that
+    run starts. Warns, once per unresolved reference, using that
     resolver's own `log_events` (a referenced rubric path that does not
     resolve to a readable file, or that resolves but carries no rubric
     section of its own).
+
+    Everything this function emits -- the rubric line as well as the
+    warnings -- goes to **stderr** (task 041): `ralphctl start`'s stdout is
+    a machine-readable contract (`out()`'s single JSON object under
+    `--json`, parsed by every docker e2e via `json.loads(res.stdout)` /
+    `_first_json_object`, and by operator scripts), and task 005 shipped
+    this line on stdout, which broke that contract in 0.18.0. The line is
+    still printed exactly once per invocation, so requirement A.3 holds;
+    only the stream changed.
     """
     resolution = findings.resolve_materiality_rubric(prd_text, workspace_root)
     if resolution.rubric is None:
@@ -1608,7 +1617,7 @@ def _print_rubric_status(prd_text: str, workspace_root: Path) -> None:
         line = f"rubric: by reference ({resolution.source_path})"
     else:
         line = "rubric: inline"
-    print(line)
+    print(line, file=sys.stderr)
     for event in resolution.log_events:
         print(f"ralphctl: warning: {event['message']}", file=sys.stderr)
 

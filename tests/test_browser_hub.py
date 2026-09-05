@@ -2070,8 +2070,11 @@ def test_run_detail_opens_the_state_document_dialogs(tmp_path, pw):
         # is NOT a button (there is nothing to open)
         assert f"composite-prd composite-prd.md {RUN_DOCUMENT_ABSENT}" in rows, rows
         assert int(pw.eval_js(_DOCUMENT_BUTTONS)) == 3
+        # 3, not 1: task 007 added two unconditional `run-record` rows to
+        # `state.RUN_DOCUMENTS`, so a run that never reached `finishing` is
+        # missing composite-prd.md, run-record.md and run-record.json.
         assert int(pw.eval_js(
-            "document.querySelectorAll('[data-document-absent]').length")) == 1
+            "document.querySelectorAll('[data-document-absent]').length")) == 3
         assert int(pw.eval_js(_DIALOGS)) == 0
 
         # -- the worker's notes --------------------------------------------

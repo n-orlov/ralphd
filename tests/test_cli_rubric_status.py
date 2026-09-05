@@ -2,7 +2,11 @@
 which materiality rubric applies (task 005, PRD requirement A.3): exactly
 one `rubric: ...` line, one of `inline`, `by reference (<path>)` or
 `engine default`, plus a warning on a referenced rubric path that does not
-resolve. Each test invokes the real `ralphctl` executable with
+resolve. The line goes to **stderr** (task 041): `ralphctl start`'s stdout
+is a machine-readable contract -- one JSON object under `--json` -- and
+task 005 originally printed the rubric line to stdout, which broke every
+caller that does `json.loads(res.stdout)`. Each test invokes the real
+`ralphctl` executable with
 RALPHD_DOCKER pointing at the recording stub (tests/stub-docker/docker) and
 RALPHD_REGISTRY at a tmp dir. No CLI internals are imported -- this mirrors
 tests/test_cli_docker.py's harness.
@@ -10,6 +14,7 @@ tests/test_cli_docker.py's harness.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -96,9 +101,9 @@ def ctl(tmp_path):
     return Ctl(tmp_path)
 
 
-def _rubric_line(stdout: str) -> str:
-    m = _RUBRIC_LINE_RE.search(stdout)
-    assert m is not None, f"no rubric line in stdout:\n{stdout}"
+def _rubric_line(stderr: str) -> str:
+    m = _RUBRIC_LINE_RE.search(stderr)
+    assert m is not None, f"no rubric line in stderr:\n{stderr}"
     return m.group(0)
 
 
@@ -110,7 +115,25 @@ def test_start_prints_inline_rubric(ctl, tmp_path):
     res = ctl.run("start", "--prd", str(prd), "--llm", "none",
                   "--run-id", "tst-inline")
     assert res.returncode == 0, res.stderr
-    assert _rubric_line(res.stdout) == "rubric: inline"
+    assert _rubric_line(res.stderr) == "rubric: inline"
+
+
+def test_start_stdout_is_one_json_object_when_a_rubric_line_is_printed(
+        ctl, tmp_path):
+    """Task 041: `ralphctl --json start`'s stdout is exactly the one JSON
+    object it was before task 005 -- the rubric line is on stderr, so
+    `json.loads(res.stdout)` (what every docker e2e does) still parses."""
+    prd = tmp_path / "prd.md"
+    prd.write_text(INLINE_PRD)
+    res = ctl.run("--json", "start", "--prd", str(prd), "--llm", "none",
+                  "--run-id", "tst-stdout-json")
+    assert res.returncode == 0, res.stderr
+    # the rubric line WAS printed -- on stderr, where it belongs
+    assert _rubric_line(res.stderr) == "rubric: inline"
+    doc = json.loads(res.stdout)
+    assert isinstance(doc, dict), doc
+    assert doc["runId"] == "tst-stdout-json"
+    assert "rubric" not in res.stdout
 
 
 def test_start_prints_by_reference_rubric(ctl, tmp_path):
@@ -122,7 +145,7 @@ def test_start_prints_by_reference_rubric(ctl, tmp_path):
     res = ctl.run("start", "--prd", str(prd), "--llm", "none",
                   "--workspace", str(ws), "--run-id", "tst-byref")
     assert res.returncode == 0, res.stderr
-    assert _rubric_line(res.stdout) == \
+    assert _rubric_line(res.stderr) == \
         "rubric: by reference (docs/review-economics.md)"
     assert res.stderr == "" or "did not resolve" not in res.stderr
 
@@ -133,7 +156,7 @@ def test_start_prints_engine_default_rubric(ctl, tmp_path):
     res = ctl.run("start", "--prd", str(prd), "--llm", "none",
                   "--run-id", "tst-default")
     assert res.returncode == 0, res.stderr
-    assert _rubric_line(res.stdout) == "rubric: engine default"
+    assert _rubric_line(res.stderr) == "rubric: engine default"
 
 
 def test_start_warns_on_unresolvable_reference(ctl, tmp_path):
@@ -144,7 +167,7 @@ def test_start_warns_on_unresolvable_reference(ctl, tmp_path):
     res = ctl.run("start", "--prd", str(prd), "--llm", "none",
                   "--workspace", str(ws), "--run-id", "tst-warn")
     assert res.returncode == 0, res.stderr
-    assert _rubric_line(res.stdout) == "rubric: engine default"
+    assert _rubric_line(res.stderr) == "rubric: engine default"
     assert "did not resolve" in res.stderr
     assert "docs/does-not-exist.md" in res.stderr
 
@@ -156,7 +179,7 @@ def test_doctor_prints_inline_rubric_for_readable_prd(ctl, tmp_path):
     prd.write_text(INLINE_PRD)
     res = ctl.run("doctor", "--prd", str(prd),
                   env={"STUB_DOCKER_INSPECT_OK": "1"})
-    assert _rubric_line(res.stdout) == "rubric: inline"
+    assert _rubric_line(res.stderr) == "rubric: inline"
 
 
 def test_doctor_prints_by_reference_rubric_relative_to_cwd(ctl, tmp_path):
@@ -175,7 +198,7 @@ def test_doctor_prints_by_reference_rubric_relative_to_cwd(ctl, tmp_path):
             "STUB_DOCKER_INSPECT_OK": "1",
         }),
         capture_output=True, text=True, timeout=60)
-    assert _rubric_line(res.stdout) == \
+    assert _rubric_line(res.stderr) == \
         "rubric: by reference (docs/review-economics.md)"
 
 
@@ -184,7 +207,7 @@ def test_doctor_prints_engine_default_rubric(ctl, tmp_path):
     prd.write_text(NO_RUBRIC_PRD)
     res = ctl.run("doctor", "--prd", str(prd),
                   env={"STUB_DOCKER_INSPECT_OK": "1"})
-    assert _rubric_line(res.stdout) == "rubric: engine default"
+    assert _rubric_line(res.stderr) == "rubric: engine default"
 
 
 def test_doctor_warns_on_unresolvable_reference(ctl, tmp_path):
@@ -192,18 +215,18 @@ def test_doctor_warns_on_unresolvable_reference(ctl, tmp_path):
     prd.write_text(UNRESOLVABLE_REFERENCE_PRD)
     res = ctl.run("doctor", "--prd", str(prd),
                   env={"STUB_DOCKER_INSPECT_OK": "1"})
-    assert _rubric_line(res.stdout) == "rubric: engine default"
+    assert _rubric_line(res.stderr) == "rubric: engine default"
     assert "did not resolve" in res.stderr
     assert "docs/does-not-exist.md" in res.stderr
 
 
 def test_doctor_without_prd_prints_no_rubric_line(ctl):
     res = ctl.run("doctor", env={"STUB_DOCKER_INSPECT_OK": "1"})
-    assert _RUBRIC_LINE_RE.search(res.stdout) is None
+    assert _RUBRIC_LINE_RE.search(res.stderr) is None
 
 
 def test_doctor_with_unreadable_prd_path_prints_no_rubric_line(ctl, tmp_path):
     missing = tmp_path / "nope.md"
     res = ctl.run("doctor", "--prd", str(missing),
                   env={"STUB_DOCKER_INSPECT_OK": "1"})
-    assert _RUBRIC_LINE_RE.search(res.stdout) is None
+    assert _RUBRIC_LINE_RE.search(res.stderr) is None
