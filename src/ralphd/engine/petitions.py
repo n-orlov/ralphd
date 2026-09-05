@@ -966,26 +966,45 @@ def _flag_tampered(run, reason: str) -> bool:
 
 
 def record_confirmed_adjudications(run, adjudications) -> None:
-    """Persist every CONFIRMED entry in `adjudications` (review's own
+    """Persist every ADJUDICATED entry in `adjudications` (review's own
     `petition_adjudications` verdict field -- a list of
     `{"obligation": str, "adjudication": "CONFIRMED"|"REFUTED", ...}`
     dicts, already schema-checked by `contracts.validate_payload`) into
-    `run.petition_adjudications_file`. ONLY REFUTED->CONFIRMED entries are
-    kept -- a REFUTED entry is not something a later approach inherits
-    (the PRD's own words: review "states what would satisfy the
-    obligation", not a permanent record), and anything not shaped like a
-    valid entry is silently skipped (this function is not a second
-    schema validator -- fact 16/#65 -- it is a filter over an
-    already-validated payload field).
+    `run.petition_adjudications_file` -- CONFIRMED and REFUTED alike, the
+    REFUTED ones carrying review's `remedy` text, all under the ONE keyed
+    MAC this module has always written. Anything not shaped like a valid
+    entry (no `obligation` string, an `adjudication` that is neither
+    value) is silently skipped: this function is not a second schema
+    validator -- fact 16/#65 -- it is a filter over an already-validated
+    payload field.
+
+    Why REFUTED entries live here too (approach 02 task 016, cure for
+    task 002, review finding 2): this store is the run's ONE record of
+    what review actually decided, and `run_record.build_petitions_section`
+    renders it. When only CONFIRMED entries were persisted, a REFUTED
+    adjudication -- and the remedy review stated for it -- never reached
+    `run-record.json`/`run-record.md` at all. Persisting it changes
+    nothing about EXEMPTIONS: `read_confirmed_adjudications` (and hence
+    `confirmed_obligations`, `petitioned_task_accepted`,
+    `downgrade_confirmed_findings`, `open_unconfirmed_petitions`,
+    `adjudicated_petitions_review_context`) filters this record down to
+    `adjudication == "CONFIRMED"` entries after authenticating it, so a
+    REFUTED entry in the store can never exempt an obligation, and a
+    REFUTED adjudication is still "not something a later approach
+    inherits" as an exemption (`docs/petition-format.md`) -- it is
+    inherited only as history to render.
 
     Merges into whatever is already on disk keyed by normalised
     obligation text, rather than overwriting -- a later approach's review
     adjudicating a DIFFERENT petition must not erase an earlier approach's
-    CONFIRMED entries; this is the actual inheritance mechanism together
+    entries; this is the actual inheritance mechanism together
     with `petition_adjudications_file` never being one of the paths
     `LoopSupervisor._archive_approach` copies away. A no-op (no write at
-    all) when nothing new is CONFIRMED, so a review pass that adjudicates
-    nothing, or only REFUTES, never touches the file's mtime.
+    all) when nothing changes, so a review pass that adjudicates nothing
+    never touches the file's mtime. An obligation already CONFIRMED in
+    the store is never downgraded by a later REFUTED entry for the same
+    obligation (a duplicate/stale re-adjudication): the CONFIRMED entry
+    wins, which is also how `build_petitions_section` renders it.
 
     Callers: `LoopSupervisor` only, immediately after a review iteration's
     contract payload is parsed -- never a worker or review hat's own
@@ -1010,7 +1029,7 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     if not adjudications:
         return
     from ralphd.engine import privsep
-    existing, tampered = read_confirmed_adjudications(run)
+    existing, tampered = read_adjudications(run)
     if tampered:
         existing = []
     by_key = {_normalize_obligation(e["obligation"]): e for e in existing
@@ -1019,13 +1038,24 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     for item in adjudications:
         if not isinstance(item, dict):
             continue
-        if item.get("adjudication") != "CONFIRMED":
+        adjudication = item.get("adjudication")
+        if adjudication not in ("CONFIRMED", "REFUTED"):
             continue
         obligation = item.get("obligation")
         if not isinstance(obligation, str) or not obligation.strip():
             continue
         key = _normalize_obligation(obligation)
-        entry = {"obligation": obligation.strip(), "adjudication": "CONFIRMED"}
+        entry = {"obligation": obligation.strip(),
+                 "adjudication": adjudication}
+        if adjudication == "REFUTED":
+            remedy = item.get("remedy")
+            entry["remedy"] = remedy.strip() if isinstance(remedy, str) else ""
+            prior = by_key.get(key)
+            if isinstance(prior, dict) and \
+                    prior.get("adjudication") == "CONFIRMED":
+                # A CONFIRMED exemption is never downgraded by a later or
+                # duplicate REFUTED entry for the same obligation.
+                continue
         if by_key.get(key) != entry:
             by_key[key] = entry
             changed = True
@@ -1044,9 +1074,33 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     _emit(run, ADJUDICATIONS_RECORDED_EVENT, mac=mac, entries=len(entries))
 
 
+def read_adjudications(run) -> tuple[list[dict], bool]:
+    """`(entries, tampered)` -- EVERY adjudicated entry the store holds,
+    CONFIRMED and REFUTED alike (the REFUTED ones with their `remedy`),
+    authenticated by exactly the same checks
+    `read_confirmed_adjudications` documents below; this is that
+    function's own body, and `read_confirmed_adjudications` is the
+    CONFIRMED-only filter over it.
+
+    Read this when RENDERING the run's record of what review decided
+    (`run_record.build_petitions_section`). NEVER read it to decide
+    whether an obligation is exempt: `confirmed_obligations` /
+    `read_confirmed_adjudications` are the exemption readers, and they
+    are CONFIRMED-only by construction.
+    """
+    return _read_adjudications_record(run)
+
+
 def read_confirmed_adjudications(run) -> tuple[list[dict], bool]:
-    """`(entries, tampered)` read back from `run.petition_adjudications_
-    file`. `tampered` is True exactly when the record does not match, in
+    """`(entries, tampered)` -- the CONFIRMED entries only, read back from
+    `run.petition_adjudications_file`. Every entry returned here has
+    `adjudication == "CONFIRMED"`; a REFUTED entry the same store carries
+    for the run record's sake (see `record_confirmed_adjudications` and
+    `read_adjudications`) is filtered out here, so an exemption is only
+    ever granted for a CONFIRMED adjudication -- this is the single place
+    that property is enforced for every exemption caller.
+
+    `tampered` is True exactly when the record does not match, in
     every respect, what `record_confirmed_adjudications` -- its only
     writer -- leaves behind:
 
@@ -1083,6 +1137,18 @@ def read_confirmed_adjudications(run) -> tuple[list[dict], bool]:
       run dir can always destroy the record's trustworthiness, and doing
       so only ever REMOVES exemptions.
     """
+    entries, tampered = _read_adjudications_record(run)
+    return ([e for e in entries
+             if isinstance(e, dict)
+             and e.get("adjudication") == "CONFIRMED"], tampered)
+
+
+def _read_adjudications_record(run) -> tuple[list[dict], bool]:
+    """The authenticated read itself: `(entries, tampered)` with every
+    entry the record holds, unfiltered. `read_adjudications` (render) and
+    `read_confirmed_adjudications` (exemptions, CONFIRMED-only) are the
+    two public views over this one body; the tamper/MAC semantics live
+    here and are shared verbatim by both."""
     from ralphd.engine.state import read_json
     if _tamper_already_witnessed(run):
         return [], True

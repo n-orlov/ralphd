@@ -78,13 +78,31 @@ def test_record_confirmed_adjudications_writes_the_run_scope_file(tmp_path):
                          "adjudication": "CONFIRMED"}]
 
 
-def test_refuted_entries_are_never_persisted(tmp_path):
+def test_refuted_entries_are_persisted_but_never_exempt(tmp_path):
+    """Task 016 (approach 02, review finding 2) changed the product here:
+    `record_confirmed_adjudications` now persists REFUTED entries too --
+    same store, same keyed MAC -- because that store is what
+    `run_record.build_petitions_section` renders, and a REFUTED
+    adjudication and its remedy were otherwise lost to the run record.
+    What must NOT change (and is pinned here) is the EXEMPTION rule: the
+    exemption readers (`read_confirmed_adjudications`,
+    `confirmed_obligations`) still see CONFIRMED entries only, so a
+    REFUTED entry in the store exempts nothing. This test previously
+    asserted the file was never written at all; that expectation was the
+    render bug, not the property."""
     run = RunDir(root=tmp_path / "run")
     petitions.record_confirmed_adjudications(run, [
         {"obligation": "Some other requirement", "adjudication": "REFUTED",
          "remedy": "do X instead"},
     ])
-    assert not run.petition_adjudications_file.exists()
+    assert run.petition_adjudications_file.exists()
+    stored, tampered = petitions.read_adjudications(run)
+    assert tampered is False
+    assert stored == [{"obligation": "Some other requirement",
+                       "adjudication": "REFUTED", "remedy": "do X instead"}]
+    entries, tampered = petitions.read_confirmed_adjudications(run)
+    assert entries == []
+    assert tampered is False
     obligations, tampered = petitions.confirmed_obligations(run)
     assert obligations == set()
     assert tampered is False

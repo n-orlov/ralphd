@@ -174,32 +174,43 @@ def build_approach_history(run: "state.RunDir") -> list[dict]:
 # ---------------------------------------------------------------------------
 # Petitions + adjudications (task 011, requirement C.3, #114): read back
 # ONLY from `petition_adjudications_file` -- the run-scope, tamper-checked
-# record `petitions.record_confirmed_adjudications` is the sole writer of.
+# record `petitions.record_confirmed_adjudications` is the sole writer of
+# (task 016: it holds REFUTED entries too, so this render needs no second
+# writer).
 # ---------------------------------------------------------------------------
 
 def build_petitions_section(run: "state.RunDir") -> dict:
-    """Every adjudicated petition, CONFIRMED and REFUTED alike (review
-    finding 2, approach 02 task 002): `petitions.record_confirmed_
-    adjudications` deliberately drops REFUTED entries from its trusted,
-    tamper-checked store -- a REFUTED adjudication is "not something a
-    later approach inherits" (`docs/petition-format.md`) -- so that store
-    alone is the wrong read for a RENDER of what review actually decided.
-    This function does not touch that store or its tamper/MAC semantics
-    at all: CONFIRMED entries (and the `tampered` flag) still come
-    straight from `read_confirmed_adjudications`, unchanged. REFUTED
-    entries are merged in from the plain, unauthenticated witness log
-    `petitions.record_refuted_adjudications` already writes -- one
-    `PETITION_REFUTED_EVENT` per REFUTED verdict, carrying the obligation
-    and the remedy text ("what would satisfy it") -- so a REFUTED
-    obligation and its remedy appear in the run record even though it was
-    never eligible for the exemption store.
+    """Every adjudicated petition, CONFIRMED and REFUTED alike, with its
+    adjudication value and -- for a REFUTED one -- review's remedy text
+    (review finding 2; approach 02 task 016, cure for task 002).
 
-    An obligation present in BOTH channels (a petition REFUTED once and
-    later re-adjudicated CONFIRMED, or a duplicate event) is rendered
-    once, as CONFIRMED -- the trusted store wins.
+    The read is `petitions.read_adjudications`: the ONE run-scope,
+    tamper/MAC-checked store `petitions.record_confirmed_adjudications`
+    is the sole writer of, which since task 016 persists EVERY adjudicated
+    entry it is handed -- REFUTED included, under the same keyed MAC. That
+    store, not a caller-side side effect, is why a REFUTED obligation and
+    its remedy reach `run-record.json`/`run-record.md`: task 002's fix
+    read the REFUTED entries out of the `PETITION_REFUTED_EVENT` witness
+    log instead, so the render only worked when the caller ALSO happened
+    to call `petitions.record_refuted_adjudications`.
+
+    Exemptions are untouched by this: `read_adjudications` is a RENDER
+    read, and `petitions.read_confirmed_adjudications` (the exemption
+    read, used by `confirmed_obligations` and everything downstream of it)
+    filters the identical authenticated record down to CONFIRMED entries,
+    so a REFUTED entry can never exempt an obligation. The `tampered`
+    flag, and the whole MAC/witness path behind it, are shared verbatim.
+
+    The `PETITION_REFUTED_EVENT` witness log is still merged in
+    afterwards, for a REFUTED adjudication that reached only that channel
+    (`record_refuted_adjudications` called on its own -- e.g. an entry
+    adjudicated by an engine episode older than task 016, or a record
+    destroyed/unauthenticatable so the store reads empty). An obligation
+    present in both channels is rendered ONCE, from the store -- the
+    authenticated record wins.
     """
-    entries, tampered = petitions_mod.read_confirmed_adjudications(run)
-    confirmed_keys = {
+    entries, tampered = petitions_mod.read_adjudications(run)
+    stored_keys = {
         petitions_mod._normalize_obligation(e["obligation"]) for e in entries
         if isinstance(e, dict) and isinstance(e.get("obligation"), str)}
     refuted: dict[str, dict] = {}
@@ -209,7 +220,7 @@ def build_petitions_section(run: "state.RunDir") -> dict:
         if not isinstance(obligation, str) or not obligation.strip():
             continue
         key = petitions_mod._normalize_obligation(obligation)
-        if key in confirmed_keys:
+        if key in stored_keys:
             continue
         remedy = ev.get("remedy")
         refuted[key] = {
