@@ -153,6 +153,15 @@ def attribute_authorship(items: list[dict], author: str) -> list[dict]:
     return [dict(item, author=author) for item in items]
 
 
+# Task 039 (operator steer 002): the ONE literal that identifies a
+# criteria-tamper finding as the engine's own. `flagged_criteria_findings`
+# below builds every `clause` it emits from this marker, and
+# `any_criteria_tamper_finding` recognises one by it -- so the producer and
+# the recogniser can never drift apart into two hand-typed copies of the
+# same wording.
+CRITERIA_TAMPER_CLAUSE_MARKER = "successCriteria authority (#116 section 2)"
+
+
 def flagged_criteria_findings(tasks: list[dict]) -> list[dict]:
     """Task 024 (requirement E.3, #116 section 2): one engine-detected
     `severity: "blocking"` finding, shaped exactly like `FINDING_SCHEMA`,
@@ -204,8 +213,8 @@ def flagged_criteria_findings(tasks: list[dict]) -> list[dict]:
         out.append({
             "severity": "blocking",
             "curable": True,
-            "clause": (f"task {t.get('id')} successCriteria authority "
-                       "(#116 section 2)"),
+            "clause": (f"task {t.get('id')} "
+                       f"{CRITERIA_TAMPER_CLAUSE_MARKER}"),
             "evidence": (
                 f"task {t.get('id')}'s successCriteria was rewritten by a "
                 "worker or planner with no amendment authority -- the ONE "
@@ -214,6 +223,30 @@ def flagged_criteria_findings(tasks: list[dict]) -> list[dict]:
                 f"{t.get('successCriteria', '')!r}"),
         })
     return out
+
+
+def any_criteria_tamper_finding(findings: list[dict]) -> bool:
+    """Task 039 (operator steer 002): does this findings list carry at least
+    one criteria-tamper finding -- the engine-authored finding
+    `flagged_criteria_findings` emits for a task whose `successCriteria` a
+    worker or planner rewrote with no amendment authority?
+
+    Recognised by `CRITERIA_TAMPER_CLAUSE_MARKER` appearing in a finding's
+    `clause`, the same literal the producer above builds its clause from.
+
+    Deliberately severity-BLIND, unlike `compute_verdict`/`all_blocking_
+    findings_curable`: a caller asks this question in order to withhold a
+    remedy (the cure pass, see `engine.loop.LoopSupervisor._review_cure_
+    pass_available`), so the safe direction is to answer `True` whenever the
+    fact appears at all -- including a copy that some other rule has
+    downgraded to `"residual"`. Answering only for `"blocking"` copies would
+    make a downgrade a way to buy back the cure pass over a tampered
+    approach, which is exactly the authority boundary #116 section 2 exists
+    to hold.
+    """
+    return any(
+        CRITERIA_TAMPER_CLAUSE_MARKER in (f.get("clause") or "")
+        for f in findings)
 
 
 def compute_verdict(findings: list[dict]) -> str:

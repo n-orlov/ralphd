@@ -41,7 +41,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     # back to the invoking user's real `$HOME`.
     {
         "path": "cli/main.py",
-        "line": "158",
+        "line": "159",
         "reason": ("registry()'s ralphctl-managed-state root: overridable via "
                    "RALPHD_REGISTRY; the ambient fallback is the operator's own "
                    "machine home, which is exactly right for a bare `ralphctl` "
@@ -49,7 +49,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "1790",
+        "line": "1823",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -57,14 +57,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "1803",
+        "line": "1836",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "4084",
+        "line": "4117",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -74,7 +74,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4286",
+        "line": "4319",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -83,13 +83,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4290",
+        "line": "4323",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "6016",
+        "line": "6060",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -97,7 +97,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6020",
+        "line": "6064",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
@@ -166,11 +166,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         "path": "engine/loop.py",
         # Was line 733 when this entry was written; tasks 032/033/034's engine
         # work shifted `loop.py` below it and task 027's sweep caught the
-        # stale citation, corrected to 866. Task 001 (this wave) found it
-        # drifted again to 872 -- same method, same read, same reason; line
-        # numbers drift with unrelated edits, exactly as this module's own
-        # docstring warns.
-        "line": "872",
+        # stale citation, corrected to 866, then task 001 (this wave) to 872.
+        # Task 039 re-derived every citation in this file from a fresh scan
+        # after the B/C/D/E engine work of tasks 006-013 and the cure tasks
+        # 035-038 shifted both `loop.py` and `cli/main.py`: this read is now
+        # at 978 -- same method, same read, same reason; line numbers drift
+        # with unrelated edits, exactly as this module's own docstring warns.
+        "line": "978",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

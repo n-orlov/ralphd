@@ -6981,11 +6981,29 @@ class LoopSupervisor:
         blocking_findings_curable` -- requires `curable is True` across
         the whole blocking set), AND this approach has not already spent
         its one cure pass (`curePasses[approach] == 0`).
+
+        Task 039 (operator steer 002): a rejection that carries a
+        criteria-tamper finding at all (`findings.any_criteria_tamper_
+        finding` -- the engine's own finding for a worker/planner rewrite of
+        a task's `successCriteria`, #116 section 2) is NEVER curable, whatever
+        that finding's own `curable` flag says. The flag is `True` for a
+        sound reason of its own (a *fresh* approach that never edits criteria
+        again does not repeat the violation -- `findings.flagged_criteria_
+        findings`' own docstring), but curing is not a fresh approach: it
+        hands THIS approach, the one that already rewrote its own criteria,
+        another worker pass over the very tasks whose criteria are in
+        dispute. So a tampered approach is archived and replanned exactly as
+        it was before this wave's cure-pass edge existed (task 009), which is
+        also what `tests/test_e2e.py::test_criteria_edited_after_validation_
+        failure_is_refused` pins end to end: the archived approach holds its
+        planned tasks and no engine-appended cure task.
         """
         findings_list = self._review_findings()
         if findings_list is None:
             return False
         if findings.compute_verdict(findings_list) != "rejected":
+            return False
+        if findings.any_criteria_tamper_finding(findings_list):
             return False
         if not findings.all_blocking_findings_curable(findings_list):
             return False

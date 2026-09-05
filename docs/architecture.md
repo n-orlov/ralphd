@@ -1457,7 +1457,21 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   already spent. Tests: `tests/test_cure_pass_task009.py` (the edge and the
   appended tasks) and `tests/test_bounded_cure_pass_task010.py` (the
   one-per-approach bound, incurable precedence, and that the counter
-  survives a resume).
+  survives a resume). A criteria-tamper rejection is the ONE exception to
+  "all-curable takes the cure pass": the engine's own tamper finding
+  (`findings.flagged_criteria_findings`, #116 section 2) is flagged
+  `curable: true` because a *fresh* approach that never rewrites its
+  criteria again does not repeat the violation -- but curing is not a fresh
+  approach, it hands the approach that already rewrote its own
+  `successCriteria` another worker pass over exactly those tasks. So
+  `_review_cure_pass_available` refuses the edge whenever
+  `findings.any_criteria_tamper_finding` recognises such a finding in the
+  channel (severity-blind on purpose, so a downgrade cannot buy the cure
+  pass back), and a tampered approach is archived and replanned exactly as
+  it was before this edge existed (v0.18 task 039, operator steer 002).
+  Tests: `tests/test_cure_pass_not_on_tamper_task039.py` in process and
+  `tests/test_e2e.py::test_criteria_edited_after_validation_failure_is_refused`
+  end to end.
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
   from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
   final approach's all-curable rejection takes its own `review -> review`
