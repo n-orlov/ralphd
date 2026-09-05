@@ -105,7 +105,7 @@ def _drive_the_pause_edge(root: Path) -> LoopSupervisor:
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
     return sup
 
 
@@ -166,7 +166,7 @@ def test_the_persisted_pause_is_recorded_before_the_escalation_is_notified(
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     assert asyncio.run(sup._step_review()) == (
-        "advance", "review", "rejected_last_approach")
+        "advance", "paused", "rejected_last_approach")
 
     assert len(seen) == 1
     assert seen[0]["state"] == "paused"

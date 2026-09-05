@@ -89,7 +89,7 @@ def _drive_the_pause_edge(sup: LoopSupervisor) -> None:
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
 
 
 def test_resume_asks_review_again_over_the_same_approach_and_reaches_terminal(
@@ -186,7 +186,7 @@ def test_resume_without_a_ruling_asks_review_again_and_can_still_reject(
     sup.runner.run = _review_rejects_again  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
     assert len(calls) == 1
     status = sup.run.read_status()
     assert status["approach"] == 1

@@ -197,7 +197,7 @@ def test_the_same_fixture_without_the_marker_does_take_the_cure_pass(tmp_path):
 
     outcome = _drive_review_over(sup)
 
-    assert outcome == ("advance", "worker", "rejected_curable_pass_available")
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
     assert sup.run.read_status().get("curePasses") == {"1": 1}
     assert len([t for t in sup.run.read_tasks()["tasks"]
                 if t.get("origin") == "review-cure"]) == 1

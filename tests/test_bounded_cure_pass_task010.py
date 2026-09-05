@@ -92,7 +92,7 @@ def _cure_once(root: Path, approach: int = 1, max_approaches: int = 3
     sup.runner.run = reviewer  # type: ignore[method-assign]
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "worker", "rejected_curable_pass_available")
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
     assert sup.run.read_status().get("curePasses") == {str(approach): 1}
     return sup
 
@@ -166,7 +166,7 @@ def test_second_rejection_with_no_approach_left_takes_task011s_pause_edge(
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
     assert sup._pause.is_set() is False  # paused, not failed
     status = sup.run.read_status()
     assert status.get("state") != "succeeded"

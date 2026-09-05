@@ -76,6 +76,34 @@ STEP_STATES: tuple[str, ...] = (
     # `plan_review`/`verify` are, so both variants render from the same
     # enumeration whether or not the gate is on.
     "verdict_gate",
+    # Task 004 (PRD requirement C.1, finding 4): the cure-pass edge's own
+    # step state -- a pure formalisation of "review took the cure pass"
+    # (task 009's `rejected_curable_pass_available`, previously a direct
+    # `review -> worker` edge) as a NAMED position in the FSM rather than
+    # an unrecorded side effect that happened to land back on `worker`.
+    # Deterministic, no hat of its own (like `replan`/`finishing`): the
+    # actual append/counter/event work still happens inside `_step_review`
+    # (`_take_cure_pass`) before this state is even entered -- `cure`'s own
+    # handler (`LoopSupervisor._step_cure`) does nothing but take its one
+    # declared edge straight back to `worker`, in the same dispatch pass,
+    # so "the worker runs the appended cure tasks" is unchanged end to
+    # end. Reachable ONLY through `review`'s `rejected_curable_pass_
+    # available` edge, in both `TABLE` and `PEER_VERDICT_GATE_DELTA`.
+    "cure",
+    # Task 004 (PRD requirement D.1, finding 4): the last-approach pause's
+    # own step state -- the same formalisation for task 011/036's
+    # `rejected_last_approach` edge, previously a `review -> review`
+    # self-loop that relied entirely on `status.json`'s `state: "paused"`
+    # (a DIFFERENT namespace, `state.PAUSED_STATE`) to make the parked run
+    # observable. `paused`'s own handler (`LoopSupervisor._step_paused`)
+    # does the actual parking (`await self._gate()`, the same existing
+    # `asyncio.Event` `self.pause()`/`resume()` already drive) and, once
+    # released, takes its one declared edge straight back to `review` --
+    # never `worker`, never a fresh `replan` -- so a `resume` still
+    # re-reviews the SAME approach exactly as before. Reachable ONLY
+    # through `review`'s `rejected_last_approach` edge, in both `TABLE`
+    # and `PEER_VERDICT_GATE_DELTA`. Deterministic, no hat of its own.
+    "paused",
 )
 
 RUN_TERMINAL_STATES: tuple[str, ...] = ("succeeded", "failed", "aborted")
@@ -246,7 +274,13 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # before taking this edge; task 010 is what bounds a SECOND
         # rejection in the same approach back onto the ordinary
         # `rejected_approach_left` edge below.
-        T("worker", "rejected_curable_pass_available"),
+        #
+        # Task 004 (PRD requirement C.1, finding 4): the target is now the
+        # dedicated `cure` step state, not `worker` directly -- `cure`'s
+        # own edge (below) takes the run the rest of the way to `worker`,
+        # in the same dispatch pass, so this is a formalisation of what
+        # already happened, not a behaviour change.
+        T("cure", "rejected_curable_pass_available"),
         # Task 011 (PRD requirement D.1, #142): on the FINAL approach
         # (`approach == max_approaches`), a rejection whose blocking
         # findings are ALL curable but whose one cure pass for this
@@ -263,7 +297,16 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # approach, never a fresh one). A rejection with any incurable
         # blocking finding on the last approach still falls through to
         # `rejected_no_approach_left` below (requirement D.2).
-        T("review", "rejected_last_approach"),
+        #
+        # Task 004 (PRD requirement D.1, finding 4): the target is now the
+        # dedicated `paused` step state, not a `review -> review` self-
+        # loop -- `paused`'s own edge (below) parks the run
+        # (`LoopSupervisor._step_paused`, the same `self._pause`
+        # `asyncio.Event` this self-loop always relied on) and, once
+        # resumed, lands back on `review` over the SAME approach, which is
+        # exactly what the self-loop already did; this is a
+        # formalisation, not a behaviour change.
+        T("paused", "rejected_last_approach"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -322,6 +365,25 @@ TABLE: dict[str, tuple[Transition, ...]] = {
     # inserted/updated, same as any planner-proposed task.
     "steer": (
         T("worker", "steer_settled"),
+    ),
+    # Task 004 (PRD requirement C.1, finding 4): `cure` -- reached only via
+    # `review`'s `rejected_curable_pass_available` edge above (and its
+    # `PEER_VERDICT_GATE_DELTA` twin below) -- has exactly one declared
+    # successor, straight back to `worker`, taken unconditionally and
+    # immediately by `LoopSupervisor._step_cure` (the append/counter/event
+    # side effects already ran inside `_step_review` before this state was
+    # entered; nothing here is contingent on anything).
+    "cure": (
+        T("worker", "cure_pass_appended"),
+    ),
+    # Task 004 (PRD requirement D.1, finding 4): `paused` -- reached only
+    # via `review`'s `rejected_last_approach` edge above (and its
+    # `PEER_VERDICT_GATE_DELTA` twin below) -- has exactly one declared
+    # successor, back to `review` over the SAME approach, taken by
+    # `LoopSupervisor._step_paused` only once the existing `self._pause`
+    # `asyncio.Event` is released again (`ralphctl resume`/`POST /resume`).
+    "paused": (
+        T("review", "paused_resumed"),
     ),
     # Task 018 (requirement K, #101): `plan_review` has NO base-table entry
     # -- unlike `verify` (which is always a key, forced to `()` when
@@ -477,14 +539,19 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # carried over byte-for-byte -- same reasoning as
         # `rejected_incurable` just above: the cure-pass check runs on the
         # REJECTED branch too, entirely before the (VERIFIED-only) peer
-        # verdict gate is ever consulted.
-        T("worker", "rejected_curable_pass_available"),
+        # verdict gate is ever consulted. Task 004 (finding 4) retargeted
+        # this at `cure` instead of `worker` directly, in `TABLE` above --
+        # carried over identically here for the same reason every other
+        # entry in this delta is.
+        T("cure", "rejected_curable_pass_available"),
         # Task 011 (PRD requirement D.1, #142): carried over byte-for-byte
         # from `TABLE["review"]` above -- same reasoning as `rejected_
         # incurable`/`rejected_curable_pass_available` just above: this
         # check runs on the REJECTED branch too, entirely before the
-        # (VERIFIED-only) peer verdict gate is ever consulted.
-        T("review", "rejected_last_approach"),
+        # (VERIFIED-only) peer verdict gate is ever consulted. Task 004
+        # (finding 4) retargeted this at `paused` instead of `review`, in
+        # `TABLE` above -- carried over identically here.
+        T("paused", "rejected_last_approach"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),
@@ -564,6 +631,11 @@ STATE_HAT: dict[str, str | None] = {
     "replan": None,
     "finishing": None,
     "reflect": "reflect",
+    # Task 004 (PRD requirement C.1/D.1, finding 4): `cure`/`paused` are
+    # deterministic harness decisions, exactly like `replan`/`finishing`
+    # above -- no hat of their own, no prompt, no schema.
+    "cure": None,
+    "paused": None,
     # Task 009 (requirement G, #98): the steer hat occupies its own state.
     "steer": "steer",
     # Task 018 (requirement K, #101): the peer plan-review hat occupies its

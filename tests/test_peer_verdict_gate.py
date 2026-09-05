@@ -97,13 +97,15 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # too for the same reason: gate-off is byte-identical to TODAY's
         # table (now including this edge), not to a pre-task-009 snapshot
         # of it.
-        tr.T("worker", "rejected_curable_pass_available"),
+        tr.T("cure", "rejected_curable_pass_available"),
         # Task 011 (PRD requirement D.1, #142): the last-approach pause
         # edge, added to the base table beside `rejected_curable_pass_
         # available` -- present here too for the same reason: gate-off is
         # byte-identical to TODAY's table (now including this edge), not
-        # to a pre-task-011 snapshot of it.
-        tr.T("review", "rejected_last_approach"),
+        # to a pre-task-011 snapshot of it. Task 004 (finding 4)
+        # retargeted this at `paused`, and the cure-pass edge above at
+        # `cure`, in the base table -- both carried over here unchanged.
+        tr.T("paused", "rejected_last_approach"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),

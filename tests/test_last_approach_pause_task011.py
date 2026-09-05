@@ -82,14 +82,14 @@ def test_the_edge_is_declared_in_both_variants():
         assert "rejected_last_approach" in guards
         by_guard = {e.guard: e.target for e in
                    transitions.successors("review", vigilant)}
-        assert by_guard["rejected_last_approach"] == "review"
+        assert by_guard["rejected_last_approach"] == "paused"
 
 
 def test_the_edge_is_also_declared_under_the_peer_verdict_gate_delta():
     edges = transitions.successors("review", vigilant=False,
                                    peer_verdict_gate=True)
     by_guard = {e.guard: e.target for e in edges}
-    assert by_guard["rejected_last_approach"] == "review"
+    assert by_guard["rejected_last_approach"] == "paused"
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ def test_last_approach_all_curable_with_cure_spent_pauses_and_escalates(
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
     # paused through the EXISTING pause machinery -- the same asyncio.Event
     # POST /pause's loop.pause() clears.
     assert sup._pause.is_set() is False
@@ -172,7 +172,7 @@ def test_the_escalation_is_emitted_to_events_jsonl_with_no_notifier(tmp_path):
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
     assert sup._pause.is_set() is False
 
     escalations = _events(root, "operator_escalation")
@@ -205,7 +205,7 @@ def test_last_approach_first_rejection_still_takes_the_cure_pass(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "worker", "rejected_curable_pass_available")
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
     assert sup._pause.is_set() is True  # never paused -- cured instead
     assert sup.notifier.messages == []  # never escalated
     assert sup.run.read_status().get("curePasses") == {"1": 1}
@@ -308,7 +308,7 @@ def test_resume_detects_the_last_approach_pause_and_re_enters_review(
 
     sup1.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup1._step_review())
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
     assert sup1._pause.is_set() is False
 
     # a brand-new process, no shared Python state at all -- reads
@@ -346,7 +346,7 @@ def test_paused_awaiting_last_approach_ruling_is_false_once_a_new_iteration_star
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "review", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "rejected_last_approach")
     assert sup._paused_awaiting_last_approach_ruling(1) is True
 
     sup.run.emit("iteration.start", phase="review", approach=1)

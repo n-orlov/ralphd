@@ -174,8 +174,8 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `finishing` | `verified` |
 | `review` | review | both | `replan` | `rejected_approach_left` |
 | `review` | review | both | `review` | `rejected_incurable` |
-| `review` | review | both | `worker` | `rejected_curable_pass_available` |
-| `review` | review | both | `review` | `rejected_last_approach` |
+| `review` | review | both | `cure` | `rejected_curable_pass_available` |
+| `review` | review | both | `paused` | `rejected_last_approach` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
 | `review` | review | both | `review` | `review_interrupted` |
 | `review` | review | both | `finishing` | `review_unjudged_at_budget_end` |
@@ -193,6 +193,8 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_approved` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `replan` | `verdict_gate_rejected_approach_left` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_rejected_no_approach_left` |
+| `cure` | — | both | `worker` | `cure_pass_appended` |
+| `paused` | — | both | `review` | `paused_resumed` |
 | `finishing` | — | both | `reflect` | `reflect_enabled` |
 | `finishing` | — | both | `succeeded` | `reflect_disabled_outcome_succeeded` |
 | `finishing` | — | both | `failed` | `reflect_disabled_outcome_failed` |
@@ -1474,8 +1476,10 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   end to end.
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
   from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
-  final approach's all-curable rejection takes its own `review -> review`
-  edge and parks the run on the same `self._pause` event; `_resume_point()`'s
+  final approach's all-curable rejection takes `rejected_last_approach` into
+  the dedicated `paused` step state (v0.18 task 004, finding 4 --
+  previously a `review -> review` self-loop) and parks the run on the same
+  `self._pause` event via `LoopSupervisor._step_paused`; `_resume_point()`'s
   `_paused_awaiting_last_approach_ruling(approach)` case routes a restarted
   episode straight back to **`review`** over the SAME (never archived)
   approach, for the same reasons as the `rejected_incurable` case above plus

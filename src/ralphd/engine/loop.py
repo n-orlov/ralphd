@@ -3353,6 +3353,20 @@ class LoopSupervisor:
                     outcome = await self._step_worker()
                 elif step == "review":
                     outcome = await self._step_review()
+                elif step == "cure":
+                    # Task 004 (PRD requirement C.1, finding 4): a
+                    # dedicated handler, not the generic
+                    # `_step_generic_hat` fallback below -- `cure` has no
+                    # hat of its own (`transitions.STATE_HAT["cure"]` is
+                    # `None`, exactly like `replan`/`finishing`) and takes
+                    # its one declared edge unconditionally.
+                    outcome = await self._step_cure()
+                elif step == "paused":
+                    # Task 004 (PRD requirement D.1, finding 4): likewise
+                    # dedicated, not generic -- `paused` has no hat either
+                    # and its own edge is gated on the existing pause
+                    # machinery (`self._pause`), not on any hat reply.
+                    outcome = await self._step_paused()
                 elif step == "plan_review":
                     # Task 018 (requirement K, #101): a dedicated handler,
                     # NOT the generic `_step_generic_hat` fallback below --
@@ -6929,10 +6943,16 @@ class LoopSupervisor:
         # rejection keeps its pause-and-escalate precedence) and BEFORE
         # the ordinary archive/replan below, so a curable rejection never
         # burns the approach it could instead be cured inside of.
+        #
+        # Task 004 (PRD requirement C.1, finding 4): the target is the
+        # dedicated `cure` step state (`transitions.TABLE`), not `worker`
+        # directly -- `_step_cure` takes the run the rest of the way to
+        # `worker`, immediately, in the same dispatch pass, so the worker
+        # still runs the appended cure tasks exactly as before.
         if self._review_cure_pass_available(approach):
             self._take_cure_pass(approach)
-            self._advance("review", "worker", "rejected_curable_pass_available")
-            return ("advance", "worker", "rejected_curable_pass_available")
+            self._advance("review", "cure", "rejected_curable_pass_available")
+            return ("advance", "cure", "rejected_curable_pass_available")
         # Task 011 (PRD requirement D.1, #142): on the FINAL approach, a
         # rejection whose blocking findings are ALL curable but whose one
         # cure pass for this approach is already spent (the branch just
@@ -6943,11 +6963,17 @@ class LoopSupervisor:
         # "if a cure pass is available, take it") and BEFORE the ordinary
         # archive/replan-or-fail below, so the approach is never archived
         # on this branch (`resume` re-reviews the SAME approach).
+        #
+        # Task 004 (PRD requirement D.1, finding 4): the target is the
+        # dedicated `paused` step state, not a `review -> review` self-
+        # loop -- `_step_paused` parks the run on the same `self._pause`
+        # `asyncio.Event` this self-loop always relied on, then lands back
+        # on `review` over the SAME approach once resumed.
         if (approach == self.cfg.max_approaches
                 and self._review_last_approach_curable_rejection(approach)):
             self._pause_and_escalate_last_approach_rejection(approach)
-            self._advance("review", "review", "rejected_last_approach")
-            return ("advance", "review", "rejected_last_approach")
+            self._advance("review", "paused", "rejected_last_approach")
+            return ("advance", "paused", "rejected_last_approach")
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:
@@ -6955,6 +6981,46 @@ class LoopSupervisor:
             return ("advance", "replan", "rejected_approach_left")
         self._advance("review", "finishing", "rejected_no_approach_left")
         return ("tail",)
+
+    async def _step_cure(self) -> tuple:
+        """The `cure` state (task 004, PRD requirement C.1, finding 4).
+
+        A pure formalisation of "review took the cure-pass edge" as its
+        own named position in the FSM, rather than an unrecorded side
+        effect that happened to land straight back on `worker`. The
+        actual append-cure-tasks/increment-counter/emit-event work
+        (`_take_cure_pass`) already ran inside `_step_review` BEFORE this
+        state was ever entered -- there is nothing left to decide here:
+        `cure` has exactly one declared successor (`transitions.TABLE
+        ["cure"]`), taken unconditionally and immediately, in the same
+        dispatch pass, so "the worker runs the appended cure tasks" is
+        exactly as immediate as it was before this state existed.
+        """
+        self._advance("cure", "worker", "cure_pass_appended")
+        return ("advance", "worker", "cure_pass_appended")
+
+    async def _step_paused(self) -> tuple:
+        """The `paused` state (task 004, PRD requirement D.1, finding 4).
+
+        The formal step-table home for "review paused itself on
+        `rejected_last_approach`" -- `_pause_and_escalate_last_approach_
+        rejection` already did the actual work (persisted the pause to
+        status.json, emitted `operator_escalation`, notified) before
+        `_step_review` advanced here. This state's own job is only to
+        occupy the dispatch loop's `step` position while the run sits
+        parked, and to resume straight back into `review` -- never
+        `worker`, never a fresh `replan` -- the instant the existing
+        `self._pause` `asyncio.Event` is released again
+        (`ralphctl resume`/`POST /resume`), exactly the target a fresh
+        process's own `_resume_point`/`_paused_awaiting_last_approach_
+        ruling` case already lands on. `await self._gate()` is the SAME
+        parking primitive every other step boundary already calls -- a
+        no-op the instant `resume()` has already run, and an actual park
+        otherwise.
+        """
+        await self._gate()
+        self._advance("paused", "review", "paused_resumed")
+        return ("advance", "review", "paused_resumed")
 
     def _cure_passes_for_approach(self, approach: int) -> int:
         """Task 009 (requirement C.1, #141): `curePasses[approach]` as

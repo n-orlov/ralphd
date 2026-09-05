@@ -162,11 +162,15 @@ def test_review_to_worker_replan_finishing_or_review():
     # requirement A, #72: `review_interrupted` self-loops back to `review`,
     # `review_unjudged_at_budget_end` lands on `finishing` (already a
     # target via `rejected_no_approach_left`) -- so `review` joins the
-    # target set alongside the four pre-existing targets.
+    # target set alongside the four pre-existing targets. Task 004
+    # (finding 4): `rejected_curable_pass_available` now targets `cure`
+    # (not `worker` directly) and `rejected_last_approach` now targets
+    # `paused` (not a `review -> review` self-loop) -- both new step
+    # states join the target set too.
     targets = {edge.target for edge in tr.successors("review", vigilant=True)}
-    assert targets == {"worker", "replan", "finishing", "review"}
+    assert targets == {"worker", "replan", "finishing", "review", "cure", "paused"}
     targets_plain = {edge.target for edge in tr.successors("review", vigilant=False)}
-    assert targets_plain == {"worker", "replan", "finishing", "review"}
+    assert targets_plain == {"worker", "replan", "finishing", "review", "cure", "paused"}
 
 
 def test_review_interrupted_edges_declared_in_both_variants_requirement_a_72():

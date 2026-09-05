@@ -79,14 +79,14 @@ def test_the_edge_is_declared_in_both_variants():
         assert "rejected_curable_pass_available" in guards
         by_guard = {e.guard: e.target for e in
                    transitions.successors("review", vigilant)}
-        assert by_guard["rejected_curable_pass_available"] == "worker"
+        assert by_guard["rejected_curable_pass_available"] == "cure"
 
 
 def test_the_edge_is_also_declared_under_the_peer_verdict_gate_delta():
     edges = transitions.successors("review", vigilant=False,
                                    peer_verdict_gate=True)
     by_guard = {e.guard: e.target for e in edges}
-    assert by_guard["rejected_curable_pass_available"] == "worker"
+    assert by_guard["rejected_curable_pass_available"] == "cure"
 
 
 def test_rejected_incurable_keeps_precedence_over_the_cure_pass(tmp_path):
@@ -148,7 +148,7 @@ def test_all_curable_blocking_findings_take_the_cure_pass_edge(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "worker", "rejected_curable_pass_available")
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
 
     # the counter, persisted on status.json (survives a fresh read).
     status = sup.run.read_status()
