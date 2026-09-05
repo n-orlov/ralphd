@@ -2099,7 +2099,9 @@ def test_run_detail_opens_the_state_document_dialogs(tmp_path, pw):
 
         # -- it survives a full 4s poll without stacking -------------------
         time.sleep(5.0)
-        assert int(pw.eval_js(_DOCUMENT_ITEMS)) == 4      # panel re-rendered
+        # 6, not 4: same task-007 `RUN_DOCUMENTS` growth as the absent count
+        # above (notes, findings, job + the three absent rows).
+        assert int(pw.eval_js(_DOCUMENT_ITEMS)) == 6      # panel re-rendered
         assert int(pw.eval_js(_DIALOGS)) == 1             # ...behind ONE dialog
         assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
 
