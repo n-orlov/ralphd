@@ -503,7 +503,10 @@ def materiality_rubric_context(contract_text: str) -> str:
 #
 # Two reference shapes are recognised, both requiring a backticked path:
 #   - a PROSE line: "...the materiality rubric ... of `<path>` applies..."
-#     (case-insensitive, one line -- `.` does not cross a newline by
+#     or "...apply..." (both verb forms accepted -- review finding 1,
+#     approach 02 task 001: a contract subject may be singular "rubric"
+#     or plural, so either "apply" or "applies" must resolve), case-
+#     insensitive, one line -- `.` does not cross a newline by
 #     default, which is exactly the restriction a *sentence* needs);
 #   - an explicit HTML-comment MARKER: `<!-- rubric: <path> -->`, for a
 #     contract that would rather not rely on prose-matching at all.
@@ -517,7 +520,7 @@ _RUBRIC_MARKER_RE = re.compile(
     r"<!--\s*rubric:\s*(\S+?)\s*-->", re.IGNORECASE)
 
 _RUBRIC_PROSE_REFERENCE_RE = re.compile(
-    r"the materiality rubric\b.{0,200}?\bof\s+`([^`]+)`.{0,200}?\bapplies\b",
+    r"the materiality rubric\b.{0,200}?\bof\s+`([^`]+)`.{0,200}?\bappl(?:y|ies)\b",
     re.IGNORECASE | re.DOTALL)
 
 

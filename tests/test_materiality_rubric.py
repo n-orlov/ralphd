@@ -282,6 +282,47 @@ def test_resolve_materiality_rubric_follows_a_marker_reference(tmp_path):
     assert resolution.log_events == ()
 
 
+# Approach 02 task 001, review finding 1: the prose-reference regex hard-
+# coded `\bapplies\b` but PRD requirement A.1 accepts either verb form
+# ("apply" or "applies") for a by-reference rubric adoption sentence.
+# One assertion per spelling, both against the same referenced document.
+
+APPLY_SPELLING_CONTRACT = """# Some PRD
+
+The materiality rubric of `docs/review-economics.md` apply.
+"""
+
+APPLIES_SPELLING_CONTRACT = """# Some PRD
+
+The materiality rubric of `docs/review-economics.md` applies.
+"""
+
+
+def test_resolve_materiality_rubric_follows_a_prose_reference_spelled_apply(
+        tmp_path):
+    # Review finding 1: "apply" (not just "applies") must resolve.
+    root = _checkout_with_referenced_document(tmp_path)
+    resolution = findings.resolve_materiality_rubric(
+        APPLY_SPELLING_CONTRACT, root)
+    assert resolution.rubric is not None
+    assert "Blocking" in resolution.rubric and "Residual" in resolution.rubric
+    assert resolution.source_path == "docs/review-economics.md"
+    assert resolution.log_events == ()
+
+
+def test_resolve_materiality_rubric_follows_a_prose_reference_spelled_applies(
+        tmp_path):
+    # Review finding 1: the pre-existing "applies" spelling must keep
+    # resolving once the regex is widened to also accept "apply".
+    root = _checkout_with_referenced_document(tmp_path)
+    resolution = findings.resolve_materiality_rubric(
+        APPLIES_SPELLING_CONTRACT, root)
+    assert resolution.rubric is not None
+    assert "Blocking" in resolution.rubric and "Residual" in resolution.rubric
+    assert resolution.source_path == "docs/review-economics.md"
+    assert resolution.log_events == ()
+
+
 def test_resolve_materiality_rubric_inline_wins_over_a_reference(tmp_path):
     root = _checkout_with_referenced_document(tmp_path)
     contract = RUBRIC_BEARING_CONTRACT + (
