@@ -3251,15 +3251,22 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
 
 
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
-    """Task 009 (PRD requirement C.1, #141): append one cure task per
-    entry of `blocking` (in finding order) to `tasks.json`, skipping any
-    id already present -- `cure_task_from_finding`'s id is deterministic
-    per `(approach, index)` and `LoopSupervisor._step_review` only ever
-    calls this once per approach (guarded by `curePasses[approach] == 0`
-    before the call), but every other insert helper in this module keeps
-    the same defensive skip against a hand-edited or resumed-mid-write
-    `tasks.json` that already carries the id, so this one does too.
-    Returns the ids actually inserted, in order.
+    """Task 009 (PRD requirement C.1, #141; cured under task 006, C.1
+    finding 4): append exactly one cure task per entry of `blocking` (in
+    finding order) to `tasks.json` and return exactly one id per entry.
+    `cure_task_from_finding`'s id is deterministic per `(approach,
+    index)`, and in the ordinary case (a fresh approach, `curePasses
+    [approach] == 0`, `LoopSupervisor._step_review` calling this exactly
+    once) that id is always unused. But a hand-edited or resumed-mid-
+    write `tasks.json` -- or a worker-origin task that happened to reuse
+    a `cure-{approach}-{index}` id -- can already carry it; the old
+    behaviour silently SKIPPED that entry, which meant a genuinely
+    blocking finding could end up with no cure task at all and no error
+    telling anyone why. Now a collision picks a fresh, still-unused id
+    (`cure-{approach:02d}-{index:02d}-{suffix}`, suffix counting up from
+    2) instead of dropping the entry -- every blocking finding still
+    gets its cure task, and the return value always has exactly
+    `len(blocking)` entries, one per finding, in finding order.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
@@ -3267,8 +3274,12 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     inserted: list = []
     for index, finding in enumerate(blocking, start=1):
         new_task = cure_task_from_finding(approach, index, finding)
-        if new_task["id"] in existing_ids:
-            continue
+        base_id = new_task["id"]
+        if base_id in existing_ids:
+            suffix = 2
+            while f"{base_id}-{suffix}" in existing_ids:
+                suffix += 1
+            new_task["id"] = f"{base_id}-{suffix}"
         tasks.append(new_task)
         existing_ids.add(new_task["id"])
         inserted.append(new_task["id"])
