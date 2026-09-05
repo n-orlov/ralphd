@@ -421,16 +421,59 @@ class LoopSupervisor:
             cfg.vigilant, cfg.peer_plan_review, cfg.peer_verdict_gate)
         self._approach: int | None = None
 
-        # Task 006 (PRD requirement B.2, #111): the operator-escalation
-        # seam for a `rejected_incurable` pause -- `None` in production
-        # today (the escalation is still `emit()`ed to `events.jsonl`
-        # either way, so nothing is silently lost with no notifier wired
-        # in). A test replaces this with a stub callable AFTER
+        # Task 006 (PRD requirement B.2, #111) / task 007 (requirement
+        # D.1, finding 5): the operator-escalation seam for a `rejected_
+        # incurable`/`rejected_last_approach` pause. In production this is
+        # `_notify_via_configured_notifier` (below) whenever `cfg.
+        # notifier_url` is actually set -- it reaches that URL through
+        # B.3's OWN helper (`hat_tools.send_notification`), never a second
+        # HTTP client, so the escalation lands as a `notification.sent`
+        # event on `events.jsonl` and in the run record's notifications
+        # section, exactly like a hat's own `notify` tool call.
+        #
+        # `notifier_url` UNSET leaves this `None`, same as before this
+        # task -- `send_notification` itself would write a `notification.
+        # sent` event even for a missing URL (its own "no notifier URL
+        # configured" branch), and requirement D.1's escalation must write
+        # NO such event when nothing is configured, so the no-URL case is
+        # never dispatched through `send_notification` at all: the
+        # `if self.notifier is not None` guard at each call site simply
+        # finds nothing to call. The escalation itself
+        # (`operator_escalation`, the pause) never depends on any of this
+        # either way.
+        #
+        # A test replaces this attribute with a stub callable AFTER
         # construction, the same post-construction stubbing shape already
         # used for `sup.runner`/`sup._wait_out_backoff` throughout this
         # test suite -- never a constructor parameter, so every existing
         # call site keeps working unchanged.
-        self.notifier: Callable[[str], None] | None = None
+        self.notifier: Callable[[str], None] | None = (
+            self._notify_via_configured_notifier if cfg.notifier_url
+            else None)
+
+    def _notify_via_configured_notifier(self, text: str) -> None:
+        """Task 007 (PRD requirement D.1, finding 5): the production
+        `self.notifier` callable, wired only when `self.cfg.notifier_url`
+        is set. Reaches it through `hat_tools.send_notification`, B.3's own
+        helper -- the escalation text becomes a `notification.sent` event
+        (`textSha256`, `endpoint`, `httpStatus`) on `events.jsonl` and in
+        the run record's notifications section, the same as any hat's
+        `notify` tool call.
+
+        `send_notification` itself never raises for a connection error or
+        a non-2xx status -- both just answer `ok=False` and are recorded.
+        The `try`/`except` here is a second line of defence against
+        anything else unexpected (e.g. a raising test stub swapped in for
+        the poster) reaching all the way out through this call: the pause
+        and the `operator_escalation` event this is invoked from have
+        already landed on disk by the time this runs, and a broken
+        notifier attempt must never turn that into a crashed iteration.
+        """
+        try:
+            hat_tools.send_notification(self.run, text, self.cfg.notifier_url)
+        except Exception:                             # pragma: no cover
+            log.exception("notifier dispatch failed for run %s",
+                          self.cfg.run_id)
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
     # Task 014 (requirement J, #98): "steer" joins "infra"/"grace" here.
