@@ -1908,15 +1908,36 @@ end).
 ## v0.18 — the run can finish
 
 Full PRD: [`docs/prds/v0.18-the-run-can-finish.md`](prds/v0.18-the-run-can-finish.md). This wave
-addresses issues #139–#147: a materiality rubric that reaches zero reviews when a PRD only
-adopts it by reference; a terminal record that makes the run author claims about its own
-future; a cure unit that is a whole new approach instead of a bounded pass over the same one;
+addressed issues #139–#147: a materiality rubric that reached zero reviews when a PRD only
+adopted it by reference; a terminal record that made the run author claims about its own
+future; a cure unit that was a whole new approach instead of a bounded pass over the same one;
 a last approach with no exit but `failed` on paperwork; criteria that are structurally
-unsatisfiable and reach a worker anyway; and four ladder-hygiene gaps (a re-filed adjudicated
+unsatisfiable and reached a worker anyway; and four ladder-hygiene gaps (a re-filed adjudicated
 petition, a worker retry blind to why it was rejected, a mid-review deadline logged as a
 rejection, and the steer hat unable to skip a dead task). Requirement letters are the PRD's
-own, A–H. **This entry is written while the run is still going** (`docs/prds/README.md`'s row
-reads `in-flight`); it records the evidence landed so far and is not a terminal account.
+own, A–H. **This is the terminal account**, settled host-side by the operator on 2026-09-05 from
+the dead run's own `status.json`/`tasks.json` (`docs/prds/README.md`'s row reads `failed`); the
+full record is the operator closing addendum in `artifacts/reports/v0.18-closing-report.md`.
+
+The run (`selfdev-v018-the-run-can-finish`, launched at `1c61b32` with `--max-approaches 2`)
+ended **`failed` / `unverified`**: the engine's stagnation guard failed approach 2 of 2 at
+2026-09-05T16:01:07Z — "3 iterations with no task progress; failing approach" — after task
+009's third consecutive worker iteration ended with no `tasks.json` change, and wrote `failed`
+at 16:10:32Z after reflect. Neither the deadline (2026-09-05T21:43:42Z) nor the iteration budget
+(300) was reached, and approach 2 was never reviewed. The iteration that tripped the guard ran
+96 minutes and pushed ten commits (`c0caaa1` through `21652d4`, including all six approach-2
+lane records); the guard measures progress as `tasks.json` changes only, so a long, productive
+iteration that never signalled its task complete counted the same as an idle one — filed as
+#153. Approach 1 (41 tasks: 001–034, steer-inserted cure tasks 035–038, resume-steered fix
+tasks 039–041) landed the whole wave — 36 `validated`, 4 `failed` (006, 011, 013, 017, each
+cured on the same approach by 035/036/037/038), 1 `skipped` (029, superseded by 040) — with all
+six lanes green at its final code sha `51a10c5` and #139–#147 closed, and was rejected at
+2026-09-05T13:02:42Z on six substance findings and one residual: the first rejection ever taken
+under an inline materiality rubric, with every lane green. Approach 2 (16 tasks: 8 `validated`,
+1 `failed`, 1 `in-progress`, 6 `pending`) cured all six findings in code and corrected the four
+over-claimed closures; its closing report (task 015) was never written. Counter 181, 163
+charged (refunds recorded: 13 infra, 10 grace, 5 steer), ~340.1M tokens, ~$216.05 derived.
+Shipped sha `21652d4`, version 0.18.0, installed host-side by the operator.
 
 - **A — the rubric is real (#139).** Landed. `findings` resolves a by-reference rubric (prose
   line or `<!-- rubric: ... -->` marker, inline wins when both are present, a missing file
@@ -1926,68 +1947,90 @@ reads `in-flight`); it records the evidence landed so far and is not a terminal 
   blocking/residual text of `docs/review-economics.md` kept as the single copy — at `edd5184`
   (task 004); `ralphctl start`/`doctor` print the `rubric: inline` / `rubric: by reference
   (<path>)` / `rubric: engine default` line, warning on an unresolved reference, at `2532de5`
-  (task 005); the three adoption forms and the dropped all-blocking fallback are documented in
-  `docs/review-economics.md` and `docs/prds/README.md` at `086a708` (task 018).
-- **B — the harness owns the terminal record (#140).** B.1 landed on its cure after task 006's
-  first attempt exhausted its ladder on one residual gap (the petition/adjudication and
-  usage-breakdown detail review's own contract named): `run-record.md`/`.json` are written at
-  `finishing` and rewritten on promotion at `b320b28` (task 006), surfaced through `ralphctl
-  docs`/`artifacts` and the hub at `f9ca52e` (task 007), then the full render — every
-  review/verdict-gate verdict persisted in engine-owned approach metadata the moment the judge
-  runs, `run_record.build_run_record` reading it for both the live and archived approach
-  history, `run-record.md` rendering every `run-record.json` section including the
-  byPhase/byApproach/byTier token breakdowns — landed at `4d8f69e` (task 035, the cure). B.2
-  (`review.md` and the contract context state the engine's ownership) landed at `2cea504`
-  (task 008). B.3 (the `notify` hat tool) is still open (task 022, pending). B.4 (the
-  `docs/review-economics.md` v0.18 addendum) landed alongside B.2's docs at `086a708`
-  (task 018).
-- **C — a curable rejection is a cure pass (#141).** C.1/C.2 landed: the `review -> cure` edge
-  and the engine's cure-task append at `318128b` (task 009); the one-cure-pass-per-approach
-  bound and the incurable edge's precedence at `742736c` (task 010). C.3 (the black-box e2e
-  over a stub `pi`) is still open (task 023, pending; the in-process tier from tasks 009-010
-  already covers the append/route/replan/resume paths named in C.3's own pin list).
-- **D — the last approach cannot end `failed` on paperwork (#142).** D.3 landed first, standing
-  alone: `verdict: verified-with-residuals` recorded when review verifies over residual
-  findings at `65ccc38` (task 012). D.1/D.2 landed on their cure after task 011's first attempt
-  exhausted its ladder on the pause not surviving `resume`: the initial `review -> paused` edge
-  landed at `e2ecead` (task 011), then the cure made the pause a persisted, resumable state —
-  `rejected_last_approach` recorded in `status.json` so a restart re-enters the same pause
-  rather than losing it — at `b2b6ebf` (task 036, the cure). D.4 (the resume-from-paused
-  in-process pin) is still open (task 024, pending).
-- **E — criteria that cannot be satisfied are refused (#143).** Landed on its cure after task
-  013's first attempt exhausted its ladder on missing verbatim must-catch fixtures: the seventh
-  `lint_proposal()` lint refusing the banned successCriteria shapes (later/final-commit
-  references, predeclared event state, self-citing records, empty git ranges, "exactly once"
-  counts, notification/HTTP-status clauses), widened to sha/send/audit-range cues, at
-  `ac484b3`/`f7fb583` (task 013); the cure pinned the verbatim v0.14-a3 and v0.15-a2 must-catch
-  fixtures as literal source substrings at `43b7329`/`1b02be1` (task 037).
+  (task 005), corrected to print it on stderr so `ralphctl start`'s stdout stays one
+  machine-readable line at `15861e8`/`51a10c5` (task 041, after the docker tier exposed the
+  regression); the three adoption forms and the dropped all-blocking fallback are documented in
+  `docs/review-economics.md` and `docs/prds/README.md` at `086a708` (task 018). Approach 2's
+  finding 1 (the prose form spelled `apply` was refused, only `applies` resolved) was cured at
+  `b99669e` (approach-2 task 001). This wave's own review ran under the PRD's inline rubric and
+  filed a count inaccuracy as residual instead of blocking — the requirement working as
+  specified, live, on the run that shipped it.
+- **B — the harness owns the terminal record (#140).** Landed. B.1: `run-record.md`/`.json`
+  written at `finishing` and rewritten on promotion at `b320b28` (task 006), surfaced through
+  `ralphctl docs`/`artifacts` and the hub at `f9ca52e` (task 007), every review/verdict-gate
+  verdict persisted in engine-owned approach metadata the moment the judge runs and every
+  `run-record.json` section rendered at `4d8f69e` (task 035, the cure for 006's exhausted
+  ladder); REFUTED petitions and their remedies rendered at `4361dee` (approach-2 task 002) and
+  persisted through `record_confirmed_adjudications` at `fe1c3bd` (approach-2 task 016, the cure
+  for 002's exhausted ladder — finding 2). B.2 (`review.md` and the contract context state the
+  engine's ownership) at `2cea504` (task 008). B.3: the `notify` hat tool recording a
+  `notification.sent` event and a run-record entry per send at `13c12ae` (task 022), and the placed
+  telegram-notify skill made to prefer it at placement time at `51fc89b` (approach-2 task 003,
+  finding 3). B.4 (the `docs/review-economics.md` v0.18 addendum) at `086a708` (task 018).
+- **C — a curable rejection is a cure pass (#141).** Landed. The cure-task append and its route
+  at `318128b` (task 009); the one-cure-pass-per-approach bound and the incurable edge's
+  precedence at `742736c` (task 010); the black-box e2e over a stub `pi` at `1a48dcc` (task 023); the
+  criteria-tamper rejection excluded from the cure edge so a tampered approach archives exactly
+  as before this wave at `2c6a752` (task 039). Approach 2's finding 4 — the declared
+  `review -> cure` edge, the mermaid diagram generated from the transition table, and a
+  cure-id collision that could suppress a required cure task — was cured at `f3c5195`,
+  `d0c0354` and `708b795` (approach-2 tasks 004, 005, 006).
+- **D — the last approach cannot end `failed` on paperwork (#142).** Landed. D.3, `verdict:
+  verified-with-residuals` when review verifies over residual findings, at `65ccc38`
+  (task 012); D.1/D.2, the `review -> paused` route at `e2ecead` (task 011) and the pause made a
+  persisted, resumable `rejected_last_approach` state at `b2b6ebf` (task 036, the cure for
+  011's exhausted ladder); D.4's resume-from-paused in-process pin at `4dffef4` (task 024).
+  Approach 2's finding 5 — the `review -> paused` edge declared in both table variants and the
+  pause escalation reaching the configured notifier — was cured at `f3c5195` and `0fc60b1`
+  (approach-2 tasks 004, 007). The guard that actually ended this run is a different edge
+  (`worker`'s stagnation guard on the last approach, #153): D closed the review-side exit, not
+  the worker-side one.
+- **E — criteria that cannot be satisfied are refused (#143).** Landed. The seventh
+  `lint_proposal()` lint refusing the banned successCriteria shapes at `ac484b3`/`f7fb583`
+  (task 013); the verbatim v0.14-a3 and v0.15-a2 must-catch fixtures pinned as literal source
+  substrings at `43b7329`/`1b02be1` (task 037, the cure for 013's exhausted ladder).
 - **F — ladder hygiene (#144, #145, #146, #147).** Landed. F.1 (#144): adjudicated petitions
-  render as history, never re-filed, and the mid-run adjudication episode gets the legal
-  verdict value `adjudicated` at `b85b108` (task 014). F.2 (#145): the worker's retry prompt
-  carries `validationNotes` verbatim under "Why the previous attempt was rejected" at
-  `fb484e7` (task 015). F.3 (#146): a deadline landing mid-review ends `unreviewed`, never
-  logs a rejection, and `resume` re-reviews the same approach, at `a148926` (task 016). F.4
-  (#147) landed on its cure after task 017's first attempt exhausted its ladder on dropping the
-  justification when a steer `task-update` also supplied `changes.notes`: the steer
-  `failed -> skipped` move threading a justification into `notes` landed at `b8814e7`
-  (task 017), the cure keeping that justification appended (unless already the notes' own
-  tail) even when `changes.notes` is given at `01e9726`/`2bbd29a` (task 038).
+  render as history and the mid-run adjudication episode gets the legal verdict value
+  `adjudicated` at `b85b108` (task 014). F.2 (#145): the worker's retry prompt carries
+  `validationNotes` verbatim at `fb484e7` (task 015). F.3 (#146): a deadline landing mid-review
+  ends `unreviewed` and `resume` re-reviews the same approach at `a148926` (task 016). F.4
+  (#147): the steer `failed -> skipped` move threading a justification into `notes` at
+  `b8814e7` (task 017), kept even when `changes.notes` is also given at `01e9726`/`2bbd29a`
+  (task 038, the cure for 017's exhausted ladder). None of F was live in the 0.17.0 image that
+  executed this run: the blind retries that exhausted 006/011/013/017 in ~30 s each are exactly
+  the #145 shape, and the operator's steer-inserted cures were the manual form of C.
 - **G — the version, the roadmap, the row.** `0.18.0` in `pyproject.toml` and
-  `src/ralphd/__init__.py`, and the sweep-sha guard's `LAUNCH_SHA` bumped to this wave's launch
-  sha `1c61b32`, at `8db9739` (task 001); this wave's in-flight index row in
-  `docs/prds/README.md` at `06d9c9a` (task 020); this block itself (task 021).
-- **H — the evidence, the closure, and the record.** Still open: closing #139–#147 with
-  fresh-`GET`-verified evidence (tasks 025-027), the six lanes swept and recorded (tasks
-  028-033), the closing report (task 034), one terminal summary send. None of these has run
-  yet as of this entry's own commit.
+  `src/ralphd/__init__.py`, and the sweep-sha guard's `LAUNCH_SHA` bumped to `1c61b32`, at
+  `8db9739` (task 001); the in-flight index row at `06d9c9a` (task 020); the in-flight form of
+  this block at `b8db947` (task 021); both settled to this terminal account by the operator.
+- **H — the evidence, the closure, and the record.** Approach 1: #139–#147 closed with
+  fresh-`GET`-verified evidence (tasks 025–027; `artifacts/reports/v0.18-issue-closures.md`),
+  all six lanes green at `51a10c5` — fast, docker, browser, both dev-layout modes and the final
+  guard subset, exit 0 each, independently re-run by the review (fast 6155 passed, docker 23,
+  browser 42, guard 3738) — recorded in `artifacts/reports/v0.18-fast-tier.md`,
+  `v0.18-docker-tier.md`, `v0.18-browser-tier.md`, `v0.18-dev-layout-unset.md`,
+  `v0.18-dev-layout-exported.md` and `v0.18-final-guard-subset.md`; the closing report at
+  `0e7e320` (task 034); the terminal summary sent, HTTP 200 (iteration 148). Approach 2: the
+  four over-claimed closures corrected with approach-2 evidence at `add155a` (task 009); the six
+  approach-2 lane records (`v0.18-a2-*.md`) written inside task 009's last iteration — docker
+  23/23 and browser 42/42 green; fast, guard and both dev-layout modes red only on the
+  staleness of records landing during the sweeps (`test_sweep_sha_guard.py`/
+  `test_report_claims.py`) and one same-image-tag docker collision between the two dev-layout
+  modes run concurrently — with two real citation-drift regressions fixed under the standing
+  rules' exception at `c0caaa1` and `17c947e`. The approach-2 closing report and terminal
+  summary were never written; the operator closing addendum stands in for them.
 
-All four of this approach's `failed` tasks (006, 011, 013, 017) were cured on the same
-approach by steer-inserted tasks (035, 036, 037, 038 respectively) rather than costing a
-second approach, per the operator steer that inserted them — an early, human-driven instance
-of the cure-pass shape requirement C itself ships. Carried so far: B.3, C.3 and D.4 are named
-in the PRD's own cut order as the first two things to drop if the clock bites; nothing else
-has been cut. This block will be revised again as the remaining tasks land and the run
-reaches a terminal state.
+Two ways a run can end for a non-work reason showed up live in this wave and are
+filed rather than fixed: the instant-failure breaker aborted the run 28 s into a gateway TCP
+reset on 2026-09-04, overriding the 4 h infra budget (#151), and the stagnation guard ended it
+(#153). Also filed from this run: previous waves' petitions leaking into the next run's
+adjudication (#150 — the v0.17 task-014 petition is this run's only recorded CONFIRMED
+adjudication), the adjudication MAC key not surviving a resume (#152), and the hub's polling
+cost (#148). Every step of the recovery — the four same-approach cures, the resume after the
+breaker, the fast-tier fix, the stdout-regression fix, the approach-2 cure for task 002 — went
+through `ralphctl steer`/`amend` and is on the record in the run dir's `steering/` and
+`/config/amendments/`; the whole run stayed inside its two approaches, its deadline and its
+budget, and stopped on a guard.
 
 ## Later / explicitly deferred
 
