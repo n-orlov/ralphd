@@ -32,6 +32,7 @@ from ralphd.engine import findings
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 NO_RUBRIC_CONTRACT = """# Some PRD
 
@@ -122,12 +123,11 @@ def test_a_rubric_bearing_contract_is_handed_the_rubric_text_verbatim():
 # LoopSupervisor._review_materiality_rubric_context -- the engine call site.
 # ---------------------------------------------------------------------------
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="starting")
-    cfg = JobConfig(run_id="task003-materiality-rubric")
-    return LoopSupervisor(cfg, run, root)
+# The shared harness (tests/conftest.py, G.1); `status` is the resumed-run
+# shape: the state is on disk before the supervisor exists.
+_supervisor = supervisor_factory(run_id="task003-materiality-rubric",
+                                status={"state": "starting"})
+
 
 
 def test_the_engine_call_site_defaults_to_the_engine_default_rubric_with_no_prd_file(

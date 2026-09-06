@@ -48,6 +48,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import VERIFIED, IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import scripted_supervisor
 
 from test_failed_task_vocabulary import _drive_until_paused
 
@@ -88,48 +89,12 @@ def _task(**over) -> dict:
     return task
 
 
-class _ScriptedAgent:
-    """Same shape as `tests/test_failed_task_vocabulary.py`'s: dispatches on
-    the phase the engine recorded, one script per phase, the last step of
-    each repeating forever."""
 
-    def __init__(self, handlers: dict):
-        self.handlers = handlers
-        self.calls: dict[str, int] = {}
-        self.running = False
+_supervisor = scripted_supervisor(run_id="v09-unsatisfiable", iterations=15,
+                                  max_approaches=1, vigilant=False,
+                                  on_complete="exit",
+                                  infra_outage_budget_s=1000.0)
 
-    def interrupt(self) -> bool:
-        return self.running
-
-    async def run(self, prompt, transcript, **kw) -> IterationResult:
-        phase = self.sup.run.read_status().get("phase")
-        n = self.calls.get(phase, 0)
-        self.calls[phase] = n + 1
-        steps = self.handlers[phase]
-        self.running = True
-        try:
-            return steps[min(n, len(steps) - 1)](self.sup, prompt)
-        finally:
-            self.running = False
-
-
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 15, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="v09-unsatisfiable", **kw), run, root)
-    agent = _ScriptedAgent(handlers)
-    agent.sup = sup                      # type: ignore[attr-defined]
-    sup.runner = agent                    # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
-    return sup
 
 
 def _run(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:
@@ -379,7 +344,7 @@ def test_a_report_with_no_reason_is_a_contract_violation_with_the_move_still_ref
     # the errors were carried back on every re-ask: the ladder ran the
     # FULL contract_retry_max + 1 attempts (never fewer, never more) --
     # every call (the one charged `run_iteration` plus every uncharged
-    # `_ask_contract_fix` re-ask) lands on the SAME `_ScriptedAgent.run`,
+    # `_ask_contract_fix` re-ask) lands on the SAME `ScriptedRunner.run` (tests/conftest.py),
     # so this call count is the ladder's own attempt count directly.
     assert sup.runner.calls["worker"] == sup.cfg.contract_retry_max + 1  # type: ignore[attr-defined]
 

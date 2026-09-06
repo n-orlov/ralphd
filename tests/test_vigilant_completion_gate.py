@@ -26,12 +26,12 @@ from ralphd.engine.state import (
     format_task_fraction,
     task_counts,
 )
+from tests.conftest import supervisor_factory
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    cfg = JobConfig(run_id="unit")
-    return LoopSupervisor(cfg, run, tmp_path)
+# The shared harness (tests/conftest.py, G.1).
+_supervisor = supervisor_factory(run_id="unit")
+
 
 
 def _write_tasks(run: RunDir, tasks: list[dict]) -> None:

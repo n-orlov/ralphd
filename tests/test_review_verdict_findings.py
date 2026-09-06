@@ -35,6 +35,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 
 def _finding(severity: str, **overrides) -> dict:
@@ -54,12 +55,11 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="starting")
-    cfg = JobConfig(run_id="task002-review-findings")
-    return LoopSupervisor(cfg, run, root)
+# The shared harness (tests/conftest.py, G.1); `status` is the resumed-run
+# shape: the state is on disk before the supervisor exists.
+_supervisor = supervisor_factory(run_id="task002-review-findings",
+                                status={"state": "starting"})
+
 
 
 def _write_findings(sup: LoopSupervisor, findings_list: list[dict]) -> None:

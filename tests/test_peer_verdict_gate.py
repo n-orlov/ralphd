@@ -56,6 +56,7 @@ from ralphd.engine.config import (DEFAULT_HAT_MODEL_REF, MODEL_HATS,
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import scripted_supervisor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERDICT_GATE_PROMPT = REPO_ROOT / "src" / "ralphd" / "prompts" / "verdict_gate.md"
@@ -387,51 +388,12 @@ def _verdict_gate_rejects(reason: str):
     return handler
 
 
-class _ScriptedAgent:
-    """Same shape as
-    `tests/test_peer_plan_review_gate.py::_ScriptedAgent`."""
 
-    def __init__(self, handlers: dict):
-        self.handlers = handlers
-        self.calls: dict[str, int] = {}
-        self.phases_seen: list[str] = []
-        self.prompts: list[str] = []
-        self.running = False
+_supervisor = scripted_supervisor(run_id="task020-verdict-gate", iterations=20,
+                                  max_approaches=1, vigilant=False,
+                                  on_complete="exit",
+                                  infra_outage_budget_s=1000.0)
 
-    def interrupt(self) -> bool:
-        return self.running
-
-    async def run(self, prompt, transcript, **kw) -> IterationResult:
-        phase = self.sup.run.read_status().get("phase")
-        self.phases_seen.append(phase)
-        self.prompts.append(prompt)
-        n = self.calls.get(phase, 0)
-        self.calls[phase] = n + 1
-        steps = self.handlers[phase]
-        self.running = True
-        try:
-            return steps[min(n, len(steps) - 1)](self.sup, prompt)
-        finally:
-            self.running = False
-
-
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 20, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="task020-verdict-gate", **kw), run, root)
-    agent = _ScriptedAgent(handlers)
-    agent.sup = sup                      # type: ignore[attr-defined]
-    sup.runner = agent                    # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
-    return sup
 
 
 def _run_job(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:

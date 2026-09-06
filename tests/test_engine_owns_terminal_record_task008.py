@@ -27,6 +27,7 @@ from pathlib import Path
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REVIEW_MD = (REPO_ROOT / "src" / "ralphd" / "prompts" / "review.md").read_text()
@@ -54,17 +55,12 @@ OBLIGATIONS_SENTENCE = (
 )
 
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="starting")
-    cfg = JobConfig(run_id="task008-terminal-record")
-    return LoopSupervisor(cfg, run, root)
+# The shared harness (tests/conftest.py, G.1); `status` is the resumed-run
+# shape: the state is on disk before the supervisor exists.
+_supervisor = supervisor_factory(run_id="task008-terminal-record",
+                                status={"state": "starting"})
 
 
-# ---------------------------------------------------------------------------
-# review.md: the static prompt file
-# ---------------------------------------------------------------------------
 
 def test_review_md_names_the_engine_owned_history_categories():
     assert ENGINE_RECORD_SENTENCE in _flatten(REVIEW_MD)

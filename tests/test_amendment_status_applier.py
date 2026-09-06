@@ -25,6 +25,7 @@ from ralphd.engine.state import (
     apply_amendment_status_rulings,
     write_amendment,
 )
+from tests.conftest import supervisor_factory
 
 
 def _run(tmp_path: Path) -> RunDir:
@@ -235,10 +236,11 @@ def test_vigilant_delta_governs_which_transitions_are_legal(tmp_path):
 # -- criteriaEditedAfterValidationFailure must not confuse a ruling with a --
 # -- worker's own rewrite of the bar it just failed -------------------------
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path / "run")
-    cfg = JobConfig(run_id="unit")
-    return LoopSupervisor(cfg, run, tmp_path / "ws")
+# The shared harness (tests/conftest.py, G.1): this module's run dir and
+# workspace sit side by side under the test's own tmp_path.
+_supervisor = supervisor_factory(run_id="unit", run_root="run",
+                                workspace="ws")
+
 
 
 def test_status_ruling_does_not_fire_the_criteria_edited_flag(tmp_path):

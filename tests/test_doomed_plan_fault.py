@@ -62,6 +62,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import scripted_supervisor
 
 TASK_1 = "001"
 TASK_2 = "002"
@@ -87,48 +88,12 @@ def _review_rejects(sup, prompt="") -> IterationResult:
     return _ok("this plan cannot be verified; rejecting")
 
 
-class _ScriptedAgent:
-    """Same shape as `tests/test_unsatisfiable_criteria.py`'s: dispatches on
-    the phase the engine recorded, one script per phase, the last step of
-    each repeating forever."""
 
-    def __init__(self, handlers: dict):
-        self.handlers = handlers
-        self.calls: dict[str, int] = {}
-        self.running = False
+_supervisor = scripted_supervisor(run_id="v014-doomed-plan", iterations=15,
+                                  max_approaches=1, vigilant=False,
+                                  on_complete="exit",
+                                  infra_outage_budget_s=1000.0)
 
-    def interrupt(self) -> bool:
-        return self.running
-
-    async def run(self, prompt, transcript, **kw) -> IterationResult:
-        phase = self.sup.run.read_status().get("phase")
-        n = self.calls.get(phase, 0)
-        self.calls[phase] = n + 1
-        steps = self.handlers[phase]
-        self.running = True
-        try:
-            return steps[min(n, len(steps) - 1)](self.sup, prompt)
-        finally:
-            self.running = False
-
-
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 15, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="v014-doomed-plan", **kw), run, root)
-    agent = _ScriptedAgent(handlers)
-    agent.sup = sup                      # type: ignore[attr-defined]
-    sup.runner = agent                    # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
-    return sup
 
 
 def _run_resumed(root: Path, handlers: dict, tasks: list[dict],

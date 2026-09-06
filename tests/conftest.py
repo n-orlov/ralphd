@@ -5,6 +5,7 @@ directly-launched `ralphd-engine` (no Docker) behind `ralphctl` — the
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -477,6 +479,208 @@ class LiveRun:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+
+
+# --- the shared in-process supervisor harness (G.1, task 021) -------------
+# 87 modules at this wave's launch sha each defined their own module-local
+# `_supervisor(...)` helper: build a `RunDir` under a tmp dir, build a
+# `JobConfig` with the same handful of "don't wait for anything" knobs,
+# construct a `LoopSupervisor`, hang a scripted stand-in off `sup.runner`,
+# and stub `_wait_out_backoff` so a retry does not really sleep. They
+# differed only in a run id, a couple of cfg values, and where the run root
+# and workspace sat under `tmp_path` -- so a change to the harness contract
+# (task 040's notifier scrub, task 042's bounded pause wait) had to be made
+# 87 times or be silently missing from most of the suite.
+#
+# `make_supervisor()` below is that harness, once. The two names the tests
+# use are `supervisor(tmp_path, **cfg)` (the fixture, a factory) and
+# `scripted_attempts(sup, [...])` (attach a scripted runner), both with
+# backoff AND sleep stubbed by default:
+#
+#   - backoff: `sup._wait_out_backoff` is replaced by an instant one that
+#     reports the delay it was asked for and "not woken", the exact shape
+#     every module's local `no_backoff` had.
+#   - sleep: `asyncio.sleep` is patched to yield instead of waiting, for as
+#     long as the test runs (undone by `_undo_instant_sleep_patches` below,
+#     autouse, so a module-level `make_supervisor()` call inside a test body
+#     cannot leak the patch into the next test). Ask for the real thing with
+#     `real_sleep=True` when the test is about elapsed time itself.
+# Deliberately only the two BACKOFF knobs, not a second set of iteration /
+# approach / vigilance defaults: a module that migrated its local harness over
+# to `make_supervisor` must keep seeing `JobConfig`'s own defaults for
+# everything its harness did not name itself, or the migration would quietly
+# re-tune every run it drives. `infra_outage_budget_s` is left alone for the
+# same reason -- the modules that care about it pass their own.
+DEFAULT_SUPERVISOR_CFG = {
+    "infra_retry_backoff_s": [0.0],
+    "infra_retry_backoff_max_s": 0.0,
+}
+
+_real_asyncio_sleep = asyncio.sleep
+_INSTANT_SLEEP_PATCHES: list = []
+
+
+async def _instant_sleep(delay, result=None):
+    """`asyncio.sleep` with the waiting taken out: still a real await point
+    (so a task that is meant to yield still yields, and cancellation still
+    lands), just never a real delay."""
+    return await _real_asyncio_sleep(0, result)
+
+
+def _patch_sleep_for_this_test() -> None:
+    patcher = unittest.mock.patch.object(asyncio, "sleep", _instant_sleep)
+    patcher.start()
+    _INSTANT_SLEEP_PATCHES.append(patcher)
+
+
+@pytest.fixture(autouse=True)
+def _undo_instant_sleep_patches():
+    yield
+    while _INSTANT_SLEEP_PATCHES:
+        _INSTANT_SLEEP_PATCHES.pop().stop()
+
+
+class ScriptedRunner:
+    """The scripted stand-in for `sup.runner`: a script per phase, the last
+    step of each repeating forever, dispatched on the phase the engine itself
+    recorded in `status.json` (never on a count the test keeps) -- so a
+    contract re-ask, which stays on the same phase, keeps hitting the same
+    step.
+
+    A step is called `step(sup, prompt)` and returns an `IterationResult`.
+    `calls` counts per phase; `phases_seen` and `prompts` record order flatly,
+    for tests that pin the order of phases directly rather than depending on
+    which internal call site happens to emit a `phase` event.
+    """
+
+    def __init__(self, handlers: dict | None = None):
+        self.handlers: dict = dict(handlers or {})
+        self.calls: dict[str, int] = {}
+        self.phases_seen: list[str] = []
+        self.prompts: list[str] = []
+        self.running = False
+        self.sup = None
+
+    def interrupt(self) -> bool:
+        return self.running
+
+    async def run(self, prompt, transcript, **kw):
+        phase = self.sup.run.read_status().get("phase")
+        self.phases_seen.append(phase)
+        self.prompts.append(prompt)
+        n = self.calls.get(phase, 0)
+        self.calls[phase] = n + 1
+        steps = self.handlers[phase]
+        self.running = True
+        try:
+            return steps[min(n, len(steps) - 1)](self.sup, prompt)
+        finally:
+            self.running = False
+
+
+def _under(root: Path, where) -> Path:
+    """`where` resolved against `root`: None -> root itself, a relative
+    string/Path -> under it (`"ws"`, `"../ws"`), an absolute Path -> itself."""
+    if where is None:
+        return root
+    p = Path(where)
+    return p if p.is_absolute() else (root / p).resolve()
+
+
+async def _no_backoff(seconds):
+    return seconds, False
+
+
+def make_supervisor(root: Path, runner=None, *, run_id: str = "unit",
+                    run_root=None, workspace=None, status: dict | None = None,
+                    tasks: list[dict] | None = None, no_backoff: bool = True,
+                    real_sleep: bool = False, **cfg):
+    """A `LoopSupervisor` on a real `RunDir` under `root`, wired for an
+    in-process test: no real backoff, no real sleeping, and a scripted
+    `runner` instead of `PiRunner` whenever one is given.
+
+    `run_root`/`workspace` are resolved by `_under()` against `root` (both
+    default to `root`); `status` is written through `RunDir.update_status`
+    before the supervisor exists (the resumed-run shape); `tasks` seeds
+    `tasks.json` directly (the shape a real plan-proposal contract can never
+    produce, because it carries each task's own `status`). Everything else in
+    `**cfg` goes to `JobConfig` over `DEFAULT_SUPERVISOR_CFG`.
+    """
+    # Imported here, not at module import: this conftest is loaded for every
+    # session (including the black-box CLI modules that only shell out), and
+    # `ralphd.engine.loop` pulls in the whole engine.
+    from ralphd.engine.config import JobConfig
+    from ralphd.engine.loop import LoopSupervisor
+    from ralphd.engine.state import RunDir, atomic_write_json
+
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=_under(root, run_root))
+    ws = _under(root, workspace)
+    ws.mkdir(parents=True, exist_ok=True)
+    if status is not None:
+        run.update_status(**status)
+    sup = LoopSupervisor(JobConfig(run_id=run_id, **{**DEFAULT_SUPERVISOR_CFG, **cfg}),
+                         run, ws)
+    if runner is not None:
+        attach_runner(sup, runner)
+    if no_backoff:
+        sup._wait_out_backoff = _no_backoff    # type: ignore[method-assign]
+    if not real_sleep:
+        _patch_sleep_for_this_test()
+    if tasks is not None:
+        atomic_write_json(run.tasks_file,
+                          {"version": 1, "tasks": [dict(t) for t in tasks]})
+    return sup
+
+
+def attach_runner(sup, runner):
+    """Hang `runner` off `sup.runner`, with the back-reference every scripted
+    stand-in needs to read the phase the engine recorded."""
+    if getattr(runner, "sup", None) is None:
+        runner.sup = sup                       # type: ignore[attr-defined]
+    sup.runner = runner                        # type: ignore[assignment]
+    return runner
+
+
+def scripted_attempts(sup, script) -> ScriptedRunner:
+    """Attach a `ScriptedRunner` to `sup` and return it.
+
+    `script` is either a `{phase: [step, ...]}` mapping or a plain list of
+    steps, which is taken as the script for the phase the run is in when the
+    first attempt is made (`"worker"` unless the test says otherwise via a
+    mapping). A step is `step(sup, prompt) -> IterationResult`.
+    """
+    handlers = script if isinstance(script, dict) else {"worker": list(script)}
+    return attach_runner(sup, ScriptedRunner(handlers))
+
+
+def supervisor_factory(runner_factory=None, **defaults):
+    """A module's own `_supervisor`-shaped callable, built out of the shared
+    harness: `(root, *runner_args, **cfg) -> LoopSupervisor`, with this
+    module's run id and cfg defaults bound and a call's own `**cfg` winning.
+
+    `runner_factory` (e.g. `ScriptedRunner`) is called with whatever
+    positional arguments follow `root`, so a module whose call sites read
+    `_supervisor(root, handlers)` keeps reading exactly that.
+    """
+    def build(root, *runner_args, **cfg):
+        runner = runner_factory(*runner_args) if runner_factory is not None else None
+        return make_supervisor(root, runner, **{**defaults, **cfg})
+    return build
+
+
+def scripted_supervisor(**defaults):
+    """`supervisor_factory(ScriptedRunner, **defaults)`: the shape used by the
+    modules that drive the whole loop through a per-phase script."""
+    return supervisor_factory(ScriptedRunner, **defaults)
+
+
+@pytest.fixture
+def supervisor():
+    """Factory fixture: `supervisor(tmp_path, **cfg)` -> LoopSupervisor, with
+    backoff and sleep stubbed by default (see `make_supervisor`)."""
+    return make_supervisor
 
 
 @pytest.fixture

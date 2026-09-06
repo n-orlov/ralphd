@@ -33,6 +33,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, read_json
+from tests.conftest import supervisor_factory
 
 
 def _finding(severity: str, **overrides) -> dict:
@@ -52,17 +53,12 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="starting")
-    cfg = JobConfig(run_id="task011-petition-adjudications")
-    return LoopSupervisor(cfg, run, root)
+# The shared harness (tests/conftest.py, G.1); `status` is the resumed-run
+# shape: the state is on disk before the supervisor exists.
+_supervisor = supervisor_factory(run_id="task011-petition-adjudications",
+                                status={"state": "starting"})
 
 
-# ---------------------------------------------------------------------------
-# engine.petitions: the write/read/digest layer, in isolation.
-# ---------------------------------------------------------------------------
 
 def test_record_confirmed_adjudications_writes_the_run_scope_file(tmp_path):
     run = RunDir(root=tmp_path / "run")

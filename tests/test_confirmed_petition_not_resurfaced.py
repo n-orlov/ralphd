@@ -35,6 +35,7 @@ from ralphd.engine import petitions
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir, read_json
+from tests.conftest import supervisor_factory
 
 TWO_OPEN_PETITIONS_MD = """# v0.15 petitions
 
@@ -55,10 +56,11 @@ cannot both hold.
 """
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path / "run")
-    cfg = JobConfig(run_id="task001-confirmed-not-resurfaced")
-    return LoopSupervisor(cfg, run, tmp_path / "ws")
+# The shared harness (tests/conftest.py, G.1): this module's run dir and
+# workspace sit side by side under the test's own tmp_path.
+_supervisor = supervisor_factory(run_id="task001-confirmed-not-resurfaced", run_root="run",
+                                workspace="ws")
+
 
 
 def _write_two_open_petitions(tmp_path: Path) -> None:

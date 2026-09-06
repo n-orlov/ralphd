@@ -25,6 +25,7 @@ from pathlib import Path
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKER = REPO_ROOT / "src" / "ralphd" / "prompts" / "worker.md"
@@ -34,10 +35,11 @@ NOTES = ("Missing evidence for criterion 2 -- the log file cited was never "
          "actually produced by the command run.")
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path / "run")
-    cfg = JobConfig(run_id="task015-retry-rejection")
-    return LoopSupervisor(cfg, run, tmp_path / "ws")
+# The shared harness (tests/conftest.py, G.1): this module's run dir and
+# workspace sit side by side under the test's own tmp_path.
+_supervisor = supervisor_factory(run_id="task015-retry-rejection", run_root="run",
+                                workspace="ws")
+
 
 
 def _task(**overrides) -> dict:

@@ -32,6 +32,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import scripted_supervisor
 
 TASK_1 = "001"
 
@@ -59,51 +60,12 @@ def _task(**over) -> dict:
     return task
 
 
-class _ScriptedAgent:
-    """Same shape as `tests/test_unsatisfiable_criteria.py`'s: dispatches on
-    the phase the engine recorded, one script per phase, the last step of
-    each repeating forever -- so a re-ask that lands on the SAME phase
-    ("worker" never changes during a contract-fix re-ask, only during a
-    real `run_iteration`) keeps hitting the SAME handler."""
 
-    def __init__(self, handlers: dict):
-        self.handlers = handlers
-        self.calls: dict[str, int] = {}
-        self.running = False
+_supervisor = scripted_supervisor(run_id="v013-task007-schema-verdict", iterations=2,
+                                  max_approaches=1, vigilant=False,
+                                  on_complete="exit",
+                                  infra_outage_budget_s=1000.0)
 
-    def interrupt(self) -> bool:
-        return self.running
-
-    async def run(self, prompt, transcript, **kw) -> IterationResult:
-        phase = self.sup.run.read_status().get("phase")
-        n = self.calls.get(phase, 0)
-        self.calls[phase] = n + 1
-        steps = self.handlers[phase]
-        self.running = True
-        try:
-            return steps[min(n, len(steps) - 1)](self.sup, prompt)
-        finally:
-            self.running = False
-
-
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 2, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="v013-task007-schema-verdict", **kw),
-                         run, root)
-    agent = _ScriptedAgent(handlers)
-    agent.sup = sup                      # type: ignore[attr-defined]
-    sup.runner = agent                    # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
-    return sup
 
 
 def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
@@ -150,7 +112,7 @@ def test_an_unrecognised_verdict_value_exhausts_the_ladder_and_still_refuses_the
     there was nothing legal to apply in the first place, and nothing was);
     the ladder ran the FULL `contract_retry_max + 1` attempts (every call,
     the one charged `run_iteration` plus every uncharged `_ask_contract_fix`
-    re-ask, lands on the SAME `_ScriptedAgent.run`, so this call count IS
+    re-ask, lands on the SAME `ScriptedRunner.run` (tests/conftest.py), so this call count IS
     the ladder's own attempt count directly); `sup._abort_reason` stays
     `None` and no "contract violation" log message is emitted; and the run
     continues per the table (`T("worker", "no_verdict_yet")`, the

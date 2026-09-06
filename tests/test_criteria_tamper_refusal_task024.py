@@ -46,12 +46,12 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    cfg = JobConfig(run_id="unit")
-    return LoopSupervisor(cfg, run, tmp_path)
+# The shared harness (tests/conftest.py, G.1).
+_supervisor = supervisor_factory(run_id="unit")
+
 
 
 def _write_tasks(run: RunDir, tasks: list[dict]) -> None:

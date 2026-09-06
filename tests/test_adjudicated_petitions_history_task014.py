@@ -46,6 +46,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_factory
 
 OBLIGATION = "Task 1: awaiting an adjudication episode"
 
@@ -58,15 +59,12 @@ def _ok(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path / "run")
-    cfg = JobConfig(run_id="task014-history")
-    return LoopSupervisor(cfg, run, tmp_path / "ws")
+# The shared harness (tests/conftest.py, G.1): this module's run dir and
+# workspace sit side by side under the test's own tmp_path.
+_supervisor = supervisor_factory(run_id="task014-history", run_root="run",
+                                workspace="ws")
 
 
-# ---------------------------------------------------------------------------
-# 1. History rendering.
-# ---------------------------------------------------------------------------
 
 def test_empty_when_nothing_confirmed(tmp_path):
     sup = _supervisor(tmp_path)
