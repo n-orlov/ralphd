@@ -1197,8 +1197,22 @@ def _stored_key_path(run) -> Path | None:
     store = key_store_dir()
     if store is None:
         return None
-    ident = hashlib.sha256(_authority_id(run).encode("utf-8")).hexdigest()
-    return store / f"{ident[:32]}.key"
+    return store / stored_key_filename(_authority_id(run))
+
+
+def stored_key_filename(run_root: str) -> str:
+    """The file name `_stored_key_path` gives the key of a run whose root
+    is `run_root` -- a digest of the root path, so the store itself names
+    no run paths.
+
+    Public because a HOST-side surface has to look for exactly this file
+    without importing the private path builder: `ralphctl status` reports
+    whether the run's key is actually THERE (task 020's rejection: the
+    directory merely existing is not the same condition), and the host
+    knows the run root only as the container path the run dir is bound at.
+    """
+    ident = hashlib.sha256(str(Path(run_root)).encode("utf-8")).hexdigest()
+    return f"{ident[:32]}.key"
 
 
 def _decode_key_material(material: bytes) -> bytes:

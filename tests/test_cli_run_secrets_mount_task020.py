@@ -19,12 +19,17 @@ import shutil
 import stat
 from pathlib import Path
 
+from ralphd.engine import petitions
+
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run, _run_argv
 
 __all__ = ["ctl", "unix_sock"]
 
 RUN_SECRETS_TARGET = "/var/lib/ralphd/run-secrets"
+# The engine's own run root inside the job container (`-v <rdir>:/run/ralphd`),
+# which is what names this run's key file in the store.
+CONTAINER_RUN_DIR = "/run/ralphd"
 
 
 def _mount_pairs(argv: list[str]) -> list[str]:
@@ -74,8 +79,86 @@ def test_resume_self_heals_a_pre_task020_run_with_no_run_secrets_dir_yet(ctl):
     assert f"{sdir}:{RUN_SECRETS_TARGET}" in _mount_pairs(argv)
 
 
-def test_status_names_the_mount_and_the_fallback_check_when_unbound(ctl):
+def test_status_reports_key_availability_not_the_directory_and_names_the_fallback(ctl):
+    """The condition an operator needs is "is this run's MAC key THERE",
+    not "did `start` create a directory". A bound-but-empty `run-secrets/`
+    is the ordinary single-uid shape (`petitions.key_store_dir()` returns
+    None, so nothing is ever persisted), and in it the `events.jsonl`
+    witness is the only remaining check -- `status` must say so even while
+    the mount itself is bound.
+    """
     rdir, cdir = _seed_run(ctl, "tst-secrets-status")
+    (rdir / "status.json").write_text(json.dumps({
+        "state": "running", "verdict": None, "phase": "worker",
+        "approach": 1, "iterationsUsed": 1, "iterationsBudget": 10,
+        "startedAt": "2024-01-01T00:00:00Z", "schemaVersion": 1,
+    }))
+    # the fallback's own witness exists in this run's events log, so the
+    # only thing missing is the key itself.
+    (rdir / "events.jsonl").write_text(json.dumps({
+        "ts": "2024-01-01T00:00:01Z",
+        "type": petitions.ADJUDICATIONS_RECORDED_EVENT,
+        "mac": "ab" * 32,
+    }) + "\n")
+    sdir = cdir / "run-secrets"
+    sdir.mkdir(mode=0o700)
+    assert list(sdir.glob("*.key")) == []
+
+    res = ctl.run("--json", "status", "tst-secrets-status")
+    assert res.returncode == 0, res.stderr
+    rsm = json.loads(res.stdout)["runSecretsMount"]
+    assert rsm["path"] == str(sdir)
+    assert rsm["target"] == RUN_SECRETS_TARGET
+    assert rsm["bound"] is True
+    assert rsm["keyAvailable"] is False
+    assert rsm["keyFiles"] == []
+    assert "events.jsonl" in rsm["fallbackCheck"]
+    assert petitions.ADJUDICATIONS_RECORDED_EVENT in rsm["fallbackCheck"]
+
+    text = ctl.run("status", "tst-secrets-status").stdout
+    assert "run-secrets: bound" in text
+    assert str(sdir) in text
+    assert RUN_SECRETS_TARGET in text
+    assert "no MAC key available" in text
+    assert "events.jsonl" in text
+    assert petitions.ADJUDICATIONS_RECORDED_EVENT in text
+
+
+def test_status_names_the_key_once_one_survives_in_the_bound_directory(ctl):
+    rdir, cdir = _seed_run(ctl, "tst-secrets-key")
+    (rdir / "status.json").write_text(json.dumps({
+        "state": "running", "verdict": None, "phase": "worker",
+        "approach": 1, "iterationsUsed": 1, "iterationsBudget": 10,
+        "startedAt": "2024-01-01T00:00:00Z", "schemaVersion": 1,
+    }))
+    sdir = cdir / "run-secrets"
+    sdir.mkdir(mode=0o700)
+    keyfile = sdir / petitions.stored_key_filename(CONTAINER_RUN_DIR)
+    keyfile.write_text("cd" * 32)
+
+    rsm = json.loads(ctl.run("--json", "status",
+                             "tst-secrets-key").stdout)["runSecretsMount"]
+    assert rsm["bound"] is True
+    assert rsm["keyAvailable"] is True
+    assert rsm["keyFiles"] == [keyfile.name]
+    assert rsm["fallbackCheck"] is None
+
+    text = ctl.run("status", "tst-secrets-key").stdout
+    assert "run-secrets: bound" in text
+    assert f"MAC key present: {keyfile.name}" in text
+    assert "no MAC key available" not in text
+
+    # an empty key file is no key: truncating it puts the run back in the
+    # fallback condition rather than leaving a false "present".
+    keyfile.write_text("")
+    rsm = json.loads(ctl.run("--json", "status",
+                             "tst-secrets-key").stdout)["runSecretsMount"]
+    assert rsm["keyAvailable"] is False
+    assert "events.jsonl" in rsm["fallbackCheck"]
+
+
+def test_status_names_the_mount_and_the_fallback_check_when_unbound(ctl):
+    rdir, cdir = _seed_run(ctl, "tst-secrets-gone")
     (rdir / "status.json").write_text(json.dumps({
         "state": "running", "verdict": None, "phase": "worker",
         "approach": 1, "iterationsUsed": 1, "iterationsBudget": 10,
@@ -84,27 +167,17 @@ def test_status_names_the_mount_and_the_fallback_check_when_unbound(ctl):
     sdir = cdir / "run-secrets"
     sdir.mkdir(mode=0o700)
 
-    res = ctl.run("--json", "status", "tst-secrets-status")
-    assert res.returncode == 0, res.stderr
-    doc = json.loads(res.stdout)
-    assert doc["runSecretsMount"] == {
-        "path": str(sdir), "target": RUN_SECRETS_TARGET, "bound": True}
-
-    text = ctl.run("status", "tst-secrets-status").stdout
-    assert "run-secrets: bound" in text
-    assert str(sdir) in text
-    assert RUN_SECRETS_TARGET in text
-
     # remove the host directory out from under the run: `status` names the
     # unbound condition and the documented fallback in the same line.
     shutil.rmtree(sdir)
-    res = ctl.run("--json", "status", "tst-secrets-status")
-    doc = json.loads(res.stdout)
+    doc = json.loads(ctl.run("--json", "status", "tst-secrets-gone").stdout)
     assert doc["runSecretsMount"]["bound"] is False
-    text = ctl.run("status", "tst-secrets-status").stdout
+    assert doc["runSecretsMount"]["keyAvailable"] is False
+    text = ctl.run("status", "tst-secrets-gone").stdout
     assert "run-secrets: not bound" in text
+    assert "no MAC key available" in text
     assert "events.jsonl" in text
-    assert "petition_adjudications_recorded" in text
+    assert petitions.ADJUDICATIONS_RECORDED_EVENT in text
 
 
 def test_doctor_names_the_mount_and_the_fallback_check(ctl):

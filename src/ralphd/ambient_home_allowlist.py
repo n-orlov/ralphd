@@ -41,7 +41,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     # back to the invoking user's real `$HOME`.
     {
         "path": "cli/main.py",
-        "line": "159",
+        "line": "160",
         "reason": ("registry()'s ralphctl-managed-state root: overridable via "
                    "RALPHD_REGISTRY; the ambient fallback is the operator's own "
                    "machine home, which is exactly right for a bare `ralphctl` "
@@ -56,7 +56,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # 6060->6069, 6064->6073. Same reads, same reasons; line numbers
         # drift with unrelated edits, exactly as this module's own docstring
         # warns.
-        "line": "1832",
+        #
+        # Task 020 (the run-secrets mount) re-derived them AGAIN from a
+        # fresh scan after inserting `run_secrets_key_files` and its
+        # constants near the top of `cli/main.py`: 159->160 (drift that
+        # predated this task), 1832->1903, 1845->1916, 4126->4250,
+        # 4328->4452, 4332->4456, 6069->6193, 6073->6197. Same reads, same
+        # reasons.
+        "line": "1903",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -64,14 +71,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "1845",
+        "line": "1916",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "4126",
+        "line": "4250",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -81,7 +88,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4328",
+        "line": "4452",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -90,13 +97,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4332",
+        "line": "4456",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "6069",
+        "line": "6193",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -104,7 +111,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6073",
+        "line": "6197",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

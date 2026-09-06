@@ -833,9 +833,20 @@ is the same `events.jsonl` witness every episode already writes:
 `ADJUDICATIONS_RECORDED_EVENT` (`petition_adjudications_recorded`) carries
 the MAC of the write that produced it, independent of whatever
 `petition-adjudications.json` says on disk right now. `ralphctl status`
-names the mount per run (`runSecretsMount.bound`, and the same fallback
-sentence in the text line when it is `False`); `ralphctl doctor` names the
-mount and its fallback unconditionally, registry-wide.
+reports the two conditions SEPARATELY per run, because the mount existing
+is not the key existing: `runSecretsMount.bound` is whether
+`start`/`resume` created and bound the directory, and
+`runSecretsMount.keyAvailable` (with `keyFiles`, from
+`cli/main.run_secrets_key_files`, which looks for the very file
+`petitions.stored_key_filename` names for the run root `/run/ralphd`) is
+whether a non-empty key actually survived into it. Whenever no key is
+available -- the ordinary single-uid shape, where the directory is bound
+and stays empty for the whole run, as much as a directory that was never
+bound at all -- the text line says `no MAC key available` and names this
+fallback check in the same line, and `runSecretsMount.fallbackCheck`
+carries the same sentence in `--json` (it is `null` exactly when a key is
+there). `ralphctl doctor` names the mount and its fallback
+unconditionally, registry-wide.
 
 ### The run's own terminal record: run-record.md/.json (v0.18 requirement B.1, #140, cured by task 035)
 

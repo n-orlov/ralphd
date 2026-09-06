@@ -190,6 +190,50 @@ def _bind_run_secrets_mount(run_id: str, mounts: list) -> None:
     mounts += ["-v", f"{d}:{petitions.DEFAULT_RUN_SECRETS_DIR}"]
 
 
+# The container path every `docker run` in this module binds the run dir at
+# (`-v {rdir}:/run/ralphd`), which is therefore the engine's own
+# `run.root` -- and so the identity `petitions.stored_key_filename` names
+# this run's key file by.
+CONTAINER_RUN_DIR = "/run/ralphd"
+
+# What `status` reports in place of a key when there is none: the check an
+# operator can still run, spelled out rather than left to inference.
+RUN_SECRETS_FALLBACK_CHECK = (
+    "the events.jsonl petition_adjudications_recorded MAC witness")
+
+
+def run_secrets_key_files(run_id: str) -> list[Path]:
+    """The non-empty MAC-key files that actually exist in this run's
+    run-secrets directory: the one `petitions.stored_key_filename` names
+    for the engine's own run root first, then any other `*.key` an
+    operator's `$RALPHD_RUN_SECRETS_DIR` override or an older engine build
+    left behind.
+
+    An EMPTY list is the no-key condition `status` must name (task 020's
+    rejection): the directory existing says only that `start`/`resume`
+    bound it, never that a key survived into it -- with no uid boundary
+    `petitions.key_store_dir()` returns None and the mount stays empty for
+    the whole run, which is exactly when the `events.jsonl` fallback check
+    is the operator's only handle.
+    """
+    d = run_secrets_dir(run_id)
+    candidates = [d / petitions.stored_key_filename(CONTAINER_RUN_DIR)]
+    try:
+        candidates += sorted(d.glob("*.key"))
+    except OSError:
+        pass
+    found: list[Path] = []
+    for p in candidates:
+        if p in found:
+            continue
+        try:
+            if p.is_file() and p.stat().st_size > 0:
+                found.append(p)
+        except OSError:
+            continue
+    return found
+
+
 def gen_run_id() -> str:
     return (f"{random.choice(ADJECTIVES)}-{random.choice(ANIMALS)}-"
             f"{time.strftime('%H%M')}")
@@ -3050,15 +3094,29 @@ def cmd_status(args):
     # Task 020 (E.4): whether this run's per-run MAC-key host directory is
     # bound (created by `start`/`resume`, see `run_secrets_dir`) -- known
     # from the host alone, live or not, unlike `model`/`provisioning`
-    # above. `bound=False` names the exact fallback the run falls back to
-    # (the `events.jsonl` `petition_adjudications_recorded` MAC witness),
-    # so an operator reading `status` sees the condition, not just its
-    # absence.
+    # above.
+    #
+    # `bound` is about the MOUNT (did `start`/`resume` create and bind the
+    # directory); `keyAvailable` is the separate, weaker condition that
+    # decides whether cross-episode authentication can work at all -- is
+    # there a key FILE in there (`run_secrets_key_files`). A bound but
+    # empty directory is the ordinary single-uid shape: `key_store_dir()`
+    # returns None, no key is ever written, and the run's only handle is
+    # the `events.jsonl` `petition_adjudications_recorded` MAC witness.
+    # So the fallback check is reported whenever no key is available, not
+    # merely when the directory is missing (the first attempt at this task
+    # used directory-exists as a proxy for key-exists and was rejected for
+    # exactly that).
     _secrets_dir = run_secrets_dir(args.run_id)
+    _secrets_keys = run_secrets_key_files(args.run_id)
     status["runSecretsMount"] = {
         "path": str(_secrets_dir),
         "target": str(petitions.DEFAULT_RUN_SECRETS_DIR),
         "bound": _secrets_dir.is_dir(),
+        "keyAvailable": bool(_secrets_keys),
+        "keyFiles": [p.name for p in _secrets_keys],
+        "fallbackCheck": (None if _secrets_keys
+                          else RUN_SECRETS_FALLBACK_CHECK),
     }
 
     # Task 036 (#20 H4): which image this run is running. A live `GET /status`
@@ -3242,20 +3300,26 @@ def cmd_status(args):
     lines.extend(_format_termination_lines(status.get("termination")))
     lines.append(f"tasks:     {_summarize_tasks(status.get('tasks') or {})}")
     lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
-    # Task 020 (E.4): name the run-secrets MAC-key mount and, when it is
-    # not bound (a pre-task-020 run dir that has not resumed yet, or a
-    # registry whose `configs/<run>/` was removed out from under a live
-    # run), the documented fallback check in the same line rather than
-    # leaving the operator to infer it from silence.
+    # Task 020 (E.4): name the run-secrets MAC-key mount, and name the
+    # documented fallback check in the same line whenever NO KEY is
+    # available -- whether because the directory is not bound at all (a
+    # pre-task-020 run dir that has not resumed yet, or a registry whose
+    # `configs/<run>/` was removed out from under a live run) or because
+    # it is bound and empty (no uid boundary, so `key_store_dir()`
+    # returned None and nothing was ever persisted). Reporting the mount
+    # alone would tell the operator the key survived when it never
+    # existed.
     _rsm = status.get("runSecretsMount") or {}
-    if _rsm.get("bound"):
-        lines.append(f"run-secrets: bound ({_rsm.get('path')} -> "
-                     f"{_rsm.get('target')})")
+    _mount = (f"{_rsm.get('path')} -> {_rsm.get('target')}")
+    _state = "bound" if _rsm.get("bound") else "not bound"
+    if _rsm.get("keyAvailable"):
+        lines.append(f"run-secrets: {_state} ({_mount}); MAC key present: "
+                     f"{', '.join(_rsm.get('keyFiles') or [])}")
     else:
         lines.append(
-            f"run-secrets: not bound ({_rsm.get('path')} -> "
-            f"{_rsm.get('target')}); fallback check: the events.jsonl "
-            "petition_adjudications_recorded MAC witness")
+            f"run-secrets: {_state} ({_mount}); no MAC key available "
+            "(cross-episode authentication fails closed); fallback check: "
+            + (_rsm.get("fallbackCheck") or RUN_SECRETS_FALLBACK_CHECK))
     # Task 020 (#5): a failed post-terminal reflection is otherwise invisible
     # here -- it deliberately leaves state/verdict/reason untouched, so
     # without this line the operator cannot tell "reflect ran and died" from
@@ -6271,7 +6335,8 @@ def cmd_doctor(args):
     # Task 020 (E.4): named unconditionally (registry-wide, not tied to any
     # one run) so an operator reading `doctor` alone still learns the
     # mount and its fallback -- `status` (per run) is where whether a
-    # SPECIFIC run's directory is actually bound is answered.
+    # SPECIFIC run's key is actually THERE is answered
+    # (`runSecretsMount.keyAvailable`).
     report += (
         f"\n  run-secrets: `start`/`resume` bind a mode-0700 host "
         f"directory `<config>/<run>/run-secrets/` at "
