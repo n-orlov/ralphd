@@ -24,6 +24,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 __all__ = ["engine_factory"]
 
@@ -44,10 +45,7 @@ def _ok_result() -> IterationResult:
     return r
 
 
-def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    cfg = JobConfig(run_id="unit", **cfg_kw)
-    return LoopSupervisor(cfg, run, tmp_path)
+_supervisor = supervisor_factory(run_id="unit", cfg_defaults=False)
 
 
 def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):

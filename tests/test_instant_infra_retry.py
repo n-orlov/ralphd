@@ -30,6 +30,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 __all__ = ["engine_factory"]
 
@@ -65,13 +66,9 @@ def _ok_result() -> IterationResult:
     return r
 
 
-def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    kw = {"infra_retry_backoff_s": [0.1, 0.2, 0.4],
-          "infra_retry_backoff_max_s": 10.0,
-          "infra_outage_budget_s": 1000.0, **cfg_kw}
-    cfg = JobConfig(run_id="unit", **kw)
-    return LoopSupervisor(cfg, run, tmp_path)
+_supervisor = supervisor_factory(run_id="unit", infra_retry_backoff_s=[0.1, 0.2, 0.4],
+                                 infra_retry_backoff_max_s=10.0,
+                                 infra_outage_budget_s=1000.0)
 
 
 def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):

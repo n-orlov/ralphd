@@ -37,6 +37,7 @@ from ralphd.engine.state import RunDir, atomic_write_json
 from test_steering_priority_routing_task012 import (
     TASK_1, _ok, _run_resumed,
 )
+from tests.conftest import supervisor_factory
 
 
 def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
@@ -52,13 +53,10 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    (root / "prd.md").write_text("# task 009 fixture PRD\n\nDo the thing.\n")
-    cfg = JobConfig(run_id="task009-cure-pass", max_approaches=3, **cfg_kw)
-    return LoopSupervisor(cfg, run, root)
+_supervisor = supervisor_factory(run_id="task009-cure-pass", cfg_defaults=False,
+                                 status={"state": "running"},
+                                 prd="# task 009 fixture PRD\n\nDo the thing.\n",
+                                 max_approaches=3)
 
 
 def _events(root: Path, type_: str) -> list[dict]:

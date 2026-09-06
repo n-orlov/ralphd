@@ -79,6 +79,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, read_events
+from tests.conftest import supervisor_factory
 
 TEST_STATE = "task004_audit_hat_state"
 TEST_HAT = "task004_audit_hat"
@@ -109,14 +110,9 @@ def _interrupted(text: str = "partial output before the cutoff") -> IterationRes
     return r
 
 
-def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    kw = {"infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
-          "infra_outage_budget_s": 1000.0, "vigilant": False,
-          "max_approaches": 2, "on_complete": "exit",
-          **cfg_kw}
-    cfg = JobConfig(run_id="task004-audit", **kw)
-    return LoopSupervisor(cfg, run, tmp_path)
+_supervisor = supervisor_factory(run_id="task004-audit", infra_retry_backoff_s=[0.0],
+                                 infra_retry_backoff_max_s=0.0, infra_outage_budget_s=1000.0,
+                                 vigilant=False, max_approaches=2, on_complete="exit")
 
 
 def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]) -> list[str]:

@@ -591,9 +591,16 @@ async def _no_backoff(seconds):
     return seconds, False
 
 
+PRD_TEXT = "# test PRD\n\nDo the thing.\n"
+
+
 def make_supervisor(root: Path, runner=None, *, run_id: str = "unit",
                     run_root=None, workspace=None, status: dict | None = None,
-                    tasks: list[dict] | None = None, no_backoff: bool = True,
+                    tasks: list[dict] | None = None, prd=None,
+                    approach: int | None = None,
+                    iterations_used: int | None = None,
+                    runner_factory=None, no_backoff: bool = True,
+                    cfg_defaults: bool = True,
                     real_sleep: bool = False, **cfg):
     """A `LoopSupervisor` on a real `RunDir` under `root`, wired for an
     in-process test: no real backoff, no real sleeping, and a scripted
@@ -605,6 +612,24 @@ def make_supervisor(root: Path, runner=None, *, run_id: str = "unit",
     `tasks.json` directly (the shape a real plan-proposal contract can never
     produce, because it carries each task's own `status`). Everything else in
     `**cfg` goes to `JobConfig` over `DEFAULT_SUPERVISOR_CFG`.
+
+    The four remaining knobs are the module-local pre/post steps that were
+    the only reason a module could not use this harness as-is:
+
+    - `prd=True` (or a string) writes `run.prd_file`, which every path that
+      composes a prompt out of the PRD reads unconditionally;
+    - `approach=`/`iterations_used=` set `sup._approach` / `sup.iterations_used`
+      after construction, the two counters a test that starts mid-run seeds by
+      hand;
+    - `runner_factory=` is called with the finished supervisor
+      (`runner_factory(sup)`) and its result attached, for the scripted
+      stand-ins whose constructor takes the supervisor or its `RunDir`.
+
+    `cfg_defaults=False` drops `DEFAULT_SUPERVISOR_CFG` from the `JobConfig`:
+    for a module whose local harness never named a backoff knob, the retry
+    schedule under test IS `JobConfig`'s own default, and seeding the instant
+    one would silently rewrite what the test measures (`_wait_out_backoff` is
+    still stubbed, so it reports those delays without waiting them).
     """
     # Imported here, not at module import: this conftest is loaded for every
     # session (including the black-box CLI modules that only shell out), and
@@ -618,12 +643,22 @@ def make_supervisor(root: Path, runner=None, *, run_id: str = "unit",
     run = RunDir(root=_under(root, run_root))
     ws = _under(root, workspace)
     ws.mkdir(parents=True, exist_ok=True)
+    if prd is not None and prd is not False:
+        run.prd_file.write_text(PRD_TEXT if prd is True else prd)
     if status is not None:
         run.update_status(**status)
-    sup = LoopSupervisor(JobConfig(run_id=run_id, **{**DEFAULT_SUPERVISOR_CFG, **cfg}),
+    sup = LoopSupervisor(JobConfig(run_id=run_id,
+                                   **({**DEFAULT_SUPERVISOR_CFG, **cfg} if cfg_defaults
+                                      else cfg)),
                          run, ws)
     if runner is not None:
         attach_runner(sup, runner)
+    if runner_factory is not None:
+        attach_runner(sup, runner_factory(sup))
+    if approach is not None:
+        sup._approach = approach
+    if iterations_used is not None:
+        sup.iterations_used = iterations_used
     if no_backoff:
         sup._wait_out_backoff = _no_backoff    # type: ignore[method-assign]
     if not real_sleep:

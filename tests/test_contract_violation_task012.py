@@ -63,6 +63,7 @@ from ralphd.engine.state import (
     iteration_summary_lines,
     read_events,
 )
+from tests.conftest import supervisor_factory
 
 TEST_STATE = "task012_contract_hat_state"
 TEST_HAT = "task012_contract_hat"
@@ -84,13 +85,9 @@ def _ok(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    kw = {"infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
-          "infra_outage_budget_s": 1000.0, "vigilant": False,
-          "max_approaches": 2, "on_complete": "exit", **cfg_kw}
-    cfg = JobConfig(run_id="task012-contract", **kw)
-    return LoopSupervisor(cfg, run, tmp_path)
+_supervisor = supervisor_factory(run_id="task012-contract", infra_retry_backoff_s=[0.0],
+                                 infra_retry_backoff_max_s=0.0, infra_outage_budget_s=1000.0,
+                                 vigilant=False, max_approaches=2, on_complete="exit")
 
 
 def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]) -> list[str]:

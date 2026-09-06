@@ -36,6 +36,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_factory
 
 TASK_1 = "001"
 TASK_2 = "002"
@@ -92,12 +93,9 @@ def test_plan_complete_is_a_name_distinct_from_the_per_task_complete():
 # -- _apply_worker_plan_complete_report -----------------------------------
 
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    cfg = JobConfig(run_id="v015-plan-complete-unit", iterations=5,
-                    max_approaches=1, vigilant=False, on_complete="exit")
-    return LoopSupervisor(cfg, run, root)
+_supervisor = supervisor_factory(run_id="v015-plan-complete-unit", cfg_defaults=False,
+                                 iterations=5, max_approaches=1, vigilant=False,
+                                 on_complete="exit")
 
 
 def test_a_task_assigned_this_iteration_is_refused_structurally(tmp_path):

@@ -34,6 +34,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 
 def _finding(severity: str, **overrides) -> dict:
@@ -55,13 +56,10 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "prd.md").write_text("# task 012 D.3 fixture PRD\n\nDo the thing.\n")
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    cfg = JobConfig(run_id="task012-verified-with-residuals", **cfg_kw)
-    return LoopSupervisor(cfg, run, root)
+_supervisor = supervisor_factory(run_id="task012-verified-with-residuals",
+                                 cfg_defaults=False,
+                                 prd="# task 012 D.3 fixture PRD\n\nDo the thing.\n",
+                                 status={"state": "running"})
 
 
 # ---------------------------------------------------------------------------

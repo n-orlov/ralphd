@@ -52,6 +52,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 
 def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
@@ -67,12 +68,8 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    cfg = JobConfig(run_id="task006-rejected-incurable", **cfg_kw)
-    return LoopSupervisor(cfg, run, root)
+_supervisor = supervisor_factory(run_id="task006-rejected-incurable", cfg_defaults=False,
+                                 status={"state": "running"})
 
 
 class _StubNotifier:
