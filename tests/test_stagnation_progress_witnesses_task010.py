@@ -57,6 +57,7 @@ from test_failed_task_vocabulary import (
     _plan_pointer,
     _steps,
     _task,
+    _write_plan,
     _write_proposal,
 )
 
@@ -238,34 +239,71 @@ def test_a_petition_riding_on_no_verdict_counts_as_progress_without_a_tasks_json
 def test_none_of_the_four_witnesses_still_increments_the_counter(tmp_path):
     """The guard this must NOT weaken: three ordinary no-op iterations
     (no tasks.json change, no commit, no contract payload, no tool-call
-    evidence) still trip the guard exactly as before this task, even with
-    a real git workspace present and simply never touched."""
+    evidence) still trip the counter exactly as before this task, even
+    with a real git workspace present and simply never touched. This
+    drives `_step_worker()` directly (default `max_approaches=1`, i.e.
+    the LAST approach) rather than the full `_run_job_core()` dispatch
+    loop, because on the LAST approach task 012 (requirement B.3) changes
+    what happens once the counter fires: the run now pauses and
+    escalates (`tests/test_stagnation_last_approach_pause_task012.py` is
+    that pause's own dedicated coverage) instead of ending `failed` on
+    paperwork, and a run parked on that pause inside `_run_job_core()`
+    would sit forever awaiting a `resume()` this test never sends. The
+    counter itself is unchanged either way -- the log line still fires.
+    """
     root = tmp_path / "run"
     workspace = tmp_path / "workspace"
     _init_git_workspace(workspace)
-    sup, outcome = _run(root, workspace, {
-        "planning": _plan,
-        "worker": _steps(_noop, _noop, _noop, _noop),
-    })
+    sup = _supervisor(root, workspace, {})
+    sup._approach = 1
+    RunDir(root=root).update_status(state="starting")
+    _write_plan(sup, [_task()])
+    sup._ensure_criteria_baseline()  # mimics planning's own baseline (task 008)
+    handler = _steps(_noop, _noop, _noop, _noop)
+
+    async def _dispatch(prompt, transcript, **kw):
+        return handler(sup, prompt)
+
+    sup.runner.run = _dispatch  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_worker())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert (outcome, sup.run.read_status()["verdict"]) == ("failed", "unverified")
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "stagnation"
 
 
 def test_tool_activity_below_the_threshold_still_increments_the_counter(tmp_path):
     """Witness (d) is a THRESHOLD, not "any tool call counts": one call
     below `STAGNATION_TOOL_ACTIVITY_MIN_CALLS` on every iteration must
-    still stagnate exactly like zero calls would."""
+    still stagnate exactly like zero calls would. Same direct-`_step_
+    worker()` shape as the test just above, for the same reason (default
+    `max_approaches=1` is the LAST approach, task 012's pause).
+    """
     root = tmp_path / "run"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     below = LoopSupervisor.STAGNATION_TOOL_ACTIVITY_MIN_CALLS - 1
     assert below >= 1, "the threshold must be > 1 for this test to mean anything"
-    sup, outcome = _run(root, workspace, {
-        "planning": _plan,
-        "worker": _steps(_tool_heavy(below), _tool_heavy(below),
-                         _tool_heavy(below), _tool_heavy(below)),
-    })
+    sup = _supervisor(root, workspace, {})
+    sup._approach = 1
+    RunDir(root=root).update_status(state="starting")
+    _write_plan(sup, [_task()])
+    sup._ensure_criteria_baseline()  # mimics planning's own baseline (task 008)
+    handler = _steps(_tool_heavy(below), _tool_heavy(below),
+                     _tool_heavy(below), _tool_heavy(below))
+
+    async def _dispatch(prompt, transcript, **kw):
+        return handler(sup, prompt)
+
+    sup.runner.run = _dispatch  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_worker())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert (outcome, sup.run.read_status()["verdict"]) == ("failed", "unverified")
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "stagnation"

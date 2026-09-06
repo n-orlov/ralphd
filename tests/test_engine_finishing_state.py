@@ -141,6 +141,31 @@ def _events(root: Path, type_: str) -> list[dict]:
     return [ev for ev in (json.loads(x) for x in lines) if ev.get("type") == type_]
 
 
+async def _drive_until_paused(sup: LoopSupervisor) -> None:
+    """Task 012 (requirement B.3, #153): a run that hits the stagnation
+    guard on the LAST approach now pauses and escalates instead of ending
+    the run `failed` -- and stays parked at `_gate()` forever without an
+    operator's `resume()`, which this scripted-runner test never sends.
+    Starts `run_job()` as a background task, polls `status.json` for
+    `state == "paused"`, then cancels the still-pending task so the
+    test's own event loop can close cleanly."""
+    task = asyncio.ensure_future(sup.run_job())
+    for _ in range(500):
+        if sup.run.read_status().get("state") == "paused":
+            break
+        if task.done():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        task.cancel()
+        raise AssertionError("run never reached `paused`")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 # -- succeeded / failed / aborted, all through the finishing window --------
 
 def test_succeeded_outcome_goes_through_finishing_before_promoting(tmp_path):
@@ -198,9 +223,16 @@ def test_failed_outcome_goes_through_finishing_before_promoting(tmp_path):
         return _write_reflect_report(sup)
 
     # _plan produces a task, but nothing ever completes it or signals
-    # COMPLETE -- three stagnant iterations fail the approach.
-    sup = _supervisor(root, [_plan, _no_progress, _no_progress, _no_progress,
-                            snapshot_then_reflect], reflect=True)
+    # COMPLETE. Two of these no-progress passes never even reach the
+    # 3-in-a-row stagnation guard -- what ends the approach here is the
+    # ORDINARY iteration budget running out first (`iterations=3`: one
+    # `planning` pass plus two `worker` passes), a path task 012
+    # (requirement B.3) never touches, since the LAST approach's own
+    # stagnation guard now pauses instead of failing outright and this
+    # test needs a genuine terminal `failed` to prove the `finishing`
+    # window wraps it correctly.
+    sup = _supervisor(root, [_plan, _no_progress, _no_progress,
+                            snapshot_then_reflect], reflect=True, iterations=3)
 
     final_state = asyncio.run(sup.run_job())
 

@@ -2463,6 +2463,34 @@ class LoopSupervisor:
             return False
         return iteration_start_id is None or iteration_start_id < escalation_id
 
+    def _paused_awaiting_stagnation_last_approach_ruling(self, approach: int) -> bool:
+        """Task 012 (PRD requirement B.3, #153): the same crashed/
+        restarted-episode shape as `_paused_awaiting_last_approach_ruling`
+        just above, for the `stagnation` reason instead of `rejected_
+        last_approach` -- the most recent `operator_escalation` event with
+        `reason == "stagnation"` recorded for THIS approach, with no
+        `iteration.start` event on record after it. Unlike the last-
+        approach-ruling case, a resumed episode landing here goes straight
+        back to `worker` (not `review`) -- there is no rejection verdict
+        for review to reconsider, only unfinished tasks the approach never
+        archived, exactly what `_step_paused` also does for an in-process
+        resume of this same escalation.
+        """
+        escalation_id = None
+        iteration_start_id = None
+        for ev in state.read_events(
+                self.run.root,
+                types=("operator_escalation", "iteration.start")):
+            if ev.get("type") == "operator_escalation":
+                if (ev.get("reason") == "stagnation"
+                        and ev.get("approach") == approach):
+                    escalation_id = ev.get("id")
+            else:
+                iteration_start_id = ev.get("id")
+        if escalation_id is None:
+            return False
+        return iteration_start_id is None or iteration_start_id < escalation_id
+
     def _unreviewed_awaiting_resume(self, approach: int) -> bool:
         """Task 016 (PRD requirement F.3, #146): the same crashed/restarted-
         episode shape as `_paused_awaiting_incurable_ruling`/`_paused_
@@ -2592,6 +2620,17 @@ class LoopSupervisor:
                     "approach) so any ruling recorded while paused is seen "
                     "by the next review iteration"))
             return approach, False, "review"
+        if self._paused_awaiting_stagnation_last_approach_ruling(approach):
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "was paused on a stagnation escalation with no "
+                    "operator resume ever reaching this episode; resuming "
+                    "directly into worker (never review, never a fresh "
+                    "approach) over the same unarchived approach the "
+                    "stagnation guard parked instead of failing"))
+            return approach, False, "worker"
         if self._unreviewed_awaiting_resume(approach):
             self.run.emit(
                 "log",
@@ -6337,6 +6376,16 @@ class LoopSupervisor:
                 return ("done", "succeeded")
             return ("tail",)
         if not verdict_ready:
+            if self._approach == self.cfg.max_approaches:
+                # Task 012 (PRD requirement B.3, #153): the LAST approach
+                # never fails silently on stagnation alone -- pause and
+                # escalate exactly like `review`'s `rejected_last_
+                # approach` edge, leaving the approach unarchived so
+                # `resume` re-enters it directly.
+                self._pause_and_escalate_stagnation_last_approach(
+                    approach, outstanding_tasks)
+                self._advance("worker", "paused", "stagnation_last_approach")
+                return ("advance", "paused", "stagnation_last_approach")
             self._archive_approach(approach)
             return ("advance", "replan", "stagnation_exhausted")
         return ("advance", "review", guard_ready)
@@ -7295,17 +7344,33 @@ class LoopSupervisor:
         status.json, emitted `operator_escalation`, notified) before
         `_step_review` advanced here. This state's own job is only to
         occupy the dispatch loop's `step` position while the run sits
-        parked, and to resume straight back into `review` -- never
-        `worker`, never a fresh `replan` -- the instant the existing
-        `self._pause` `asyncio.Event` is released again
-        (`ralphctl resume`/`POST /resume`), exactly the target a fresh
-        process's own `_resume_point`/`_paused_awaiting_last_approach_
-        ruling` case already lands on. `await self._gate()` is the SAME
-        parking primitive every other step boundary already calls -- a
-        no-op the instant `resume()` has already run, and an actual park
-        otherwise.
+        parked, and to resume back into the state that paused it -- never
+        a fresh `replan` -- the instant the existing `self._pause`
+        `asyncio.Event` is released again (`ralphctl resume`/
+        `POST /resume`), exactly the target a fresh process's own
+        `_resume_point`/`_paused_awaiting_last_approach_ruling` case
+        already lands on. `await self._gate()` is the SAME parking
+        primitive every other step boundary already calls -- a no-op the
+        instant `resume()` has already run, and an actual park otherwise.
+
+        Task 012 (PRD requirement B.3, #153): TWO different escalations
+        reach this state now, and they resume to DIFFERENT targets --
+        `review`'s `rejected_last_approach` pause resumes back into
+        `review` over the same approach (there is a ruling for review to
+        consider); `worker`'s `stagnation_last_approach` pause resumes
+        straight back into `worker` over the same, unarchived approach
+        (there is no verdict pending, only unfinished tasks). The pause
+        reason is read from status.json BEFORE `_gate()` is awaited,
+        because `resume()` clears `pauseReason` back to `None` the moment
+        it releases the gate (`_clear_persisted_pause`) -- reading it
+        after would always see `None` and could never tell the two cases
+        apart.
         """
+        reason = self.run.read_status().get("pauseReason")
         await self._gate()
+        if reason == "stagnation":
+            self._advance("paused", "worker", "paused_resumed_stagnation")
+            return ("advance", "worker", "paused_resumed_stagnation")
         self._advance("paused", "review", "paused_resumed")
         return ("advance", "review", "paused_resumed")
 
@@ -7466,6 +7531,55 @@ class LoopSupervisor:
         # `operator_escalation` event above and the persisted status agree
         # without a second vocabulary to map between.
         self.pause(reason="rejected_last_approach")
+        if self.notifier is not None:
+            self.notifier(text)
+
+    def _stagnation_last_approach_escalation_text(
+        self, approach: int, outstanding_tasks: list[dict]
+    ) -> str:
+        """The operator-facing escalation body for a `stagnation_last_
+        approach` pause (task 012, PRD requirement B.3, #153) -- the same
+        shape as `_last_approach_rejection_escalation_text`, but for a
+        stagnant last approach rather than a rejected one: there are no
+        findings to list, only the tasks the plan still holds open after
+        three consecutive worker iterations made no progress against any
+        of the stagnation counter's four witnesses.
+        """
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: 3 consecutive "
+            "worker iterations made no progress and this is the LAST "
+            "available approach -- the run has been paused (existing "
+            "pause machinery) rather than ended `failed` on stagnation "
+            "alone; it will not proceed until an operator ruling is "
+            "recorded and the run is resumed "
+            f"(`ralphctl resume {self.cfg.run_id}`).",
+            "",
+            "Outstanding tasks:",
+        ]
+        for task in outstanding_tasks:
+            lines.append(
+                f"  {task.get('id')} ({task.get('status', 'pending')})")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_stagnation_last_approach(
+        self, approach: int, outstanding_tasks: list[dict]
+    ) -> None:
+        """Task 012 (PRD requirement B.3, #153): pause the run through the
+        EXISTING pause machinery -- the same seam `_pause_and_escalate_
+        last_approach_rejection` already uses (`self.pause()`, `self.
+        notifier`, an `operator_escalation` event always emitted to
+        `events.jsonl`) -- with `reason: "stagnation"` instead of
+        `"rejected_last_approach"`, so the two escalation kinds stay
+        distinguishable on status.json's `pauseReason`, on the emitted
+        event, and to `_step_paused`, which resumes a `"stagnation"` pause
+        straight back into `worker` rather than `review`.
+        """
+        text = self._stagnation_last_approach_escalation_text(
+            approach, outstanding_tasks)
+        self.run.emit("operator_escalation", approach=approach,
+                      reason="stagnation", outstandingTasks=outstanding_tasks,
+                      escalation=text)
+        self.pause(reason="stagnation")
         if self.notifier is not None:
             self.notifier(text)
 

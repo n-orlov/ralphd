@@ -100,9 +100,20 @@ STEP_STATES: tuple[str, ...] = (
     # `asyncio.Event` `self.pause()`/`resume()` already drive) and, once
     # released, takes its one declared edge straight back to `review` --
     # never `worker`, never a fresh `replan` -- so a `resume` still
-    # re-reviews the SAME approach exactly as before. Reachable ONLY
-    # through `review`'s `rejected_last_approach` edge, in both `TABLE`
-    # and `PEER_VERDICT_GATE_DELTA`. Deterministic, no hat of its own.
+    # re-reviews the SAME approach exactly as before. Reachable through
+    # `review`'s `rejected_last_approach` edge, in both `TABLE` and
+    # `PEER_VERDICT_GATE_DELTA`.
+    #
+    # Task 012 (PRD requirement B.3, #153): a SECOND way into this same
+    # state -- `worker`'s own `stagnation_last_approach` edge below,
+    # taken when the stagnation guard would otherwise fail the run's
+    # LAST approach silently. `_step_paused` (loop.py) now branches on
+    # which escalation reason parked the run: a `rejected_last_approach`
+    # pause still resumes into `review` over the same approach; a
+    # `stagnation_last_approach` pause resumes straight back into
+    # `worker` over the same approach instead (there is no verdict
+    # pending for review to judge, only unfinished worker tasks the
+    # approach never archived). Deterministic, no hat of its own.
     "paused",
 )
 
@@ -226,6 +237,22 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # reasoning as `blocked_with_failures` just above.
         T("worker", "unsatisfiable_targeted_replan"),
         T("review", "unsatisfiable_and_nothing_left"),
+        # Task 012 (PRD requirement B.3, #153): a stagnant LAST approach
+        # (`self._approach == self.cfg.max_approaches`) must not end
+        # `failed` silently -- the ordinary `stagnation_exhausted` edge
+        # above still fires for every approach that has a successor left
+        # ("a genuinely silent approach with approaches left still fails
+        # as today"), but on the final approach the run instead takes
+        # THIS edge: `_pause_and_escalate_stagnation_last_approach`
+        # (loop.py) pauses the run through the same existing pause
+        # machinery `rejected_last_approach` already uses, emits an
+        # `operator_escalation` event with `reason: "stagnation"`, and
+        # notifies -- the approach is left unarchived, exactly like
+        # `rejected_last_approach`, so `resume` re-enters the SAME
+        # approach (`_step_paused` routes a `stagnation_last_approach`
+        # pause back to `worker`, never `review` -- there is no verdict
+        # pending, only unfinished tasks).
+        T("paused", "stagnation_last_approach"),
     ),
     "review": (
         # ledger guard 12: a VERIFIED verdict is discarded while operator
@@ -376,14 +403,23 @@ TABLE: dict[str, tuple[Transition, ...]] = {
     "cure": (
         T("worker", "cure_pass_appended"),
     ),
-    # Task 004 (PRD requirement D.1, finding 4): `paused` -- reached only
-    # via `review`'s `rejected_last_approach` edge above (and its
-    # `PEER_VERDICT_GATE_DELTA` twin below) -- has exactly one declared
-    # successor, back to `review` over the SAME approach, taken by
+    # Task 004 (PRD requirement D.1, finding 4): `paused` -- reached via
+    # `review`'s `rejected_last_approach` edge above (and its
+    # `PEER_VERDICT_GATE_DELTA` twin below) -- has this successor, back
+    # to `review` over the SAME approach, taken by
     # `LoopSupervisor._step_paused` only once the existing `self._pause`
     # `asyncio.Event` is released again (`ralphctl resume`/`POST /resume`).
+    #
+    # Task 012 (PRD requirement B.3, #153): a SECOND successor, back to
+    # `worker` instead, taken when the pause that parked the run was
+    # `worker`'s own `stagnation_last_approach` edge above rather than
+    # `review`'s `rejected_last_approach` one -- `_step_paused` decides
+    # which of the two by reading the pause it is actually resuming from
+    # (`pauseReason` captured before the gate releases), never by
+    # guessing from the approach number alone.
     "paused": (
         T("review", "paused_resumed"),
+        T("worker", "paused_resumed_stagnation"),
     ),
     # Task 018 (requirement K, #101): `plan_review` has NO base-table entry
     # -- unlike `verify` (which is always a key, forced to `()` when

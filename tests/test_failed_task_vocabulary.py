@@ -197,6 +197,36 @@ def _run(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:
     return sup, asyncio.run(sup._run_job_core())
 
 
+async def _drive_until_paused(sup: LoopSupervisor) -> None:
+    """Task 012 (requirement B.3, #153): a `_run_job_core()` that hits the
+    stagnation guard on the LAST approach now pauses and escalates instead
+    of ending the run `failed` -- and stays parked at `_gate()` forever
+    without an operator's `resume()`, which none of these scripted-runner
+    tests ever send. Used only by tests whose scenario runs the guard out
+    on the (default, `max_approaches=1`) last approach: starts
+    `_run_job_core()` as a background task, polls `status.json` for
+    `state == "paused"`, then cancels the still-pending task so the test's
+    own event loop can close cleanly -- the same shape
+    `tests/test_stagnation_last_approach_pause_task012.py` uses for its own
+    in-process resume coverage, minus the resume.
+    """
+    task = asyncio.ensure_future(sup._run_job_core())
+    for _ in range(500):
+        if sup.run.read_status().get("state") == "paused":
+            break
+        if task.done():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        task.cancel()
+        raise AssertionError("run never reached `paused`")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 def _events(root: Path) -> list[dict]:
     p = root / "events.jsonl"
     if not p.exists():
@@ -545,38 +575,51 @@ def test_a_plan_with_work_left_is_never_routed_to_review(tmp_path):
     """The route must not fire while a worker iteration still has something to
     pick up -- otherwise one failed task would cut a plan's remaining work
     short. Here the second task stays `pending` and the worker keeps ignoring
-    it, so the run ends on the stagnation guard, as before."""
+    it, so the run ends on the stagnation guard, as before -- except this is
+    the (default, `max_approaches=1`) LAST approach, so the guard now pauses
+    and escalates rather than ending the run `failed` (task 012, requirement
+    B.3)."""
     root = tmp_path / "run"
-    sup, state = _run_resumed(
-        root, {"worker": _give_up, "verify": _verify_miss,
-              "review": _review_verified},
-        [_task(status="failed", validationAttempts=3),
-         _task(id="002", status="pending")])
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(root, {"worker": _give_up, "verify": _verify_miss,
+                             "review": _review_verified})
+    _write_plan(sup, [_task(status="failed", validationAttempts=3),
+                      _task(id="002", status="pending")])
+    sup.iterations_used = 1
+    asyncio.run(_drive_until_paused(sup))
     msgs = _log_messages(root)
     assert "routing to review" not in msgs, msgs
     assert "3 iterations with no task progress" in msgs, msgs
     assert "review" not in _phases_recorded(root)
-    assert (state, sup.run.read_status()["verdict"]) == ("failed", "unverified")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "stagnation"
 
 
 def test_a_finished_plan_still_waits_for_the_workers_complete(tmp_path):
     """R5 is untouched where it applies: with every task `completed` and no
     `failed` one, entry to review is still the worker's COMPLETE. A worker that
     finishes the work and forgets to signal gets the stagnation guard, exactly
-    as before this task."""
+    as before this task -- except this is the (default, `max_approaches=1`)
+    LAST approach, so the guard now pauses and escalates rather than ending
+    the run `failed` (task 012, requirement B.3)."""
     def finish_quietly(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
         _set_status(sup, "completed")
         return _ok("done, no signal")
 
     root = tmp_path / "run"
-    sup, state = _run(root, {"planning": _plan,
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(root, {"planning": _plan,
                              "worker": _steps(finish_quietly, _give_up),
                              "verify": _verify_pass,
                              "review": _review_verified})
+    asyncio.run(_drive_until_paused(sup))
     msgs = _log_messages(root)
     assert "routing to review" not in msgs, msgs
     assert "3 iterations with no task progress" in msgs, msgs
-    assert (state, sup.run.read_status()["verdict"]) == ("failed", "unverified")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "stagnation"
 
 
 def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):

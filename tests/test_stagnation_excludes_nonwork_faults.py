@@ -44,6 +44,7 @@ from test_failed_task_vocabulary import (
     _steps,
     _supervisor,
     _task,
+    _write_plan,
     _write_proposal,
 )
 
@@ -97,19 +98,39 @@ def test_three_signal_iterations_do_not_fail_the_approach(tmp_path):
     assert faults and set(faults) == {"signal"}, faults
 
 
-def test_three_ordinary_work_noop_iterations_still_fail_the_approach(tmp_path):
+def test_three_ordinary_work_noop_iterations_still_pause_on_the_last_approach(tmp_path):
     """The guard this must NOT weaken: three consecutive ordinary
-    `"work"`-classified no-op worker iterations still trip the guard exactly
-    as before task 117 -- the INPUT to the gate changed, not its strength."""
+    `"work"`-classified no-op worker iterations still trip the counter
+    exactly as before task 117 -- the INPUT to the gate changed, not its
+    strength. Drives `_step_worker()` directly (default `max_approaches=1`,
+    the LAST approach) rather than the full `_run_job_core()` loop: on the
+    last approach, task 012 (requirement B.3) pauses and escalates instead
+    of ending `failed` on paperwork (the pause itself is
+    `tests/test_stagnation_last_approach_pause_task012.py`'s own dedicated
+    coverage), and a run parked on that pause inside `_run_job_core()`
+    would sit forever awaiting a `resume()` this test never sends.
+    """
     root = tmp_path / "run"
-    sup, state = _run(root, {
-        "planning": _plan_one,
-        "worker": _steps(_work_noop_iteration, _work_noop_iteration,
-                         _work_noop_iteration, _work_noop_iteration),
-    }, iterations=20)
+    from ralphd.engine.state import RunDir
+    sup = _supervisor(root, {})
+    sup._approach = 1
+    RunDir(root=root).update_status(state="starting")
+    _write_plan(sup, [_task()])
+    sup._ensure_criteria_baseline()  # mimics planning's own baseline (task 008)
+    handler = _steps(_work_noop_iteration, _work_noop_iteration,
+                     _work_noop_iteration, _work_noop_iteration)
+
+    async def _dispatch(prompt, transcript, **kw):
+        return handler(sup, prompt)
+
+    sup.runner.run = _dispatch  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_worker())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert (state, sup.run.read_status()["verdict"]) == ("failed", "unverified")
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    status = sup.run.read_status()
+    assert status.get("pauseReason") == "stagnation"
 
 
 def test_a_mix_of_two_work_noops_and_one_signal_does_not_reach_three(tmp_path):
@@ -117,15 +138,29 @@ def test_a_mix_of_two_work_noops_and_one_signal_does_not_reach_three(tmp_path):
     iteration: two ordinary no-progress work iterations (stagnant -> 2)
     followed by one signal-classified no-progress iteration must leave the
     counter at 2, not reset it to 0 and not advance it to 3 -- so a FOURTH
-    (ordinary) no-op is what reaches the guard, not a third."""
+    (ordinary) no-op is what reaches the guard, not a third. Same direct-
+    `_step_worker()` shape as the test just above, for the same reason
+    (default `max_approaches=1` is the LAST approach, task 012's pause).
+    """
     root = tmp_path / "run"
-    sup, state = _run(root, {
-        "planning": _plan_one,
-        "worker": _steps(_work_noop_iteration, _work_noop_iteration,
-                         _signal_iteration, _work_noop_iteration),
-    }, iterations=20)
+    from ralphd.engine.state import RunDir
+    sup = _supervisor(root, {})
+    sup._approach = 1
+    RunDir(root=root).update_status(state="starting")
+    _write_plan(sup, [_task()])
+    sup._ensure_criteria_baseline()  # mimics planning's own baseline (task 008)
+    handler = _steps(_work_noop_iteration, _work_noop_iteration,
+                     _signal_iteration, _work_noop_iteration)
+
+    async def _dispatch(prompt, transcript, **kw):
+        return handler(sup, prompt)
+
+    sup.runner.run = _dispatch  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_worker())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
     faults = [ev.get("faultClass") for ev in _events(root)
              if ev.get("type") == "iteration.end" and ev.get("phase") == "worker"]
     # Exactly 4 worker iterations ran before the guard fired -- if the signal

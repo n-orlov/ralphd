@@ -78,8 +78,18 @@ def test_a_repeated_blocker_signature_ends_the_run_without_a_third_approach(
     assert sum(1 for m in metas if m["phase"] == "planning") == 2
 
 
-def test_a_distinct_blocker_signature_keeps_the_remaining_approaches(
+def test_a_distinct_blocker_signature_pauses_on_the_last_approach(
         engine_factory):
+    """The mismatched signature between approach 1 and approach 2 never
+    short-circuits the replan, so all three approaches get spent -- but
+    approach 3 IS the last approach, and its own stagnation (matching
+    approach 2's own wall) is task 012's own scenario (requirement B.3):
+    it pauses and escalates instead of ending the run `failed` on
+    paperwork, exactly like `tests/test_stagnation_last_approach_pause_
+    task012.py` proves in-process. This module's OWN concern -- the
+    blocker-signature guard on the `replan` transition -- stays proven by
+    the fact that a real THIRD approach ran at all (never short-circuited
+    the way the sibling test above is)."""
     e = engine_factory(
         job={"on_complete": "exit", "max_approaches": 3},
         stub_env={"STUB_WORKER_STALLS": "1",
@@ -87,20 +97,19 @@ def test_a_distinct_blocker_signature_keeps_the_remaining_approaches(
                       "wall A entirely unrelated to wall B,"
                       "wall B entirely unrelated to wall A,"
                       "wall B entirely unrelated to wall A"})
-    assert e.proc.wait(timeout=90) == 1
-    status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    status = e.wait_state(("paused",), timeout=90)
+    assert status["pauseReason"] == "stagnation"
     # All three approaches were spent -- the mismatched signature between
     # approach 1 and approach 2 never short-circuited the replan, and
-    # approach 3 (matching approach 2's own wall) ran to the ordinary
-    # budget_or_approach_exhausted ending instead.
+    # approach 3 (matching approach 2's own wall) is the one that pauses.
     assert status["approach"] == 3
     signatures = status.get("blockerSignatures") or {}
     assert signatures.get("1") != signatures.get("2")
     assert signatures.get("2") == signatures.get("3")
+    # Only approaches 1 and 2 were archived -- approach 3 is the one
+    # parked on the pause, never archived (task 012, requirement B.3).
     approach_dirs = sorted((e.run_dir / "approaches").iterdir())
-    assert [d.name for d in approach_dirs] == ["01", "02", "03"]
+    assert [d.name for d in approach_dirs] == ["01", "02"]
     iters = sorted((e.run_dir / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
     assert sum(1 for m in metas if m["phase"] == "planning") == 3

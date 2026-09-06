@@ -144,6 +144,31 @@ def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
     return sup, asyncio.run(sup._run_job_core())
 
 
+async def _drive_until_paused(sup: LoopSupervisor) -> None:
+    """Task 012 (requirement B.3, #153): a `_run_job_core()` that hits the
+    stagnation guard on the LAST approach now pauses and escalates instead
+    of ending the run `failed` -- and stays parked at `_gate()` forever
+    without an operator's `resume()`, which none of these scripted-runner
+    tests ever send. Starts `_run_job_core()` as a background task, polls
+    `status.json` for `state == "paused"`, then cancels the still-pending
+    task so the test's own event loop can close cleanly."""
+    task = asyncio.ensure_future(sup._run_job_core())
+    for _ in range(500):
+        if sup.run.read_status().get("state") == "paused":
+            break
+        if task.done():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        task.cancel()
+        raise AssertionError("run never reached `paused`")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 def _events(root: Path) -> list[dict]:
     p = root / "events.jsonl"
     if not p.exists():
@@ -226,8 +251,9 @@ def test_a_doomed_subset_with_actionable_work_left_behaves_exactly_as_today(
     task 003 is a doomed SUBSET (blocked on failed task 002). This must
     behave byte-for-byte like the pre-existing stagnation path: the fault
     never fires, the worker hat is actually called (three times, the
-    ordinary stagnation count), and the run fails through
-    `stagnation_exhausted`, not through the new guard."""
+    ordinary stagnation count), and the run pauses through the ordinary
+    last-approach stagnation guard (task 012, requirement B.3), not
+    through the new doomed-plan guard."""
     root = tmp_path / "run"
     tasks = [
         {"id": TASK_1, "status": "pending", "title": "keep going"},
@@ -236,17 +262,23 @@ def test_a_doomed_subset_with_actionable_work_left_behaves_exactly_as_today(
          "dependsOn": [TASK_2]},
     ]
 
-    sup, state = _run_resumed(root, {
+    sup = _supervisor(root, {
         "worker": [_no_progress],
         "review": [_review_rejects],
-    }, tasks)
+    })
+    RunDir(root=root).update_status(state="starting")
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
+    sup.iterations_used = 1
+    asyncio.run(_drive_until_paused(sup))
 
-    assert state == "failed", sup.run.read_status()
+    status = sup.run.read_status()
+    assert status.get("state") == "paused", status
+    assert status.get("pauseReason") == "stagnation"
     assert sup.runner.calls["worker"] == 3        # type: ignore[attr-defined]
     assert not _fault_events(root), \
         "a doomed SUBSET with actionable work left must never raise the fault"
     assert "review" not in _phases_recorded(root), \
-        "stagnation_exhausted routes to replan, never to review"
+        "stagnation on the last approach pauses, it never routes to review"
 
     doc = sup.run.read_tasks()
     by_id = {t["id"]: t for t in doc["tasks"]}
