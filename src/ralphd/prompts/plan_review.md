@@ -65,6 +65,19 @@ judge? Look specifically for:
    code sha this task lands" is fine — object only when a clause actually
    matches one of the six shapes above, naming the clause and a
    satisfiable alternative.
+7. **Command-form criteria (#154).** `plan_ingestion.lint_proposal()`
+   already refuses a `successCriteria` clause that pins the literal text
+   of a shell command, a wrapper, a polling cadence or a "nothing else"
+   clause, and one that both pins a launch form and demands the same
+   process's captured status — the `deck-phase3k` task 205 shape, where
+   the worker measured 10/10 passed three times and verify rejected every
+   attempt on the launch form alone, never the measurement. Refuse the
+   same shape here if it slips past the lint: a criterion names the
+   observable, never the literal shell line, its wrapper, its polling
+   cadence or a "nothing else" clause — if a result must be captured, the
+   criterion says what file holds it and lets the worker choose the
+   wrapper, since a bare backgrounded launch cannot hand back its own
+   exit status without one.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

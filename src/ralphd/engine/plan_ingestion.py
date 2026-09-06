@@ -983,6 +983,179 @@ def _clause_count_overrun(criteria: str) -> tuple[int, str] | None:
     return len(clauses), clauses[_MAX_CHECKABLE_CLAUSES]
 
 
+# ---------------------------------------------------------------------------
+# Task 009 (requirement A.5, #154): the plan's EIGHTH lint -- issue #154's
+# own account of `deck-phase3k` (0.18.0) approach 2's task 205 ("Run the
+# ten-run stability gate at the new final code sha"): the worker measured
+# 10/10 passed, exit 0 three times and verify rejected all three, never on
+# the measurement, only on the launch form -- attempt 1 wrapped the launch
+# in `bash -c '... ; echo $? > log.exitstatus'` instead of the criterion's
+# own literal `nohup timeout 7200 ci/stability.sh 10 > log 2>&1 &`; attempt
+# 3 added a `sleep 3; ps -p` liveness check the criterion never asked for.
+# Issue #154's own text calls the criterion itself "self-contradictory (a
+# bare backgrounded `nohup … &` cannot hand back its exit status without a
+# wrapper, yet the criterion demands both the literal line and the
+# captured status), which is a plan-time lint gap too". This wave's PRD
+# (`docs/prds/v0.19-a-note-is-not-a-rejection.md`, "What this PRD
+# deliberately does not ask") restates the shape as the must-catch fixture
+# for this lint verbatim -- collapsing that section's own hard line wrap
+# (whitespace-only, no word changes, exactly `test_task_042_fixture_embeds
+# _the_clause_that_survives_in_git_history`'s technique above for v0.8 task
+# 042) leaves the literal quoted text `launched as \`nohup timeout … &\`
+# and polled with \`sleep 120\` and nothing else" *and* "the captured exit
+# status`, which `TASK_205_SUCCESS_CRITERIA` below embeds byte-for-byte;
+# `tests/test_command_form_lint_task009.py` proves that embedding against
+# the tracked PRD file directly, the same discipline task 012/013 already
+# established for a reconstructed fixture whose original source is not
+# reachable from this sandbox. The literal `deck-phase3k` task 205 JSON
+# lives only in that run's own run directory (a different product, not
+# reachable here), so this fixture is -- like `TASK_042_SUCCESS_CRITERIA`
+# -- a reconstruction quoting the PRD's own words, not a recovered
+# original.
+#
+# Four cue shapes, each scoped to ONE clause (`_CLAUSE_SPLIT_RE`), the same
+# #86/#76 discipline every lint above follows:
+#   (a) the literal text of a shell command ("launched as `...`", "the
+#       literal `...`", "run as `...`", "invoked as `...`");
+#   (b) a wrapper pinned by name ("wrapped in `...`");
+#   (c) a polling cadence ("polled with `...`", "polling cadence", "polled
+#       every N seconds/minutes");
+#   (d) a "nothing else" exclusivity clause.
+# A fifth, independent rule (#154's own "self-contradictory" diagnosis)
+# refuses a clause that names a launch form (any of the cues above, or the
+# bare word "launched as"/"nohup"/"backgrounded") AND ALSO demands the
+# same process's captured status in that same clause -- the combination is
+# what makes task 205's own criterion unsatisfiable by a bare backgrounded
+# command, independent of whether it also happens to use one of the four
+# literal-text cues above.
+
+_LAUNCH_FORM_LITERAL_RE = re.compile(
+    r"\blaunched\s+as\s+`[^`\n]{1,160}`"
+    r"|\bthe\s+literal\s+`[^`\n]{1,160}`"
+    r"|\brun\s+as\s+`[^`\n]{1,160}`"
+    r"|\binvoked\s+as\s+`[^`\n]{1,160}`",
+    re.IGNORECASE,
+)
+
+_LAUNCH_WRAPPER_CLAUSE_RE = re.compile(
+    r"\bwrapp?ed\s+in\s+`[^`\n]{1,80}`"
+    r"|\bwrapped\s+(?:a\s+)?launch\s+in\b",
+    re.IGNORECASE,
+)
+
+_POLLING_CADENCE_CLAUSE_RE = re.compile(
+    r"\bpolled\s+with\s+`[^`\n]{1,40}`"
+    r"|\bpolling\s+cadence\b"
+    r"|\bpolled\s+every\s+\d+\s*(?:s|seconds|m|minutes)?\b",
+    re.IGNORECASE,
+)
+
+_NOTHING_ELSE_CLAUSE_RE = re.compile(r"\band\s+nothing\s+else\b", re.IGNORECASE)
+
+_COMMAND_FORM_SHAPE_CHECKS: tuple[tuple[re.Pattern, str], ...] = (
+    (
+        _LAUNCH_FORM_LITERAL_RE,
+        "pins the literal text of a shell command -- name the observable "
+        "the command must produce instead (a file, an exit-status file, a "
+        "tally line, a test node passing) and let the worker choose the "
+        "launch form",
+    ),
+    (
+        _LAUNCH_WRAPPER_CLAUSE_RE,
+        "pins the literal wrapper a launch is required to use -- name the "
+        "observable the wrapped process must produce instead and let the "
+        "worker choose the wrapper",
+    ),
+    (
+        _POLLING_CADENCE_CLAUSE_RE,
+        "pins a polling cadence -- name the observable the polled process "
+        "must eventually produce, never how often or with what command "
+        "the worker checked for it",
+    ),
+    (
+        _NOTHING_ELSE_CLAUSE_RE,
+        "carries a \"nothing else\" exclusivity clause -- name the "
+        "observable the command must produce and drop the exclusivity "
+        "demand, which rules out every wrapper or cadence a worker might "
+        "otherwise choose",
+    ),
+)
+
+
+def _command_form_shape_clause(criteria: str) -> tuple[str, str] | None:
+    """None unless some clause of `criteria` pins the literal text of a
+    shell command, a wrapper, a polling cadence or a "nothing else"
+    clause; otherwise `(clause, satisfiable_alternative_text)` for the
+    FIRST shape (in the order above) that matches the FIRST clause it
+    matches -- must-catch fixture: `TASK_205_SUCCESS_CRITERIA` below;
+    must-pass sibling: "`summary.log.exitstatus` holds the script's exit
+    status" (an observable, no launch form, no cadence, no exclusivity)."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        for pattern, alternative in _COMMAND_FORM_SHAPE_CHECKS:
+            if pattern.search(stripped):
+                return stripped, alternative
+    return None
+
+
+# The combo rule (#154's "self-contradictory" diagnosis): a clause naming a
+# launch form (looser than the four literal-text cues above -- also catches
+# bare "launched as"/"invoked as"/"wrapped in" without a backtick, and the
+# bare word "nohup") AND demanding the same process's captured status.
+_LAUNCH_FORM_CUE_RE = re.compile(
+    r"\blaunched\s+as\b"
+    r"|\binvoked\s+as\b"
+    r"|\brun\s+as\s+`"
+    r"|\bthe\s+literal\s+`"
+    r"|\bwrapp?ed\s+in\b"
+    r"|\bbackgrounded\s+(?:as|via|with)\b"
+    r"|\bnohup\b",
+    re.IGNORECASE,
+)
+
+_CAPTURED_STATUS_CUE_RE = re.compile(
+    r"\bcaptured\s+(?:exit\s+)?status\b"
+    r"|\bcapture(?:s|d)?\s+(?:the\s+)?(?:process'?s?\s+)?(?:exit\s+)?status\b",
+    re.IGNORECASE,
+)
+
+
+def _launch_form_with_captured_status_clause(criteria: str) -> str | None:
+    """None unless some clause both names a launch form and demands that
+    same process's captured status -- the shape `#154` calls
+    "self-contradictory": a bare backgrounded launch cannot hand back its
+    own exit status without a wrapper, so pinning the literal launch form
+    AND the captured status in the same breath cannot both hold. Must-catch
+    fixture: `TASK_205_SUCCESS_CRITERIA`; must-pass sibling: naming the
+    file that holds the result (`summary.log.exitstatus`) never trips this,
+    since it names no launch form at all."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        if _LAUNCH_FORM_CUE_RE.search(stripped) and _CAPTURED_STATUS_CUE_RE.search(stripped):
+            return stripped
+    return None
+
+
+# Task 009's own must-catch fixture, quoting `docs/prds/v0.19-a-note-is-
+# not-a-rejection.md`'s "What this PRD deliberately does not ask" section
+# verbatim (after collapsing that section's own whitespace-only hard line
+# wrap -- see the block comment above for the full account). The literal
+# `deck-phase3k` task 205 JSON is not reachable from this sandbox (issue
+# #154's own text: its run directory "belong[s] to a different product");
+# this is therefore a reconstruction quoting the PRD's own words, exactly
+# like `TASK_042_SUCCESS_CRITERIA` above is a reconstruction quoting
+# `docs/prds/README.md`'s historical words -- not a recovered original.
+TASK_205_SUCCESS_CRITERIA = (
+    'The ten-run stability gate is launched as `nohup timeout … &` and '
+    'polled with `sleep 120` and nothing else, and the captured exit '
+    "status is what determines pass/fail."
+)
+
+
 def lint_proposal(payload: dict) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
@@ -996,7 +1169,11 @@ def lint_proposal(payload: dict) -> list[str]:
     requirement E, #143): the six structurally-unsatisfiable shapes --
     later/final/last commit references, predeclared event states, a record
     citing the commit that writes it, an empty git range, an "exactly
-    once" commit count, and a notification/HTTP-status clause -- see the
+    once" commit count, and a notification/HTTP-status clause -- and the
+    EIGHTH (task 009, requirement A.5, #154): a command-form clause (the
+    literal text of a shell command, a wrapper, a polling cadence, a
+    "nothing else" clause) or a launch form paired with a demand for the
+    same process's captured status -- see the
     block comments immediately above."""
     errors: list[str] = []
     tasks = payload.get("tasks", [])
@@ -1110,6 +1287,26 @@ def lint_proposal(payload: dict) -> list[str]:
                 f"task {tid!r}: successCriteria is structurally "
                 f"unsatisfiable ({offending_clause!r}) -- this clause "
                 f"{alternative}"
+            )
+
+        command_form_match = _command_form_shape_clause(criteria)
+        if command_form_match is not None:
+            offending_clause, alternative = command_form_match
+            errors.append(
+                f"task {tid!r}: successCriteria pins a command form "
+                f"({offending_clause!r}) -- this clause {alternative}"
+            )
+
+        launch_status_clause = _launch_form_with_captured_status_clause(criteria)
+        if launch_status_clause is not None:
+            errors.append(
+                f"task {tid!r}: successCriteria both pins a launch form "
+                f"and demands the same process's captured status "
+                f"({launch_status_clause!r}) -- a bare backgrounded launch "
+                "cannot hand back its own exit status without a wrapper, so "
+                "the two demands cannot both hold; name the file that holds "
+                "the captured result and let the worker choose the launch "
+                "form"
             )
 
     known_ids = set(seen)
