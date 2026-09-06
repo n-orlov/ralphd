@@ -1156,6 +1156,21 @@ HAT_SCHEMAS: dict[str, dict] = {
             "task_id": {"type": "string"},
             "verdict": {"type": "string", "enum": ["verified", "rejected"]},
             "reason": {"type": "string"},
+            # Task 005 (requirement A.2, #154): a `verified` verdict may
+            # carry structured notes instead of (or beside) a plain
+            # `reason` string -- form/wording/provenance/process clauses
+            # task-verify.md now tells the verifier to "verify with a
+            # note" rather than reject over. Each element is expected to
+            # be a `{clause, observed, suggested}` object, but (like
+            # `HAT_SCHEMAS["review"]`'s `petition_adjudications` and
+            # `HAT_SCHEMAS["worker"]`'s `proposed_tasks`) only the outer
+            # TYPE is checked here -- `contracts.py`'s restricted schema
+            # engine has no `items` sub-schema for array elements, by
+            # design. `_verify_task` (engine/loop.py) persists this list
+            # verbatim onto the task record as `verifyNotes`, in the same
+            # write that sets `validated`; task 006 is what turns each
+            # entry into a `debt.json` ledger row.
+            "notes": {"type": "array"},
         },
         "additionalProperties": False,
     },

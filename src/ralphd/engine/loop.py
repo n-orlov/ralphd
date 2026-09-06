@@ -8874,6 +8874,16 @@ class LoopSupervisor:
                 for t in tasks_data.get("tasks", []):
                     if t["id"] == tid:
                         t["status"] = "validated"
+                        # Task 005 (requirement A.2, #154): a verifier's
+                        # optional structured `notes` (`{clause, observed,
+                        # suggested}` objects) ride onto the task record
+                        # as `verifyNotes`, in this SAME write -- never a
+                        # second write, never a sidecar file. Absent or
+                        # non-list `notes` leaves `verifyNotes` unset
+                        # exactly as before this task.
+                        notes = payload.get("notes") if payload else None
+                        if isinstance(notes, list):
+                            t["verifyNotes"] = notes
                         break
                 self.run.write_tasks(tasks_data)
                 self.run.emit("signal", signal="taskVerified", taskId=tid)
