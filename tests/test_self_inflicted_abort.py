@@ -48,6 +48,7 @@ from ralphd.engine.state import (
     record_operator_termination,
     termination_class,
 )
+from tests.conftest import supervisor_factory
 
 __all__ = ["ctl", "unix_sock"]
 
@@ -190,11 +191,7 @@ def test_evidence_arguments_are_scrubbed_of_secrets(tmp_path, monkeypatch):
 # one test per class, at the engine boundary that writes them
 # --------------------------------------------------------------------------
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    from ralphd.engine.state import RunDir
-
-    root.mkdir(parents=True, exist_ok=True)
-    return LoopSupervisor(JobConfig(run_id="unit"), RunDir(root=root), root)
+_supervisor = supervisor_factory(run_id="unit", cfg_defaults=False)
 
 
 def test_an_operator_abort_records_the_operator_class(tmp_path):

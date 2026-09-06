@@ -37,6 +37,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, write_amendment
+from tests.conftest import make_supervisor
 
 AMENDMENT_MARKER = "Operator rulings (task 028, #26)"
 
@@ -61,14 +62,11 @@ def _write_tasks(run: RunDir) -> None:
     ]})
 
 
-def _supervisor(root: Path, run_id: str, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=root)
-    kw = dict(iterations=8, max_approaches=3, vigilant=False,
-             on_complete="exit", infra_retry_backoff_s=[0.0],
-             infra_retry_backoff_max_s=0.0, infra_outage_budget_s=1000.0)
-    kw.update(cfg_kw)
-    cfg = JobConfig(run_id=run_id, **kw)
-    return LoopSupervisor(cfg, run, root / "ws")
+_supervisor = lambda root, run_id, **cfg: make_supervisor(
+    root, **{"run_id": run_id, "workspace": "ws", "iterations": 8, "max_approaches": 3,
+    "vigilant": False, "on_complete": "exit", "infra_retry_backoff_s": [0.0],
+    "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
+    "no_backoff": False, "real_sleep": True, **cfg})
 
 
 def _pause_via_incurable_rejection(root: Path) -> LoopSupervisor:

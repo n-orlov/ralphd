@@ -60,6 +60,7 @@ from test_failed_task_vocabulary import (
     _write_plan,
     _write_proposal,
 )
+from tests.conftest import make_supervisor
 
 __all__ = []
 
@@ -81,22 +82,12 @@ def _init_git_workspace(workspace: Path) -> None:
     _git(workspace, "commit", "-q", "-m", "seed")
 
 
-def _supervisor(root: Path, workspace: Path, handlers: dict,
-                **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    kw = {"iterations": 20, "max_approaches": 1, "vigilant": True,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="v019-task010", **kw),
-                         RunDir(root=root), workspace)
-    sup.runner = _ScriptedAgent(sup, handlers)  # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff  # type: ignore[method-assign]
-    return sup
+_supervisor = lambda root, workspace, handlers, **cfg: make_supervisor(
+    root, **{"run_id": "v019-task010", "workspace": workspace, "iterations": 20,
+    "max_approaches": 1, "vigilant": True, "on_complete": "exit",
+    "infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
+    "infra_outage_budget_s": 1000.0, "runner_factory": lambda sup: _ScriptedAgent(sup,
+    handlers), **cfg})
 
 
 def _run(root: Path, workspace: Path, handlers: dict, **cfg_kw):

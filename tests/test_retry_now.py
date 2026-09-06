@@ -24,19 +24,16 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 # Long enough that a test finishing quickly can only mean the wait was woken.
 LONG_BACKOFF = 30.0
 
 
-def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    kw = {"infra_retry_backoff_s": [LONG_BACKOFF, LONG_BACKOFF + 10.0],
-          "infra_retry_backoff_max_s": 300.0,
-          "infra_outage_budget_s": 1000.0, **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="unit", **kw), run, tmp_path)
-    run.update_status(state="running", health="ok", infraWait=None)
-    return sup
+_supervisor = supervisor_factory(run_id="unit", status={"state": "running", "health": "ok",
+                                 "infraWait": None}, infra_retry_backoff_s=[LONG_BACKOFF,
+                                 LONG_BACKOFF + 10.0], infra_retry_backoff_max_s=300.0,
+                                 infra_outage_budget_s=1000.0, no_backoff=False, real_sleep=True)
 
 
 def _feed(sup: LoopSupervisor, results: list[IterationResult]) -> list[str]:

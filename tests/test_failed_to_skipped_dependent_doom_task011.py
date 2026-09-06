@@ -49,6 +49,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import make_supervisor
 
 TASK_FAILED = "010"
 TASK_DEPENDENT = "011"
@@ -109,24 +110,12 @@ class _SequencedRunner:
         return r
 
 
-def _supervisor(tmp_path, texts, vigilant: bool):
-    root = tmp_path / "run"
-    root.mkdir(parents=True)
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": _tasks()})
-    cfg = JobConfig(run_id=f"task011-escape-{vigilant}", iterations=1,
-                    max_approaches=1, vigilant=vigilant, on_complete="exit",
-                    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
-                    infra_outage_budget_s=0.0)
-    sup = LoopSupervisor(cfg, run, root)
-    sup.runner = _SequencedRunner(texts)  # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff  # type: ignore[method-assign]
-    return sup
+_supervisor = lambda tmp_path, texts, vigilant, **cfg: make_supervisor(
+    tmp_path, **{"run_id": f'task011-escape-{vigilant}', "run_root": "run", "workspace": "run",
+    "status": {"state": "running"}, "iterations": 1, "max_approaches": 1,
+    "vigilant": vigilant, "on_complete": "exit", "infra_retry_backoff_s": [0.0],
+    "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 0.0, "tasks": _tasks(),
+    "runner_factory": lambda sup: _SequencedRunner(texts), **cfg})
 
 
 # ---------------------------------------------------------------------------

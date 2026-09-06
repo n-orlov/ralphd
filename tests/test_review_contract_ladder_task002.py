@@ -41,6 +41,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_with_runner
 
 
 def _ok(text: str) -> IterationResult:
@@ -73,20 +74,12 @@ class _SequencedRunner:
         return self.results[idx]
 
 
-def _supervisor(tmp_path: Path, results, **cfg_kw) -> LoopSupervisor:
-    root = tmp_path / "run"
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "prd.md").write_text("# test PRD\n\nDo the thing.\n")
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    kw = {"max_approaches": 3, "vigilant": True, "on_complete": "exit",
-          "infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
-          "infra_outage_budget_s": 0.0, **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="task002-review-ladder", **kw),
-                          run, root)
-    sup.runner = _SequencedRunner(results)      # type: ignore[assignment]
-    sup._approach = 1
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, results: _SequencedRunner(results),
+    run_id="task002-review-ladder", run_root="run", workspace="run",
+    prd="# test PRD\n\nDo the thing.\n", status={"state": "running"}, approach=1,
+    max_approaches=3, vigilant=True, on_complete="exit", infra_retry_backoff_s=[0.0],
+    infra_retry_backoff_max_s=0.0, infra_outage_budget_s=0.0)
 
 
 # -- 1. a prose final line is repaired, no archive/composite PRD -----------

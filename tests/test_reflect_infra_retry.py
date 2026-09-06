@@ -38,6 +38,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 INFRA_ERROR = "Connection error."
 JOB_REASON = ("infra fault: planning iteration failed throughout a 300s infra "
@@ -74,12 +75,9 @@ def _ok_result() -> IterationResult:
     return r
 
 
-def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    defaults = {"infra_retry_backoff_s": [0.5], "infra_retry_backoff_max_s": 0.5,
-                "infra_outage_budget_s": 10.0}
-    cfg = JobConfig(run_id="unit", reflect=True, **{**defaults, **cfg_kw})
-    return LoopSupervisor(cfg, run, tmp_path)
+_supervisor = supervisor_factory(run_id="unit", infra_retry_backoff_s=[0.5],
+                                 infra_retry_backoff_max_s=0.5, infra_outage_budget_s=10.0,
+                                 reflect=True)
 
 
 def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):
