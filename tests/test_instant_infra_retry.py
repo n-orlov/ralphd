@@ -157,10 +157,18 @@ async def test_digits_only_differences_still_count_as_the_same_signature(
         tmp_path, monkeypatch):
     # The same broken credential reported with a fresh request id / port each
     # time is one signature -- digits are normalised away.
+    #
+    # Task 017 (requirement D, #151): this now deliberately uses a
+    # CREDENTIAL-shaped error text (no recognized INFRA_SIGNATURES match),
+    # not `ECONNREFUSED` (which used to sit here and used to abort too --
+    # see `test_a_genuine_infra_signature_streak_of_five_does_not_trip_the_
+    # breaker` below for why a genuine infra signature no longer does). A
+    # credential-shaped failure has no infra signature at all, so it still
+    # counts towards the carve-out and still trips it at the threshold.
     sup = _supervisor(tmp_path)
-    seq = [_instant_infra("connect ECONNREFUSED 127.0.0.1:4000"),
-           _instant_infra("connect ECONNREFUSED 127.0.0.1:4001"),
-           _instant_infra("connect ECONNREFUSED 127.0.0.1:4002")]
+    seq = [_instant_crash("no LLM credentials configured (session 4000)"),
+           _instant_crash("no LLM credentials configured (session 4001)"),
+           _instant_crash("no LLM credentials configured (session 4002)")]
     calls, _waits, fake_sleep = _stub_attempts(sup, seq)
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
@@ -168,6 +176,33 @@ async def test_digits_only_differences_still_count_as_the_same_signature(
 
     assert len(calls) == 3
     assert sup._abort_reason is not None
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_infra_signature_streak_of_five_does_not_trip_the_breaker(
+        tmp_path, monkeypatch):
+    # Task 017 (requirement D, #151): before this task, an instant infra
+    # fault whose error text matched a KNOWN INFRA_SIGNATURES row (here,
+    # `ECONNREFUSED`) tripped the SAME breaker as a broken credential once
+    # it repeated MAX_CONSECUTIVE_INSTANT_FAILURES (3) times -- ending a
+    # recoverable outage the wall-clock outage budget (1000s here, the
+    # default 4h in production) still had ample time for. Five identical
+    # ECONNREFUSED attempts, then recovery, must never touch the carve-out
+    # at all: `_check_instant_failure` ignores every one of them, leaving
+    # the infra retry wrapper's own backoff/budget ladder to govern them.
+    sup = _supervisor(tmp_path)
+    seq = [_instant_infra()] * 5 + [_ok_result()]
+    calls, waits, fake_sleep = _stub_attempts(sup, seq)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    result = await sup.run_iteration("worker")
+
+    assert result.final_text == "done", "the budget, not the carve-out, governed the outage"
+    assert len(calls) == 6
+    assert len(waits) == 5, "five backoff waits, one per failed attempt"
+    assert sup._abort_reason is None
+    assert sup._instant_failure_streak == 0, \
+        "a genuine infra signature never touches this streak, in either direction"
 
 
 # -- unit: the broken-environment fast-fail survives -----------------------

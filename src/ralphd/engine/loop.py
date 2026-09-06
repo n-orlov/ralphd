@@ -48,7 +48,7 @@ from .config import (
     JobConfig,
     overlay_or_config,
 )
-from .faults import classify_fault
+from .faults import classify_fault, matched_signature
 from .llm import current_env
 from .pricing import resolve_pricing
 from .runner import IterationResult, PiRunner, last_nonblank_line
@@ -1409,7 +1409,16 @@ class LoopSupervisor:
             self.run.emit("infra_retry", phase=phase, attempt=attempt,
                           maxAttempts=retry_max, error=error_desc,
                           noTrafficTimeout=result.no_traffic_timeout,
-                          instantFailure=bool(self._instant_failure_streak),
+                          # Task 017 (requirement D, #151): this reports
+                          # whether the ATTEMPT is instant/zero-work shaped
+                          # (`_instant_failure_signature`), not whether it
+                          # was counted towards the carve-out streak -- a
+                          # genuine infra-signature attempt is exactly that
+                          # shape even though _check_instant_failure now
+                          # ignores it (self._instant_failure_streak stays
+                          # untouched for it).
+                          instantFailure=(
+                              self._instant_failure_signature(result) is not None),
                           backoffS=(None if cap_reached or budget_spent
                                     or broken_env else backoff),
                           waitedS=round(waited, 3), budgetS=budget)
@@ -3311,10 +3320,30 @@ class LoopSupervisor:
         An *operator*-initiated abort keeps its veto in full: if the operator
         stopped this run, reflect must not sit in backoff retrying against
         them -- one attempt, whatever it returns.
+
+        - The **instant-failure streak**: Task 017 (requirement D, #151)
+          closes a third obstacle, of the same shape as the first two --
+          `self._instant_failure_streak`/`self._instant_failure_sig` are
+          this ENGINE's running counters, not this job's, and
+          `_check_instant_failure` memoises its verdict per result object
+          (`self._instant_scored_result`), so a job that just aborted
+          because that streak reached MAX_CONSECUTIVE_INSTANT_FAILURES
+          leaves it sitting AT that threshold when `_run_reflection` starts.
+          Reflect's first attempt, if it fails the exact same instant
+          zero-work way (the broken environment that just ended the job is
+          still broken), would push the inherited streak one past the
+          threshold and re-trip the breaker on that ONE attempt -- never
+          reaching reflect's own bounded ladder at all. Reset to a clean
+          slate here, exactly like the episode clock above, so reflect's
+          carve-out is its own, freshly budgeted attempt count.
         """
         self._infra_episode_attempts = 0
         self._infra_episode_waited_s = 0.0
         self._infra_episode_started_at = None
+        self._instant_failure_streak = 0
+        self._instant_failure_sig = None
+        self._instant_scored_result = None
+        self._instant_scored_tripped = False
         if self._operator_abort_recorded:
             return None, False
         parked, self._abort_reason = self._abort_reason, None
@@ -8450,11 +8479,31 @@ class LoopSupervisor:
         it again at the planning/worker call sites. The verdict is
         therefore memoised per result object: scoring one attempt twice
         would inflate the streak and duplicate its log line.
+
+        Task 017 (requirement D, #151): an attempt whose error text matched
+        a genuine INFRA_SIGNATURES row (a DNS/TCP/TLS/gateway/back-pressure
+        family -- see .faults.matched_signature) is IGNORED here entirely,
+        touching neither the streak nor its signature -- it is governed by
+        the infra outage budget and backoff ladder alone
+        (_run_iteration_with_infra_retry already retries it there). Before
+        this task, three identical instant `ECONNREFUSED` attempts tripped
+        this breaker exactly like three identical broken-credential ones,
+        ending a recoverable outage in seconds instead of letting the budget
+        (hours by default) govern it. An *unclassified* no-traffic failure
+        (still classify_fault()'s own "infra", by its deliberate catch-all --
+        see explain_fault's FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED -- but with
+        no signature match) is NOT exempted: that shape is exactly the
+        missing/broken-credential incident this breaker exists for, so it
+        keeps counting and can still fail fast well inside the outage
+        budget.
         """
         if result is self._instant_scored_result:
             return self._instant_scored_tripped
         self._instant_scored_result = result
         self._instant_scored_tripped = False
+        if (self._classify_result(result) == "infra"
+                and matched_signature(result.error_message or "") is not None):
+            return False
         signature = self._instant_failure_signature(result)
         if signature is None:
             self._instant_failure_streak = 0

@@ -191,6 +191,54 @@ async def test_operator_abort_keeps_its_veto_over_reflect(tmp_path):
     assert sup._abort_reason == "operator asked to stop"
 
 
+def _instant_credential_result(error: str = "no LLM credentials configured") -> IterationResult:
+    """The broken-environment shape (task 010/017): instant, zero-work, no
+    recognized infra signature -- what `_check_instant_failure`'s streak
+    carve-out exists for, as opposed to `_infra_result()` above (SLOW,
+    genuinely infra-shaped, never touches that streak at all)."""
+    r = IterationResult(exit_code=1)
+    r.error_message = error
+    r.duration_s = 0.6
+    return r
+
+
+@pytest.mark.asyncio
+async def test_reflect_gets_its_own_bounded_ladder_not_one_attempt(tmp_path):
+    # Task 017 (requirement D, #151): the job just aborted because the
+    # credential-shaped instant-failure carve-out reached its threshold --
+    # `_instant_failure_streak` sits AT MAX_CONSECUTIVE_INSTANT_FAILURES and
+    # `_instant_failure_sig` still names that same signature. Before this
+    # task, `_begin_reflect_retry_window` reset the episode clock and the
+    # abort reason but never this streak, so reflect's own FIRST attempt --
+    # failing the exact same way, since the credentials are still broken --
+    # inherited it, pushed it one past the threshold, and re-tripped the
+    # breaker on that ONE attempt: reflect's own bounded ladder (its short
+    # outage budget/backoff) never got a chance to run at all. Two identical
+    # credential-shaped attempts then a recovery must now be RETRIED, exactly
+    # like any other infra fault under the ladder.
+    sup = _supervisor(tmp_path)
+    sig_error = "no LLM credentials configured"
+    reason = (f"{LoopSupervisor.MAX_CONSECUTIVE_INSTANT_FAILURES} consecutive "
+              f"iterations had the agent process exit instantly with no "
+              f"observable work ({sig_error})")
+    sup._abort_reason = reason
+    sup._last_fault_class = "infra"
+    sup._last_fault_error = sig_error
+    sup._instant_failure_streak = LoopSupervisor.MAX_CONSECUTIVE_INSTANT_FAILURES
+    sup._instant_failure_sig = sup._instant_failure_signature(
+        _instant_credential_result(sig_error))
+    calls, waits = _stub_attempts(
+        sup, [_instant_credential_result(sig_error),
+              _instant_credential_result(sig_error), _ok_result()])
+
+    await sup._run_reflection()
+
+    assert calls == ["reflect", "reflect", "reflect"], (
+        "reflect got its own fresh, bounded ladder instead of re-tripping "
+        "the job's already-spent streak on its very first attempt")
+    assert sup._abort_reason == reason, "the job's own terminal reason is untouched"
+
+
 @pytest.mark.asyncio
 async def test_a_job_that_ended_cleanly_reflects_immediately(tmp_path):
     sup = _supervisor(tmp_path)

@@ -529,6 +529,20 @@ failure. A worker that runs to completion every iteration but never
 changes `tasks.json` (a genuine stall, not a crash) is unaffected and still
 trips the ordinary 3-iterations-no-progress guard exactly as before.
 
+Task 017 (v0.19 requirement D, #151): `_check_instant_failure` IGNORES an
+attempt whose error text matched a genuine `INFRA_SIGNATURES` row (DNS,
+TCP, TLS, a gateway 5xx, back-pressure, …) entirely — it touches neither
+the streak nor its signature, leaving that attempt to the infra outage
+budget and backoff ladder alone (§10.5). Before this task, three identical
+instant `ECONNREFUSED` attempts tripped this same counter exactly like
+three identical broken-credential ones, ending a recoverable outage in
+seconds instead of letting the (hours-long, by default) outage budget
+govern it. An *unclassified* no-traffic failure — still `classify_fault()`'s
+`"infra"` by its own deliberate catch-all, but with no signature match — is
+NOT exempted: that shape is exactly the missing/broken-credential incident
+this counter exists for, so it still counts and can still fail fast well
+inside the outage budget.
+
 ### Infra-fault fail-fast + retry with backoff (task 001a)
 
 > Historical design note for the *first cut* of this machinery. The shipped
@@ -2484,20 +2498,31 @@ neither touches steering.
 Retrying an infra fault for hours is right for an outage and catastrophic for
 a *misconfiguration*: a run with no LLM credentials would sit in backoff for
 4 hours instead of telling the operator in seconds. Both shapes classify
-`"infra"`, so the wrapper distinguishes them by *shape over time*, not by
-text (task 010, #5):
+`"infra"`, so the wrapper used to distinguish them by *shape over time*, not
+by text (task 010, #5):
 
 - A transient fault **varies and takes time** — a gateway 502 arrives after
   a connect, a DNS glitch resolves itself, the error text moves around.
 - A broken environment **fails identically in 0.6s, every time**.
 
-So an instant (sub-`INSTANT_FAILURE_MAX_DURATION_S` = 5s), zero-work failure
-*is* retried like any other infra fault, while every such attempt is also
-scored by `_check_instant_failure()` against
-`_instant_failure_signature()` — exit code plus error text with digits
-normalised away (timestamps, ports, request ids). Once
-`MAX_CONSECUTIVE_INSTANT_FAILURES` = 3 attempts have failed instantly, with
-no traffic and the **same** signature, the wrapper stops with §2's
+Task 017 (v0.19 requirement D, #151) sharpened this: shape-over-time alone
+still let a *genuinely* infra-shaped outage (an error text matching a known
+`INFRA_SIGNATURES` row — DNS, TCP, TLS, a gateway 5xx, back-pressure …)
+repeat identically for a few attempts in a row and get mistaken for the
+broken-credential shape, ending a recoverable outage in seconds instead of
+letting the outage budget govern it. So an instant
+(sub-`INSTANT_FAILURE_MAX_DURATION_S` = 5s), zero-work failure *is* retried
+like any other infra fault, and it is ALSO scored by
+`_check_instant_failure()` against `_instant_failure_signature()` — exit
+code plus error text with digits normalised away (timestamps, ports, request
+ids) — UNLESS its error text matches a genuine `INFRA_SIGNATURES` row, in
+which case `_check_instant_failure()` ignores it outright (touches neither
+the streak nor its signature) and the infra outage budget/backoff ladder is
+left to govern it alone. An *unclassified* no-traffic failure (still
+`"infra"` by `classify_fault()`'s own catch-all, but with no signature
+match — the missing/broken-credential shape) keeps counting: once
+`MAX_CONSECUTIVE_INSTANT_FAILURES` = 3 such attempts have failed instantly,
+with no traffic and the **same** signature, the wrapper stops with §2's
 broken-environment diagnosis ("… likely missing or broken LLM credentials,
 or an agent-startup fault …") instead of waiting out the outage budget.
 "No work" means no assistant text and no *tokens*: pi zero-fills a usage
@@ -2506,7 +2531,18 @@ non-empty while nothing was ever billed. An instant failure that **did**
 reach the model (a 0.3s Bedrock 502 with tokens billed) is handed straight
 back to the phase's own bounded error retry, and any iteration that reaches
 the model resets the streak — so the fail-fast path can only fire on a run
-of genuinely identical, work-free failures.
+of genuinely identical, work-free, *unclassified* failures.
+
+`reflect` (§10.2) runs this same wrapper over its own short outage budget
+(`REFLECT_OUTAGE_BUDGET_S`) after the job has already ended — possibly
+because this very carve-out just tripped. `_begin_reflect_retry_window()`
+resets `_instant_failure_streak`/`_instant_failure_sig` (task 017) exactly
+as it already reset the episode clock and parked the abort reason: without
+that reset, a job that had just aborted at the threshold left the counter
+sitting AT it, so reflect's own first attempt — failing the same way, since
+the underlying fault is still there — pushed it one past the threshold and
+re-tripped the breaker on that ONE attempt, never reaching reflect's own
+bounded ladder at all.
 
 ## 11. Test environments that model a real developer host (v0.12, #84)
 
