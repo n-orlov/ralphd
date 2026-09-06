@@ -77,7 +77,13 @@ judge? Look specifically for:
    cadence or a "nothing else" clause — if a result must be captured, the
    criterion says what file holds it and lets the worker choose the
    wrapper, since a bare backgrounded launch cannot hand back its own
-   exit status without one.
+   exit status without one. The ban is on the SHAPE, not on one phrasing:
+   "execute `…` exactly", "run `…` verbatim", "the launch line is `…`",
+   "wrapped with/using `…`", "poll every 120 seconds" and "checked every
+   30 seconds" are the same defect as task 205's own wording, and a
+   criterion whose launch form and captured-status demand sit in two
+   different sentences (exactly how task 205 splits them) is still that
+   defect.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

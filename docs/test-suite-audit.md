@@ -223,3 +223,4 @@ is a blocking finding under the PRD's rubric.
 
 | deleted node | surviving cover | landed in |
 |---|---|---|
+| `tests/test_command_form_lint_task009.py::test_task_205_fixture_embeds_the_clause_the_prd_names_as_must_catch` | `tests/test_command_form_lint_task009.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` (the fixture is now checked by direct equality against the tracked `deck-phase3k` task 205 record, `tests/data/deck-phase3k-task-205.json`, and still checks the PRD's abbreviated quote as an abbreviation of it) | task 009, requirement A.5 |

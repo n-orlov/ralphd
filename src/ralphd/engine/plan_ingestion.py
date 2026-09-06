@@ -997,56 +997,92 @@ def _clause_count_overrun(criteria: str) -> tuple[int, str] | None:
 # wrapper, yet the criterion demands both the literal line and the
 # captured status), which is a plan-time lint gap too". This wave's PRD
 # (`docs/prds/v0.19-a-note-is-not-a-rejection.md`, "What this PRD
-# deliberately does not ask") restates the shape as the must-catch fixture
-# for this lint verbatim -- collapsing that section's own hard line wrap
-# (whitespace-only, no word changes, exactly `test_task_042_fixture_embeds
-# _the_clause_that_survives_in_git_history`'s technique above for v0.8 task
-# 042) leaves the literal quoted text `launched as \`nohup timeout … &\`
-# and polled with \`sleep 120\` and nothing else" *and* "the captured exit
-# status`, which `TASK_205_SUCCESS_CRITERIA` below embeds byte-for-byte;
-# `tests/test_command_form_lint_task009.py` proves that embedding against
-# the tracked PRD file directly, the same discipline task 012/013 already
-# established for a reconstructed fixture whose original source is not
-# reachable from this sandbox. The literal `deck-phase3k` task 205 JSON
-# lives only in that run's own run directory (a different product, not
-# reachable here), so this fixture is -- like `TASK_042_SUCCESS_CRITERIA`
-# -- a reconstruction quoting the PRD's own words, not a recovered
-# original.
+# deliberately does not ask") names "the deck-3k task 205 criterion" as
+# the VERBATIM must-catch fixture, quoting an abbreviated form of it
+# ("launched as \`nohup timeout … &\` and polled with \`sleep 120\` and
+# nothing else" *and* "the captured exit status"). `TASK_205_SUCCESS_
+# CRITERIA` below is therefore not that abbreviation but the criterion
+# ITSELF, recovered byte-for-byte from the `deck-phase3k` run's own
+# `tasks.json` (task 205, `status: skipped`, `validationAttempts: 3`) and
+# tracked in this repo at `tests/data/deck-phase3k-task-205.json` -- the
+# same fetch-and-track discipline task 013 uses for
+# `tests/data/issue-143-body.md`. Recovery path (the run directories are a
+# host-side sibling of this run's own, not on this container's filesystem):
+#     docker run --rm --user 1000:1000 \
+#       -v <host runs dir>:/hostruns:ro python:3.12-alpine python -c \
+#       'import json;d=json.load(open("/hostruns/deck-phase3k/tasks.json"))
+#        ;print([t for t in d["tasks"] if t["id"]=="205"][0]["successCriteria"])'
+# `tests/test_command_form_lint_task009.py` asserts direct EQUALITY between
+# the constant and that tracked record's `successCriteria`, so the
+# "verbatim" claim is checkable without the host run dir.
 #
 # Four cue shapes, each scoped to ONE clause (`_CLAUSE_SPLIT_RE`), the same
 # #86/#76 discipline every lint above follows:
-#   (a) the literal text of a shell command ("launched as `...`", "the
-#       literal `...`", "run as `...`", "invoked as `...`");
-#   (b) a wrapper pinned by name ("wrapped in `...`");
-#   (c) a polling cadence ("polled with `...`", "polling cadence", "polled
-#       every N seconds/minutes");
+#   (a) the literal text of a shell command -- "launched as `...`", "the
+#       literal `...`", "run as `...`", "invoked as `...`", plus the
+#       exactness forms "execute `...` exactly", "run `...` verbatim",
+#       "exactly as `...`", "the launch line is `...`";
+#   (b) a wrapper pinned by name -- "wrapped in/with/using `...`",
+#       "wrapped in bash -c", "the wrapper is `...`";
+#   (c) a polling cadence -- "polled with `...`", "with a polling
+#       cadence", "the polling cadence is ...", "poll/polled/polling every
+#       N seconds/minutes", "checked every N seconds", "every N seconds
+#       until ..." (the bare words "polling cadence" are deliberately NOT
+#       a cue on their own: a criterion may legitimately talk ABOUT the
+#       ban, as task 009's own criterion in this very wave does);
 #   (d) a "nothing else" exclusivity clause.
 # A fifth, independent rule (#154's own "self-contradictory" diagnosis)
-# refuses a clause that names a launch form (any of the cues above, or the
-# bare word "launched as"/"nohup"/"backgrounded") AND ALSO demands the
-# same process's captured status in that same clause -- the combination is
-# what makes task 205's own criterion unsatisfiable by a bare backgrounded
-# command, independent of whether it also happens to use one of the four
-# literal-text cues above.
+# refuses a criterion that names a launch form (any of the cues above, or
+# the bare word "launched as"/"nohup"/"backgrounded") AND ALSO demands the
+# same process's captured status -- the combination is what makes task
+# 205's own criterion unsatisfiable by a bare backgrounded command,
+# independent of whether it also happens to use one of the four
+# literal-text cues above. This one rule deliberately reaches ACROSS
+# clauses of the same criterion (while still reporting the two offending
+# clauses individually): the real task 205 splits the two halves over two
+# sentences -- the launch form in "`ci/stability.sh 10` is launched as
+# `nohup ... &` ...", the captured status in "summary.log.exitstatus
+# holding the script's own captured exit status" -- and a per-clause-only
+# check would let exactly the must-catch shape through.
+
+_RUN_VERB = r"(?:execute|executes|executed|run|runs|invoke|invokes|invoked|launch|launches|launched|call|calls)"
+_EXACTNESS = (
+    r"(?:exactly|verbatim|literally|as[-\s]written|character[-\s]for"
+    r"[-\s]character|byte[-\s]for[-\s]byte)"
+)
 
 _LAUNCH_FORM_LITERAL_RE = re.compile(
-    r"\blaunched\s+as\s+`[^`\n]{1,160}`"
+    r"\b(?:launched|run|invoked|executed|started)\s+as\s+`[^`\n]{1,160}`"
     r"|\bthe\s+literal\s+`[^`\n]{1,160}`"
-    r"|\brun\s+as\s+`[^`\n]{1,160}`"
-    r"|\binvoked\s+as\s+`[^`\n]{1,160}`",
+    # "execute `...` exactly" / "run `...` verbatim" / "runs `...` as written"
+    rf"|\b{_RUN_VERB}\s+(?:it\s+|the\s+[\w.\-/]+\s+)?`[^`\n]{{1,160}}`[\s,]*{_EXACTNESS}\b"
+    # "exactly as `...`" / "verbatim as `...`"
+    rf"|\b{_EXACTNESS}\s+as\s+`[^`\n]{{1,160}}`"
+    # "the launch line is (exactly) `...`"
+    r"|\b(?:command(?:\s+line)?|invocation|launch\s+line|shell\s+line)\s+"
+    rf"(?:is|must\s+be|reads)\s+(?:{_EXACTNESS}\s+)?`[^`\n]{{1,160}}`",
     re.IGNORECASE,
 )
 
 _LAUNCH_WRAPPER_CLAUSE_RE = re.compile(
-    r"\bwrapp?ed\s+in\s+`[^`\n]{1,80}`"
-    r"|\bwrapped\s+(?:a\s+)?launch\s+in\b",
+    r"\bwrapp?ed\s+(?:in|with|using)\s+`[^`\n]{1,80}`"
+    r"|\bwrapp?ed\s+(?:in|with|using)\s+(?:a\s+|the\s+)?"
+    r"(?:bash|sh|nohup|timeout|setsid|script|subshell|wrapper)\b"
+    r"|\bwrapp?(?:ed|ing|s)?\s+(?:a|the|its)\s+launch\s+(?:in|with|using)\b"
+    r"|\bwrapper\s+(?:is|must\s+be)\s+`[^`\n]{1,80}`",
     re.IGNORECASE,
 )
 
+_CADENCE_UNIT = r"(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes)"
+
 _POLLING_CADENCE_CLAUSE_RE = re.compile(
-    r"\bpolled\s+with\s+`[^`\n]{1,40}`"
-    r"|\bpolling\s+cadence\b"
-    r"|\bpolled\s+every\s+\d+\s*(?:s|seconds|m|minutes)?\b",
+    r"\bpoll(?:s|ed|ing)?\s+(?:it\s+|them\s+)?with\s+`[^`\n]{1,40}`"
+    r"|\bpolling\s+cadence\s+(?:is|of|must|remains)\b"
+    r"|\b(?:at|with|using|on)\s+(?:a|the|its)\s+polling\s+cadence\b"
+    rf"|\bpoll(?:s|ed|ing)?\s+(?:it\s+|them\s+|the\s+[\w.\-/]+\s+)?"
+    rf"every\s+\d+\s*{_CADENCE_UNIT}?\b"
+    rf"|\b(?:check|checks|checked|sleep|sleeps|slept)\s+every\s+\d+\s*{_CADENCE_UNIT}\b"
+    rf"|\bevery\s+\d+\s*{_CADENCE_UNIT}\s+until\b",
     re.IGNORECASE,
 )
 
@@ -1122,37 +1158,62 @@ _CAPTURED_STATUS_CUE_RE = re.compile(
 )
 
 
-def _launch_form_with_captured_status_clause(criteria: str) -> str | None:
-    """None unless some clause both names a launch form and demands that
+def _launch_form_with_captured_status_clause(criteria: str) -> tuple[str, str] | None:
+    """None unless `criteria` both names a launch form and demands that
     same process's captured status -- the shape `#154` calls
     "self-contradictory": a bare backgrounded launch cannot hand back its
     own exit status without a wrapper, so pinning the literal launch form
-    AND the captured status in the same breath cannot both hold. Must-catch
-    fixture: `TASK_205_SUCCESS_CRITERIA`; must-pass sibling: naming the
-    file that holds the result (`summary.log.exitstatus`) never trips this,
-    since it names no launch form at all."""
+    AND the captured status cannot both hold. Returns `(launch_clause,
+    status_clause)`, the two offending clauses (the same string twice when
+    one clause carries both). Unlike every other check in this module this
+    one spans the whole criterion rather than one clause: the must-catch
+    fixture `TASK_205_SUCCESS_CRITERIA` puts the launch form in its first
+    sentence and the captured status in its second, so a per-clause-only
+    rule would miss the very shape it exists for. Must-pass sibling:
+    naming the file that holds the result (`summary.log.exitstatus` holds
+    the script's exit status) never trips this, since it names no launch
+    form at all."""
+    launch_clause: str | None = None
+    status_clause: str | None = None
     for clause in _CLAUSE_SPLIT_RE.split(criteria):
         stripped = clause.strip()
         if not stripped:
             continue
-        if _LAUNCH_FORM_CUE_RE.search(stripped) and _CAPTURED_STATUS_CUE_RE.search(stripped):
-            return stripped
+        has_launch = bool(_LAUNCH_FORM_CUE_RE.search(stripped))
+        has_status = bool(_CAPTURED_STATUS_CUE_RE.search(stripped))
+        if has_launch and has_status:
+            return stripped, stripped
+        if has_launch and launch_clause is None:
+            launch_clause = stripped
+        if has_status and status_clause is None:
+            status_clause = stripped
+    if launch_clause is not None and status_clause is not None:
+        return launch_clause, status_clause
     return None
 
 
-# Task 009's own must-catch fixture, quoting `docs/prds/v0.19-a-note-is-
-# not-a-rejection.md`'s "What this PRD deliberately does not ask" section
-# verbatim (after collapsing that section's own whitespace-only hard line
-# wrap -- see the block comment above for the full account). The literal
-# `deck-phase3k` task 205 JSON is not reachable from this sandbox (issue
-# #154's own text: its run directory "belong[s] to a different product");
-# this is therefore a reconstruction quoting the PRD's own words, exactly
-# like `TASK_042_SUCCESS_CRITERIA` above is a reconstruction quoting
-# `docs/prds/README.md`'s historical words -- not a recovered original.
+# Task 009's own must-catch fixture: the `deck-phase3k` task 205
+# `successCriteria` itself, byte-for-byte, recovered from that run's own
+# `tasks.json` and tracked at `tests/data/deck-phase3k-task-205.json` (see
+# the block comment above for the recovery command and the equality test
+# that keeps the two in step). Not a reconstruction and not the PRD's
+# abbreviation of it.
 TASK_205_SUCCESS_CRITERIA = (
-    'The ten-run stability gate is launched as `nohup timeout … &` and '
-    'polled with `sleep 120` and nothing else, and the captured exit '
-    "status is what determines pass/fail."
+    "From a clean tree whose HEAD is the final code sha or a "
+    "docs-only descendant of it, `ci/stability.sh 10` is launched as "
+    "`nohup timeout 7200 ci/stability.sh 10 > log 2>&1 &` and polled "
+    "with `sleep 120` and nothing else (no other test run in the same "
+    "iteration). docs/reports/phase3k-205-stability10/ holds "
+    "summary.log copied from the script's output dir, "
+    "summary.log.exitstatus holding the script's own captured exit "
+    "status, a poll log, and a README quoting summary.log's final "
+    "tally verbatim. If that tally is below 10/10 it is published "
+    "as-is and never re-run to improve it: the README lists the run "
+    "numbers reported as failing by `grep -n -i fail summary.log` and "
+    "the per-run log of each run number that command prints is copied "
+    "into docs/reports/phase3k-205-stability10/. The README states "
+    "the final code sha from `git log -1 --format=%H -- '*.go' "
+    "'*.feature'`."
 )
 
 
@@ -1297,12 +1358,18 @@ def lint_proposal(payload: dict) -> list[str]:
                 f"({offending_clause!r}) -- this clause {alternative}"
             )
 
-        launch_status_clause = _launch_form_with_captured_status_clause(criteria)
-        if launch_status_clause is not None:
+        launch_status_match = _launch_form_with_captured_status_clause(criteria)
+        if launch_status_match is not None:
+            launch_clause, status_clause = launch_status_match
+            cited = (
+                repr(launch_clause)
+                if launch_clause == status_clause
+                else f"{launch_clause!r} + {status_clause!r}"
+            )
             errors.append(
                 f"task {tid!r}: successCriteria both pins a launch form "
                 f"and demands the same process's captured status "
-                f"({launch_status_clause!r}) -- a bare backgrounded launch "
+                f"({cited}) -- a bare backgrounded launch "
                 "cannot hand back its own exit status without a wrapper, so "
                 "the two demands cannot both hold; name the file that holds "
                 "the captured result and let the worker choose the launch "
