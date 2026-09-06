@@ -796,6 +796,47 @@ competes with the run's iteration budget or a task's own
 `validationAttempts`. See the verdict-values section above for the
 `"adjudicated"` reply value this episode alone may use.
 
+### The adjudication MAC and its run-secrets mount (v0.19 requirement E.4, #150/#152, task 020)
+
+`petition_adjudications_recorded` (`petitions.record_confirmed_adjudications`)
+keys a MAC over the CONFIRMED-adjudication record with a per-run secret that
+lives ONLY in the engine process's own memory for the episode
+(`petitions._AUTHORITIES`, never a file under the agent-owned run dir --
+see that module's `key_store_dir` docstring for why). That is enough to
+catch a worker-phase rewrite within one episode, but a `ralphctl resume`
+starts a fresh engine process with no memory of the old key, so without
+somewhere to persist it, an EARLIER episode's record could no longer
+authenticate after a restart and would read as tampered/empty.
+
+`ralphctl start`/`resume` (`src/ralphd/cli/main.py`, `_bind_run_secrets_mount`)
+bind a mode-0700 host directory, `~/.ralphd/configs/<run>/run-secrets/`
+(`run_secrets_dir(run_id)`, next to that run's `job.yaml`, never inside the
+agent-owned run dir), at the fixed container path
+`petitions.DEFAULT_RUN_SECRETS_DIR` (`/var/lib/ralphd/run-secrets`) on every
+`start` and every `resume` -- created and mode-fixed unconditionally each
+time, so a run dir that predates this task self-heals on its first resume
+rather than needing a manual migration. Inside the container,
+`petitions.key_store_dir()` only actually uses that mount when
+`privsep.separated()` is true (the engine started as root and dropped to the
+agent uid -- the real container's shape, not this repo's own test suite,
+which runs single-uid): there the mount is root-owned 0700 with a root-owned
+0600 key file inside it, neither readable nor replaceable at the agent uid,
+so a later episode's read of an earlier episode's key is trustworthy.
+
+**The documented fallback.** With no uid boundary (or an operator override
+via `$RALPHD_RUN_SECRETS_DIR` naming nowhere readable), `key_store_dir()`
+returns `None` and there is no on-disk key at all -- a later episode cannot
+authenticate an earlier episode's CONFIRMED record and treats it as empty,
+failing closed rather than trusting an unverifiable claim. The fallback
+check for "did this run's adjudications actually happen" in that condition
+is the same `events.jsonl` witness every episode already writes:
+`ADJUDICATIONS_RECORDED_EVENT` (`petition_adjudications_recorded`) carries
+the MAC of the write that produced it, independent of whatever
+`petition-adjudications.json` says on disk right now. `ralphctl status`
+names the mount per run (`runSecretsMount.bound`, and the same fallback
+sentence in the text line when it is `False`); `ralphctl doctor` names the
+mount and its fallback unconditionally, registry-wide.
+
 ### The run's own terminal record: run-record.md/.json (v0.18 requirement B.1, #140, cured by task 035)
 
 Every closing report a worker or reviewer writes is the AGENT's account of

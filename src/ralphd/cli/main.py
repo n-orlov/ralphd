@@ -44,6 +44,7 @@ from ..engine.config import (
     JobConfig,
 )
 from ..engine import findings
+from ..engine import petitions
 from ..engine.tiers import TIERS
 from ..engine.transitions import TASK_STATUSES
 from ..engine.state import (
@@ -165,6 +166,28 @@ def run_root(run_id: str) -> Path:
 
 def config_root(run_id: str) -> Path:
     return registry() / "configs" / run_id
+
+
+# Task 020 (E.4, #150/#152): the host directory `start`/`resume` bind at
+# `petitions.DEFAULT_RUN_SECRETS_DIR` (`/var/lib/ralphd/run-secrets`) inside
+# the job container, so a per-run MAC key an earlier engine EPISODE minted
+# (see `petitions.key_store_dir`) survives a `resume`'s fresh container
+# instead of vanishing with the exited one. Lives under the run's own
+# CONFIG dir (`~/.ralphd/configs/<run>/run-secrets/`), not the run dir --
+# the run dir is agent-owned end to end (see `petitions.key_store_dir`'s
+# docstring), and this directory only has to survive a `resume`, not be
+# read by anything at the agent uid. Created/mode-fixed on both `start` and
+# `resume` (never assumed already 0700) so a run dir predating this task
+# self-heals the first time it resumes.
+def run_secrets_dir(run_id: str) -> Path:
+    return config_root(run_id) / "run-secrets"
+
+
+def _bind_run_secrets_mount(run_id: str, mounts: list) -> None:
+    d = run_secrets_dir(run_id)
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    mounts += ["-v", f"{d}:{petitions.DEFAULT_RUN_SECRETS_DIR}"]
 
 
 def gen_run_id() -> str:
@@ -1767,6 +1790,10 @@ def cmd_start(args):
         "-v", f"{rdir}:/run/ralphd",
         "-v", f"{cdir}:/config:ro",
     ]
+    # Task 020 (E.4): the per-run MAC-key host directory, mode 0700, bound
+    # at the fixed container path `petitions.DEFAULT_RUN_SECRETS_DIR` --
+    # see `_bind_run_secrets_mount`'s docstring above.
+    _bind_run_secrets_mount(run_id, mounts)
     ws: Path | None = None          # single-unnamed workspace (legacy path)
     ws_named: dict[str, Path] = {}  # name -> host path (multi-workspace)
     ws_specs = _parse_workspace_specs(args.workspace or [])
@@ -2391,6 +2418,11 @@ def cmd_resume(args):
     ws_named: dict[str, str] = prev_meta.get("workspaces") or {}
     port = args.port or free_port()
     mounts = ["-v", f"{rdir}:/run/ralphd", "-v", f"{cdir}:/config:ro"]
+    # Task 020 (E.4): reproduce the same bind on every `resume` -- a run dir
+    # created before this task self-heals (the directory is created/mode-
+    # fixed unconditionally by `_bind_run_secrets_mount`, never assumed to
+    # already exist or be 0700).
+    _bind_run_secrets_mount(run_id, mounts)
     if ws:
         mounts += ["-v", f"{ws}:/workspace"]
     for name, path in ws_named.items():
@@ -3015,6 +3047,20 @@ def cmd_status(args):
     status["provisioning"] = _provisioning
     status["provisioningLines"] = format_provisioning_lines(_provisioning)
 
+    # Task 020 (E.4): whether this run's per-run MAC-key host directory is
+    # bound (created by `start`/`resume`, see `run_secrets_dir`) -- known
+    # from the host alone, live or not, unlike `model`/`provisioning`
+    # above. `bound=False` names the exact fallback the run falls back to
+    # (the `events.jsonl` `petition_adjudications_recorded` MAC witness),
+    # so an operator reading `status` sees the condition, not just its
+    # absence.
+    _secrets_dir = run_secrets_dir(args.run_id)
+    status["runSecretsMount"] = {
+        "path": str(_secrets_dir),
+        "target": str(petitions.DEFAULT_RUN_SECRETS_DIR),
+        "bound": _secrets_dir.is_dir(),
+    }
+
     # Task 036 (#20 H4): which image this run is running. A live `GET /status`
     # already answers it (the engine reads the same host.json), so this only
     # fills keys the answer did not carry -- the on-disk path, and a live run
@@ -3196,6 +3242,20 @@ def cmd_status(args):
     lines.extend(_format_termination_lines(status.get("termination")))
     lines.append(f"tasks:     {_summarize_tasks(status.get('tasks') or {})}")
     lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
+    # Task 020 (E.4): name the run-secrets MAC-key mount and, when it is
+    # not bound (a pre-task-020 run dir that has not resumed yet, or a
+    # registry whose `configs/<run>/` was removed out from under a live
+    # run), the documented fallback check in the same line rather than
+    # leaving the operator to infer it from silence.
+    _rsm = status.get("runSecretsMount") or {}
+    if _rsm.get("bound"):
+        lines.append(f"run-secrets: bound ({_rsm.get('path')} -> "
+                     f"{_rsm.get('target')})")
+    else:
+        lines.append(
+            f"run-secrets: not bound ({_rsm.get('path')} -> "
+            f"{_rsm.get('target')}); fallback check: the events.jsonl "
+            "petition_adjudications_recorded MAC witness")
     # Task 020 (#5): a failed post-terminal reflection is otherwise invisible
     # here -- it deliberately leaves state/verdict/reason untouched, so
     # without this line the operator cannot tell "reflect ran and died" from
@@ -6208,6 +6268,17 @@ def cmd_doctor(args):
                    f"{len(auto_resume['waiting'])} in crash-loop backoff, "
                    f"{len(auto_resume['gaveUp'])} given up on, "
                    f"{len(auto_resume['failed'])} failed")
+    # Task 020 (E.4): named unconditionally (registry-wide, not tied to any
+    # one run) so an operator reading `doctor` alone still learns the
+    # mount and its fallback -- `status` (per run) is where whether a
+    # SPECIFIC run's directory is actually bound is answered.
+    report += (
+        f"\n  run-secrets: `start`/`resume` bind a mode-0700 host "
+        f"directory `<config>/<run>/run-secrets/` at "
+        f"`{petitions.DEFAULT_RUN_SECRETS_DIR}` for the petition-"
+        f"adjudication MAC key (E.4); with no key persisted there, the "
+        f"`events.jsonl` `petition_adjudications_recorded` MAC witness is "
+        f"the documented fallback authentication check.")
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
                "imageStaleness": image_verdict, "runImageStaleness": run_images,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
@@ -6215,6 +6286,7 @@ def cmd_doctor(args):
                "defaultLlmProfileError": default_llm_profile_error,
                "hostNetworkApiBindNote": host_network_note,
                "operatorSkill": operator_skill,
+               "runSecretsMountTarget": str(petitions.DEFAULT_RUN_SECRETS_DIR),
                "autoResume": auto_resume}, report)
     sys.exit(0 if ok else 1)
 
