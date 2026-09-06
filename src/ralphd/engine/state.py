@@ -765,6 +765,43 @@ def detect_verdict_gate_peek(
     return flagged
 
 
+def count_tool_calls(run_root: Path, number: int) -> int:
+    """How many `tool_execution_start` events one iteration's OWN transcript
+    recorded (task 010, PRD requirement B.1's witness (d): "the transcript
+    shows tool activity above a threshold documented in LoopSupervisor" --
+    see `LoopSupervisor.STAGNATION_TOOL_ACTIVITY_MIN_CALLS`, the threshold
+    this count is compared against).
+
+    Scans the WHOLE transcript, the same shape `detect_verdict_gate_peek`
+    already uses and for the same reason: a single worker iteration's own
+    transcript is never the many-iteration, many-megabyte size the tail
+    truncation `last_tool_call` relies on exists to bound.
+
+    Absent/unreadable transcript -> 0: like its siblings above, this is a
+    diagnostic input to an ADDITIONAL progress witness, never a reason to
+    raise.
+    """
+    path = iteration_output_path(run_root, number)
+    if not path.is_file():
+        return 0
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return 0
+    count = 0
+    for line in lines:
+        line = line.strip()
+        if not line or "tool_execution_start" not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "tool_execution_start":
+            count += 1
+    return count
+
+
 # Task 036 (#20 H4): the host's record of WHICH IMAGE a run's container was
 # started from -- written into the run dir's `host.json` by `ralphctl
 # start`/`resume`, read from here by everything that reports or reproduces it.

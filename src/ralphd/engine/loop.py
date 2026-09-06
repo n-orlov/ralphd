@@ -4465,18 +4465,23 @@ class LoopSupervisor:
 
     def _workspace_head_sha(self) -> str | None:
         """The workspace's current commit sha, or `None` when `git` is
-        unavailable or the tree is not (yet) a git repository -- used
-        ONLY to stamp `debt.json`'s `resolvedBy` field (task 007, PRD
-        requirement A.3 prompt half, #155) with "the iteration's commit
-        sha" a worker's `debt_resolved` report names. Read AFTER the
-        worker iteration has already finished (its final line is the
-        contract payload itself), so any commit that iteration made has
-        already landed by the time this runs -- this is deliberately not
-        a NEW git integration for the engine generally (there is none
-        elsewhere in this module), only a best-effort label for a debt
-        ledger row: a failure here degrades to `resolved_by="unknown"` in
-        `_apply_worker_debt_resolution` below, never an exception that
-        would abort the iteration over a purely advisory field.
+        unavailable or the tree is not (yet) a git repository. Two call
+        sites (task 007's `debt.json` stamp, and task 010's stagnation
+        witness (b) below): originally used ONLY to stamp `debt.json`'s
+        `resolvedBy` field (task 007, PRD requirement A.3 prompt half,
+        #155) with "the iteration's commit sha" a worker's `debt_resolved`
+        report names -- read AFTER the worker iteration has already
+        finished (its final line is the contract payload itself), so any
+        commit that iteration made has already landed by the time this
+        runs. Task 010 (PRD requirement B.1, #153) added the SECOND use: a
+        before/after pair straddling `_run_worker_iteration` itself, so the
+        stagnation counter can see "the workspace branch gained commits
+        since the iteration started" as a witness of its own. Still not a
+        NEW git integration for the engine generally (there is no THIRD
+        call site); a failure here degrades to `None` in either caller --
+        `resolved_by="unknown"` for the debt stamp, "never a witness" for
+        the stagnation comparison -- never an exception that would abort
+        the iteration over either purely advisory read.
         """
         try:
             result = subprocess.run(
@@ -5345,6 +5350,19 @@ class LoopSupervisor:
         self._advance("replan", "finishing", "budget_or_approach_exhausted")
         return ("tail",)
 
+    # Task 010 (PRD requirement B.1, #153): the threshold witness (d) of
+    # the stagnation counter's four witnesses is measured against --
+    # `state.count_tool_calls(run.root, n)` (a whole-transcript count of
+    # `tool_execution_start` events for iteration `n`) reaching at least
+    # this many calls counts an otherwise tasks.json-quiet, commit-quiet,
+    # contract-quiet iteration as progress anyway (a worker that spent a
+    # real iteration reading/searching/running commands, not one that came
+    # back with nothing). Below this many calls, an iteration with no other
+    # witness still stagnates -- this is a THRESHOLD, deliberately not
+    # "any tool call counts": a single exploratory `read` must not reset
+    # the counter every pass forever and defeat the guard's purpose.
+    STAGNATION_TOOL_ACTIVITY_MIN_CALLS = 3
+
     async def _step_worker(self) -> tuple:
         """The `worker` state, including the vigilant `verify` sub-cycle.
 
@@ -5532,7 +5550,18 @@ class LoopSupervisor:
             # same as any other non-task dispatch.
             worker_tier = (state.task_effective_tier(selected)
                           if isinstance(selected, dict) else tiers.DEFAULT_TIER)
+            # Task 010 (PRD requirement B.1, #153): witness (b) -- the
+            # workspace branch's own HEAD, read immediately before the
+            # iteration is spawned and again immediately after it returns,
+            # so "gained commits since the iteration started" is measured
+            # across exactly this iteration's own work and nothing earlier.
+            # `_workspace_head_sha()` already degrades to `None` for a
+            # non-git workspace/missing `git`; a comparison against `None`
+            # on both sides is simply never a witness (a plain directory
+            # never "gains a commit").
+            head_before = self._workspace_head_sha()
             result = await self._run_worker_iteration(extra, worker_tier)
+            head_after = self._workspace_head_sha()
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)
@@ -5590,6 +5619,20 @@ class LoopSupervisor:
             proposed_split_tasks = (
                 payload.get("proposed_tasks") if isinstance(payload, dict) else None)
             applied_this_iteration = False
+            # Task 010 (PRD requirement B.1, #153): witness (c) -- a
+            # successfully APPLIED petition/unsatisfiable/complete contract
+            # payload counts as progress even when it moved nothing in
+            # `tasks.json` (a petition riding on "no_verdict" is exactly
+            # this shape: `_apply_worker_petition_declaration` files it and
+            # the plan itself is untouched). Set at each `enforcement.ok`
+            # site below and consulted by the ordinary stagnation formula
+            # further down -- never read directly as a `stagnant = 0`
+            # write at the site itself, because a bare local write there
+            # would otherwise be silently overwritten by that formula's own
+            # unconditional reassignment for any verdict shape (like
+            # "no_verdict") that falls all the way through to it, which is
+            # exactly the gap this task closes for the petition case.
+            contract_progress = False
             # Task 005 PART 1 (requirement A.1/A.2, #114, closes task 004's
             # residual gap -- operator steer 001): route EVERY worker
             # payload carrying a `petition` field through the declaration
@@ -5627,6 +5670,7 @@ class LoopSupervisor:
                 )
                 if petition_enforcement.ok:
                     stagnant = 0
+                    contract_progress = True
                     if petition_enforcement.payload is not None:
                         payload = petition_enforcement.payload
                         verdict = payload.get("verdict")
@@ -5786,6 +5830,7 @@ class LoopSupervisor:
                             worker_iter_n, "unsatisfiable", assigned_id)
                         tasks_after = self.run.read_tasks()
                         stagnant = 0
+                        contract_progress = True
                         if any(task_is_actionable(t)
                                for t in tasks_after.get("tasks", [])):
                             self._advance("worker", "worker",
@@ -5849,6 +5894,7 @@ class LoopSupervisor:
                             worker_iter_n, "complete", assigned_id)
                         tasks_after = self.run.read_tasks()
                         stagnant = 0
+                        contract_progress = True
                         applied_this_iteration = True
                     # Re-derived for `complete` (the open question tasks
                     # 005/006's map left unresolved): `applied_this_
@@ -6156,8 +6202,40 @@ class LoopSupervisor:
             # so this is unchanged from before that task -- it never
             # needed to know about fault class itself, only about whether
             # tasks.json moved.
-            stagnant = stagnant + 1 if (before == after
-                                        and not result.interrupted) else 0
+            #
+            # Task 010 (PRD requirement B.1, #153): `before == after`
+            # (witness (a), tasks.json) is no longer the ONLY witness this
+            # formula reads -- three more join it, ORed together, so ANY of
+            # the four resets the counter and only an iteration with NONE
+            # of them (and not merely a quiet `tasks.json`) still stagnates:
+            #   (b) `commits_gained` -- the workspace's own git HEAD moved
+            #       between `head_before`/`head_after` (captured immediately
+            #       around the `_run_worker_iteration` call above); a
+            #       non-git workspace reads `None` on both sides and is
+            #       never a witness by itself.
+            #   (c) `contract_progress` -- set above the instant a
+            #       petition/unsatisfiable/complete payload was actually
+            #       APPLIED this pass (see that flag's own comment):
+            #       necessary because a petition riding on "no_verdict"
+            #       falls all the way through to this exact line, and
+            #       without this witness its own `stagnant = 0` a few dozen
+            #       lines up would be silently overwritten right here.
+            #   (d) `tool_activity` -- this iteration's own transcript
+            #       recorded at least `STAGNATION_TOOL_ACTIVITY_MIN_CALLS`
+            #       `tool_execution_start` events (`state.count_tool_calls`).
+            # "An iteration with commits and no tasks.json change does not
+            # increment the counter" falls straight out of the OR: `before
+            # == after` alone no longer decides anything. `result.
+            # interrupted` is pre-existing (task 117's own predecessor
+            # logic) and orthogonal to all four -- kept exactly as before.
+            commits_gained = (head_before is not None or head_after is not None) \
+                and head_before != head_after
+            tool_activity = (
+                state.count_tool_calls(self.run.root, worker_iter_n)
+                >= self.STAGNATION_TOOL_ACTIVITY_MIN_CALLS)
+            progress = (before != after or commits_gained
+                       or contract_progress or tool_activity)
+            stagnant = 0 if (progress or result.interrupted) else stagnant + 1
             blocked = self._unresolved_failures(tasks_after)
             if stagnant and blocked:
                 # Task 024 (#33): the plan holds no task a worker iteration
