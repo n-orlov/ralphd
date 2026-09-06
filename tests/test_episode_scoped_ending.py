@@ -41,6 +41,8 @@ from ralphd.engine.loop import PREVIOUS_ENDINGS_MAX, LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
+from test_failed_task_vocabulary import _drive_until_paused
+
 REPO = Path(__file__).resolve().parents[1]
 ABORT_REASON = "signal 15 (SIGTERM) reached the engine"
 
@@ -158,6 +160,23 @@ def _episode(root: Path, script: list, **cfg_kw) -> tuple[LoopSupervisor, str]:
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, script, **cfg_kw)
     return sup, asyncio.run(sup._run_job_core())
+
+
+def _episode_until_paused(root: Path, script: list, **cfg_kw) -> LoopSupervisor:
+    """Task 042 (steer 004): same shape as `_episode` above, for a script
+    whose worker never yields a verdict. Since task 012 (`abdc914`) the
+    stagnation guard on the (default) last approach pauses and escalates
+    instead of ending the run `failed`, and then parks at `_gate()` forever
+    waiting for an operator `resume()` that no scripted test here ever
+    sends -- so drive it with the bounded-wait `_drive_until_paused` helper
+    (`tests/test_failed_task_vocabulary.py`) instead of letting
+    `asyncio.run(sup._run_job_core())` block forever, and return the
+    supervisor for the caller to read `status.json` off of directly.
+    """
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(root, script, **cfg_kw)
+    asyncio.run(_drive_until_paused(sup))
+    return sup
 
 
 def _abort_then_resume(root: Path) -> tuple[dict, dict, dict]:
@@ -307,12 +326,21 @@ def test_a_crashed_episode_appends_nothing_and_no_ending_is_recorded_twice(
     # `verdict` it is silently ignored (ordinary no-progress iteration),
     # and absent from `review`'s contract it is an ordinary non-verified
     # miss -- this test only cares about the ending record, not the outcome.
-    sup3, state3 = _episode(root, [lambda sup: _ok("nothing conclusive to report")])
-    assert sup3.run.read_status()["previousEndings"] == \
+    # Since task 012 (`abdc914`) a worker that never reports a verdict
+    # trips the stagnation guard on the (default) last approach into a
+    # PAUSE (escalate) rather than a terminal `succeeded`/`failed`, so this
+    # third episode is driven with `_episode_until_paused` (task 042, steer
+    # 004) instead of letting it run forever -- the ending record this test
+    # actually cares about is written at episode START, before any of that.
+    sup3 = _episode_until_paused(
+        root, [lambda sup: _ok("nothing conclusive to report")])
+    status3 = sup3.run.read_status()
+    assert status3["previousEndings"] == \
         crashed["previousEndings"] == [
             {"endedAt": after_abort["endedAt"], "reason": after_abort["reason"],
              "verdict": after_abort["verdict"]}]
-    assert state3 in ("succeeded", "failed")
+    assert status3["state"] == "paused", status3
+    assert status3["pauseReason"] == "stagnation", status3
 
 
 def test_the_history_is_bounded(tmp_path):

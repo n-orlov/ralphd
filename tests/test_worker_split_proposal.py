@@ -55,6 +55,8 @@ from ralphd.engine.state import (
     tasks_doc_excluding_new_entries,
 )
 
+from test_failed_task_vocabulary import _drive_until_paused
+
 REPO = Path(__file__).resolve().parents[1]
 WORKER_MD = (REPO / "src" / "ralphd" / "prompts" / "worker.md").read_text()
 
@@ -358,6 +360,41 @@ def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
     return sup, asyncio.run(sup._run_job_core())
 
 
+def _run_resumed_until_paused(root: Path, handlers: dict, tasks: list[dict],
+                              **cfg_kw) -> LoopSupervisor:
+    """Task 042 (steer 004): same setup as `_run_resumed` above, but for a
+    worker that never yields a verdict on the (default) LAST approach --
+    since task 012 (`abdc914`) the stagnation guard there pauses and
+    escalates instead of ending the run `failed`, then parks at `_gate()`
+    forever waiting for an operator `resume()` that no scripted test here
+    ever sends. Drives the run with the bounded-wait `_drive_until_paused`
+    helper (`tests/test_failed_task_vocabulary.py`) instead of letting
+    `asyncio.run(sup._run_job_core())` block forever, and returns the
+    supervisor for the caller to read `status.json` off of directly.
+    """
+    RunDir(root=root).update_status(state="starting")
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    kw = {"iterations": 15, "max_approaches": 1, "vigilant": False,
+          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
+          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
+          "worker_split_budget_per_approach": 100,
+          **cfg_kw}
+    sup = LoopSupervisor(JobConfig(run_id="v014-worker-split-run", **kw), run, root)
+    agent = _ScriptedAgent(handlers)
+    agent.sup = sup                      # type: ignore[attr-defined]
+    sup.runner = agent                    # type: ignore[assignment]
+
+    async def no_backoff(seconds):
+        return seconds, False
+
+    sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
+    sup.iterations_used = 1
+    asyncio.run(_drive_until_paused(sup))
+    return sup
+
+
 def _propose_only(n: int):
     def _step(sup, prompt=""):
         payload = {"verdict": "no_verdict",
@@ -375,18 +412,23 @@ def test_a_worker_that_only_ever_proposes_splits_still_fails_the_approach(
         tmp_path):
     """The pin requirement N asks for: proposing a split every iteration,
     and reporting nothing else, must not reset the 3-iteration stagnation
-    guard -- the run still fails, exactly as a genuinely silent hat would
+    guard -- exactly as a genuinely silent hat would not
     (`tests/test_unsatisfiable_criteria.py`'s sibling pin for
-    `unsatisfiable`), even though `tasks.json` visibly grows on every pass."""
+    `unsatisfiable`), even though `tasks.json` visibly grows on every pass.
+    Since task 012 (`abdc914`) the guard on the (default) LAST approach
+    pauses and escalates instead of ending the run `failed` -- asserted
+    here via `_run_resumed_until_paused` (task 042, steer 004)."""
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
-    sup, state = _run_resumed(root, {
+    sup = _run_resumed_until_paused(root, {
         "worker": [_propose_only(1), _propose_only(2), _propose_only(3)],
         "review": [_review_verified],
     }, tasks)
 
-    assert state == "failed", sup.run.read_status()
+    status = sup.run.read_status()
+    assert status["state"] == "paused", status
+    assert status["pauseReason"] == "stagnation", status
     assert sup.runner.calls["worker"] == 3          # type: ignore[attr-defined]
     data = sup.run.read_tasks()
     # The proposals DID land -- this is not a dead field -- they simply

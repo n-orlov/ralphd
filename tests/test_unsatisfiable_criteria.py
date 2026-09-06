@@ -49,6 +49,8 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import VERIFIED, IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
+from test_failed_task_vocabulary import _drive_until_paused
+
 TASK_1 = "001"
 TASK_2 = "002"
 
@@ -150,6 +152,28 @@ def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
     sup.iterations_used = 1
     return sup, asyncio.run(sup._run_job_core())
+
+
+def _run_resumed_until_paused(root: Path, handlers: dict, tasks: list[dict],
+                              **cfg_kw) -> LoopSupervisor:
+    """Task 042 (steer 004): same setup as `_run_resumed` above, but for a
+    scenario whose worker script never yields a verdict on the (default)
+    LAST approach -- since task 012 (`abdc914`) that no longer ends the run
+    `failed`, it pauses and escalates
+    (`_pause_and_escalate_stagnation_last_approach`) and then parks at
+    `_gate()` forever waiting for an operator `resume()` that no scripted
+    test here ever sends. Drives the run with `_drive_until_paused` (the
+    bounded-wait helper `tests/test_failed_task_vocabulary.py` already uses
+    for its own in-process resume coverage) instead of letting
+    `asyncio.run(sup._run_job_core())` block forever, and returns the
+    supervisor for the caller to read `status.json` off of directly.
+    """
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(root, handlers, **cfg_kw)
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
+    sup.iterations_used = 1
+    asyncio.run(_drive_until_paused(sup))
+    return sup
 
 
 def _events(root: Path) -> list[dict]:
@@ -386,16 +410,21 @@ def test_an_unknown_task_id_exhausts_the_ladder_and_still_refuses_the_move(
     `no_verdict_yet` every pass -- three genuinely stuck passes (each its
     own full ladder) still trips the PRE-EXISTING `stagnation_exhausted`
     guard exactly as a silent hat would (this task adds no escape hatch
-    from that), ending the run `"failed"`, never `"aborted"`."""
+    from that). Since task 012 (`abdc914`) the guard on the (default) last
+    approach pauses and escalates rather than ending `failed` -- asserted
+    here via `_run_resumed_until_paused` (task 042, steer 004) -- never
+    `"aborted"`."""
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
-    sup, state = _run_resumed(root, {
+    sup = _run_resumed_until_paused(root, {
         "worker": [lambda s, p: _unsatisfiable("does-not-exist", "nope")],
         "review": [_review_verified],
     }, tasks)
 
-    assert state == "failed", sup.run.read_status()
+    status = sup.run.read_status()
+    assert status["state"] == "paused", status
+    assert status["pauseReason"] == "stagnation", status
     assert sup._abort_reason is None
     assert "contract violation" not in _log_messages(root)
     events = _events(root)
@@ -414,16 +443,21 @@ def test_a_genuinely_silent_hat_still_fails_the_approach_after_three(
         tmp_path):
     """Requirement H's own guardrail against itself: a worker that reports
     NOTHING and changes NOTHING must not be rescued by the new mechanism --
-    it still exhausts the pre-existing stagnation guard exactly as before."""
+    it still trips the pre-existing stagnation guard exactly as before.
+    Since task 012 (`abdc914`) the guard on the (default) last approach
+    pauses and escalates instead of ending the run `failed` -- asserted
+    here via `_run_resumed_until_paused` (task 042, steer 004)."""
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
-    sup, state = _run_resumed(root, {
+    sup = _run_resumed_until_paused(root, {
         "worker": [lambda s, p: _ok("I looked at this and made no progress")],
         "review": [_review_verified],
     }, tasks)
 
-    assert state == "failed", sup.run.read_status()
+    status = sup.run.read_status()
+    assert status["state"] == "paused", status
+    assert status["pauseReason"] == "stagnation", status
     assert sup.runner.calls["worker"] == 3      # type: ignore[attr-defined]
     task = sup.run.read_tasks()["tasks"][0]
     assert task["status"] == "in-progress", \
@@ -435,17 +469,21 @@ def test_the_approach_failure_event_names_the_outstanding_tasks_on_its_payload(
         tmp_path):
     """Requirement H: "The approach-failure event names the outstanding
     tasks and their statuses" -- asserted on the EVENT PAYLOAD (a field a
-    reader can consume directly), not just grepped out of a message string."""
+    reader can consume directly), not just grepped out of a message string.
+    This `log` event is emitted before the last-approach pause/fail branch
+    decides the run's fate, so it fires the same way whether the run then
+    pauses (task 012, `abdc914`) or fails."""
     root = tmp_path / "run"
     tasks = [_task(status="in-progress"),
              _task(id=TASK_2, status="pending", title="another one")]
 
-    sup, state = _run_resumed(root, {
+    sup = _run_resumed_until_paused(root, {
         "worker": [lambda s, p: _ok("stuck, no progress made")],
         "review": [_review_verified],
     }, tasks)
 
-    assert state == "failed"
+    status = sup.run.read_status()
+    assert status["state"] == "paused", status
     failure_events = [
         ev for ev in _events(root)
         if ev.get("type") == "log" and ev.get("level") == "error"
