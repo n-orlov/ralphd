@@ -525,6 +525,25 @@ class JobConfig:
     # see `engine/contract_enforcement.py` for the mechanism itself (not
     # wired into `_run_job_core` yet -- that is task 014's cutover).
     contract_retry_max: int = 2
+    # Task 011 (PRD requirement B.2, #153): an explicit NUMBER -- how many
+    # CONSECUTIVE worker iterations may be spent on the SAME task, each
+    # landing real commits but no completion signal (`verdict: "complete"`
+    # successfully applied), before the engine takes the claim over on the
+    # worker's own behalf: it writes `awaiting-validation` itself, appends a
+    # `notes` entry saying so, and routes to `verify` exactly like an
+    # ordinary worker completion would (`LoopSupervisor._record_task_
+    # absorption_streak`). This is a DIFFERENT counter from `stagnant`
+    # (`LoopSupervisor._step_worker`'s no-progress guard, task 010,
+    # requirement B.1): a task that keeps absorbing iterations with real
+    # commits every pass never trips THAT guard at all (commits are
+    # progress), so without this separate counter it could hold a worker's
+    # attention forever with no verifier ever judging the tree. Effective
+    # only under `vigilant` -- `awaiting-validation`/`verify` do not exist
+    # in the non-vigilant task-status table
+    # (`transitions.TASK_STATUS_TABLE`), so a non-vigilant run has nothing
+    # for this knob to hand off to and the streak is never even recorded.
+    # Overridable with RALPHD_TASK_ABSORPTION_MAX_ITERATIONS.
+    task_absorption_max_iterations: int = 3
     # Task 018 (requirement E, #60 pillar 2): the router's own model and
     # latency budget. `router_model` is one new key through the EXISTING
     # `model_overrides` mechanism (`model_overrides["router"]` still wins
@@ -606,6 +625,8 @@ class JobConfig:
             cfg.price_strategy = normalize_price_strategy(v)
         if v := os.environ.get("RALPHD_CONTRACT_RETRY_MAX"):
             cfg.contract_retry_max = int(v)
+        if v := os.environ.get("RALPHD_TASK_ABSORPTION_MAX_ITERATIONS"):
+            cfg.task_absorption_max_iterations = int(v)
         if v := os.environ.get("RALPHD_ROUTER_MODEL"):
             cfg.router_model = v
         if v := os.environ.get("RALPHD_ROUTER_TIMEOUT_S"):
