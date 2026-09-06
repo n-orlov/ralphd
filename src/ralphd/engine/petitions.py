@@ -1241,15 +1241,50 @@ def _decode_key_material(material: bytes) -> bytes:
         return material
 
 
-def _read_stored_key(run) -> bytes | None:
-    path = _stored_key_path(run)
-    if path is None:
-        return None
+def _read_key_material(path: Path) -> bytes | None:
+    """The stripped bytes of `path`, or None when it cannot be read or is
+    empty. Never raises: an unreadable key file is the fail-closed
+    degrade, not an error."""
     try:
         material = path.read_bytes().strip()
     except OSError:
         return None
-    if not material:
+    return material or None
+
+
+def _read_stored_key(run) -> bytes | None:
+    """This run's persisted key, or None when there is no store, no key in
+    it, or nothing readable there.
+
+    Read at the engine's own effective uid FIRST -- that is the whole read
+    for an operator's `$RALPHD_RUN_SECRETS_DIR` store (which the operator
+    chose to make agent-readable) and for a key file an older,
+    pre-boundary engine build wrote agent-owned. Under the uid boundary,
+    though, the default store's key files are the ones `_persist_key`
+    wrote inside `privsep.root_for_write()`: root-owned mode 0600, which
+    the engine CANNOT open at its effective uid, because that uid is the
+    agent's (`privsep.separate_engine_identity`: real+saved 0, effective
+    agent) and that is exactly the property making the store a secret from
+    every hat process. So the read is retried inside the same momentary
+    raise back to root the WRITE already used -- symmetric with
+    `_persist_key`, and needing no privilege the engine does not already
+    hold (real and saved uid are 0 whenever `privsep.separated()` is
+    True). Without that retry the key persisted by episode N was
+    unreadable by episode N+1 in the ONLY configuration that persists one
+    by default, so the store bought nothing: the later episode read its
+    own run's CONFIRMED record as unauthenticated and fell back to empty
+    (task 020's second rejection reproduced exactly this).
+    """
+    path = _stored_key_path(run)
+    if path is None:
+        return None
+    material = _read_key_material(path)
+    if material is None:
+        from ralphd.engine import privsep
+        if privsep.separated():
+            with privsep.root_for_write():
+                material = _read_key_material(path)
+    if material is None:
         return None
     return _decode_key_material(material)
 

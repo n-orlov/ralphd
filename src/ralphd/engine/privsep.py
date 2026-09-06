@@ -229,6 +229,13 @@ def root_for_write() -> Iterator[bool]:
     degrade, never to skip the write itself: the file still gets written
     either way, just not root-owned when there was never a boundary raising
     it above the agent's own uid in the first place.
+
+    Named for its first caller, but the window is not write-only: v0.19
+    requirement E.4 reads one file through it too
+    (`petitions._read_stored_key`, the per-run MAC key this module's own
+    `write_root_owned_json` shape made root-owned 0600 in the first place --
+    a file the engine's EFFECTIVE uid cannot open either, which is the whole
+    reason the read has to borrow the same raise).
     """
     if not separated():
         yield False

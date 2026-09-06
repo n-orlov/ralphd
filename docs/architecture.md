@@ -823,6 +823,22 @@ which runs single-uid): there the mount is root-owned 0700 with a root-owned
 0600 key file inside it, neither readable nor replaceable at the agent uid,
 so a later episode's read of an earlier episode's key is trustworthy.
 
+**The read is elevated too, symmetrically with the write.** "Not readable at
+the agent uid" includes the ENGINE, whose own effective uid is the agent's:
+a plain `open()` of that root-owned 0600 file fails `EACCES` inside the
+engine as surely as inside a hat process. So `petitions._read_stored_key`
+tries the ordinary read first -- that is the whole read for an operator's
+agent-readable `$RALPHD_RUN_SECRETS_DIR` store, and for a key file an older
+pre-boundary build wrote agent-owned, neither of which takes any elevation
+-- and only when that yields nothing and `privsep.separated()` is true does
+it retry inside `privsep.root_for_write()`, the same momentary raise back to
+root `_persist_key` already used, needing no privilege the engine does not
+already hold (real and saved uid are 0 exactly when `separated()` is true).
+Without that retry the store was write-only in the one configuration that
+populates it by default: episode 2 read episode 1's own CONFIRMED record as
+unauthenticated and fell back to empty. `artifacts/reports/v0.19-e4-privsep-key-read.md`
+records the reproduction under a real root engine, before and after.
+
 **The documented fallback.** With no uid boundary (or an operator override
 via `$RALPHD_RUN_SECRETS_DIR` naming nowhere readable), `key_store_dir()`
 returns `None` and there is no on-disk key at all -- a later episode cannot
