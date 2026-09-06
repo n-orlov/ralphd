@@ -79,10 +79,31 @@ def test_only_older_waves_exist_nothing_is_current(tmp_path):
     assert found == []
 
 
+def test_a_lone_older_waves_file_is_not_the_current_wave(tmp_path):
+    """The direct case: EXACTLY ONE petitions file exists, it belongs to an
+    OLDER wave (`v0.18`), and the contract names `v0.19`. One older file is
+    no more current than three: nothing is surfaced, because a contract
+    that names its own wave has already said which file is current."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.18-petitions.md",
+           "# v0.18 petitions\n" + _section("v0.18's own obligation"))
+
+    found = petitions.open_petitions_in_workspace(ws, CURRENT_CONTRACT)
+
+    assert found == []
+    # and the derivation itself agrees: no on-disk file counts as current,
+    # while the path it WOULD live at is the contract's own wave.
+    default_path, existing = petitions._current_wave_petitions_path(
+        ws, CURRENT_CONTRACT)
+    assert existing is None
+    assert default_path.name == "v0.19-petitions.md"
+
+
 def test_the_single_file_backcompat_fallback_still_applies(tmp_path):
-    """Exactly one petitions file on disk, whatever it is named, is still
-    treated as the current wave's -- the common single-wave-repo shape
-    every pre-existing test in this suite already assumes."""
+    """Exactly one petitions file on disk is still treated as the current
+    wave's when the contract names NO wave at all -- the common
+    single-wave-repo shape every pre-existing test in this suite already
+    assumes, where there is no wave token to disagree with."""
     ws = tmp_path / "ws"
     _write(ws, "run-petitions.md",
            "# run petitions\n" + _section("the lone obligation"))
@@ -225,6 +246,29 @@ def test_exhaustion_reuses_an_existing_current_wave_file(tmp_path):
     # the older wave's file is untouched.
     older = ws / "artifacts" / "reports" / "v0.18-petitions.md"
     assert petitions.parse_petitions(older.read_text()) == []
+
+
+def test_exhaustion_creates_the_current_wave_file_beside_a_lone_older_one(
+        tmp_path):
+    """The direct case for the writer: EXACTLY ONE petitions file exists and
+    it is an OLDER wave's (`v0.18`). The filing lands in a newly created
+    `v0.19-petitions.md`, and v0.18's bytes are unchanged -- the lone-file
+    fallback must not make an older wave the filing target."""
+    ws = tmp_path / "ws"
+    older = _write(ws, "v0.18-petitions.md",
+                   "# v0.18 petitions\n" + _section("v0.18's own obligation"))
+    before = older.read_text()
+
+    errors = petitions.file_exhaustion_petition(ws, _task(), CURRENT_CONTRACT)
+
+    assert errors == []
+    assert older.read_text() == before
+    current = ws / "artifacts" / "reports" / "v0.19-petitions.md"
+    assert current.exists()
+    filed = petitions.parse_petitions(current.read_text())
+    assert len(filed) == 1
+    assert "018" in filed[0]["obligation"]
+    assert filed[0]["evidence"] == "cannot be met"
 
 
 def test_exhaustion_still_refuses_a_duplicate_obligation_from_any_wave(

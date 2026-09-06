@@ -294,16 +294,21 @@ def _current_wave_petitions_path(
 
     1. an EXACT filename match (`<current-wave>-petitions.md`) if one is
        discovered -- the unambiguous case;
-    2. else, when exactly ONE `<wave>-petitions.md` file exists at all,
-       THAT file -- the common single-wave-repo case (and the shape almost
-       every existing fixture in this test suite takes, several of them
-       naming a file that never matches the wave token this derivation
-       would compute from an absent/minimal contract); keeping this
-       fallback is what keeps every one of those byte-for-byte unaffected;
-    3. else (two or more files, none matching the current wave) -- no
-       existing file counts as the current wave's; a repo carrying only
-       OLDER waves' files must never resurrect the newest OLD one as if it
-       were this run's own (the `files[-1]` bug this task fixes).
+    2. else, when the contract names NO wave at all (`_current_wave_name`
+       fell back to `DEFAULT_PETITIONS_WAVE`) and exactly ONE
+       `<wave>-petitions.md` file exists, THAT file -- the
+       wave-less-caller case (the shape almost every pre-existing fixture
+       in this test suite takes: a lone file whose name never matches the
+       token an absent/minimal contract computes), where there is no wave
+       to disagree with and so nothing to misfile ACROSS;
+    3. else -- no existing file counts as the current wave's; a repo
+       carrying only OLDER waves' files must never resurrect an OLD one as
+       if it were this run's own (the `files[-1]` bug this task fixes).
+       This holds for ONE older file exactly as it holds for several: a
+       v0.19 contract beside a lone `v0.18-petitions.md` gets a NEW
+       `v0.19-petitions.md` from `ensure_petitions_file` and reads nothing
+       out of v0.18, because a contract that names its own wave has
+       already said which file is current.
     """
     wave = _current_wave_name(contract_text)
     default_path = workspace / "artifacts" / "reports" / f"{wave}-petitions.md"
@@ -311,7 +316,7 @@ def _current_wave_petitions_path(
     for f in files:
         if f.name == default_path.name:
             return default_path, f
-    if len(files) == 1:
+    if wave == DEFAULT_PETITIONS_WAVE and len(files) == 1:
         return default_path, files[0]
     return default_path, None
 
@@ -336,9 +341,11 @@ def ensure_petitions_file(workspace: Path, contract_text: str = "") -> Path | No
     whenever ANY petitions file existed, which resurrected the newest OLDER
     wave's file as this run's filing target the moment a repo carried more
     than one wave's history. `_current_wave_petitions_path` is the fix --
-    an exact wave-name match, else the lone single-file fallback that keeps
-    every pre-existing single-file caller unaffected, else nothing, so this
-    branch creates a genuinely NEW file for the current wave instead.
+    an exact wave-name match, else (only when the contract names no wave at
+    all) the lone-file fallback that keeps every pre-existing wave-less
+    caller unaffected, else nothing, so this branch creates a genuinely NEW
+    file for the current wave instead -- including when the workspace's ONE
+    existing file belongs to an older wave.
     """
     default_path, existing = _current_wave_petitions_path(workspace, contract_text)
     if existing is not None:
@@ -426,9 +433,11 @@ def open_petitions_in_workspace(
     Scoped to `_current_wave_petitions_path`'s single current-wave file
     (the same derivation `ensure_petitions_file` uses, so a reader and a
     writer agree on "the current wave" by construction). `contract_text`
-    defaults to `""` (no wave named -> `DEFAULT_PETITIONS_WAVE`), matching
-    every pre-existing caller's behaviour whenever the workspace carries at
-    most one petitions file.
+    defaults to `""` (no wave named -> `DEFAULT_PETITIONS_WAVE`), which is
+    also the only case a lone existing file is still accepted as current,
+    so every pre-existing wave-less caller behaves exactly as before while
+    a contract that DOES name a wave never reads an older wave's file --
+    not even when that older file is the only one on disk.
 
     `tasks` (optional, default `None`, backward compatible with every
     pre-existing caller) is the CURRENT run's `tasks.json` tasks list; when
@@ -477,6 +486,44 @@ def format_petition_section(obligation: str, ptype: str, evidence: str) -> str:
     )
 
 
+def filed_petition_for_obligation(workspace: Path, obligation: str) -> dict | None:
+    """The petition already on file (in ANY wave's file) whose obligation
+    normalises to the same key as `obligation`, or None.
+
+    Workspace-wide on purpose, and separate from "which file does a NEW
+    filing land in": a re-filed obligation is a violation no matter which
+    wave first filed it (`docs/petition-format.md`'s one-petition-per-
+    obligation rule), while the write target is the CURRENT wave's file
+    alone (`_current_wave_petitions_path`). Extracted (task 018,
+    requirement E.1) so `file_exhaustion_petition` can ask the duplicate
+    question BEFORE it asks `ensure_petitions_file` to create anything --
+    a refused filing must leave no new current-wave file behind.
+    """
+    key = _normalize_obligation(obligation)
+    for path in discover_petition_files(workspace):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for p in parse_petitions(text):
+            if _normalize_obligation(p["obligation"]) == key:
+                return p
+    return None
+
+
+def duplicate_petition_error(existing: dict) -> str:
+    """The one refusal string both writers return for an obligation that
+    already carries a filed petition -- worded once, here, so the worker's
+    own declaration path and the exhaustion path never drift apart."""
+    return (
+        "petition: an obligation already has a filed "
+        f"petition ({existing['obligation']!r}) -- a duplicate "
+        "declaration for the same obligation is refused, not "
+        "filed (docs/petition-format.md's one-petition-per-"
+        "obligation rule)"
+    )
+
+
 def file_worker_petition(workspace: Path, obligation: str, ptype: str,
                           evidence: str, *,
                           target: Path | None = None) -> list[str]:
@@ -515,22 +562,10 @@ def file_worker_petition(workspace: Path, obligation: str, ptype: str,
     contract re-ask ladder, so a refused declaration reaches the SAME
     worker again rather than disappearing silently.
     """
-    key = _normalize_obligation(obligation)
     files = discover_petition_files(workspace)
-    for path in files:
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        for p in parse_petitions(text):
-            if _normalize_obligation(p["obligation"]) == key:
-                return [
-                    "petition: an obligation already has a filed "
-                    f"petition ({p['obligation']!r}) -- a duplicate "
-                    "declaration for the same obligation is refused, not "
-                    "filed (docs/petition-format.md's one-petition-per-"
-                    "obligation rule)"
-                ]
+    already = filed_petition_for_obligation(workspace, obligation)
+    if already is not None:
+        return [duplicate_petition_error(already)]
     if target is not None:
         write_target = target
     elif not files:
@@ -614,19 +649,27 @@ def file_exhaustion_petition(workspace: Path, task: dict,
     file, creating it if absent -- and handed to `file_worker_petition`
     explicitly, so exhaustion never lands in `file_worker_petition`'s own
     `files[-1]` fallback (an older wave's file, the moment the workspace
-    carries more than one). `contract_text` defaults to `""`, matching
-    every pre-existing caller whenever the workspace carries at most one
-    petitions file (`_current_wave_petitions_path`'s single-file
-    fallback). A workspace where the current-wave file cannot even be
-    created (a read-only mount) refuses the filing instead of silently
-    misfiling it -- the caller folds that into the ordinary `failed`
-    route exactly like any other refusal from this function.
+    carries more than one, or the moment the single one it carries is an
+    older wave's). `contract_text` defaults to `""`, matching every
+    pre-existing caller (no wave named -> `_current_wave_petitions_path`'s
+    wave-less lone-file fallback). A workspace where the current-wave file
+    cannot even be created (a read-only mount) refuses the filing instead
+    of silently misfiling it -- the caller folds that into the ordinary
+    `failed` route exactly like any other refusal from this function, and
+    a duplicate obligation is refused BEFORE anything is created, so a
+    refused filing leaves no empty current-wave file behind.
     """
     tid = task.get("id", "?")
     obligation = task_petition_obligation(task)
     evidence = (task.get("validationNotes") or "").strip() or (
         f"Task {tid} exhausted its validation ladder with no verifier "
         "reason recorded on the last attempt.")
+    already = filed_petition_for_obligation(workspace, obligation)
+    if already is not None:
+        # Refused before `ensure_petitions_file` runs, so a duplicate never
+        # leaves a freshly created (and permanently empty) current-wave
+        # file behind (task 018, requirement E.1).
+        return [duplicate_petition_error(already)]
     target = ensure_petitions_file(workspace, contract_text)
     if target is None:
         return [
