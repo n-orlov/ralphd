@@ -6907,6 +6907,8 @@ class LoopSupervisor:
                 parsed.get("petition_adjudications"))
             self._apply_criteria_amendments(
                 parsed.get("petition_adjudications"))
+            self._write_back_petition_adjudications(
+                parsed.get("petition_adjudications"))
         findings_list, channel_errors = self._review_findings_channel()
         if isinstance(parsed, dict):
             payload = parsed
@@ -8187,6 +8189,141 @@ class LoopSupervisor:
         self.run.write_tasks(tasks_doc)
         self._emit_task_changes()
         return changed
+
+    def _workspace_is_clean(self) -> bool:
+        """True iff `self.workspace` is a git repository with an empty
+        `git status --porcelain` -- the discriminant `_write_back_
+        petition_adjudications` uses to decide whether ITS OWN write may
+        be committed immediately or must defer to the next task boundary
+        (PRD requirement E.2, task 019, #150). Read BEFORE that method
+        writes anything, so the snapshot answers "was anything else
+        already uncommitted", never "is the file this call just touched
+        the only diff" -- the latter would trivially always be true and
+        answer the wrong question. `git` unavailable, not yet a
+        repository, or the command erroring out are all treated as
+        "not clean" -- the same fail-closed posture `_workspace_head_sha`
+        takes for its own git read, just inverted: never risk committing
+        into a workspace this call cannot actually confirm is safe to
+        touch.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.workspace), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=10)
+        except OSError:
+            return False
+        return result.returncode == 0 and not result.stdout.strip()
+
+    def _commit_petition_writeback(self, paths: list[Path]) -> None:
+        """Stage and commit exactly `paths` (the tracked petitions file(s)
+        `_write_back_petition_adjudications` just edited) with the run's
+        own git identity -- whatever `git`'s ordinary identity resolution
+        (`user.name`/`user.email`, already configured for this workspace
+        the same way any worker iteration's own commits are) already
+        provides; this call never overrides it with an engine-specific
+        identity, so the commit reads as this run's own history rather
+        than a second, out-of-band author.
+
+        Called ONLY when `_workspace_is_clean` found the tree clean before
+        the write -- a caller-enforced precondition, not re-checked here,
+        because by the time this runs the just-written file(s) are
+        legitimately dirty and re-running the same check here would always
+        see them that way. Best-effort throughout: `git add`/`git commit`
+        failing (no repository, a hook that refuses, a `git` binary
+        missing) leaves the file's content written to disk regardless --
+        the write-back itself never depends on the commit succeeding --
+        and is silently skipped rather than raised, the same posture
+        `_workspace_head_sha` and `_apply_worker_debt_resolution` already
+        take for an advisory git operation.
+        """
+        try:
+            rel = [str(p.relative_to(self.workspace)) if p.is_relative_to(
+                self.workspace) else str(p) for p in paths]
+            add = subprocess.run(
+                ["git", "-C", str(self.workspace), "add", *rel],
+                capture_output=True, text=True, timeout=10)
+            if add.returncode != 0:
+                return
+            names = ", ".join(sorted({Path(r).name for r in rel}))
+            message = (
+                "reports: write back review's petition adjudication(s) "
+                f"into {names} (requirement E.2)")
+            subprocess.run(
+                ["git", "-C", str(self.workspace), "commit", "-q", "-m",
+                 message],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, ValueError):
+            return
+
+    def _write_back_petition_adjudications(self, adjudications) -> list[Path]:
+        """PRD requirement E.2 (task 019, #150): \"When `petition_
+        adjudications_recorded` fires, the engine appends `**Adjudication
+        **: CONFIRMED|REFUTED -- <remedy>` to that petition's own section
+        in the tracked wave file and commits it with the run's git
+        identity when the workspace is clean, deferring to the next task
+        boundary when the workspace is dirty.\"
+
+        Called from `_review_verdict` in the SAME step as `petitions.
+        record_confirmed_adjudications` (whose own persistence is what
+        `ADJUDICATIONS_RECORDED_EVENT` witnesses) -- for every settled
+        review/mid-run-adjudication payload, verified or not, exactly the
+        same unconditional-call discipline `_apply_refuted_petition_
+        adjudications`/`_apply_confirmed_petition_adjudications`/`_apply_
+        criteria_amendments` beside it already keep.
+
+        For each entry, delegates the actual file edit to `engine.
+        petitions.write_back_petition_adjudication` -- CONFIRMED and
+        REFUTED alike, the same "history render, not an exemption
+        mechanism" split `record_confirmed_adjudications`'s own docstring
+        draws: writing the line into the tracked file changes nothing
+        about which obligations are exempted at run scope, that is
+        `record_confirmed_adjudications`'s own job, called immediately
+        before this one. A malformed entry (no obligation string, an
+        `adjudication` that is neither value) is silently skipped by that
+        function, never a second schema validator here either. An
+        obligation whose section already carries an `Adjudication` field
+        is also a no-op (idempotent across a resumed episode replaying
+        the same payload).
+
+        Whether the write may be committed immediately is decided ONCE,
+        from `_workspace_is_clean()` read BEFORE any file is touched --
+        never re-derived per file, so a batch of several adjudications in
+        the same review payload either all land in one commit (clean
+        tree) or none do (dirty tree, every file still written to disk,
+        the commit left for whatever next commits at the next task
+        boundary the way an ordinary worker edit would). A dirty tree is
+        never treated as a reason to skip the WRITE itself -- only the
+        commit -- so the adjudication is never silently lost to a
+        worker's own in-flight, uncommitted edit; it is simply left
+        alongside that edit for the next commit to pick up.
+
+        Returns the list of tracked-file paths actually written (possibly
+        spanning more than one `<wave>-petitions.md` file), regardless of
+        whether a commit followed -- the caller has no further use for
+        this beyond tests, which is exactly what exercises it.
+        """
+        if not adjudications:
+            return []
+        was_clean = self._workspace_is_clean()
+        written: list[Path] = []
+        for item in adjudications:
+            if not isinstance(item, dict):
+                continue
+            obligation = item.get("obligation")
+            adjudication = item.get("adjudication")
+            if adjudication not in ("CONFIRMED", "REFUTED"):
+                continue
+            if not isinstance(obligation, str):
+                continue
+            remedy = item.get("remedy")
+            remedy = remedy.strip() if isinstance(remedy, str) else ""
+            path = petitions.write_back_petition_adjudication(
+                self.workspace, obligation, adjudication, remedy)
+            if path is not None and path not in written:
+                written.append(path)
+        if written and was_clean:
+            self._commit_petition_writeback(written)
+        return written
 
     def _all_tasks_completed(self) -> bool:
         """True iff tasks.json exists, is non-empty, and every task's

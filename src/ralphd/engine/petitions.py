@@ -729,6 +729,117 @@ def file_exhaustion_petition(workspace: Path, task: dict,
                                 target=target)
 
 
+def _adjudication_line(adjudication: str, remedy: str = "") -> str:
+    """The exact `**Adjudication**: ...` line `write_back_petition_
+    adjudication` appends -- the SAME field shape `parse_petitions`'s
+    `_FIELD_RE` already reads back (task 019, requirement E.2, #150).
+    `CONFIRMED` carries no remedy (`docs/petition-format.md`: a CONFIRMED
+    adjudication needs no remedy text, the obligation is simply void);
+    `REFUTED` always states one, even when review left it blank -- an
+    empty remedy is rendered as the same "no remedy stated" text
+    `apply_refuted_petition_adjudications` already writes into a task's own
+    `notes` for the identical case, not a line the file silently omits.
+    """
+    if adjudication == "REFUTED":
+        text = remedy.strip() or "Petition REFUTED with no remedy stated."
+        return f"**Adjudication**: REFUTED \u2014 {text}"
+    return f"**Adjudication**: {adjudication}"
+
+
+def _append_adjudication_to_section(text: str, obligation_key: str,
+                                     line: str) -> str | None:
+    """Task 019 (requirement E.2, #150): insert `line` into the ONE
+    section of `text` whose own `Obligation` field (or heading, the same
+    fallback `parse_petitions` uses) normalises to `obligation_key` --
+    never at the end of the whole file, since a file commonly carries more
+    than one petition and the obligation being adjudicated need not be the
+    last one filed. Mirrors `_sections`/`parse_petitions`'s own field
+    parsing exactly, rather than re-deriving it, so a section this module
+    parses as a valid petition is always the same section this function
+    can find and edit.
+
+    Returns the whole file's NEW text with the line appended just inside
+    the matching section (after its own last field, before the next
+    heading), or `None` when no section matches OR the matching section
+    already carries an `Adjudication` field -- an adjudication already
+    written to the tracked file is never overwritten or duplicated by a
+    second call (idempotent by construction, not by a caller's own
+    bookkeeping).
+    """
+    matches = list(_HEADING_RE.finditer(text))
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        section = text[start:end]
+        fields: dict[str, str] = {}
+        for fm in _FIELD_RE.finditer(section):
+            fields.setdefault(fm.group(1).lower(), fm.group(2).strip())
+        ptype = fields.get("type", "").strip().lower()
+        if ptype not in PETITION_TYPES:
+            continue
+        heading_text = m.group(0).lstrip("#").strip()
+        section_obligation = fields.get("obligation", "").strip() or heading_text
+        if _normalize_obligation(section_obligation) != obligation_key:
+            continue
+        if fields.get("adjudication"):
+            return None
+        stripped = section.rstrip("\n")
+        trailing = section[len(stripped):]
+        new_section = stripped + "\n" + line + "\n" + trailing
+        return text[:start] + new_section + text[end:]
+    return None
+
+
+def write_back_petition_adjudication(workspace: Path, obligation: str,
+                                      adjudication: str,
+                                      remedy: str = "") -> Path | None:
+    """PRD requirement E.2 (task 019, #150): when review's own
+    verdict (or the mid-run adjudication episode's) CONFIRMS or REFUTES a
+    petition, write that call back into the TRACKED file it was filed in
+    -- \"the engine appends `**Adjudication**: CONFIRMED|REFUTED --
+    <remedy>` to the petition's own section in the tracked file\" -- so a
+    reader of `<wave>-petitions.md` sees the outcome without having to
+    cross-reference `events.jsonl` or the run-scope adjudications store.
+
+    Searches every `<wave>-petitions.md` file `discover_petition_files`
+    finds under `workspace` (the same workspace-wide scope `filed_
+    petition_for_obligation` uses -- an adjudicated obligation is matched
+    by its own filed text, not by which wave happens to be current right
+    now) for the ONE section whose obligation normalises the same way, and
+    appends the adjudication line inside that section
+    (`_append_adjudication_to_section`). Returns the `Path` written on
+    success, `None` when nothing matched, the section already carried an
+    `Adjudication` field (this call is then a deliberate no-op, never a
+    silent overwrite), or the file could not be re-written (a read-only
+    mount).
+
+    `adjudication` values other than `"CONFIRMED"`/`"REFUTED"` are also a
+    no-op -- this function is a filter over an already-validated payload
+    field exactly the way `record_confirmed_adjudications`'s own docstring
+    describes itself, never a second schema validator.
+    """
+    if adjudication not in ("CONFIRMED", "REFUTED"):
+        return None
+    if not isinstance(obligation, str) or not obligation.strip():
+        return None
+    key = _normalize_obligation(obligation)
+    line = _adjudication_line(adjudication, remedy)
+    for path in discover_petition_files(workspace):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        updated = _append_adjudication_to_section(text, key, line)
+        if updated is None:
+            continue
+        try:
+            path.write_text(updated)
+        except OSError:
+            return None
+        return path
+    return None
+
+
 def duplicate_petition_obligations(workspace: Path) -> list[dict]:
     """Every normalised obligation with MORE THAN ONE filed petition section
     across every `<wave>-petitions.md` file under `workspace` --
