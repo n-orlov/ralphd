@@ -8765,7 +8765,14 @@ class LoopSupervisor:
         title = task.get("title", "")
         criteria = task.get("successCriteria", "")
         attempts = task.get("validationAttempts", 0)
-        extra = (
+        # Task 004 (requirement A.1, #154): verify receives the SAME
+        # resolved materiality rubric review does -- inline, adopted by
+        # reference, or the engine default (`findings.resolve_materiality_
+        # rubric`). `_review_materiality_rubric_context` computes that
+        # purely from the contract text and the workspace root; nothing in
+        # its body is review-specific, so verify reuses it verbatim rather
+        # than re-resolving the same rubric a second way.
+        extra = self._review_materiality_rubric_context() + (
             f"## Task under verification\n\n"
             f"- **id**: {tid}\n"
             f"- **title**: {title}\n"

@@ -43,8 +43,33 @@ from scratch, trusting nothing the worker wrote about its own work.
 
 - You verify exactly the one task described below. Do not attempt to fix anything,
   do not complete other tasks, do not modify tasks.json at all — see step 3 above.
-- Be strict: "probably fine" is not verified. If you cannot check something,
-  that is a failure, not a pass.
+- **Be strict, but reject only on substance (task 004, requirement A.1,
+  #154).** Reject a criterion only for one of these: its *deliverable* --
+  the thing it names as built or wired in -- is absent or wrong; a test the
+  criterion names is red; a factual claim in a tracked record is false; a
+  command the criterion names was never run; or a secret is exposed. Every
+  other clause a criterion's wording also reaches -- form (the literal
+  shape of a command, a wrapper, a polling cadence, a liveness check),
+  wording (imprecise or thin phrasing on a deliverable that IS done),
+  provenance (the sha a docs-only-identical tree launched from), or
+  process (a step described but not gating the deliverable itself) --
+  **verifies, with the gap recorded as a note in `reason`** rather than as
+  a rejection. "Probably fine" is still not verified, and something you
+  genuinely cannot check is still a failure, not a pass -- this bullet
+  narrows WHAT counts as a rejecting failure, not how carefully you look.
+  **"Disclose on tails" is the open-set special case of this same rule**:
+  an open-set clause -- one with a quantifier like "every", "each", "all",
+  "no ... anywhere" -- is verified against the instances it actually
+  enumerates (or the single command's output it names), not against every
+  conceivable instance you can imagine. A FURTHER instance the clause's
+  wording would also seem to cover is exactly a form/process gap in this
+  sense: name it in `reason` as a residual that informs review; it is not,
+  by itself, grounds to reject an otherwise-delivered task whose
+  enumerated core is green. Distinguish, especially on the final attempt:
+  an ABSENT deliverable (the thing the task was supposed to build or wire
+  in is simply not there) still rejects; short or thin paperwork on a
+  deliverable that IS done verifies, with the gap recorded as a residual
+  in `reason` rather than as the reason for a third miss.
 - **Budget your test runs against the iteration clock.** The cap is hard and has
   no grace period: an iteration killed at the cap loses its uncommitted work and
   is recorded as a validation failure though nothing was wrong with the work.
@@ -52,18 +77,6 @@ from scratch, trusting nothing the worker wrote about its own work.
   (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
   chain two whole-suite runs, and background such a run, polling it instead of
   blocking on it.
-- **Reject on substance, disclose on tails (#115).** An open-set clause —
-  one with a quantifier like "every", "each", "all", "no ... anywhere" — is
-  verified against the instances it actually enumerates (or the single
-  command's output it names), not against every conceivable instance you can
-  imagine. If you find a FURTHER instance the clause's wording would also
-  seem to cover, name it in `reason` as a residual that informs review — it
-  is not, by itself, grounds to reject an otherwise-delivered task whose
-  enumerated core is green. Distinguish, especially on the final attempt: an
-  ABSENT deliverable (the thing the task was supposed to build or wire in is
-  simply not there) still rejects; short or thin paperwork on a deliverable
-  that IS done verifies, with the gap recorded as a residual in `reason`
-  rather than as the reason for a third miss.
 - **Standing rules are not per-task criteria (#115, second cut).** The notes
   file's harness-pinned `## Standing rules` block (task 107 -- commit title
   format, branch and push target, commit identity, credential paths, the
