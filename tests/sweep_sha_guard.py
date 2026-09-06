@@ -194,7 +194,37 @@ WAVE_PREFIX = "v0.14-"
 # for the identical reason every prior wave boundary above needed it -- not
 # because any of those sweeps stopped being true, but because they now
 # predate the run that is checking them.
-LAUNCH_SHA = "1c61b32c854aa6ab7f46f9ff820695126a38ee27"
+#
+# Task 001 (v0.19-a-note-is-not-a-rejection): same shape of staleness, one
+# run later. The constant still held v0.18's own launch sha
+# (`1c61b32c854aa6ab7f46f9ff820695126a38ee27`) after v0.19 had already
+# launched from a later one (`4c003a5191950ef1c02d136abd933dfa43564586`,
+# the commit "docs: commit the v0.19 PRD (a note is not a rejection) ahead
+# of its launch, with its not-started index row, the test-suite audit
+# baseline and an empty v0.19 petitions file", the sha
+# `docs/prds/README.md`'s v0.19 row and `/run/ralphd/notes.md` both name as
+# this run's launch). Updated here to that real launch sha. The old value
+# (`1c61b32c854aa6ab7f46f9ff820695126a38ee27`) is a genuine ancestor of the
+# new one -- confirmed with `git merge-base --is-ancestor
+# 1c61b32c854aa6ab7f46f9ff820695126a38ee27
+# 4c003a5191950ef1c02d136abd933dfa43564586`, which exits 0 -- v0.19 shipped
+# strictly after v0.18, so this only widens which pre-launch shas the
+# ancestor check accepts; no record that passed before stops passing now.
+# Thirteen v0.18 records whose `sweep-sha` declaration's discharge chain to
+# `HEAD` no longer held once this wave's own tail commits (`docs/`, not
+# just `artifacts/reports/`) broke the report-only-tail bridge took
+# `archived-sha` in the same commit as this constant update, for the
+# identical reason every prior wave boundary above needed it -- not because
+# any of those sweeps stopped being true, but because they now predate the
+# run that is checking them:
+# `v0.18-a2-browser-lane.md`, `v0.18-a2-dev-layout-exported.md`,
+# `v0.18-a2-dev-layout-unset.md`, `v0.18-a2-docker-tier.md`,
+# `v0.18-a2-fast-tier.md`, `v0.18-a2-final-guard-subset.md`,
+# `v0.18-browser-lane.md`, `v0.18-browser-tier.md`,
+# `v0.18-dev-layout-exported.md`, `v0.18-dev-layout-unset.md`,
+# `v0.18-docker-tier.md`, `v0.18-fast-tier.md` and
+# `v0.18-final-guard-subset.md`.
+LAUNCH_SHA = "4c003a5191950ef1c02d136abd933dfa43564586"
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
