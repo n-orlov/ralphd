@@ -74,6 +74,21 @@ don't pass one separately — refused (with the applier's own diagnostic) when
 neither is given; the applier writes it into the task's own `notes`, the same
 way the worker's own escape does.
 
+**A cure inherits dependents (PRD requirement C.4, #149, task 041).** The
+engine already does this move automatically the moment its own review cure
+pass appends a cure task for a finding whose evidence names a `failed`
+task (`state.insert_cure_tasks`) — every dependent of that failed task gets
+the cure task added to its `dependsOn` and the failed task removed. Do the
+SAME move by hand whenever you re-point a dependent's `dependsOn` off a task
+you know is `failed` and superseded by a cure or replacement task: a single
+`task-update` naming BOTH changes on the dependent's own `dependsOn` list —
+add the cure/replacement task's id, remove the failed task's id — never a
+call that only adds the new id and leaves the failed one sitting alongside
+it (that dependent would still show the failed task as a live dependency,
+not merely a superseded one), and never a call that only removes the failed
+id and adds nothing (that dependent would lose ITS dependency altogether
+rather than transferring it). A dependent naming neither id is untouched.
+
 ## What to do
 
 1. Read the pending steering message(s), in arrival order — handle every

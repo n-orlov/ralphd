@@ -3299,6 +3299,57 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
     }
 
 
+def _failed_task_ids_named_in(text: str, tasks: list) -> list:
+    """Task 041 (PRD requirement C.4, #149): every `failed` task in
+    `tasks` whose id appears in `text` (a finding's own `evidence`
+    string) as a whole word (`\btid\b`, never a bare numeric substring
+    of some unrelated id or of surrounding evidence prose). Order
+    follows `tasks`, so a caller iterating the result gets a stable,
+    reproducible order across calls against the same plan.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    found: list = []
+    for t in tasks:
+        if not isinstance(t, dict) or t.get("status") != "failed":
+            continue
+        tid = t.get("id")
+        if not isinstance(tid, str) or not tid:
+            continue
+        if re.search(rf"\b{re.escape(tid)}\b", text):
+            found.append(tid)
+    return found
+
+
+def _repoint_dependents_onto_cure_task(tasks: list, failed_id: str,
+                                       cure_task_id: str) -> None:
+    """Task 041 (PRD requirement C.4, #149): "When the cure pass appends
+    a cure task for a finding whose evidence names a `failed` task,
+    every dependent of that failed task gets the cure task added to its
+    `dependsOn` and the failed task removed, so the plan has no doomed
+    remainder once the cure lands." This is the mechanical half of that
+    move, run once per `(failed_id, cure_task_id)` pair `insert_cure_
+    tasks` below discovers: for every task in `tasks` whose `dependsOn`
+    names `failed_id`, remove `failed_id` and add `cure_task_id` in its
+    place (skipped if already present, so a dependent naming BOTH the
+    failed task and the cure task -- e.g. a hand-edited plan -- never
+    ends up with a duplicate entry). A task with neither id in
+    `dependsOn` is untouched. Mirrors `petitions.apply_confirmed_
+    petition_adjudications`'s own dependent re-pointing for the CONFIRMED
+    path, the analogous gap C.1-C.3 already closed.
+    """
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        depends = t.get("dependsOn")
+        if not isinstance(depends, list) or failed_id not in depends:
+            continue
+        new_depends = [d for d in depends if d != failed_id]
+        if cure_task_id not in new_depends:
+            new_depends.append(cure_task_id)
+        t["dependsOn"] = new_depends
+
+
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     """Task 009 (PRD requirement C.1, #141; cured under task 006, C.1
     finding 4): append exactly one cure task per entry of `blocking` (in
@@ -3316,6 +3367,17 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     2) instead of dropping the entry -- every blocking finding still
     gets its cure task, and the return value always has exactly
     `len(blocking)` entries, one per finding, in finding order.
+
+    Task 041 (PRD requirement C.4, #149, re-inserted by operator steer
+    003 after task 016 cut it): when a finding's own `evidence` text
+    names a task that is currently `failed` (`_failed_task_ids_named_
+    in` above), the new cure task inherits every dependent of that
+    failed task -- `_repoint_dependents_onto_cure_task` adds the cure
+    task to each such dependent's `dependsOn` and removes the failed
+    task, so the plan has no doomed remainder once the cure lands. A
+    finding whose evidence names no `failed` task (the ordinary case)
+    leaves every other task's `dependsOn` untouched, exactly as before
+    this task.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
@@ -3332,6 +3394,10 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
         tasks.append(new_task)
         existing_ids.add(new_task["id"])
         inserted.append(new_task["id"])
+        for failed_id in _failed_task_ids_named_in(
+                finding.get("evidence"), tasks):
+            _repoint_dependents_onto_cure_task(
+                tasks, failed_id, new_task["id"])
     if inserted:
         run.write_tasks(data)
     return inserted
