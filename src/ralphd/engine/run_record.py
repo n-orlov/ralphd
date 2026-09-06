@@ -280,6 +280,20 @@ def build_usage_section(status: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# The debt ledger (task 006, requirement A.3, #155): open and resolved,
+# split the same way `state.render_debt_markdown` splits `debt.md` -- the
+# run record renders the SAME ledger, through the SAME read
+# (`state.read_debt_entries`), never a second parse of `debt.json`.
+# ---------------------------------------------------------------------------
+
+def build_debt_section(run: "state.RunDir") -> dict:
+    entries = state.read_debt_entries(run.root)
+    open_entries = [e for e in entries if e.get("status") != state.DEBT_STATUS_RESOLVED]
+    resolved_entries = [e for e in entries if e.get("status") == state.DEBT_STATUS_RESOLVED]
+    return {"open": open_entries, "resolved": resolved_entries}
+
+
+# ---------------------------------------------------------------------------
 # The whole record.
 # ---------------------------------------------------------------------------
 
@@ -308,6 +322,7 @@ RECORD_SECTIONS: dict[str, str] = {
     "steersConsumed": "Steers consumed",
     "operatorRulings": "Operator rulings",
     "notifications": "Notifications",
+    "debt": "Debt",
 }
 
 
@@ -330,6 +345,7 @@ def build_run_record(run: "state.RunDir", *, run_id: str,
         "steersConsumed": build_steers_section(run),
         "operatorRulings": build_operator_rulings_section(config_root),
         "notifications": build_notifications_section(run),
+        "debt": build_debt_section(run),
     }
     record.update(build_usage_section(status))
     return record
@@ -483,6 +499,16 @@ def render_run_record_markdown(record: dict) -> str:
     for n in notifications:
         lines.append(
             f"- {n.get('ts')} {n.get('endpoint')} httpStatus={n.get('httpStatus')}")
+
+    lines += ["", "## Debt"]
+    debt = record.get("debt") or {}
+    open_entries = debt.get("open") or []
+    resolved_entries = debt.get("resolved") or []
+    lines.append(f"- open: {len(open_entries)}, resolved: {len(resolved_entries)}")
+    for e in open_entries:
+        lines.append(state.debt_entry_line(e))
+    for e in resolved_entries:
+        lines.append(state.debt_entry_line(e))
 
     return "\n".join(lines) + "\n"
 

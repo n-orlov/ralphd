@@ -885,6 +885,12 @@ FINDINGS_JSON_FILE = "review-findings.json"
 # field the same task adds to `engine.findings.FINDING_SCHEMA`.
 VERDICT_GATE_FINDINGS_FILE = "verdict-gate-findings.md"
 VERDICT_GATE_FINDINGS_JSON_FILE = "verdict-gate-findings.json"
+# Task 006 (requirement A.3, #155 engine half): the debt ledger a verifier's
+# structured `notes` (task 005's `verifyNotes`) land in -- `DEBT_JSON_FILE` is
+# the machine-readable list `record_debt_entries` below is the ONE write path
+# for, `DEBT_FILE` the human render of the same list (`render_debt_markdown`).
+DEBT_FILE = "debt.md"
+DEBT_JSON_FILE = "debt.json"
 # Task 035 (requirement B.1, cure for task 006): the ENGINE's own record of
 # what each judge decided, per approach -- written by `record_approach_verdict`
 # below at the moment a verdict is settled, never by a hat's process, and
@@ -3813,6 +3819,8 @@ RUN_DOCUMENTS: tuple[tuple[str, str, str, str], ...] = (
      "the reviewer's findings that sent the run into another approach"),
     ("composite-prd", COMPOSITE_PRD_FILE, DOC_IN_RUN,
      "the PRD text the agent works from (written when an approach restarts)"),
+    ("debt", DEBT_FILE, DOC_IN_RUN,
+     "the debt ledger, rendered for a human (task 006, requirement A.3)"),
     ("job", JOB_CONFIG_FILE, DOC_IN_CONFIG,
      "effective job config as inlined at start, secret values redacted"),
     ("run-record", RUN_RECORD_MD_FILE, DOC_IN_ARTIFACTS,
@@ -4000,6 +4008,118 @@ def run_document_text(doc: dict) -> str:
     return "\n".join([*run_document_summary_lines(doc),
                       format_run_document_header(doc.get("name")),
                       run_document_body(doc)])
+
+
+# ---------------------------------------------------------------------------
+# The debt ledger (task 006, requirement A.3 engine half, #155)
+#
+# A verifier that verifies a task anyway, but leaves `notes` on the payload
+# (task 005, `HAT_SCHEMAS["verify"]`'s optional `notes` array), is recording a
+# clause the deliverable met only in form, not in substance -- exactly the
+# gap requirement A.1's rewritten "be strict" rule tells it to note rather
+# than reject on. Those notes used to evaporate the moment `_verify_task`
+# copied them onto the task's own `verifyNotes` field: nothing else ever read
+# them again. `record_debt_entries` is the ONE place they are also appended,
+# durably, to a per-RUN ledger (`debt.json` + a human render `debt.md`) that
+# survives whichever task they were noted against -- `ralphctl docs`/the hub's
+# document panel serve `debt.md` for free (`RUN_DOCUMENTS` below), and the run
+# record (`run_record.py`) renders the same ledger's open/resolved split.
+#
+# An entry's `status` starts `"open"`; nothing in THIS task ever writes
+# `"resolved"` -- that is task 007/008's job (letting a worker or an
+# adjudication remedy resolve one). The render and the run record already
+# handle both, so landing the resolution path later needs no second writer.
+# ---------------------------------------------------------------------------
+
+DEBT_STATUS_OPEN = "open"
+DEBT_STATUS_RESOLVED = "resolved"
+
+
+def read_debt_entries(run_root: Path) -> list[dict]:
+    """Every debt entry this run has ever recorded, oldest first -- `[]` for
+    a run that has none (never written, or the file does not parse)."""
+    raw = read_json(Path(run_root) / DEBT_JSON_FILE, [])
+    return raw if isinstance(raw, list) else []
+
+
+def render_debt_markdown(entries: list[dict]) -> str:
+    """The debt ledger rendered for a human -- `debt.md`'s whole body, and
+    the section `run_record.render_run_record_markdown` echoes for the run
+    record's own "open and resolved debt" (task 006's own wording). Open
+    entries first (the ones still owed), then resolved ones, each worded
+    identically to how `run_record.py` walks the same split -- one place,
+    `state.py`, spells both."""
+    lines = ["# Debt ledger", ""]
+    open_entries = [e for e in entries if e.get("status") != DEBT_STATUS_RESOLVED]
+    resolved_entries = [e for e in entries if e.get("status") == DEBT_STATUS_RESOLVED]
+    lines.append(f"## Open ({len(open_entries)})")
+    if not open_entries:
+        lines.append("- (none)")
+    for e in open_entries:
+        lines.append(debt_entry_line(e))
+    lines.append("")
+    lines.append(f"## Resolved ({len(resolved_entries)})")
+    if not resolved_entries:
+        lines.append("- (none)")
+    for e in resolved_entries:
+        lines.append(debt_entry_line(e))
+    return "\n".join(lines) + "\n"
+
+
+def debt_entry_line(e: dict) -> str:
+    """One debt entry as a single markdown bullet -- shared by `debt.md`
+    and the run record's own render, so the two can never describe the same
+    entry differently."""
+    line = (f"- `{e.get('id')}` task {e.get('taskId')}: {e.get('clause')} -- "
+           f"observed: {e.get('observed')}; suggested: {e.get('suggested')} "
+           f"({e.get('ts')})")
+    if e.get("status") == DEBT_STATUS_RESOLVED and e.get("resolvedBy"):
+        line += f" [resolved by {e['resolvedBy']}]"
+    return line
+
+
+def record_debt_entries(run_root: Path, task_id: str,
+                        notes: list[dict]) -> list[dict]:
+    """THE one write path for the debt ledger (task 006): append one entry
+    per item of `notes` (each `{clause, observed, suggested}`, task 005's
+    `verifyNotes` shape) to `debt.json`, keyed `"<task_id>/<n>"` with `n`
+    the 1-based count of entries this task id already has in the ledger --
+    NOT a run-global counter, so re-reading `debt.json` alone tells you how
+    many times a given task has been noted -- then re-render `debt.md` from
+    the whole updated list in the same call, so the two files can never
+    disagree about what the ledger holds.
+
+    A non-list or empty `notes` writes nothing and returns the ledger
+    unchanged -- called unconditionally from `_verify_task`'s verified
+    path is safe exactly because of this no-op case.
+
+    Returns the FULL ledger (existing entries plus whatever was just
+    appended), so a caller that wants to render or inspect it need not
+    read the file back.
+    """
+    entries = read_debt_entries(run_root)
+    if not isinstance(notes, list) or not notes:
+        return entries
+    existing_for_task = sum(1 for e in entries if e.get("taskId") == task_id)
+    ts = utcnow()
+    for i, note in enumerate(notes):
+        if not isinstance(note, dict):
+            continue
+        n = existing_for_task + i + 1
+        entries.append({
+            "id": f"{task_id}/{n}",
+            "taskId": task_id,
+            "clause": note.get("clause"),
+            "observed": note.get("observed"),
+            "suggested": note.get("suggested"),
+            "ts": ts,
+            "status": DEBT_STATUS_OPEN,
+            "resolvedBy": None,
+        })
+    root = Path(run_root)
+    atomic_write_json(root / DEBT_JSON_FILE, entries)
+    atomic_write(root / DEBT_FILE, render_debt_markdown(entries))
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -5481,6 +5601,25 @@ class RunDir:
     @property
     def findings_json_file(self) -> Path:
         return self.root / FINDINGS_JSON_FILE
+
+    @property
+    def debt_file(self) -> Path:
+        """Task 006 (requirement A.3, #155): the debt ledger's human render --
+        never written directly, only through `record_debt`/`state.
+        record_debt_entries` below."""
+        return self.root / DEBT_FILE
+
+    @property
+    def debt_json_file(self) -> Path:
+        """The machine-readable list `debt_file` renders -- same pairing as
+        `findings_file`/`findings_json_file` above."""
+        return self.root / DEBT_JSON_FILE
+
+    def record_debt(self, task_id: str, notes: list[dict]) -> list[dict]:
+        """Bound form of `record_debt_entries` -- what `_verify_task` calls
+        after copying a verifier's `notes` onto `verifyNotes` (task 005),
+        so no caller has to know where the ledger lives."""
+        return record_debt_entries(self.root, task_id, notes)
 
     @property
     def verdict_gate_findings_file(self) -> Path:

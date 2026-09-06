@@ -105,7 +105,7 @@ JOB = {
 def _seed(tmp: Path, run_id: str = "docs-run", *, notes: bool = True,
           findings: bool = True, composite: bool = False,
           job: dict | None = None, creds: bool = True,
-          run_record: bool = False) -> Path:
+          run_record: bool = False, debt: bool = False) -> Path:
     """A registry holding one run dir + its config dir, container long gone."""
     registry = tmp / "registry"
     rdir = registry / "runs" / run_id
@@ -120,6 +120,8 @@ def _seed(tmp: Path, run_id: str = "docs-run", *, notes: bool = True,
         (rdir / "review-findings.md").write_text(FINDINGS)
     if composite:
         (rdir / "composite-prd.md").write_text(COMPOSITE)
+    if debt:
+        (rdir / "debt.md").write_text("# Debt ledger\n\n## Open (0)\n- (none)\n")
     if run_record:
         (rdir / "artifacts").mkdir(parents=True, exist_ok=True)
         (rdir / "artifacts" / RUN_RECORD_MD_FILE).write_text(RUN_RECORD_MD)
@@ -137,7 +139,7 @@ def test_run_documents_lists_every_known_document_present_or_not(tmp_path):
     docs = run_documents(registry / "runs" / "docs-run",
                          registry / "configs" / "docs-run")
     assert [d["key"] for d in docs] == run_document_keys() == [
-        "notes", "findings", "composite-prd", "job", "run-record",
+        "notes", "findings", "composite-prd", "debt", "job", "run-record",
         "run-record-json"]
     by_key = {d["key"]: d for d in docs}
     assert by_key["notes"]["exists"] and by_key["notes"]["body"] == NOTES
@@ -161,7 +163,7 @@ def test_run_documents_without_a_config_dir_says_out_of_reach_not_missing(tmp_pa
 
 
 def test_bodies_false_omits_every_body(tmp_path):
-    registry = _seed(tmp_path, composite=True, run_record=True)
+    registry = _seed(tmp_path, composite=True, run_record=True, debt=True)
     docs = run_documents(registry / "runs" / "docs-run",
                          registry / "configs" / "docs-run", bodies=False)
     assert all("body" not in d for d in docs)
@@ -396,8 +398,8 @@ def test_docs_json_listing_carries_every_row_without_bodies(tmp_path):
     assert [d["key"] for d in doc["documents"]] == run_document_keys()
     assert all("body" not in d for d in doc["documents"])
     assert {d["key"]: d["exists"] for d in doc["documents"]} == {
-        "notes": True, "findings": True, "composite-prd": False, "job": True,
-        "run-record": False, "run-record-json": False}
+        "notes": True, "findings": True, "composite-prd": False, "debt": False,
+        "job": True, "run-record": False, "run-record-json": False}
 
 
 def test_docs_absent_document_exits_1_naming_what_is_on_disk(tmp_path):

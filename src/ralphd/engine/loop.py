@@ -8886,6 +8886,12 @@ class LoopSupervisor:
                             t["verifyNotes"] = notes
                         break
                 self.run.write_tasks(tasks_data)
+                # Task 006 (requirement A.3, #155 engine half): the SAME
+                # `notes`, appended to the run's own debt ledger -- through
+                # `RunDir.record_debt`, the ONE write path, never a second
+                # `debt.json` writer. Called unconditionally: a non-list or
+                # empty `notes` is a documented no-op there.
+                self.run.record_debt(tid, notes)
                 self.run.emit("signal", signal="taskVerified", taskId=tid)
                 log.info("task %s verified", tid)
                 return True

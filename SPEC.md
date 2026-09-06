@@ -421,7 +421,7 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 │   ├── status.json              # engine-maintained: state, phase, approach, verdict,
 │   │                            #   health, infraWait, schemaVersion, usage, reflect
 │   ├── tasks.json               # the plan; agent-written, atomically
-│   ├── prd.md · composite-prd.md · notes.md · review-findings.md
+│   ├── prd.md · composite-prd.md · notes.md · review-findings.md · debt.json · debt.md
 │   ├── events.jsonl             # append-only event log, also fed to GET /events
 │   ├── iterations/NNNN/{meta.json,output.jsonl}
 │   ├── approaches/ · artifacts/ · steering/{NNN-*.md,.consumed.json}
@@ -1341,6 +1341,8 @@ strictly append-only.
 ├── standing-rules.md        # harness-pinned copy of notes.md's "## Standing rules" block (§4.3)
 ├── review-findings.md       # the reviewer's unmet-requirement list, when rejected
 ├── review-findings.json     # the same findings, structured: severity/curable/clause/evidence (task 001, #110)
+├── debt.json                # the debt ledger: verifier notes on a form-met-substance-missed clause, appended by `RunDir.record_debt` (task 006, requirement A.3, #155)
+├── debt.md                  # the same ledger, rendered for a human, open then resolved (task 006, requirement A.3, #155)
 ├── verdict-gate-findings.md # verdict_gate's own free-markdown findings, when it rejects (task 019, requirement D.4, #125)
 ├── verdict-gate-findings.json # the same findings, structured with per-finding authorship (task 019, requirement D.4, #125)
 ├── petition-adjudications.json # run-scope CONFIRMED impossibility-petition adjudications, survives approach archiving (task 011, requirement C.3, #112)
@@ -4051,7 +4053,7 @@ the run dir alone (§10.1) and takes `--json`:
 | `iteration <id> <n>` | what happened to iteration `n`: phase, start/end, duration, why it ended, its own tokens and cost, and its full transcript (`--no-log` for the header alone) |
 | `fault <id>` | why the run is in trouble: the fault's class, the signature its error text matched, the retry ladder so far, what is left of the outage budget |
 | `cost <id>` | what it spent, per phase and per approach, with quoted, derived and unavailable money each labelled as such (§8.6) |
-| `docs <id> [name]` | the prose the run left behind — `notes.md`, `review-findings.md`, `composite-prd.md` — and the effective `job.yaml` with secret values redacted |
+| `docs <id> [name]` | the prose the run left behind — `notes.md`, `review-findings.md`, `composite-prd.md`, `debt.md` — and the effective `job.yaml` with secret values redacted |
 
 A missing iteration exits `1` naming the ones that do exist, an unknown document
 name exits `2` listing the keys, and an unknown run is exit `3` as everywhere
@@ -4296,7 +4298,8 @@ dir themselves and a live proxy would only add a way to disagree.
   phase, timestamps, duration, exit reason, tokens, cost and its full rendered
   transcript — byte-identical to what `ralphctl iteration <id> <n>` prints.
 - **State documents panel** — one row per run document: the worker's `notes.md`,
-  `review-findings.md`, `composite-prd.md` and the run's `job.yaml` **with
+  `review-findings.md`, `composite-prd.md`, the debt ledger `debt.md` (task 006,
+  requirement A.3) and the run's `job.yaml` **with
   secrets redacted**, each opening its body in a dialog. A document that was
   never written is listed as such rather than omitted: absence is an answer.
 - **Artifacts panel** — what the job left behind under `artifacts/`, size and
@@ -4483,7 +4486,8 @@ logs) in the artifacts directory". The engine-written files under
 file is agent-produced, and neither is faulted for omitting or predating
 anything a closing report claims (requirement B.2) -- it is the engine's own
 account of the run, built only from files the engine itself owns
-(`status.json`, `approach-metadata.json`, `petition-adjudications.json`, the
+(`status.json`, `approach-metadata.json`, `petition-adjudications.json`,
+`debt.json` (task 006, requirement A.3), the
 steering ledger, `CONFIG_DIR/amendments/`, the archived `approaches/NN/`
 findings sidecars) and never from a hat's live reasoning. `write_run_record()`
 writes both files together, atomically, at every entry to `finishing`
