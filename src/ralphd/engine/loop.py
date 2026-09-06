@@ -7690,16 +7690,20 @@ class LoopSupervisor:
         `engine.petitions.apply_refuted_petition_adjudications` -- read
         the CURRENT `tasks.json`, apply any REFUTED entries in
         `adjudications` to it (mutating any matching `petitioned` task to
-        `failed`, remedy recorded), and persist + announce the change
-        exactly like any other engine-driven task-status move
+        `failed`, remedy recorded -- or, for a `remedy_type: "form"`
+        entry, task 008/A.4, #155, to `validated`, with the remedy
+        recorded as a debt item instead), and persist + announce the
+        change exactly like any other engine-driven task-status move
         (`_emit_task_changes`, the same seam `_verify_task`'s own
         exhaustion routing uses). A no-op call touches neither the file
         nor the emitted-changes machinery -- `write_tasks` is skipped
         entirely when nothing changed, so a review pass with no REFUTED
         entries never perturbs `tasks.json`'s mtime.
 
-        Returns the ids of every task this call moved to `failed`, same
-        as the petitions-module function it wraps.
+        Returns the ids of every task this call moved to `failed` (the
+        `"substance"` branch only), same as the petitions-module function
+        it wraps; a `"form"`-routed task's id is never in this list --
+        read the debt ledger (`self.run.read_debt()`) for those.
 
         Task 007 (requirement B, #114): ALSO calls `petitions.
         record_refuted_adjudications` -- unconditionally, before the
@@ -7710,16 +7714,30 @@ class LoopSupervisor:
         episode's usual shape, since a worker's own declaration never
         moves the task off its ordinary status). A no-op call (nothing
         REFUTED) records nothing, exactly like the tasks.json half.
+
+        Task 008 (requirement A.4, #155): `form_debt` collects any
+        `"form"`-classified remedy's debt-shaped note, keyed by task id,
+        as `petitions.apply_refuted_petition_adjudications` mutates
+        `tasks_doc` -- recorded through `self.run.record_debt`, the ONE
+        write path task 006 already gives the debt ledger, AFTER
+        `tasks.json` is written back (so a debt entry never outlives the
+        task-status write that motivated it) and counted alongside
+        `changed` for whether anything needs writing/announcing at all --
+        a call with only `"form"`-routed matches and no `"substance"`
+        ones still persists `tasks.json` and still emits task changes.
         """
         if not adjudications:
             return []
         petitions.record_refuted_adjudications(self.run, adjudications)
         tasks_doc = self.run.read_tasks()
+        form_debt: dict[str, list[dict]] = {}
         changed = petitions.apply_refuted_petition_adjudications(
-            tasks_doc, adjudications)
-        if changed:
+            tasks_doc, adjudications, form_debt=form_debt)
+        if changed or form_debt:
             self.run.write_tasks(tasks_doc)
             self._emit_task_changes()
+        for task_id, notes in form_debt.items():
+            self.run.record_debt(task_id, notes)
         return changed
 
     def _apply_criteria_amendments(self, adjudications) -> list[str]:
@@ -8512,6 +8530,16 @@ class LoopSupervisor:
             "field: `CONFIRMED` (the obligation genuinely cannot be "
             "satisfied as written) or `REFUTED` (state CONCRETELY, in "
             "that entry's `remedy`, what would satisfy the obligation).\n"
+            "\nTask 008 (requirement A.4, #155): on a `REFUTED` entry, "
+            "also add `\"remedy_type\": \"form\"` or `\"substance\"` -- "
+            "`form` when the remedy changes NO deliverable, only how it "
+            "is produced (rerun a command differently, restate something "
+            "already true, adjust process); `substance` (the default if "
+            "omitted) when the remedy actually requires a different "
+            "deliverable. A `form` remedy routes the task to `validated` "
+            "with the remedy recorded as a debt item, never as a retry "
+            "driver; a `substance` remedy fails the task with the remedy "
+            "as its next handoff, exactly as before this task.\n"
             "\nTask 006 (requirement B.1, #114): if a petition's `Type` is "
             "`contradictory-clauses` or `self-referential` AND its "
             "obligation IS the affected task's own `successCriteria` text "

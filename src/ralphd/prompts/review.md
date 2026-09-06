@@ -108,10 +108,19 @@ either `CONFIRMED` (the obligation genuinely cannot be satisfied as written;
 it becomes a disclosed residual for the rest of the run, and every later
 approach inherits your adjudication rather than re-litigating it) or
 `REFUTED` (state CONCRETELY what would satisfy the obligation -- a vague or
-missing remedy is not a valid REFUTED adjudication). Carry your
+missing remedy is not a valid REFUTED adjudication). On a REFUTED entry,
+also classify the remedy: `remedy_type: "form"` when it changes NO
+deliverable, only how one is produced (rerun a command differently, adjust
+a process, restate something already true), or `remedy_type: "substance"`
+(the default when omitted) when it actually requires a different
+deliverable. A `form` remedy routes the affected task to `validated`, with
+the remedy recorded as a debt item rather than a retry driver; a
+`substance` remedy fails the task with the remedy as its next handoff,
+exactly as REFUTED has always behaved. Carry your
 adjudications in your verdict payload's `petition_adjudications` field (see
 Verdict below), one entry per petition, naming the obligation and your
-CONFIRMED/REFUTED call (and, for REFUTED, the remedy). A duplicate filing
+CONFIRMED/REFUTED call (and, for REFUTED, the remedy and its `remedy_type`).
+A duplicate filing
 against an obligation that already has one, or a petition re-filed after an
 earlier REFUTED against the same obligation, is itself a BLOCKING finding,
 not a second hearing -- do not adjudicate a duplicate/re-filed petition as
@@ -224,6 +233,7 @@ exactly one JSON object:
 - If this prompt includes an "Open impossibility petitions" section, add
   `"petition_adjudications": [{"obligation": "<as named there>", "adjudication":
   "CONFIRMED"|"REFUTED", "remedy": "<required when REFUTED, otherwise omit>",
+  "remedy_type": "form"|"substance" (<REFUTED only, default substance>),
   "task_id": "<only when re-scoping that ONE task's own criteria, see below>",
   "replacement_criteria": "<only alongside task_id above>"}]`
   to whichever verdict object above you report, one entry per open petition --

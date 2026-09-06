@@ -1230,7 +1230,26 @@ def petitioned_task_accepted(task: dict, confirmed: set[str]) -> bool:
     return _obligation_confirmed(task_petition_obligation(task), confirmed)
 
 
-def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications) -> list[str]:
+def _refuted_remedy_type(item: dict) -> str:
+    """Task 008 (requirement A.4, #155): the REFUTED entry's own
+    classification of its remedy -- `"form"` (the remedy changes no
+    deliverable, only how it is produced) or the default `"substance"`
+    for anything else (missing, blank, or any other value). Case-
+    insensitive on the `"form"` literal, whitespace-tolerant; every
+    other value -- including every REFUTED entry filed before this task
+    existed, none of which ever supplied `remedy_type` at all -- is
+    `"substance"`, which is exactly the point: PRD A.4's "substance
+    behaves exactly as today" is this function defaulting closed, not a
+    separate code path.
+    """
+    raw = item.get("remedy_type")
+    if isinstance(raw, str) and raw.strip().lower() == "form":
+        return "form"
+    return "substance"
+
+
+def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications,
+                                         form_debt: dict | None = None) -> list[str]:
     """Task 010 (requirement C.2, #114): the REFUTED counterpart to
     `record_confirmed_adjudications` -- but, unlike that function, this
     one is never persisted at run scope (`docs/petition-format.md`:
@@ -1239,19 +1258,43 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications) -> list
     records, mutating them IN PLACE: any `petitioned` task whose own
     engine-filed obligation (`task_petition_obligation`) fuzzy-matches a
     REFUTED entry in `adjudications` (review's `petition_adjudications`
-    verdict field) moves to `failed` -- the same terminal C.2 says an
-    un-rescued exhaustion always lands at -- carrying the refutation's
-    own "what would satisfy it" text (its `remedy` field) into
-    `validationNotes` on the task record, replacing the stale last-attempt
-    handoff that got it petitioned in the first place. `failureKind` is
-    set to `state.TASK_FAILURE_VALIDATION_EXHAUSTED`, matching the label
-    an un-rescued exhaustion already carries (task 024/#33) -- a REFUTED
-    petition does not invent a new failure vocabulary, it is the SAME
-    exhaustion, just adjudicated.
+    verdict field) is routed by that entry's OWN classification of its
+    remedy (`_refuted_remedy_type`, task 008/A.4, #155):
 
-    Returns the ids of every task this call moved to `failed`, in plan
-    order; a no-op call (nothing REFUTED, or nothing `petitioned` to
-    match against) returns `[]` and leaves `tasks_doc` untouched.
+    - `"substance"` (the default -- see `_refuted_remedy_type`) moves the
+      task to `failed`, the same terminal C.2 says an un-rescued
+      exhaustion always lands at, carrying the refutation's own "what
+      would satisfy it" text (its `remedy` field) into `validationNotes`
+      on the task record, replacing the stale last-attempt handoff that
+      got it petitioned in the first place. `failureKind` is set to
+      `state.TASK_FAILURE_VALIDATION_EXHAUSTED`, matching the label an
+      un-rescued exhaustion already carries (task 024/#33) -- a REFUTED
+      petition does not invent a new failure vocabulary, it is the SAME
+      exhaustion, just adjudicated. Behaves BYTE-FOR-BYTE as this
+      function did before task 008 (every pre-existing caller, none of
+      which ever supplied `remedy_type`, is unaffected).
+    - `"form"` (the remedy changes no deliverable, only how it is
+      produced -- PRD A.4) moves the task to `validated` instead --
+      the SAME acceptance a verify pass with only a form/wording/
+      process note already gives it (requirement A.2/A.3) -- and NEVER
+      touches `validationNotes`: the remedy is recorded as a
+      debt-shaped note (`{clause, observed, suggested}`, task 006's
+      `verifyNotes` shape) appended to `form_debt[task_id]` when the
+      caller supplies that dict, for the caller to hand to
+      `state.record_debt_entries`/`RunDir.record_debt` -- the same one
+      write path the verify-notes debt ledger already uses, never a
+      second ledger writer. `form_debt` is optional and, when omitted,
+      the note is simply not recorded anywhere but the task still moves
+      to `validated` -- this function's own job (routing the task) never
+      depends on the caller wanting the debt side effect too.
+
+    Returns the ids of every task this call moved to `failed` (the
+    `"substance"` branch only -- a `"form"`-routed task's id is never in
+    this list, matching the docstring's pre-task-008 promise verbatim;
+    callers that want the `"form"`-routed ids read `form_debt`'s own
+    keys instead), in plan order; a no-op call (nothing REFUTED, or
+    nothing `petitioned` to match against) returns `[]` and leaves
+    `tasks_doc` (and `form_debt`) untouched.
 
     A CONFIRMED entry in `adjudications` is silently ignored here --
     that side is `record_confirmed_adjudications`'s job, at run scope,
@@ -1263,6 +1306,7 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications) -> list
     from ralphd.engine.state import TASK_FAILURE_VALIDATION_EXHAUSTED
     tasks = tasks_doc.get("tasks") or []
     changed: list[str] = []
+    handled: set = set()
     for item in adjudications:
         if not isinstance(item, dict) or item.get("adjudication") != "REFUTED":
             continue
@@ -1272,17 +1316,32 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications) -> list
         norm = _normalize_obligation(obligation)
         remedy = item.get("remedy")
         remedy_text = remedy.strip() if isinstance(remedy, str) else ""
+        remedy_type = _refuted_remedy_type(item)
         for t in tasks:
             if (not isinstance(t, dict) or t.get("status") != "petitioned"
-                    or t.get("id") in changed):
+                    or t.get("id") in handled):
                 continue
             own = _normalize_obligation(task_petition_obligation(t))
             if own and (own in norm or norm in own):
-                t["status"] = "failed"
-                t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
-                t["validationNotes"] = remedy_text or (
-                    "Petition REFUTED with no remedy stated.")
-                changed.append(t.get("id"))
+                handled.add(t.get("id"))
+                if remedy_type == "form":
+                    t["status"] = "validated"
+                    if form_debt is not None:
+                        form_debt.setdefault(t.get("id"), []).append({
+                            "clause": obligation,
+                            "observed": (
+                                "Adjudication REFUTED the petition; the "
+                                "remedy is classified 'form' -- it changes "
+                                "no deliverable, only how it is produced."),
+                            "suggested": remedy_text or (
+                                "Petition REFUTED with no remedy stated."),
+                        })
+                else:
+                    t["status"] = "failed"
+                    t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
+                    t["validationNotes"] = remedy_text or (
+                        "Petition REFUTED with no remedy stated.")
+                    changed.append(t.get("id"))
     return changed
 
 
