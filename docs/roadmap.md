@@ -2044,8 +2044,11 @@ instead of starving (#149); an infra fault that never trips the instant-failure 
 (#151); petitions scoped to their own wave and an adjudication MAC key that survives a resume
 (#150, #152); a hub that is cheap to leave open (#148); and a suite restructured into a smoke
  tier, a parallel fast tier and consolidated flow cases so the lanes the run must keep green at
- its final code sha stay small. Requirement letters are the PRD's own, A–I. **This entry is
-written while the run is still going** (`docs/prds/README.md`'s row reads `in-flight`); it
+ its final code sha stay small. Requirement letters are the PRD's own, A–I.
+
+The run is `selfdev-v019-a-note-is-not-a-rejection`, launched at `4c003a5` with
+`--max-approaches 2`. **This entry is written while that run is still going**
+(`docs/prds/README.md`'s row for `selfdev-v019-a-note-is-not-a-rejection` reads `in-flight`); it
 records the evidence landed so far and is not a terminal account.
 
 - **H — the version, the roadmap, the row.** `0.19.0` in `pyproject.toml` and
@@ -2057,7 +2060,11 @@ records the evidence landed so far and is not a terminal account.
   `docs/prds/README.md` and this block itself (task 003, this same commit). The `## v0.18`
   block and index row are settled host-side by the operator (`00003a3`, `68c6692`) and were
   not touched by any of the three commits above.
-- **A–G, I.** Still open (tasks 004–039, pending).
+- **Still open** (tasks 004–039, pending): **A** — the verifier accepts delivered work (#154);
+  **B** — progress is what the run did (#153); **C** — a `petitioned` dependency holds (#149);
+  **D** — an infra fault never trips the breaker (#151); **E** — petitions belong to their wave,
+  adjudications survive (#150, #152); **F** — the hub is cheap to leave open (#148); **G** — the
+  suite is small and fast; **I** — the evidence, the closure, and the record.
 
 This block will be revised again as the remaining tasks land and the run reaches a terminal
 state.
