@@ -19,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHD_ENGINE, _resolved_home_env, with_ralphd_importable
+from tests.conftest import (
+    NOTIFIER_ENV_VAR, RALPHD_ENGINE, _resolved_home_env, with_ralphd_importable,
+)
 
 REPO = Path(__file__).parent.parent
 STUB_PI = REPO / "tests" / "stub-pi"
@@ -47,12 +49,20 @@ class EngineProc:
         self.port = free_port()
         base_env = {
             k: v for k, v in os.environ.items()
-            if k not in ("RALPHD_HOST_WORKSPACE", "RALPHD_HOST_RUN_DIR", "RALPHD_RUN_ID")
+            if k not in ("RALPHD_HOST_WORKSPACE", "RALPHD_HOST_RUN_DIR", "RALPHD_RUN_ID",
+                         NOTIFIER_ENV_VAR)
         }
         # These docker-siblings vars may be set in the ambient environment
         # (e.g. this very test suite running inside a docker-enabled ralphd
         # job); strip them so tests are deterministic regardless of the host
         # environment, and only set them via explicit stub_env.
+        # `NOTIFIER_ENV_VAR` (steer 002, task 040) is stripped the same way
+        # for the same reason `tests/conftest.py`'s `LiveRun`/`ralphctl` are:
+        # a spawned engine that reaches a notifier-escalation pause must not
+        # POST to the operator's real endpoint just because this container
+        # happens to export it -- `stub_env` (merged in below, last, via
+        # `_resolved_home_env`) is still the one way to opt a specific test
+        # back in.
         #
         # PATH, in order (same construction as LiveRun in tests/conftest.py):
         # STUB_PI first, because tests depend on the stub `pi` shadowing any

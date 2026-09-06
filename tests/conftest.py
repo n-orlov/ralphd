@@ -233,6 +233,18 @@ def pytest_configure(config):
         "amain()) sees the real ambient $HOME -- the same opt-in spelling "
         "as the AMBIENT_HOME sentinel used for spawned-child stub_env",
     )
+    # Task 040 (steer 002, #83-shaped): the one opt-in from the autouse
+    # RALPHD_NOTIFIER_URL scrub below (`_scrub_notifier_env_in_process`) --
+    # a test that genuinely wants to see the ambient notifier URL in its
+    # own os.environ (in-process JobConfig.load() call) marks itself with
+    # this and nothing else, so there stays exactly one greppable spelling
+    # for the opt-in.
+    config.addinivalue_line(
+        "markers",
+        "NOTIFIER_ENV: opt this test out of the autouse RALPHD_NOTIFIER_URL "
+        "scrub, so its own os.environ (and anything it calls in-process, "
+        "e.g. JobConfig.load()) sees the ambient notifier URL",
+    )
 
 
 def free_port() -> int:
@@ -330,6 +342,50 @@ def _isolate_ambient_home_in_process(request, monkeypatch, tmp_path_factory):
     monkeypatch.setenv("PYTHONUSERBASE", _USER_BASE)
 
 
+# --- keep the operator's real notifier URL out of the suite (steer 002, ---
+# --- task 040) ---------------------------------------------------------
+# This container exports `RALPHD_NOTIFIER_URL` (the operator's own
+# notifier endpoint) into every process it starts, including whatever
+# spawns pytest. `LiveRun`/`ralphctl` below (and `EngineProc` in
+# tests/test_e2e.py, which mirrors the same construction) used to build a
+# spawned child's env as `{**os.environ, ...}`, so the ambient notifier URL
+# rode along into every test engine/ralphctl child unless a test happened
+# to override it. `JobConfig.load()` reads the same variable straight out
+# of `os.environ` (config.py), so any IN-PROCESS call (no subprocess at
+# all) saw it too. Task 012's last-approach stagnation pause escalates
+# through `self.notifier` whenever `cfg.notifier_url` is set -- so a test
+# engine that reached that pause POSTed the escalation text to the
+# operator's real Telegram.
+#
+# `NOTIFIER_ENV_VAR` is the one name both halves of the fix key off of:
+# `_without_notifier_env()` drops it from a spawned child's env dict
+# unless the caller's own `stub_env` names it explicitly (stub_env is
+# always merged in AFTER this, so an explicit stub_env entry still wins);
+# the autouse fixture below drops it from the pytest PROCESS's own
+# `os.environ`, with the `NOTIFIER_ENV` marker (registered in
+# `pytest_configure` above) as the one opt-in spelling.
+NOTIFIER_ENV_VAR = "RALPHD_NOTIFIER_URL"
+
+
+def _without_notifier_env(env: dict) -> dict:
+    """`env` (typically `os.environ`) with `RALPHD_NOTIFIER_URL` dropped.
+
+    Callers merge a `stub_env` dict AFTER this, last, in every call site
+    that has one -- so a test that deliberately wants a spawned child to
+    see the notifier URL still gets it, by naming
+    `RALPHD_NOTIFIER_URL` in its own `stub_env` explicitly; this function
+    never has to know about that case itself.
+    """
+    return {k: v for k, v in env.items() if k != NOTIFIER_ENV_VAR}
+
+
+@pytest.fixture(autouse=True)
+def _scrub_notifier_env_in_process(request, monkeypatch):
+    if request.node.get_closest_marker("NOTIFIER_ENV"):
+        return
+    monkeypatch.delenv(NOTIFIER_ENV_VAR, raising=False)
+
+
 class LiveRun:
     """A real ralphd-engine, wired so `ralphctl` (pointed at `registry`)
     can talk to it as if a container had been started normally."""
@@ -360,7 +416,7 @@ class LiveRun:
         # variables that have to survive it are applied last rather than
         # buried in the defaults where a caller could shadow them by accident.
         env = with_ralphd_importable({
-            **os.environ,
+            **_without_notifier_env(os.environ),
             "PATH": ":".join([str(STUB_PI), str(RALPHD_ENGINE.parent),
                               str(_INTERPRETER_DIR), os.environ["PATH"]]),
             "STUB_RUN_DIR": str(self.run_dir),
@@ -398,7 +454,7 @@ class LiveRun:
         # behind a different console script, so any test that hands it a
         # different HOME hides `ralphd` from it in exactly the same way (#67).
         env = with_ralphd_importable(
-            {**os.environ, "RALPHD_REGISTRY": str(self.registry)})
+            {**_without_notifier_env(os.environ), "RALPHD_REGISTRY": str(self.registry)})
         return subprocess.run([str(RALPHCTL), *argv], env=env,
                               capture_output=True, text=True, timeout=60)
 
