@@ -84,6 +84,22 @@ What it obliges you to do:
   the steer hat did with a message; it is never a verdict on the tasks that
   message produced, which the task state file alone carries.
 
+## Open debt ledger (task 007, requirement A.3, #155)
+
+If this prompt includes an `## Open debt (read-only context)` section below,
+every item listed there arrives PRE-CLASSIFIED as a residual: a verifier
+already decided, under this run's materiality rubric, that the underlying
+form/wording/provenance gap was worth noting rather than rejecting over
+(task 005), and the engine already recorded it as such in the run's debt
+ledger (task 006). Your job with each one is narrow -- **confirm the
+classification, or, with concrete evidence, promote it to blocking** -- and
+never to rediscover it from scratch as though it were a fresh finding: an
+entry here is not itself grounds for a new residual finding, and re-deriving
+the same observation the ledger already states is redundant, not additional
+rigor. Promoting an entry to blocking requires the same evidence discipline
+every other blocking finding in this prompt already demands -- a bare
+disagreement with the verifier's original call is not evidence.
+
 ## Impossibility petitions
 
 If this prompt includes an "Open impossibility petitions" section below,

@@ -1119,6 +1119,24 @@ HAT_SCHEMAS: dict[str, dict] = {
             # second, drifting copy of that table pinned here.
             "task_status": {"type": "string"},
             "justification": {"type": "string"},
+            # Task 007 (requirement A.3 prompt half, #155): an OPTIONAL
+            # side channel, independent of `verdict` exactly like
+            # `proposed_tasks`/`task_status`/`petition` above -- a worker
+            # MAY, while on its own assigned task, resolve a debt ledger
+            # item (`state.DEBT_JSON_FILE`, task 006) when doing so costs
+            # minutes and stays inside its own task's files, and names
+            # which one(s) here by `id` (`"<taskId>/<n>"`, the shape
+            # `record_debt_entries` mints). Only the outer TYPE is checked
+            # here -- `contracts.py`'s restricted schema engine has no
+            # `items` sub-schema for array elements, by design, the same
+            # as every other optional array field in this schema. Applied
+            # by `LoopSupervisor._apply_worker_debt_resolution`
+            # (`state.resolve_debt_entries` -> `RunDir.resolve_debt`),
+            # stamping `resolvedBy` with the iteration's own commit sha --
+            # an id this run's ledger does not recognise, or one already
+            # resolved, is silently ignored rather than rejected, since
+            # this report is advisory, never authoritative.
+            "debt_resolved": {"type": "array"},
             # Task 004 (requirement A.1, #114): an OPTIONAL structured
             # impossibility declaration -- a worker names the obligation
             # (a requirement letter, a DoD item, or its own task's

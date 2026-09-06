@@ -4122,6 +4122,51 @@ def record_debt_entries(run_root: Path, task_id: str,
     return entries
 
 
+def resolve_debt_entries(run_root: Path, ids: list[str],
+                         resolved_by: str) -> list[str]:
+    """Task 007 (requirement A.3, #155 prompt half): the resolution
+    counterpart `record_debt_entries`' own docstring named as "task
+    007/008's job" -- flips every entry in `ids` whose current `status`
+    is still `DEBT_STATUS_OPEN` to `DEBT_STATUS_RESOLVED`, stamping
+    `resolvedBy` with `resolved_by` (the iteration's own commit sha, or
+    whatever else a caller passes -- this function trusts it verbatim,
+    the same way `record_debt_entries` trusts a verifier's note text).
+
+    An id in `ids` that does not exist in the ledger, or that is already
+    `DEBT_STATUS_RESOLVED`, is silently skipped -- never an error. A
+    worker's `debt_resolved` report is advisory, not authoritative (task
+    007's own PRD wording: "a worker MAY resolve an item"), so a stale
+    or mistyped id must degrade to a no-op rather than reject the whole
+    completion report over an unrelated typo.
+
+    Re-renders `debt.md` from the whole updated list in the SAME call,
+    exactly like `record_debt_entries` -- the two files can never
+    disagree about what the ledger holds, whichever writer touched it
+    last. Writes nothing, and returns `[]`, when nothing in `ids` was
+    actually flipped (including the case where `ids` is empty/not a
+    list), so a caller with nothing to apply never dirties the ledger's
+    mtime for no reason.
+
+    Returns the ids ACTUALLY flipped this call (a subset of `ids`, in
+    ledger order) -- never `ids` itself echoed back -- so a caller can
+    log or event exactly what changed rather than what was merely asked
+    for.
+    """
+    entries = read_debt_entries(run_root)
+    wanted = set(ids) if isinstance(ids, list) else set()
+    flipped: list[str] = []
+    for e in entries:
+        if e.get("id") in wanted and e.get("status") != DEBT_STATUS_RESOLVED:
+            e["status"] = DEBT_STATUS_RESOLVED
+            e["resolvedBy"] = resolved_by
+            flipped.append(e["id"])
+    if flipped:
+        root = Path(run_root)
+        atomic_write_json(root / DEBT_JSON_FILE, entries)
+        atomic_write(root / DEBT_FILE, render_debt_markdown(entries))
+    return flipped
+
+
 # ---------------------------------------------------------------------------
 # Archived approaches (task 020, #24)
 #
@@ -5620,6 +5665,20 @@ class RunDir:
         after copying a verifier's `notes` onto `verifyNotes` (task 005),
         so no caller has to know where the ledger lives."""
         return record_debt_entries(self.root, task_id, notes)
+
+    def read_debt(self) -> list[dict]:
+        """Bound form of `read_debt_entries` -- what the worker/review
+        prompt context (task 007, `LoopSupervisor._debt_ledger_context`)
+        and `_apply_worker_debt_resolution` read, so neither has to know
+        the ledger's on-disk path."""
+        return read_debt_entries(self.root)
+
+    def resolve_debt(self, ids: list[str], resolved_by: str) -> list[str]:
+        """Bound form of `resolve_debt_entries` -- what
+        `LoopSupervisor._apply_worker_debt_resolution` calls when a
+        worker's completion payload carries `debt_resolved` (task 007,
+        requirement A.3 prompt half, #155)."""
+        return resolve_debt_entries(self.root, ids, resolved_by)
 
     @property
     def verdict_gate_findings_file(self) -> Path:

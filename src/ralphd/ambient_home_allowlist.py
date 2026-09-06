@@ -188,8 +188,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # with unrelated edits, exactly as this module's own docstring warns.
         # Task 007 (approach 02, D.1, notifier wiring) shifted `_creds_note`
         # again -- this read is now at 1021, same method, same read, same
-        # reason.
-        "line": "1021",
+        # reason. Task 007 (v0.19, requirement A.3 prompt half, #155) added
+        # `_debt_ledger_context`/`_apply_worker_debt_resolution`/
+        # `_workspace_head_sha` above `_creds_note` in this same module,
+        # shifting this read again -- it is now at 1092, same method, same
+        # read, same reason.
+        "line": "1092",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

@@ -164,6 +164,37 @@ Anything that applies to every later iteration (a convention, a command, a
 prohibition) belongs in the notes' standing-rules block as well as under the
 note's own heading.
 
+## Open debt
+
+If this prompt includes an `## Open debt (read-only context)` section below, it
+lists every OPEN item in this run's debt ledger (`debt.json`/`debt.md`) --
+form/wording/provenance notes a verifier chose to pass with rather than
+reject over (task 005), carried forward so nobody has to rediscover them.
+
+**Resolving one is entirely OPTIONAL, and bounded.** You may resolve an open
+debt item while working on your OWN assigned task this iteration, but only
+when doing so costs a few minutes and the fix stays inside that task's own
+files -- never a reason to touch a file outside your assigned task's scope,
+and never a reason to spend the bulk of an iteration on someone else's note
+instead of your own task. If it does not fit inside those two limits, leave
+it for a later iteration or for review to weigh as a residual -- there is no
+penalty for resolving nothing.
+
+When you do resolve one (or several), report the id(s) alongside your
+ordinary verdict in the same JSON reply:
+
+```json
+{"verdict": "complete", "task_id": "<the assigned id>",
+ "debt_resolved": ["<id>", "<id>"]}
+```
+
+The engine flips each named item to `resolved` and stamps it with this
+iteration's own commit sha -- you never edit `debt.json`/`debt.md` yourself,
+the same discipline every other side channel in this contract already
+follows. An id this run's ledger does not recognise, or one already
+resolved, is silently ignored rather than rejected. `debt_resolved` may ride
+alongside ANY verdict value, including `"no_verdict"`.
+
 ## Sandbox safety: you run inside the thing you are changing
 
 Your shell runs in the job's own container, as the same user, beside the

@@ -24,6 +24,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Callable
@@ -141,6 +142,14 @@ STEERING_LEDGER_NOT_A_WAIVER = (
     "A steer is NOT a waiver: only operator amendments in "
     "`/config/amendments` waive an obligation.")
 STEERING_LEDGER_MAX_NOTES_CHARS = 400
+
+# Task 007 (PRD requirement A.3 prompt half, #155): the debt ledger's OWN
+# read-only context section, appended to EVERY hat's prompt exactly the way
+# `STEERING_LEDGER_HEADING` above already is -- so a worker sees what is
+# open before deciding whether to spend a few of its own minutes resolving
+# one, and review sees the SAME open items pre-classified as residuals
+# (`prompts/review.md`'s own paragraph) rather than rediscovering them.
+DEBT_LEDGER_HEADING = "## Open debt (read-only context)"
 
 # Task 022 (#30): how many earlier episode endings `status.json` keeps in
 # `previousEndings`. Bounded because status.json is rewritten in full on every
@@ -846,6 +855,7 @@ class LoopSupervisor:
                     "instructions to be actioned by the next planning/worker "
                     "iteration. This phase does not consume or act on them.\n")
         parts.append(self._steering_ledger_context())
+        parts.append(self._debt_ledger_context())
         parts.append(self._recent_steering_echo())
         if extra:
             parts.append("\n" + extra)
@@ -991,6 +1001,67 @@ class LoopSupervisor:
             if notes:
                 lines.append(f"\n  - steer hat's settlement notes: {notes}")
         lines.append("\n")
+        return "".join(lines)
+
+    def _debt_ledger_context(self) -> str:
+        """The debt ledger's own read-only context section (task 007, PRD
+        requirement A.3 prompt half, #155) -- appended to EVERY hat's
+        prompt beside `_steering_ledger_context` above, the SAME
+        treatment for the SAME reason: a fact the harness already knows
+        (task 006's `debt.json`/`debt.md`) surfaced once, here, instead of
+        asking each hat prompt to reconstruct it.
+
+        Lists only OPEN entries -- a resolved one has nothing left for
+        either a worker or review to act on, and `debt.md`/the run record
+        (task 006) already carry the resolved history for anyone who wants
+        it. Returns '' when the ledger has no open entry (the common case
+        for most of a run's life, and every run before task 006's verifier
+        ever leaves a note), so prompts are unaffected until one exists.
+
+        Semantics, stated in the text itself exactly as the steering
+        ledger's own section does, rather than left for each hat prompt to
+        infer:
+
+        * for a WORKER: resolving an item is OPTIONAL and bounded -- worth
+          doing only when it costs minutes and stays inside the files of
+          the task the worker is already on; report it via the
+          `debt_resolved` contract field (`transitions.HAT_SCHEMAS
+          ["worker"]`), never by editing `debt.json` directly.
+        * for REVIEW: every entry listed here arrives PRE-CLASSIFIED as a
+          residual -- review may CONFIRM that classification or, with
+          concrete evidence, PROMOTE one to blocking, but never treats an
+          entry here as something to rediscover from scratch
+          (`prompts/review.md`'s own paragraph restates this).
+        * reading this section, like the steering ledger, consumes and
+          settles nothing by itself -- only a `debt_resolved` report
+          (worker) or a promotion in a review verdict actually changes
+          anything.
+        """
+        entries = [e for e in self.run.read_debt()
+                  if e.get("status") != state.DEBT_STATUS_RESOLVED]
+        if not entries:
+            return ""
+        lines = [
+            f"\n{DEBT_LEDGER_HEADING}\n",
+            f"{len(entries)} open debt item(s) this run's verifier has "
+            "left as a note rather than a rejection (task 005/006). A "
+            "WORKER may resolve one while on its own assigned task, "
+            "OPTIONALLY and only when doing so costs a few minutes and "
+            "stays inside that task's own files -- report the id(s) via "
+            "`\"debt_resolved\": [\"<id>\", ...]` beside your ordinary "
+            "verdict; the engine flips them to resolved with this "
+            "iteration's own commit sha. An id this run's ledger does not "
+            "recognise, or one already resolved, is silently ignored, "
+            "never rejected. REVIEW receives every entry below "
+            "PRE-CLASSIFIED as a residual: confirm it, or promote it to "
+            "blocking with concrete evidence -- never rediscover it. "
+            "Reading this section settles nothing by itself.\n",
+        ]
+        for e in entries:
+            lines.append(
+                f"\n- `{e.get('id')}` (task {e.get('taskId')}): "
+                f"{e.get('clause')} -- observed: {e.get('observed')}; "
+                f"suggested: {e.get('suggested')}\n")
         return "".join(lines)
 
     def _workspace_note(self) -> str:
@@ -4392,6 +4463,71 @@ class LoopSupervisor:
                       f"{len(inserted)} new task(s) created "
                       f"({', '.join(str(i) for i in inserted)})"))
 
+    def _workspace_head_sha(self) -> str | None:
+        """The workspace's current commit sha, or `None` when `git` is
+        unavailable or the tree is not (yet) a git repository -- used
+        ONLY to stamp `debt.json`'s `resolvedBy` field (task 007, PRD
+        requirement A.3 prompt half, #155) with "the iteration's commit
+        sha" a worker's `debt_resolved` report names. Read AFTER the
+        worker iteration has already finished (its final line is the
+        contract payload itself), so any commit that iteration made has
+        already landed by the time this runs -- this is deliberately not
+        a NEW git integration for the engine generally (there is none
+        elsewhere in this module), only a best-effort label for a debt
+        ledger row: a failure here degrades to `resolved_by="unknown"` in
+        `_apply_worker_debt_resolution` below, never an exception that
+        would abort the iteration over a purely advisory field.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.workspace), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10)
+        except OSError:
+            return None
+        if result.returncode != 0:
+            return None
+        sha = result.stdout.strip()
+        return sha or None
+
+    def _apply_worker_debt_resolution(self, debt_resolved) -> list[str]:
+        """Task 007 (PRD requirement A.3 prompt half, #155): applies a
+        worker's OPTIONAL `debt_resolved` side channel
+        (`transitions.HAT_SCHEMAS["worker"]`) -- a list of debt ledger
+        ids the worker claims to have resolved while on its own assigned
+        task. Flips each recognised, still-open id to
+        `state.DEBT_STATUS_RESOLVED` via `RunDir.resolve_debt`, stamped
+        with this iteration's own workspace HEAD sha
+        (`_workspace_head_sha`, `"unknown"` when that is unavailable --
+        e.g. a stub-`pi` test harness with no real git repository).
+
+        Deliberately NOT routed through `contract_enforcement.enforce_
+        contract`'s re-ask ladder, the same reasoning `_apply_worker_
+        proposed_tasks` states for itself: this is an optional side
+        channel that can accompany ANY verdict, and an id this run's
+        ledger does not recognise (or one already resolved) is a
+        documented no-op in `state.resolve_debt_entries` itself, never an
+        error to re-ask about. Never raises, never advances a state,
+        never touches `stagnant`.
+
+        Returns the ids actually flipped (possibly `[]` -- an empty or
+        malformed `debt_resolved`, or one naming nothing this run's
+        ledger recognises, is silently a no-op).
+        """
+        if not isinstance(debt_resolved, list) or not debt_resolved:
+            return []
+        clean = [i for i in debt_resolved if isinstance(i, str) and i.strip()]
+        if not clean:
+            return []
+        resolved_by = self._workspace_head_sha() or "unknown"
+        flipped = self.run.resolve_debt(clean, resolved_by)
+        if flipped:
+            self.run.emit(
+                "log", level="info",
+                message=(f"worker resolved {len(flipped)} debt ledger "
+                          f"item(s): {', '.join(flipped)} "
+                          f"(resolvedBy={resolved_by})"))
+        return flipped
+
     def _record_worker_iteration_verdict(self, iteration_number: int,
                                           verdict: str,
                                           task_id: str | None) -> None:
@@ -5606,6 +5742,16 @@ class LoopSupervisor:
                     self._apply_worker_proposed_tasks(
                         proposed_split_tasks, assigned_id, approach)
                     tasks_after = self.run.read_tasks()
+                # Task 007 (PRD requirement A.3 prompt half, #155): same
+                # independent-side-channel treatment as `proposed_tasks`
+                # just above -- `debt_resolved` rides beside ANY verdict
+                # value and is applied once, here, before the
+                # verdict-specific branches below.
+                debt_resolved = (
+                    payload.get("debt_resolved")
+                    if isinstance(payload, dict) else None)
+                if not schema_errors and debt_resolved:
+                    self._apply_worker_debt_resolution(debt_resolved)
                 if verdict == "unsatisfiable":
                     # v0.13 task 005 (#92 site 3): a schema violation or an
                     # illegal `_apply_unsatisfiable_report` (bad `task_id`,
