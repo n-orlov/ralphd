@@ -44,6 +44,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import make_supervisor
 
 
 # ---------------------------------------------------------------------------
@@ -58,20 +59,22 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path, monkeypatch, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "prd.md").write_text("# task 035 fixture PRD\n\nDo the thing.\n")
+def _no_config_dir(monkeypatch, root: Path) -> Path:
+    """Point the loop module's `CONFIG_DIR` at a directory that does not exist
+    -- what the run record says without a config dir is this module's subject
+    -- and hand `root` back so a binding can use it inline."""
     monkeypatch.setattr(loop_mod, "CONFIG_DIR", root / "no-config")
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    run.write_tasks({"version": 1, "tasks": [
-        {"id": "001", "title": "t", "successCriteria": "c",
-         "status": "completed"},
-    ]})
-    kw = {"max_approaches": 1, "reflect": False}
-    kw.update(cfg_kw)
-    cfg = JobConfig(run_id="task035-approach-metadata", **kw)
-    return LoopSupervisor(cfg, run, root)
+    return root
+
+
+_supervisor = lambda root, monkeypatch, **cfg: make_supervisor(
+    _no_config_dir(monkeypatch, root),
+    **{"run_id": "task035-approach-metadata", "cfg_defaults": False,
+       "prd": "# task 035 fixture PRD\n\nDo the thing.\n",
+       "status": {"state": "running"},
+       "tasks": [{"id": "001", "title": "t", "successCriteria": "c",
+                  "status": "completed"}],
+       "max_approaches": 1, "reflect": False, **cfg})
 
 
 def _stub_runner(sup: LoopSupervisor, payload: dict) -> None:

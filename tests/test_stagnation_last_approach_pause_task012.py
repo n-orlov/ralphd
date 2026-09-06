@@ -37,6 +37,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import make_supervisor, supervisor_with_runner
 
 TASK_ID = "001"
 
@@ -56,22 +57,22 @@ def _ok(text: str = "looked at the task and made no change") -> IterationResult:
     return r
 
 
-def _supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "prd.md").write_text("# task 012 fixture PRD\n\nDo the thing.\n")
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [_task()]})
-    kw = {"max_approaches": 1, "vigilant": False, "iterations": 20}
-    kw.update(cfg_kw)
-    cfg = JobConfig(run_id="task012-stagnation-last-approach", **kw)
-    sup = LoopSupervisor(cfg, run, root)
+class _NoopRunner:
+    """Every iteration is an ordinary successful one: this module is about the
+    stagnation counter, not about what any hat says."""
 
-    async def _noop_iteration(prompt, transcript, **kw2):
+    def interrupt(self) -> bool:
+        return False
+
+    async def run(self, prompt, transcript, **kw):
         return _ok()
 
-    sup.runner.run = _noop_iteration  # type: ignore[method-assign]
-    return sup
+
+_supervisor = supervisor_with_runner(
+    lambda sup: _NoopRunner(),
+    run_id="task012-stagnation-last-approach", cfg_defaults=False,
+    prd="# task 012 fixture PRD\n\nDo the thing.\n", status={"state": "running"},
+    tasks=[_task()], max_approaches=1, vigilant=False, iterations=20)
 
 
 class _StubNotifier:

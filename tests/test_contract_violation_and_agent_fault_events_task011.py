@@ -53,6 +53,7 @@ from ralphd.engine.contract_enforcement import EVENT_AGENT_FAULT, EVENT_VIOLATIO
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import make_supervisor
 
 TASK_ID = "1"
 
@@ -90,27 +91,19 @@ class _ScriptedWorker:
         return step
 
 
-def _supervisor(tmp_path, name: str, *, iterations: int = 10
-                 ) -> tuple[LoopSupervisor, RunDir]:
-    root = tmp_path / name
-    root.mkdir(parents=True)
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [
-        {"id": TASK_ID, "title": "prove the events land on disk",
-         "status": "in-progress", "successCriteria": "n/a"},
-    ]})
-    cfg = JobConfig(run_id=f"task011-{name}", iterations=iterations,
-                    max_approaches=3, vigilant=False, on_complete="exit",
-                    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
-                    infra_outage_budget_s=1000.0)
-    sup = LoopSupervisor(cfg, run, root)
-    sup._approach = 1
-    return sup, run
+_supervisor = lambda tmp_path, name, *, iterations=10: make_supervisor(
+    tmp_path, run_id=f"task011-{name}", cfg_defaults=False, run_root=name,
+    workspace=name, status={"state": "running"}, approach=1,
+    tasks=[{"id": TASK_ID, "title": "prove the events land on disk",
+            "status": "in-progress", "successCriteria": "n/a"}],
+    iterations=iterations, max_approaches=3, vigilant=False, on_complete="exit",
+    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 def test_a_recovering_violation_emits_one_violation_event_and_no_fault(tmp_path):
-    sup, run = _supervisor(tmp_path, "recovers")
+    sup = _supervisor(tmp_path, "recovers")
+    run = sup.run
     agent = _ScriptedWorker([_ok(BAD_PAYLOAD), _ok(GOOD_PAYLOAD)])
     sup.runner = agent  # type: ignore[assignment]
 
@@ -145,7 +138,8 @@ def test_an_exhausted_ladder_emits_one_violation_per_attempt_and_one_fault(tmp_p
     # charged iteration means this call makes exactly one pass, so the
     # events on disk are exactly one ladder's worth: `contract_retry_max
     # + 1` violations and one fault, nothing folded in from a second pass.
-    sup, run = _supervisor(tmp_path, "exhausts", iterations=1)
+    sup = _supervisor(tmp_path, "exhausts", iterations=1)
+    run = sup.run
     agent = _ScriptedWorker([_ok(BAD_PAYLOAD)])   # every attempt, forever
     sup.runner = agent  # type: ignore[assignment]
 

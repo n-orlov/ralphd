@@ -60,6 +60,7 @@ from ralphd.engine.config import (DEFAULT_HAT_MODEL_REF, MODEL_HATS,
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import make_supervisor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLAN_REVIEW_PROMPT = REPO_ROOT / "src" / "ralphd" / "prompts" / "plan_review.md"
@@ -348,29 +349,13 @@ class _ScriptedAgent:
             self.running = False
 
 
-def _supervisor(root: Path, handlers: dict, router_answer=None,
-                **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 15, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="task018-plan-review", **kw), run, root)
-    agent = _ScriptedAgent(handlers)
-    agent.sup = sup                      # type: ignore[attr-defined]
-    sup.runner = agent                    # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
-    # Task 019 (requirement M): the ROUTER's own channel, stubbed at
-    # `_ask_router` (the model call) and NOT at `router.decide` -- so the
-    # live `engine.router.decide()` logic (schema check, legal-target check
-    # against `plan_review`'s REAL edges, N-then-fall-back retry ladder)
-    # runs for real in every test below that reaches it. `router_answer` is
-    # one answer string or a list of them (the last one repeats).
+def _stub_router(sup, router_answer):
+    """Task 019 (requirement M): the ROUTER's own channel, stubbed at
+    `_ask_router` (the model call) and NOT at `router.decide` -- so the live
+    `engine.router.decide()` logic (schema check, legal-target check against
+    `plan_review`'s REAL edges, N-then-fall-back retry ladder) runs for real in
+    every test below that reaches it. `router_answer` is one answer string or a
+    list of them (the last one repeats)."""
     sup.router_prompts = []               # type: ignore[attr-defined]
     answers = ([] if router_answer is None else
                [router_answer] if isinstance(router_answer, str)
@@ -387,6 +372,15 @@ def _supervisor(root: Path, handlers: dict, router_answer=None,
 
     sup._ask_router = fake_ask_router     # type: ignore[method-assign]
     return sup
+
+
+_supervisor = lambda root, handlers, router_answer=None, **cfg: _stub_router(
+    make_supervisor(root, runner_factory=lambda sup: _ScriptedAgent(handlers),
+                    **{"run_id": "task018-plan-review", "iterations": 15,
+                       "max_approaches": 1, "vigilant": False, "on_complete": "exit",
+                       "infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
+                       "infra_outage_budget_s": 1000.0, **cfg}),
+    router_answer)
 
 
 def _router_decisions(root: Path) -> list[dict]:
