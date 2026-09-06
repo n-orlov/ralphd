@@ -6874,6 +6874,8 @@ class LoopSupervisor:
                 self.run, parsed.get("petition_adjudications"))
             self._apply_refuted_petition_adjudications(
                 parsed.get("petition_adjudications"))
+            self._apply_confirmed_petition_adjudications(
+                parsed.get("petition_adjudications"))
             self._apply_criteria_amendments(
                 parsed.get("petition_adjudications"))
         findings_list, channel_errors = self._review_findings_channel()
@@ -8023,6 +8025,42 @@ class LoopSupervisor:
             self._emit_task_changes()
         for task_id, notes in form_debt.items():
             self.run.record_debt(task_id, notes)
+        return changed
+
+    def _apply_confirmed_petition_adjudications(self, adjudications) -> list[str]:
+        """Task 015 (requirement C.3, #149): the write-back half of
+        `engine.petitions.apply_confirmed_petition_adjudications` -- the
+        CONFIRMED-side sibling of `_apply_refuted_petition_adjudications`
+        immediately above, same seam: read the CURRENT `tasks.json`, apply
+        any CONFIRMED entries in `adjudications` to it (moving a matching
+        `petitioned` task to `skipped`, its own `notes` field carrying the
+        adjudication, and re-pointing every dependent's `dependsOn` off
+        it -- to the entry's `replacement_task_id` when one names a real
+        task, otherwise to nothing), and persist + announce the change
+        exactly like any other engine-driven task-status move
+        (`_emit_task_changes`). A no-op call touches neither the file nor
+        the emitted-changes machinery -- `write_tasks` is skipped entirely
+        when nothing changed, so a review pass with no matching CONFIRMED
+        entry never perturbs `tasks.json`'s mtime.
+
+        Called from `_review_verdict` in the SAME step as `record_
+        confirmed_adjudications` (the run-scope persistence, C.2's own
+        exemption) and `_apply_refuted_petition_adjudications` beside it,
+        for every settled review/mid-run-adjudication payload, verified or
+        not -- exactly the same unconditional-call discipline this
+        method's REFUTED and criteria-amendment siblings already keep.
+
+        Returns the ids of every task this call moved to `skipped`, same
+        as the petitions-module function it wraps.
+        """
+        if not adjudications:
+            return []
+        tasks_doc = self.run.read_tasks()
+        changed = petitions.apply_confirmed_petition_adjudications(
+            tasks_doc, adjudications)
+        if changed:
+            self.run.write_tasks(tasks_doc)
+            self._emit_task_changes()
         return changed
 
     def _apply_criteria_amendments(self, adjudications) -> list[str]:

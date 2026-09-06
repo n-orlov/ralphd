@@ -1345,6 +1345,111 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications,
     return changed
 
 
+def apply_confirmed_petition_adjudications(tasks_doc: dict, adjudications) -> list[str]:
+    """Task 015 (PRD requirement C.3, #149): the CONFIRMED counterpart to
+    `apply_refuted_petition_adjudications` above, for the SAME `petitioned`
+    task records -- "a CONFIRMED adjudication moves the petitioned task to
+    `skipped` with the adjudication in `notes` (the obligation is void) and
+    re-points every dependent's `dependsOn` from it to nothing (or to the
+    replacement task the adjudication names), in the same pass that records
+    the confirmation."
+
+    Matches a CONFIRMED entry to a `petitioned` task the identical way the
+    REFUTED branch does -- `task_petition_obligation(t)` fuzzy-matched
+    (substring either direction, `_normalize_obligation`) against the
+    entry's own `obligation` text -- because this is the SAME free-text
+    channel disagreement `_refuted_remedy_type`'s sibling already lives
+    with. This is deliberately a DIFFERENT match than `criteria_amendment_
+    candidates` above: that one matches a CONFIRMED entry against a task's
+    own `successCriteria` (the task stays in the plan, only its criteria
+    text changes); this one matches against a `petitioned` task's own
+    ENGINE-FILED obligation (the task itself is what the petition says is
+    impossible), so the two never fire on the same entry for the same
+    reason -- a task cannot simultaneously stay in the plan with amended
+    criteria and be removed from it.
+
+    For each match:
+
+    - the task's `status` moves to `skipped` (never `failed` -- CONFIRMED
+      means the obligation is void, not that the task was tried and came
+      up short, the distinction REFUTED's own routing already draws
+      between the two adjudications);
+    - a note naming the obligation and the CONFIRMED call is appended to
+      the task's own `notes` field (kept, never overwritten, exactly like
+      task 011's absorption note beside it: `f"{existing}\n{note}"` when
+      `notes` is already non-empty);
+    - every OTHER task in `tasks_doc` whose `dependsOn` names this task's
+      id has that id removed from `dependsOn`; when the SAME entry also
+      carries a non-empty `replacement_task_id` string that names a task
+      actually present in `tasks_doc` (the judge's own claim of which
+      task inherits the dependency -- an id that does not exist in the
+      CURRENT plan is never invented a dependency on), that id is added
+      in its place (skipped if already present, so a dependent naming
+      both the petitioned task and its replacement already never ends up
+      with a duplicate entry). No `replacement_task_id`, or one naming a
+      task that is not in the plan, leaves the dependent depending on
+      nothing in that slot -- "re-points ... to nothing" is the default,
+      exactly as the requirement's own parenthetical states it.
+
+    Returns the ids of every task this call moved to `skipped`, in plan
+    order; a no-op call (nothing CONFIRMED, or nothing `petitioned` to
+    match against) returns `[]` and leaves `tasks_doc` untouched -- the
+    same no-op contract `apply_refuted_petition_adjudications` keeps.
+
+    A REFUTED entry in `adjudications` is silently ignored here -- that
+    side is `apply_refuted_petition_adjudications`'s job; this function
+    only ever moves a task OFF `petitioned` on CONFIRMED.
+    """
+    if not adjudications:
+        return []
+    tasks = tasks_doc.get("tasks") or []
+    changed: list[str] = []
+    handled: set = set()
+    for item in adjudications:
+        if not isinstance(item, dict) or item.get("adjudication") != "CONFIRMED":
+            continue
+        obligation = item.get("obligation")
+        if not isinstance(obligation, str) or not obligation.strip():
+            continue
+        norm = _normalize_obligation(obligation)
+        raw_replacement = item.get("replacement_task_id")
+        replacement_task_id = (raw_replacement.strip()
+                               if isinstance(raw_replacement, str) else "")
+        for t in tasks:
+            if (not isinstance(t, dict) or t.get("status") != "petitioned"
+                    or t.get("id") in handled):
+                continue
+            own = _normalize_obligation(task_petition_obligation(t))
+            if not (own and (own in norm or norm in own)):
+                continue
+            tid = t.get("id")
+            handled.add(tid)
+            note = (f"Petition CONFIRMED: {obligation.strip()} -- the "
+                   "obligation is void; this task is skipped.")
+            existing = t.get("notes")
+            t["notes"] = f"{existing}\n{note}" if existing else note
+            t["status"] = "skipped"
+            changed.append(tid)
+            valid_replacement = (
+                replacement_task_id
+                if replacement_task_id and any(
+                    isinstance(o, dict) and o.get("id") == replacement_task_id
+                    for o in tasks)
+                else None)
+            for other in tasks:
+                if not isinstance(other, dict) or other is t:
+                    continue
+                deps = other.get("dependsOn")
+                if not isinstance(deps, list) or tid not in deps:
+                    continue
+                new_deps = [d for d in deps if d != tid]
+                if (valid_replacement is not None
+                        and valid_replacement not in new_deps):
+                    new_deps.append(valid_replacement)
+                other["dependsOn"] = new_deps
+    return changed
+
+
 def record_refuted_adjudications(run, adjudications) -> list[str]:
     """Task 007 (requirement B, #114): emit one `PETITION_REFUTED_EVENT`
     line per REFUTED entry in `adjudications` (review's/the mid-run

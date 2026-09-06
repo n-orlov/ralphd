@@ -160,6 +160,27 @@ own criteria) is never amended -- it converts to a disclosed residual,
 with no text rewritten anywhere. Omit both fields on any
 CONFIRMED entry you are not re-scoping (the overwhelming common case).
 
+### Closing a petitioned task (task 015, requirement C.3, #149)
+
+When the obligation you are adjudicating is a task's OWN engine-filed
+petition -- the one a task's validation ladder exhausted into (its status
+reads `petitioned`), not a PRD requirement or another task's criteria --
+and you rule it CONFIRMED, the engine closes the loop itself: it moves
+that task to `skipped`, records your adjudication on the task's own
+`notes` field (the obligation is void), and removes that task's id from
+every OTHER task's `dependsOn`. If some other, still-viable task should
+inherit that dependency instead of the dependent simply losing it, name it
+with a THIRD optional field on the same entry: `replacement_task_id` (the
+exact id of the task that takes its place). Omit it, or name a task id
+that is not in the current plan, and the dependency is removed with
+nothing put in its place. This is unrelated to `task_id`/
+`replacement_criteria` above -- those re-scope a task's criteria while it
+STAYS in the plan; `replacement_task_id` only ever applies when the task
+itself is leaving the plan. A REFUTED adjudication of a `petitioned` task's
+own obligation behaves exactly as it always has (the task moves to
+`failed` or `validated`, per its `remedy_type`) -- this section only
+changes what CONFIRMED does.
+
 ## Structured findings (severity, curability, clause, evidence)
 
 (#110) Every finding you record — blocking or residual, whether the overall
@@ -235,13 +256,19 @@ exactly one JSON object:
   "CONFIRMED"|"REFUTED", "remedy": "<required when REFUTED, otherwise omit>",
   "remedy_type": "form"|"substance" (<REFUTED only, default substance>),
   "task_id": "<only when re-scoping that ONE task's own criteria, see below>",
-  "replacement_criteria": "<only alongside task_id above>"}]`
+  "replacement_criteria": "<only alongside task_id above>",
+  "replacement_task_id": "<only when a CONFIRMED entry closes a petitioned
+  task and a different task inherits its dependents, see below>"}]`
   to whichever verdict object above you report, one entry per open petition --
   every open petition gets an adjudication regardless of whether your overall
   verdict is `verified` or `rejected`. `task_id`/`replacement_criteria` are
   described under "Criteria amendment authority" above -- add them only on a
   CONFIRMED, `contradictory-clauses`/`self-referential` entry whose obligation
   is that task's own `successCriteria`; omit both on every other entry.
+  `replacement_task_id` is described under "Closing a petitioned task" above
+  -- add it only on a CONFIRMED entry that closes a `petitioned` task whose
+  dependents should inherit a different task instead of losing the
+  dependency outright; omit it on every other entry.
 
 **Mid-run adjudication episodes (task 014, requirement F.1, #144).** If this
 prompt tells you this iteration is a bounded, off-budget mid-run petition
