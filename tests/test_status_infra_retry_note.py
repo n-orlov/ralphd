@@ -16,7 +16,7 @@ def test_ralphctl_status_shows_infra_retry_note_during_backoff(live):
     # Planning succeeds normally; the first worker invocation hangs with
     # zero LLM traffic (STUB_INFRA_HANG_COUNT=1), gets killed by the
     # startup watchdog, is classified as an infra fault, and the engine
-    # backs off for a few seconds before retrying -- during that backoff
+    # backs off for a second before retrying -- during that backoff
     # window `ralphctl status` must show the note.
     run = live(run_id="infra-retry-note", job={"iterations": 6},
                stub_env={
@@ -25,7 +25,7 @@ def test_ralphctl_status_shows_infra_retry_note_during_backoff(live):
                    "STUB_INFRA_HANG_COUNT": "1",
                    "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
                    "RALPHD_INFRA_RETRY_MAX": "3",
-                   "RALPHD_INFRA_RETRY_BACKOFF_S": "5,5,5",
+                   "RALPHD_INFRA_RETRY_BACKOFF_S": "1,1,1",
                })
     run.wait_api()
 

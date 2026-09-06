@@ -182,15 +182,16 @@ async def test_a_healthy_iteration_never_writes_the_degraded_fields(
 def test_ralphctl_status_json_carries_health_and_infra_wait(live):
     # Planning is healthy; the first two worker invocations hang with zero
     # LLM traffic, get killed by the startup watchdog, are classified infra
-    # and retried after a 5s backoff -- long enough to poll the degraded
-    # window, short enough that the test stays fast.
+    # and retried after a 1s backoff -- long enough (at a 0.2s poll
+    # interval) to catch the degraded window, short enough that the test
+    # stays fast.
     run = live(run_id="health-infra-wait", job={"iterations": 6},
                stub_env={
                    "STUB_TASKS": "1",
                    "STUB_INFRA_HANG_SKIP": "1",
                    "STUB_INFRA_HANG_COUNT": "2",
                    "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
-                   "RALPHD_INFRA_RETRY_BACKOFF_S": "5,5",
+                   "RALPHD_INFRA_RETRY_BACKOFF_S": "1,1",
                    "RALPHD_INFRA_OUTAGE_BUDGET_S": "600",
                })
     run.wait_api()
