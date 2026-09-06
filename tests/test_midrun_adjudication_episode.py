@@ -34,7 +34,14 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
-OBLIGATION = "An obligation this test invents for coverage"
+OBLIGATION = ("Task 1: an obligation this test invents for coverage"
+              # Task 018 (requirement E.1, #150): a petition whose
+              # obligation names NO task in the current tasks.json
+              # and no requirement of the contract is history and is
+              # never surfaced to review, so this fixture names the
+              # plan's own task the way a real engine-filed
+              # exhaustion petition does
+              " that the plan below still carries")
 
 
 def _ok(text: str) -> IterationResult:

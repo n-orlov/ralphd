@@ -172,11 +172,15 @@ def test_an_obligation_naming_a_requirement_the_contract_never_declares_is_histo
     assert found == []
 
 
-def test_freeform_obligation_with_no_task_or_requirement_token_stays_open(
+def test_freeform_obligation_naming_neither_a_task_nor_a_requirement_is_history(
         tmp_path):
-    """An obligation that names neither kind of token at all (an ordinary
-    worker declaration) is never excluded merely because it cannot be
-    checked -- only a NAMED, unresolved reference triggers the exclusion."""
+    """An obligation that anchors to nothing this run carries -- no task id
+    from the current `tasks.json`, no requirement the contract declares -- is
+    history, exactly as this task's criterion of record states ("a petition
+    whose obligation names no task in the current tasks.json and no
+    requirement of the contract"). Free text such as a bare criterion clause
+    names neither, so nothing shows it belongs to this run's own plan or
+    PRD."""
     ws = tmp_path / "ws"
     _write(ws, "v0.19-petitions.md",
            "# v0.19 petitions\n" +
@@ -185,7 +189,88 @@ def test_freeform_obligation_with_no_task_or_requirement_token_stays_open(
     found = petitions.open_petitions_in_workspace(
         ws, CURRENT_CONTRACT, tasks=[{"id": "1", "title": "x"}])
 
+    assert found == []
+
+
+def test_an_unanchored_obligation_beside_an_anchored_one_is_the_only_one_dropped(
+        tmp_path):
+    """The filter is per-petition, not per-file: the current wave's file
+    carries one obligation anchored to a live task and one anchored to
+    nothing, and only the unanchored one is left out."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("Task 018: scope petition discovery") +
+           _section("no anchor of any kind in this text"))
+    tasks = [{"id": "018", "title": "scope petition discovery"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks)
+
+    assert [p["obligation"] for p in found] == [
+        "Task 018: scope petition discovery"]
+
+
+def test_with_no_contract_an_unresolvable_requirement_ref_gets_the_doubt(
+        tmp_path):
+    """With NO contract text in hand there is nothing to resolve a
+    `requirement <letter>` reference against, so that reference is left open
+    -- unresolvABLE is not the same fact as unresolved. An obligation naming
+    no anchor at all is still history, contract or no contract, and a live
+    task reference is still an anchor."""
+    ws = tmp_path / "ws"
+    _write(ws, "run-petitions.md",
+           "# run petitions\n" +
+           _section("Requirement E, DoD predicate 1 cannot be met") +
+           _section("Task 018: scope petition discovery") +
+           _section("nothing here anchors to anything at all"))
+    tasks = [{"id": "018", "title": "scope petition discovery"}]
+
+    found = petitions.open_petitions_in_workspace(ws, "", tasks=tasks)
+
+    assert [p["obligation"] for p in found] == [
+        "Requirement E, DoD predicate 1 cannot be met",
+        "Task 018: scope petition discovery"]
+
+
+def test_an_obligation_quoting_a_live_tasks_own_criterion_clause_stays_open(
+        tmp_path):
+    """The third obligation form the worker contract names -- "your own
+    task's criterion clause" -- names its task by quoting it, so a clause
+    that is still in a current task's `successCriteria` is an anchor and
+    the petition stays open, while the same shape of free text that matches
+    no current criterion is history (the test above)."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("the completion names the test node ids covering the "
+                    "scoped discovery"))
+    tasks = [{"id": "018", "title": "scope petition discovery",
+              "successCriteria": (
+                  "`open_petitions_in_workspace` reads only the current "
+                  "wave's petitions file; the completion names the test "
+                  "node ids covering the scoped discovery and the scoped "
+                  "filing and they pass.")}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks)
+
     assert len(found) == 1
+
+
+def test_a_two_word_overlap_with_some_criterion_is_not_an_anchor(tmp_path):
+    """The clause anchor is bounded: an obligation too short to be a real
+    clause never anchors itself to a criterion that happens to contain it."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md", "# v0.19 petitions\n" +
+           _section("they pass"))
+    tasks = [{"id": "018", "title": "x",
+              "successCriteria": "the node ids are named and they pass."}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks)
+
+    assert found == []
 
 
 def test_tasks_none_keeps_history_filtering_off_for_backward_compat(tmp_path):

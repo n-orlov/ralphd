@@ -51,8 +51,6 @@ from pathlib import Path
 from ralphd.engine.state import atomic_write_json
 
 from test_midrun_adjudication_episode import (
-    OBLIGATION,
-    _confirming_review,
     _make_petitions_file,
     _ok,
     _ScriptedAgent,
@@ -60,6 +58,25 @@ from test_midrun_adjudication_episode import (
 )
 
 __all__ = []
+
+# The held task's own filed obligation. It names task `A` of `_held_plan`
+# below because that is what a real filing names: task 018 (requirement
+# E.1, #150) treats a petition whose obligation names no task in the
+# current `tasks.json` and no requirement of the contract as history, and
+# history is never surfaced to review at all -- so an obligation invented
+# out of thin air would make this scenario un-adjudicable rather than held.
+HELD_OBLIGATION = "Task A: the criterion names its own not-yet-existing sha"
+
+
+def _confirming_review(sup, prompt=""):
+    """The review hat adjudicating `HELD_OBLIGATION` CONFIRMED -- the same
+    shape `test_midrun_adjudication_episode._confirming_review` has, over
+    this module's own held obligation."""
+    return _ok("adjudicating the open petition\n" + json.dumps({
+        "verdict": "rejected",
+        "petition_adjudications": [
+            {"obligation": HELD_OBLIGATION, "adjudication": "CONFIRMED"}],
+    }))
 
 
 def _held_plan() -> list[dict]:
@@ -85,7 +102,7 @@ def test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker(tmp_path):
     """Node id: test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker
     -- the immediate-adjudication half of requirement C.2."""
     sup, run, workspace = _worker_supervisor(tmp_path, iterations=1)
-    _make_petitions_file(workspace, OBLIGATION)
+    _make_petitions_file(workspace, HELD_OBLIGATION)
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _held_plan()})
 
@@ -137,7 +154,7 @@ def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
     runs its ordinary iteration budget out and tails off."""
     sup, run, workspace = _worker_supervisor(
         tmp_path, iterations=5, max_approaches=2)
-    _make_petitions_file(workspace, OBLIGATION)
+    _make_petitions_file(workspace, HELD_OBLIGATION)
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _held_plan()})
 

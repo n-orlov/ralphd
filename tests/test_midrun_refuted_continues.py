@@ -63,7 +63,12 @@ from ralphd.engine.state import RunDir, atomic_write_json
 CRITERIA = (
     "The task's own success criteria this test invents for coverage; "
     "REFUTED must never rewrite it.")
-OBLIGATION = "An obligation this test invents for coverage"
+# Names task `1` of `_task_record` below, the way a real filing names
+# the task it was filed for: task 018 (requirement E.1, #150) treats a
+# petition whose obligation names no task in the current tasks.json
+# and no requirement of the contract as history, and history is never
+# surfaced to review at all.
+OBLIGATION = "Task 1: an obligation this test invents for coverage"
 REMEDY = ("Run the missing migration script before the next validation "
           "attempt; the obligation is achievable once it has run.")
 

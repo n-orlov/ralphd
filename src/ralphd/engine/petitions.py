@@ -368,8 +368,17 @@ _REQUIREMENT_OBLIGATION_REF_RE = re.compile(
     r"\brequirement\s+([A-Za-z](?:\.\d+)*)\b", re.IGNORECASE)
 
 
+# The shortest normalised obligation text that may anchor itself to a task
+# by QUOTING that task's own criterion clause (anchor 3 in
+# `_obligation_is_history`): short enough that a real clause qualifies, long
+# enough that an incidental word or two shared with some task's criteria
+# never does.
+_MIN_CRITERION_CLAUSE_ANCHOR = 24
+
+
 def _obligation_is_history(obligation: str, task_ids: set[str],
-                            contract_text: str) -> bool:
+                            contract_text: str,
+                            task_criteria: tuple[str, ...] = ()) -> bool:
     """Task 018 (requirement E.1, #150): true when `obligation` names
     neither a task that exists in the CURRENT `tasks.json` (`task_ids`) nor
     a requirement the CURRENT contract (`contract_text`) actually declares
@@ -380,34 +389,65 @@ def _obligation_is_history(obligation: str, task_ids: set[str],
     `open_petitions_in_workspace`'s result -- it is not re-typed or
     deleted, only left out of what review is asked to adjudicate.
 
-    Two independent checks, deliberately not symmetrical:
+    The rule is an ANCHOR test, not a token test: an obligation is current
+    only while it still names something this run actually carries. It is
+    history unless AT LEAST ONE of the following resolves --
 
-    1. `obligation` names a task (`Task <id>` -- `task_petition_obligation`'s
-       own format, the shape an ENGINE-filed exhaustion petition always
-       takes): history unless that id is in `task_ids`. Decisive either
-       way -- a task reference is either current or it is not, and
-       `contract_text` plays no part in that answer.
-    2. Only when (1) named no task at all AND `contract_text` is non-empty
-       (an actual contract is in hand to ask) does a `requirement <letter>`
-       reference in the obligation get checked against it -- a literal
-       `"requirement <letter>"` phrase, or the letter's own PRD heading
-       (`## <letter> --`, this PRD's own section shape). An EMPTY contract
-       never marks anything history through this path: there is nothing to
-       resolve against, so "no longer resolves" cannot be asked, and a
-       worker's own free-text declaration (`file_worker_petition`) that
-       merely happens to mention the word in passing must stay open, the
-       same default-safe direction every other by-presence rule in this
-       module takes.
+    1. a task reference (`Task <id>` -- `task_petition_obligation`'s own
+       format, the shape an ENGINE-filed exhaustion petition always takes)
+       whose id is in `task_ids`; or
+    2. a `requirement <letter>` reference the contract actually declares --
+       a literal `"requirement <letter>"` phrase, or the letter's own PRD
+       heading (`## <letter> --`, this PRD's own section shape); or
+    3. a verbatim criterion CLAUSE of a task that is in the current plan
+       (`task_criteria`, each task's `successCriteria`/`criteriaOfRecord`
+       normalised) -- the third obligation form the worker contract itself
+       names ("the requirement letter, DoD item, or your own task's
+       criterion clause this obligation names"). Quoting a live task's own
+       clause names that task as surely as writing its id does, so this is
+       still the same anchor test rather than an exception to it. Bounded on
+       purpose: at least `_MIN_CRITERION_CLAUSE_ANCHOR` normalised
+       characters must match, so a couple of words a foreign wave's
+       obligation happens to share with some current criterion is never an
+       anchor.
+
+    Everything else is history, INCLUDING an obligation that names neither
+    kind of anchor at all (free text such as `the criterion can only be
+    verified after it is met`): the criterion of record for this task says
+    "a petition whose obligation names no task in the current tasks.json
+    and no requirement of the contract" is history, and free text names
+    neither. An obligation with NO anchor cannot be shown to belong to this
+    run's own plan or PRD, which is exactly the property that separates a
+    foreign wave's leftover filing from this wave's own (#150: the two
+    mid-run adjudications that re-adjudicated 14 foreign petitions filed
+    under v0.16-v0.18).
+
+    One narrow benefit of the doubt, and only one: when `contract_text` is
+    EMPTY there is no contract in hand to resolve a `requirement <letter>`
+    reference against, so such a reference is left OPEN -- unresolvABLE, not
+    unresolved. An obligation that names no anchor at all is history whether
+    a contract was supplied or not; an anchor nobody can check is not the
+    same fact as a missing anchor.
+
+    Note the asymmetry that remains: this filter is applied ONLY when a
+    caller hands `open_petitions_in_workspace` the current `tasks` list
+    (`tasks=None`, every pre-existing caller, never filters at all), so the
+    strict direction here can never hide a petition from a caller that did
+    not ask to have the current plan taken into account. A petition called
+    history is neither re-typed nor deleted -- only left out of what review
+    is asked to adjudicate.
     """
     task_refs = {m.rstrip(":") for m in _TASK_OBLIGATION_REF_RE.findall(obligation)}
-    if task_refs:
-        return not any(ref in task_ids for ref in task_refs)
-    if not contract_text:
+    if any(ref in task_ids for ref in task_refs):
+        return False
+    clause = _normalize_obligation(obligation)
+    if len(clause) >= _MIN_CRITERION_CLAUSE_ANCHOR and any(
+            clause in criteria for criteria in task_criteria):
         return False
     requirement_refs = _REQUIREMENT_OBLIGATION_REF_RE.findall(obligation)
-    if not requirement_refs:
+    if requirement_refs and not contract_text:
         return False
-    contract_lower = contract_text.lower()
+    contract_lower = (contract_text or "").lower()
     for ref in requirement_refs:
         if re.search(rf"\brequirement\s+{re.escape(ref)}\b", contract_lower,
                      re.IGNORECASE):
@@ -445,7 +485,9 @@ def open_petitions_in_workspace(
     requirement of `contract_text` is also excluded as history
     (`_obligation_is_history`) -- even from within the current wave's own
     file, e.g. a leftover filing for a task the plan no longer carries at
-    all.
+    all, or one whose obligation anchors to nothing in this run at all.
+    `tasks=None` (every pre-existing caller) applies no history filter
+    whatsoever.
 
     A file that cannot be read (permissions, a race with a concurrent
     write) costs nothing more than itself, the same posture
@@ -463,9 +505,14 @@ def open_petitions_in_workspace(
     if tasks and found:
         task_ids = {str(t.get("id")) for t in tasks
                     if isinstance(t, dict) and t.get("id") is not None}
+        task_criteria = tuple(
+            _normalize_obligation(str(t.get(field) or ""))
+            for t in tasks if isinstance(t, dict)
+            for field in ("successCriteria", "criteriaOfRecord")
+            if t.get(field))
         found = [p for p in found
                 if not _obligation_is_history(
-                    p["obligation"], task_ids, contract_text)]
+                    p["obligation"], task_ids, contract_text, task_criteria)]
     return found
 
 
