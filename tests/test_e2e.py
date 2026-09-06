@@ -3,15 +3,17 @@
 Each test launches the real `ralphd-engine` process (the same entrypoint the
 container runs) with a stub `pi` on PATH, then observes it strictly from the
 outside: the HTTP API and the run-dir files. No engine internals are imported.
+
+The launcher itself is `tests/conftest.py::LiveRun` and its `engine_factory`
+fixture (task 021, requirement G.1): this module used to carry its own
+near-identical `EngineProc`, which ~47 other modules imported from here.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import socket
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -19,144 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import (
-    NOTIFIER_ENV_VAR, RALPHD_ENGINE, _resolved_home_env, with_ralphd_importable,
-)
-
-REPO = Path(__file__).parent.parent
-STUB_PI = REPO / "tests" / "stub-pi"
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-class EngineProc:
-    """A running ralphd-engine with its run/config dirs and API helpers."""
-
-    def __init__(self, tmp: Path, job: dict, stub_env: dict | None = None):
-        self.run_dir = tmp / "run"
-        self.config_dir = tmp / "config"
-        self.workspace = tmp / "ws"
-        self.home = tmp / "home"
-        for d in (self.run_dir, self.config_dir, self.workspace):
-            d.mkdir(parents=True, exist_ok=True)
-        (self.config_dir / "prd.md").write_text("# E2E test PRD\n\nDo the thing.\n")
-        (self.config_dir / "job.yaml").write_text(
-            "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items()))
-        self.port = free_port()
-        base_env = {
-            k: v for k, v in os.environ.items()
-            if k not in ("RALPHD_HOST_WORKSPACE", "RALPHD_HOST_RUN_DIR", "RALPHD_RUN_ID",
-                         NOTIFIER_ENV_VAR)
-        }
-        # These docker-siblings vars may be set in the ambient environment
-        # (e.g. this very test suite running inside a docker-enabled ralphd
-        # job); strip them so tests are deterministic regardless of the host
-        # environment, and only set them via explicit stub_env.
-        # `NOTIFIER_ENV_VAR` (steer 002, task 040) is stripped the same way
-        # for the same reason `tests/conftest.py`'s `LiveRun`/`ralphctl` are:
-        # a spawned engine that reaches a notifier-escalation pause must not
-        # POST to the operator's real endpoint just because this container
-        # happens to export it -- `stub_env` (merged in below, last, via
-        # `_resolved_home_env`) is still the one way to opt a specific test
-        # back in.
-        #
-        # PATH, in order (same construction as LiveRun in tests/conftest.py):
-        # STUB_PI first, because tests depend on the stub `pi` shadowing any
-        # real one; then the *resolved* engine's directory, which on a
-        # `pip install --user -e .` layout is ~/.local/bin and not the
-        # interpreter's /usr/bin (#65) -- this entry is what the old
-        # `Path(sys.executable).parent` spelling got wrong; then the
-        # interpreter's own directory, which is still needed on its own
-        # account because tests/stub-pi/pi is `#!/usr/bin/env python3` and
-        # must run under the interpreter running pytest; then ambient PATH.
-        # with_ralphd_importable() wraps the *merged* dict, after stub_env,
-        # because stub_env is where the HOME override arrives and the import
-        # path that has to survive it must be applied last (#67).
-        env = with_ralphd_importable({
-            **base_env,
-            "PATH": ":".join([str(STUB_PI), str(RALPHD_ENGINE.parent),
-                              str(Path(sys.executable).parent), os.environ["PATH"]]),
-            "STUB_RUN_DIR": str(self.run_dir),
-            "RALPHD_RUN_DIR": str(self.run_dir),
-            "RALPHD_CONFIG_DIR": str(self.config_dir),
-            "RALPHD_WORKSPACE_DIR": str(self.workspace),
-            "RALPHD_PORT": str(self.port),
-            **_resolved_home_env(self.home, stub_env),
-        })
-        self.proc = subprocess.Popen(
-            [str(RALPHD_ENGINE)], env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
-    # -- black-box surface -------------------------------------------------
-    def api(self, method: str, path: str, body: dict | None = None,
-            expect_error: bool = False):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}", method=method)
-        if body is not None:
-            req.add_header("Content-Type", "application/json")
-            req.data = json.dumps(body).encode()
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read()
-                return resp.status, (json.loads(data) if data else None)
-        except urllib.error.HTTPError as e:
-            if not expect_error:
-                raise
-            return e.code, json.loads(e.read() or b"{}")
-
-    def api_raw(self, path: str) -> str:
-        """GET a non-JSON (e.g. NDJSON) route and return the decoded body."""
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.read().decode()
-
-    def wait_api(self, timeout=15):
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                self.api("GET", "/healthz")
-                return
-            except (urllib.error.URLError, ConnectionError, TimeoutError):
-                time.sleep(0.2)
-        raise TimeoutError("engine API never came up")
-
-    def wait_state(self, states: tuple[str, ...], timeout=60) -> dict:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            status = json.loads((self.run_dir / "status.json").read_text()) \
-                if (self.run_dir / "status.json").exists() else {}
-            if status.get("state") in states:
-                return status
-            time.sleep(0.2)
-        raise TimeoutError(f"never reached {states}; last: {status}")
-
-    def stop(self):
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-
-
-@pytest.fixture
-def engine_factory(tmp_path):
-    procs: list[EngineProc] = []
-
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
-        defaults = {"run_id": "e2e", "iterations": 12,
-                    "max_approaches": 3, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
-        procs.append(e)
-        return e
-
-    yield make
-    for e in procs:
-        e.stop()
+from tests.conftest import RALPHD_ENGINE
 
 
 # --------------------------------------------------------------------------

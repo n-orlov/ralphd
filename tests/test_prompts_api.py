@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 
 def _put_text(port: int, path: str, text: str) -> int:
@@ -29,12 +29,12 @@ def _put_text(port: int, path: str, text: str) -> int:
 
 @pytest.fixture
 def prompts_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "prompts-e2e", "iterations": 3,
                     "max_approaches": 1, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

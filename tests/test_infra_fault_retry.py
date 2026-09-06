@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import time
 
-from test_e2e import engine_factory
 
 __all__ = ["engine_factory"]
 

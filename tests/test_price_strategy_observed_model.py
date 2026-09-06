@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 from test_price_strategy_derive import (
     AWS_DERIVED_USD,
     GATEWAY_MODEL,
@@ -187,9 +187,9 @@ def test_the_second_message_of_an_iteration_reuses_the_observed_id():
 
 @pytest.fixture
 def observed_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         # NO `model` key at all: exactly the job.yaml of a run that lets pi
         # choose, which is where the defect lived.
         defaults = {"run_id": "observed-model-e2e", "iterations": 6,
@@ -198,7 +198,7 @@ def observed_engine(tmp_path):
         env = {"STUB_ZERO_COST_COUNT": "99",
                "STUB_MODEL_PROVIDER": OBSERVED_PROVIDER,
                "STUB_MODEL": OBSERVED_MODEL, **(stub_env or {})}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, env)
         procs.append(e)
         return e
 

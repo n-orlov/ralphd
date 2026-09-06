@@ -30,7 +30,6 @@ import asyncio
 import json
 
 import pytest
-from test_e2e import engine_factory
 
 from ralphd.engine import transitions
 from ralphd.engine.config import JobConfig

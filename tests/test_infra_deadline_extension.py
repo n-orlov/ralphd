@@ -20,7 +20,6 @@ import asyncio
 import json
 
 import pytest
-from test_e2e import engine_factory
 from test_infra_outage_budget import (
     _events,
     _infra_result,

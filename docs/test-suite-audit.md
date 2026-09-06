@@ -79,8 +79,9 @@ real sleeps and subprocess spawns, and is almost perfectly parallelisable.
 
 - **Real-engine tests are spread thin.** 44 modules / ~175 tests each spawn `ralphd-engine` +
   `tests/stub-pi` (1,301-line stub with ~45 `STUB_*` knobs). `STUB_SLEEP` is set to 1-5 s in 42
-  call sites (15 use 0). `test_e2e.py` carries its own `EngineProc` that duplicates
-  `conftest.LiveRun`. Loop paths covered by a real engine today: happy path, review rejection ->
+  call sites (15 use 0). `test_e2e.py` carried its own `EngineProc` that duplicated
+  `conftest.LiveRun` (folded into `LiveRun`, with both layouts behind `registry=`, by task 021,
+  requirement G.1; the ~47 modules that imported it now import `tests.conftest.LiveRun`). Loop paths covered by a real engine today: happy path, review rejection ->
   new approach, stagnation, budget/grace review, steering (4 variants), abort, huge line, vigilant
   verify fail/transient/three strikes, criteria tamper, lock, logs follow, peer gates (task029/031/
   032), ladder exhaustion (task033), cure pass (task023), budget top-up. **Not covered by any

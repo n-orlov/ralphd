@@ -349,7 +349,8 @@ def _isolate_ambient_home_in_process(request, monkeypatch, tmp_path_factory):
 # This container exports `RALPHD_NOTIFIER_URL` (the operator's own
 # notifier endpoint) into every process it starts, including whatever
 # spawns pytest. `LiveRun`/`ralphctl` below (and `EngineProc` in
-# tests/test_e2e.py, which mirrors the same construction) used to build a
+# tests/test_e2e.py, which mirrored the same construction until task 021
+# folded it into `LiveRun`) used to build a
 # spawned child's env as `{**os.environ, ...}`, so the ambient notifier URL
 # rode along into every test engine/ralphctl child unless a test happened
 # to override it. `JobConfig.load()` reads the same variable straight out
@@ -388,20 +389,62 @@ def _scrub_notifier_env_in_process(request, monkeypatch):
     monkeypatch.delenv(NOTIFIER_ENV_VAR, raising=False)
 
 
-class LiveRun:
-    """A real ralphd-engine, wired so `ralphctl` (pointed at `registry`)
-    can talk to it as if a container had been started normally."""
+# `_STRIPPED_CHILD_ENV_VARS`: variables a spawned engine must never inherit
+# from whatever process is running pytest. The three docker-siblings ones may
+# be set in the ambient environment (e.g. this very suite running inside a
+# docker-enabled ralphd job), so a test that never asked for them would
+# otherwise see the host's values; `NOTIFIER_ENV_VAR` (steer 002, task 040) is
+# stripped so a child that reaches a notifier escalation cannot POST to the
+# operator's real endpoint. `stub_env` (merged in last, through
+# `_resolved_home_env`) stays the one way to opt a specific test back in.
+_STRIPPED_CHILD_ENV_VARS = (
+    "RALPHD_HOST_WORKSPACE", "RALPHD_HOST_RUN_DIR", "RALPHD_RUN_ID",
+    NOTIFIER_ENV_VAR,
+)
 
-    def __init__(self, tmp: Path, run_id: str, job: dict, stub_env: dict | None = None):
-        self.run_id = run_id
+
+def _child_base_env() -> dict:
+    return {k: v for k, v in os.environ.items()
+            if k not in _STRIPPED_CHILD_ENV_VARS}
+
+
+class LiveRun:
+    """A real ralphd-engine with its run/config dirs and API helpers.
+
+    The one shared launcher for a real child engine (task 021, G.1): before
+    this wave `tests/test_e2e.py` carried a second, near-identical `EngineProc`
+    that ~47 modules imported, so every change to the spawn contract (task
+    001's HOME isolation, task 040's notifier scrub) had to be made twice or
+    be silently missing from half the suite. Both layouts live here now,
+    chosen by `registry=`:
+
+      * `registry=False` (the default, and the old `EngineProc` shape):
+        `tmp/run`, `tmp/config`, `tmp/ws`, `tmp/home`, no registry and no
+        `host.json` -- for black-box tests that observe the engine strictly
+        through its own HTTP API and run-dir files.
+      * `registry=True`: `tmp/registry/runs/<run_id>` and
+        `tmp/registry/configs/<run_id>` plus a `host.json`, so `ralphctl`
+        pointed at `registry` can talk to the run as if a container had been
+        started normally (the `live` fixture's shape).
+    """
+
+    def __init__(self, tmp: Path, job: dict, stub_env: dict | None = None,
+                 *, run_id: str | None = None, registry: bool = False):
+        self.run_id = run_id or job.get("run_id")
         self.registry = tmp / "registry"
-        self.run_dir = self.registry / "runs" / run_id
-        self.config_dir = self.registry / "configs" / run_id
-        self.workspace = tmp / "ws" / run_id
-        self.home = tmp / "home" / run_id
+        if registry:
+            self.run_dir = self.registry / "runs" / self.run_id
+            self.config_dir = self.registry / "configs" / self.run_id
+            self.workspace = tmp / "ws" / self.run_id
+            self.home = tmp / "home" / self.run_id
+        else:
+            self.run_dir = tmp / "run"
+            self.config_dir = tmp / "config"
+            self.workspace = tmp / "ws"
+            self.home = tmp / "home"
         for d in (self.run_dir, self.config_dir, self.workspace):
             d.mkdir(parents=True, exist_ok=True)
-        (self.config_dir / "prd.md").write_text("# CLI logs test PRD\n\nDo the thing.\n")
+        (self.config_dir / "prd.md").write_text("# E2E test PRD\n\nDo the thing.\n")
         (self.config_dir / "job.yaml").write_text(
             "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items()))
         self.port = free_port()
@@ -409,8 +452,10 @@ class LiveRun:
         # stub `pi` shadowing any real one the operator has installed. After it
         # come the two directories that can hold this repo's own scripts -- the
         # resolved engine's (#65: on a `--user` layout that is ~/.local/bin,
-        # not the interpreter's bin) and the interpreter's -- and only then the
-        # ambient PATH. Before #65 the engine's own directory was absent here
+        # not the interpreter's bin) and the interpreter's, which is needed on
+        # its own account because tests/stub-pi/pi is `#!/usr/bin/env python3`
+        # and must run under the interpreter running pytest -- and only then
+        # the ambient PATH. Before #65 the engine's own directory was absent here
         # and `ralphd-engine` was spawned by bare name, so the spawn worked
         # only when the ambient PATH happened to carry ~/.local/bin.
         # with_ralphd_importable() wraps the *merged* dict, after stub_env:
@@ -418,7 +463,7 @@ class LiveRun:
         # variables that have to survive it are applied last rather than
         # buried in the defaults where a caller could shadow them by accident.
         env = with_ralphd_importable({
-            **_without_notifier_env(os.environ),
+            **_child_base_env(),
             "PATH": ":".join([str(STUB_PI), str(RALPHD_ENGINE.parent),
                               str(_INTERPRETER_DIR), os.environ["PATH"]]),
             "STUB_RUN_DIR": str(self.run_dir),
@@ -431,10 +476,45 @@ class LiveRun:
         self.proc = subprocess.Popen([str(RALPHD_ENGINE)], env=env,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True)
-        (self.run_dir / "host.json").write_text(json.dumps({
-            "runId": run_id, "container": "f" * 12, "port": self.port,
-            "apiUrl": f"http://127.0.0.1:{self.port}", "image": "n/a",
-        }))
+        if registry:
+            (self.run_dir / "host.json").write_text(json.dumps({
+                "runId": self.run_id, "container": "f" * 12, "port": self.port,
+                "apiUrl": f"http://127.0.0.1:{self.port}", "image": "n/a",
+            }))
+
+    # -- black-box surface -------------------------------------------------
+    def api(self, method: str, path: str, body: dict | None = None,
+            expect_error: bool = False):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", method=method)
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+            req.data = json.dumps(body).encode()
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = resp.read()
+                return resp.status, (json.loads(data) if data else None)
+        except urllib.error.HTTPError as e:
+            if not expect_error:
+                raise
+            return e.code, json.loads(e.read() or b"{}")
+
+    def api_raw(self, path: str) -> str:
+        """GET a non-JSON (e.g. NDJSON) route and return the decoded body."""
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read().decode()
+
+    def wait_state(self, states: tuple[str, ...], timeout=60) -> dict:
+        deadline = time.time() + timeout
+        status: dict = {}
+        while time.time() < deadline:
+            status = json.loads((self.run_dir / "status.json").read_text()) \
+                if (self.run_dir / "status.json").exists() else {}
+            if status.get("state") in states:
+                return status
+            time.sleep(0.2)
+        raise TimeoutError(f"never reached {states}; last: {status}")
 
     def wait_terminal(self, timeout=60) -> dict:
         deadline = time.time() + timeout
@@ -464,10 +544,8 @@ class LiveRun:
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                req = urllib.request.Request(
-                    f"http://127.0.0.1:{self.port}/healthz")
-                with urllib.request.urlopen(req, timeout=2):
-                    return
+                self.api("GET", "/healthz")
+                return
             except (urllib.error.URLError, ConnectionError, TimeoutError):
                 time.sleep(0.2)
         raise TimeoutError("engine API never came up")
@@ -752,10 +830,31 @@ def live(tmp_path):
     def make(run_id="logtest", job=None, stub_env=None):
         defaults = {"run_id": run_id, "iterations": 12, "max_approaches": 3,
                     "on_complete": "idle"}
-        r = LiveRun(tmp_path, run_id, {**defaults, **(job or {})}, stub_env)
+        r = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env,
+                    run_id=run_id, registry=True)
         runs.append(r)
         return r
 
     yield make
     for r in runs:
         r.stop()
+
+
+@pytest.fixture
+def engine_factory(tmp_path):
+    """Factory fixture: `engine_factory(job=..., stub_env=...)` -> `LiveRun`
+    on the registry-less layout (what `tests/test_e2e.py` owned before task
+    021 folded `EngineProc` into `LiveRun`). All runs are stopped at
+    teardown."""
+    procs: list[LiveRun] = []
+
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
+        defaults = {"run_id": "e2e", "iterations": 12,
+                    "max_approaches": 3, "on_complete": "idle"}
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
+        procs.append(e)
+        return e
+
+    yield make
+    for e in procs:
+        e.stop()

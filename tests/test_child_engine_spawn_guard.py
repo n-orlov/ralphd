@@ -1,5 +1,5 @@
 """Task 010 (v0.12 PRD, #83 class, D's "cheap static half"): the runtime fix
-(task 001) made `EngineProc`/`LiveRun` isolate a spawned child engine's `HOME`
+(task 001) made the shared launchers isolate a spawned child engine's `HOME`
 by default, with exactly one greppable opt-in (`AMBIENT_HOME`,
 `tests/conftest.py::_resolved_home_env`). That fix only protects call sites
 that actually go *through* those two classes. Nothing stopped a THIRD module
@@ -28,7 +28,7 @@ exactly that case (task 007). The one sanctioned pattern that pairs a live
 engine with a `ralphctl` spawn against it, `tests/conftest.py::LiveRun.
 ralphctl`, is covered here too, for free, by the same class-membership rule
 that already exempts `LiveRun.__init__`'s own engine spawn (below) -- so a
-reimplementation of that *pairing* outside `LiveRun`/`EngineProc` would still
+reimplementation of that *pairing* outside `LiveRun` would still
 need its own engine spawn caught by this scan, which it would be.
 
 A guarded spawn is compliant if ANY of the following holds, each read off
@@ -36,8 +36,11 @@ the textual source of the OUTERMOST function that lexically contains the
 call (so a spawn hidden in a closure still sees a `HOME`/`AMBIENT_HOME`
 literal written in the enclosing test function, one level up):
 
-  1. the call is a method of a class literally named `EngineProc` or
-     `LiveRun` -- "goes through EngineProc/LiveRun" verbatim;
+  1. the call is a method of a class literally named `LiveRun` -- "goes
+     through the shared launcher" verbatim. Until task 021 (G.1) this set
+     also held `EngineProc`, tests/test_e2e.py's second, near-identical
+     launcher; that class is gone, folded into `LiveRun`, so the exempt set
+     names one class again;
   2. the enclosing function's source calls `_resolved_home_env(` --
      task 001's own isolation-by-default mechanism;
   3. the enclosing function's source names `AMBIENT_HOME` -- task 001's one
@@ -78,7 +81,7 @@ TESTS_ROOT = REPO_ROOT / "tests"
 
 SPAWN_METHODS = {"Popen", "run", "check_call", "check_output"}
 GUARDED_NAMES = {"RALPHD_ENGINE"}
-EXEMPT_CLASSES = {"EngineProc", "LiveRun"}
+EXEMPT_CLASSES = {"LiveRun"}
 
 HOME_KEY_RE = re.compile(
     r"""(['"])HOME\1\s*:"""              # {"HOME": ...} dict-literal key
@@ -128,7 +131,7 @@ def _argv_expr(call: ast.Call) -> ast.expr | None:
 
 def find_unguarded_child_engine_spawns(root: Path) -> list[tuple[str, int, str]]:
     """Every raw `subprocess.*` spawn under `root` whose argv resolves to
-    `RALPHD_ENGINE` and is neither inside an `EngineProc`/`LiveRun` method,
+    `RALPHD_ENGINE` and is neither inside a `LiveRun` method,
     nor covered by `_resolved_home_env(`/`AMBIENT_HOME`, nor sets an
     explicit `"HOME"` key -- in the outermost function lexically containing
     the call. Returns `(relpath, 1-based lineno, message)` tuples.
@@ -183,7 +186,7 @@ def _scan_module(tree: ast.Module, text: str, rel: str) -> list[tuple[str, int, 
             rel, call.lineno,
             f"unguarded child-engine spawn at {rel}:{call.lineno} "
             f"(subprocess.{attr} of {target}) -- goes through neither "
-            f"EngineProc/LiveRun nor AMBIENT_HOME, and sets no explicit "
+            f"LiveRun nor AMBIENT_HOME, and sets no explicit "
             f"HOME override",
         ))
 
@@ -193,7 +196,7 @@ def _scan_module(tree: ast.Module, text: str, rel: str) -> list[tuple[str, int, 
 
 def test_no_unguarded_child_engine_spawns_in_tests_tree():
     """The real check: every `RALPHD_ENGINE` spawn under `tests/` is either
-    inside `EngineProc`/`LiveRun`, opts into `AMBIENT_HOME`, or sets an
+    inside `LiveRun`, opts into `AMBIENT_HOME`, or sets an
     explicit `HOME`."""
     violations = find_unguarded_child_engine_spawns(TESTS_ROOT)
     assert not violations, "\n".join(v[2] for v in violations)

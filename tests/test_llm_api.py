@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 SECRET_VALUE = "sekret-llm-key-do-not-leak-abc123"
 
@@ -57,12 +57,12 @@ def wait_for_env_marker(path, predicate=None, timeout=ENV_MARKER_TIMEOUT):
 
 @pytest.fixture
 def llm_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "llm-api-e2e", "iterations": 20,
                     "max_approaches": 1, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

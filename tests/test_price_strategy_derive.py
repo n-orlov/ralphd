@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 from ralphd.engine import pricing_aws as aws
 from ralphd.engine.config import JobConfig
@@ -344,7 +344,7 @@ def test_the_supervisor_hands_the_resolved_chain_to_the_runner(tmp_path):
 
 @pytest.fixture
 def price_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
     # Isolated HOME, for the reason spelled out in test_model_id_recorded.py's
     # `model_engine`: every engine here runs on `GATEWAY_MODEL`, and
     # `check_hat_routes` would abort it at start (exit 5) on any host whose
@@ -352,12 +352,12 @@ def price_engine(tmp_path):
     fixture_home = tmp_path / "fixture-home"
     fixture_home.mkdir()
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "price-derive-e2e", "iterations": 6,
                     "max_approaches": 1, "on_complete": "exit",
                     "model": GATEWAY_MODEL}
         env = {"HOME": str(fixture_home), **(stub_env or {})}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, env)
         procs.append(e)
         return e
 

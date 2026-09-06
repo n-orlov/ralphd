@@ -1,4 +1,4 @@
-"""Task 001 (#83 family): `EngineProc`/`LiveRun` isolate a spawned engine's
+"""Task 001 (#83 family): `LiveRun`/`LiveRun` isolate a spawned engine's
 `HOME` by default, with exactly one greppable opt-in (`AMBIENT_HOME`) for a
 call site that genuinely needs the operator's own, real `$HOME`.
 
@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from tests.conftest import AMBIENT_HOME
-from tests.test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 ENV_MARKER = ".stub-env.json"
 
@@ -41,7 +41,7 @@ def _defaults(run_id: str) -> dict:
 
 
 def test_engine_proc_default_home_is_isolated_from_the_ambient_one(tmp_path):
-    e = EngineProc(tmp_path, _defaults("home-default-e2e"))
+    e = LiveRun(tmp_path, _defaults("home-default-e2e"))
     try:
         e.wait_api()
         seen = _wait_for_env_marker(e.run_dir / ENV_MARKER)
@@ -62,7 +62,7 @@ def test_engine_proc_default_home_is_isolated_from_the_ambient_one(tmp_path):
 
 
 def test_engine_proc_ambient_home_opt_in_gets_the_real_home(tmp_path):
-    e = EngineProc(tmp_path, _defaults("home-ambient-e2e"),
+    e = LiveRun(tmp_path, _defaults("home-ambient-e2e"),
                    stub_env={"HOME": AMBIENT_HOME})
     try:
         e.wait_api()

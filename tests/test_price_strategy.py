@@ -35,7 +35,7 @@ import pytest
 import yaml
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 from ralphd.cli import llm_profiles
 from ralphd.engine.config import (
@@ -168,12 +168,12 @@ def test_the_strategy_is_independent_of_the_operator_pricing_map(tmp_path):
 
 @pytest.fixture
 def price_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "price-strategy-e2e", "iterations": 2,
                     "max_approaches": 1, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

@@ -35,7 +35,6 @@ import os
 import signal
 import time
 
-from test_e2e import engine_factory
 
 __all__ = ["engine_factory"]
 

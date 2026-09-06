@@ -32,7 +32,7 @@ import json
 import pytest
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 from ralphd.engine.runner import IterationResult, PiRunner
 from ralphd.engine.state import model_ids
@@ -135,7 +135,7 @@ def test_a_later_message_without_a_model_does_not_erase_an_observation():
 
 @pytest.fixture
 def model_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
     # Isolated HOME for every engine in this module, not just the one test
     # that asked for it below: `check_hat_routes` (task 009, #60) reads the
     # provider keys out of `$HOME/.pi/agent/models.json` and aborts the
@@ -150,11 +150,11 @@ def model_engine(tmp_path):
     fixture_home = tmp_path / "fixture-home"
     fixture_home.mkdir()
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "model-id-e2e", "iterations": 6,
                     "max_approaches": 1, "on_complete": "exit"}
         env = {"HOME": str(fixture_home), **(stub_env or {})}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, env)
         procs.append(e)
         return e
 

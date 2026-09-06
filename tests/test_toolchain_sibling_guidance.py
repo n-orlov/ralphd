@@ -25,7 +25,7 @@ import re
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 REPO = Path(__file__).parent.parent
 SKILL_DIR = REPO / "examples" / "skills" / "toolchain-sibling"
@@ -50,12 +50,12 @@ RECIPE_MARKERS = [
 
 @pytest.fixture
 def engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "tc-sib", "iterations": 3, "max_approaches": 1,
                     "on_complete": "exit"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 
@@ -64,7 +64,7 @@ def engine(tmp_path):
         e.stop()
 
 
-def _prompts(e: EngineProc) -> list[str]:
+def _prompts(e: LiveRun) -> list[str]:
     all_prompts = (e.run_dir / ".stub-all-prompts").read_text()
     return [p for p in all_prompts.split("===PROMPT===") if p.strip()]
 

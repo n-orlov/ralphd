@@ -19,9 +19,10 @@ with the console scripts beside it -- so this is a distinct defect from #65's
 script-location bug, and no virtualenv hides it.
 
 The fix lives once, in `tests/conftest.py:with_ralphd_importable()`, and every
-place that spawns this repo's code routes its env through it: the three engine
-launchers (`LiveRun` there, `EngineProc` in tests/test_e2e.py, and
-test_config_overlay.py's fixture, which bypasses `EngineProc.__init__` and so
+place that spawns this repo's code routes its env through it: the two engine
+launchers (`LiveRun` there -- the one launcher since task 021 folded
+test_e2e.py's `EngineProc` into it -- and test_config_overlay.py's fixture,
+which bypasses `LiveRun.__init__` and so
 has to repeat it) and the two shared `ralphctl` runners (`LiveRun.ralphctl`,
 and `Ctl.run` in tests/test_cli_docker.py -- `ralphctl` is the same package
 behind a second console script, so a HOME handed to it hides `ralphd` just the
@@ -230,20 +231,22 @@ def test_live_run_engine_starts_and_keeps_the_tmp_home(live, tmp_path):
 
 
 def test_engine_proc_starts_and_keeps_the_tmp_home(tmp_path):
-    """The same assertions for `EngineProc` (tests/test_e2e.py), the other
-    launcher -- used by test_llm_api.py, test_creds_api.py, test_skills_api.py
-    and the rest of the fresh-$HOME tier. Two launchers means two places the
-    fix has to be, so it is asserted twice rather than assumed to generalise.
+    """The same assertions for a direct `LiveRun` construction on the
+    registry-less layout (what `EngineProc` was before task 021) -- used by
+    test_llm_api.py, test_creds_api.py, test_skills_api.py
+    and the rest of the fresh-$HOME tier. Two entry points into the launcher
+    means two places to check, so it is asserted twice rather than assumed to
+    generalise.
     (test_config_overlay.py is a third, and covers itself: its own tests
     override HOME and could not start the engine at all without this.)
     """
-    from test_e2e import EngineProc
+    from tests.conftest import LiveRun
 
     fake_home = tmp_path / "engine-home"
     fake_home.mkdir()
-    e = EngineProc(tmp_path, {"run_id": "import-path-e2e", "iterations": 6,
-                              "max_approaches": 1, "on_complete": "idle"},
-                   stub_env={"HOME": str(fake_home)})
+    e = LiveRun(tmp_path, {"run_id": "import-path-e2e", "iterations": 6,
+                          "max_approaches": 1, "on_complete": "idle"},
+                stub_env={"HOME": str(fake_home)})
     try:
         e.wait_api()
         seen = _wait_for_env_marker(e.run_dir / ENV_MARKER)

@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-from test_e2e import STUB_PI, EngineProc, free_port
+from tests.conftest import STUB_PI, LiveRun, free_port
 
 from tests.conftest import RALPHD_ENGINE, with_ralphd_importable
 
@@ -35,9 +35,9 @@ def _chmod_tree_ro(root: Path) -> None:
 
 @pytest.fixture
 def overlay_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict, stub_env: dict, readonly_config: bool = True) -> EngineProc:
+    def make(job: dict, stub_env: dict, readonly_config: bool = True) -> LiveRun:
         run_dir = tmp_path / "run"
         config_dir = tmp_path / "config"
         workspace = tmp_path / "ws"
@@ -56,7 +56,7 @@ def overlay_engine(tmp_path):
             k: v for k, v in os.environ.items()
             if k not in ("RALPHD_HOST_WORKSPACE", "RALPHD_HOST_RUN_DIR", "RALPHD_RUN_ID")
         }
-        # This fixture bypasses EngineProc.__init__ (it needs /config chmod'd
+        # This fixture bypasses LiveRun.__init__ (it needs /config chmod'd
         # read-only *before* the engine starts), so it has to repeat what
         # __init__ does about script/module resolution rather than inherit it:
         # spawn the *resolved* ralphd-engine and put its directory on PATH
@@ -75,7 +75,7 @@ def overlay_engine(tmp_path):
             "HOME": str(fake_home),
             **stub_env,
         })
-        e = EngineProc.__new__(EngineProc)
+        e = LiveRun.__new__(LiveRun)
         e.run_dir = run_dir
         e.config_dir = config_dir
         e.workspace = workspace

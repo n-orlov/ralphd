@@ -3,8 +3,8 @@
 
 CLI-side mount correctness reuses tests/test_cli_docker.py's stub-docker
 recording harness (Ctl/docker_run_argv/env_vars). The engine-side test
-(prompts list the mounted workspace names) reuses tests/test_e2e.py's
-no-Docker EngineProc/engine_factory harness.
+(prompts list the mounted workspace names) reuses tests/conftest.py's
+no-Docker LiveRun/engine_factory harness.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_cli_docker import Ctl, docker_run_argv, env_vars
-from test_e2e import engine_factory
 
 __all__ = ["engine_factory"]
 

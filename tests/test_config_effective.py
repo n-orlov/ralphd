@@ -14,7 +14,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 SECRET_CRED_VALUE = "sekret-config-api-do-not-leak-abc123"
 SECRET_LLM_VALUE = "sekret-llm-env-do-not-leak-xyz789"
@@ -22,13 +22,13 @@ SECRET_LLM_VALUE = "sekret-llm-env-do-not-leak-xyz789"
 
 @pytest.fixture
 def config_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "config-api-e2e", "iterations": 3,
                     "max_approaches": 1, "on_complete": "idle",
                     "vigilant": True, "models": {"worker": "prov/fast-x"}}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

@@ -26,8 +26,8 @@ started life as the reproducer for the bug, before task 001/002 fixed it):
   ralphd job) has `CONFIG_DIR` == the run's real config dir and its ambient
   `$HOME` == the container's real home, so its own startup call was always
   self-consistent there.
-- But this repo's own black-box tests (`tests/test_e2e.py`'s `EngineProc`,
-  `tests/conftest.py`'s `LiveRun`) spawn a **second, child** `ralphd-engine`
+- But this repo's own black-box tests (`tests/conftest.py`'s `LiveRun`, the
+  shared launcher behind `engine_factory` and `live`) spawn a **second, child** `ralphd-engine`
   process to test the engine itself, with a throwaway tmp `config_dir` that
   (almost always) has no `skills/` subdirectory at all. Before task 001, a
   test module that forgot to pass a HOME override in `stub_env` spawned a
@@ -52,7 +52,7 @@ inverted into a regression test proving the opposite holds by default: the
 old assertion claimed a child engine spawned without an explicit HOME
 override in `stub_env` wipes the ambient HOME's placed skill. The new
 assertion is strictly stronger, because it demands survival under exactly
-the same construction (`EngineProc` with no HOME in `stub_env` -- the common,
+the same construction (`LiveRun` with no HOME in `stub_env` -- the common,
 non-opt-in case across the e2e/live suite) instead of merely tolerating loss:
 the placed skill under the stand-in ambient HOME must still exist, unchanged,
 and `~/.pi/agent/skills/` must still list exactly that one entry, after a
@@ -63,7 +63,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 
 def test_child_engine_without_home_override_preserves_ambient_home_skills(
@@ -90,13 +90,13 @@ def test_child_engine_without_home_override_preserves_ambient_home_skills(
     # real container ambient env would present it.
     monkeypatch.setenv("HOME", str(ambient_home))
 
-    # Same construction as tests/test_e2e.py's `engine_factory` fixture,
+    # Same construction as tests/conftest.py's `engine_factory` fixture,
     # deliberately with NO stub_env HOME override -- this is the common
     # case across the e2e/live suite, not a contrived one. Since task 001,
     # `_resolved_home_env()` gives this child its own isolated tmp HOME
     # (`tmp_path / "engine" / "home"`) instead of inheriting the ambient one
     # set above.
-    e = EngineProc(
+    e = LiveRun(
         tmp_path / "engine",
         {"run_id": "skills-loss-repro", "iterations": 1,
          "max_approaches": 1, "on_complete": "idle"},

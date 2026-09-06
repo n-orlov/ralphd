@@ -32,7 +32,6 @@ import time
 from pathlib import Path
 
 import pytest
-from test_e2e import engine_factory
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor

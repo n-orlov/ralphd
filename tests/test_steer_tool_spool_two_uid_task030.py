@@ -12,7 +12,8 @@ under the #60 boundary) itself -- it writes a *request* file and reads an
 *answer* file, and the ENGINE performs every write, from ITS OWN process.
 
 This module drives that for real: a real `ralphd-engine` subprocess (the
-`engine_factory` fixture `tests/test_e2e.py` already exercises the rest of
+`engine_factory` fixture (tests/conftest.py) `tests/test_e2e.py` already
+exercises the rest of
 the black-box surface with) launches a real `Role: Steer` invocation of the
 stub `pi` as ITS OWN subprocess, and the stub -- new knobs
 `STUB_STEER_TOOL_CALLS`/`STUB_STEER_MALFORMED_REQUEST`, see `tests/stub-pi/
@@ -48,7 +49,6 @@ from __future__ import annotations
 
 import json
 
-from test_e2e import engine_factory  # noqa: F401  (fixture used by name)
 
 
 def _tasks(e) -> list[dict]:

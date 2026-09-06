@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 from ralphd.engine.state import CURRENT_SCHEMA_VERSION
 
@@ -24,12 +24,12 @@ EXIT_SCHEMA_TOO_NEW = 4
 
 @pytest.fixture
 def engine_factory(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "schema-e2e", "iterations": 12,
                     "max_approaches": 3, "on_complete": "exit"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

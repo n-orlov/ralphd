@@ -1,7 +1,7 @@
 """Crash-consistency black-box tests (PRD req 17 / task 030).
 
-Each test launches a real `ralphd-engine` process (via `test_e2e.py`'s
-`engine_factory`/`EngineProc`), lets it get partway into a job, then
+Each test launches a real `ralphd-engine` process (via `tests/conftest.py`'s
+`engine_factory`/`LiveRun`), lets it get partway into a job, then
 SIGKILLs that *specific* PID (never a pattern-based kill) at a chosen
 moment, and proves that a second, freshly-launched engine over the exact
 same run dir (a real `ralphctl resume` does exactly this: same run-dir
@@ -29,7 +29,6 @@ import os
 import signal
 import time
 
-from test_e2e import engine_factory
 
 __all__ = ["engine_factory"]
 

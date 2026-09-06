@@ -32,7 +32,6 @@ import pytest
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
 from test_cli_ui import _write_dead_run
-from test_e2e import engine_factory
 
 from ralphd.cli.main import _summarize_usage
 from ralphd.cli.ui_server import run_detail

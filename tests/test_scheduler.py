@@ -14,17 +14,17 @@ from __future__ import annotations
 import json
 
 import pytest
-from test_e2e import STUB_PI, EngineProc  # noqa: F401
+from tests.conftest import STUB_PI, LiveRun  # noqa: F401
 
 
 @pytest.fixture
 def engine_factory(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "e2e", "iterations": 12,
                     "max_approaches": 3, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

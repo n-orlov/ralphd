@@ -32,7 +32,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 SECRET_CRED = "sekret-cred-value-do-not-leak-redact-001"
 SECRET_LLM = "sekret-llm-value-do-not-leak-redact-002"
@@ -41,12 +41,12 @@ NONSECRET_MARKER = "NONSECRET_SENTINEL_9f3a"
 
 @pytest.fixture
 def redact_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "redact-e2e", "iterations": 12,
                     "max_approaches": 1, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

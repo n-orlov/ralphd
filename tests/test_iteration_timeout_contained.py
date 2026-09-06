@@ -43,7 +43,6 @@ import pytest
 from ralphd.engine import runner as runner_mod
 from ralphd.engine.runner import PiRunner
 
-from test_e2e import engine_factory
 
 __all__ = ["engine_factory"]
 

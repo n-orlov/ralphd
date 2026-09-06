@@ -30,7 +30,6 @@ import os
 import stat
 
 import pytest
-from test_e2e import engine_factory
 from test_llm_api import wait_for_env_marker
 
 from ralphd.engine.config import CONTROL_PLANE_ENV_VARS

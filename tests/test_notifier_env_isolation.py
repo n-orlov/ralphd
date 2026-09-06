@@ -20,9 +20,9 @@ autouse or not):
 1. `test_a_spawned_engine_that_pauses_never_gets_the_ambient_notifier_url`
    opts OUT of `tests/conftest.py`'s autouse in-process scrub (the
    `NOTIFIER_ENV` marker) so its own `os.environ` still carries the
-   ambient export, then spawns a real `EngineProc` (the same subprocess
+   ambient export, then spawns a real `LiveRun` (the same subprocess
    shape `tests/test_e2e.py` uses) that reaches the last-approach
-   stagnation pause -- proving the CHILD-env scrub in `EngineProc`/
+   stagnation pause -- proving the CHILD-env scrub in
    `LiveRun`/`ralphctl` holds even when the parent process's own env is
    not clean.
 2. `test_jobconfig_load_in_process_never_sees_the_ambient_notifier_url`
@@ -39,8 +39,7 @@ import os
 import pytest
 
 from ralphd.engine.config import JobConfig
-from tests.conftest import NOTIFIER_ENV_VAR
-from tests.test_e2e import EngineProc
+from tests.conftest import NOTIFIER_ENV_VAR, LiveRun
 
 AMBIENT_NOTIFIER_URL = "http://127.0.0.1:9/notify"
 
@@ -61,12 +60,12 @@ def _ambient_notifier_export():
 
 @pytest.fixture
 def engine_factory(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "notifier-scrub", "iterations": 20,
                     "max_approaches": 1, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-from test_e2e import EngineProc, engine_factory
+from tests.conftest import LiveRun
 
 __all__ = ["engine_factory"]
 
@@ -112,7 +112,7 @@ def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_pa
 
     # Direction 2: work fault (reached the model, failed doing the task) ->
     # left `in-progress`, never silently reverted to `pending`.
-    e_work = EngineProc(
+    e_work = LiveRun(
         tmp_path_factory.mktemp("work_fault"),
         {"run_id": "e2e", "iterations": 12, "max_approaches": 1, "on_complete": "exit"},
         stub_env={"STUB_TASKS": "1", "STUB_WORKER_WORK_FAULT": "1"})

@@ -23,7 +23,7 @@ representative subsets of the e2e/live suite --
 2. `PREVIOUSLY_AMBIENT_SUBSET`: two modules (`test_iteration_env_strip.py`,
    `test_stagnation_signature.py`) drawn from the exact 46-module
    ambient-HOME-inheriting set task 001's own rootcause report named --
-   modules that construct `EngineProc`/`LiveRun` and name no `"HOME"` of
+   modules that construct `LiveRun`/`LiveRun` and name no `"HOME"` of
    their own, so before task 001 they inherited whatever `$HOME` the outer
    pytest process had and their child engine's ordinary startup wiped it.
    Task 001 (`tests/conftest.py`'s `_resolved_home_env`) now defaults every
@@ -52,7 +52,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 from tests.conftest import with_ralphd_importable
 
 REPO = Path(__file__).parent.parent
@@ -71,9 +71,9 @@ SAFE_SUITE_SUBSET = [
 
 # Two modules drawn from the exact 46-module ambient-HOME-inheriting set
 # named in `artifacts/reports/task-001-home-isolation.md` (the command
-# there -- `grep -rln "EngineProc\|LiveRun\|engine_factory\|live_run"
+# there -- `grep -rln "LiveRun\|LiveRun\|engine_factory\|live_run"
 # tests/*.py` minus any file already naming `"HOME"` -- lists exactly 46
-# files, both of these among them): they construct `EngineProc`/`LiveRun`
+# files, both of these among them): they construct `LiveRun`/`LiveRun`
 # and name no `"HOME"` of their own, so before task 001 they inherited
 # whatever `$HOME` the outer pytest process had. Task 001's
 # `_resolved_home_env` now defaults their child engine's `HOME` to an
@@ -100,7 +100,7 @@ def _discoverable_skill_names(home: Path) -> set[str]:
 
 
 def _run_pytest_subset(home: Path, modules: list[str]) -> subprocess.CompletedProcess:
-    # `with_ralphd_importable` for the same reason EngineProc uses it (#67):
+    # `with_ralphd_importable` for the same reason LiveRun uses it (#67):
     # overriding HOME moves *user* site-packages, so on a `pip install --user
     # -e .` layout the child pytest cannot import `ralphd` at all and every
     # module in the subset fails to collect -- a fixture failure that this
@@ -201,7 +201,7 @@ def test_skill_placed_at_engine_startup_is_still_discoverable_after_a_real_suite
     (mounted_skill / "SKILL.md").write_text("# manual-skill\n\nStands in for a "
                                             "human-placed/mounted skill.\n")
 
-    e = EngineProc(engine_root,
+    e = LiveRun(engine_root,
                    {"run_id": "job-container-repro", "iterations": 1,
                     "max_approaches": 1, "on_complete": "idle"},
                    stub_env={"HOME": str(ambient_home)})
@@ -254,7 +254,7 @@ def test_skill_placed_at_engine_startup_is_still_discoverable_after_previously_a
     (mounted_skill / "SKILL.md").write_text("# manual-skill\n\nStands in for a "
                                             "human-placed/mounted skill.\n")
 
-    e = EngineProc(engine_root,
+    e = LiveRun(engine_root,
                    {"run_id": "job-container-repro-2", "iterations": 1,
                     "max_approaches": 1, "on_complete": "idle"},
                    stub_env={"HOME": str(ambient_home)})

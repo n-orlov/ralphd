@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 
-from test_e2e import engine_factory
 
 __all__ = ["engine_factory"]
 

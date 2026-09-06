@@ -1,6 +1,6 @@
 """Black-box tests for per-phase/per-approach usage accounting (PRD req 19).
 
-Reuses tests/test_e2e.py's `engine_factory`/`EngineProc` harness: launches a
+Reuses tests/conftest.py's `engine_factory`/`LiveRun` harness: launches a
 real `ralphd-engine` with the stub `pi`, then observes strictly from the
 outside (HTTP API + run-dir files).
 """
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 
-from test_e2e import engine_factory
 
 from ralphd.engine.loop import LoopSupervisor
 

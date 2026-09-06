@@ -35,7 +35,7 @@ import signal
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 from ralphd.cli.main import _format_reflect_lines
 from ralphd.engine.config import JobConfig
@@ -240,12 +240,12 @@ def test_the_pre_existing_reflect_shapes_render_exactly_as_before():
 
 @pytest.fixture
 def engine_factory(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "reflect-signal", "iterations": 12,
                     "max_approaches": 1, "on_complete": "exit"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

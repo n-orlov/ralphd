@@ -32,7 +32,7 @@ import json
 from datetime import datetime
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
@@ -258,7 +258,7 @@ def test_reflect_survives_the_outage_that_killed_the_job(tmp_path):
     spent (the job ends `aborted`). Invocation 5: reflect's first attempt,
     still inside the outage. Invocation 6: reflect's retry, which succeeds and
     writes the report."""
-    e = EngineProc(
+    e = LiveRun(
         tmp_path,
         {"run_id": "reflect-outage", "reflect": True, "iterations": 3,
          "max_approaches": 1, "on_complete": "exit"},

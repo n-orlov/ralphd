@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 SECRET_VALUE = "sekret-token-do-not-leak-prompt-abc123"
 SOURCING_RULE = "set -a; . ~/.creds/<name>.env; set +a"
@@ -15,12 +15,12 @@ SOURCING_RULE = "set -a; . ~/.creds/<name>.env; set +a"
 
 @pytest.fixture
 def creds_prompt_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "creds-prompt-e2e", "iterations": 12,
                     "max_approaches": 3, "on_complete": "exit"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 
@@ -41,7 +41,7 @@ def _write_creds(config_dir: Path) -> None:
 def test_every_phase_prompt_lists_creds_inventory_no_values(creds_prompt_engine, tmp_path):
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
-    # EngineProc starts the subprocess synchronously in __init__, so the
+    # LiveRun starts the subprocess synchronously in __init__, so the
     # creds dir must exist under tmp_path/"config" before construction.
     _write_creds(tmp_path / "config")
     e = creds_prompt_engine(stub_env={"HOME": str(fake_home)})

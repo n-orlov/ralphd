@@ -1,7 +1,7 @@
 """Task 017: reconstruct FSM position from disk on resume, one test case per
 step state that can genuinely be interrupted mid-invocation or mid-decision,
 driven through the real `ralphd-engine` binary (`engine_factory`, the same
-harness `test_e2e.py`/`test_crash_consistency.py` use) -- plus `ralphctl
+shared harness `test_e2e.py`/`test_crash_consistency.py` use) -- plus `ralphctl
 repair` diagnosing the same crashed run dirs without ever starting an engine.
 
 `worker` and `verify` already have dedicated real-binary SIGKILL/resume tests
@@ -54,7 +54,6 @@ from pathlib import Path
 
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
-from test_e2e import engine_factory
 
 __all__ = ["ctl", "unix_sock", "engine_factory"]
 

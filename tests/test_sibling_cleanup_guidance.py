@@ -19,7 +19,7 @@ and none of it when the capability is off.
 from __future__ import annotations
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 from ralphd.engine.loop import LoopSupervisor
 
@@ -43,10 +43,10 @@ CLEANUP_MARKERS = [
 
 @pytest.fixture
 def engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(stub_env: dict | None = None) -> EngineProc:
-        e = EngineProc(tmp_path, {"run_id": "sib-clean", "iterations": 2,
+    def make(stub_env: dict | None = None) -> LiveRun:
+        e = LiveRun(tmp_path, {"run_id": "sib-clean", "iterations": 2,
                                   "max_approaches": 1, "on_complete": "exit"},
                        stub_env)
         procs.append(e)
@@ -57,7 +57,7 @@ def engine(tmp_path):
         e.stop()
 
 
-def _prompts(e: EngineProc) -> list[str]:
+def _prompts(e: LiveRun) -> list[str]:
     all_prompts = (e.run_dir / ".stub-all-prompts").read_text()
     return [p for p in all_prompts.split("===PROMPT===") if p.strip()]
 

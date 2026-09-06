@@ -48,7 +48,8 @@ def episodes(tmp_path):
     runs: list[LiveRun] = []
 
     def make(run_id: str, job: dict, stub_env: dict | None = None) -> LiveRun:
-        r = LiveRun(tmp_path, run_id, {"run_id": run_id, **job}, stub_env)
+        r = LiveRun(tmp_path, {"run_id": run_id, **job}, stub_env,
+                    run_id=run_id, registry=True)
         runs.append(r)
         return r
 

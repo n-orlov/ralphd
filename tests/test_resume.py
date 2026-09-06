@@ -1,9 +1,9 @@
 """Black-box tests for engine resume-from-existing-state (PRD req 16, engine
 side / task 028).
 
-Reuses `test_e2e.py`'s `engine_factory` fixture: calling it twice within one
+Reuses `tests/conftest.py`'s `engine_factory` fixture: calling it twice within one
 test launches a second real `ralphd-engine` process over the *same* run dir
-(the fixture's `tmp_path` is shared for the whole test, and `EngineProc`
+(the fixture's `tmp_path` is shared for the whole test, and `LiveRun`
 always resolves `run`/`config`/`workspace` under it) -- exactly what a real
 `ralphctl resume` does (fresh container, same mounted run dir), without
 needing Docker.
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 
-from test_e2e import engine_factory
 
 __all__ = ["engine_factory"]
 

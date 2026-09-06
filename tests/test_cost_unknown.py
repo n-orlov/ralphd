@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 
-from test_e2e import engine_factory
 
 from ralphd.engine.runner import IterationResult, PiRunner
 

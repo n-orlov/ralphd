@@ -9,19 +9,19 @@ import stat
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 SECRET_VALUE = "sekret-token-do-not-leak-xyz789"
 
 
 @pytest.fixture
 def creds_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "creds-e2e", "iterations": 12,
                     "max_approaches": 3, "on_complete": "exit"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 
@@ -52,8 +52,8 @@ def _write_creds(config_dir: Path) -> None:
 def test_creds_placed_by_engine_not_entrypoint_no_value_leak(creds_engine, tmp_path):
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
-    # EngineProc starts the process synchronously in __init__, so the creds
-    # dir must exist under tmp_path/"config" (the path EngineProc uses)
+    # LiveRun starts the process synchronously in __init__, so the creds
+    # dir must exist under tmp_path/"config" (the path LiveRun uses)
     # *before* the factory instantiates it -- mkdir(exist_ok=True) there
     # won't disturb files already present.
     _write_creds(tmp_path / "config")

@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 SECRET_VALUE = "sekret-token-do-not-leak-guidance-xyz789"
 SOURCING_RULE = "set -a; . ~/.creds/<name>.env; set +a"
@@ -28,12 +28,12 @@ PROHIBITION_MARKERS = ["cat", "echo", "print"]
 
 @pytest.fixture
 def guidance_engine(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "creds-guidance-e2e", "iterations": 6,
                     "max_approaches": 3, "on_complete": "exit"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 

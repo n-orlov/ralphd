@@ -28,17 +28,17 @@ import json
 
 import pytest
 
-from tests.test_e2e import EngineProc
+from tests.conftest import LiveRun
 
 
 @pytest.fixture
 def engine_factory(tmp_path):
-    procs: list[EngineProc] = []
+    procs: list[LiveRun] = []
 
-    def make(job: dict | None = None, stub_env: dict | None = None) -> EngineProc:
+    def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "stagnation-sig", "iterations": 40,
                     "max_approaches": 3, "on_complete": "idle"}
-        e = EngineProc(tmp_path, {**defaults, **(job or {})}, stub_env)
+        e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e
 
