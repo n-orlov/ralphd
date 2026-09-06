@@ -48,6 +48,7 @@ from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (STEERING_APPLIED, STEERING_CONSUMED_FILE,
                                  STEERING_PENDING, RunDir, steering_entries)
 from tests.conftest import RALPHCTL
+from tests.conftest import supervisor_with_runner
 
 NOTE = "Stop rewriting the tests; fix the runner instead.\n"
 
@@ -118,15 +119,10 @@ DYING = {"work error": _work_error, "interrupted": _interrupted,
          "timed out": _timed_out, "engine explosion": _exploded}
 
 
-def _supervisor(root: Path, script: list) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    sup = LoopSupervisor(
-        JobConfig(run_id="unit", iterations=8, max_approaches=1,
-                  vigilant=False, on_complete="exit"),
-        run, root)
-    sup.runner = _ScriptedRunner(script)   # type: ignore[assignment]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, script: _ScriptedRunner(script),
+    run_id="unit", cfg_defaults=False, iterations=8, max_approaches=1, vigilant=False,
+    on_complete="exit")
 
 
 def _consumed_marker(root: Path) -> list:

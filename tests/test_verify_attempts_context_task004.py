@@ -30,6 +30,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, VALIDATION_ATTEMPT_LIMIT, atomic_write_json
+from tests.conftest import make_supervisor
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "src" / "ralphd" / "prompts"
 LOOP_PY = Path(__file__).resolve().parents[1] / "src" / "ralphd" / "engine" / "loop.py"
@@ -65,23 +66,11 @@ class _FixedRunner:
         return self.result
 
 
-def _supervisor(tmp_path: Path, task: dict) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(JobConfig(run_id="task004-verify-attempts",
-                                    iterations=8, max_approaches=1,
-                                    vigilant=True, on_complete="exit",
-                                    infra_retry_backoff_s=[0.0],
-                                    infra_retry_backoff_max_s=0.0,
-                                    infra_outage_budget_s=0.0),
-                          run, tmp_path)
-    sup.runner = _FixedRunner(_verified(task["id"]))  # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff  # type: ignore[method-assign]
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [dict(task)]})
-    return sup
+_supervisor = lambda tmp_path, task, **cfg: make_supervisor(
+    tmp_path, run_id="task004-verify-attempts", iterations=8, max_approaches=1, vigilant=True,
+    on_complete="exit", infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=0.0, tasks=[dict(task)],
+    runner_factory=lambda sup: _FixedRunner(_verified(task['id'])), **cfg)
 
 
 # -- 1. the extra block names count and limit, and gates the marker --------

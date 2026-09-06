@@ -76,6 +76,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_with_runner
 
 
 class _RecordingRunner:
@@ -105,14 +106,10 @@ class _RecordingRunner:
         return IterationResult(exit_code=0, final_text="ok")
 
 
-def _supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="starting")
-    cfg = JobConfig(run_id="task008-reflect-tail", reflect=True, **cfg_kw)
-    sup = LoopSupervisor(cfg, run, root)
-    sup.runner = _RecordingRunner(sup)  # type: ignore[assignment]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup: _RecordingRunner(sup),
+    run_id="task008-reflect-tail", cfg_defaults=False, status={"state": "starting"},
+    reflect=True)
 
 
 # ---------------------------------------------------------------------------

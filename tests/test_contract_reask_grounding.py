@@ -34,6 +34,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import CONTRACT_REASK_FINAL_TEXT_MAX_CHARS, LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 STEER_SCHEMA_ERROR = "$.settled: is a required property"
 WORKER_SCHEMA_ERROR = "$.verdict: is a required property"
@@ -59,10 +60,8 @@ class _StubRunner:
         return r
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    cfg = JobConfig(run_id="task032-contract-reask-grounding")
-    sup = LoopSupervisor(cfg, RunDir(root=tmp_path), tmp_path)
-    return sup
+_supervisor = supervisor_factory(run_id="task032-contract-reask-grounding",
+                                 cfg_defaults=False)
 
 
 def _fenced(payload_json: str, *, prose: str = "Here is my reasoning about the situation.\nAfter thinking it through, my final answer is below.\n") -> str:

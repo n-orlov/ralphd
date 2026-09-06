@@ -34,6 +34,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_with_runner
 
 
 # -- scaffolding -- mirrors tests/test_engine_finishing_state.py -----------
@@ -98,22 +99,11 @@ def _bad_own_terminal_state_plan(sup: LoopSupervisor) -> IterationResult:
     return _ok("planned\n" + _pointer_line())
 
 
-def _supervisor(root: Path, script: list, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 12, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          "contract_retry_max": 0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="v09-plan-rejection", **kw), run, root)
-    sup.runner = _ScriptedRunner(sup, script)   # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff          # type: ignore[method-assign]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, script: _ScriptedRunner(sup, script),
+    run_id="v09-plan-rejection", iterations=12, max_approaches=1, vigilant=False,
+    on_complete="exit", infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0, contract_retry_max=0)
 
 
 def _events(root: Path, type_: str) -> list[dict]:

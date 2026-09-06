@@ -31,6 +31,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events
+from tests.conftest import make_supervisor
 
 
 def _ok(text: str = "working") -> IterationResult:
@@ -106,24 +107,11 @@ def _verified(sup: LoopSupervisor, _prompt: str = "") -> IterationResult:
     return _ok("looks right\n" + json.dumps({"verdict": "verified"}))
 
 
-def _supervisor(root: Path, handlers: dict, run_id: str = "task016-review-deadline",
-                **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="starting")
-    run.prd_file.write_text("# PRD\n\nDo the thing.\n")
-    kw = {"max_approaches": 2, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id=run_id, **kw), run, root)
-    sup.runner = _ScriptedAgent(sup, handlers)  # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff  # type: ignore[method-assign]
-    return sup
+_supervisor = lambda root, handlers, run_id='task016-review-deadline', **cfg: make_supervisor(
+    root, run_id=run_id, status={"state": "starting"}, prd="# PRD\n\nDo the thing.\n",
+    max_approaches=2, vigilant=False, on_complete="exit", infra_retry_backoff_s=[0.0],
+    infra_retry_backoff_max_s=0.0, infra_outage_budget_s=1000.0,
+    runner_factory=lambda sup: _ScriptedAgent(sup, handlers), **cfg)
 
 
 def _rejected_events(run: RunDir) -> list[dict]:

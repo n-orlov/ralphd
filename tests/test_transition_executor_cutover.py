@@ -33,6 +33,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_with_runner
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOOP_PATH = REPO_ROOT / "src" / "ralphd" / "engine" / "loop.py"
@@ -70,21 +71,11 @@ class _ScriptedAgent:
             self.running = False
 
 
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 15, "max_approaches": 2, "vigilant": True,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="task014-cutover", **kw), run, root)
-    sup.runner = _ScriptedAgent(sup, handlers)  # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff  # type: ignore[method-assign]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, handlers: _ScriptedAgent(sup, handlers),
+    run_id="task014-cutover", iterations=15, max_approaches=2, vigilant=True, on_complete="exit",
+    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 def _run(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:

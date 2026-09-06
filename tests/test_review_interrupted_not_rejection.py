@@ -44,6 +44,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events
+from tests.conftest import supervisor_with_runner
 
 
 def _ok(text: str = "working") -> IterationResult:
@@ -145,33 +146,12 @@ def _complete_task(sup: LoopSupervisor, _prompt: str = "") -> IterationResult:
     return _ok("done\n" + json.dumps({"verdict": "complete", "task_id": task_id}))
 
 
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="starting")
-    # The mutation test (test 3) undoes the fix and falls all the way
-    # through to the ordinary rejected-verdict path, which calls
-    # `_write_composite_prd` -- that reads `run.prd_file` unconditionally,
-    # so every scenario in this module needs one on disk even though the
-    # fixed tests never reach that call.
-    run.prd_file.write_text("# PRD\n\nDo the thing.\n")
-    kw = {"max_approaches": 2, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="task003-review-interrupt", **kw),
-                         run, root)
-    sup.runner = _ScriptedAgent(sup, handlers)  # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        # Steer 002: report the requested `seconds` as WAITED (matching
-        # `_wait_out_backoff`'s real contract) while actually sleeping
-        # none, so a misbehaving stub still bounds a hot retry loop via the
-        # outage budget instead of spinning forever with 0s ever accruing.
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff  # type: ignore[method-assign]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, handlers: _ScriptedAgent(sup, handlers),
+    run_id="task003-review-interrupt", status={"state": "starting"},
+    prd="# PRD\n\nDo the thing.\n", max_approaches=2, vigilant=False, on_complete="exit",
+    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 def _rejected_events(run: RunDir) -> list[dict]:

@@ -29,6 +29,7 @@ from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from tests.conftest import make_supervisor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 API_DOC = REPO_ROOT / "docs" / "api.md"
@@ -39,12 +40,10 @@ CONTROL_HEADER = "X-Ralphd-Control-Token"
 CONTROL_TOKEN = "control-secret-for-task-005"
 
 
-def _supervisor(tmp_path, control_token: str | None) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    cfg = JobConfig(run_id="unit", iterations=5, control_token=control_token)
-    sup = LoopSupervisor(cfg, run, tmp_path)
-    run.update_status(state="running", iterationsBudget=5, iterationsUsed=0)
-    return sup
+_supervisor = lambda tmp_path, control_token, **cfg: make_supervisor(
+    tmp_path, run_id="unit", cfg_defaults=False, status={"state": "running",
+    "iterationsBudget": 5, "iterationsUsed": 0}, iterations=5, control_token=control_token,
+    **cfg)
 
 
 def _client(sup: LoopSupervisor) -> httpx.AsyncClient:

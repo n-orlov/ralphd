@@ -44,6 +44,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_with_runner
 
 
 # -- unit level: skills.verify_placement / verify_placement_and_report -----
@@ -164,16 +165,11 @@ def _events(run_dir: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-def _supervisor(tmp_path: Path, config_dir: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(
-        JobConfig(run_id="unit", iterations=8, max_approaches=1, vigilant=False,
-                  on_complete="exit", infra_retry_backoff_s=[0.0],
-                  infra_retry_backoff_max_s=0.0, infra_outage_budget_s=1000.0),
-        run, tmp_path,
-    )
-    sup.runner = _ScriptedRunner(run)  # type: ignore[assignment]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, config_dir: _ScriptedRunner(sup.run),
+    run_id="unit", iterations=8, max_approaches=1, vigilant=False, on_complete="exit",
+    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 @pytest.mark.asyncio

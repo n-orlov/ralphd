@@ -39,6 +39,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_with_runner
 
 TASK = {
     "id": "007",
@@ -81,22 +82,11 @@ class _SequencedRunner:
         return self.results[idx]
 
 
-def _supervisor(tmp_path: Path, results, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    kw = {"iterations": 8, "max_approaches": 1, "vigilant": True,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 0.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="task001-verify-ladder", **kw),
-                          run, tmp_path)
-    sup.runner = _SequencedRunner(results)      # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff          # type: ignore[method-assign]
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [dict(TASK)]})
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, results: _SequencedRunner(results),
+    run_id="task001-verify-ladder", iterations=8, max_approaches=1, vigilant=True,
+    on_complete="exit", infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=0.0, tasks=[dict(TASK)])
 
 
 def _events(run_dir: Path) -> list[dict]:

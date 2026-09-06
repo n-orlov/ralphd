@@ -711,6 +711,27 @@ def scripted_supervisor(**defaults):
     return supervisor_factory(ScriptedRunner, **defaults)
 
 
+def supervisor_with_runner(build_runner, **defaults):
+    """`supervisor_factory` for a module whose scripted stand-in needs the
+    supervisor (or its `RunDir`) to exist first: `build_runner(sup,
+    *runner_args)` is called with the finished supervisor and whatever
+    positional arguments the call site passed after `root`, and its result is
+    attached as `sup.runner`.
+
+    A module keeps its own stand-in class and stops rebuilding the harness
+    around it:
+
+        _supervisor = supervisor_with_runner(
+            lambda sup, handlers: _ScriptedAgent(sup, handlers),
+            run_id="...", iterations=15)
+    """
+    def build(root, *runner_args, **cfg):
+        return make_supervisor(
+            root, runner_factory=lambda sup: build_runner(sup, *runner_args),
+            **{**defaults, **cfg})
+    return build
+
+
 @pytest.fixture
 def supervisor():
     """Factory fixture: `supervisor(tmp_path, **cfg)` -> LoopSupervisor, with

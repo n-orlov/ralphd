@@ -28,14 +28,11 @@ import pytest
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 
-def _supervisor(tmp_path, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(JobConfig(run_id="task094-budget-setters", **cfg_kw),
-                         run, tmp_path)
-    run.update_status(state="running")
-    return sup
+_supervisor = supervisor_factory(run_id="task094-budget-setters", cfg_defaults=False,
+                                 status={"state": "running"})
 
 
 def test_set_max_approaches_rebinds_cfg_and_status(tmp_path):

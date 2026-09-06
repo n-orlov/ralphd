@@ -40,6 +40,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_with_runner
 
 
 # -- scaffolding -----------------------------------------------------------
@@ -88,20 +89,11 @@ def _cancel(_run: RunDir) -> IterationResult:
     raise asyncio.CancelledError("stray cancellation from the agent plumbing")
 
 
-def _supervisor(tmp_path: Path, script: list, **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    kw = {"iterations": 8, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="unit", **kw), run, tmp_path)
-    sup.runner = _ScriptedRunner(run, script)   # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff          # type: ignore[method-assign]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, script: _ScriptedRunner(sup.run, script),
+    run_id="unit", iterations=8, max_approaches=1, vigilant=False, on_complete="exit",
+    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 def _metas(run_dir: Path) -> list[dict]:

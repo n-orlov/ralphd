@@ -45,6 +45,7 @@ from ralphd.engine.state import (
     RunDir,
     atomic_write_json,
 )
+from tests.conftest import supervisor_with_runner
 
 TASK_ID = "001"
 HANDOFF_TEXT = ("criterion 2 can only be verified against a state its own "
@@ -116,17 +117,11 @@ def _task(**over) -> dict:
     return task
 
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    sup = LoopSupervisor(
-        JobConfig(run_id="task011-backcompat", iterations=9,
-                  max_approaches=1, vigilant=True, on_complete="exit",
-                  infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
-                  infra_outage_budget_s=0.0),
-        run, root)
-    sup.runner = _FixedRunner(lambda: _rejected(HANDOFF_TEXT))  # type: ignore[assignment]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup: _FixedRunner(lambda: _rejected(HANDOFF_TEXT)),
+    run_id="task011-backcompat", iterations=9, max_approaches=1, vigilant=True,
+    on_complete="exit", infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=0.0)
 
 
 def _write_plan(sup: LoopSupervisor) -> None:

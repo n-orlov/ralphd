@@ -54,6 +54,7 @@ from ralphd.engine.config import HatBundle, JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult, PiRunner
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_with_runner
 
 # A ref from each family, matching the PRD's own worked example
 # (amazon-bedrock/eu.anthropic.* and aigw-openai/openai.* -- see
@@ -224,17 +225,11 @@ class _RecordingAgent:
             self.running = False
 
 
-def _supervisor(root, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    kw = {"iterations": 5, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="t007-wiring", **kw), run, root)
-    sup.runner = _RecordingAgent()   # type: ignore[assignment]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup: _RecordingAgent(),
+    run_id="t007-wiring", status={"state": "running"}, iterations=5, max_approaches=1,
+    vigilant=False, on_complete="exit", infra_retry_backoff_s=[0.0],
+    infra_retry_backoff_max_s=0.0, infra_outage_budget_s=1000.0)
 
 
 def test_dispatch_carries_the_bundle_not_the_global_thinking_string(tmp_path):

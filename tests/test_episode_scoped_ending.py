@@ -42,6 +42,7 @@ from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
 from test_failed_task_vocabulary import _drive_until_paused
+from tests.conftest import supervisor_with_runner
 
 REPO = Path(__file__).resolve().parents[1]
 ABORT_REASON = "signal 15 (SIGTERM) reached the engine"
@@ -136,21 +137,11 @@ def _review_ok(sup: LoopSupervisor) -> IterationResult:
     return _ok("looks good\n" + json.dumps({"verdict": "verified"}))
 
 
-def _supervisor(root: Path, script: list, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 12, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="v07-episodes", **kw), run, root)
-    sup.runner = _ScriptedRunner(sup, script)   # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff          # type: ignore[method-assign]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, script: _ScriptedRunner(sup, script),
+    run_id="v07-episodes", iterations=12, max_approaches=1, vigilant=False, on_complete="exit",
+    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 def _episode(root: Path, script: list, **cfg_kw) -> tuple[LoopSupervisor, str]:

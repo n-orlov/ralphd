@@ -22,6 +22,7 @@ from ralphd.engine.faults import FAULT_CLASS_SIGNAL, classify_fault
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import make_supervisor
 
 # -- classifier ------------------------------------------------------------
 
@@ -104,13 +105,9 @@ class _FakeRunner:
         return self.running
 
 
-def _supervisor(tmp_path: Path, retry_max: int = 3) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    cfg = JobConfig(run_id="unit", infra_retry_max=retry_max,
-                    infra_retry_backoff_s=[0.01])
-    sup = LoopSupervisor(cfg, run, tmp_path)
-    sup.runner = _FakeRunner()
-    return sup
+_supervisor = lambda tmp_path, retry_max=3, **cfg: make_supervisor(
+    tmp_path, run_id="unit", infra_retry_max=retry_max, infra_retry_backoff_s=[0.01],
+    runner_factory=lambda sup: _FakeRunner(), **cfg)
 
 
 def _aborted_result() -> IterationResult:

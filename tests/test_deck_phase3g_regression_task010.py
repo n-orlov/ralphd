@@ -59,6 +59,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_with_runner
 
 TASK_104 = "104"
 
@@ -130,24 +131,11 @@ class _RecordingScriptedAgent:
             self.running = False
 
 
-def _supervisor(root: Path, handlers: dict, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 3, "max_approaches": 12, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="deck-phase3g-regression-task010",
-                                    **kw), run, root)
-    agent = _RecordingScriptedAgent(handlers)
-    agent.sup = sup                      # type: ignore[attr-defined]
-    sup.runner = agent                    # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, handlers: _RecordingScriptedAgent(handlers),
+    run_id="deck-phase3g-regression-task010", iterations=3, max_approaches=12, vigilant=False,
+    on_complete="exit", infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 def _run_resumed(root: Path, handlers: dict, tasks: list[dict],

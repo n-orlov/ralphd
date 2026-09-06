@@ -39,6 +39,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_factory
 
 
 def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
@@ -54,15 +55,10 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    (root / "prd.md").write_text("# task 010 fixture PRD\n\nDo the thing.\n")
-    kw = {"max_approaches": 3}
-    kw.update(cfg_kw)
-    cfg = JobConfig(run_id="task010-bounded-cure-pass", **kw)
-    return LoopSupervisor(cfg, run, root)
+_supervisor = supervisor_factory(run_id="task010-bounded-cure-pass", cfg_defaults=False,
+                                 status={"state": "running"},
+                                 prd="# task 010 fixture PRD\n\nDo the thing.\n",
+                                 max_approaches=3)
 
 
 def _rejects_with(findings_list: list[dict]):

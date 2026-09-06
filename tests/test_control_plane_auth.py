@@ -34,6 +34,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
 from test_route_inventory import EXPECTED_MUTATING
+from tests.conftest import make_supervisor
 
 CONTROL_TOKEN = "control-secret-for-tests"
 CONTROL_HEADER = "X-Ralphd-Control-Token"
@@ -54,12 +55,10 @@ _BODIES: dict[tuple[str, str], dict] = {
 }
 
 
-def _supervisor(tmp_path, control_token: str | None = CONTROL_TOKEN) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    cfg = JobConfig(run_id="unit", iterations=5, control_token=control_token)
-    sup = LoopSupervisor(cfg, run, tmp_path)
-    run.update_status(state="running", iterationsBudget=5, iterationsUsed=0)
-    return sup
+_supervisor = lambda tmp_path, control_token=CONTROL_TOKEN, **cfg: make_supervisor(
+    tmp_path, run_id="unit", cfg_defaults=False, status={"state": "running",
+    "iterationsBudget": 5, "iterationsUsed": 0}, iterations=5, control_token=control_token,
+    **cfg)
 
 
 def _client(sup: LoopSupervisor) -> httpx.AsyncClient:
