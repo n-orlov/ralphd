@@ -5484,6 +5484,15 @@ class LoopSupervisor:
             selected = scheduler.select_next_task(
                 tasks_before.get("tasks", []))
             assigned_id = selected.get("id") if isinstance(selected, dict) else None
+            # Task 014 (PRD requirement C.2, #149): set below, inside the
+            # `selected is None` branch, whenever the ENTIRE actionable
+            # remainder is blocked on a petitioned ancestor -- read again
+            # near the stagnation-diff formula further down so a pass held
+            # on an open petition is never charged as a no-progress
+            # iteration. Declared here (rather than only inside that
+            # branch) so it is always defined for the ordinary `selected
+            # is not None` pass too, where it is simply `False`.
+            petition_held_this_pass = False
             if selected is None:
                 # Task 123 (#60): the harness -- not the agent, and not
                 # `tests/stub-pi/pi`'s own emulation -- is the one place
@@ -5542,6 +5551,54 @@ class LoopSupervisor:
                         with open(self.run.notes_file, "a") as f:
                             f.write("\n" + "\n".join(lines) + "\n")
                         self._blocked_notes_written.update(new_ids)
+                # Task 014 (PRD requirement C.2, #149): "held, not
+                # starved" -- reached this line only when `doom_fault`
+                # just above is `None` (the actionable remainder is NOT
+                # entirely dead-doomed). If it is instead entirely
+                # blocked on a `petitioned` ancestor (`state.
+                # task_blocked_by(..., include_petitioned=True)`, the
+                # SAME derivation task 013 wired into every display
+                # surface, here read for a fifth purpose: deciding
+                # whether the only reason nothing is schedulable this pass
+                # is a hold, never a stuck plan), the engine runs the SAME
+                # bounded, off-budget mid-run adjudication episode
+                # (`_maybe_run_midrun_adjudication_episode`, already
+                # deduped per obligation by `self._petition_adjudication_
+                # seen` so calling it here on every held pass is a cheap
+                # no-op once an obligation has had its bounded shot)
+                # IMMEDIATELY -- right here, rather than waiting for a
+                # `pending_verify` cycle that will never arrive while
+                # nothing is being worked on -- instead of just letting the
+                # loop idle along to the ordinary "nothing selectable"
+                # worker dispatch a few lines below. `petition_held_this_
+                # pass` is read further down (right where the
+                # infra/signal fault-class carve-outs already skip the
+                # stagnation diff formula) so THIS pass's lack of
+                # tasks.json/commit/contract/tool-activity progress is
+                # never charged to the stagnation counter either -- the
+                # ordinary worker dispatch below still runs (a held plan
+                # still gets its normal chance to report `plan_complete`/
+                # a fresh petition/etc.), only the STAGNATION bookkeeping
+                # is exempted.
+                blocked_incl_petitioned = state.task_blocked_by(
+                    tasks_before.get("tasks", []), include_petitioned=True)
+                actionable_ids = {
+                    str(t["id"]) for t in tasks_before.get("tasks", [])
+                    if isinstance(t, dict) and t.get("id") not in (None, "")
+                    and task_is_actionable(t)}
+                if actionable_ids and actionable_ids <= set(
+                        blocked_incl_petitioned.keys()):
+                    petition_held_this_pass = True
+                    self.run.emit(
+                        "log", level="info",
+                        message=(
+                            "the entire actionable remainder is blocked "
+                            "on a petitioned dependency -- holding "
+                            "instead of starving, and running the mid-run "
+                            "adjudication episode immediately (task 014, "
+                            "requirement C.2, #149)"),
+                        blockedTaskIds=sorted(actionable_ids))
+                    await self._maybe_run_midrun_adjudication_episode()
             claimed_from = None
             claimed_from_tier: str | None = None
             if isinstance(selected, dict) and selected.get("status") in (
@@ -6228,6 +6285,22 @@ class LoopSupervisor:
                 # run selfdev-v09-fsm-loop) were misclassified `"work"` by a
                 # since-retired duration bound and failed an approach through
                 # this exact guard while nothing about the plan was stuck.
+                continue
+
+            if petition_held_this_pass:
+                # Task 014 (PRD requirement C.2, #149): the ENTIRE
+                # actionable remainder was blocked on a petitioned
+                # ancestor at the top of this pass -- the worker was
+                # still dispatched (a held plan still gets its ordinary
+                # chance to report `plan_complete`, a fresh petition, or
+                # anything else worth a real reply), but its `no_verdict`
+                # is exactly what a held plan is SUPPOSED to answer, not
+                # evidence the plan is stuck. Same carve-out shape as the
+                # two checks just above: neither incremented nor reset,
+                # because "nothing was learned this pass" is not
+                # "progress was made this pass" -- but here the reason is
+                # a legitimate hold on an open adjudication, not an
+                # infra/signal fault.
                 continue
 
             after = json.dumps(
