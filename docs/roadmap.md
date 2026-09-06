@@ -2032,6 +2032,36 @@ through `ralphctl steer`/`amend` and is on the record in the run dir's `steering
 `/config/amendments/`; the whole run stayed inside its two approaches, its deadline and its
 budget, and stopped on a guard.
 
+## v0.19 — a note is not a rejection
+
+Full PRD: [`docs/prds/v0.19-a-note-is-not-a-rejection.md`](prds/v0.19-a-note-is-not-a-rejection.md).
+This wave (#148–#154) closes the remaining non-work ways a run ends, gives the verifier the
+same materiality standard the reviewer has, and shrinks the suite the run has to keep green:
+a verifier that can accept delivered work with a note instead of rejecting on form (#154); a
+stagnation guard that sees commits and tool activity instead of only `tasks.json`, and pauses
+rather than fails the last approach (#153); a `petitioned` dependency that holds visibly
+instead of starving (#149); an infra fault that never trips the instant-failure breaker
+(#151); petitions scoped to their own wave and an adjudication MAC key that survives a resume
+(#150, #152); a hub that is cheap to leave open (#148); and a suite restructured into a smoke
+ tier, a parallel fast tier and consolidated flow cases so the lanes the run must keep green at
+ its final code sha stay small. Requirement letters are the PRD's own, A–I. **This entry is
+written while the run is still going** (`docs/prds/README.md`'s row reads `in-flight`); it
+records the evidence landed so far and is not a terminal account.
+
+- **H — the version, the roadmap, the row.** `0.19.0` in `pyproject.toml` and
+  `src/ralphd/__init__.py`, and the sweep-sha guard's `LAUNCH_SHA` bumped to this wave's launch
+  sha with the 13 stale v0.18 `sweep-sha` declarations it re-opens converted to
+  `archived-sha` in place, at `73ea9a7` (task 001); the version bump and its `docs/api.md`
+  echo at `16bdbf1`, with a cure teaching the shipped-sha parse to read the settled v0.18
+  block's prose form of "shipped" at `3a36c02` (task 002); this wave's in-flight index row in
+  `docs/prds/README.md` and this block itself (task 003, this same commit). The `## v0.18`
+  block and index row are settled host-side by the operator (`00003a3`, `68c6692`) and were
+  not touched by any of the three commits above.
+- **A–G, I.** Still open (tasks 004–039, pending).
+
+This block will be revised again as the remaining tasks land and the run reaches a terminal
+state.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
