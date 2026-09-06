@@ -26,6 +26,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 # The exact schema-violation shape task 002's own acceptance text names.
 VALIDATION_ERROR = "$.task_id: expected string, got int"
@@ -35,9 +36,7 @@ VALIDATION_ERROR = "$.task_id: expected string, got int"
 WORKER_PROMPT_FRAGMENT = "THE ONE RULE: exactly one task, then stop"
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    cfg = JobConfig(run_id="task002-contract-reask")
-    return LoopSupervisor(cfg, RunDir(root=tmp_path), tmp_path)
+_supervisor = supervisor_factory(run_id="task002-contract-reask", cfg_defaults=False)
 
 
 class _StubRunner:

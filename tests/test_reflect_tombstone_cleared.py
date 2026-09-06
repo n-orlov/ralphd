@@ -43,6 +43,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, artifact_entries
 from tests.conftest import RALPHCTL
+from tests.conftest import make_supervisor
 
 REPO = Path(__file__).resolve().parents[1]
 STALE = ("# Reflection failed\n\n- error: Connection error.\n"
@@ -59,10 +60,8 @@ _OK_CONTRACT = json.dumps({"report_written": True, "suggestions_written": False}
 # the engine, in process
 # --------------------------------------------------------------------------
 
-def _supervisor(root: Path, run_id: str = "unit") -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    return LoopSupervisor(JobConfig(run_id=run_id, reflect=True),
-                          RunDir(root=root), root)
+_supervisor = lambda root, run_id='unit', **cfg: make_supervisor(
+    root, run_id=run_id, cfg_defaults=False, reflect=True, **cfg)
 
 
 def _reflect_dir(sup: LoopSupervisor) -> Path:

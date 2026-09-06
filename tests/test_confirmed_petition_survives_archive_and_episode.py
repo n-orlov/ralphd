@@ -38,6 +38,7 @@ from ralphd.engine import petitions
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from tests.conftest import make_supervisor
 
 TWO_OPEN_PETITIONS_MD = """# v0.15 petitions
 
@@ -68,10 +69,9 @@ def _write_two_open_petitions(workspace: Path) -> Path:
     return petitions_file
 
 
-def _supervisor(run_root: Path, workspace: Path) -> LoopSupervisor:
-    run = RunDir(root=run_root)
-    cfg = JobConfig(run_id="task002-confirmed-survives-archive-and-episode")
-    return LoopSupervisor(cfg, run, workspace)
+_supervisor = lambda run_root, workspace, **cfg: make_supervisor(
+    run_root, run_id="task002-confirmed-survives-archive-and-episode", cfg_defaults=False,
+    workspace=workspace, **cfg)
 
 
 def _populate_the_three_archived_files(sup: LoopSupervisor) -> None:

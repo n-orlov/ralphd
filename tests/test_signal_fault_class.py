@@ -36,6 +36,7 @@ from ralphd.engine.faults import (
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, format_exit_reason
+from tests.conftest import supervisor_factory
 
 REPO = Path(__file__).resolve().parents[1]
 DNS_ERROR = "getaddrinfo EAI_AGAIN gateway.internal"
@@ -146,10 +147,8 @@ def test_the_exit_reason_line_names_the_new_class():
 
 # ----------------------------------------------------------- the loop's own
 # verdict, and what the retry wrapper does with it.
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    cfg = JobConfig(run_id="unit", infra_retry_max=3,
-                    infra_retry_backoff_s=[0.01])
-    return LoopSupervisor(cfg, RunDir(root=tmp_path), tmp_path)
+_supervisor = supervisor_factory(run_id="unit", infra_retry_max=3,
+                                 infra_retry_backoff_s=[0.01])
 
 
 def _signal_result() -> IterationResult:

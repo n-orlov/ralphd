@@ -42,16 +42,14 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 
 # --------------------------------------------------------------------------
 # the engine: _run_reflection() over a real run dir, no subprocess
 # --------------------------------------------------------------------------
 
-def _supervisor(root: Path) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    return LoopSupervisor(JobConfig(run_id="unit", reflect=True),
-                          RunDir(root=root), root)
+_supervisor = supervisor_factory(run_id="unit", cfg_defaults=False, reflect=True)
 
 
 class _FakeReflect:

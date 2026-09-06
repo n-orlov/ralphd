@@ -44,6 +44,7 @@ from ralphd.engine.state import (
     record_debt_entries,
     resolve_debt_entries,
 )
+from tests.conftest import supervisor_factory
 
 REPO = Path(__file__).resolve().parents[1]
 WORKER_MD = (REPO / "src" / "ralphd" / "prompts" / "worker.md").read_text()
@@ -55,16 +56,10 @@ NOTE_B = {"clause": "polling cadence", "observed": "hard-coded 4s",
           "suggested": "no criterion should pin a cadence"}
 
 
-def _supervisor(tmp_path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path / "run")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": []})
-    cfg = JobConfig(run_id="unit", vigilant=True,
-                    infra_retry_backoff_s=[0.0],
-                    infra_retry_backoff_max_s=0.0,
-                    infra_outage_budget_s=1000.0)
-    return LoopSupervisor(cfg, run, workspace)
+_supervisor = supervisor_factory(run_id="unit", run_root="run", workspace="workspace",
+                                 vigilant=True, infra_retry_backoff_s=[0.0],
+                                 infra_retry_backoff_max_s=0.0, infra_outage_budget_s=1000.0,
+                                 tasks=[])
 
 
 def _git(cwd: Path, *args: str) -> None:

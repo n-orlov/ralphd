@@ -27,6 +27,7 @@ from ralphd.engine import petitions
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import make_supervisor
 
 TASK_ID = "001"
 DEPENDENT_ID = "002"
@@ -42,12 +43,10 @@ def _task(id_=TASK_ID, **over) -> dict:
     return task
 
 
-def _supervisor(root: Path, workspace: Path | None = None) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    cfg = JobConfig(run_id="task015-confirmed-closes-task", iterations=5,
-                    max_approaches=1, vigilant=False, on_complete="exit")
-    return LoopSupervisor(cfg, run, workspace or (root.parent / "ws"))
+_supervisor = lambda root, workspace=None, **cfg: make_supervisor(
+    root, run_id="task015-confirmed-closes-task", cfg_defaults=False,
+    workspace=workspace or root.parent / 'ws', iterations=5, max_approaches=1,
+    vigilant=False, on_complete="exit", **cfg)
 
 
 def _write_plan(sup: LoopSupervisor, tasks: list[dict]) -> None:

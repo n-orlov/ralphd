@@ -28,6 +28,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
+from tests.conftest import supervisor_factory
 
 PLANNING_MODEL = "amazon-bedrock/eu.anthropic.claude-opus-5"
 WORKER_MODEL = "amazon-bedrock/eu.anthropic.claude-sonnet-5"
@@ -50,12 +51,9 @@ class _StubRunner:
         return r
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    cfg = JobConfig(
-        run_id="task004-contract-reask-model",
-        model_overrides={"planning": PLANNING_MODEL, "worker": WORKER_MODEL},
-    )
-    return LoopSupervisor(cfg, RunDir(root=tmp_path), tmp_path)
+_supervisor = supervisor_factory(run_id="task004-contract-reask-model", cfg_defaults=False,
+                                 model_overrides={'planning': PLANNING_MODEL,
+                                 'worker': WORKER_MODEL})
 
 
 @pytest.mark.asyncio

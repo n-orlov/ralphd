@@ -34,6 +34,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import supervisor_factory
 
 WAVE_FILE_TEXT = """# v0.19 impossibility petitions
 
@@ -89,13 +90,8 @@ def _result(payload: dict) -> IterationResult:
     return r
 
 
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    run = RunDir(root=tmp_path / "run")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": []})
-    cfg = JobConfig(run_id="task019-petition-writeback")
-    return LoopSupervisor(cfg, run, workspace)
+_supervisor = supervisor_factory(run_id="task019-petition-writeback", cfg_defaults=False,
+                                 run_root="run", workspace="workspace", tasks=[])
 
 
 # ---------------------------------------------------------------------------

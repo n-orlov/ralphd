@@ -47,6 +47,7 @@ from ralphd.engine.faults import (
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, fault_explanation
+from tests.conftest import supervisor_factory
 
 REPO = Path(__file__).resolve().parents[1]
 EARLY = 39.0         # the observed instant: iteration 145 of selfdev-v06-release
@@ -198,10 +199,8 @@ def test_classify_fault_still_delegates_to_the_one_ladder():
 
 
 # --------------------------------------------------- the engine's own verdict
-def _supervisor(tmp_path: Path) -> LoopSupervisor:
-    cfg = JobConfig(run_id="unit", infra_retry_max=3,
-                    infra_retry_backoff_s=[0.01])
-    return LoopSupervisor(cfg, RunDir(root=tmp_path), tmp_path)
+_supervisor = supervisor_factory(run_id="unit", infra_retry_max=3,
+                                 infra_retry_backoff_s=[0.01])
 
 
 def _aborted_after_traffic(duration_s: float) -> IterationResult:
