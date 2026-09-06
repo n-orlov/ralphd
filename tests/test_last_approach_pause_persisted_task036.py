@@ -46,6 +46,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import PAUSED_STATE, RunDir
+from tests.conftest import make_supervisor
 
 
 def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
@@ -61,19 +62,15 @@ def _result(text: str) -> IterationResult:
     return r
 
 
-def _supervisor(root: Path, seed_status: bool = True, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "prd.md").write_text("# task 036 fixture PRD\n\nDo the thing.\n")
-    run = RunDir(root=root)
-    if seed_status:
-        # `seed_status=False` is the crashed-episode shape: a second
-        # supervisor over the SAME run dir must read whatever the previous
-        # episode left on status.json, paused marker included.
-        run.update_status(state="running", phase="review", approach=1)
-    kw = {"max_approaches": 1}
-    kw.update(cfg_kw)
-    cfg = JobConfig(run_id="task036-persisted-pause", **kw)
-    return LoopSupervisor(cfg, run, root)
+# `seed_status=False` is the crashed-episode shape: a second supervisor over the
+# SAME run dir must read whatever the previous episode left on status.json,
+# paused marker included -- so it writes no status of its own.
+_supervisor = lambda root, seed_status=True, **cfg: make_supervisor(
+    root, **{"run_id": "task036-persisted-pause", "cfg_defaults": False,
+             "prd": "# task 036 fixture PRD\n\nDo the thing.\n",
+             "status": ({"state": "running", "phase": "review", "approach": 1}
+                        if seed_status else None),
+             "max_approaches": 1, **cfg})
 
 
 def _host_status(root: Path) -> dict:

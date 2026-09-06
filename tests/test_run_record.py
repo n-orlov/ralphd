@@ -32,16 +32,17 @@ from ralphd.engine.state import (
     atomic_write_json,
     write_amendment,
 )
+from tests.conftest import make_supervisor
 
 
 def _run(tmp_path: Path) -> RunDir:
     return RunDir(root=tmp_path / "run")
 
 
-def _supervisor(tmp_path: Path, run: RunDir | None = None, **cfg_kw) -> LoopSupervisor:
-    run = run or _run(tmp_path)
-    cfg = JobConfig(run_id="unit-run", max_approaches=3, **cfg_kw)
-    return LoopSupervisor(cfg, run, tmp_path / "ws")
+_supervisor = lambda tmp_path, run=None, **cfg: make_supervisor(
+    tmp_path, **{"run_id": "unit-run", "cfg_defaults": False,
+                 "run_root": (run or _run(tmp_path)).root, "workspace": "ws",
+                 "max_approaches": 3, **cfg})
 
 
 # ---------------------------------------------------------------------------

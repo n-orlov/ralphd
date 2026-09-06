@@ -31,6 +31,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import PAUSED_STATE, RunDir, write_amendment
+from tests.conftest import supervisor_factory
 
 AMENDMENT_MARKER = "Operator rulings (task 028, #26)"
 
@@ -56,16 +57,13 @@ def _write_tasks(run: RunDir) -> None:
     ]})
 
 
-def _supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "prd.md").write_text("# task 024 fixture PRD\n\nDo the thing.\n")
-    run = RunDir(root=root)
-    run.update_status(state="running", phase="review", approach=1)
-    _write_tasks(run)
-    kw = dict(max_approaches=1)
-    kw.update(cfg_kw)
-    cfg = JobConfig(run_id="task024-resume-same-approach", **kw)
-    return LoopSupervisor(cfg, run, root / "ws")
+_supervisor = supervisor_factory(
+    run_id="task024-resume-same-approach", cfg_defaults=False, workspace="ws",
+    prd="# task 024 fixture PRD\n\nDo the thing.\n",
+    status={"state": "running", "phase": "review", "approach": 1},
+    tasks=[{"id": "001", "title": "do the thing", "status": "completed",
+            "successCriteria": "the thing is done"}],
+    max_approaches=1)
 
 
 def _drive_the_pause_edge(sup: LoopSupervisor) -> None:

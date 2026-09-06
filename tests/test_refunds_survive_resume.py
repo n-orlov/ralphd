@@ -39,6 +39,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 from ralphd.log_merge import iteration_attempt_dirs, iteration_numbers
+from tests.conftest import make_supervisor
 
 __all__ = ["engine_factory"]
 
@@ -73,11 +74,10 @@ def _seed_run(tmp_path, finished: int = 0, refunded: dict | None = None,
     return run
 
 
-def _supervisor(run: RunDir, iterations: int = 100) -> LoopSupervisor:
-    cfg = JobConfig(run_id="unit", iterations=iterations,
-                    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
-                    infra_outage_budget_s=1000.0)
-    return LoopSupervisor(cfg, run, run.root.parent)
+_supervisor = lambda run, iterations=100, **cfg: make_supervisor(
+    run.root, **{"run_id": "unit", "workspace": "..", "iterations": iterations,
+                 "infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
+                 "infra_outage_budget_s": 1000.0, **cfg})
 
 
 def _infra_result() -> IterationResult:

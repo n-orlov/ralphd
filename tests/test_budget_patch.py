@@ -27,17 +27,14 @@ from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from tests.conftest import make_supervisor
 
 
-def _supervisor(tmp_path, iterations: int = 25, used: int = 0,
-                **cfg_kw) -> LoopSupervisor:
-    run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(JobConfig(run_id="unit", iterations=iterations, **cfg_kw),
-                         run, tmp_path)
-    sup.iterations_used = used
-    run.update_status(state="running", iterationsBudget=iterations,
-                      iterationsUsed=used)
-    return sup
+_supervisor = lambda tmp_path, iterations=25, used=0, **cfg: make_supervisor(
+    tmp_path, **{"run_id": "unit", "cfg_defaults": False, "iterations": iterations,
+                 "iterations_used": used,
+                 "status": {"state": "running", "iterationsBudget": iterations,
+                            "iterationsUsed": used}, **cfg})
 
 
 def _client(sup: LoopSupervisor) -> httpx.AsyncClient:

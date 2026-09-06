@@ -654,7 +654,11 @@ def make_supervisor(root: Path, runner=None, *, run_id: str = "unit",
     if runner is not None:
         attach_runner(sup, runner)
     if runner_factory is not None:
-        attach_runner(sup, runner_factory(sup))
+        # A factory may return None, for the modules whose stand-in is optional
+        # (`_supervisor(root)` with no handlers keeps the real `PiRunner`).
+        built = runner_factory(sup)
+        if built is not None:
+            attach_runner(sup, built)
     if approach is not None:
         sup._approach = approach
     if iterations_used is not None:

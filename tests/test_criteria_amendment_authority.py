@@ -69,6 +69,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import make_supervisor
 
 
 def _ok(text: str) -> IterationResult:
@@ -109,11 +110,14 @@ def _job_config(run_id: str) -> JobConfig:
                           "review": "prov/review-model-y"})
 
 
-def _supervisor(root: Path, run_id: str) -> LoopSupervisor:
-    run = RunDir(root=root)
-    run.update_status(state="running")
-    (root / "prd.md").write_text("# task 008 fixture PRD\n\nDo the thing.\n")
-    return LoopSupervisor(_job_config(run_id), run, root)
+_supervisor = lambda root, run_id, **cfg: make_supervisor(
+    root, **{"run_id": run_id, "cfg_defaults": False, "status": {"state": "running"},
+             "prd": "# task 008 fixture PRD\n\nDo the thing.\n",
+             "iterations": 10, "max_approaches": 3, "vigilant": True,
+             "on_complete": "exit", "infra_retry_backoff_s": [0.0],
+             "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
+             "model_overrides": {"worker": "prov/worker-model-x",
+                                 "review": "prov/review-model-y"}, **cfg})
 
 
 # ---------------------------------------------------------------------------

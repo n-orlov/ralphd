@@ -79,6 +79,7 @@ from ralphd.engine.runner import (
     last_nonblank_line,
 )
 from ralphd.engine.state import RunDir, atomic_write_json, task_blocks_completion
+from tests.conftest import supervisor_with_runner
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -226,22 +227,11 @@ def _plan_doc(*specs: tuple) -> dict:
                        "successCriteria": f"{i} works"} for i, s in specs]}
 
 
-def _supervisor(root: Path, handlers: dict | None = None, **cfg_kw) -> LoopSupervisor:
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    kw = {"iterations": 14, "max_approaches": 1, "vigilant": False,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    sup = LoopSupervisor(JobConfig(run_id="v07-marker", **kw), run, root)
-    if handlers is not None:
-        sup.runner = _ScriptedAgent(sup, handlers)   # type: ignore[assignment]
-
-    async def no_backoff(seconds):
-        return seconds, False
-
-    sup._wait_out_backoff = no_backoff              # type: ignore[method-assign]
-    return sup
+_supervisor = supervisor_with_runner(
+    lambda sup, handlers=None: None if handlers is None else _ScriptedAgent(sup, handlers),
+    run_id="v07-marker", iterations=14, max_approaches=1, vigilant=False,
+    on_complete="exit", infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+    infra_outage_budget_s=1000.0)
 
 
 def _events(root: Path) -> list[dict]:
