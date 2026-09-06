@@ -197,7 +197,8 @@ def _run(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:
     return sup, asyncio.run(sup._run_job_core())
 
 
-async def _drive_until_paused(sup: LoopSupervisor) -> None:
+async def _drive_until_paused(sup: LoopSupervisor,
+                             expect_reason: str = "stagnation") -> None:
     """Task 012 (requirement B.3, #153): a `_run_job_core()` that hits the
     stagnation guard on the LAST approach now pauses and escalates instead
     of ending the run `failed` -- and stays parked at `_gate()` forever
@@ -209,6 +210,14 @@ async def _drive_until_paused(sup: LoopSupervisor) -> None:
     own event loop can close cleanly -- the same shape
     `tests/test_stagnation_last_approach_pause_task012.py` uses for its own
     in-process resume coverage, minus the resume.
+
+    The bounded wait AND the pause's identity both live here (task 042,
+    steer 004): the poll can only ever end at a `paused` status -- a run
+    that ends any other way, or a stub engine that parks somewhere the
+    guard never reaches, raises instead of hanging the suite -- and the
+    helper then asserts `pauseReason == expect_reason` (`"stagnation"` for
+    every caller so far), so no caller can mistake some other pause for the
+    stagnation pause it meant to drive.
     """
     task = asyncio.ensure_future(sup._run_job_core())
     for _ in range(500):
@@ -225,6 +234,10 @@ async def _drive_until_paused(sup: LoopSupervisor) -> None:
         await task
     except asyncio.CancelledError:
         pass
+    status = sup.run.read_status()
+    assert status.get("state") == "paused", status
+    if expect_reason is not None:
+        assert status.get("pauseReason") == expect_reason, status
 
 
 def _events(root: Path) -> list[dict]:

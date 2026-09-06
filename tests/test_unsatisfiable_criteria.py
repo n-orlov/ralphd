@@ -484,6 +484,7 @@ def test_the_approach_failure_event_names_the_outstanding_tasks_on_its_payload(
 
     status = sup.run.read_status()
     assert status["state"] == "paused", status
+    assert status["pauseReason"] == "stagnation", status
     failure_events = [
         ev for ev in _events(root)
         if ev.get("type") == "log" and ev.get("level") == "error"
