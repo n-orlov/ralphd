@@ -2606,8 +2606,14 @@ class TasksRead:
         for this read's tasks -- derived through `task_blocked_by()`, exactly
         the same pattern `failure_kinds` follows for a different overlay, and
         for the same reason: a plan written before this existed carries no
-        such field at all, so there is nothing to fall back to but derive."""
-        return task_blocked_by(self.tasks)
+        such field at all, so there is nothing to fall back to but derive.
+
+        Task 013 (PRD requirement C.1, #149): `include_petitioned=True` --
+        this is the on-disk half of the four display surfaces, so a
+        dependent of a `petitioned` task shows up here (and, through
+        `payload` below, in `GET /tasks` and `ralphctl tasks`) with the
+        petitioned task named as its cause, same map, same field."""
+        return task_blocked_by(self.tasks, include_petitioned=True)
 
     @property
     def payload(self) -> dict:
@@ -3412,7 +3418,8 @@ def steering_origin_outstanding(tasks_doc) -> list:
             if is_steering_origin(t) and not task_is_terminal(t)]
 
 
-def task_blocked_by(tasks: list) -> dict[str, list[str]]:
+def task_blocked_by(tasks: list, *,
+                     include_petitioned: bool = False) -> dict[str, list[str]]:
     """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}` for
     every task that can never be completed because a `dependsOn` entry --
     directly, or transitively through another doomed task -- reached
@@ -3420,6 +3427,23 @@ def task_blocked_by(tasks: list) -> dict[str, list[str]]:
     harness-derived" requirement: the harness marks the dependents here, so
     no prompt has to notice and no agent has to write a note about it
     (worker.md used to ask for exactly that, by hand).
+
+    Task 013 (PRD requirement C.1, #149): `include_petitioned=True` widens
+    the same map with a SECOND, unrelated cause -- a task whose `dependsOn`
+    names a `petitioned` ancestor DIRECTLY (one hop only, never propagated
+    through the fixpoint below) is included too, with that ancestor as its
+    cause. `petitioned` is deliberately never added to `dead`/`doomed`
+    itself: a petition can still resolve (REFUTED keeps it exactly where it
+    is; CONFIRMED moves it to `skipped` and re-points dependents, C.3's
+    scope) so treating it as permanently dead here would make
+    `_doomed_plan_fault`'s "nothing can ever move this plan again" verdict
+    fire on a plan that is merely holding for an adjudication -- the one
+    reason this is opt-in, `False` by default, so every existing caller
+    (doom detection at `LoopSupervisor._step_worker`/`_doomed_plan_fault`)
+    is untouched. The four display surfaces (`ralphctl tasks`, `GET
+    /tasks`/`TasksRead.blocked_by`, the hub's `ui_server._with_task_
+    blocked_by`) pass `True`; worker.md's own prose names the same map for
+    the fourth (the worker prompt).
 
     A task already `completed`/`validated` is a SINK: whatever its own
     `dependsOn` said, the work is done, so doom does not propagate PAST it to
@@ -3460,6 +3484,10 @@ def task_blocked_by(tasks: list) -> dict[str, list[str]]:
 
     dead = {tid for tid, t in by_id.items()
             if t.get("status", "pending") in TASK_DEPENDENCY_DEAD_STATUSES}
+    held: set[str] = set()
+    if include_petitioned:
+        held = {tid for tid, t in by_id.items()
+                if t.get("status", "pending") == "petitioned"}
     doomed = set(dead)
     changed = True
     while changed:
@@ -3476,9 +3504,13 @@ def task_blocked_by(tasks: list) -> dict[str, list[str]]:
 
     out: dict[str, list[str]] = {}
     for tid in order:
-        if tid in dead or tid not in doomed:
+        if tid in dead or tid in held:
             continue
-        causes = sorted(dep for dep in depends_on.get(tid, []) if dep in doomed)
+        status = by_id[tid].get("status", "pending")
+        if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+            continue  # a sink: done regardless of what it depended on
+        causes = sorted(dep for dep in depends_on.get(tid, [])
+                         if dep in doomed or dep in held)
         if causes:
             out[tid] = causes
     return out

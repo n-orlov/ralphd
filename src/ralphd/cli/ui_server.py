@@ -1052,8 +1052,13 @@ def _with_task_blocked_by(tasks: dict) -> dict:
     entirely when nothing is blocked, exactly as `TasksRead.payload` omits it
     on the on-disk path.
     """
+    # Task 013 (PRD requirement C.1, #149): `include_petitioned=True` --
+    # this is the hub's own re-derivation half of the same four display
+    # surfaces; a dependent of a `petitioned` task shows up here exactly as
+    # `TasksRead.blocked_by` (the on-disk/`GET /tasks` half) shows it, with
+    # the petitioned task named as its cause.
     out = {k: v for k, v in tasks.items() if k != TASK_BLOCKED_FIELD}
-    blocked = task_blocked_by(tasks.get("tasks") or [])
+    blocked = task_blocked_by(tasks.get("tasks") or [], include_petitioned=True)
     if blocked:
         out[TASK_BLOCKED_FIELD] = blocked
     return out

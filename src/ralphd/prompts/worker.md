@@ -40,7 +40,15 @@ immediately starts the next iteration.
    note appended to the handoff notes file naming the blocked task and its
    dead dependency) the moment the dependency reaches `failed`/`skipped` —
    you do not have to notice or record it yourself**, and the scheduler
-   never assigns such a task to you in the first place.
+   never assigns such a task to you in the first place. A dependent of a
+   `petitioned` task is marked on the exact same `taskBlockedBy` map, on the
+   same surfaces (`ralphctl tasks`, the hub, `GET /tasks`, and this same
+   sentence naming the rule to you) — with the petitioned task named as its
+   cause — but a petitioned task is not genuinely dead the way `failed`/
+   `skipped` is: an adjudication may still REFUTE it (the hold stays) or
+   CONFIRM it (the task moves to `skipped` and its dependents are
+   re-pointed). Held, not doomed — do not carve around it as if it were a
+   dead dependency.
 3. Do the work in the workspace for the assigned task. **If your prompt carries a
    `## Why the previous attempt was rejected` block** (only present when this is a
    retry, `validationAttempts > 0`), that block's `validationNotes` is the verifier's
