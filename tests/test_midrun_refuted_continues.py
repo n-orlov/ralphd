@@ -63,7 +63,7 @@ from ralphd.engine.state import RunDir, atomic_write_json
 CRITERIA = (
     "The task's own success criteria this test invents for coverage; "
     "REFUTED must never rewrite it.")
-OBLIGATION = "Requirement Q: an obligation this test invents for coverage"
+OBLIGATION = "An obligation this test invents for coverage"
 REMEDY = ("Run the missing migration script before the next validation "
           "attempt; the obligation is achievable once it has run.")
 

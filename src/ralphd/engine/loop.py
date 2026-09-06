@@ -8153,7 +8153,9 @@ class LoopSupervisor:
         all_tasks = tasks_doc.get("tasks") or []
         candidates = petitions.criteria_amendment_candidates(
             adjudications,
-            petitions.open_petitions_in_workspace(self.workspace),
+            petitions.open_petitions_in_workspace(
+                self.workspace, contract_text=self._contract_text(),
+                tasks=all_tasks),
             all_tasks)
         refusals = petitions.criteria_amendment_refusals(adjudications, all_tasks)
         for r in refusals:
@@ -8847,7 +8849,9 @@ class LoopSupervisor:
         `validationAttempts` count.
         """
         open_petitions = petitions.open_unconfirmed_petitions(
-            self.workspace, self.run)
+            self.workspace, self.run,
+            contract_text=self._contract_text(),
+            tasks=self.run.read_tasks().get("tasks") or [])
         if not open_petitions:
             return
         obligations_now = {
@@ -8965,8 +8969,19 @@ class LoopSupervisor:
         actually exists. All parsing/rendering logic lives in
         `engine.petitions`; this method is the one call site that hands it
         this run's workspace path (and now its run handle).
+
+        Task 018 (requirement E.1, #150): also passes this run's own
+        contract text and current `tasks.json` tasks through, so the
+        underlying discovery is scoped to THIS run's own wave and its own
+        plan/contract -- never an older wave's file, and never an
+        obligation naming a task or requirement that no longer exists in
+        the current run.
         """
-        return petitions.petitions_review_context(self.workspace, self.run)
+        tasks_doc = self.run.read_tasks()
+        return petitions.petitions_review_context(
+            self.workspace, self.run,
+            contract_text=self._contract_text(),
+            tasks=tasks_doc.get("tasks") or [])
 
     def _petition_adjudications_tamper_context(self) -> str:
         """Task 011 (requirement C.3, #112): warn review, in-prompt, when
@@ -9568,7 +9583,7 @@ class LoopSupervisor:
                         else:
                             petition_errors = (
                                 petitions.file_exhaustion_petition(
-                                    self.workspace, t))
+                                    self.workspace, t, contract_text))
                     else:
                         petition_errors = [
                             petitions.NO_PETITION_PROTOCOL_NOTICE]

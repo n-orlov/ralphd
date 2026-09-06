@@ -34,7 +34,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
-OBLIGATION = "Requirement Q: an obligation this test invents for coverage"
+OBLIGATION = "An obligation this test invents for coverage"
 
 
 def _ok(text: str) -> IterationResult:

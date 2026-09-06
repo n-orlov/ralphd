@@ -270,55 +270,194 @@ def contract_declares_petition_protocol(contract_text: str) -> bool:
                 or _PETITION_LIST_ITEM_RE.search(text))
 
 
+def _current_wave_name(contract_text: str = "") -> str:
+    """The wave token this run's CONTRACT names (`v0.16` -> `"v0.16"`),
+    else `DEFAULT_PETITIONS_WAVE` -- the one derivation `ensure_petitions_
+    file`, `open_petitions_in_workspace` and `file_exhaustion_petition`
+    now all share, so "the current wave" means the same file to a reader
+    and a writer by construction rather than by convention.
+    """
+    match = _WAVE_RE.search(contract_text or "")
+    return f"v{match.group(1)}" if match else DEFAULT_PETITIONS_WAVE
+
+
+def _current_wave_petitions_path(
+        workspace: Path, contract_text: str = "") -> tuple[Path, Path | None]:
+    """The path THIS wave's petitions file would live at, and the existing
+    on-disk file (if any) that counts as that wave's file today.
+
+    A repo commonly carries more than one `<wave>-petitions.md` under
+    `artifacts/reports/` -- an earlier wave's filing, tracked history, sits
+    right beside the current one (#150: this run's own two mid-run
+    adjudications re-adjudicated 14 foreign petitions filed under v0.16-
+    v0.18 for exactly this reason). The match is:
+
+    1. an EXACT filename match (`<current-wave>-petitions.md`) if one is
+       discovered -- the unambiguous case;
+    2. else, when exactly ONE `<wave>-petitions.md` file exists at all,
+       THAT file -- the common single-wave-repo case (and the shape almost
+       every existing fixture in this test suite takes, several of them
+       naming a file that never matches the wave token this derivation
+       would compute from an absent/minimal contract); keeping this
+       fallback is what keeps every one of those byte-for-byte unaffected;
+    3. else (two or more files, none matching the current wave) -- no
+       existing file counts as the current wave's; a repo carrying only
+       OLDER waves' files must never resurrect the newest OLD one as if it
+       were this run's own (the `files[-1]` bug this task fixes).
+    """
+    wave = _current_wave_name(contract_text)
+    default_path = workspace / "artifacts" / "reports" / f"{wave}-petitions.md"
+    files = discover_petition_files(workspace)
+    for f in files:
+        if f.name == default_path.name:
+            return default_path, f
+    if len(files) == 1:
+        return default_path, files[0]
+    return default_path, None
+
+
 def ensure_petitions_file(workspace: Path, contract_text: str = "") -> Path | None:
-    """The petitions file a filing goes into, creating an empty one when the
-    workspace has none yet -- so that a contract which DOES declare the
-    protocol never falls back to `failed` merely because no wave file had
-    been created yet. Without this, the workspace's file inventory would
-    remain a second, hidden discriminant beside the contract, which is
-    exactly what requirement C.3 forbids ("the two branches are
-    distinguished by the contract and nothing else").
+    """The CURRENT wave's petitions file (`_current_wave_petitions_path`),
+    creating an empty one when the workspace has none yet -- so that a
+    contract which DOES declare the protocol never falls back to `failed`
+    merely because no wave file had been created yet. Without this, the
+    workspace's file inventory would remain a second, hidden discriminant
+    beside the contract, which is exactly what requirement C.3 forbids
+    ("the two branches are distinguished by the contract and nothing
+    else").
 
     Called only where the contract has already been found to declare a
     protocol (`contract_declares_petition_protocol`); returns the existing
-    file when there is one (the last, matching `file_worker_petition`'s own
-    target choice), or None when the file cannot be created at all (a
-    read-only workspace), in which case the caller keeps the `failed`
-    fallback.
+    current-wave file when there is one, or None when the file cannot be
+    created at all (a read-only workspace), in which case the caller keeps
+    the `failed` fallback.
+
+    Task 018 (requirement E.1, #150): this used to return `files[-1]`
+    whenever ANY petitions file existed, which resurrected the newest OLDER
+    wave's file as this run's filing target the moment a repo carried more
+    than one wave's history. `_current_wave_petitions_path` is the fix --
+    an exact wave-name match, else the lone single-file fallback that keeps
+    every pre-existing single-file caller unaffected, else nothing, so this
+    branch creates a genuinely NEW file for the current wave instead.
     """
-    files = discover_petition_files(workspace)
-    if files:
-        return files[-1]
-    match = _WAVE_RE.search(contract_text or "")
-    wave = f"v{match.group(1)}" if match else DEFAULT_PETITIONS_WAVE
-    path = workspace / "artifacts" / "reports" / f"{wave}-petitions.md"
+    default_path, existing = _current_wave_petitions_path(workspace, contract_text)
+    if existing is not None:
+        return existing
+    wave = _current_wave_name(contract_text)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        default_path.write_text(
             f"# {wave} impossibility petitions\n\n"
             "Created by the engine because this run's contract declares a "
             "petition protocol (see `docs/petition-format.md`). One section "
             "per petition; no petition filed yet.\n")
     except OSError:
         return None
-    return path
+    return default_path
 
 
-def open_petitions_in_workspace(workspace: Path) -> list[dict]:
-    """Every OPEN petition across every petitions file found under
-    `workspace` -- the input `petitions_review_context` renders. A file
-    that cannot be read (permissions, a race with a concurrent write)
-    costs nothing more than itself, the same posture
+_TASK_OBLIGATION_REF_RE = re.compile(r"\btask\s+(\S+?)\b[:\s]", re.IGNORECASE)
+_REQUIREMENT_OBLIGATION_REF_RE = re.compile(
+    r"\brequirement\s+([A-Za-z](?:\.\d+)*)\b", re.IGNORECASE)
+
+
+def _obligation_is_history(obligation: str, task_ids: set[str],
+                            contract_text: str) -> bool:
+    """Task 018 (requirement E.1, #150): true when `obligation` names
+    neither a task that exists in the CURRENT `tasks.json` (`task_ids`) nor
+    a requirement the CURRENT contract (`contract_text`) actually declares
+    -- the shape a foreign wave's filing takes once its own task ids and
+    requirement letters no longer resolve against this run's own plan or
+    PRD (the two mid-run adjudications this task's PRD requirement cites,
+    #150). A petition this function calls history is excluded from
+    `open_petitions_in_workspace`'s result -- it is not re-typed or
+    deleted, only left out of what review is asked to adjudicate.
+
+    Two independent checks, deliberately not symmetrical:
+
+    1. `obligation` names a task (`Task <id>` -- `task_petition_obligation`'s
+       own format, the shape an ENGINE-filed exhaustion petition always
+       takes): history unless that id is in `task_ids`. Decisive either
+       way -- a task reference is either current or it is not, and
+       `contract_text` plays no part in that answer.
+    2. Only when (1) named no task at all AND `contract_text` is non-empty
+       (an actual contract is in hand to ask) does a `requirement <letter>`
+       reference in the obligation get checked against it -- a literal
+       `"requirement <letter>"` phrase, or the letter's own PRD heading
+       (`## <letter> --`, this PRD's own section shape). An EMPTY contract
+       never marks anything history through this path: there is nothing to
+       resolve against, so "no longer resolves" cannot be asked, and a
+       worker's own free-text declaration (`file_worker_petition`) that
+       merely happens to mention the word in passing must stay open, the
+       same default-safe direction every other by-presence rule in this
+       module takes.
+    """
+    task_refs = {m.rstrip(":") for m in _TASK_OBLIGATION_REF_RE.findall(obligation)}
+    if task_refs:
+        return not any(ref in task_ids for ref in task_refs)
+    if not contract_text:
+        return False
+    requirement_refs = _REQUIREMENT_OBLIGATION_REF_RE.findall(obligation)
+    if not requirement_refs:
+        return False
+    contract_lower = contract_text.lower()
+    for ref in requirement_refs:
+        if re.search(rf"\brequirement\s+{re.escape(ref)}\b", contract_lower,
+                     re.IGNORECASE):
+            return False
+        letter = ref[0]
+        if re.search(rf"^#{{1,6}}[ \t]*{re.escape(letter)}\b", contract_text,
+                     re.MULTILINE):
+            return False
+    return True
+
+
+def open_petitions_in_workspace(
+        workspace: Path, contract_text: str = "",
+        tasks: list[dict] | None = None) -> list[dict]:
+    """Every OPEN petition filed under `workspace`'s CURRENT wave's
+    petitions file -- the input `petitions_review_context` renders.
+
+    Task 018 (requirement E.1, #150): this used to read EVERY
+    `<wave>-petitions.md` file discovered under the workspace, which
+    surfaced an earlier wave's still-unadjudicated petitions to every later
+    wave's review too (the mid-run adjudication episode re-adjudicated 14
+    foreign petitions from v0.16-v0.18 alongside this run's own, #150).
+    Scoped to `_current_wave_petitions_path`'s single current-wave file
+    (the same derivation `ensure_petitions_file` uses, so a reader and a
+    writer agree on "the current wave" by construction). `contract_text`
+    defaults to `""` (no wave named -> `DEFAULT_PETITIONS_WAVE`), matching
+    every pre-existing caller's behaviour whenever the workspace carries at
+    most one petitions file.
+
+    `tasks` (optional, default `None`, backward compatible with every
+    pre-existing caller) is the CURRENT run's `tasks.json` tasks list; when
+    given, a petition whose obligation names no task in it and no
+    requirement of `contract_text` is also excluded as history
+    (`_obligation_is_history`) -- even from within the current wave's own
+    file, e.g. a leftover filing for a task the plan no longer carries at
+    all.
+
+    A file that cannot be read (permissions, a race with a concurrent
+    write) costs nothing more than itself, the same posture
     `_apply_operator_status_rulings` takes for a broken amendments mount:
     skipped, not raised."""
-    petitions: list[dict] = []
-    for path in discover_petition_files(workspace):
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        petitions.extend(open_petitions(text))
-    return petitions
+    _default_path, current_file = _current_wave_petitions_path(
+        workspace, contract_text)
+    if current_file is None:
+        return []
+    try:
+        text = current_file.read_text()
+    except OSError:
+        return []
+    found = open_petitions(text)
+    if tasks and found:
+        task_ids = {str(t.get("id")) for t in tasks
+                    if isinstance(t, dict) and t.get("id") is not None}
+        found = [p for p in found
+                if not _obligation_is_history(
+                    p["obligation"], task_ids, contract_text)]
+    return found
 
 
 def format_petition_section(obligation: str, ptype: str, evidence: str) -> str:
@@ -339,7 +478,8 @@ def format_petition_section(obligation: str, ptype: str, evidence: str) -> str:
 
 
 def file_worker_petition(workspace: Path, obligation: str, ptype: str,
-                          evidence: str) -> list[str]:
+                          evidence: str, *,
+                          target: Path | None = None) -> list[str]:
     """The ENGINE's own write path for a worker's structured impossibility
     declaration (task 004, requirement A.1, #114) -- never the worker
     itself: a worker's final-line payload only ever carries the three
@@ -352,6 +492,21 @@ def file_worker_petition(workspace: Path, obligation: str, ptype: str,
     enforces POST-HOC for a filing that reached the file some other way;
     this is the point where an ordinary declaration never reaches that
     state at all.
+
+    `target` (optional, default `None`, backward compatible with every
+    pre-existing caller) is the exact file to write into, when the caller
+    has already resolved one -- `file_exhaustion_petition` (below) passes
+    `ensure_petitions_file`'s own current-wave file, so exhaustion never
+    falls into this function's own `files[-1]` fallback (task 018,
+    requirement E.1, #150). `target=None` keeps choosing among whatever
+    `discover_petition_files` finds, exactly as before this task -- the
+    worker's own typed declaration (task 004) has no wave to resolve from,
+    so it is unaffected.
+
+    The duplicate-obligation scan below is always workspace-wide (every
+    discovered file, every wave) regardless of `target`: a re-filed
+    obligation is a violation no matter which wave first filed it, and
+    that is a separate concern from which file a NEW filing lands in.
 
     Returns a list of error strings; empty means the petition was written.
     A non-empty return means nothing was written to disk -- the caller (an
@@ -376,20 +531,23 @@ def file_worker_petition(workspace: Path, obligation: str, ptype: str,
                     "filed (docs/petition-format.md's one-petition-per-"
                     "obligation rule)"
                 ]
-    if not files:
+    if target is not None:
+        write_target = target
+    elif not files:
         return [
             "petition: no <wave>-petitions.md file exists under "
             "artifacts/reports/ to file this declaration into"
         ]
-    target = files[0] if len(files) == 1 else files[-1]
+    else:
+        write_target = files[0] if len(files) == 1 else files[-1]
     try:
-        existing = target.read_text()
+        existing = write_target.read_text()
     except OSError:
         existing = ""
     section = format_petition_section(obligation, ptype, evidence)
     if existing and not existing.endswith("\n"):
         section = "\n" + section
-    with target.open("a", encoding="utf-8") as f:
+    with write_target.open("a", encoding="utf-8") as f:
         f.write(section)
     return []
 
@@ -422,7 +580,8 @@ def task_petition_obligation(task: dict) -> str:
     return f"Task {tid}: {title}" if title else f"Task {tid}"
 
 
-def file_exhaustion_petition(workspace: Path, task: dict) -> list[str]:
+def file_exhaustion_petition(workspace: Path, task: dict,
+                              contract_text: str = "") -> list[str]:
     """File a petition on a task's behalf the moment its validation ladder
     is exhausted (`state.VALIDATION_ATTEMPT_LIMIT`), carrying its
     last-attempt handoff -- the text already written into
@@ -449,14 +608,35 @@ def file_exhaustion_petition(workspace: Path, task: dict) -> list[str]:
     worker's own earlier declaration against the SAME task -- filed with
     the same id+title text -- is treated as the one filing this obligation
     already has, not a fresh one).
+
+    Task 018 (requirement E.1, #150): `target` is resolved through
+    `ensure_petitions_file(workspace, contract_text)` -- the CURRENT wave's
+    file, creating it if absent -- and handed to `file_worker_petition`
+    explicitly, so exhaustion never lands in `file_worker_petition`'s own
+    `files[-1]` fallback (an older wave's file, the moment the workspace
+    carries more than one). `contract_text` defaults to `""`, matching
+    every pre-existing caller whenever the workspace carries at most one
+    petitions file (`_current_wave_petitions_path`'s single-file
+    fallback). A workspace where the current-wave file cannot even be
+    created (a read-only mount) refuses the filing instead of silently
+    misfiling it -- the caller folds that into the ordinary `failed`
+    route exactly like any other refusal from this function.
     """
     tid = task.get("id", "?")
     obligation = task_petition_obligation(task)
     evidence = (task.get("validationNotes") or "").strip() or (
         f"Task {tid} exhausted its validation ladder with no verifier "
         "reason recorded on the last attempt.")
+    target = ensure_petitions_file(workspace, contract_text)
+    if target is None:
+        return [
+            "petition: the contract declares a petition protocol but no "
+            "current-wave petitions file could be created under "
+            "artifacts/reports/"
+        ]
     return file_worker_petition(workspace, obligation,
-                                PETITION_TYPE_EXHAUSTION_DEFAULT, evidence)
+                                PETITION_TYPE_EXHAUSTION_DEFAULT, evidence,
+                                target=target)
 
 
 def duplicate_petition_obligations(workspace: Path) -> list[dict]:
@@ -591,7 +771,9 @@ def _obligation_confirmed(obligation: str, confirmed: set[str]) -> bool:
     return bool(clause) and any(clause in c or c in clause for c in confirmed)
 
 
-def open_unconfirmed_petitions(workspace: Path, run=None) -> list[dict]:
+def open_unconfirmed_petitions(workspace: Path, run=None, *,
+                                contract_text: str = "",
+                                tasks: list[dict] | None = None) -> list[dict]:
     """Every OPEN petition under `workspace` (`open_petitions_in_workspace`)
     MINUS whatever a run-scope CONFIRMED adjudication (`confirmed_
     obligations`) already excludes -- the exact filter `petitions_review_
@@ -606,8 +788,15 @@ def open_unconfirmed_petitions(workspace: Path, run=None) -> list[dict]:
     `run=None` (every caller that existed before this task) returns
     exactly `open_petitions_in_workspace(workspace)`, unfiltered and
     byte-for-byte unchanged.
+
+    `contract_text`/`tasks` (task 018, requirement E.1, #150) are passed
+    straight through to `open_petitions_in_workspace` -- see its own
+    docstring for what each scopes. Both default to the same
+    backward-compatible values (`""`/`None`) that function itself
+    defaults to.
     """
-    petitions_list = open_petitions_in_workspace(workspace)
+    petitions_list = open_petitions_in_workspace(
+        workspace, contract_text=contract_text, tasks=tasks)
     if run is not None and petitions_list:
         confirmed, tampered = confirmed_obligations(run)
         if not tampered and confirmed:
@@ -618,7 +807,9 @@ def open_unconfirmed_petitions(workspace: Path, run=None) -> list[dict]:
     return petitions_list
 
 
-def petitions_review_context(workspace: Path, run=None) -> str:
+def petitions_review_context(workspace: Path, run=None, *,
+                              contract_text: str = "",
+                              tasks: list[dict] | None = None) -> str:
     """Render the review-prompt context block for every OPEN petition
     found under `workspace` -- the same treatment
     `LoopSupervisor._operator_amendment_review_context` gives operator
@@ -642,8 +833,13 @@ def petitions_review_context(workspace: Path, run=None) -> str:
     EMPTY confirmed set: fail towards surfacing the obligation again for
     a fresh adjudication, never towards trusting a record that might
     have been edited to manufacture a false exemption.
+
+    `contract_text`/`tasks` (task 018, requirement E.1, #150), passed
+    through to `open_unconfirmed_petitions`/`open_petitions_in_workspace`,
+    default the same backward-compatible way.
     """
-    petitions = open_unconfirmed_petitions(workspace, run)
+    petitions = open_unconfirmed_petitions(
+        workspace, run, contract_text=contract_text, tasks=tasks)
     if not petitions:
         return ""
     lines = [

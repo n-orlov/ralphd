@@ -47,7 +47,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
-OBLIGATION = "Requirement Q, DoD predicate 3 -- task 014's own fixture"
+OBLIGATION = "Task 1: awaiting an adjudication episode"
 
 
 def _ok(text: str) -> IterationResult:
