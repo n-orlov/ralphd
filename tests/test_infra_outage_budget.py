@@ -45,7 +45,13 @@ def _ok_result() -> IterationResult:
     return r
 
 
-_supervisor = supervisor_factory(run_id="unit", cfg_defaults=False)
+# `no_backoff=False, real_sleep=True`: this module (and the modules that import
+# this `_supervisor`) measure the retry wait itself -- how much of the outage
+# budget it consumes, and that `POST /retry` can interrupt it -- so the shared
+# harness's instant stubs would erase the subject. `cfg_defaults=False` for the
+# same reason: the schedule under test is JobConfig's own.
+_supervisor = supervisor_factory(run_id="unit", cfg_defaults=False,
+                                 no_backoff=False, real_sleep=True)
 
 
 def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):
