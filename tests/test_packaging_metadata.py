@@ -133,16 +133,76 @@ def test_no_current_doc_claims_a_different_version():
     assert seen >= 1, "matched no version claim at all -- VERSION_CLAIM_RES has rotted"
 
 
-def _roadmap_milestones() -> list[tuple[tuple[int, int], bool]]:
-    """`[((major, minor), records_something_shipped), ...]` per `## vX.Y` block."""
+# A milestone block records what shipped in one of two forms, and this module
+# has to read both. The older blocks tick each delivered line with ✅ (and ⏳
+# for a deferred one). From v0.18 on, the operator's settled terminal account
+# states the shipped sha and version in one prose line instead and ticks
+# nothing: `docs/roadmap.md`'s `## v0.18` block (settled at `00003a3`) carries
+# zero ✅ characters while ending "Shipped sha `21652d4`, version 0.18.0,
+# installed host-side by the operator". A ✅-only parse therefore reads the
+# newest shipped milestone as unshipped, which both weakens the "not behind"
+# assertion below (its floor drops a minor) and makes the release after it look
+# "more than one minor ahead" of a roadmap that in fact records it as shipped.
+# The declaration only counts for the block it sits in: its version series must
+# match the heading, so a shipped line quoted from another wave proves nothing.
+SHIPPED_DECLARATION_RE = re.compile(
+    r"^Shipped sha\s+`?\w{7,40}`?,\s+version\s+`?(\d+)\.(\d+)\.\d+`?",
+    re.MULTILINE,
+)
+
+
+def _records_shipped(series: tuple[int, int], body: str) -> bool:
+    if "✅" in body:
+        return True
+    return any(
+        (int(m.group(1)), int(m.group(2))) == series
+        for m in SHIPPED_DECLARATION_RE.finditer(body)
+    )
+
+
+def _roadmap_blocks() -> list[tuple[tuple[int, int], str]]:
+    """`[((major, minor), block body), ...]` per `## vX.Y` heading."""
     text = ROADMAP.read_text()
     heads = list(re.finditer(r"^## v(\d+)\.(\d+)\b", text, re.MULTILINE))
     out = []
     for i, m in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-        body = text[m.end(): end]
-        out.append(((int(m.group(1)), int(m.group(2))), "✅" in body))
+        out.append(((int(m.group(1)), int(m.group(2))), text[m.end(): end]))
     return out
+
+
+def _roadmap_milestones() -> list[tuple[tuple[int, int], bool]]:
+    """`[((major, minor), records_something_shipped), ...]` per `## vX.Y` block."""
+    return [(series, _records_shipped(series, body)) for series, body in _roadmap_blocks()]
+
+
+def test_a_settled_block_stating_its_shipped_sha_counts_as_shipped():
+    """The v0.18 form: a settled terminal account that ticks nothing.
+
+    Non-vacuous by construction -- it asserts such a block exists in
+    `docs/roadmap.md` -- and mutation-checked: strike the shipped-sha line out
+    of the body and the same block stops counting, so this is a second reading
+    of the roadmap's own record, not a blanket "assume shipped".
+    """
+    declared = [
+        (series, body) for series, body in _roadmap_blocks()
+        if "✅" not in body and SHIPPED_DECLARATION_RE.search(body)
+    ]
+    assert declared, (
+        "no docs/roadmap.md block records a shipped sha without ✅ ticks; if the "
+        "convention changed again, re-read SHIPPED_DECLARATION_RE against it"
+    )
+    for series, body in declared:
+        assert _records_shipped(series, body), f"v{series[0]}.{series[1]} read as unshipped"
+        struck = SHIPPED_DECLARATION_RE.sub("(line removed)", body)
+        assert not _records_shipped(series, struck), (
+            f"v{series[0]}.{series[1]} still reads as shipped with its shipped-sha "
+            "line removed -- the parse is not reading that line"
+        )
+        assert not _records_shipped((series[0], series[1] + 1), body), (
+            f"v{series[0]}.{series[1]}'s shipped-sha line counts for a milestone it "
+            "does not name"
+        )
 
 
 def test_the_roadmap_records_shipped_milestones_at_all():
