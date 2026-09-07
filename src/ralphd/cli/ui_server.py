@@ -101,7 +101,13 @@ from ..engine.state import (
     task_failure_kinds,
     tasks_read_notice,
 )
-from ..log_merge import NO_TRANSCRIPT, iteration_lines, iteration_numbers, merged_lines
+from ..log_merge import (
+    NO_TRANSCRIPT,
+    iteration_dir,
+    iteration_lines,
+    iteration_numbers,
+    merged_lines,
+)
 from .log_render import new_render_state, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
@@ -1090,6 +1096,39 @@ def _with_tasks_read_label(tasks: dict) -> dict:
     return out
 
 
+def run_detail_etag(reg: Path, run_id: str) -> str:
+    """Task 003 (A.1): the `ETag` for `GET /api/runs/<id>`.
+
+    Derived from the max mtime of the four on-disk files whose changes can
+    move what `run_detail` reports -- `status.json`, `tasks.json`,
+    `events.jsonl` and the newest iteration's `meta.json` -- so a hub poller
+    can send it back as `If-None-Match` and skip re-fetching (and
+    re-rendering) a detail view that has not moved since its last poll.
+    Purely on-disk, like the mtime it is built from: a live proxied
+    status/tasks answer is never consulted here, so the tag only ever
+    changes when something was actually WRITTEN to this run's directory,
+    never merely because a container answered a proxy call differently this
+    time.
+
+    Missing files (a run dir before its first iteration writes anything, or
+    an events.jsonl not yet created) contribute nothing rather than raising
+    -- the tag is simply built from whichever of the four exist.
+    """
+    run_dir = reg / "runs" / run_id
+    candidates = [run_dir / "status.json", run_dir / "tasks.json",
+                  run_dir / "events.jsonl"]
+    numbers = iteration_numbers(run_dir)
+    if numbers:
+        candidates.append(iteration_dir(run_dir, max(numbers)) / "meta.json")
+    mtime = 0.0
+    for path in candidates:
+        try:
+            mtime = max(mtime, path.stat().st_mtime)
+        except OSError:
+            continue
+    return f'"{run_id}-{mtime:.6f}"'
+
+
 def run_detail(reg: Path, run_id: str) -> dict | None:
     """Run detail view (PRD req 21): task table + iteration timeline data,
     live where possible, falling back to the on-disk snapshot for a dead
@@ -1297,14 +1336,28 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- response helpers -------------------------------------------------
 
-    def _send_json(self, obj, code=200):
+    def _send_json(self, obj, code=200, *, etag: str | None = None):
         data = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Content-Security-Policy", HUB_CSP)
+        if etag is not None:
+            # Task 003 (A.1): only the run-detail route passes this -- see
+            # `run_detail_etag`.
+            self.send_header("ETag", etag)
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_not_modified(self, etag: str) -> None:
+        """Task 003 (A.1): the `If-None-Match` hit path for `GET
+        /api/runs/<id>` -- `304` with the same `ETag` and an empty body, no
+        `Content-Type` (there is no representation being sent)."""
+        self.send_response(304)
+        self.send_header("ETag", etag)
+        self.send_header("Content-Security-Policy", HUB_CSP)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send_bytes(self, data: bytes, code=200, content_type="application/octet-stream",
                     *, nosniff: bool = False):
@@ -1545,11 +1598,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(segs) == 3 and segs[:2] == ["api", "runs"]:
                 run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                # Task 003 (A.1): the ETag is cheap (four `stat()` calls) and
+                # computed BEFORE the full detail build, so a hit never pays
+                # for the tasks/iterations shaping it is about to skip.
+                etag = run_detail_etag(reg, run_id)
+                if self.headers.get("If-None-Match") == etag:
+                    self._send_not_modified(etag)
+                    return
                 detail = run_detail(reg, run_id)
                 if detail is None:
                     self._send_json({"error": f"run {run_id} not found"}, 404)
                     return
-                self._send_json(detail)
+                self._send_json(detail, etag=etag)
                 return
             if segs and segs[0] == "api":
                 self._send_json({"error": "no such endpoint"}, 404)
