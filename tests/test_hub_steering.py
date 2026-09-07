@@ -466,7 +466,7 @@ def test_real_engine_live_then_container_gone_agree(tmp_path, live, ui):
     # STUB_SLEEP/STUB_TASKS keep the loop busy long enough to be steered
     # *while running* (a finished job refuses steering, 409).
     run = live(run_id="steerhub", job={"iterations": 8, "on_complete": "idle"},
-               stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "4"})
+               stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "4"})
     run.wait_api()
     server = ui(run.registry)
 

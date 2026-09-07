@@ -80,7 +80,7 @@ def test_a_real_steer_iteration_applies_a_task_insert_through_the_spool(engine_f
              "args": {"task": {"id": "spooled-1", "title": "via the spool",
                                "status": "completed", "origin": "attacker"}}}]
     e = engine_factory(job={"on_complete": "exit", "iterations": 12},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1",
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3",
                                 "STUB_STEER_TOOL_CALLS": json.dumps(calls)})
     e.wait_api()
     code, res = e.api("POST", "/steering",
@@ -127,7 +127,7 @@ def test_a_malformed_spool_request_is_refused_without_ending_the_run(engine_fact
     the broker's asyncio task, hang the steer iteration, or fail the run:
     the run still has to reach its ordinary terminal, verified state."""
     e = engine_factory(job={"on_complete": "exit", "iterations": 12},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1",
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3",
                                 "STUB_STEER_MALFORMED_REQUEST": "1"})
     e.wait_api()
     code, res = e.api("POST", "/steering",
@@ -170,7 +170,7 @@ def test_a_task_update_status_move_still_goes_through_the_transition_validator(e
          "args": {"taskId": "spooled-2", "changes": {"status": "validated"}}},
     ]
     e = engine_factory(job={"on_complete": "exit", "iterations": 12},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1",
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3",
                                 "STUB_STEER_TOOL_CALLS": json.dumps(calls)})
     e.wait_api()
     code, res = e.api("POST", "/steering",
