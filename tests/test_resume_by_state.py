@@ -147,14 +147,21 @@ def _assert_repair_correctly_diagnosed_the_crash(res):
 # ---------------------------------------------------------------------------
 
 def test_killed_before_planning_ever_produces_tasks_then_resume_replans(
-        engine_factory, ctl):
+        engine_factory, ctl, tmp_path):
     """Killed while the very first planning invocation is still running --
     no tasks.json has ever existed. Resume must NOT treat this as "planning
     already ran" (guard 23's condition, exactly): it must replan from
     scratch, not skip straight into a worker loop with nothing to work on."""
+    hold_file = tmp_path / "hold-planning"
     e1 = engine_factory(job={"on_complete": "idle", "iterations": 15,
                              "max_approaches": 1},
-                        stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "3"})
+                        # No STUB_HOLD_PHASE needed: planning is necessarily
+                        # the very first invocation of a fresh run, so the
+                        # unconditional hold (never released by this test)
+                        # blocks it deterministically before it can write
+                        # anything.
+                        stub_env={"STUB_HOLD_FILE": str(hold_file),
+                                  "STUB_HOLD_TIMEOUT_S": "60", "STUB_TASKS": "3"})
     e1.wait_api()
     meta = _wait_for(lambda: _iteration_phase(e1.run_dir, "planning",
                                               finished=False), timeout=20)
@@ -196,14 +203,20 @@ def test_killed_before_planning_ever_produces_tasks_then_resume_replans(
 # ---------------------------------------------------------------------------
 
 def test_killed_mid_review_before_any_verdict_then_resume_reviews_for_real(
-        engine_factory, ctl):
+        engine_factory, ctl, tmp_path):
     """Killed while the review invocation is hung, before it ever wrote a
     verdict. The completed task must not be redone; review must genuinely
     run again on resume rather than the run silently treating the crashed,
     verdict-less attempt as though a decision had already been made."""
+    hold_file = tmp_path / "hold-review"
     e1 = engine_factory(job={"on_complete": "idle", "iterations": 15,
                              "max_approaches": 1},
-                        stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "1"})
+                        # STUB_HOLD_PHASE restricts the hold to review, so
+                        # planning and the worker iteration that completes
+                        # the one task run unheld first.
+                        stub_env={"STUB_HOLD_FILE": str(hold_file),
+                                  "STUB_HOLD_PHASE": "review",
+                                  "STUB_HOLD_TIMEOUT_S": "60", "STUB_TASKS": "1"})
     e1.wait_api()
     meta = _wait_for(lambda: _iteration_phase(e1.run_dir, "review",
                                               finished=False), timeout=30)
@@ -362,7 +375,7 @@ def test_last_approach_rejected_and_crashed_before_finishing_still_fails_termina
 # ---------------------------------------------------------------------------
 
 def test_killed_mid_reflect_after_finish_wrote_finishing_then_resume_promotes(
-        engine_factory, ctl):
+        engine_factory, ctl, tmp_path):
     """Killed while the post-terminal reflect invocation is hung --
     status.json already reads `state: finishing` (`_finish()` settled the
     outcome before `_run_reflection()` was ever called). Before the fix
@@ -373,7 +386,12 @@ def test_killed_mid_reflect_after_finish_wrote_finishing_then_resume_promotes(
     (task 012, #56) was unreachable code in practice."""
     e1 = engine_factory(job={"on_complete": "idle", "iterations": 15,
                              "max_approaches": 1, "reflect": True},
-                        stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "1"})
+                        # STUB_HOLD_PHASE restricts the hold to reflect, so
+                        # planning, worker and review/verify all run unheld
+                        # first, up to the settled terminal outcome.
+                        stub_env={"STUB_HOLD_FILE": str(tmp_path / "hold-reflect"),
+                                  "STUB_HOLD_PHASE": "reflect",
+                                  "STUB_HOLD_TIMEOUT_S": "60", "STUB_TASKS": "1"})
     e1.wait_api()
     meta = _wait_for(lambda: _iteration_phase(e1.run_dir, "reflect",
                                               finished=False), timeout=40)

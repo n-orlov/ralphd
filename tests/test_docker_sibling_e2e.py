@@ -349,14 +349,32 @@ def test_stop_reaps_container_and_keeps_run_dir(ctl):
     assert rdir.is_dir() and (rdir / "status.json").is_file()  # run dir kept
 
 
-def test_resume_continues_after_container_stop(ctl):
+def test_resume_continues_after_container_stop(ctl, work_root):
     run_id = _unique_run_id("e041-resume")
-    # STUB_SLEEP gives a wide window to catch the job genuinely mid-run
-    # (not yet terminal) before stopping the container out from under it.
-    # This test explicitly stops the container mid-run itself (that's the
-    # scenario under test), so on_complete's default doesn't matter for the
-    # first container -- but keep it explicit for clarity/stability.
-    res = ctl.start(run_id, extra_env={"STUB_TASKS": "2", "STUB_SLEEP": "4"},
+    # STUB_HOLD_FILE (a container-side path under /workspace, mounted from
+    # `work_root/ws` below) blocks the job indefinitely -- deterministically
+    # catching it genuinely mid-run before the stop, rather than racing a
+    # fixed STUB_SLEEP window against how fast the container reaches a
+    # terminal state. Unlike every other hold-based test in this plan, this
+    # one MUST release the hold before calling `resume`: `cmd_resume`
+    # reproduces `start`'s resolved `--env` pairs verbatim via
+    # `_read_extra_env_wiring` (`src/ralphd/cli/main.py`), so the resumed
+    # container's own stub-pi invocation(s) see the exact same
+    # STUB_HOLD_FILE/STUB_HOLD_TIMEOUT_S again -- an unreleased hold would
+    # just as deterministically re-block the resumed run for the same 60s
+    # (confirmed live: the resumed container sat in `phase: planning`,
+    # never crashing, until the bound). Touching the file after the stop
+    # (below) is the same release signal every hold-based test uses, only
+    # applied across the resume boundary instead of within one process's
+    # lifetime; the module's own docstring claim that `resume` drops
+    # arbitrary `--env` is stale for this exact pair -- superseded by the
+    # `_read_extra_env_wiring` reproduction path, not re-verified here since
+    # it is out of this task's scope.
+    hold_rel = ".hold-resume-boundary"
+    hold_file_host = work_root / "ws" / hold_rel
+    res = ctl.start(run_id, extra_env={"STUB_TASKS": "2",
+                                       "STUB_HOLD_FILE": f"/workspace/{hold_rel}",
+                                       "STUB_HOLD_TIMEOUT_S": "60"},
                     extra=("--on-complete", "idle"))
     assert res.returncode == 0, res.stderr
     meta = json.loads(res.stdout)
@@ -364,8 +382,7 @@ def test_resume_continues_after_container_stop(ctl):
 
     status = _wait_status(meta["apiUrl"], lambda s: True, timeout=30)
     assert status.get("state") == "running", (
-        "job reached a terminal state before it could be stopped mid-run -- "
-        "increase STUB_SLEEP or poll faster")
+        "job reached a terminal state before it could be stopped mid-run")
 
     res = subprocess.run([REAL_DOCKER, "stop", "-t", "5", container],
                         capture_output=True, text=True, timeout=30)
@@ -376,6 +393,9 @@ def test_resume_continues_after_container_stop(ctl):
     pre_status = json.loads((rdir / "status.json").read_text())
     assert pre_status.get("state") != "succeeded", (
         "job already finished before the stop -- not a genuine resume proof")
+
+    hold_file_host.touch()  # release: the resumed container's own hold
+                            # checks (same env, reapplied) pass instantly
 
     res = ctl.resume(run_id, extra=("--iterations", "+10"))
     assert res.returncode == 0, res.stderr

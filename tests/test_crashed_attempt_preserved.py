@@ -234,19 +234,26 @@ def _wait_for(predicate, timeout=30, interval=0.02):
     raise TimeoutError("condition never became true")
 
 
-def test_a_sigkilled_iterations_three_files_survive_the_resume(engine_factory):
+def test_a_sigkilled_iterations_three_files_survive_the_resume(engine_factory, tmp_path):
     """The whole point, black box: SIGKILL a real engine mid-worker-iteration,
     resume over the same run dir, and read the crashed attempt's `prompt.md`,
     `output.jsonl` and `meta.json` back afterwards -- byte for byte, with the
     resumed attempt's own files sitting in the same slot."""
+    hold_file = tmp_path / "hold-mid-worker"
     e1 = engine_factory(
         job={"on_complete": "idle", "iterations": 15, "max_approaches": 1},
         # STUB_RICH_EVENTS makes the worker emit (and flush) a tool-call
-        # preamble BEFORE it starts "working", so the 1s window this test kills
-        # inside has a partially written transcript on disk -- the file whose
-        # loss motivated #44. Without it the stub prints only at the very end
-        # and there would be nothing to preserve.
-        stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "1", "STUB_RICH_EVENTS": "1"},
+        # preamble BEFORE it starts "working" -- the hold primitive (task
+        # 008/B.2) applies at that same position for the worker phase, so
+        # a partially written transcript is on disk once the hold blocks.
+        # Without STUB_RICH_EVENTS the stub prints only at the very end and
+        # there would be nothing to preserve. STUB_HOLD_PHASE restricts the
+        # hold to worker so planning (which necessarily runs first)
+        # proceeds unheld; this test never releases the hold file, so the
+        # kill below lands inside that block deterministically.
+        stub_env={"STUB_TASKS": "3", "STUB_HOLD_FILE": str(hold_file),
+                  "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "60",
+                  "STUB_RICH_EVENTS": "1"},
     )
     e1.wait_api()
 

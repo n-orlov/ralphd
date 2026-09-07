@@ -10,16 +10,18 @@ state and monotonic, non-duplicated iteration numbering.
 
 Two crash points are covered:
   (a) mid-worker-iteration -- killed while a task is genuinely
-      `in-progress` in tasks.json (STUB_SLEEP holds the worker there,
-      after it has written the in-progress flip but before it finishes
-      the task) -- proves recovery from a *partially done* iteration.
+      `in-progress` in tasks.json (the hold primitive, task 008/B.2, holds
+      the worker there, after it has written the in-progress flip but
+      before it finishes the task) -- proves recovery from a *partially
+      done* iteration.
   (b) at an iteration boundary -- killed while the very next iteration
       (a vigilant "verify" phase) has been started by the engine (its
       iterations/NNNN/meta.json has startedAt) but has not yet done any
-      work at all (stub-pi's non-worker phases sleep before touching any
-      file, including their own prompt-echo markers) -- proves recovery
-      from a *freshly started but wholly unstarted* iteration, with the
-      prior iteration's work already durably completed.
+      work at all (stub-pi's non-worker phases apply the hold before
+      touching any file, including their own prompt-echo markers) --
+      proves recovery from a *freshly started but wholly unstarted*
+      iteration, with the prior iteration's work already durably
+      completed.
 """
 
 from __future__ import annotations
@@ -72,10 +74,18 @@ def _assert_iterations_monotonic_no_dupes(run_dir):
 
 
 # --------------------------------------------------------------------------
-def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory):
+def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory, tmp_path):
+    hold_file = tmp_path / "hold-mid-worker"
     e1 = engine_factory(
         job={"on_complete": "idle", "iterations": 15, "max_approaches": 1},
-        stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "1"},
+        # STUB_HOLD_PHASE restricts the hold to the worker phase, so
+        # planning (which necessarily runs first) proceeds unheld and
+        # writes tasks.json for real; only the worker invocation that
+        # flips a task to in-progress ever blocks on this hold file,
+        # which this test never releases -- the kill below lands inside
+        # that block, deterministically, never a real-time race.
+        stub_env={"STUB_TASKS": "3", "STUB_HOLD_FILE": str(hold_file),
+                  "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "60"},
     )
     e1.wait_api()
 
@@ -169,17 +179,25 @@ def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory):
                in ev.get("message", "") for ev in events_after)
 
 
-def test_sigkill_at_iteration_boundary_then_resume_completes(engine_factory):
+def test_sigkill_at_iteration_boundary_then_resume_completes(engine_factory, tmp_path):
     """Non-worker boundary: the worker loop finishes all tasks and emits
     COMPLETE (that iteration is durably endedAt-recorded, all tasks fully
     'completed'), the engine starts the very next iteration -- review --
-    (meta.json startedAt written) but stub-pi's non-worker top-level sleep
+    (meta.json startedAt written) but stub-pi's non-worker top-level hold
     means it has not yet touched a single file. Kill lands exactly at that
     boundary: the prior work is 100% durable, the next iteration is 0%
     done."""
+    hold_file = tmp_path / "hold-review-boundary"
     e1 = engine_factory(
         job={"on_complete": "idle", "iterations": 15, "max_approaches": 1},
-        stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "1"},
+        # STUB_HOLD_PHASE restricts the hold to the review phase, so
+        # planning and both worker iterations (which necessarily run
+        # first) proceed unheld and finish both tasks for real; only the
+        # review invocation that follows ever blocks on this hold file,
+        # which this test never releases -- the kill below lands exactly
+        # at that boundary, deterministically.
+        stub_env={"STUB_TASKS": "2", "STUB_HOLD_FILE": str(hold_file),
+                  "STUB_HOLD_PHASE": "review", "STUB_HOLD_TIMEOUT_S": "60"},
     )
     e1.wait_api()
 

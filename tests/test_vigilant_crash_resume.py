@@ -21,11 +21,12 @@ holds from that one field, with no sidecar to keep in sync.
 This test proves the fix: a task reaches `awaiting-validation`, the engine
 is SIGKILLed before the verify iteration for it ever finishes (its verify
 iteration's meta.json has startedAt but never endedAt -- killed while `pi`
-is still asleep at the top of its invocation, having touched no files yet),
-then a fresh engine resumes over the same run dir and the task DOES
-eventually get a real, passing verify iteration (a `taskVerified` signal is
-emitted for it, and its verify meta.json shows `verifyOutcome: pass`) before
-the job reaches its terminal succeeded/verified state.
+is still blocked on the hold primitive (task 008/B.2) at the top of its
+invocation, having touched no files yet), then a fresh engine resumes over
+the same run dir and the task DOES eventually get a real, passing verify
+iteration (a `taskVerified` signal is emitted for it, and its verify
+meta.json shows `verifyOutcome: pass`) before the job reaches its terminal
+succeeded/verified state.
 """
 
 from __future__ import annotations
@@ -63,11 +64,19 @@ def _events(run_dir):
 
 
 def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifies(
-        engine_factory):
+        engine_factory, tmp_path):
+    hold_file = tmp_path / "hold-verify-boundary"
     e1 = engine_factory(
         job={"on_complete": "idle", "vigilant": True, "iterations": 15,
              "max_approaches": 1},
-        stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"},
+        # STUB_HOLD_PHASE restricts the hold to the verify phase, so
+        # planning and the worker iteration (which necessarily run first)
+        # proceed unheld and complete the task for real; only the verify
+        # invocation that follows ever blocks on this hold file, which
+        # this test never releases -- the kill below lands exactly at that
+        # boundary, deterministically, never a real-time race.
+        stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                  "STUB_HOLD_PHASE": "verify", "STUB_HOLD_TIMEOUT_S": "60"},
     )
     e1.wait_api()
 
@@ -102,8 +111,8 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
     _kill(e1)
 
     # The crashed verify iteration genuinely never finished: no endedAt, no
-    # verifiedTask/verifyOutcome recorded, no stub verify-call marker (stub
-    # sleeps before touching any file at all in non-worker phases).
+    # verifiedTask/verifyOutcome recorded, no stub verify-call marker (the
+    # hold primitive blocks before touching any file at all).
     crashed_meta = json.loads(
         (e1.run_dir / "iterations" / f"{verify_number:04d}" / "meta.json").read_text())
     assert crashed_meta["phase"] == "verify"

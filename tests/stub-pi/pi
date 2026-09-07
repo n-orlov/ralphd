@@ -19,8 +19,16 @@ from env vars set by the test:
                       through the planner's contract (which task 120's
                       lint now refuses outright).
   STUB_HOLD_FILE      task 007 (B.1): a bounded, env-driven hold primitive
-                      every phase's invocation applies BEFORE its own
-                      role logic runs. When set, this invocation blocks
+                      every phase's invocation applies. Every phase except
+                      Worker applies it BEFORE its own role logic runs, at
+                      the very top of the script; Worker applies it at the
+                      same point it already applied its STUB_SLEEP padding
+                      (task 008/B.2) -- after its own role logic (task
+                      pick, any STUB_REWRITE_CRITERIA mutation, and any
+                      STUB_RICH_EVENTS preamble it already flushed) has
+                      run, so a hold-based test can still observe a
+                      partially-written transcript the way a STUB_SLEEP-
+                      based one used to. When set, this invocation blocks
                       until the named path exists on disk (the test's own
                       release signal, e.g. `path.touch()` once the test has
                       observed whatever it needed mid-iteration) OR
@@ -46,6 +54,30 @@ from env vars set by the test:
                       silent continue.
   STUB_HOLD_POLL_S    poll interval (seconds) while waiting on STUB_HOLD_FILE
                       (default 0.02). Ignored when STUB_HOLD_FILE is unset.
+  STUB_HOLD_PHASE     task 008 (B.2): restricts the hold above to exactly
+                      the invocation(s) whose own phase name (`"planning"`,
+                      `"plan_review"`, `"worker"`, `"review"`,
+                      `"verdict_gate"`, `"verify"`, `"reflect"` -- the same
+                      strings `engine/loop.py`'s own `run_iteration(phase,
+                      ...)` calls use) equals this value; every other
+                      phase's invocation skips the hold entirely, unheld,
+                      no matter how STUB_HOLD_FILE/STUB_HOLD_TIMEOUT_S are
+                      set. Unset (the default) -- unchanged from task
+                      007/B.1 -- applies the hold to EVERY invocation
+                      unconditionally, which is exactly what a test that
+                      opens a hold on the very FIRST invocation of a run
+                      (e.g. a crash mid-planning) still wants, but is
+                      never sufficient on its own for a LATER phase: a
+                      single shared hold file cannot tell "block worker,
+                      not the planning iteration that necessarily runs
+                      before it" apart, since existence is a one-way,
+                      whole-run-wide latch (once released every
+                      invocation from then on -- past AND future -- passes
+                      through instantly; while unreleased every invocation
+                      that checks it blocks, planning included). Naming
+                      the target phase is what makes "let planning (and
+                      any other earlier phase) run normally, then hold
+                      worker/review/verify/reflect" possible at all.
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
   STUB_WORKER_PETITION  task 005 (G.5): a JSON object with the three
                       strings a worker's structured impossibility petition
@@ -449,6 +481,7 @@ if "Role: Worker" not in prompt:
     time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
 
 
+
 def marker(name):
     return os.path.join(run, f".stub-{name}")
 
@@ -846,9 +879,46 @@ if _timeout_hang_count:
 HOLD_TIMEOUT_EXIT_CODE = 3
 
 
-def _apply_hold():
+def _resolve_phase(prompt_text):
+    """Task 008 (B.2): the same phase-name strings `loop.py`'s own
+    `run_iteration(phase, ...)` calls use (`"planning"`, `"plan_review"`,
+    `"worker"`, `"review"`, `"verdict_gate"`, `"verify"`, `"reflect"`),
+    derived from whichever `Role: ...` marker the prompt carries, in the
+    same precedence order the role dispatch below already checks them.
+    `STUB_HOLD_PHASE` (below) compares against this, so a test can hold
+    exactly one LATER phase while every phase strictly before it in the
+    same run keeps running with no hold applied at all -- a single shared
+    `STUB_HOLD_FILE` can otherwise never do that: once it exists every
+    invocation from then on (including ones still to come) passes
+    through instantly, and while it does not exist EVERY invocation that
+    checks it blocks, including the planning iteration that necessarily
+    runs before any worker/review/verify/reflect iteration ever could.
+    """
+    if "Role: Planner" in prompt_text:
+        return "planning"
+    if "Role: Peer plan review" in prompt_text:
+        return "plan_review"
+    if "Role: Worker" in prompt_text:
+        return "worker"
+    if "Role: Steer" in prompt_text:
+        return "steer"
+    if "Role: Reviewer" in prompt_text:
+        return "review"
+    if "Role: Peer verdict gate (BLIND)" in prompt_text:
+        return "verdict_gate"
+    if "Role: Verifier" in prompt_text:
+        return "verify"
+    if "Role: Reflector" in prompt_text:
+        return "reflect"
+    return None
+
+
+def _apply_hold(phase=None):
     hold_file = os.environ.get("STUB_HOLD_FILE")
     if not hold_file:
+        return
+    target_phase = os.environ.get("STUB_HOLD_PHASE")
+    if target_phase and phase != target_phase:
         return
     timeout_s = float(os.environ.get("STUB_HOLD_TIMEOUT_S", "5"))
     poll_s = float(os.environ.get("STUB_HOLD_POLL_S", "0.02"))
@@ -871,7 +941,12 @@ def _apply_hold():
         sys.exit(HOLD_TIMEOUT_EXIT_CODE)
 
 
-_apply_hold()
+# Worker applies the hold at its own STUB_SLEEP position below (task
+# 008/B.2) instead of here, so a partial STUB_RICH_EVENTS transcript can
+# still land before the window opens; every other phase applies it here,
+# before touching any file at all.
+if "Role: Worker" not in prompt:
+    _apply_hold(_resolve_phase(prompt))
 
 if "Role: Planner" in prompt:
     # Task 026 (#61): a marker counting how many times the Planner has run
@@ -1021,6 +1096,12 @@ elif "Role: Worker" in prompt:
                 picked.get("successCriteria", "") + " (rewritten by worker)")
             with open(tasks_file, "w") as f:
                 json.dump(d, f)
+        # Task 008 (B.2): the hold primitive applies HERE for Worker,
+        # mirroring the position its own STUB_SLEEP padding already held
+        # (see the top-level `if "Role: Worker" not in prompt:` skip
+        # above) -- a no-op when STUB_HOLD_FILE is unset, so this composes
+        # unchanged with every existing STUB_SLEEP-only worker consumer.
+        _apply_hold("worker")
         time.sleep(float(os.environ.get("STUB_SLEEP", "0")))
     # record steering whenever a worker iteration sees it. Anchor on the
     # engine's *injected* header (loop.py writes
