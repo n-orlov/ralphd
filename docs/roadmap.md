@@ -1249,7 +1249,7 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
 - ✅ **D. A doomed plan raises a named fault instead of starving quietly (#99).** When the
   doomed set covers the entire actionable remainder, the loop now raises a fault naming the
   doomed tasks and their dead ancestors rather than producing three silent no-progress
-  iterations and a stagnation misattribution (`838753e`, `tests/test_doomed_plan_fault.py`).
+  iterations and a stagnation misattribution (`838753e`, `tests/test_transitions.py`, folded task 027 D.6).
   This run's own approach 1 reproduced exactly the failure D exists to prevent — but under the
   wheel-baked engine that predates this fix, so D's own mechanism was never live in the process
   that needed it; the fix is proven by test, not by the run demonstrating it against itself.
@@ -1265,7 +1265,7 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   (`4ec3629`, task 008).
 - ✅ **G. The steer hat: a state, a schema, a prompt, a model role (#98).** `steer` is a real
   `TABLE` entry, `HAT_SCHEMAS` entry and `MODEL_HATS` entry with its own prompt, reached only
-  through declared edges (`0650acd`, task 009, `tests/test_steer_hat_table_entry.py`).
+  through declared edges (`0650acd`, task 009, `tests/test_transitions.py`, folded task 027 D.6).
 - ✅ **H. The authority boundary is the tool surface, not the prompt (#98).** The steer hat's
   tool set carries no budget tool, asserted by a test that fails the moment one is added to
   the wrong list; its status-changing tool calls requirement E's own applier rather than a

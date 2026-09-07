@@ -5,7 +5,7 @@ the `<!-- BEGIN GENERATED TRANSITION DIAGRAM -->` /
 `<!-- END GENERATED TRANSITION DIAGRAM -->` markers.
 
 Task 005 (PRD requirement C.1, finding 4): the FSM diagram in the docs is
-not hand-drawn — this script (and `tests/test_transition_diagram_docs.py`,
+not hand-drawn — this script (and `tests/test_transitions.py`,
 which calls the same function) is the only place that turns
 `transitions.table_for(...)`'s data into a diagram, so a changed edge shows
 up as doc drift instead of silently going stale, exactly like
@@ -59,7 +59,7 @@ def render() -> str:
         f"`scripts/render_transition_diagram.py` — do not hand-edit this "
         f"block; regenerate it with `python "
         f"scripts/render_transition_diagram.py --write` and let "
-        f"`tests/test_transition_diagram_docs.py` catch drift."
+        f"`tests/test_transitions.py` catch drift."
     )
     lines.append("")
     edges = _edges()

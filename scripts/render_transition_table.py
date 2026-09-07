@@ -5,7 +5,7 @@ markdown block `docs/architecture.md` embeds between the
 `<!-- END GENERATED TRANSITION TABLE -->` markers.
 
 Task 016 (requirement B follow-through): the table in the docs is not a
-hand copy — this script (and `tests/test_transition_table_docs.py`, which
+hand copy — this script (and `tests/test_transitions.py`, which
 calls the same function) is the ONLY place that turns `transitions.py`'s
 data into prose, so a changed table entry shows up as doc drift instead of
 silently going stale.
@@ -91,7 +91,7 @@ def render() -> str:
         f"Generated from `src/ralphd/engine/transitions.py` by "
         f"`scripts/render_transition_table.py` — do not hand-edit this "
         f"block; regenerate it with `python scripts/render_transition_table.py "
-        f"--write` and let `tests/test_transition_table_docs.py` catch drift. "
+        f"--write` and let `tests/test_transitions.py` catch drift. "
         f"Entry state: `{transitions.ENTRY_STATE}`. Run-terminal states "
         f"(`status.json`'s top-level `state`, not a step state): "
         f"{', '.join(f'`{s}`' for s in transitions.RUN_TERMINAL_STATES)}."
