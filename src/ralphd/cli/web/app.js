@@ -3,6 +3,12 @@
  * `/api/runs/<id>/logs`, `POST /api/runs/<id>/steer`). */
 
 const REFRESH_MS = 4000;
+// Task 005 (A.3): the back-off target once the run detail poll decides it
+// is quiescent (two identical `304`s in a row, or the run is no longer
+// `running`) -- a fixed point inside the PRD's 15-30s band rather than a
+// randomized one, so the browser-tier test pinning it has something exact
+// to assert on.
+const BACKOFF_POLL_MS = 20000;
 let refreshTimer = null;
 
 // -- where the hub is mounted --------------------------------------------
@@ -66,9 +72,9 @@ let renderGeneration = 0;
 let liveRefreshLoops = 0;
 window.__hubRefreshLoopCount = () => liveRefreshLoops;
 
-function startRefreshLoop(fn) {
+function startRefreshLoop(fn, intervalMs) {
   liveRefreshLoops += 1;
-  return setInterval(fn, REFRESH_MS);
+  return setInterval(fn, intervalMs == null ? REFRESH_MS : intervalMs);
 }
 
 function stopRefreshLoop(id) {
@@ -77,6 +83,41 @@ function stopRefreshLoop(id) {
     liveRefreshLoops -= 1;
   }
 }
+
+// Task 005 (A.3): "stops polling while `document.hidden`" -- a single
+// pause/resume point that sits below both `renderRunList` and
+// `renderRunDetail`'s own refresh loops (only one is ever live at a time,
+// per the `renderGeneration` guard above), rather than a duplicate
+// `visibilitychange` listener in each view. `scheduleRefresh` is what
+// every call site now uses in place of a bare `startRefreshLoop(load)`:
+// it remembers the function/interval a hidden tab owes a resume, and
+// either installs the timer right away (tab visible) or leaves it paused
+// (tab hidden) for the listener below to pick up the moment the tab comes
+// back. `router()` clears `pendingLoadFn` on every navigation so a view
+// that got superseded while hidden never resumes into a page nobody is
+// looking at any more.
+let pendingLoadFn = null;
+let pendingIntervalMs = REFRESH_MS;
+
+function scheduleRefresh(fn, intervalMs) {
+  pendingLoadFn = fn;
+  pendingIntervalMs = intervalMs == null ? REFRESH_MS : intervalMs;
+  if (document.hidden) return null;
+  return startRefreshLoop(fn, pendingIntervalMs);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (refreshTimer) {
+      stopRefreshLoop(refreshTimer);
+      refreshTimer = null;
+    }
+  } else if (pendingLoadFn) {
+    const fn = pendingLoadFn;
+    fn();
+    refreshTimer = startRefreshLoop(fn, pendingIntervalMs);
+  }
+});
 
 function h(tag, attrs, children) {
   const el = document.createElement(tag);
@@ -93,10 +134,15 @@ function h(tag, attrs, children) {
   return el;
 }
 
-async function getJSON(path) {
-  const resp = await fetch(hubURL(path), { cache: "no-store" });
-  const body = await resp.json().catch(() => ({}));
-  return { ok: resp.ok, status: resp.status, body };
+async function getJSON(path, headers) {
+  const resp = await fetch(hubURL(path), { cache: "no-store", headers: headers || undefined });
+  // Task 005 (A.3): a `304` (only ever returned for `GET /api/runs/<id>`,
+  // task 003's `If-None-Match` hit path) carries no body to parse -- `body`
+  // is `{}` rather than the result of a failed `.json()` on an empty
+  // stream, so a caller can tell "nothing to parse" from "server sent
+  // malformed JSON" by checking `status` first.
+  const body = resp.status === 304 ? {} : await resp.json().catch(() => ({}));
+  return { ok: resp.ok, status: resp.status, body, etag: resp.headers.get("ETag") };
 }
 
 function pill(text) {
@@ -1204,6 +1250,9 @@ function router() {
   const myGen = renderGeneration;
   stopRefreshLoop(refreshTimer);
   refreshTimer = null;
+  // A view superseded while the tab was hidden must not resume into a page
+  // nobody navigated to any more (task 005, A.3).
+  pendingLoadFn = null;
   if (m) {
     renderRunDetail(decodeURIComponent(m[1]), myGen);
   } else {
@@ -1300,7 +1349,7 @@ async function renderRunList(myGen) {
   // race installs a timer nothing will ever clear (the `stopRefreshLoop`
   // call already happened, in the *next* `router()` call, before this one
   // got here).
-  if (myGen === renderGeneration) refreshTimer = startRefreshLoop(load);
+  if (myGen === renderGeneration) refreshTimer = scheduleRefresh(load, REFRESH_MS);
 }
 
 // -------------------------------------------------------- run detail view
@@ -1422,6 +1471,25 @@ async function renderRunDetail(runId, myGen) {
   // response arriving after a later tick of this same view.
   let loadSeq = 0;
 
+  // Task 005 (A.3): the client half of the ETag/`If-None-Match` round trip
+  // (server half: task 003, `run_detail_etag`/`_send_not_modified`) plus
+  // the back-off it exists to drive. `lastEtag` is the tag from the most
+  // recent `200`, sent back as `If-None-Match` on every later poll of THIS
+  // view; `unchangedStreak` counts consecutive `304`s (the server's own
+  // word that nothing in `status.json`/`tasks.json`/`events.jsonl`/the
+  // newest iteration `meta.json` moved); `pollIntervalMs` is this view's
+  // current scheduling interval, widened to `BACKOFF_POLL_MS` once either
+  // back-off condition holds and snapped back to `REFRESH_MS` the moment
+  // something genuinely changes again.
+  let lastEtag = null;
+  let unchangedStreak = 0;
+  let lastKnownState;
+  let pollIntervalMs = REFRESH_MS;
+  // Test-only instrumentation (never read by the app itself): lets a
+  // browser test observe the back-off without waiting out the full
+  // 15-30s band it targets.
+  window.__hubDetailPollIntervalMs = () => pollIntervalMs;
+
   async function load() {
     // Task 016 (#27): same discard-if-superseded rule as `renderRunList`'s
     // `load()` -- see the comment there. The detail view's `load()` also
@@ -1430,31 +1498,65 @@ async function renderRunDetail(runId, myGen) {
     // all rather than trying to guard each one individually.
     if (myGen !== renderGeneration) return;
     const seq = ++loadSeq;
-    const { ok, status, body } = await getJSON(`/api/runs/${encodeURIComponent(runId)}`);
+    const headers = lastEtag ? { "If-None-Match": lastEtag } : undefined;
+    const { ok, status, body, etag } =
+      await getJSON(`/api/runs/${encodeURIComponent(runId)}`, headers);
     if (myGen !== renderGeneration || seq !== loadSeq) return;
-    if (!ok) {
+    if (status === 304) {
+      // Confirmed identical to what is already on screen -- nothing to
+      // reparse or repaint for the main card/tasks/timeline, but the sub
+      // panels below (steering, logs, documents, artifacts, router calls,
+      // approaches) each have their own change surface the ETag does not
+      // cover, so they still poll every tick regardless of back-off state.
+      unchangedStreak += 1;
+    } else if (!ok) {
       summary.innerHTML = "";
       summary.appendChild(h("p", { class: "muted" }, [
         status === 404 ? "run not found" : "failed to load run detail",
       ]));
       return;
+    } else {
+      lastEtag = etag || lastEtag;
+      unchangedStreak = 0;
+      lastKnownState = body.status && body.status.state;
+      renderSummary(summary, body);
+      renderDelete(document.getElementById("delete-box"), runId, body);
+      renderUsage(document.getElementById("usage-box"),
+                  body.status && body.status.usage, runId);
+      renderTasks(document.getElementById("task-box"), body.tasks);
+      renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
     }
-    renderSummary(summary, body);
-    renderDelete(document.getElementById("delete-box"), runId, body);
-    renderUsage(document.getElementById("usage-box"),
-                body.status && body.status.usage, runId);
-    renderTasks(document.getElementById("task-box"), body.tasks);
-    renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
     await loadLogs(runId);
     await loadSteering(runId);
     await loadDocuments(runId);
     await loadArtifacts(runId);
     await loadRouterCalls(runId);
     await loadApproaches(runId);
+
+    // Task 005 (A.3): back off once the run looks quiescent -- two
+    // identical payloads in a row (`304`, twice) or a run that is no
+    // longer `running` -- into the fixed point this app picked inside the
+    // PRD's 15-30s band; snap back to the normal 4s cadence the instant
+    // something actually changes. Only REINSTALLS the timer when the
+    // target interval actually differs AND a timer is already running:
+    // the very first call `renderRunDetail` makes (`await load()`, before
+    // its own install line further down has ever run) must only ever
+    // update `pollIntervalMs` for that line to pick up -- installing a
+    // timer here too would double the loop that line goes on to install
+    // right after (the exact race `test_browser_hub_refresh_loop.py`
+    // pins against for the pre-back-off code).
+    const backOff = unchangedStreak >= 2 || lastKnownState !== "running";
+    const nextIntervalMs = backOff ? BACKOFF_POLL_MS : REFRESH_MS;
+    const intervalChanged = nextIntervalMs !== pollIntervalMs;
+    pollIntervalMs = nextIntervalMs;
+    if (myGen === renderGeneration && refreshTimer != null && intervalChanged) {
+      stopRefreshLoop(refreshTimer);
+      refreshTimer = scheduleRefresh(load, pollIntervalMs);
+    }
   }
 
   await load();
-  if (myGen === renderGeneration) refreshTimer = startRefreshLoop(load);
+  if (myGen === renderGeneration) refreshTimer = scheduleRefresh(load, pollIntervalMs);
 }
 
 // Task 031 (#19): the run-detail page's delete control -- the same affordance
