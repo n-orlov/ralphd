@@ -203,7 +203,6 @@ def test_infra_shaped_review_is_retried_and_does_not_cost_an_approach(
             "STUB_INBAND_ERROR_SKIP": "2",   # planning + worker are healthy
             "STUB_INBAND_ERROR_COUNT": "1",  # invocation 3 (1st review) errors
             "STUB_INBAND_ERROR_DELAY_S": INBAND_DELAY_S,
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.1,0.1",
         })
     assert e.proc.wait(timeout=90) == 0
 

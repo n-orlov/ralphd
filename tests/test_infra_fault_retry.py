@@ -31,7 +31,6 @@ def test_startup_watchdog_kills_hang_within_startup_window_not_full_timeout(engi
             "STUB_INFRA_HANG_COUNT": "10",  # hang forever after that
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_MAX": "1",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1",
         })
     t0 = time.monotonic()
     assert e.proc.wait(timeout=30) == 1
@@ -60,7 +59,6 @@ def test_infra_hang_retry_does_not_consume_budget_then_recovers(engine_factory):
             "STUB_INFRA_HANG_COUNT": "1",  # invocation 2 (1st worker) hangs
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_MAX": "3",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.1,0.1",
         })
     assert e.proc.wait(timeout=30) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
@@ -86,7 +84,6 @@ def test_infra_retries_exhausted_ends_terminal_with_infra_reason(engine_factory)
             "STUB_INFRA_HANG_COUNT": "10",  # hangs on every worker attempt
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_MAX": "2",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.1",
         })
     assert e.proc.wait(timeout=30) == 1
     status = json.loads((e.run_dir / "status.json").read_text())

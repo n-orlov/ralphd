@@ -511,6 +511,44 @@ def _child_base_env() -> dict:
             if k not in _STRIPPED_CHILD_ENV_VARS}
 
 
+# Task 010 (B.4): the all-zero infra-retry backoff schedule every stub-`pi`
+# launch gets by default. `JobConfig`'s shipped default is
+# [2, 5, 15, 30, 60, 120, 300] with a 300 s per-wait cap, so a live run that
+# hits ONE infra fault (a killed startup watchdog, a refused connection while
+# a port comes up) used to pay a real two-second sleep at best and a real
+# five-minute one at worst -- inside a test whose subject is never the retry
+# schedule. A test that IS about the schedule keeps its own values: naming
+# either knob in the `job` dict, or either `RALPHD_INFRA_RETRY_BACKOFF_S`/
+# `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` in `stub_env` (env wins over job.yaml in
+# `JobConfig.load`, so an env-named schedule would win regardless) suppresses
+# the default for BOTH knobs -- they are one setting, and filling in only the
+# unnamed half of it would silently rewrite the other (a `max_s` of 0.0 caps
+# any schedule to zero: `backoff = min(backoff, infra_retry_backoff_max_s,
+# ...)` in `LoopSupervisor._run_iteration_with_infra_retry`).
+_ZERO_BACKOFF_JOB_KEYS = {
+    "infra_retry_backoff_s": [0.0],
+    "infra_retry_backoff_max_s": 0.0,
+}
+_ZERO_BACKOFF_ENV_KEYS = {
+    "infra_retry_backoff_s": "RALPHD_INFRA_RETRY_BACKOFF_S",
+    "infra_retry_backoff_max_s": "RALPHD_INFRA_RETRY_BACKOFF_MAX_S",
+}
+
+
+def _with_zero_backoff(job: dict, stub_env: dict | None) -> dict:
+    """`job` with the zero backoff schedule filled in, unless this call named
+    either half of it itself (see `_ZERO_BACKOFF_JOB_KEYS`)."""
+    out = dict(job)
+    env = stub_env or {}
+    named = any(key in out or _ZERO_BACKOFF_ENV_KEYS[key] in env
+                for key in _ZERO_BACKOFF_JOB_KEYS)
+    if named:
+        return out
+    for key, value in _ZERO_BACKOFF_JOB_KEYS.items():
+        out[key] = value
+    return out
+
+
 class LiveRun:
     """A real ralphd-engine with its run/config dirs and API helpers.
 
@@ -549,7 +587,8 @@ class LiveRun:
             d.mkdir(parents=True, exist_ok=True)
         (self.config_dir / "prd.md").write_text("# E2E test PRD\n\nDo the thing.\n")
         (self.config_dir / "job.yaml").write_text(
-            "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items()))
+            "".join(f"{k}: {json.dumps(v)}\n"
+                    for k, v in _with_zero_backoff(job, stub_env).items()))
         self.port = free_port()
         # The engine's PATH: STUB_PI stays *first*, because tests depend on the
         # stub `pi` shadowing any real one the operator has installed. After it

@@ -94,10 +94,18 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
     assert doc["budgets"]["iterations"] == 3
     assert doc["budgets"]["maxApproaches"] == 1
     # Task 006 (#5): the infra-resilience knobs are part of the budgets
-    # contract -- fast escalating schedule, per-wait cap, outage budget, and
+    # contract -- the effective schedule, per-wait cap, outage budget, and
     # infraRetryMax as an opt-in cap (null when not set explicitly).
-    assert doc["budgets"]["infraRetryBackoffS"] == [2, 5, 15, 30, 60, 120, 300]
-    assert doc["budgets"]["infraRetryBackoffMaxS"] == 300
+    # Task 010 (B.4): the schedule and its cap are what this run was
+    # CONFIGURED with -- the shared stub-`pi` launcher gives every live run an
+    # all-zero backoff schedule unless the test names its own -- which is the
+    # stronger statement about this route anyway: it republishes the effective
+    # config rather than the shipped defaults. That the shipped defaults are
+    # [2, 5, 15, 30, 60, 120, 300] / 300 s stays pinned in
+    # tests/test_job_config_defaults.py, and the two knobs NOT configured here
+    # (below) still prove an unset knob surfaces its default.
+    assert doc["budgets"]["infraRetryBackoffS"] == [0.0]
+    assert doc["budgets"]["infraRetryBackoffMaxS"] == 0.0
     assert doc["budgets"]["infraOutageBudgetS"] == 14400
     assert doc["budgets"]["infraRetryMax"] is None
     assert doc["flags"]["vigilant"] is True

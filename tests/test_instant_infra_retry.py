@@ -264,7 +264,6 @@ def test_instant_refused_connection_recovers_and_the_job_completes(engine_factor
             "STUB_INBAND_ERROR_SKIP": "1",   # invocation 1 (planning) is healthy
             "STUB_INBAND_ERROR_COUNT": "2",
             "STUB_INBAND_ERROR_MESSAGE": REFUSED,
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.2",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
     assert e.proc.wait(timeout=60) == 0
@@ -286,17 +285,19 @@ def test_instant_refused_connection_recovers_and_the_job_completes(engine_factor
 
 def test_broken_credentials_still_fail_fast_not_after_the_outage_budget(
         engine_factory):
-    # The missing-credential shape, on the DEFAULT backoff schedule and the
-    # DEFAULT 4h outage budget: the run must be over in seconds because the
-    # broken-environment carve-out -- not the outage budget -- is what stops
-    # it. Every attempt fails identically and instantly.
+    # The missing-credential shape, on the DEFAULT 4h outage budget (task
+    # 010, B.4: the backoff schedule is the shared launcher's all-zero one --
+    # the carve-out, not the schedule and not the budget, is what stops this
+    # run, and the schedule's own seconds were never the subject here): the
+    # run must be over in seconds. Every attempt fails identically and
+    # instantly.
     started = time.monotonic()
     e = engine_factory(
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
         stub_env={"STUB_INSTANT_FAIL_COUNT": "10"})
     assert e.proc.wait(timeout=60) == 1
     elapsed = time.monotonic() - started
-    assert elapsed < 30, f"failed fast? took {elapsed:.1f}s (backoff 2+5s + startup)"
+    assert elapsed < 30, f"failed fast? took {elapsed:.1f}s (4h outage budget)"
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "aborted"

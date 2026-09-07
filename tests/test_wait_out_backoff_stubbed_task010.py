@@ -28,6 +28,20 @@ it looks at the literal source of every other `tests/*.py` and
 A module that never constructs a supervisor at all (most of the suite) is
 never inspected -- the check costs nothing on every module that doesn't
 touch this contract.
+
+Since the task's second run this module also pins B.4's FIRST clause -- the
+stub-`pi` (subprocess) side of the same "no real sleeps" requirement:
+
+* the shared launcher (`tests/conftest.py`'s `LiveRun`, behind the `live` and
+  `engine_factory` fixtures) gives EVERY live engine an all-zero infra-retry
+  backoff schedule unless the calling test names one itself
+  (`_with_zero_backoff`, exercised below), so a stub-`pi` module that merely
+  happens to hit one infra fault can no longer pay `JobConfig`'s shipped
+  2 s..300 s ladder;
+* every module that DOES name a non-zero schedule of its own is on
+  `NONZERO_BACKOFF_ALLOWLIST` below with the reason its own subject needs
+  one, and every name on that list still carries a non-zero value (a stale
+  entry fails the check as loudly as an unlisted module does).
 """
 
 from __future__ import annotations
@@ -169,3 +183,125 @@ def test_the_checker_actually_fires_on_the_shapes_it_claims_to_catch(
     genuinely clears it."""
     got = violations_in_text(snippet, "synthetic")
     assert bool(got) is expect_violation, got
+
+
+# ---------------------------------------------------------------------------
+# B.4's first clause: the stub-`pi` (subprocess) side.
+
+# Every module that names a NON-ZERO `RALPHD_INFRA_RETRY_BACKOFF_S` /
+# `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` -- the only two knobs a spawned engine
+# reads, and therefore the only ones that can buy a real sleep in a stub-`pi`
+# test -- with the reason its own subject cannot be met on the launcher's
+# all-zero schedule. An in-process module configuring a non-zero schedule is
+# NOT on this list and does not need to be: its `_wait_out_backoff` is stubbed
+# (the clause above), so the numbers are reported, never waited.
+NONZERO_BACKOFF_ALLOWLIST = {
+    "test_status_infra_retry_note.py":
+        "the `currentIteration.note` under test exists only while the engine "
+        "is inside the backoff wait (loop.py writes it immediately before "
+        "`_wait_out_backoff`, and the next attempt's iteration-start status "
+        "write clears it), so an all-zero schedule leaves nothing for the "
+        "0.3s poll loop to observe -- 1s per attempt is the smallest window "
+        "that keeps the observation deterministic (declared as a B.4 residual "
+        "for this wave's petitions file)",
+    "test_status_health_infra_wait.py":
+        "same shape for `health`/`infraWait`: both are only populated between "
+        "`_begin_infra_wait` and `_end_infra_wait`, i.e. only for as long as "
+        "the wait itself lasts",
+    "test_infra_deadline_extension.py":
+        "asserts `infraWaitTotalS == sum(waits)` and `deadlineAt == start + "
+        "job_timeout_s + sum(waits)` through the real engine: on an all-zero "
+        "schedule both sides are 0 and the assertion says nothing",
+    "test_cli_fault_explanation.py":
+        "asserts `budget.totalWaitedS > 0` for a ladder the engine itself "
+        "walked; reduced to 0.05s per attempt, the smallest value that keeps "
+        "that assertion non-vacuous",
+    "test_reflection.py":
+        "the reflect retry episode here ends by spending its 1.0s outage "
+        "budget, and only wall-clock waits spend an outage budget",
+    "test_job_config_defaults.py":
+        "no engine is launched at all: monkeypatched env, read back through "
+        "in-process `JobConfig.load` -- the parsing of the two knobs is the "
+        "subject",
+}
+
+_ENV_BACKOFF_RE = re.compile(
+    r"RALPHD_INFRA_RETRY_BACKOFF_(?:MAX_)?S\"\s*[:,]\s*\"([^\"]*)\"")
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def nonzero_env_backoffs(text: str) -> list[str]:
+    """The non-zero `RALPHD_INFRA_RETRY_BACKOFF*` values `text` names."""
+    found = []
+    for m in _ENV_BACKOFF_RE.finditer(text):
+        value = m.group(1)
+        if any(float(n) != 0.0 for n in _NUMBER_RE.findall(value)):
+            found.append(value)
+    return found
+
+
+def _scanned_files() -> list[Path]:
+    files = sorted(TESTS_DIR.glob("test_*.py")) + sorted(FLOWS_DIR.glob("test_*.py"))
+    return [f for f in files
+            if f.name not in EXEMPT_MODULES and f.name != Path(__file__).name]
+
+
+def test_no_stub_pi_module_buys_a_real_backoff_sleep_outside_the_allowlist():
+    unlisted = {}
+    for path in _scanned_files():
+        found = nonzero_env_backoffs(path.read_text())
+        if found and path.name not in NONZERO_BACKOFF_ALLOWLIST:
+            unlisted[path.name] = found
+    assert not unlisted, (
+        "these modules configure a non-zero infra-retry backoff for a spawned "
+        "engine, i.e. a real sleep (B.4). Drop the knob so the shared "
+        "launcher's all-zero schedule applies, or add the module to "
+        "NONZERO_BACKOFF_ALLOWLIST in this file with the reason its subject "
+        f"needs a real wait: {unlisted}")
+
+
+def test_the_allowlist_has_no_stale_entries():
+    """Non-vacuity in the other direction: an allowlisted module that no
+    longer names a non-zero schedule must lose its entry, so the list can
+    never quietly grow into a blanket permission."""
+    stale = []
+    for name, reason in NONZERO_BACKOFF_ALLOWLIST.items():
+        assert reason.strip(), f"{name} is allowlisted with no reason"
+        path = TESTS_DIR / name
+        if not path.exists() or not nonzero_env_backoffs(path.read_text()):
+            stale.append(name)
+    assert not stale, (
+        "these modules are on NONZERO_BACKOFF_ALLOWLIST but no longer "
+        f"configure a non-zero backoff -- remove the entries: {stale}")
+
+
+def test_the_shared_launcher_zeroes_the_backoff_unless_the_test_names_one():
+    """The other half of the first clause, behaviourally: `LiveRun` (the one
+    launcher behind `live`/`engine_factory`) writes an all-zero schedule into
+    every job.yaml it generates, and yields the WHOLE setting -- both knobs --
+    to a test that names either half of it, in the job dict or in `stub_env`
+    (a spawned engine's env wins over its job.yaml, and a `max_s` of 0.0
+    would cap an env-named schedule back to zero)."""
+    from tests.conftest import _with_zero_backoff
+
+    assert _with_zero_backoff({"run_id": "x"}, None) == {
+        "run_id": "x", "infra_retry_backoff_s": [0.0],
+        "infra_retry_backoff_max_s": 0.0}
+    # An explicit job-dict schedule survives untouched, cap included.
+    assert _with_zero_backoff({"infra_retry_backoff_s": [2.0]}, None) == {
+        "infra_retry_backoff_s": [2.0]}
+    # ... and so does an env-named one, from either half of the setting.
+    assert _with_zero_backoff({}, {"RALPHD_INFRA_RETRY_BACKOFF_S": "1,1"}) == {}
+    assert _with_zero_backoff({}, {"RALPHD_INFRA_RETRY_BACKOFF_MAX_S": "1"}) == {}
+
+
+@pytest.mark.parametrize("snippet,expected", [
+    ('"RALPHD_INFRA_RETRY_BACKOFF_S": "1,1,1",', ["1,1,1"]),
+    ('"RALPHD_INFRA_RETRY_BACKOFF_MAX_S": "0.5",', ["0.5"]),
+    ('"RALPHD_INFRA_RETRY_BACKOFF_S": "0",', []),
+    ('"RALPHD_INFRA_RETRY_BACKOFF_S": "0.0,0",', []),
+    ('setenv("RALPHD_INFRA_RETRY_BACKOFF_S", "0.1,0.2")', ["0.1,0.2"]),
+    ('infra_retry_backoff_s=[1.0]  # in-process: stubbed, not waited', []),
+])
+def test_the_env_backoff_scanner_reads_the_shapes_it_claims_to(snippet, expected):
+    assert nonzero_env_backoffs(snippet) == expected

@@ -758,7 +758,11 @@ def test_engine_infra_fault_is_explained_end_to_end(live):
             "STUB_INFRA_HANG_COUNT": "2",  # then two hung worker attempts
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_MAX": "4",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.2,0.4,0.4",
+            # Task 010 (B.4): the smallest schedule this node's own
+            # assertion (`budget.totalWaitedS > 0` -- the engine really did
+            # wait) can be made with; it is deliberately not the launcher's
+            # all-zero default, which would make that assertion vacuous.
+            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.05,0.05,0.05",
         })
     status = e.wait_terminal(timeout=90)
     assert status["state"] == "succeeded"

@@ -347,7 +347,6 @@ def test_a_refund_earned_before_a_crash_is_still_credited_after_the_resume(
             "STUB_INFRA_HANG_SKIP": "1",   # invocation 1 (planning) is healthy
             "STUB_INFRA_HANG_COUNT": "1",  # invocation 2 (1st worker) hangs
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.1,0.1",
         })
     e1.wait_api()
 

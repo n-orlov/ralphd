@@ -200,7 +200,8 @@ def test_classify_fault_still_delegates_to_the_one_ladder():
 
 # --------------------------------------------------- the engine's own verdict
 _supervisor = supervisor_factory(run_id="unit", infra_retry_max=3,
-                                 infra_retry_backoff_s=[0.01])
+                                 infra_retry_backoff_s=[0.0],
+                                 infra_retry_backoff_max_s=0.0)
 
 
 def _aborted_after_traffic(duration_s: float) -> IterationResult:

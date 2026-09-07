@@ -40,7 +40,6 @@ def test_fault_class_null_on_clean_and_infra_on_hung_iteration(engine_factory):
             "STUB_INFRA_HANG_COUNT": "1",  # invocation 2 (1st worker) hangs
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_MAX": "3",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.1,0.1",
         })
     assert e.proc.wait(timeout=30) == 0
     status = json.loads((e.run_dir / "status.json").read_text())

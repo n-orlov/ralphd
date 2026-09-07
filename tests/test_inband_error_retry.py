@@ -14,8 +14,8 @@ status.json and the iteration meta.json the same way an operator would.
 The stub's in-band error is delayed past LoopSupervisor's 5s instant-failure
 window on purpose -- an *instant* no-traffic failure is still handled by the
 pre-existing broken-environment carve-out (task 010 changes that), and this
-test is about the retry path. Everything else runs on a compressed backoff
-schedule (RALPHD_INFRA_RETRY_BACKOFF_S), never a real minute-long sleep.
+test is about the retry path. Nothing here waits out a backoff: every live
+run gets the shared stub-`pi` launcher's all-zero schedule (task 010, B.4).
 """
 
 from __future__ import annotations
@@ -54,7 +54,6 @@ def test_inband_exit0_error_is_retried_refunded_and_job_completes(engine_factory
             "STUB_INBAND_ERROR_COUNT": "1",  # invocation 2 (1st worker) errors
             "STUB_INBAND_ERROR_DELAY_S": INBAND_DELAY_S,
             "RALPHD_INFRA_RETRY_MAX": "3",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.1,0.1",
         })
     assert e.proc.wait(timeout=60) == 0
 
@@ -99,7 +98,6 @@ def test_inband_errors_exhausting_retries_end_terminal_without_burning_budget(
             "STUB_INBAND_ERROR_COUNT": "10",
             "STUB_INBAND_ERROR_DELAY_S": INBAND_DELAY_S,
             "RALPHD_INFRA_RETRY_MAX": "2",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.1",
         })
     assert e.proc.wait(timeout=90) == 1
 

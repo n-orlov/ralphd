@@ -14,9 +14,10 @@ wrapper first -- it is retried on the backoff schedule and REFUNDED, so
 directories on disk still do, and are asserted here instead). The fail-fast
 itself is unchanged: MAX_CONSECUTIVE_INSTANT_FAILURES identical instant
 failures still abort with the same diagnosis, in seconds, without burning an
-approach. The backoff schedule is compressed here only to keep the suite
-fast; tests/test_instant_infra_retry.py proves the fast-fail on the real
-default schedule and outage budget.
+approach. Task 010 (B.4): the backoff schedule is the shared stub-`pi`
+launcher's all-zero one (nothing here is about the schedule -- the streak is
+what ends the run); tests/test_instant_infra_retry.py proves the fast-fail
+against the real default 4h outage budget.
 """
 
 from __future__ import annotations
@@ -27,14 +28,10 @@ from tests.conftest import LiveRun
 
 __all__ = ["engine_factory"]
 
-# Compressed infra backoff (the retries between the three instant attempts).
-FAST_BACKOFF = {"RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.2,0.4"}
-
-
 def test_instant_planning_failures_abort_fast_without_burning_approaches(engine_factory):
     e = engine_factory(
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
-        stub_env={"STUB_INSTANT_FAIL_COUNT": "10", **FAST_BACKOFF})
+        stub_env={"STUB_INSTANT_FAIL_COUNT": "10"})
     assert e.proc.wait(timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
     # Must fail fast via the instant-failure carve-out (state=aborted, a
@@ -63,8 +60,8 @@ def test_instant_worker_failures_abort_fast_without_burning_approaches(engine_fa
     # tasks.json) and only the worker loop kept crashing.
     e = engine_factory(
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
-        stub_env={"STUB_INSTANT_FAIL_SKIP": "1", "STUB_INSTANT_FAIL_COUNT": "10",
-                  **FAST_BACKOFF})
+        stub_env={"STUB_INSTANT_FAIL_SKIP": "1",
+                  "STUB_INSTANT_FAIL_COUNT": "10"})
     assert e.proc.wait(timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "aborted"
@@ -104,8 +101,8 @@ def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_pa
     # depend on that test surviving unmodified.
     e_infra = engine_factory(
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
-        stub_env={"STUB_INSTANT_FAIL_SKIP": "1", "STUB_INSTANT_FAIL_COUNT": "10",
-                  **FAST_BACKOFF})
+        stub_env={"STUB_INSTANT_FAIL_SKIP": "1",
+                  "STUB_INSTANT_FAIL_COUNT": "10"})
     assert e_infra.proc.wait(timeout=60) == 1
     infra_tasks = json.loads((e_infra.run_dir / "tasks.json").read_text())["tasks"]
     assert all(t["status"] == "pending" for t in infra_tasks)
