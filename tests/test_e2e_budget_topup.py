@@ -27,7 +27,7 @@ The pair of tests is the whole argument:
   budget -- with the `budget_changed` audit event in events.jsonl.
 
 `STUB_SLEEP` is what makes the top-up window real rather than racy: every
-stub iteration takes ~2s, so once `iterationsUsed` reaches the last budget
+stub iteration takes ~1s, so once `iterationsUsed` reaches the last budget
 slot there is a comfortable window in which to spawn `ralphctl`.
 """
 
@@ -42,7 +42,7 @@ NEEDED_ITERATIONS = 6
 # Deliberately short: enough for planning + 2 workers, never enough to finish.
 STARTING_BUDGET = 3
 # Per-iteration stub work time; keeps a wide window for the CLI top-up.
-STUB_SLEEP_S = "2"
+STUB_SLEEP_S = "1"
 
 
 def _status(run) -> dict:
