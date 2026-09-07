@@ -43,7 +43,11 @@ omits modules, and a module written tomorrow would belong to no tier at all.
 item:
 
 1. an item marked `docker` or `browser`, and every item of the dev-layout
-   module, is nightly: it gets neither tier marker;
+   module, is nightly: it gets neither tier marker; so is an item marked
+   `nightly` directly -- applied to one node at a time (task 048, B.5
+   follow-on), for a node that is inherently slow (a real backoff/outage
+   schedule under test, or a real nested-pytest-subset run) rather than
+   merely unoptimised, without pulling its whole module out of `fast`;
 2. everything else is `fast`;
 3. a `fast` item is also `smoke` unless its own module spawns a real engine or a
    real `ralphctl`/console-script process -- that is, unless the module's source

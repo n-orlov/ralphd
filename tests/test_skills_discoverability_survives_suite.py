@@ -191,6 +191,10 @@ def test_discoverability_check_is_not_vacuous_without_a_placement(tmp_path):
     assert _discoverable_skill_names(empty_home) == set()
 
 
+@pytest.mark.nightly  # task 048 (B.5 follow-on): spawns a real nested
+# pytest subprocess over SAFE_SUITE_SUBSET (task 001) -- inherently several
+# real seconds by design; moved rather than thinning the subset or its
+# assertions, which would weaken the very proof this node exists to give.
 def test_skill_placed_at_engine_startup_is_still_discoverable_after_a_real_suite_subset_runs_in_the_same_home(
     tmp_path,
 ):

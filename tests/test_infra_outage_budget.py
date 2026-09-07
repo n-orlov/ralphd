@@ -197,6 +197,10 @@ async def test_explicit_retry_max_still_caps_attempts(tmp_path, monkeypatch):
 # -- black box: through the real engine ------------------------------------
 
 
+@pytest.mark.nightly  # task 048 (B.5 follow-on): real 5x hang + backoff ladder,
+# inherently multi-second by design (this module keeps real backoff,
+# task 047/B.4) -- moved out of fast rather than shrinking the very
+# schedule the test is proving.
 def test_five_consecutive_infra_faults_are_ridden_out_free(engine_factory):
     # No RALPHD_INFRA_RETRY_MAX at all: five hung worker invocations (the old
     # default would have given up after three) are retried on a compressed
@@ -230,6 +234,9 @@ def test_five_consecutive_infra_faults_are_ridden_out_free(engine_factory):
     assert [ev["waitedS"] for ev in infra] == [0.0, 0.1, 0.3, 0.7, 1.1]
 
 
+@pytest.mark.nightly  # task 048 (B.5 follow-on): real hang-timeout + outage
+# ladder, same reasoning as the node above -- moved rather than shrinking
+# the real schedule this module exists to test.
 def test_outage_budget_exhaustion_ends_terminal_naming_the_duration(engine_factory):
     # A permanently broken endpoint: with a 2s outage budget the run gives up
     # quickly and the terminal reason tells the operator how long the outage

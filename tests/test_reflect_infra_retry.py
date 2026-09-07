@@ -258,6 +258,9 @@ async def test_a_job_that_ended_cleanly_reflects_immediately(tmp_path):
 # -- black-box: the incident's exact shape through the real engine ----------
 
 
+@pytest.mark.nightly  # task 048 (B.5 follow-on): 5 real delayed invocations
+# in a module that keeps real backoff (task 047, B.4) -- moved rather than
+# shrinking the schedule this module exists to test.
 def test_reflect_survives_the_outage_that_killed_the_job(tmp_path):
     """Invocations 1-4: planning, failing in band until the outage budget is
     spent (the job ends `aborted`). Invocation 5: reflect's first attempt,
