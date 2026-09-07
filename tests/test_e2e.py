@@ -62,12 +62,17 @@ def test_stagnation_guard_fails_job(engine_factory):
     STALLS`) now pauses and escalates rather than failing the job
     silently -- `state: "paused"`, `pauseReason: "stagnation"`. Waits on
     the pause (bounded by `wait_state`'s own deadline), never on process
-    exit, which does not happen here on its own."""
+    exit, which does not happen here on its own. The old `verdict:
+    "unverified"` was written BY the `failed` ending this pause replaces,
+    so its current-behaviour counterpart is that a parked run has settled
+    no verdict at all and the engine is still alive holding the run."""
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
                        stub_env={"STUB_WORKER_STALLS": "1"})
     status = e.wait_state(("paused",), timeout=60)
     assert status["pauseReason"] == "stagnation"
     assert status["state"] != "failed"
+    assert status.get("verdict") is None, status
+    assert e.proc.poll() is None, "a stagnation pause must not end the process"
 
 
 def test_budget_exhaustion_fails_job(engine_factory):

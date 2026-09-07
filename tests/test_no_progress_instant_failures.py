@@ -127,6 +127,8 @@ def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_pa
         status = e_work.wait_state(("paused",), timeout=60)
         assert status["pauseReason"] == "stagnation"
         assert status["state"] != "failed"
+        assert status.get("verdict") is None, status
+        assert e_work.proc.poll() is None
         work_tasks = json.loads((e_work.run_dir / "tasks.json").read_text())["tasks"]
         assert len(work_tasks) == 1
         assert work_tasks[0]["status"] == "in-progress"
@@ -144,9 +146,14 @@ def test_genuine_stagnation_guard_still_fails_job_unaffected(engine_factory):
     pauses and escalates (`state: "paused"`, `pauseReason: "stagnation"`)
     instead of exiting `failed` silently, so this waits for the pause
     (bounded by `wait_state`'s own deadline) rather than for process exit,
-    which never happens on its own here."""
+    which never happens on its own here. The pre-B.3 `verdict:
+    "unverified"` was written BY that `failed` ending, so its
+    current-behaviour counterpart is asserted here instead: a parked run
+    carries no settled verdict and its engine is still alive."""
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
                        stub_env={"STUB_WORKER_STALLS": "1"})
     status = e.wait_state(("paused",), timeout=60)
     assert status["pauseReason"] == "stagnation"
     assert status["state"] != "failed"
+    assert status.get("verdict") is None, status
+    assert e.proc.poll() is None, "a stagnation pause must not end the process"
