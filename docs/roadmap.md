@@ -2047,9 +2047,28 @@ instead of starving (#149); an infra fault that never trips the instant-failure 
  its final code sha stay small. Requirement letters are the PRD's own, A–I.
 
 The run is `selfdev-v019-a-note-is-not-a-rejection`, launched at `4c003a5` with
-`--max-approaches 2`. **This entry is written while that run is still going**
-(`docs/prds/README.md`'s row for `selfdev-v019-a-note-is-not-a-rejection` reads `in-flight`); it
-records the evidence landed so far and is not a terminal account.
+`--max-approaches 2`, started 2026-09-06T07:10:17Z. **This wave ended `failed` / unverified —
+settled history, not a mid-wave snapshot.** The worker loop ended 2026-09-07T04:46:50Z, reaching
+its terminal state after reflect at 04:54:36Z; **119 iterations** (112 charged), **~345.7M
+tokens**, **~$190.02 derived**. Approach 1 was a 39-task flat plan plus three operator-steer
+inserts (040 the notifier scrub, 041 requirement C.4, 042 the five parked tests) and a worker
+split (043–045); it reached **24 validated** (001–021, 040–042) with task 022 `in-progress`,
+and was failed by the stagnation guard at 00:37:26Z after three `no_verdict` iterations that
+pushed thirteen commits toward requirement G.2's 120 s target (802.89 s → 641.66 s) without
+reaching it. Approach 2 replanned as a 12-task flat plan; it reached **9 validated**
+(001–009) with task 010 `in-progress`, and was failed by the same guard at 04:46:50Z on a cut
+record the operator's own steer 003 had made illegal before 06:00Z. Landed and closed with
+fresh-`GET`-verified evidence: #149, #150, #151, #152, #153, #154. Not landed: **F** — the hub
+cheap to leave open (#148); **G.2** — the suite still summed 381.03 s, not under the 120 s
+target; **G.4** — the records-lint family; **G.5** — 4 of the 12 flow modules; **G.6** — 86
+per-task pin modules still on disk; **G.7** — the CLI still shells out; and the lanes green
+(docker green; smoke, fast, browser, both dev-layout modes and the guard subset red on the two
+nodes requirement G named). #156 and #157 record the two ways this run's own guard ended it
+and stay open as the post-mortem the next wave lives with rather than fixes. This run's own `status.json`
+and run directory are not reachable from this container, so this paragraph and
+`docs/prds/README.md`'s row for `selfdev-v019-a-note-is-not-a-rejection` are both sourced from
+this wave's own successor PRD, `docs/prds/v0.19.1-a-gate-is-not-a-wall.md` (requirement H),
+rather than a fresh `status.json` read.
 
 - **H — the version, the roadmap, the row.** `0.19.0` in `pyproject.toml` and
   `src/ralphd/__init__.py`, and the sweep-sha guard's `LAUNCH_SHA` bumped to this wave's launch
@@ -2057,17 +2076,43 @@ records the evidence landed so far and is not a terminal account.
   `archived-sha` in place, at `73ea9a7` (task 001); the version bump and its `docs/api.md`
   echo at `16bdbf1`, with a cure teaching the shipped-sha parse to read the settled v0.18
   block's prose form of "shipped" at `3a36c02` (task 002); this wave's in-flight index row in
-  `docs/prds/README.md` and this block itself (task 003, this same commit). The `## v0.18`
-  block and index row are settled host-side by the operator (`00003a3`, `68c6692`) and were
-  not touched by any of the three commits above.
-- **Still open** (tasks 004–039, pending): **A** — the verifier accepts delivered work (#154);
-  **B** — progress is what the run did (#153); **C** — a `petitioned` dependency holds (#149);
-  **D** — an infra fault never trips the breaker (#151); **E** — petitions belong to their wave,
-  adjudications survive (#150, #152); **F** — the hub is cheap to leave open (#148); **G** — the
-  suite is small and fast; **I** — the evidence, the closure, and the record.
+  `docs/prds/README.md` and this block itself (task 003, this same commit — later corrected to
+  this terminal account by v0.19.1's own task 030). The `## v0.18` block and index row are
+  settled host-side by the operator (`00003a3`, `68c6692`) and were not touched by any of the
+  three commits above.
+- **Landed** (validated: 001–021 and 040–042 in approach 1; 001–009 in approach 2): **A** —
+  the verifier accepts delivered work (#154); **B** — progress is what the run did (#153);
+  **C** — a `petitioned` dependency holds (#149); **D** — an infra fault never trips the
+  breaker (#151); **E** — petitions belong to their wave, adjudications survive (#150, #152).
+- **Not landed** (named above, and v0.19.1's own opening requirements): **F**, **G.2**,
+  **G.4**, **G.5**, **G.6**, **G.7**, and the lanes green.
 
-This block will be revised again as the remaining tasks land and the run reaches a terminal
-state.
+## v0.19.1 — a gate is not a wall
+
+Full PRD: [`docs/prds/v0.19.1-a-gate-is-not-a-wall.md`](prds/v0.19.1-a-gate-is-not-a-wall.md).
+v0.19 validated 24 tasks in approach 1 and 9 in approach 2 and was failed twice by the same
+0.18.0 stagnation guard it was built to replace. The engine actually running this wave is
+still `ralphd 0.19.0` from `main` `1a3b9bb` (image `ralphd:17b2050a5439`, built at launch): none
+of v0.19's own mechanisms — the verifier's rubric and debt ledger (A), the progress witnesses
+and the last-approach pause (B), the `petitioned` hold and cure inheritance (C), the breaker
+carve-out (D), wave-scoped petitions and the MAC mount (E), C.4 — are live in the process
+running this wave (operator steer 001); tests are the whole of the evidence for them. This
+wave finishes v0.19's suite half on the engine that killed it, in requirements A–I: **A** —
+the hub is cheap to leave open (#148, v0.19's F, never started); **B** — no real sleeps
+(v0.19's G.2), the fast-tier `--durations=80` sum from **381.03 s** toward under **120 s**, in
+stages that each fit one iteration; **C** — the eight missing flow modules (v0.19's G.5) and
+the real-engine fold; **D** — the per-task pins folded (v0.19's G.6), 86 modules toward zero,
+one feature module at a time; **E** — the records-lint family (v0.19's G.4, never started);
+**F** — the CLI in-process (v0.19's G.7, never started); **G** — the two red nodes fixed and
+the tier budgets re-measured truthfully; **H** — the version `0.19.1`, this block, v0.19's
+settled row and block above, this wave's own row, and `LAUNCH_SHA` bumped to this wave's
+launch sha; **I** — every lane green at the final code sha, the records, the closing report,
+#148 closed, the terminal summary.
+
+The run is `selfdev-v0191-a-gate-is-not-a-wall`. **This entry is written while that run is
+still going**; it records the plan this wave is working and is not a terminal account — the
+operator resettles this row and this block after the run ends, per this wave's own requirement
+H.
 
 ## Later / explicitly deferred
 
