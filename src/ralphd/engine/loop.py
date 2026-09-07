@@ -4993,9 +4993,60 @@ class LoopSupervisor:
         # construction, `__init__`) was built with, so the two can never
         # disagree about which table variant is in force.
         if self.cfg.peer_plan_review:
+            # #161: a resume (`skip_planning`) over a plan the peer already
+            # approved -- or one that already has recorded work, which is
+            # the same fact for a run dir from before the approval marker
+            # existed -- goes straight to `worker`. Re-asking the peer
+            # about a plan being worked is pointless at best; at worst its
+            # objection (or an interruption during it, e.g. a `steer
+            # --now`) spends a revision whose ingestion resets every
+            # task to `pending`. That is what happened on
+            # `selfdev-v0191-a-gate-is-not-a-wall` (8 validated tasks,
+            # stopped by the operator before the proposal landed).
+            if skip_planning and self._plan_review_already_settled(approach):
+                self.run.emit(
+                    "log",
+                    message=(
+                        f"approach {approach}: plan already peer-reviewed "
+                        "(or already worked); resuming into worker without "
+                        "re-entering plan_review (#161)"))
+                return ("advance", "worker",
+                        "planning_skipped_plan_already_reviewed")
             return ("advance", "plan_review",
                     "planning_produced_tasks_peer_review_enabled")
         return ("advance", "worker", "planning_produced_tasks")
+
+    def _approach_has_recorded_work(self) -> bool:
+        """True iff any task in the live `tasks.json` is past `pending` --
+        the disk fact that says "this plan is being worked", independent
+        of any marker. Ingesting a fresh proposal over such a plan resets
+        every status (`plan_ingestion.ingest_proposal` sets `pending`
+        unconditionally, by design), so this is the guard both #161 edges
+        read."""
+        tasks = (self.run.read_tasks() or {}).get("tasks") or []
+        return any((t.get("status") or "pending") != "pending" for t in tasks)
+
+    def _plan_review_already_settled(self, approach: int) -> bool:
+        """#161: whether `plan_review` has already spoken for `approach`
+        -- an `approved` verdict or the revision bound being reached, both
+        recorded in status.json's `planReviewApproved` map by
+        `_record_plan_review_settled` -- OR the plan already has recorded
+        work (a run dir written before the marker existed still resumes
+        correctly: work on a plan is proof the plan proceeded)."""
+        approved = self.run.read_status().get("planReviewApproved") or {}
+        if approved.get(str(approach)):
+            return True
+        return self._approach_has_recorded_work()
+
+    def _record_plan_review_settled(self, approach: int) -> None:
+        """Persist that `plan_review` let `approach`'s plan proceed
+        (approval or bound reached), disk-side like `planReviewRevisions`,
+        so a later resume (`_plan_review_already_settled`) never re-enters
+        the gate over it (#161)."""
+        approved = dict(
+            self.run.read_status().get("planReviewApproved") or {})
+        approved[str(approach)] = True
+        self.run.update_status(planReviewApproved=approved)
 
     async def _step_plan_review(self) -> tuple:
         """The `plan_review` state (task 018, requirement K, #101) --
@@ -5070,6 +5121,22 @@ class LoopSupervisor:
             return ("tail",)
         self.run.emit("phase", phase="plan_review", approach=approach)
         result = await self.run_iteration("plan_review")
+        if result.interrupted and self.budget_left():
+            # #161: an interrupted peer iteration (a `steer --now`, the
+            # iteration cap, a signal) is not a verdict and must not be
+            # read as an undecidable objection that spends a revision.
+            # Re-ask once, in place -- an in-place retry is not a state
+            # change (the same reading `_one_planning_attempt`'s inner
+            # retry already takes). A second interruption falls through
+            # to the policy below, where the work-recorded refusal still
+            # protects a worked plan.
+            self.run.emit(
+                "log",
+                message=(
+                    f"approach {approach}: plan_review iteration was "
+                    "interrupted before it could speak; asking the peer "
+                    "again instead of spending a revision (#161)"))
+            result = await self.run_iteration("plan_review")
         raw_reply = result.final_text or ""
         parse_errors: list[str] = []
         try:
@@ -5092,6 +5159,7 @@ class LoopSupervisor:
                 f"the reply parsed as {type(parsed).__name__}, not a JSON "
                 "object"]
         if payload is not None and payload.get("verdict") == "approved":
+            self._record_plan_review_settled(approach)
             return ("advance", "worker", "plan_review_approved")
 
         reason = (payload or {}).get("reason") if payload else None
@@ -5099,6 +5167,27 @@ class LoopSupervisor:
             self.run.read_status().get("planReviewRevisions") or {})
         used = int(revisions.get(str(approach), 0))
         revision_available = used < self.cfg.peer_plan_review_max_revisions
+
+        if revision_available and self._approach_has_recorded_work():
+            # #161: a revision re-ingests a fresh proposal with every
+            # status `pending`. Over a plan that already has validated or
+            # in-progress tasks that is a status wipe, whatever the peer
+            # (or a garbled/interrupted reply) said -- refuse it and let
+            # the worked plan proceed. The objection is logged, never
+            # applied. This is the safety net behind the resume edge in
+            # `_step_planning`; with that edge in place the gate should
+            # not normally see a worked plan at all.
+            self.run.emit(
+                "log", level="warning",
+                message=(
+                    f"approach {approach}: plan_review asked for a "
+                    "revision over a plan that already has recorded work; "
+                    "refused -- a re-ingested proposal would reset every "
+                    "task to pending (#161). Objection: "
+                    + (reason or "; ".join(parse_errors) or "(none)")))
+            self._record_plan_review_settled(approach)
+            return ("advance", "worker",
+                    "plan_review_revision_refused_work_recorded")
 
         def spend_revision(objection: str) -> tuple:
             revisions[str(approach)] = used + 1
@@ -5124,6 +5213,7 @@ class LoopSupervisor:
         if revision_available:
             return spend_revision(
                 reason or "plan review objected with no reason given")
+        self._record_plan_review_settled(approach)
         return ("advance", "worker", "plan_review_revision_bound_reached")
 
     async def _step_verdict_gate(self) -> tuple:

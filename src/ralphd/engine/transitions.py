@@ -499,16 +499,33 @@ VIGILANT_DELTA: dict[str, tuple[Transition, ...]] = {
 # requirement M, the FIRST hat to exercise it in production; this hat
 # picks its own edge exactly like `_step_worker`'s `_apply_reported_task_
 # status` and `_review_verdict` already do for theirs).
+#
+# Two more edges since #161 (a resume re-entered `plan_review` over an
+# approved plan; the interrupted review spent a "revision" whose ingestion
+# would have reset every validated task to `pending`):
+# `planning_skipped_plan_already_reviewed` (planning -> worker) is the
+# resume edge -- `_step_planning(skip_planning=True)` takes it instead of
+# the peer-review edge when this approach's plan was already approved
+# (`status.json` `planReviewApproved`) or already has recorded work (any
+# task past `pending`), so a resume never re-asks the peer about a plan
+# that is being worked. `plan_review_revision_refused_work_recorded`
+# (plan_review -> worker) is the safety net behind it: whatever brought
+# the gate back over a worked plan, a revision is refused -- a fresh
+# `plan-proposal.json` is ingested with every status `pending`, and that
+# is a status wipe, not a revision, once work exists. Neither edge is legal
+# with the gate off (they live only in this delta, like the other four).
 PEER_PLAN_REVIEW_DELTA: dict[str, tuple[Transition, ...]] = {
     "planning": (
         T("planning", "instant_failure_streak"),
         T("replan", "empty_plan"),
         T("plan_review", "planning_produced_tasks_peer_review_enabled"),
+        T("worker", "planning_skipped_plan_already_reviewed"),
     ),
     "plan_review": (
         T("worker", "plan_review_approved"),
         T("planning", "plan_review_objected_revision_available"),
         T("worker", "plan_review_revision_bound_reached"),
+        T("worker", "plan_review_revision_refused_work_recorded"),
     ),
 }
 

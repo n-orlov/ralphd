@@ -131,17 +131,23 @@ def test_planning_routes_to_plan_review_only_when_the_gate_is_on(vigilant):
     assert peer_edges[0].guard == "planning_produced_tasks_peer_review_enabled"
     # and `planning -> worker` under the OLD guard is gone once the gate
     # is on -- the two guards must never both be legal at once, or a doc
-    # reader could not tell which one actually fires.
-    assert not tr.is_legal("planning", "worker", vigilant, peer_plan_review=True)
+    # reader could not tell which one actually fires. The only
+    # `planning -> worker` edge with the gate on is #161's resume edge,
+    # under its own distinct guard.
+    worker_edges = [e for e in edges if e.target == "worker"]
+    assert [e.guard for e in worker_edges] == [
+        "planning_skipped_plan_already_reviewed"]
+    assert "planning_produced_tasks" not in {e.guard for e in edges}
 
 
 @pytest.mark.parametrize("vigilant", [True, False])
-def test_plan_review_has_exactly_the_three_declared_edges(vigilant):
+def test_plan_review_has_exactly_the_four_declared_edges(vigilant):
     edges = tr.successors("plan_review", vigilant, peer_plan_review=True)
     assert edges == (
         tr.T("worker", "plan_review_approved"),
         tr.T("planning", "plan_review_objected_revision_available"),
         tr.T("worker", "plan_review_revision_bound_reached"),
+        tr.T("worker", "plan_review_revision_refused_work_recorded"),
     )
 
 

@@ -159,6 +159,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `planning` | planning | both | `replan` | `empty_plan` |
 | `planning` | planning | both | `worker` | `planning_produced_tasks` |
 | `planning` | planning | peer plan review only | `plan_review` | `planning_produced_tasks_peer_review_enabled` |
+| `planning` | planning | peer plan review only | `worker` | `planning_skipped_plan_already_reviewed` |
 | `worker` | worker | both | `steer` | `steering_pending` |
 | `worker` | worker | both | `worker` | `no_verdict_yet` |
 | `worker` | worker | both | `review` | `verdict_ready` |
@@ -191,6 +192,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_approved` |
 | `plan_review` | plan_review | peer plan review only | `planning` | `plan_review_objected_revision_available` |
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_bound_reached` |
+| `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_refused_work_recorded` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_approved` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `replan` | `verdict_gate_rejected_approach_left` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_rejected_no_approach_left` |
