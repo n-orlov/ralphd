@@ -67,7 +67,7 @@ def _tool_call_events(e) -> list[dict]:
     return [ev for ev in events if ev.get("type") == "steer.tool_call"]
 
 
-def test_a_real_steer_iteration_applies_a_task_insert_through_the_spool(engine_factory):
+def test_a_real_steer_iteration_applies_a_task_insert_through_the_spool(engine_factory, tmp_path):
     """The hat's subprocess asks for `status: "completed"` and `origin:
     "attacker"` on the new task -- both illegal for a steer-hat insert
     (`state.STEER_HAT_TOOLS["task-insert"]` always lands `origin=steer`/
@@ -79,13 +79,22 @@ def test_a_real_steer_iteration_applies_a_task_insert_through_the_spool(engine_f
     calls = [{"tool": "task-insert",
              "args": {"task": {"id": "spooled-1", "title": "via the spool",
                                "status": "completed", "origin": "attacker"}}}]
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # first worker iteration (after it has flipped the task to in-progress,
+    # `tests/stub-pi/pi`'s own `_apply_hold("worker")` position) instead of
+    # racing a fixed STUB_SLEEP window against how fast the single-task run
+    # reaches a terminal state -- the steering POST below is guaranteed to
+    # land before the hold is released, deterministically, not probably.
+    hold_file = tmp_path / "hold-spool-insert"
     e = engine_factory(job={"on_complete": "exit", "iterations": 12},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3",
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                                 "STUB_STEER_TOOL_CALLS": json.dumps(calls)})
     e.wait_api()
     code, res = e.api("POST", "/steering",
                       {"message": "insert a task", "name": "spool"})
     assert code == 202 and res["file"] == "001-spool.md"
+    hold_file.touch()  # release: let the held worker iteration proceed
     assert e.proc.wait(timeout=90) == 0
 
     responses = _responses(e)
@@ -119,20 +128,24 @@ def test_a_real_steer_iteration_applies_a_task_insert_through_the_spool(engine_f
     assert list((e.run_dir / "hat-tools" / "requests").glob("*.json")) == []
 
 
-def test_a_malformed_spool_request_is_refused_without_ending_the_run(engine_factory):
+def test_a_malformed_spool_request_is_refused_without_ending_the_run(engine_factory, tmp_path):
     """A hand-written, unparseable request file dropped straight into the
     spool (never through `hat_tools.call()`, which always writes valid
     JSON) must be answered `ok: false` -- `SteerToolBroker.serve_once()`'s
     `except (OSError, json.JSONDecodeError)` branch -- and must not crash
     the broker's asyncio task, hang the steer iteration, or fail the run:
     the run still has to reach its ordinary terminal, verified state."""
+    # task 009 (B.3): see the hold rationale on the sibling test above.
+    hold_file = tmp_path / "hold-spool-malformed"
     e = engine_factory(job={"on_complete": "exit", "iterations": 12},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3",
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                                 "STUB_STEER_MALFORMED_REQUEST": "1"})
     e.wait_api()
     code, res = e.api("POST", "/steering",
                       {"message": "drop a bad request", "name": "bad"})
     assert code == 202 and res["file"] == "001-bad.md"
+    hold_file.touch()  # release: let the held worker iteration proceed
     assert e.proc.wait(timeout=90) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
@@ -156,7 +169,7 @@ def test_a_malformed_spool_request_is_refused_without_ending_the_run(engine_fact
     assert list((e.run_dir / "hat-tools" / "requests").glob("*.json")) == []
 
 
-def test_a_task_update_status_move_still_goes_through_the_transition_validator(engine_factory):
+def test_a_task_update_status_move_still_goes_through_the_transition_validator(engine_factory, tmp_path):
     """A second call, in the SAME spooled batch: an illegal status jump
     (`pending` -> `validated` is not a legal transition table entry for a
     non-vigilant run) must come back refused with the applier's own
@@ -169,13 +182,17 @@ def test_a_task_update_status_move_still_goes_through_the_transition_validator(e
         {"tool": "task-update",
          "args": {"taskId": "spooled-2", "changes": {"status": "validated"}}},
     ]
+    # task 009 (B.3): see the hold rationale on the first test in this module.
+    hold_file = tmp_path / "hold-spool-jump"
     e = engine_factory(job={"on_complete": "exit", "iterations": 12},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3",
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                                 "STUB_STEER_TOOL_CALLS": json.dumps(calls)})
     e.wait_api()
     code, res = e.api("POST", "/steering",
                       {"message": "insert then illegally jump", "name": "jump"})
     assert code == 202 and res["file"] == "001-jump.md"
+    hold_file.touch()  # release: let the held worker iteration proceed
     assert e.proc.wait(timeout=90) == 0
 
     responses = _responses(e)

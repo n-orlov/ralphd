@@ -41,11 +41,20 @@ from test_docker_sibling_e2e import (  # noqa: F401  (fixtures used by name)
 )
 
 
-def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ctl):
+def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ctl, work_root):
     run_id = _unique_run_id("e004-ctlauth")
-    # STUB_SLEEP gives a window wide enough to pause/budget/unpause a
-    # running job before it reaches a terminal state on its own.
-    res = ctl.start(run_id, extra_env={"STUB_TASKS": "1", "STUB_SLEEP": "6"},
+    # task 009 (B.3): STUB_HOLD_FILE (a container-side path under
+    # /workspace, mounted from work_root/ws below) blocks the job
+    # indefinitely -- deterministically wide enough to pause/budget/unpause
+    # a running job -- instead of racing a fixed STUB_SLEEP window against
+    # how fast the container reaches a terminal state on its own. Released
+    # (touched) right before the final wait below, same pattern as
+    # test_docker_sibling_e2e.py's test_resume_continues_after_container_stop.
+    hold_rel = ".hold-ctlauth"
+    hold_file_host = work_root / "ws" / hold_rel
+    res = ctl.start(run_id, extra_env={"STUB_TASKS": "1",
+                                       "STUB_HOLD_FILE": f"/workspace/{hold_rel}",
+                                       "STUB_HOLD_TIMEOUT_S": "60"},
                     extra=("--on-complete", "idle"))
     assert res.returncode == 0, res.stderr
     meta = json.loads(res.stdout)
@@ -90,6 +99,8 @@ def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ct
 
     res = ctl.run("unpause", run_id, timeout=30)
     assert res.returncode == 0, res.stderr
+
+    hold_file_host.touch()  # release: let the held phase proceed and finish
 
     final = _wait_status(api_url, lambda s: s.get("state") in
                          ("succeeded", "failed", "aborted"), timeout=60)

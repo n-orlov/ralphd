@@ -199,13 +199,21 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
     assert e.proc.wait(timeout=10) == 0
 
 
-def test_steering_reaches_next_iteration(engine_factory):
+def test_steering_reaches_next_iteration(engine_factory, tmp_path):
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # first worker iteration open (after its own in-progress write)
+    # deterministically until the steering POST below has landed, instead
+    # of racing a fixed STUB_SLEEP window against how fast three tasks
+    # with no padding would finish.
+    hold_file = tmp_path / "hold-steering-next"
     e = engine_factory(job={"on_complete": "exit"},
-                       stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "3"})
+                       stub_env={"STUB_TASKS": "3", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     code, res = e.api("POST", "/steering", {"message": "prefer the shortcut",
                                             "name": "hint"})
     assert code == 202 and res["file"] == "001-hint.md"
+    hold_file.touch()  # release: let the held worker iteration proceed
     assert e.proc.wait(timeout=90) == 0
     # the stub records steering text it saw in the final worker prompt
     saw = (e.run_dir / ".stub-saw-steering").read_text()
@@ -215,8 +223,15 @@ def test_steering_reaches_next_iteration(engine_factory):
     assert "001-hint.md" in consumed
 
 
-def test_abort_via_api(engine_factory):
-    e = engine_factory(stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "10"})
+def test_abort_via_api(engine_factory, tmp_path):
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" keeps the job
+    # deterministically non-terminal (mid worker iteration) until the abort
+    # arrives below -- never released; the abort ends the run without the
+    # held iteration ever needing to finish -- instead of racing a fixed
+    # STUB_SLEEP window across ten tasks against how fast the abort lands.
+    hold_file = tmp_path / "hold-abort"
+    e = engine_factory(stub_env={"STUB_TASKS": "10", "STUB_HOLD_FILE": str(hold_file),
+                                 "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     e.wait_state(("running",))
     code, _ = e.api("POST", "/abort", {"reason": "test abort"})
@@ -237,14 +252,17 @@ def test_abort_via_api(engine_factory):
     assert e.proc.wait(timeout=10) == 1
 
 
-def test_terminal_status_surfaces_unconsumed_steering(engine_factory):
+def test_terminal_status_surfaces_unconsumed_steering(engine_factory, tmp_path):
     """Task 006: a run that goes terminal (aborted here, but the same
     ``_unconsumed_steering_patch`` call covers failed/succeeded) with a
     steering file that never got consumed must not bury that fact -- it
     must be loudly discoverable straight from status.json's
     ``unconsumedSteering`` field, since a terminal run never reads pending
     steering again."""
-    e = engine_factory(stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "10"})
+    # task 009 (B.3): see the hold rationale on test_abort_via_api above.
+    hold_file = tmp_path / "hold-unconsumed-steering"
+    e = engine_factory(stub_env={"STUB_TASKS": "10", "STUB_HOLD_FILE": str(hold_file),
+                                 "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     e.wait_state(("running",))
     code, res = e.api("POST", "/steering",
@@ -266,7 +284,7 @@ def test_terminal_status_surfaces_unconsumed_steering(engine_factory):
     assert e.proc.wait(timeout=10) == 1
 
 
-def test_steering_during_review_iteration_never_silently_dropped(engine_factory):
+def test_steering_during_review_iteration_never_silently_dropped(engine_factory, tmp_path):
     """Task 007: steering that lands WHILE a review iteration that would
     otherwise verify the run is still in flight (i.e. before its
     ``saw_verified``/pending-steering check even runs, per task 005) must
@@ -278,17 +296,21 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory)
     present on disk but absent from BOTH the consumed-steering record AND
     the terminal status's ``unconsumedSteering`` list -- that would be a
     silent drop."""
-    e = engine_factory(stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "1"})
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="review" holds exactly
+    # the review invocation, at the very top of its own dispatch (before
+    # any role logic runs, `tests/stub-pi/pi`'s own `_apply_hold` position
+    # for every phase except worker) -- deterministically inside the same
+    # open window the removed STUB_SLEEP comment described, instead of
+    # racing a fixed real-time sleep against the engine's own
+    # saw_verified/pending_steering check. Still confirmed via status.json's
+    # phase (the same signal the removed comment relied on), just without
+    # depending on a fixed-duration real sleep to keep it open.
+    hold_file = tmp_path / "hold-mid-review"
+    e = engine_factory(stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                 "STUB_HOLD_PHASE": "review", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     e.wait_state(("running",))
 
-    # Wait until the review iteration has actually started (status.json's
-    # phase flips to "review" at the top of run_iteration, before the
-    # stub's own STUB_SLEEP-second sleep at the top of its invocation --
-    # see tests/stub-pi/pi's "if 'Role: Worker' not in prompt: sleep(...)").
-    # This lands the steering POST strictly inside that open window, i.e.
-    # while the review iteration is still running and has not yet reached
-    # the saw_verified/pending_steering check in loop.py.
     deadline = time.time() + 30
     phase = None
     while time.time() < deadline:
@@ -305,6 +327,8 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory)
     assert code == 202
     steering_file = res["file"]
     assert steering_file == "001-mid-review.md"
+
+    hold_file.touch()  # release: let the held review iteration proceed
 
     status = e.wait_state(("succeeded", "failed", "aborted"), timeout=90)
 
@@ -400,8 +424,12 @@ def test_steering_not_lost_across_verify_phase(engine_factory):
     guidance), the engine must NOT mark the steering consumed there -- doing
     so would silently discard it forever, since nothing ever acts on it. It
     must stay pending until an actionable phase (planning/worker) runs."""
+    # task 009 (B.3): reduced -- no immediate-state race here (iteration 2's
+    # meta.json presence is itself the signal the polling loop below waits
+    # for, and it is written before the stub's own sleep position), so this
+    # needs no more real delay than it takes each iteration to actually run.
     e = engine_factory(job={"on_complete": "idle", "vigilant": True},
-                       stub_env={"STUB_SLEEP": "0.6"})
+                       stub_env={"STUB_SLEEP": "0.3"})
     e.wait_api()
 
     def iter_meta(n: int) -> dict | None:
@@ -510,7 +538,7 @@ def test_steering_not_lost_across_verify_phase(engine_factory):
     assert status["state"] == "succeeded" and status["verdict"] == "verified"
 
 
-def test_verified_review_refused_while_steering_pending(engine_factory):
+def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path):
     """Task 005 regression: steering that lands during the review iteration of
     what would otherwise be the final VERIFIED verdict must not be silently
     stranded by a terminal-succeeded run. The engine must discard that verdict,
@@ -529,8 +557,15 @@ def test_verified_review_refused_while_steering_pending(engine_factory):
     still may not go terminal-succeeded with the file unconsumed -- and the
     consumer is now a hat whose whole prompt is about operator messages
     instead of a worker iteration with no task in hand."""
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="review" holds exactly
+    # the first review invocation at the top of its own dispatch,
+    # deterministically, giving a real window to land steering while it's
+    # in flight, strictly before the engine's post-review pending-steering
+    # check can run -- instead of a fixed STUB_SLEEP window.
+    hold_file = tmp_path / "hold-lastcall"
     e = engine_factory(job={"on_complete": "idle"},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.5"})
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "review", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
 
     def iter_meta(n: int) -> dict | None:
@@ -538,9 +573,7 @@ def test_verified_review_refused_while_steering_pending(engine_factory):
         return json.loads(p.read_text()) if p.exists() else None
 
     # Iteration 3 is the first review (1=planning, 2=worker with a single
-    # task -> COMPLETE). It sleeps STUB_SLEEP seconds before doing anything,
-    # giving us a real window to land steering while it's in flight, strictly
-    # before the engine's post-review pending-steering check can run.
+    # task -> COMPLETE), held above before it does anything.
     deadline = time.time() + 30
     while time.time() < deadline and iter_meta(3) is None:
         time.sleep(0.05)
@@ -550,6 +583,8 @@ def test_verified_review_refused_while_steering_pending(engine_factory):
     code, res = e.api("POST", "/steering",
                       {"message": "hold on, check one more thing", "name": "lastcall"})
     assert code == 202 and res["file"] == "001-lastcall.md"
+
+    hold_file.touch()  # release: let the held review iteration proceed
 
     status = e.wait_state(("succeeded", "failed", "aborted"), timeout=90)
     assert status["state"] == "succeeded" and status["verdict"] == "verified"
@@ -1107,8 +1142,13 @@ def test_get_logs_follow_streams_across_iteration_boundaries(engine_factory):
     job delivers lines from at least two different iterations on the same
     open connection, and the stream closes once the job reaches a terminal
     state (never hangs forever, never truncates before the job finishes)."""
+    # task 009 (B.3): reduced -- no immediate-state race (the assertion is
+    # over the whole connection's lifetime, not a single instant), so this
+    # just needs enough real spacing between iterations for the follow
+    # stream's reader to observe >=2 distinct iteration numbers before the
+    # job (3 fast tasks) reaches its terminal state.
     e = engine_factory(job={"on_complete": "idle"},
-                       stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "3"})
+                       stub_env={"STUB_SLEEP": "0.1", "STUB_TASKS": "3"})
     e.wait_api()
 
     req = urllib.request.Request(
@@ -1145,7 +1185,7 @@ def test_get_logs_follow_streams_across_iteration_boundaries(engine_factory):
     assert e.proc.wait(timeout=10) == 0
 
 
-def test_task_in_progress_visible_while_worker_iteration_running(engine_factory):
+def test_task_in_progress_visible_while_worker_iteration_running(engine_factory, tmp_path):
     """`GET /tasks` re-reads `tasks.json` from disk on every call, so an
     operator watching `ralphctl tasks` (or the hub) during an iteration
     sees the exact task being worked *while the iteration is still
@@ -1169,8 +1209,15 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
     no third, mid-hat event for the transient state, because there is no
     transient state left to observe: the harness already committed
     in-progress before iteration 2's subprocess so much as started."""
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # single task's worker iteration open, deterministically, after the
+    # harness's own pre-spawn in-progress write -- the polling loop below
+    # is now guaranteed to observe in-progress-while-running on its very
+    # first pass, instead of racing a fixed STUB_SLEEP window.
+    hold_file = tmp_path / "hold-in-progress-visible"
     e = engine_factory(job={"on_complete": "idle"},
-                       stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "1"})
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     e.wait_state(("running",))
 
@@ -1197,6 +1244,8 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
     assert observed_in_progress_while_running, (
         f"never observed task 001 as in-progress while its worker iteration "
         f"was still running; last statuses seen: {statuses}")
+
+    hold_file.touch()  # release: let the held worker iteration finish
 
     e.wait_state(("succeeded",))
 

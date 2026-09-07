@@ -31,11 +31,21 @@ import time
 
 from tests.conftest import RALPHCTL
 
-# Slow enough (several seconds of total job runtime) that a buffered
-# implementation's "first" line -- which would only arrive at job end --
-# is trivially distinguishable from a genuinely live first line, which
-# arrives while iterations are still in flight.
-_STUB_ENV = {"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "0.3", "STUB_TASKS": "3"}
+# task 009 (B.3): STUB_TASKS/STUB_RICH_EVENTS unchanged; the real-time
+# STUB_SLEEP padding that used to buy several seconds of job runtime for
+# the buffered-vs-live distinguishability below is replaced per-test with
+# STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" (see `_assert_liveness_and_drain`'s
+# `hold_file` argument): the job is held open, deterministically, at the
+# exact instant the immediate liveness check needs it to still be running,
+# rather than probabilistically outrunning a fixed real sleep.
+_STUB_ENV = {"STUB_RICH_EVENTS": "1", "STUB_TASKS": "3"}
+
+
+def _stub_env_with_hold(tmp_path, name: str):
+    hold_file = tmp_path / name
+    env = {**_STUB_ENV, "STUB_HOLD_FILE": str(hold_file),
+           "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"}
+    return env, hold_file
 
 
 def _spawn(run, *extra_args: str) -> subprocess.Popen:
@@ -67,7 +77,8 @@ def _job_state(run) -> str | None:
         return None
 
 
-def _assert_liveness_and_drain(run, proc: subprocess.Popen, *, raw: bool) -> str:
+def _assert_liveness_and_drain(run, proc: subprocess.Popen, *, raw: bool,
+                               hold_file=None) -> str:
     try:
         first_line = _read_first_nonblank_line(proc, timeout=30)
         # The check happens as close as possible to the moment the line
@@ -81,6 +92,13 @@ def _assert_liveness_and_drain(run, proc: subprocess.Popen, *, raw: bool) -> str
             "ralphctl buffered the whole response instead of following it "
             "live"
         )
+
+        if hold_file is not None:
+            # task 009 (B.3): release the held worker iteration now that
+            # the immediate liveness check above has already run against a
+            # deterministically-still-running job -- the hold, not a real
+            # sleep, was what kept it from reaching a terminal state early.
+            hold_file.touch()
 
         # Let the job finish naturally, then confirm the CLI itself exits
         # cleanly once the underlying stream closes, with the full expected
@@ -96,13 +114,14 @@ def _assert_liveness_and_drain(run, proc: subprocess.Popen, *, raw: bool) -> str
             proc.wait(timeout=10)
 
 
-def test_logs_follow_streams_live_pretty(live):
+def test_logs_follow_streams_live_pretty(live, tmp_path):
+    stub_env, hold_file = _stub_env_with_hold(tmp_path, "hold-pretty")
     run = live(run_id="followtest-pretty", job={"iterations": 20},
-               stub_env=_STUB_ENV)
+               stub_env=stub_env)
     run.wait_api()
 
     proc = _spawn(run)
-    full = _assert_liveness_and_drain(run, proc, raw=False)
+    full = _assert_liveness_and_drain(run, proc, raw=False, hold_file=hold_file)
 
     assert "iteration 1" in full and "phase=planning" in full
     assert "planning done" in full
@@ -110,13 +129,14 @@ def test_logs_follow_streams_live_pretty(live):
     assert "tokens=" in full
 
 
-def test_logs_follow_streams_live_raw(live):
+def test_logs_follow_streams_live_raw(live, tmp_path):
+    stub_env, hold_file = _stub_env_with_hold(tmp_path, "hold-raw")
     run = live(run_id="followtest-raw", job={"iterations": 20},
-               stub_env=_STUB_ENV)
+               stub_env=stub_env)
     run.wait_api()
 
     proc = _spawn(run, "--raw")
-    full = _assert_liveness_and_drain(run, proc, raw=True)
+    full = _assert_liveness_and_drain(run, proc, raw=True, hold_file=hold_file)
 
     lines = [l for l in full.splitlines() if l.strip()]
     assert lines, "no raw NDJSON lines received"
@@ -128,11 +148,12 @@ def test_logs_follow_streams_live_raw(live):
     assert any(json.loads(l).get("type") == "ralphd.iteration" for l in lines)
 
 
-def test_logsf_alias_also_streams_live(live):
+def test_logsf_alias_also_streams_live(live, tmp_path):
     """`logsf` is a pure argv-rewrite alias for `logs --follow` (see
     _preprocess_logs_argv) -- confirm the alias path is covered too."""
+    stub_env, hold_file = _stub_env_with_hold(tmp_path, "hold-alias")
     run = live(run_id="followtest-alias", job={"iterations": 20},
-               stub_env=_STUB_ENV)
+               stub_env=stub_env)
     run.wait_api()
 
     env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
@@ -140,7 +161,7 @@ def test_logsf_alias_also_streams_live(live):
         [str(RALPHCTL), "logsf", run.run_id],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1)
-    full = _assert_liveness_and_drain(run, proc, raw=False)
+    full = _assert_liveness_and_drain(run, proc, raw=False, hold_file=hold_file)
     assert "iteration 1" in full and "phase=planning" in full
 
 

@@ -80,9 +80,17 @@ def _spawn_under_pty(run, extra_args: list[str]):
     return proc, master_fd, pre_attrs
 
 
-def test_sigint_restores_termios_mode(live):
+def test_sigint_restores_termios_mode(live, tmp_path):
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" keeps the job
+    # genuinely non-terminal for as long as this test needs (bounded, never
+    # released -- `live`'s own teardown kills the engine subprocess
+    # regardless of whether the hold's own bound is ever reached) instead
+    # of racing a fixed STUB_SLEEP window against how fast three tasks with
+    # no padding would finish before the signal below could land.
+    hold_file = tmp_path / "hold-sigint"
     run = live(run_id="pty-sigint", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.0",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_HOLD_FILE": str(hold_file),
+                         "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                          "STUB_TASKS": "3"})
     run.wait_api()
 
@@ -116,9 +124,12 @@ def test_sigint_restores_termios_mode(live):
         os.close(master_fd)
 
 
-def test_quit_keypress_restores_termios_mode(live):
+def test_quit_keypress_restores_termios_mode(live, tmp_path):
+    # task 009 (B.3): see the hold rationale on the sibling test above.
+    hold_file = tmp_path / "hold-quit"
     run = live(run_id="pty-quit", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.0",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_HOLD_FILE": str(hold_file),
+                         "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                          "STUB_TASKS": "3"})
     run.wait_api()
 
@@ -143,9 +154,12 @@ def test_quit_keypress_restores_termios_mode(live):
         os.close(master_fd)
 
 
-def test_sigterm_exits_clean_and_restores_termios_mode(live):
+def test_sigterm_exits_clean_and_restores_termios_mode(live, tmp_path):
+    # task 009 (B.3): see the hold rationale on the first test in this module.
+    hold_file = tmp_path / "hold-sigterm"
     run = live(run_id="pty-sigterm", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.0",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_HOLD_FILE": str(hold_file),
+                         "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                          "STUB_TASKS": "3"})
     run.wait_api()
 

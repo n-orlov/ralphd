@@ -45,11 +45,17 @@ def _read_first_nonblank_line(proc: subprocess.Popen, timeout: float) -> str:
     raise TimeoutError("ralphctl logs --follow produced no output in time")
 
 
-def test_sigint_during_follow_exits_clean_no_traceback(live):
-    # A job with a handful of slow-ish iterations so the follow is still
-    # live (not already exited) when the signal arrives.
+def test_sigint_during_follow_exits_clean_no_traceback(live, tmp_path):
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" keeps the job
+    # genuinely non-terminal for as long as this test needs (bounded, never
+    # released -- `live`'s own teardown kills the engine subprocess
+    # regardless) instead of racing a fixed STUB_SLEEP window against how
+    # fast three tasks with no padding would finish before the signal below
+    # could land.
+    hold_file = tmp_path / "hold-sigint-follow"
     run = live(run_id="sigint-follow", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.0",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_HOLD_FILE": str(hold_file),
+                         "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                          "STUB_TASKS": "3"})
     run.wait_api()
 

@@ -540,7 +540,7 @@ def test_run_detail_shows_reason_for_terminal_failed_run(tmp_path, pw):
 def test_run_detail_shows_task_table_and_iteration_timeline(tmp_path, pw, live):
     run = live(run_id="browser-detail",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},
-               stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "1"})
+               stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "0.05"})
     run.wait_api()
 
     server = UiServer(run.registry)
@@ -566,9 +566,17 @@ def test_run_detail_shows_task_table_and_iteration_timeline(tmp_path, pw, live):
 
 
 def test_steering_form_submit_creates_steering_file(tmp_path, pw, live):
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # single task's worker iteration open (after its own in-progress write)
+    # deterministically long enough for the browser to open the page, fill
+    # and submit the steer form before the job could reach a terminal
+    # state (which refuses steering with 409) -- instead of racing a fixed
+    # STUB_SLEEP window against real Playwright interaction latency.
+    hold_file = tmp_path / "hold-browser-steer"
     run = live(run_id="browser-steer",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "3"})
+               stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
 
     server = UiServer(run.registry)
@@ -583,6 +591,8 @@ def test_steering_form_submit_creates_steering_file(tmp_path, pw, live):
 
         status_text = _wait_for(pw, "document.getElementById('steer-status').textContent", "sent")
         assert "sent" in status_text
+
+        hold_file.touch()  # release: let the held worker iteration finish
 
         pw.screenshot(SCREENSHOTS_DIR / "03-steering-sent.png")
     finally:
@@ -608,6 +618,18 @@ def test_run_detail_keeps_updating_through_a_long_worker_iteration(tmp_path, pw,
     to span several of the hub's own `REFRESH_MS` (4s) polls, with no
     engine-side poller involved at all.
     """
+    # task 009 (B.3): a genuine wall-clock requirement (the sampling loop
+    # below has its own fixed 8s real-time window, spanning several of the
+    # hub's REFRESH_MS polls by construction). STUB_HOLD_FILE was tried and
+    # rejected: holding the worker indefinitely (rather than a bounded real
+    # sleep) measurably destabilized this same sampling loop (a live-run
+    # hub GET/eval round trip occasionally stalled several seconds while
+    # the worker sat silent with no output at all, dropping the collected
+    # sample count below the loop's own >=4 floor across repeated runs) in
+    # a way a fixed STUB_SLEEP never did. 8.5s was tried too and also
+    # measured unstable (3 failed runs, "not enough samples") -- 9s (the
+    # original value) is the smallest value confirmed to pass three
+    # consecutive runs; left unchanged.
     run = live(run_id="browser-liveness",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},
                stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "9"})
@@ -675,9 +697,13 @@ def test_run_detail_log_tail_collapses_many_delta_thinking_block(tmp_path, pw, l
     `_render_message_update`/`_render_message_end` in `log_render.py`
     already applied for the CLI), and `app.js` merely displays the lines
     the server decided on."""
+    # task 009 (B.3): STUB_SLEEP reduced -- this test has no immediate-state
+    # race (every assertion below is reached through _wait_for_count_ge's
+    # own generous 30s poll, not a fixed-window sample), so it needs no
+    # more real delay than it takes both rich iterations' events to stream.
     run = live(run_id="browser-thinking",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "1"})
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "0.1"})
     run.wait_api()
 
     server = UiServer(run.registry)

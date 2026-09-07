@@ -81,8 +81,24 @@ def spool_run(work_root, gateway_ip, test_image):
     """
     ctl = Ctl(work_root, gateway_ip, test_image)
     run_id = _unique_run_id("e130-spool")
+    # task 009 (B.3): STUB_HOLD_FILE (a container-side path under
+    # /workspace, mounted from work_root/ws below) holds the first worker
+    # iteration -- after it has flipped its task to in-progress, the same
+    # position `tests/stub-pi/pi`'s own `_apply_hold("worker")` uses --
+    # deterministically wide enough for the `ralphctl steer` call below to
+    # land while a worker iteration remains, instead of racing a fixed
+    # STUB_SLEEP window across two tasks against how fast the run finishes.
+    # Released (touched) right after the steer call; the shared hold file
+    # then passes every later worker invocation (including the second
+    # task's) through instantly, per the primitive's own documented
+    # once-released-stays-released behaviour.
+    hold_rel = ".hold-spool-steer"
+    hold_file_host = work_root / "ws" / hold_rel
     res = ctl.start(run_id,
-                    extra_env={"STUB_TASKS": "2", "STUB_SLEEP": "4",
+                    extra_env={"STUB_TASKS": "2",
+                               "STUB_HOLD_FILE": f"/workspace/{hold_rel}",
+                               "STUB_HOLD_PHASE": "worker",
+                               "STUB_HOLD_TIMEOUT_S": "60",
                                "STUB_STEER_TOOL_CALLS": json.dumps(SPOOLED_CALLS),
                                "STUB_STEER_MALFORMED_REQUEST": "1"},
                     extra=("--on-complete", "idle"))
@@ -90,15 +106,17 @@ def spool_run(work_root, gateway_ip, test_image):
     meta = json.loads(res.stdout)
     # Steer while worker iterations remain: the `worker -> steer` edge is
     # taken when unsettled steering exists, so a message arriving after the
-    # last task is done would never reach the steer hat at all. `STUB_SLEEP=4`
-    # over two tasks buys the margin. Sent through the real `ralphctl steer`
-    # (the operator's own channel), not an internal import.
+    # last task is done would never reach the steer hat at all. The hold
+    # above (not yet released) guarantees a worker iteration is still
+    # blocked, mid-run, when this call is made. Sent through the real
+    # `ralphctl steer` (the operator's own channel), not an internal import.
     _wait_status(meta["apiUrl"], lambda s: s.get("state") == "running", timeout=60)
     # `ralphctl steer <run> <message>` -- the message is POSITIONAL (there is
     # no `--message` flag; `--file`/stdin are the alternatives).
     steered = ctl.run("steer", run_id, "insert a task through the spool",
                       "--name", "spool")
     assert steered.returncode == 0, steered.stderr
+    hold_file_host.touch()  # release: let the held worker iteration proceed
     status = _wait_status(meta["apiUrl"], lambda s: s.get("state") in
                           ("succeeded", "failed", "aborted"), timeout=180)
     yield SimpleNamespace(ctl=ctl, run_id=run_id, container=f"ralphd-{run_id}",

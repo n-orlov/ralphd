@@ -463,10 +463,17 @@ def test_real_engine_live_then_container_gone_agree(tmp_path, live, ui):
     """End to end: steer a REAL running engine, watch the entry flip from
     pending to applied through the hub, then kill the engine and assert the
     on-disk fallback reports the very same entries."""
-    # STUB_SLEEP/STUB_TASKS keep the loop busy long enough to be steered
-    # *while running* (a finished job refuses steering, 409).
+    # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # loop busy (mid worker iteration, after the primitive's own
+    # in-progress write) for as long as this test needs to steer it
+    # *while running* (a finished job refuses steering, 409), instead of
+    # racing a fixed STUB_SLEEP window across four tasks. Released right
+    # after the pending entry is confirmed queued, below.
+    hold_file = tmp_path / "hold-steerhub"
     run = live(run_id="steerhub", job={"iterations": 8, "on_complete": "idle"},
-               stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "4"})
+               stub_env={"STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
+                        "STUB_TASKS": "4"})
     run.wait_api()
     server = ui(run.registry)
 
@@ -486,6 +493,9 @@ def test_real_engine_live_then_container_gone_agree(tmp_path, live, ui):
     assert entry["name"] == "from-hub"
     assert entry["body"].strip() == ONE.strip()
     assert entry["state"] == STEERING_PENDING
+
+    hold_file.touch()  # release: let the held worker iteration proceed and
+                       # consume the now-confirmed-pending steering entry
 
     def applied_yet():
         body = entries()
