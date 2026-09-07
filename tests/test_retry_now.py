@@ -26,6 +26,11 @@ from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
 from tests.conftest import supervisor_factory
 
+# Task 047 (B.4 cure): this module tests the backoff/retry schedule itself,
+# so it opts out of tests/conftest.py's autouse class-level
+# LoopSupervisor._wait_out_backoff stub (see REAL_BACKOFF_MARKER there).
+pytestmark = pytest.mark.real_backoff
+
 # Long enough that a test finishing quickly can only mean the wait was woken.
 LONG_BACKOFF = 30.0
 

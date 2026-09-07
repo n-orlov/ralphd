@@ -786,6 +786,51 @@ def _undo_instant_sleep_patches():
 
 
 
+# --- B.4 cure (task 047, operator steer 004): a class-level backoff stub
+# for every collected test -------------------------------------------------
+# Task 010 zeroed the backoff SCHEDULE across the suite, and its own grep
+# guard accepted that all-zero schedule as equivalent to a stub -- but a
+# zero schedule makes the REAL `_wait_out_backoff` return instantly, which
+# is not the same thing as the PRD's B.4 "unstubbed" clause, and it does
+# nothing for the ~43 modules that construct a bare `LoopSupervisor(...)`
+# without going through `make_supervisor()` or assigning their own instance
+# stub. Patching the CLASS attribute here, once, autouse, for every test
+# collected in the whole session, closes that gap structurally instead of
+# hunting down every construction site: an instance that never assigns its
+# own `_wait_out_backoff` now resolves this class-level stub through
+# ordinary attribute lookup, and one that DOES assign its own
+# (`make_supervisor()`'s `_no_backoff`, or a test's own `fake_backoff`/
+# `wrapped`) shadows it exactly as before -- nothing already stubbed changes
+# behaviour.
+#
+# Opt-out: `@pytest.mark.real_backoff` (module-level `pytestmark =
+# pytest.mark.real_backoff` works too), registered in pyproject.toml and
+# applied ONLY by the three modules the PRD names as testing the
+# backoff/retry schedule itself -- `test_infra_outage_budget.py`,
+# `test_retry_now.py`, `test_reflect_infra_retry.py`.
+# `tests/test_wait_out_backoff_stubbed_task010.py` pins both this fixture's
+# presence and that no other module carries the marker.
+REAL_BACKOFF_MARKER = "real_backoff"
+
+
+async def _class_level_no_backoff(self, seconds):
+    return seconds, False
+
+
+@pytest.fixture(autouse=True)
+def _stub_wait_out_backoff_at_class_level(request):
+    from ralphd.engine.loop import LoopSupervisor
+    if request.node.get_closest_marker(REAL_BACKOFF_MARKER) is not None:
+        yield
+        return
+    original = LoopSupervisor._wait_out_backoff
+    LoopSupervisor._wait_out_backoff = _class_level_no_backoff   # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        LoopSupervisor._wait_out_backoff = original             # type: ignore[assignment]
+
+
 class ScriptedRunner:
     """The scripted stand-in for `sup.runner`: a script per phase, the last
     step of each repeating forever, dispatched on the phase the engine itself

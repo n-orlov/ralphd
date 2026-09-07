@@ -74,4 +74,5 @@ markers = [
     "docker: docker-sibling container-level e2e tests (skip cleanly if the docker socket is absent)",
     "smoke: the per-task tier (task 004, G.8) -- in-process engine flows, in-process CLI, records lint, in-process hub; no real engine/ralphctl process. Applied by derivation in tests/conftest.py, budget in docs/testing.md",
     "fast: the final-sha tier (task 004, G.8) -- smoke plus the stub-pi flows and the process-boundary CLI tests; everything outside the nightly docker/browser/dev-layout lanes. Applied by derivation in tests/conftest.py, budget in docs/testing.md",
+    "real_backoff: opt-out from tests/conftest.py's autouse class-level LoopSupervisor._wait_out_backoff stub (task 047, B.4 cure) -- used only by the three PRD-named modules that test the backoff/retry schedule itself.",
 ]

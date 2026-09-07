@@ -1,55 +1,42 @@
-"""Task 010 (B.4): a grep-based check pinning that every in-process test
-outside the three named exempt modules keeps `LoopSupervisor._wait_out_backoff`
-harmless -- either genuinely stubbed (the default `make_supervisor()`/
-`scripted_supervisor()`/`supervisor_with_runner()` harness gives every caller
-that does not explicitly ask for the real thing) or backed by an explicit
-all-zero backoff schedule (`infra_retry_backoff_s=[0.0]`,
-`infra_retry_backoff_max_s=0.0`) so the real function returns instantly even
-when it IS the real function (`tests/test_resume_after_incurable_rejection.py`
-deliberately keeps the real `_wait_out_backoff` -- episode 2's dispatch is the
-thing under test -- but pins its own cost to zero this same way).
+"""Task 010 (B.4), cured by task 047 (operator steer 004): no in-process
+test's `LoopSupervisor._wait_out_backoff` is reachable as a real, waiting
+coroutine, and no `LiveRun.__init__`-bypassing `job.yaml` writer buys a
+spawned engine a real backoff/STUB_SLEEP sleep either.
 
-The three modules the PRD names as genuinely testing the backoff/retry
-schedule itself, and therefore exempt: `tests/test_infra_outage_budget.py`,
-`tests/test_retry_now.py`, `tests/test_reflect_infra_retry.py`.
+Task 010's own pass accepted an all-zero backoff SCHEDULE
+(`infra_retry_backoff_s=[0.0]`, `infra_retry_backoff_max_s=0.0`) on a bare
+`LoopSupervisor(...)` construction as equivalent to a stub -- but a zero
+schedule makes the REAL `_wait_out_backoff` return instantly; it is not the
+same thing as the PRD's B.4 "unstubbed" clause, and it left the ~43 modules
+that construct a bare `LoopSupervisor` outside `make_supervisor()` to fend
+for themselves. Task 047 closed that at the harness level instead:
+`tests/conftest.py` now carries an AUTOUSE fixture that patches
+`LoopSupervisor._wait_out_backoff` at the CLASS level for every collected
+test, so no per-module scan for an unstubbed instance is needed any more --
+this module pins that the fixture exists (below) rather than re-deriving the
+old, now-obsolete, per-module scan.
 
-This is deliberately a TEXTUAL check (grep-shaped, not an AST/semantic one):
-it looks at the literal source of every other `tests/*.py` and
-`tests/flows/*.py` module for two violation shapes --
+What is still worth scanning the tree for, because the class-level fixture
+cannot reach it:
 
-1. `no_backoff=False` (or the dict-literal `"no_backoff": False` a
-   `make_supervisor(**kw)` call spreads in) with no all-zero backoff config
-   anywhere in the same file;
-2. a direct `LoopSupervisor(...)` construction (bypassing the
-   `make_supervisor` family entirely, so its default stub never applies)
-   whose own call span carries no all-zero backoff config, and that has no
-   `_wait_out_backoff = ...` stub assignment shortly after it either.
+1. the opt-out marker (`@pytest.mark.real_backoff` /
+   `pytestmark = pytest.mark.real_backoff`) must be used ONLY by the three
+   modules the PRD names as testing the backoff/retry schedule itself
+   (`test_infra_outage_budget.py`, `test_retry_now.py`,
+   `test_reflect_infra_retry.py`) -- a fourth module carrying it would quietly
+   reopen the real sleep the fixture exists to close;
+2. a `job.yaml` writer under `tests/` that bypasses `LiveRun.__init__`
+   (`LiveRun.__new__(LiveRun)`, the shape `tests/test_config_overlay.py`
+   needs because it must chmod `/config` read-only *before* the engine
+   starts) spawns a SEPARATE PROCESS the in-process fixture above cannot
+   reach at all -- it must name the zero-backoff triple itself:
+   `infra_retry_backoff_s: [0.0]`, `infra_retry_backoff_max_s: 0.0`, and
+   `STUB_SLEEP=0`.
 
-A module that never constructs a supervisor at all (most of the suite) is
-never inspected -- the check costs nothing on every module that doesn't
-touch this contract.
-
-Since the task's second run this module also pins B.4's FIRST clause -- the
-stub-`pi` (subprocess) side of the same "no real sleeps" requirement:
-
-* the shared launcher (`tests/conftest.py`'s `LiveRun`, behind the `live` and
-  `engine_factory` fixtures) gives EVERY live engine an all-zero infra-retry
-  backoff schedule unless the calling test names one itself
-  (`_with_zero_backoff`, exercised below), so a stub-`pi` module that merely
-  happens to hit one infra fault can no longer pay `JobConfig`'s shipped
-  2 s..300 s ladder;
-* and NO module outside the three exempt ones names a non-zero schedule of its
-  own any more: the five that used to (`test_status_infra_retry_note.py`,
-  `test_status_health_infra_wait.py`, `test_infra_deadline_extension.py`,
-  `test_cli_fault_explanation.py`, `test_reflection.py`) were converted on this
-  task's third pass -- two of them observe the wait-only status window from
-  *inside* a stubbed `_wait_out_backoff` (in-process, deterministic, no poll
-  race), one bounds its retry episode with an attempt cap instead of a spent
-  outage budget, and two assert their subject against the engine's own
-  zero-cost ladder. `NONZERO_BACKOFF_ALLOWLIST` below is therefore down to the
-  single module that names the knobs without launching anything at all, and
-  `test_the_allowlist_has_no_stale_entries` keeps it from growing back
-  silently.
+The second half of this module (unchanged since task 010's third pass) pins
+B.4's other clause: no stub-`pi` module outside the one module that parses
+the two env knobs without launching an engine at all names a non-zero
+`RALPHD_INFRA_RETRY_BACKOFF_S`/`_MAX_S`.
 """
 
 from __future__ import annotations
@@ -64,137 +51,164 @@ TESTS_DIR = REPO_ROOT / "tests"
 FLOWS_DIR = TESTS_DIR / "flows"
 
 # The PRD's own three exempt modules (B.4): these test the backoff/retry
-# schedule itself and are allowed to leave `_wait_out_backoff` real.
+# schedule itself and are allowed to leave `_wait_out_backoff` real (via the
+# `real_backoff` opt-out marker on tests/conftest.py's autouse fixture).
 EXEMPT_MODULES = {
     "test_infra_outage_budget.py",
     "test_retry_now.py",
     "test_reflect_infra_retry.py",
 }
 
-_ZERO = r"(?:0(?:\.0+)?|\[\s*0(?:\.0+)?\s*\])"
 _ZERO_BACKOFF_S_RE = re.compile(
     r"infra_retry_backoff_s[\"']?\s*[:=]\s*\[\s*0(?:\.0+)?\s*\]")
 _ZERO_BACKOFF_MAX_RE = re.compile(
     r"infra_retry_backoff_max_s[\"']?\s*[:=]\s*0(?:\.0+)?\b")
-_NO_BACKOFF_FALSE_RE = re.compile(r"no_backoff[\"']?\s*[:=]\s*False\b")
-_LOOP_SUPERVISOR_CALL_RE = re.compile(r"\bLoopSupervisor\(")
-_WAIT_OUT_BACKOFF_STUB_RE = re.compile(r"_wait_out_backoff\s*=[^=]")
+_STUB_SLEEP_ZERO_RE = re.compile(
+    r"STUB_SLEEP[\"']?\s*[:=]\s*[\"']?0(?:\.0+)?[\"']?\b")
+_LIVERUN_BYPASS_RE = re.compile(r"LiveRun\.__new__\(")
+_JOB_YAML_LITERAL_RE = re.compile(r"[\"']job\.yaml[\"']")
 
 
-def _target_files() -> list[Path]:
+def _all_files() -> list[Path]:
+    """Every `tests/test_*.py` and `tests/flows/test_*.py` module, this
+    checker's own module excluded (its synthetic snippets below are literal
+    violation SHAPES on purpose and would otherwise flag themselves)."""
     files = sorted(TESTS_DIR.glob("test_*.py")) + sorted(FLOWS_DIR.glob("test_*.py"))
-    # The checker's own module is excluded: its synthetic snippets (the
-    # parametrized proof below) are literal violation SHAPES on purpose and
-    # would otherwise flag themselves.
-    return [f for f in files
-            if f.name not in EXEMPT_MODULES and f.name != Path(__file__).name]
+    return [f for f in files if f.name != Path(__file__).name]
 
 
-def _has_zero_backoff_config(text: str) -> bool:
-    return bool(_ZERO_BACKOFF_S_RE.search(text) and _ZERO_BACKOFF_MAX_RE.search(text))
+def _scanned_files() -> list[Path]:
+    """`_all_files()` minus the three exempt modules -- the set every check
+    in this module other than the exempt-module pins itself scans."""
+    return [f for f in _all_files() if f.name not in EXEMPT_MODULES]
 
 
-def _balanced_call_span(text: str, open_paren_idx: int) -> str:
-    """`text[open_paren_idx:]` up to (inclusive) the matching close paren for
-    the '(' at `open_paren_idx`, tolerant of nesting."""
-    depth = 0
-    i = open_paren_idx
-    n = len(text)
-    while i < n:
-        if text[i] == "(":
-            depth += 1
-        elif text[i] == ")":
-            depth -= 1
-            if depth == 0:
-                return text[open_paren_idx:i + 1]
-        i += 1
-    return text[open_paren_idx:]
+# ---------------------------------------------------------------------------
+# 1. The class-level fixture itself: pinned present, not re-derived.
+
+def test_conftest_carries_the_autouse_class_level_backoff_stub():
+    text = (TESTS_DIR / "conftest.py").read_text()
+    fixture_idx = text.find("def _stub_wait_out_backoff_at_class_level")
+    assert fixture_idx != -1, (
+        "tests/conftest.py must carry an autouse fixture named "
+        "_stub_wait_out_backoff_at_class_level (task 047, B.4 cure) -- the "
+        "class-level stub that replaced this guard's old per-module scan")
+    preceding = text[max(0, fixture_idx - 300):fixture_idx]
+    assert "@pytest.fixture(autouse=True)" in preceding, (
+        "_stub_wait_out_backoff_at_class_level must be autouse, or it never "
+        "runs for the ~43 modules this cure exists to cover")
+    body = text[fixture_idx:fixture_idx + 1500]
+    assert "LoopSupervisor._wait_out_backoff =" in body, (
+        "the fixture must assign LoopSupervisor._wait_out_backoff at CLASS "
+        "level (LoopSupervisor._wait_out_backoff = ...), not merely an "
+        "instance's -- an instance-level assignment would not reach a bare "
+        "LoopSupervisor(...) construction elsewhere")
+    assert "REAL_BACKOFF_MARKER" in body, (
+        "the fixture must consult the registered opt-out marker so the "
+        "three exempt modules can still exercise the real backoff")
 
 
-def violations_in_text(text: str, label: str) -> list[str]:
-    """The check's whole logic, factored out so the negative-proof test
-    below can feed it a synthetic snippet without touching disk."""
-    out: list[str] = []
+# ---------------------------------------------------------------------------
+# 2. Exempt modules + the opt-out marker: present in exactly the three, in
+#    exactly the three -- checked together because they are one contract
+#    (the PRD's own named list IS the marker's whole authorized surface).
 
-    if _NO_BACKOFF_FALSE_RE.search(text) and not _has_zero_backoff_config(text):
-        out.append(f"{label}: no_backoff=False with no all-zero backoff "
-                   f"config (infra_retry_backoff_s/infra_retry_backoff_max_s) "
-                   f"anywhere in the file")
-
-    for m in _LOOP_SUPERVISOR_CALL_RE.finditer(text):
-        call_span = _balanced_call_span(text, m.end() - 1)
-        # The config is often built a few lines earlier as `cfg = JobConfig(
-        # ..., infra_retry_backoff_s=[0.0], ...)` and then just `cfg` is
-        # passed in -- so a window around the call (not only the call's own
-        # literal text) is what a `cfg =`/`**kw` forwarding shape needs.
-        window_start = max(0, m.start() - 1200)
-        window = text[window_start:m.end()] + call_span
-        if _has_zero_backoff_config(window):
-            continue
-        # A stub assigned shortly (within ~800 chars, generously >10 lines)
-        # after the construction covers the common
-        # `sup = LoopSupervisor(...); ...; sup._wait_out_backoff = fn` shape.
-        tail = text[m.end(): m.end() + 800]
-        if _WAIT_OUT_BACKOFF_STUB_RE.search(tail):
-            continue
-        line_no = text.count("\n", 0, m.start()) + 1
-        out.append(f"{label}: LoopSupervisor(...) at line {line_no} leaves "
-                   f"_wait_out_backoff unstubbed with no all-zero backoff "
-                   f"config (within ~30 lines before/at the call) and no "
-                   f"nearby stub assignment")
-
-    return out
+_REAL_BACKOFF_MARK_RE = re.compile(r"pytest\.mark\.real_backoff")
 
 
-def test_no_in_process_test_outside_the_exempt_modules_leaves_backoff_unstubbed():
-    all_violations: list[str] = []
-    for path in _target_files():
-        all_violations.extend(violations_in_text(path.read_text(), path.name))
-    assert not all_violations, (
-        "the following in-process tests leave a real, un-zeroed "
-        "_wait_out_backoff reachable (B.4) -- stub it via the default "
-        "make_supervisor()/scripted_supervisor() harness, add "
-        "infra_retry_backoff_s=[0.0]/infra_retry_backoff_max_s=0.0, or add "
-        "the module to the PRD's named exempt list:\n" + "\n".join(all_violations))
-
-
-def test_exempt_modules_are_the_prds_named_three_and_still_on_disk():
+def test_exempt_modules_are_the_prds_named_three_and_carry_the_marker():
     names = {p.name for p in TESTS_DIR.glob("test_*.py")}
     for exempt in EXEMPT_MODULES:
         assert exempt in names, f"exempt module {exempt} no longer exists on disk"
     assert EXEMPT_MODULES == {
         "test_infra_outage_budget.py", "test_retry_now.py",
         "test_reflect_infra_retry.py"}
+    marked = {p.name for p in _all_files()
+              if _REAL_BACKOFF_MARK_RE.search(p.read_text())}
+    assert marked == EXEMPT_MODULES, (
+        "@pytest.mark.real_backoff (tests/conftest.py's opt-out from the "
+        "autouse class-level backoff stub) must be used by exactly the "
+        f"three exempt modules: found it in {sorted(marked)}, wanted "
+        f"{sorted(EXEMPT_MODULES)}")
+
+
+# ---------------------------------------------------------------------------
+# 3. LiveRun.__init__-bypassing job.yaml writers: the one shape the
+#    in-process class-level fixture cannot reach (a separate process).
+
+def job_yaml_writer_violations_in_text(text: str, label: str) -> list[str]:
+    """The check's whole logic for this half, factored out so the
+    non-vacuity proof below can feed it synthetic snippets without touching
+    disk. A file that never bypasses `LiveRun.__init__` (the overwhelming
+    majority of the suite, including every ordinary `LiveRun(...)` call) is
+    not scanned at all -- the shared launcher's own `_with_zero_backoff`
+    already covers that path."""
+    if not (_LIVERUN_BYPASS_RE.search(text) and _JOB_YAML_LITERAL_RE.search(text)):
+        return []
+    # `_with_zero_backoff(job, stub_env)` (tests/conftest.py's own helper)
+    # computes both knobs programmatically -- a writer that calls it never
+    # spells either key out literally, so a call to it satisfies both.
+    zeroed_by_helper = "_with_zero_backoff(" in text
+    missing = []
+    if not zeroed_by_helper and not _ZERO_BACKOFF_S_RE.search(text):
+        missing.append("infra_retry_backoff_s: [0.0]")
+    if not zeroed_by_helper and not _ZERO_BACKOFF_MAX_RE.search(text):
+        missing.append("infra_retry_backoff_max_s: 0.0")
+    if not _STUB_SLEEP_ZERO_RE.search(text):
+        missing.append("STUB_SLEEP=0")
+    if not missing:
+        return []
+    return [(f"{label}: LiveRun.__init__-bypassing job.yaml writer omits "
+             f"{', '.join(missing)}")]
+
+
+def test_no_livrun_bypassing_job_yaml_writer_omits_the_zero_backoff_triple():
+    all_violations: list[str] = []
+    for path in _scanned_files():
+        all_violations.extend(
+            job_yaml_writer_violations_in_text(path.read_text(), path.name))
+    assert not all_violations, (
+        "the following tests/*.py modules spawn a real engine through a "
+        "job.yaml writer that bypasses LiveRun.__init__ without pinning the "
+        "zero-backoff triple (B.4) -- name all three, or route the launch "
+        "through LiveRun.__init__ / _with_zero_backoff instead:\n"
+        + "\n".join(all_violations))
 
 
 @pytest.mark.parametrize("snippet,expect_violation", [
-    # A bare, un-stubbed, non-zero-config construction: caught.
-    ('sup = LoopSupervisor(JobConfig(run_id="x"), run, root)\n', True),
-    # Stubbed right after construction: clean.
-    ('sup = LoopSupervisor(JobConfig(run_id="x"), run, root)\n'
-     'sup._wait_out_backoff = _no_backoff\n', False),
-    # All-zero config on the same call: clean.
-    ('sup = LoopSupervisor(JobConfig(run_id="x", infra_retry_backoff_s=[0.0],\n'
-     '                                infra_retry_backoff_max_s=0.0), run, root)\n', False),
-    # no_backoff=False with no zero config anywhere: caught.
-    ('sup = make_supervisor(root, no_backoff=False)\n', True),
-    # no_backoff=False WITH zero config elsewhere in the file: clean (the
-    # test_resume_after_incurable_rejection.py shape).
-    ('sup = make_supervisor(root, no_backoff=False,\n'
-     '                       infra_retry_backoff_s=[0.0],\n'
-     '                       infra_retry_backoff_max_s=0.0)\n', False),
+    # Bypasses LiveRun.__init__, writes job.yaml, missing infra_retry_backoff_s.
+    (('e = LiveRun.__new__(LiveRun)\n'
+      '(config_dir / "job.yaml").write_text(text)\n'
+      'env = {"STUB_SLEEP": "0", **stub_env}\n'
+      'job = {"infra_retry_backoff_max_s": 0.0}\n'), True),
+    # ... missing infra_retry_backoff_max_s.
+    (('e = LiveRun.__new__(LiveRun)\n'
+      '(config_dir / "job.yaml").write_text(text)\n'
+      'env = {"STUB_SLEEP": "0", **stub_env}\n'
+      'job = {"infra_retry_backoff_s": [0.0]}\n'), True),
+    # ... missing STUB_SLEEP.
+    (('e = LiveRun.__new__(LiveRun)\n'
+      '(config_dir / "job.yaml").write_text(text)\n'
+      'job = {"infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0}\n'), True),
+    # All three present: clean.
+    (('e = LiveRun.__new__(LiveRun)\n'
+      '(config_dir / "job.yaml").write_text(text)\n'
+      'env = {"STUB_SLEEP": "0", **stub_env}\n'
+      'job = {"infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0}\n'), False),
 ])
 def test_the_checker_actually_fires_on_the_shapes_it_claims_to_catch(
         snippet, expect_violation):
-    """Proof the check is not vacuous (the whole point of pinning it): a
-    synthetic violation is caught, and each of its accepted escape hatches
-    genuinely clears it."""
-    got = violations_in_text(snippet, "synthetic")
+    """Proof the check is not vacuous: a planted violation of each shape is
+    caught by feeding the checker a synthetic snippet (never written to
+    disk, so there is nothing to remove afterwards), and the clean shape
+    clears it."""
+    got = job_yaml_writer_violations_in_text(snippet, "synthetic")
     assert bool(got) is expect_violation, got
 
 
 # ---------------------------------------------------------------------------
-# B.4's first clause: the stub-`pi` (subprocess) side.
+# 4. B.4's first clause, unchanged since task 010's third pass: the
+#    stub-`pi` (subprocess) side of "no real sleeps".
 
 # Every module that names a NON-ZERO `RALPHD_INFRA_RETRY_BACKOFF_S` /
 # `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` -- the only two knobs a spawned engine
@@ -202,7 +216,8 @@ def test_the_checker_actually_fires_on_the_shapes_it_claims_to_catch(
 # test -- with the reason it cannot be zero. Exactly one module qualifies, and
 # it launches no engine at all. An in-process module configuring a non-zero
 # schedule is NOT on this list and does not need to be: its `_wait_out_backoff`
-# is stubbed (the clause above), so the numbers are reported, never waited.
+# is stubbed at the class level (the fixture above), so the numbers are
+# reported, never waited.
 NONZERO_BACKOFF_ALLOWLIST = {
     "test_job_config_defaults.py":
         "no engine is launched at all: monkeypatched env, read back through "
@@ -223,12 +238,6 @@ def nonzero_env_backoffs(text: str) -> list[str]:
         if any(float(n) != 0.0 for n in _NUMBER_RE.findall(value)):
             found.append(value)
     return found
-
-
-def _scanned_files() -> list[Path]:
-    files = sorted(TESTS_DIR.glob("test_*.py")) + sorted(FLOWS_DIR.glob("test_*.py"))
-    return [f for f in files
-            if f.name not in EXEMPT_MODULES and f.name != Path(__file__).name]
 
 
 def test_no_stub_pi_module_buys_a_real_backoff_sleep_outside_the_allowlist():

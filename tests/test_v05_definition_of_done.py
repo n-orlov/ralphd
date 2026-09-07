@@ -35,6 +35,19 @@ from ralphd.engine.config import (
     DEFAULT_INFRA_RETRY_BACKOFF_S,
     JobConfig,
 )
+from ralphd.engine.loop import LoopSupervisor
+
+# Task 047 (B.4 cure): captured at IMPORT time -- collection happens before
+# any test's setup fixture runs, so tests/conftest.py's autouse class-level
+# LoopSupervisor._wait_out_backoff stub has not touched the class yet here.
+# This module is not one of the PRD's three exempt modules and must not
+# carry the opt-out marker (tests/test_wait_out_backoff_stubbed_task010.py
+# pins that), but the one test below genuinely needs the REAL coroutine on
+# the real backoff/retry-now seam -- so it rebinds this captured original
+# onto its OWN instance, an ordinary instance-level shadow of whatever the
+# class attribute happens to be during the test, exactly like
+# make_supervisor()'s own `_no_backoff` stub shadows it the other way.
+_REAL_WAIT_OUT_BACKOFF = LoopSupervisor._wait_out_backoff
 
 OUTAGE_S = 30 * 60  # the DoD's "30-minute outage"
 
@@ -126,6 +139,7 @@ async def test_the_thirty_minute_wait_is_interruptible_by_retry_now(
     `_wait_out_backoff` seam: the operator's POST /retry (-> retry_now())
     releases a 5-minute default backoff immediately."""
     sup = _supervisor(tmp_path, job_timeout_s=8 * 3600)
+    sup._wait_out_backoff = _REAL_WAIT_OUT_BACKOFF.__get__(sup, LoopSupervisor)
     sup._infra_waiting = True  # what the wrapper sets around the wait
     sup._retry_now.clear()
 

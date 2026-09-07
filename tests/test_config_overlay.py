@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-from tests.conftest import STUB_PI, LiveRun, free_port
+from tests.conftest import STUB_PI, LiveRun, _with_zero_backoff, free_port
 
 from tests.conftest import RALPHD_ENGINE, with_ralphd_importable
 
@@ -44,8 +44,16 @@ def overlay_engine(tmp_path):
         for d in (run_dir, config_dir, workspace):
             d.mkdir(parents=True, exist_ok=True)
         (config_dir / "prd.md").write_text("# overlay test PRD\n\nDo the thing.\n")
+        # Task 047 (B.4 cure): this fixture bypasses LiveRun.__init__ (see the
+        # comment below), so it must repeat _with_zero_backoff() itself --
+        # the one call that keeps a job.yaml writer off a real infra-retry
+        # sleep -- and pin STUB_SLEEP=0 the same explicit way (its own default
+        # is already 0, but the guard in
+        # tests/test_wait_out_backoff_stubbed_task010.py wants it named, not
+        # merely defaulted, for any LiveRun.__init__-bypassing writer).
         (config_dir / "job.yaml").write_text(
-            "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items()))
+            "".join(f"{k}: {json.dumps(v)}\n"
+                    for k, v in _with_zero_backoff(job, stub_env).items()))
         if readonly_config:
             _chmod_tree_ro(config_dir)
 
@@ -73,6 +81,7 @@ def overlay_engine(tmp_path):
             "RALPHD_WORKSPACE_DIR": str(workspace),
             "RALPHD_PORT": str(port),
             "HOME": str(fake_home),
+            "STUB_SLEEP": "0",
             **stub_env,
         })
         e = LiveRun.__new__(LiveRun)
