@@ -242,11 +242,11 @@ def test_a_sigkilled_iterations_three_files_survive_the_resume(engine_factory):
     e1 = engine_factory(
         job={"on_complete": "idle", "iterations": 15, "max_approaches": 1},
         # STUB_RICH_EVENTS makes the worker emit (and flush) a tool-call
-        # preamble BEFORE it starts "working", so the 5s window this test kills
+        # preamble BEFORE it starts "working", so the 1s window this test kills
         # inside has a partially written transcript on disk -- the file whose
         # loss motivated #44. Without it the stub prints only at the very end
         # and there would be nothing to preserve.
-        stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "5", "STUB_RICH_EVENTS": "1"},
+        stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "1", "STUB_RICH_EVENTS": "1"},
     )
     e1.wait_api()
 

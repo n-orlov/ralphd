@@ -154,7 +154,7 @@ def test_killed_before_planning_ever_produces_tasks_then_resume_replans(
     scratch, not skip straight into a worker loop with nothing to work on."""
     e1 = engine_factory(job={"on_complete": "idle", "iterations": 15,
                              "max_approaches": 1},
-                        stub_env={"STUB_SLEEP": "5", "STUB_TASKS": "3"})
+                        stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "3"})
     e1.wait_api()
     meta = _wait_for(lambda: _iteration_phase(e1.run_dir, "planning",
                                               finished=False), timeout=20)
@@ -203,7 +203,7 @@ def test_killed_mid_review_before_any_verdict_then_resume_reviews_for_real(
     verdict-less attempt as though a decision had already been made."""
     e1 = engine_factory(job={"on_complete": "idle", "iterations": 15,
                              "max_approaches": 1},
-                        stub_env={"STUB_SLEEP": "4", "STUB_TASKS": "1"})
+                        stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "1"})
     e1.wait_api()
     meta = _wait_for(lambda: _iteration_phase(e1.run_dir, "review",
                                               finished=False), timeout=30)
@@ -373,7 +373,7 @@ def test_killed_mid_reflect_after_finish_wrote_finishing_then_resume_promotes(
     (task 012, #56) was unreachable code in practice."""
     e1 = engine_factory(job={"on_complete": "idle", "iterations": 15,
                              "max_approaches": 1, "reflect": True},
-                        stub_env={"STUB_SLEEP": "4", "STUB_TASKS": "1"})
+                        stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "1"})
     e1.wait_api()
     meta = _wait_for(lambda: _iteration_phase(e1.run_dir, "reflect",
                                               finished=False), timeout=40)

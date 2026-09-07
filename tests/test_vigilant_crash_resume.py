@@ -67,7 +67,7 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
     e1 = engine_factory(
         job={"on_complete": "idle", "vigilant": True, "iterations": 15,
              "max_approaches": 1},
-        stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "3"},
+        stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"},
     )
     e1.wait_api()
 

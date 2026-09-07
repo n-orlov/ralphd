@@ -75,7 +75,7 @@ def _assert_iterations_monotonic_no_dupes(run_dir):
 def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory):
     e1 = engine_factory(
         job={"on_complete": "idle", "iterations": 15, "max_approaches": 1},
-        stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "5"},
+        stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "1"},
     )
     e1.wait_api()
 
@@ -117,7 +117,7 @@ def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory):
     # finished, exactly the scenario under test.
     _wait_for(second_iteration_dir_exists, timeout=15)
 
-    # kill THIS specific pid, right in the middle of the worker's 5s sleep
+    # kill THIS specific pid, right in the middle of the worker's 1s sleep
     # (the task has already been flipped to in-progress and persisted, but
     # the iteration is nowhere near finishing).
     _kill(e1)
@@ -179,7 +179,7 @@ def test_sigkill_at_iteration_boundary_then_resume_completes(engine_factory):
     done."""
     e1 = engine_factory(
         job={"on_complete": "idle", "iterations": 15, "max_approaches": 1},
-        stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "3"},
+        stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "1"},
     )
     e1.wait_api()
 
