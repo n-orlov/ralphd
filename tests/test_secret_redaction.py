@@ -81,20 +81,31 @@ def test_secrets_redacted_from_output_events_and_logs(redact_engine, tmp_path):
     # runs right after place_creds()).
     _write_mounted_cred(tmp_path / "config", "probe", f"PROBE_TOKEN={SECRET_CRED}\n")
 
+    # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="planning" holds the
+    # FIRST (only) pi invocation open, before it writes anything at all,
+    # instead of racing a real STUB_SLEEP window to land the PUT before
+    # any worker iteration (which is what echoes the secret) ever spawns --
+    # nothing has been dispatched yet, so there is no tighter window to
+    # win; the PUT lands and is released deterministically, then planning
+    # and every worker iteration after it spawn with the override already
+    # in place.
+    hold_file = tmp_path / "hold-redact"
     e = redact_engine(
-        stub_env={"HOME": str(fake_home), "STUB_TASKS": "2", "STUB_SLEEP": "0.5",
+        stub_env={"HOME": str(fake_home), "STUB_TASKS": "2",
+                 "STUB_HOLD_FILE": str(hold_file), "STUB_HOLD_PHASE": "planning",
+                 "STUB_HOLD_TIMEOUT_S": "30",
                  "STUB_ECHO_SECRET": f"{SECRET_CRED},{SECRET_LLM}"})
     e.wait_api()
 
-    # Planted secret #2: a PUT /config/llm env override. Fired immediately
-    # after the API comes up -- the planning iteration sleeps STUB_SLEEP=2s
-    # before doing anything, so this lands well before the worker phase's
-    # subprocess (the one that actually echoes the secrets) is spawned,
-    # ensuring the redaction map already includes it at write time (not
-    # just retroactively at serve time).
+    # Planted secret #2: a PUT /config/llm env override, landed while the
+    # held planning iteration has not yet run at all -- well before the
+    # worker phase's subprocess (the one that actually echoes the secrets)
+    # is ever spawned, ensuring the redaction map already includes it at
+    # write time (not just retroactively at serve time).
     st, _ = _put(e.port, "/config/llm",
                  json.dumps({"env": {"PROBE_LLM_TOKEN": SECRET_LLM}}).encode())
     assert st == 204
+    hold_file.touch()
 
     status = e.wait_state(("succeeded", "failed", "aborted"), timeout=60)
     assert status["state"] == "succeeded"

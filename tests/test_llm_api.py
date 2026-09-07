@@ -85,8 +85,18 @@ def _put(port: int, path: str, body: bytes) -> tuple[int, bytes]:
 def test_llm_env_reaches_next_pi_invocation_no_leak(llm_engine, tmp_path):
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
-    e = llm_engine(stub_env={"HOME": str(fake_home), "STUB_SLEEP": "0.3",
-                             "STUB_TASKS": "5"})
+    # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" +
+    # STUB_HOLD_REARM_MAX="1" holds the first TWO worker iterations open
+    # (one per PUT below) instead of racing a real STUB_SLEEP window to
+    # land each PUT before the next iteration's env dump -- released once
+    # per checkpoint, and the stub itself re-arms the hold for the second
+    # checkpoint the instant the first is released (see the stub's own
+    # STUB_HOLD_REARM_MAX doc).
+    hold_file = tmp_path / "hold-llmapi"
+    e = llm_engine(stub_env={"HOME": str(fake_home),
+                             "STUB_HOLD_FILE": str(hold_file),
+                             "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
+                             "STUB_HOLD_REARM_MAX": "1", "STUB_TASKS": "5"})
     e.wait_api()
 
     # -- no override yet: the stub's env has no trace of our key -----------
@@ -100,6 +110,7 @@ def test_llm_env_reaches_next_pi_invocation_no_leak(llm_engine, tmp_path):
                                "PROBE_LLM_ENDPOINT": "https://gw.example.com"}}).encode()
     st, _ = _put(e.port, "/config/llm", body)
     assert st == 204
+    hold_file.touch()  # release checkpoint 1; the stub re-arms it for #2
 
     seen = wait_for_env_marker(
         env_marker, lambda d: d.get("PROBE_LLM_KEY") == SECRET_VALUE)
@@ -111,6 +122,7 @@ def test_llm_env_reaches_next_pi_invocation_no_leak(llm_engine, tmp_path):
     st, _ = _put(e.port, "/config/llm",
                  json.dumps({"env": {"OTHER_KEY": "v2"}}).encode())
     assert st == 204
+    hold_file.touch()  # release checkpoint 2 (last -- no more re-arming)
     seen = wait_for_env_marker(env_marker, lambda d: d.get("OTHER_KEY") == "v2")
     assert seen.get("OTHER_KEY") == "v2"
     assert "PROBE_LLM_KEY" not in seen, "env PUT must replace, not merge"

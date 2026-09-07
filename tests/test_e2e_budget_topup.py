@@ -26,9 +26,14 @@ The pair of tests is the whole argument:
   terminal state the control run proves is unreachable on the original
   budget -- with the `budget_changed` audit event in events.jsonl.
 
-`STUB_SLEEP` is what makes the top-up window real rather than racy: every
-stub iteration takes ~1s, so once `iterationsUsed` reaches the last budget
-slot there is a comfortable window in which to spawn `ralphctl`.
+task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker"/STUB_HOLD_REARM_MAX="1"
+holds the SECOND worker iteration (task 2, overall iteration 3 -- the last
+affordable one on `STARTING_BUDGET`) open instead of racing a real STUB_SLEEP
+window to spawn `ralphctl budget` while the run is still one boundary away
+from exhaustion. The first worker iteration (task 1) is released immediately
+(nothing to observe there) and, per the stub's own re-arm doc, immediately
+re-arms the SAME hold file for the second -- deterministic either way,
+regardless of how quickly the test's own release call lands.
 """
 
 from __future__ import annotations
@@ -41,8 +46,6 @@ PLAN_TASKS = 4
 NEEDED_ITERATIONS = 6
 # Deliberately short: enough for planning + 2 workers, never enough to finish.
 STARTING_BUDGET = 3
-# Per-iteration stub work time; keeps a wide window for the CLI top-up.
-STUB_SLEEP_S = "1"
 
 
 def _status(run) -> dict:
@@ -101,12 +104,19 @@ def test_run_without_topup_dies_of_budget_exhaustion(live):
     assert any(t["status"] != "completed" for t in tasks), tasks
 
 
-def test_topup_midflight_lets_the_job_reach_a_terminal_state_it_could_not_have(live):
+def test_topup_midflight_lets_the_job_reach_a_terminal_state_it_could_not_have(live, tmp_path):
+    hold_file = tmp_path / "hold-budgettopup"
     run = live(run_id="budget-topup",
                job={"iterations": STARTING_BUDGET},
                stub_env={"STUB_TASKS": str(PLAN_TASKS),
-                         "STUB_SLEEP": STUB_SLEEP_S})
+                        "STUB_HOLD_FILE": str(hold_file), "STUB_HOLD_PHASE": "worker",
+                        "STUB_HOLD_TIMEOUT_S": "30", "STUB_HOLD_REARM_MAX": "1"})
     run.wait_api()
+    # release the first worker iteration (task 1) at once -- nothing to
+    # observe there; the stub's own re-arm immediately re-blocks the SAME
+    # file for the second (task 2 == overall iteration 3, the last one
+    # this budget affords).
+    hold_file.touch()
     _wait_for_last_budget_slot(run)
 
     # ...still running, one boundary from exhaustion: top up from outside.
@@ -114,6 +124,7 @@ def test_topup_midflight_lets_the_job_reach_a_terminal_state_it_could_not_have(l
     assert res.returncode == 0, (res.stdout, res.stderr)
     assert f"iteration budget: {STARTING_BUDGET} -> {STARTING_BUDGET + 10}" in res.stdout
     assert _status(run)["state"] == "running", "top-up must apply to a live run"
+    hold_file.touch()  # release the held iteration; no re-arm budget left
 
     # The run keeps going past the original budget and finishes.
     status = run.wait_terminal(timeout=120)

@@ -254,12 +254,20 @@ def engine_factory(tmp_path):
         e.stop()
 
 
-def test_a_sigtermed_engine_records_reflect_as_not_attempted(engine_factory):
+def test_a_sigtermed_engine_records_reflect_as_not_attempted(engine_factory, tmp_path):
     """The whole path, end to end: a real engine with reflect enabled, taken
     down by a real SIGTERM mid-job (what `ralphctl stop` and `docker stop` both
-    do)."""
+    do).
+
+    task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the first
+    worker iteration open instead of racing a real STUB_SLEEP window to
+    catch the job mid-iteration before signalling it -- the SIGTERM below
+    kills the held pi process directly, so the hold never needs releasing.
+    """
+    hold_file = tmp_path / "hold-reflect-signal"
     e = engine_factory(job={"reflect": True, "iterations": 6},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.5"})
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     e.wait_state(("running",), timeout=30)
 

@@ -167,7 +167,7 @@ def _dead_first_episode(episodes, run_id: str) -> LiveRun:
     return e1
 
 
-def test_logs_follow_streams_past_a_resumed_runs_stale_terminal_marker(episodes):
+def test_logs_follow_streams_past_a_resumed_runs_stale_terminal_marker(episodes, tmp_path):
     """The #13 scenario applied to `logs -f`: attach to a run dir that
     already carries a mid-log terminal marker + finished iterations, while
     a resumed engine is working. The follow must replay the old episode's
@@ -175,19 +175,31 @@ def test_logs_follow_streams_past_a_resumed_runs_stale_terminal_marker(episodes)
     end at the real terminus."""
     e1 = _dead_first_episode(episodes, "logsresume")
 
-    # Episode 2 = the resume: same run dir, bumped budget, slow enough that
-    # "it kept streaming" is a genuine multi-second observation.
+    # Episode 2 = the resume: same run dir, bumped budget. task 010 (B.4):
+    # STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds episode 2's first
+    # worker iteration (task 3) open instead of racing a real STUB_SLEEP
+    # window to keep the whole run alive long enough for `pause` to land
+    # before all 5 tasks finish -- the hold keeps iteration 3 from ever
+    # finalizing its own dir until released below, which is exactly the
+    # deterministic version of the same window a real sleep only
+    # probabilistically bought.
+    hold_file = tmp_path / "hold-logsresume"
     e2 = episodes("logsresume", {"iterations": 20, "max_approaches": 1,
                                  "on_complete": "idle"},
-                  {"STUB_TASKS": "5", "STUB_SLEEP": "0.3"})
+                  {"STUB_TASKS": "5", "STUB_HOLD_FILE": str(hold_file),
+                   "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "60"})
     assert e2.run_dir == e1.run_dir  # sanity: genuinely the same run dir
     e2.wait_api()
     # An operator pause parks the loop at an iteration boundary, which puts
     # the follower in its 'all iteration dirs consumed, is the job over?'
     # branch *while the run is very much alive* -- a deterministic window
-    # for the assertion below (without it, the resumed engine creates the
-    # next iteration dir so promptly that the branch is barely entered).
+    # for the assertion below (the hold above is what keeps the run alive
+    # long enough for this call to land instead of racing all 5 tasks).
     assert e2.ralphctl("pause", "logsresume").returncode == 0
+    # Release the held iteration 3 now that the pause is registered -- it
+    # completes normally and iteration 4 is the one `pause` actually holds
+    # back, giving the follower a clean, frozen `end` boundary to settle on.
+    hold_file.touch()
 
     f = Follower(e2.registry, "logsresume")
     try:

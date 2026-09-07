@@ -314,9 +314,14 @@ def test_hub_and_cli_share_one_nonterminal_state_set(tmp_path):
 
 
 def test_run_detail_proxies_live_status_tasks_and_logs(tmp_path, live, ui):
+    # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # first worker iteration open instead of racing a real STUB_SLEEP
+    # window to observe the run non-terminal ("live") through the hub.
+    hold_file = tmp_path / "hold-hubtest"
     run = live(run_id="hubtest", job={"iterations": 12, "max_approaches": 3,
                                       "on_complete": "idle"},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"})
+               stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
 
     server = ui(run.registry)
@@ -336,6 +341,7 @@ def test_run_detail_proxies_live_status_tasks_and_logs(tmp_path, live, ui):
     assert isinstance(logs["lines"], list)
     assert all(isinstance(line, str) for line in logs["lines"])
 
+    hold_file.touch()
     run.wait_terminal()
 
 
@@ -351,7 +357,7 @@ def test_ui_log_endpoint_matches_cli_pretty_rendering(tmp_path, live, ui):
     no equivalent slot for."""
     run = live(run_id="hubparity", job={"iterations": 12, "max_approaches": 3,
                                         "on_complete": "idle"},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "1"})
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "0"})
     run.wait_api()
     run.wait_terminal()
 
@@ -440,9 +446,14 @@ def test_log_endpoint_on_disk_lines_match_the_shared_merge(tmp_path, ui):
 
 
 def test_steering_post_proxies_and_creates_steering_file(tmp_path, live, ui):
+    # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # first worker iteration open instead of racing a real STUB_SLEEP
+    # window to POST the steering message while the run is still running.
+    hold_file = tmp_path / "hold-hubsteer"
     run = live(run_id="hubsteer", job={"iterations": 12, "max_approaches": 3,
                                        "on_complete": "idle"},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"})
+               stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
 
     server = ui(run.registry)
@@ -455,6 +466,7 @@ def test_steering_post_proxies_and_creates_steering_file(tmp_path, live, ui):
     assert steering_files, "steering POST via the hub never wrote a file"
     assert any("hub steering message" in f.read_text() for f in steering_files)
 
+    hold_file.touch()
     run.wait_terminal()
 
 

@@ -114,11 +114,22 @@ OVERRIDE_TEXT = (
     "# Role: Worker\n\nOVERLAY-MARKER-xyz987 overridden worker instructions.\n")
 
 
-def test_config_mutation_persists_in_overlay_not_readonly_config(overlay_engine):
+def test_config_mutation_persists_in_overlay_not_readonly_config(overlay_engine, tmp_path):
+    # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # FIRST worker iteration's pi process open (mid-iteration, its prompt
+    # already fixed at spawn time) instead of racing a real STUB_SLEEP
+    # window to land the PUT before that iteration's own prompt was built.
+    # It doesn't matter that iteration 1's own prompt predates the PUT --
+    # the assertion below only needs SOME later worker prompt to carry the
+    # override, and holding iteration 1 open blocks the engine from ever
+    # building iteration 2's prompt until we release it, right after the
+    # PUT lands.
+    hold_file = tmp_path / "hold-overlay"
     e = overlay_engine(
         job={"run_id": "overlay-e2e", "iterations": 8, "max_approaches": 1,
              "on_complete": "exit"},
-        stub_env={"STUB_SLEEP": "1"})
+        stub_env={"STUB_HOLD_FILE": str(hold_file), "STUB_HOLD_PHASE": "worker",
+                  "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
 
     # /config is genuinely read-only: confirm the mount mode before we rely on it.
@@ -127,6 +138,7 @@ def test_config_mutation_persists_in_overlay_not_readonly_config(overlay_engine)
 
     status = put_raw(e.port, "/config/prompts/worker", OVERRIDE_TEXT.encode())
     assert status == 204
+    hold_file.touch()
 
     # /config itself must remain untouched: still read-only, no new prompts/ dir.
     assert stat.S_IMODE(e.config_dir.stat().st_mode) == 0o555
@@ -158,7 +170,7 @@ def test_prompt_override_rejects_empty_body(overlay_engine):
     e = overlay_engine(
         job={"run_id": "overlay-empty", "iterations": 3, "max_approaches": 1,
              "on_complete": "exit"},
-        stub_env={"STUB_SLEEP": "1"})
+        stub_env={"STUB_SLEEP": "0"})
     e.wait_api()
     req = urllib.request.Request(
         f"http://127.0.0.1:{e.port}/config/prompts/worker", method="PUT", data=b"")

@@ -10,9 +10,18 @@ import json
 import time
 
 
-def test_status_shows_total_duration_and_json_fields_when_terminal(live):
+def test_status_shows_total_duration_and_json_fields_when_terminal(live, tmp_path):
+    # task 010 (B.4): the whole point of this test is that `durationSeconds`
+    # tracks REAL wall-clock elapsed time -- there is no stub-side knob to
+    # fake that, so instead of STUB_SLEEP padding every phase, hold the
+    # very first (planning) invocation open and let the TEST's own real
+    # sleep (not a stub config knob) be what the run's duration measures.
+    hold_file = tmp_path / "hold-durterm"
     run = live(run_id="dur-terminal", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "3"})
+               stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "planning", "STUB_HOLD_TIMEOUT_S": "30"})
+    time.sleep(3.5)
+    hold_file.touch()
     run.wait_terminal()
 
     res = run.ralphctl("status", run.run_id)
@@ -26,10 +35,10 @@ def test_status_shows_total_duration_and_json_fields_when_terminal(live):
     assert jres.returncode == 0, (jres.stdout, jres.stderr)
     status = json.loads(jres.stdout)
     assert isinstance(status["durationSeconds"], (int, float))
-    # STUB_SLEEP=3 across >=3 real iterations (planning/worker/review, at
-    # least) guarantees a genuinely-measurable (>=3s) duration -- tight
-    # enough that a broken/zeroed-out duration computation cannot hide
-    # behind slack the way a near-instant job's duration would.
+    # the real 3.5s sleep held above guarantees a genuinely-measurable
+    # (>=3s) duration -- tight enough that a broken/zeroed-out duration
+    # computation cannot hide behind slack the way a near-instant job's
+    # duration would.
     assert status["durationSeconds"] >= 3
     # existing timestamp fields are untouched, just augmented
     assert status["startedAt"] and status["endedAt"]
@@ -40,12 +49,18 @@ def test_status_shows_total_duration_and_json_fields_when_terminal(live):
     assert abs(status["durationSeconds"] - expected) <= 2
 
 
-def test_status_shows_elapsed_so_far_and_current_iteration_elapsed_while_running(live):
+def test_status_shows_elapsed_so_far_and_current_iteration_elapsed_while_running(live, tmp_path):
+    # task 010 (B.4): hold the first (planning) invocation open instead of
+    # STUB_SLEEP-padding every phase -- gives a deterministic window in
+    # which the run is guaranteed still "running" with an in-flight
+    # currentIteration, with no real-time race against how fast the stub
+    # would otherwise finish.
+    hold_file = tmp_path / "hold-durrunning"
     run = live(run_id="dur-running", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.5"})
+               stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "planning", "STUB_HOLD_TIMEOUT_S": "30"})
     # Poll until we observe an in-flight iteration (currentIteration set),
-    # well before the job (which sleeps 1.5s per invocation across several
-    # iterations) reaches a terminal state.
+    # well before the held planning iteration is released.
     deadline = time.time() + 30
     status = None
     while time.time() < deadline:
@@ -78,6 +93,7 @@ def test_status_shows_elapsed_so_far_and_current_iteration_elapsed_while_running
     assert isinstance(cur["elapsedSeconds"], (int, float))
     assert cur["elapsedSeconds"] >= 0
 
+    hold_file.touch()
     run.wait_terminal(timeout=90)
 
 

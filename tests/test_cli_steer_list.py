@@ -302,13 +302,24 @@ def test_a_pre_v06_live_answer_is_completed_from_disk(tmp_path, ui):
         engine.close()
 
 
-def test_real_engine_live_then_container_gone(live, ui):
+def test_real_engine_live_then_container_gone(live, ui, tmp_path):
     """The strongest test: steer a REAL engine from the CLI, watch `--list`
     report it pending and then applied, confirm the hub says the same, then
     stop the engine and assert `--list` still shows the same entries from the
-    run dir with the snapshot notice."""
+    run dir with the snapshot notice.
+
+    task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the first
+    worker iteration open instead of racing a real STUB_SLEEP window to
+    post the steer message while the run is still pending -- that held
+    iteration's own prompt was already built before the steer landed, so
+    it stays pending until we release the hold and a LATER iteration's
+    freshly-built prompt observes and applies it.
+    """
+    hold_file = tmp_path / "hold-steercli"
     run = live(run_id="steercli", job={"iterations": 8, "on_complete": "idle"},
-               stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "4"})
+               stub_env={"STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
+                        "STUB_TASKS": "4"})
     run.wait_api()
     server = ui(run.registry)
 
@@ -325,6 +336,11 @@ def test_real_engine_live_then_container_gone(live, ui):
     (entry,) = entries
     assert entry["name"] == "from-cli"
     assert entry["body"].strip() == ONE.strip()
+
+    # release the held first worker iteration now that the entry is
+    # confirmed queued (pending) -- a later iteration's own freshly-built
+    # prompt is what actually observes and applies it.
+    hold_file.touch()
 
     def applied_yet():
         _, current = _cli_entries(

@@ -10,9 +10,16 @@ from __future__ import annotations
 import json
 
 
-def test_ralphctl_status_warns_about_unconsumed_steering(live):
+def test_ralphctl_status_warns_about_unconsumed_steering(live, tmp_path):
+    # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # first worker iteration open instead of racing a real STUB_SLEEP
+    # window to steer+abort while the job is still running -- the abort
+    # below interrupts the held pi process directly, so the hold never
+    # needs an explicit release.
+    hold_file = tmp_path / "hold-unconsumed"
     run = live(run_id="unconsumed-steer", job={"iterations": 12},
-               stub_env={"STUB_TASKS": "10", "STUB_SLEEP": "1"})
+               stub_env={"STUB_TASKS": "10", "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
 
     steer = run.ralphctl("steer", run.run_id, "never gets acted on",
@@ -39,7 +46,7 @@ def test_ralphctl_status_no_warning_when_steering_fully_consumed(live):
     """Negative case: a run that ends with no pending steering (the common
     case) must not print the warning line at all."""
     run = live(run_id="no-unconsumed-steer", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3"})
+               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"})
     run.wait_terminal(timeout=60)
 
     jres = run.ralphctl("--json", "status", run.run_id)

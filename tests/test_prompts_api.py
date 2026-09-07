@@ -54,8 +54,16 @@ def test_list_shows_builtin_then_mounted_then_api(prompts_engine, tmp_path):
     fake_home.mkdir()
     _write_mounted_prompt(tmp_path / "config", "review",
                           "# Role: Review\n\nmounted override.\n")
+    # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    # first worker iteration open instead of racing a real STUB_SLEEP
+    # window to land the PUT before any worker prompt is built -- it
+    # doesn't matter that the held iteration's own prompt predates the
+    # PUT, only that a LATER one (of the remaining STUB_TASKS) does not.
+    hold_file = tmp_path / "hold-promptslist"
     e = prompts_engine(job={"iterations": 8},
-                       stub_env={"HOME": str(fake_home), "STUB_SLEEP": "0.3",
+                       stub_env={"HOME": str(fake_home),
+                                "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                                 "STUB_TASKS": "3"})
     e.wait_api()
 
@@ -81,6 +89,7 @@ def test_list_shows_builtin_then_mounted_then_api(prompts_engine, tmp_path):
     assert by_name["planning"] == "builtin"
 
     # -- takes effect next iteration: the stub's worker prompts carry it ----
+    hold_file.touch()
     e.wait_state(("succeeded", "failed", "aborted"), timeout=60)
     all_prompts = (e.run_dir / ".stub-all-prompts").read_text()
     chunks = [c for c in all_prompts.split("===PROMPT===") if c.strip()]

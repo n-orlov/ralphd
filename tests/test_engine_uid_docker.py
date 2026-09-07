@@ -186,12 +186,22 @@ def test_a_worker_iteration_cannot_kill_the_engine(ctl):
     assert json.loads(tasks_path.read_text()) == tasks_doc
 
 
-def test_the_engine_can_still_stop_its_own_iteration(ctl):
+def test_the_engine_can_still_stop_its_own_iteration(ctl, work_root):
     """The boundary is one-directional on purpose: signals flow downward. A
     `POST /interrupt` still reaches the running iteration -- otherwise the uid
     split would have cost the engine its own control over pi."""
     run_id = _unique_run_id("e048-interrupt")
-    res = ctl.start(run_id, extra_env={"STUB_TASKS": "2", "STUB_SLEEP": "30"},
+    # task 010 (B.4): STUB_HOLD_FILE (a container-side path under
+    # /workspace, mounted from work_root/ws) holds the worker iteration
+    # open deterministically instead of racing a fixed STUB_SLEEP window
+    # against how fast the stub would otherwise finish -- no release is
+    # needed, since `interrupt` ends the held iteration outright the same
+    # way SIGTERM does for the in-process hold-based tests.
+    hold_rel = ".hold-interrupt-boundary"
+    res = ctl.start(run_id, extra_env={"STUB_TASKS": "2",
+                                       "STUB_HOLD_FILE": f"/workspace/{hold_rel}",
+                                       "STUB_HOLD_PHASE": "worker",
+                                       "STUB_HOLD_TIMEOUT_S": "60"},
                     extra=("--on-complete", "idle"))
     assert res.returncode == 0, res.stderr
     meta = json.loads(res.stdout)

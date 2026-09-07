@@ -78,6 +78,22 @@ from env vars set by the test:
                       the target phase is what makes "let planning (and
                       any other earlier phase) run normally, then hold
                       worker/review/verify/reflect" possible at all.
+  STUB_HOLD_REARM_MAX task 010 (B.4): lets a single STUB_HOLD_FILE gate MORE
+                      than the first matching-phase invocation -- once an
+                      occurrence's hold is released, if fewer than this
+                      many re-arms have been used so far, the hold file is
+                      immediately deleted again (inside this same
+                      invocation, before it does anything else), so the
+                      NEXT matching-phase invocation blocks exactly the
+                      same way, waiting for the test to `touch()` it again.
+                      Default 0 (unset): the original one-shot latch --
+                      once released, every invocation from then on passes
+                      through instantly. A test that needs N sequential
+                      checkpoints (e.g. two successive config PUTs, each
+                      observed by a separate later iteration) sets this to
+                      N-1 and calls `touch()` once per checkpoint; the
+                      (N+1)th and every later invocation then runs
+                      unheld, exactly like the plain one-shot case.
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
   STUB_WORKER_PETITION  task 005 (G.5): a JSON object with the three
                       strings a worker's structured impossibility petition
@@ -932,6 +948,27 @@ def _apply_hold(phase=None):
     duration = time.monotonic() - start
     with open(f"{hold_file}.stub-hold-duration", "w") as _f:
         _f.write(repr(duration))
+    if not timed_out:
+        # Task 010 (B.4): re-arm for a bounded number of further
+        # checkpoints -- delete the just-released hold file again, inside
+        # THIS invocation, before it does anything else, so the deletion
+        # is guaranteed to land before the engine can ever dispatch the
+        # next matching-phase invocation (there is no test-side race to
+        # win: the next invocation cannot start until this one's process
+        # exits, and the delete already happened by then).
+        rearm_max = int(os.environ.get("STUB_HOLD_REARM_MAX", "0"))
+        if rearm_max > 0:
+            rearm_marker = f"{hold_file}.stub-hold-rearms-used"
+            used = 0
+            if os.path.exists(rearm_marker):
+                used = int(open(rearm_marker).read())
+            if used < rearm_max:
+                with open(rearm_marker, "w") as _f:
+                    _f.write(str(used + 1))
+                try:
+                    os.remove(hold_file)
+                except OSError:
+                    pass
     if timed_out:
         sys.stderr.write(
             f"stub: hold {hold_file!r} never released; failing on the bounded "

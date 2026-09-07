@@ -118,20 +118,30 @@ def test_follow_pretty_tail_n_shows_exactly_n_backlog_lines_on_terminal_job(live
     assert got == full_pretty.stdout.splitlines()[-10:]
 
 
-def test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming(live):
+def test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming(live, tmp_path):
     """Genuine liveness proof for the follow+tail combo: once the job has
     already produced more than N rendered lines, spawn `-Nf`, confirm the
     first line arrives while the job is still running (not buffered until
     job end -- same liveness bar as task 056), then let the job finish and
     confirm the total output grew PAST the initial N-line backlog once
     more content arrived live (proving `-Nf` doesn't just stop at N and
-    exit -- it shows N lines of backlog, then keeps following)."""
+    exit -- it shows N lines of backlog, then keeps following).
+
+    task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
+    first worker iteration open (mid-preamble) instead of racing a real
+    STUB_SLEEP window to catch the job with backlog already produced but
+    not yet terminal -- a held first iteration's own rich-event preamble
+    (planning + partial worker transcript) already exceeds the smaller
+    `tail_n` used here (confirmed: 6 lines while held vs 3 threshold),
+    so no further real wait is needed before spawning `-Nf`."""
+    hold_file = tmp_path / "hold-rendtail-live"
     run = live(run_id="rendtail-follow-live",
               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "6",
-                        "STUB_SLEEP": "0.3"})
+                        "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
 
-    tail_n = 10
+    tail_n = 3
     deadline = time.time() + 30
     while time.time() < deadline:
         full = run.ralphctl("logs", run.run_id, "--tail", "0")
@@ -169,6 +179,11 @@ def test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming(live):
         assert state not in ("succeeded", "failed", "aborted"), (
             f"first line only arrived after the job reached a terminal "
             f"state ({state!r}) -- -Nf buffered instead of following live")
+
+        # Release the held first worker iteration now that the immediate
+        # liveness check above has already run against a deterministically
+        # still-running job -- the hold, not a real sleep, kept it open.
+        hold_file.touch()
 
         run.wait_terminal(timeout=60)
         rest = proc.stdout.read()
