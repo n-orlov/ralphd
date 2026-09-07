@@ -851,7 +851,7 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   while there were completed tasks it could have matched, emitting a
   `vigilant_verified_migration` event either way so "legitimately nothing to
   fold" and "matched nothing while there was something to match" are
-  distinguishable in the record. `tests/test_vigilant_verified_migration_task005.py`
+  distinguishable in the record. `test_vigilant_verified_migration_task005.py`
   reproduces the incident and pins the ordinary same-approach fold
   unchanged; a mutation test proves the reproduction fails against the old
   current-approach-only logic.
@@ -1079,7 +1079,7 @@ does.
   the executor.
 - ✅ **D. An engine-side cutoff is still not a contract violation.**
   `_iteration_cut_short_by_engine` is checked before the contract pass at
-  every cutover site; `tests/test_interrupt_not_substantive_outcome_task004.py`'s
+  every cutover site; `test_interrupt_not_substantive_outcome_task004.py`'s
   three pinned assertions were not touched by this wave and still pass.
 - ✅ **E. The tests that pin the abort are strengthened, never deleted
   (#92).** The five assertions in `test_worker_harness_owned_status.py`,
@@ -1309,7 +1309,7 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   cross-checked against `_outstanding_for_completion()` the same way the old marker was, and
   `<promise>COMPLETE</promise>` is retired from `worker.md` including the paragraph that
   existed only to explain the textual channel (`9a6f202`, task 015,
-  `tests/test_worker_plan_complete_task015.py`).
+  `test_worker_plan_complete_task015.py`).
 - ✅ **P. A paused run does not burn its own deadline (#95) — landed, with a disclosed
   residual now also landed.** `_gate()` credits only the span actually parked, extends both
   deadline fields, republishes `deadlineAt`, and records `pausedTotalS` beside
@@ -1321,7 +1321,7 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   approach gave the residual its one prescribed honest attempt and it landed:
   `test_pause_mid_flight_iteration_credits_only_the_real_park` drives a real in-flight
   iteration and is hand-verified to fail when `_account_paused_wait`'s call in `_gate()` is
-  removed (`8ed5083`, task 004, `tests/test_pause_deadline_credit_task016.py`). **#104**, filed
+  removed (`8ed5083`, task 004, `test_pause_deadline_credit_task016.py`). **#104**, filed
   against exactly this gap, remains **open** as of this entry — the fix it asked for is in the
   tree and green, but closing the tracking issue itself was not this wave's own task.
 - ✅ **Q. Reflect gets the ladder every other hat has (#96).** `_reflect_verdict` now goes

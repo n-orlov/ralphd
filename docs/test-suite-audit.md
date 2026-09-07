@@ -29,12 +29,12 @@ Biggest 30 modules by test count: `tests/test_report_claims.py` 1095, `tests/tes
 `tests/test_host_like_pytest_script.py` 127, `tests/test_tiers.py` 97, `tests/test_cli_fault_explanation.py` 82,
 `tests/test_model_tiers_config.py` 67, `tests/test_spec_state_surface.py` 62, `tests/test_fault_classifier.py` 62,
 `tests/test_cli_suggestions_guards.py` 61, `tests/test_promise_marker_last_line.py` 56, `tests/test_peer_verdict_gate.py` 53,
-`tests/test_docs_semantics.py` 51, `tests/test_failed_task_vocabulary.py` 50, `tests/test_task_failure_kind_surfaces.py` 49,
-`tests/test_plan_ingestion.py` 49, `tests/test_seventh_lint_task013.py` 46, `tests/test_stranding_lints.py` 45,
+`tests/test_docs_semantics.py` 51, `test_failed_task_vocabulary.py` 50, `tests/test_task_failure_kind_surfaces.py` 49,
+`tests/test_plan_ingestion.py` 49, `test_seventh_lint_task013.py` 46, `tests/test_stranding_lints.py` 45,
 `tests/test_aborted_stream_fault_class.py` 45, `tests/test_image_dockerfile.py` 43, `tests/test_suggestions_patch.py` 42,
 `tests/test_pricing_aws.py` 42, `tests/test_engine_uid_boundary.py` 42, `tests/test_cost_zero_quote.py` 41,
 `tests/test_price_strategy_derive.py` 39, `tests/test_peer_plan_review_gate.py` 39,
-`tests/test_no_dead_return_after_return_task014.py` 39, `tests/test_image_hash.py` 38, `tests/test_cli_suggestions_subset.py` 38,
+`test_no_dead_return_after_return_task014.py` 39, `tests/test_image_hash.py` 38, `tests/test_cli_suggestions_subset.py` 38,
 `tests/test_image_derived.py` 36, `tests/test_hub_delete_affordance.py` 36.
 
 Families (modules / tests): cli 66/966, hub 14/253, image 6/203, docs 5/167, prompt 14/126,
@@ -64,7 +64,7 @@ Where the time goes:
 | docs/spec derivation checks | `test_docs_consistency/semantics/prd_index/spec_*/sweep_sha`: 224 tests, 11.1 s | 1 % |
 | in-process engine + prose pins | e.g. 7 lint/gate modules: 368 tests in 0.9 s; 9 roadmap modules: 106 tests in 0.45 s; report_claims 1,100 in 2.0 s | ~10 % for all ~4,000 |
 
-Per-module slow time in the top 80: `tests/test_interrupt_not_substantive_outcome_task004.py` 80 s,
+Per-module slow time in the top 80: `test_interrupt_not_substantive_outcome_task004.py` 80 s,
 `tests/test_e2e.py` 46 s, `tests/test_cli_logs_follow_liveness.py` 37 s, `tests/test_reflect_infra_retry.py` 35 s, `tests/test_cli_ui.py`
 26 s, `tests/test_durations.py` 25 s, `tests/test_refunds_survive_resume.py` 24 s, `tests/test_resume_by_state.py` 22 s,
 `tests/test_iteration_timeout_contained.py` 21 s, `tests/test_inband_error_retry.py` 19 s, `tests/test_config_overlay.py` 17 s,
@@ -90,14 +90,14 @@ real sleeps and subprocess spawns, and is almost perfectly parallelisable.
 - **Harness duplication.** 87 modules define `_supervisor()`; 98 modules build `IterationResult`
   by hand; 14 assign `sup._run_iteration_once = fake`, 7 `sup.run_iteration = fake`, 6 stub
   `_wait_out_backoff`. The rest inherit real sleeps (hence the 80 s and 35 s tests).
-- **Per-task pins overlap by feature.** Last-approach pause: `tests/test_last_approach_pause_task011.py` (9), `tests/test_last_approach_pause_persisted_task036.py`
-  (9), `resume_..._task024` (2). Cure pass: `tests/test_cure_pass_task009.py` (6), `tests/test_cure_pass_not_on_tamper_task039.py` (6),
-  `tests/test_bounded_cure_pass_task010.py` (5), `tests/test_cure_pass_id_collision_task006.py` (4), `test_cure_pass_e2e_task023.py` (1). Contract ladder: 7 modules.
+- **Per-task pins overlap by feature.** Last-approach pause: `test_last_approach_pause_task011.py` (9), `test_last_approach_pause_persisted_task036.py`
+  (9), `resume_..._task024` (2). Cure pass: `test_cure_pass_task009.py` (6), `test_cure_pass_not_on_tamper_task039.py` (6),
+  `test_bounded_cure_pass_task010.py` (5), `test_cure_pass_id_collision_task006.py` (4), `test_cure_pass_e2e_task023.py` (1). Contract ladder: 7 modules.
   Steer: 14 modules. Eight modules re-pin the same transition-table edges
   (`test_the_edge_is_declared_in_both_variants`, 29 `transitions.is_legal/successors` call sites).
 - **Prose pins inside engine modules.** Of the 100 guard modules that *do* import ralphd, 320 of
   1,591 test functions read a `.md` in the body (e.g. `tests/test_docs_semantics.py` 23, `tests/test_suggestions_patch.py`
-  16, `tests/test_seventh_lint_task013.py` 14, `tests/test_cli_suggestions_verb.py` 12, `tests/test_hub_artifacts.py` 12).
+  16, `test_seventh_lint_task013.py` 14, `tests/test_cli_suggestions_verb.py` 12, `tests/test_hub_artifacts.py` 12).
   `docs/cli.md` is read by 34 modules, `SPEC.md` by 29, `architecture.md` by 24, `roadmap.md` by 11.
 - **Parametrised explosions:** `tests/test_report_claims.py` (217 reports x 5), `tests/test_conformance_ledger.py`
   (79 citations + 68 node ids, one `pytest` subprocess each), `tests/test_host_like_pytest_script.py`
@@ -124,7 +124,7 @@ and backoffs set to 0 via job.yaml:
 
 1. happy path + exit modes + durations + cost breakdown + artifacts (absorbs `tests/test_durations.py`,
    `tests/test_cli_cost_breakdown.py`, `tests/test_cli_iteration_detail.py`, `tests/test_cli_artifacts.py`, `test_cli_runs_*`, `test_cli_logs*` x11)
-2. validation rejection -> retry -> three strikes -> review; criteria tamper refusal (absorbs vigilant `tests/test_e2e.py` cases, `tests/test_criteria_tamper_refusal_task024.py`)
+2. validation rejection -> retry -> three strikes -> review; criteria tamper refusal (absorbs vigilant `tests/test_e2e.py` cases, `test_criteria_tamper_refusal_task024.py`)
 3. review rejection -> replan -> ladder exhaustion -> last-approach pause -> resume with/without ruling (absorbs `test_ladder_exhaustion_e2e_task033.py`, 3 last-approach modules, `tests/test_resume_by_state.py`)
 4. cure pass: curable-only -> cure tasks -> re-review; bounded; not on tamper; id collision (absorbs 5 cure-pass modules)
 5. petition -> adjudication -> refuted/confirmed -> history persisted (new e2e; today 0 real-engine coverage)
@@ -329,7 +329,7 @@ modules, one of them now under this new name.
 
 | deleted node | surviving cover | landed in |
 |---|---|---|
-| `tests/test_command_form_lint_task009.py::test_task_205_fixture_embeds_the_clause_the_prd_names_as_must_catch` | `tests/test_ingestion_lints.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` (the fixture is now checked by direct equality against the tracked `deck-phase3k` task 205 record, `tests/data/deck-phase3k-task-205.json`, and still checks the PRD's abbreviated quote as an abbreviation of it) | task 009, requirement A.5 |
+| `test_command_form_lint_task009.py::test_task_205_fixture_embeds_the_clause_the_prd_names_as_must_catch` | `tests/test_ingestion_lints.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` (the fixture is now checked by direct equality against the tracked `deck-phase3k` task 205 record, `tests/data/deck-phase3k-task-205.json`, and still checks the PRD's abbreviated quote as an abbreviation of it) | task 009, requirement A.5 |
 | `tests/test_stagnation_signature.py::test_a_distinct_blocker_signature_keeps_the_remaining_approaches` | `tests/test_stagnation_signature.py::test_a_distinct_blocker_signature_pauses_on_the_last_approach` (same scenario -- approach 3's own stagnation, matching approach 2's wall -- but now proves task 012's pause instead of a failed run: `status["pauseReason"] == "stagnation"`, approach stays 3, and only approaches 1-2 are archived) | task 012, requirement B.3 |
 | `tests/test_stagnation_excludes_nonwork_faults.py::test_three_ordinary_work_noop_iterations_still_fail_the_approach` | `tests/test_stagnation_excludes_nonwork_faults.py::test_three_ordinary_work_noop_iterations_still_pause_on_the_last_approach` (drives `_step_worker()` directly on the last approach and asserts the `("advance", "paused", "stagnation_last_approach")` outcome and `pauseReason == "stagnation"` instead of the pre-task-012 failed-run assertion) | task 012, requirement B.3 |
 | `test_e2e_peer_gates_task029.py::test_plan_review_approval_lets_worker_proceed` | `tests/flows/test_flow_peer_gates.py::test_both_peer_gates_compose_in_one_run` (same edge, inside the composed run: approach 2's FIRST `plan_review` invocation approves outright (the objection knob is already spent) and the plan proceeds to `worker` untouched -- asserted as the exact `phase:plan_review@2`/`iteration:plan_review`/`iteration:worker` step sequence plus `planReviewRevisions == {"1": 1}` (no revision against approach 2)) | task 020, requirement C.9 |
