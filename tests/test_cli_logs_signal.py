@@ -49,7 +49,7 @@ def test_sigint_during_follow_exits_clean_no_traceback(live):
     # A job with a handful of slow-ish iterations so the follow is still
     # live (not already exited) when the signal arrives.
     run = live(run_id="sigint-follow", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "0.5",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.0",
                          "STUB_TASKS": "3"})
     run.wait_api()
 
