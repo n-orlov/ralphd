@@ -18,6 +18,26 @@ from env vars set by the test:
                       a task genuinely dead without smuggling a `status`
                       through the planner's contract (which task 120's
                       lint now refuses outright).
+  STUB_HOLD_FILE      task 007 (B.1): a bounded, env-driven hold primitive
+                      every phase's invocation applies BEFORE its own
+                      role logic runs. When set, this invocation blocks
+                      until the named path exists on disk (the test's own
+                      release signal, e.g. `path.touch()` once the test has
+                      observed whatever it needed mid-iteration) OR
+                      STUB_HOLD_TIMEOUT_S seconds elapse (default 5.0 -- a
+                      SMALL bounded fallback, never anything close to the
+                      real iteration timeout), whichever comes first. A
+                      test that never releases the hold therefore fails
+                      fast on that bound instead of hanging. The actual
+                      wait duration (seconds) is always recorded to
+                      `STUB_HOLD_FILE + ".stub-hold-duration"`, released or
+                      timed out either way, so a test can assert its own
+                      recorded duration stayed within the bound plus a
+                      stated margin.
+  STUB_HOLD_TIMEOUT_S the fallback bound (seconds) for STUB_HOLD_FILE above
+                      (default 5.0). Ignored when STUB_HOLD_FILE is unset.
+  STUB_HOLD_POLL_S    poll interval (seconds) while waiting on STUB_HOLD_FILE
+                      (default 0.02). Ignored when STUB_HOLD_FILE is unset.
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
   STUB_WORKER_PETITION  task 005 (G.5): a JSON object with the three
                       strings a worker's structured impossibility petition
@@ -784,6 +804,47 @@ if _timeout_hang_count:
         time.sleep(9999)
         sys.exit(1)
 
+
+# STUB_HOLD_FILE / STUB_HOLD_TIMEOUT_S (task 007, B.1): the bounded,
+# env-driven hold primitive requirement B's race-window conversions (B.2,
+# B.3) replace fixed `STUB_SLEEP` padding with -- a test that needs a real
+# window to observe an in-flight state (crash mid-write, a resume racing a
+# still-running iteration, ...) opens one deterministically instead of
+# guessing a sleep long enough to "probably" still be running. Applies to
+# EVERY phase, not just Worker, since any role can be the one a test wants
+# to catch mid-iteration.
+#
+# When STUB_HOLD_FILE names a path, this invocation blocks until that path
+# exists on disk (the test's own release signal -- typically a plain
+# `open(path, "w").close()` or `path.touch()` from the test, once it has
+# observed whatever it was waiting to observe) or STUB_HOLD_TIMEOUT_S
+# seconds elapse, whichever comes first. The fallback is DELIBERATELY
+# small (default 5.0s, never anything close to the iteration timeout): a
+# test that forgets to release the hold must fail on this bound, fast,
+# rather than hang the test process for the run's full iteration budget.
+#
+# The actual wait duration (seconds, monotonic) is always recorded to
+# `STUB_HOLD_FILE + ".stub-hold-duration"` -- written whether the hold was
+# released or timed out -- so a test can assert its own recorded duration
+# stayed within the bound plus a stated margin instead of just trusting
+# that the process "returned eventually".
+def _apply_hold():
+    hold_file = os.environ.get("STUB_HOLD_FILE")
+    if not hold_file:
+        return
+    timeout_s = float(os.environ.get("STUB_HOLD_TIMEOUT_S", "5"))
+    poll_s = float(os.environ.get("STUB_HOLD_POLL_S", "0.02"))
+    start = time.monotonic()
+    while not os.path.exists(hold_file):
+        if time.monotonic() - start >= timeout_s:
+            break
+        time.sleep(poll_s)
+    duration = time.monotonic() - start
+    with open(f"{hold_file}.stub-hold-duration", "w") as _f:
+        _f.write(repr(duration))
+
+
+_apply_hold()
 
 if "Role: Planner" in prompt:
     # Task 026 (#61): a marker counting how many times the Planner has run
