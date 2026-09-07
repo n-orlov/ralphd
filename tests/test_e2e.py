@@ -191,7 +191,7 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
 
 def test_steering_reaches_next_iteration(engine_factory):
     e = engine_factory(job={"on_complete": "exit"},
-                       stub_env={"STUB_SLEEP": "1.5", "STUB_TASKS": "3"})
+                       stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "3"})
     e.wait_api()
     code, res = e.api("POST", "/steering", {"message": "prefer the shortcut",
                                             "name": "hint"})
@@ -206,7 +206,7 @@ def test_steering_reaches_next_iteration(engine_factory):
 
 
 def test_abort_via_api(engine_factory):
-    e = engine_factory(stub_env={"STUB_SLEEP": "2", "STUB_TASKS": "10"})
+    e = engine_factory(stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "10"})
     e.wait_api()
     e.wait_state(("running",))
     code, _ = e.api("POST", "/abort", {"reason": "test abort"})
@@ -234,7 +234,7 @@ def test_terminal_status_surfaces_unconsumed_steering(engine_factory):
     must be loudly discoverable straight from status.json's
     ``unconsumedSteering`` field, since a terminal run never reads pending
     steering again."""
-    e = engine_factory(stub_env={"STUB_SLEEP": "5", "STUB_TASKS": "10"})
+    e = engine_factory(stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "10"})
     e.wait_api()
     e.wait_state(("running",))
     code, res = e.api("POST", "/steering",
@@ -268,7 +268,7 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory)
     present on disk but absent from BOTH the consumed-steering record AND
     the terminal status's ``unconsumedSteering`` list -- that would be a
     silent drop."""
-    e = engine_factory(stub_env={"STUB_SLEEP": "2", "STUB_TASKS": "1"})
+    e = engine_factory(stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "1"})
     e.wait_api()
     e.wait_state(("running",))
 
@@ -520,7 +520,7 @@ def test_verified_review_refused_while_steering_pending(engine_factory):
     consumer is now a hat whose whole prompt is about operator messages
     instead of a worker iteration with no task in hand."""
     e = engine_factory(job={"on_complete": "idle"},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.0"})
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.5"})
     e.wait_api()
 
     def iter_meta(n: int) -> dict | None:
@@ -1097,7 +1097,7 @@ def test_get_logs_follow_streams_across_iteration_boundaries(engine_factory):
     open connection, and the stream closes once the job reaches a terminal
     state (never hangs forever, never truncates before the job finishes)."""
     e = engine_factory(job={"on_complete": "idle"},
-                       stub_env={"STUB_SLEEP": "1.5", "STUB_TASKS": "3"})
+                       stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "3"})
     e.wait_api()
 
     req = urllib.request.Request(
@@ -1159,7 +1159,7 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory)
     transient state left to observe: the harness already committed
     in-progress before iteration 2's subprocess so much as started."""
     e = engine_factory(job={"on_complete": "idle"},
-                       stub_env={"STUB_SLEEP": "2", "STUB_TASKS": "1"})
+                       stub_env={"STUB_SLEEP": "0.5", "STUB_TASKS": "1"})
     e.wait_api()
     e.wait_state(("running",))
 
