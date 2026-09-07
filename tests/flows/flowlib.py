@@ -102,6 +102,24 @@ def flow_steps(run) -> list[str]:
         elif t == "approach.cure_pass":
             steps.append(
                 f"cure_pass:{ev.get('curePasses')}@{ev.get('approach')}")
+        # Task 014 (C.3): the steer path's own five step-marking event
+        # types -- received/consumed (state.py's `RunDir.add_steering`/
+        # `consume_steering`), the hat's own settlement claim
+        # (`LoopSupervisor._step_generic_hat`'s `steer.settled`), and the
+        # two tool-surface audit events (`hat_tools.EVENT_TOOL_CALL`/
+        # `EVENT_CONTEXT_WRITE`) a `task-insert`/`standing-rules` call
+        # emits. No other flow drives any of these, so adding them here
+        # cannot perturb an existing flow's reduced sequence.
+        elif t == "steering.received":
+            steps.append(f"steering:received:{ev.get('file')}")
+        elif t == "steering.consumed":
+            steps.append(f"steering:consumed:{ev.get('file')}")
+        elif t == "steer.settled":
+            steps.append(f"steer:settled:{ev.get('settled')}")
+        elif t == "steer.tool_call":
+            steps.append(f"steer_tool:{ev.get('tool')}:{ev.get('ok')}")
+        elif t == "steer.context_write":
+            steps.append(f"steer_write:{ev.get('file')}")
     return steps
 
 
