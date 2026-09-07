@@ -54,7 +54,7 @@ from ralphd.engine.state import (
     atomic_write_json,
 )
 
-from test_steering_priority_routing_task012 import _ok, _supervisor
+from test_steer import _ok, _supervisor
 
 PROMPT = (Path(__file__).resolve().parents[1] / "src" / "ralphd" / "prompts"
           / "steer.md")

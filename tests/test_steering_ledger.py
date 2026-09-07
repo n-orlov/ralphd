@@ -44,7 +44,7 @@ from ralphd.engine.loop import (
 )
 from ralphd.engine.state import RunDir, atomic_write_json
 
-from test_steering_priority_routing_task012 import _ok, _supervisor
+from test_steer import _ok, _supervisor
 
 STEER_EDGES = transitions.successors("steer", vigilant=False)
 

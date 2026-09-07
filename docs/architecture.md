@@ -2863,7 +2863,7 @@ suite never mistakes one for behavioral coverage of the thing it describes.
   `tests/test_prompt_steering_durability.py`, which regex-matches these
   phrases inside `worker.md`'s own section text. No part of this module
   drives a real steering delivery — that is `tests/test_e2e.py`'s and
-  `tests/test_steer_tool_spool_two_uid_docker_task030.py`'s job.
+  `tests/test_steer.py`'s job.
 - **Dependency-doom prose** — `worker.md`'s `## Completion signal` section
   must say that neither failed-task resolution (carve a residual task;
   relabel `skipped`) ever moves the original failed task into

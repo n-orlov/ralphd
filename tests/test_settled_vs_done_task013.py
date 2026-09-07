@@ -56,7 +56,7 @@ from ralphd.engine import state, transitions
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
-from test_steering_priority_routing_task012 import (
+from test_steer import (
     TASK_1, _ok, _review_verifies, _steer_settles, _supervisor,
 )
 

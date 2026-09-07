@@ -54,7 +54,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, insert_cure_tasks
 
-from test_steering_priority_routing_task012 import TASK_1, _ok, _run_resumed
+from test_steer import TASK_1, _ok, _run_resumed
 from tests.conftest import supervisor_factory
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
