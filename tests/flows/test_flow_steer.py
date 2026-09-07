@@ -37,8 +37,12 @@ The path, end to end, with the engine doing every write:
 Asserted two ways, like every other flow module: the exact `events.jsonl`
 step sequence (`flowlib.assert_step_sequence`, naming the diverging index
 and step on any mismatch) and the observable record on disk -- the new
-task's own fields in `tasks.json`, and the run's `standing-rules.md`
-contents.
+task's own fields in `tasks.json`, the run's `standing-rules.md` contents,
+and the resulting `notes.md` -- the file a later iteration actually READS,
+because the harness splices the pinned block back into it after every
+iteration (`state.reinject_standing_rules`, task 107), so the steer's
+replacement must have DISPLACED the planner's original block there while
+leaving the agent's own prose in that file untouched.
 """
 
 from __future__ import annotations
@@ -51,6 +55,15 @@ INSERTED_TASK = {"id": "steer-inserted", "title": "landed by the steer hat",
                  "successCriteria": "criteria via steer",
                  "status": "completed", "origin": "attacker"}
 STANDING_RULES_TEXT = "## Standing rules\n\n- steered rule (task 014)\n"
+# The planner's own `standing_rules` contract field (stub `pi`) -- the block
+# the steer hat's write must DISPLACE in notes.md, not merely sit beside.
+PLANNED_RULES_LINE = "- stub-supplied convention"
+# notes.md's own prose, written by the stub planner: every line outside the
+# pinned block must survive the harness's splice verbatim.
+PLANNED_NOTES_PROSE = "planned by stub"
+# `state.STANDING_RULES_END_MARKER`, spelled out rather than imported: these
+# flows read a finished run dir like any other host would, never internals.
+END_MARKER = "<!-- /standing-rules: harness-pinned, task 107 -->"
 
 STEER_TOOL_CALLS = [
     {"tool": "task-insert", "args": {"task": dict(INSERTED_TASK)}},
@@ -131,6 +144,26 @@ def test_a_steer_message_is_received_consumed_and_settled_with_a_task_insert_and
     assert rules_file.read_text() == STANDING_RULES_TEXT, (
         f"flow steer: standing-rules.md must be the steer hat's exact "
         f"replacement text, got {rules_file.read_text()!r}")
+
+    # The resulting notes state: notes.md is where the pinned block is
+    # actually read from by every later iteration, so a steered
+    # standing-rules write that never reached it would be inert.
+    notes_file = run.run_dir / "notes.md"
+    assert notes_file.exists(), (
+        "flow steer: the run never wrote notes.md at all")
+    notes_text = notes_file.read_text()
+    assert STANDING_RULES_TEXT.rstrip("\n") + "\n" + END_MARKER in notes_text, (
+        f"flow steer: notes.md must carry the steer hat's own standing-rules "
+        f"block, re-injected verbatim and closed by the harness marker, got "
+        f"{notes_text!r}")
+    assert PLANNED_RULES_LINE not in notes_text, (
+        f"flow steer: the planner's original standing rule "
+        f"{PLANNED_RULES_LINE!r} must be GONE from notes.md -- the steer's "
+        f"write replaces the pinned block, it does not append to it; got "
+        f"{notes_text!r}")
+    assert PLANNED_NOTES_PROSE in notes_text, (
+        f"flow steer: notes.md's own prose outside the pinned block must "
+        f"survive the harness splice, got {notes_text!r}")
 
     st = status(run)
     assert st.get("state") == "succeeded", (
