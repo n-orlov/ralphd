@@ -228,6 +228,18 @@ Filled in by the v0.19 run as requirement G lands: one row per deleted test node
 surviving flow/records test that covers the behaviour it pinned. A deleted node with no row here
 is a blocking finding under the PRD's rubric.
 
+Derivation for task 006 (requirement G.9): diff every `-def test_`/`+def test_` line out of
+`git diff 4c003a5 HEAD -- tests/` and keep the removed names that never reappear as an added
+name anywhere in the same diff (a same-name signature change, e.g. gaining a fixture argument,
+is not a removal). At this table's construction that git-derived list is exactly two names:
+`test_a_distinct_blocker_signature_keeps_the_remaining_approaches` (was in
+`tests/test_stagnation_signature.py`) and `test_three_ordinary_work_noop_iterations_still_fail_the_approach`
+(was in `tests/test_stagnation_excludes_nonwork_faults.py`) -- both rows below. `tests/test_subsumed_table.py`
+resolves each row's surviving node against the collected test set on every run, so a later
+deletion the table forgets to record is caught mechanically, not just at construction time.
+
 | deleted node | surviving cover | landed in |
 |---|---|---|
 | `tests/test_command_form_lint_task009.py::test_task_205_fixture_embeds_the_clause_the_prd_names_as_must_catch` | `tests/test_command_form_lint_task009.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` (the fixture is now checked by direct equality against the tracked `deck-phase3k` task 205 record, `tests/data/deck-phase3k-task-205.json`, and still checks the PRD's abbreviated quote as an abbreviation of it) | task 009, requirement A.5 |
+| `tests/test_stagnation_signature.py::test_a_distinct_blocker_signature_keeps_the_remaining_approaches` | `tests/test_stagnation_signature.py::test_a_distinct_blocker_signature_pauses_on_the_last_approach` (same scenario -- approach 3's own stagnation, matching approach 2's wall -- but now proves task 012's pause instead of a failed run: `status["pauseReason"] == "stagnation"`, approach stays 3, and only approaches 1-2 are archived) | task 012, requirement B.3 |
+| `tests/test_stagnation_excludes_nonwork_faults.py::test_three_ordinary_work_noop_iterations_still_fail_the_approach` | `tests/test_stagnation_excludes_nonwork_faults.py::test_three_ordinary_work_noop_iterations_still_pause_on_the_last_approach` (drives `_step_worker()` directly on the last approach and asserts the `("advance", "paused", "stagnation_last_approach")` outcome and `pauseReason == "stagnation"` instead of the pre-task-012 failed-run assertion) | task 012, requirement B.3 |
