@@ -272,6 +272,7 @@ DEPENDENCY_EVIDENCE = {
     "pyyaml": _Import("yaml", ("src",)),
     "pytest": _Import("pytest", ("tests",)),
     "pytest-asyncio": _Literal("pyproject.toml", "asyncio_mode"),
+    "pytest-xdist": _Literal("scripts/host_like_pytest.sh", "-n 8 --dist loadfile"),
     "httpx": _Import("httpx", ("tests",)),
     "ruff": _Literal("pyproject.toml", "[tool.ruff]"),
     "build": _Literal("tests/test_image_packaged_inputs.py", '"-m", "build"'),

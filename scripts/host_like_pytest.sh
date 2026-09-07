@@ -74,6 +74,16 @@
 #
 # Exit code and stdout/stderr are pytest's own -- pipe to a log and inspect
 # pass/fail/skip counts the normal way.
+#
+# Fast-tier recipe (G.3, task 003): pytest-xdist is a dev dependency
+# (pyproject.toml); the fast tier's own recipe for a loaded parallel run is
+# `-n 8 --dist loadfile` -- appended by the caller as extra args to this
+# script, e.g. `scripts/host_like_pytest.sh -m "not docker and not browser"
+# -n 8 --dist loadfile`. `--dist loadfile` keeps every test of one module on
+# the same worker, which is what the module-level `xdist_group` markers on
+# the AMBIENT_HOME modules and the nested-pytest module
+# (tests/test_skills_discoverability_survives_suite.py) rely on to never
+# race a same-HOME test against itself on a different worker.
 
 set -euo pipefail
 

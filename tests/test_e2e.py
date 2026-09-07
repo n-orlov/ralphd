@@ -947,20 +947,21 @@ def test_no_docker_siblings_guidance_without_env(engine_factory):
     assert "Docker siblings" not in prompt
 
 
-def test_api_token_auth(engine_factory, tmp_path):
-    os.environ["RALPHD_API_TOKEN"] = "sekret"
-    try:
-        e = engine_factory()
-        e.wait_api()  # healthz is unauthenticated
-        with pytest.raises(urllib.error.HTTPError) as exc:
-            e.api("GET", "/status")
-        assert exc.value.code == 401
-        req = urllib.request.Request(f"http://127.0.0.1:{e.port}/status")
-        req.add_header("Authorization", "Bearer sekret")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            assert resp.status == 200
-    finally:
-        del os.environ["RALPHD_API_TOKEN"]
+def test_api_token_auth(engine_factory, tmp_path, monkeypatch):
+    # monkeypatch.setenv (task 003, G.3): scoped to this test, restored
+    # automatically even on failure -- a plain `os.environ[...] =` write
+    # here is a global mutation any other test in the same worker process
+    # could observe under a parallel (`-n 8`) run.
+    monkeypatch.setenv("RALPHD_API_TOKEN", "sekret")
+    e = engine_factory()
+    e.wait_api()  # healthz is unauthenticated
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        e.api("GET", "/status")
+    assert exc.value.code == 401
+    req = urllib.request.Request(f"http://127.0.0.1:{e.port}/status")
+    req.add_header("Authorization", "Bearer sekret")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        assert resp.status == 200
 
 
 # -- self-protection: --help/--version must be pristine (PRD req 29a) -----

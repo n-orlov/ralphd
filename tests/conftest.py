@@ -6,6 +6,7 @@ directly-launched `ralphd-engine` (no Docker) behind `ralphctl` — the
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import shutil
@@ -14,7 +15,6 @@ import socket
 import subprocess
 import sys
 import time
-import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -250,9 +250,33 @@ def pytest_configure(config):
 
 
 def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """An ephemeral TCP port, currently free on 127.0.0.1.
+
+    `bind(("127.0.0.1", 0))` asks the kernel for a free port and releases it
+    the instant the probe socket above closes -- a TOCTOU race under a
+    loaded parallel run (`-n 8`, task 003/G.3): many workers racing for
+    ephemeral ports at once can have the OS hand the same just-released
+    number to a second bind before the first caller ever gets to use it.
+    Re-verify the candidate with a second, immediate bind right before
+    returning it, and retry with a fresh candidate on `EADDRINUSE` instead
+    of handing back a port that already lost the race -- this does not
+    close the window entirely (the port is released again after this
+    second bind too), but it shrinks it from "since the probe socket
+    closed" to "since this line ran".
+    """
+    for _ in range(10):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        try:
+            with socket.socket() as s2:
+                s2.bind(("127.0.0.1", port))
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+            continue
+        return port
+    raise RuntimeError("free_port: no free port after 10 EADDRINUSE retries")
 
 
 # --- default HOME isolation for spawned engines (#83) ---------------------
@@ -583,6 +607,35 @@ class LiveRun:
 #     autouse, so a module-level `make_supervisor()` call inside a test body
 #     cannot leak the patch into the next test). Ask for the real thing with
 #     `real_sleep=True` when the test is about elapsed time itself.
+#
+#     The restore is an UNCONDITIONAL `asyncio.sleep = _real_asyncio_sleep`,
+#     not a `unittest.mock.patch` stack popped by whoever pushed it (task
+#     003, G.3): `tests/conftest.py` is loaded TWICE under two distinct
+#     module identities in every ordinary invocation -- once as the bare
+#     top-level `conftest` plugin pytest's own conftest-discovery imports
+#     (no `tests/__init__.py`, so pytest's prepend import mode roots there),
+#     and again as `tests.conftest` the first time any test module does
+#     `from tests.conftest import ...` (resolved through the namespace
+#     package `tests_package_pin.py` pins). Both copies define their own
+#     `_patch_sleep_for_this_test`/`_undo_instant_sleep_patches` with their
+#     own separate module-global state, but pytest only ever registers the
+#     bare-`conftest` copy's fixtures as autouse -- so a `unittest.mock.patch`
+#     stack, tracked in a list private to whichever copy's function actually
+#     ran, is popped by a teardown that is watching the OTHER copy's
+#     (always-empty) list and therefore never restores anything: the first
+#     `make_supervisor(real_sleep=False)` call in an entire pytest session
+#     patches the one real, process-global `asyncio.sleep` and it stays
+#     patched for every later test, forever (caught by
+#     `tests/test_router.py`'s and `tests/test_router_engine.py`'s
+#     millisecond-timeout hanging-call tests, which fail because a
+#     3600-second `asyncio.sleep` returns instantly). Setting `asyncio.sleep`
+#     straight back to the module-level `_real_asyncio_sleep` captured at
+#     import time sidesteps the whole double-module problem: it does not
+#     matter which copy's function object did the patching, because there is
+#     only ever one real `asyncio` module and one real `.sleep` attribute on
+#     it, and every copy's `_real_asyncio_sleep` was captured, correctly,
+#     before any test ever ran.
+#
 # Deliberately only the two BACKOFF knobs, not a second set of iteration /
 # approach / vigilance defaults: a module that migrated its local harness over
 # to `make_supervisor` must keep seeing `JobConfig`'s own defaults for
@@ -595,7 +648,6 @@ DEFAULT_SUPERVISOR_CFG = {
 }
 
 _real_asyncio_sleep = asyncio.sleep
-_INSTANT_SLEEP_PATCHES: list = []
 
 
 async def _instant_sleep(delay, result=None):
@@ -606,16 +658,14 @@ async def _instant_sleep(delay, result=None):
 
 
 def _patch_sleep_for_this_test() -> None:
-    patcher = unittest.mock.patch.object(asyncio, "sleep", _instant_sleep)
-    patcher.start()
-    _INSTANT_SLEEP_PATCHES.append(patcher)
+    asyncio.sleep = _instant_sleep    # type: ignore[assignment]
 
 
 @pytest.fixture(autouse=True)
 def _undo_instant_sleep_patches():
     yield
-    while _INSTANT_SLEEP_PATCHES:
-        _INSTANT_SLEEP_PATCHES.pop().stop()
+    asyncio.sleep = _real_asyncio_sleep    # type: ignore[assignment]
+
 
 
 class ScriptedRunner:

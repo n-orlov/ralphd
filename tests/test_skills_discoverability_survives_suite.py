@@ -52,8 +52,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.conftest import LiveRun
-from tests.conftest import with_ralphd_importable
+import pytest
+
+# xdist_group (task 003, G.3): the nested-pytest module -- it shells out to a
+# real pytest subprocess over module subsets also collected by the outer
+# xdist run, and shares the AMBIENT_HOME family's group so it never runs
+# concurrently with another AMBIENT_HOME module on a different worker under
+# a loaded parallel (`-n 8`) run.
+pytestmark = pytest.mark.xdist_group(name="ambient_home")
+
+from tests.conftest import LiveRun, with_ralphd_importable
 
 REPO = Path(__file__).parent.parent
 

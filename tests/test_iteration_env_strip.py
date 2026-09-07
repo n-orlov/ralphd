@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import stat
 
 import pytest
@@ -113,22 +112,23 @@ def test_runner_strips_control_plane_vars_reintroduced_by_extra_env(
 # black-box tier: the real engine + stub pi
 # --------------------------------------------------------------------------
 
-def test_iteration_environment_has_no_control_plane_coords(engine_factory):
-    os.environ["RALPHD_API_TOKEN"] = "sekret-e2e-tok"
-    os.environ["RALPHD_CONTROL_TOKEN"] = "sekret-e2e-control-tok"
-    try:
-        e = engine_factory(job={"on_complete": "idle"})
-        marker = e.run_dir / ".stub-env.json"
-        seen = wait_for_env_marker(marker, predicate=lambda d: bool(d))
-        assert seen, "stub never dumped its environment"
-        for name in ("RALPHD_PORT", "RALPHD_API_TOKEN", "RALPHD_BIND",
-                     "RALPHD_CONTROL_TOKEN"):
-            assert name not in seen, (
-                f"{name} present in the iteration's own environment: "
-                "the control-plane coordinate leaked")
-        # Sanity: the stub really did see ITS environment, not an empty one --
-        # a coordinate the iteration legitimately needs must still be there.
-        assert "RALPHD_RUN_DIR" in seen
-    finally:
-        del os.environ["RALPHD_API_TOKEN"]
-        del os.environ["RALPHD_CONTROL_TOKEN"]
+def test_iteration_environment_has_no_control_plane_coords(engine_factory, monkeypatch):
+    # monkeypatch.setenv (task 003, G.3): a plain `os.environ[...] =` write
+    # here is a global, process-wide mutation that a parallel (`-n 8`) xdist
+    # worker running any OTHER test in the same process would also observe;
+    # monkeypatch scopes the write to this test and restores it afterwards
+    # even on failure, same as the `try`/`finally` used to.
+    monkeypatch.setenv("RALPHD_API_TOKEN", "sekret-e2e-tok")
+    monkeypatch.setenv("RALPHD_CONTROL_TOKEN", "sekret-e2e-control-tok")
+    e = engine_factory(job={"on_complete": "idle"})
+    marker = e.run_dir / ".stub-env.json"
+    seen = wait_for_env_marker(marker, predicate=lambda d: bool(d))
+    assert seen, "stub never dumped its environment"
+    for name in ("RALPHD_PORT", "RALPHD_API_TOKEN", "RALPHD_BIND",
+                 "RALPHD_CONTROL_TOKEN"):
+        assert name not in seen, (
+            f"{name} present in the iteration's own environment: "
+            "the control-plane coordinate leaked")
+    # Sanity: the stub really did see ITS environment, not an empty one --
+    # a coordinate the iteration legitimately needs must still be there.
+    assert "RALPHD_RUN_DIR" in seen

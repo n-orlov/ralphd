@@ -18,8 +18,15 @@ import os
 import time
 from pathlib import Path
 
-from tests.conftest import AMBIENT_HOME
-from tests.conftest import LiveRun
+import pytest
+
+# xdist_group (task 003, G.3): an AMBIENT_HOME-family module -- keeps this
+# module's tests on one worker under a loaded parallel (`-n 8`) run rather
+# than racing another AMBIENT_HOME/nested-pytest module over the real
+# ambient $HOME on a different worker.
+pytestmark = pytest.mark.xdist_group(name="ambient_home")
+
+from tests.conftest import AMBIENT_HOME, LiveRun
 
 ENV_MARKER = ".stub-env.json"
 

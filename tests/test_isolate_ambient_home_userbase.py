@@ -32,6 +32,12 @@ import pytest
 
 from tests.conftest import _USER_BASE
 
+# xdist_group (task 003, G.3): an AMBIENT_HOME-family module -- keeps this
+# module's tests on one worker under a loaded parallel (`-n 8`) run rather
+# than racing another AMBIENT_HOME/nested-pytest module over the real
+# ambient $HOME on a different worker.
+pytestmark = pytest.mark.xdist_group(name="ambient_home")
+
 # Captured at collection time -- before any test function has run, so
 # before this fixture (or any other) has touched os.environ this session.
 # `monkeypatch` reverts its own edits after every test, so this is the same
