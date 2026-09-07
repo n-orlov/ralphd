@@ -10,7 +10,12 @@ and `infraWait` (null unless actually sitting in a backoff wait), plus the
 
 The unit half samples status.json from *inside* the backoff wait (the stubbed
 sleep reads the file, so no test ever really sleeps); the black-box half
-proves the same fields reach a real run dir and `ralphctl status --json`.
+proves the same payload reaches a real run dir -- since task 010 (B.4) through
+the `infra_wait` event twin `_begin_infra_wait` emits in the SAME call that
+writes `health`/`infraWait` into status.json, because at the shared launcher's
+all-zero backoff schedule there is no wait window left to poll for. What
+`ralphctl status --json` is still asked for end to end is the recovered shape
+(`health: ok`, `infraWait: null`) the run ends on.
 """
 
 from __future__ import annotations
@@ -182,57 +187,47 @@ async def test_a_healthy_iteration_never_writes_the_degraded_fields(
 def test_ralphctl_status_json_carries_health_and_infra_wait(live):
     # Planning is healthy; the first two worker invocations hang with zero
     # LLM traffic, get killed by the startup watchdog, are classified infra
-    # and retried after a 1s backoff -- long enough (at a 0.2s poll
-    # interval) to catch the degraded window, short enough that the test
-    # stays fast.
+    # and retried -- at the launcher's all-zero backoff schedule (task 010,
+    # B.4), so the engine pays no wall clock for them and the degraded window
+    # is read off the `infra_wait` events rather than raced for with a poll
+    # loop: `_begin_infra_wait` writes status.json and emits that event in one
+    # call, and the unit half above pins the status.json side field for field.
     run = live(run_id="health-infra-wait", job={"iterations": 6},
                stub_env={
                    "STUB_TASKS": "1",
                    "STUB_INFRA_HANG_SKIP": "1",
                    "STUB_INFRA_HANG_COUNT": "2",
                    "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
-                   "RALPHD_INFRA_RETRY_BACKOFF_S": "1,1",
                    "RALPHD_INFRA_OUTAGE_BUDGET_S": "600",
                })
     run.wait_api()
-
-    deadline = time.time() + 30
-    degraded: dict = {}
-    seen_states: set = set()
-    while time.time() < deadline and not degraded:
-        res = run.ralphctl("--json", "status", run.run_id)
-        if res.returncode == 0:
-            try:
-                status = json.loads(res.stdout)
-            except json.JSONDecodeError:
-                status = {}
-            if status.get("state"):
-                seen_states.add(status["state"])
-            if status.get("health") == "degraded" and status.get("infraWait"):
-                degraded = status
-        time.sleep(0.2)
-
-    assert degraded, "GET /status never reported health degraded with an infraWait"
-    wait = degraded["infraWait"]
-    assert degraded["state"] == "running", "no new `state` value"
-    assert wait["attempt"] >= 1
-    assert wait["phase"] == "worker"
-    assert wait["error"]
-    assert wait["budgetS"] == 600.0
-    assert wait["remainingS"] <= 600.0
-    assert parse_utc(wait["nextAttemptAt"]) >= parse_utc(wait["since"])
-
     status = run.wait_terminal(timeout=60)
     assert status["state"] == "succeeded"
-    # Recovery cleared both halves again.
-    assert status["health"] == "ok"
-    assert status["infraWait"] is None
-    assert seen_states <= set(STATES), seen_states
 
     events = [json.loads(x) for x in
               (run.run_dir / "events.jsonl").read_text().splitlines()]
-    types = [ev["type"] for ev in events]
-    assert "infra_wait" in types, "the wait must be visible in the event stream"
-    assert "infra_recovered" in types
+    waits = [ev for ev in events if ev["type"] == "infra_wait"]
+    assert [ev["attempt"] for ev in waits] == [1, 2], \
+        "the wait must be visible in the event stream, once per attempt"
+    for ev in waits:
+        assert ev["phase"] == "worker"
+        assert ev["error"]
+        assert ev["budgetS"] == 600.0
+        assert ev["remainingS"] <= 600.0
+        assert ev["backoffS"] == 0.0, "no real sleep was bought (B.4)"
+        assert parse_utc(ev["nextAttemptAt"]) >= parse_utc(ev["since"])
+    assert [ev for ev in events if ev["type"] == "infra_recovered"], \
+        "recovery must be visible in the event stream too"
+
+    # ... and the recovered shape is what `ralphctl status --json` reports, with
+    # no `state` value outside the documented set anywhere.
+    res = run.ralphctl("--json", "status", run.run_id)
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    doc = json.loads(res.stdout)
+    assert doc["state"] == "succeeded", "no new `state` value"
+    assert doc["health"] == "ok"
+    assert doc["infraWait"] is None
+    assert status["health"] == "ok"
+    assert status["infraWait"] is None
     assert all(ev.get("state") in STATES
                for ev in events if ev["type"] == "state")

@@ -145,11 +145,21 @@ def test_reflect_model_resolved_per_strategy(engine_factory, tmp_path):
 
 # -- task 019 (#5): the reflect phase's own outcome is recorded -------------
 
-# Compressed infra retry: a reflect failure IS an infra-shaped fault, so the
+# Bounded infra retry: a reflect failure IS an infra-shaped fault, so the
 # retry wrapper (task 018) has its say first -- these tests must not sit out
 # the real 5-minute reflect outage budget.
-FAST_RETRY = {"RALPHD_INFRA_RETRY_BACKOFF_S": "0.2",
-              "RALPHD_INFRA_RETRY_BACKOFF_MAX_S": "0.2",
+#
+# Task 010 (B.4): the bound used to be a COMPRESSED BACKOFF LADDER
+# (`RALPHD_INFRA_RETRY_BACKOFF_S/_MAX_S` at 0.2 s, so the episode ended by
+# spending its 1 s outage budget in real wall-clock waits). The episode is
+# bounded by an ATTEMPT CAP instead now: `infra_retry_max` ends it at attempt
+# 2 without waiting anything, so this module inherits the shared launcher's
+# all-zero schedule (`tests/conftest.py::_with_zero_backoff`) and buys no real
+# sleep at all. The outage budget stays named so the events still carry a
+# `budgetS` an assertion can read; nothing here asserts a non-zero wait (the
+# wait accounting itself is `tests/test_infra_outage_budget.py`'s subject, one
+# of B.4's three exempt modules).
+FAST_RETRY = {"RALPHD_INFRA_RETRY_MAX": "2",
               "RALPHD_INFRA_OUTAGE_BUDGET_S": "1.0"}
 
 

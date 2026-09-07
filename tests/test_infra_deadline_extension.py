@@ -11,7 +11,10 @@ auditable instead of invisible.
 
 The unit half asserts the arithmetic exactly (stubbed attempts, recorded
 backoffs, no real sleeping); the black-box half proves the same numbers land
-in the real run dir's status.json and events.jsonl.
+in the real run dir's status.json and events.jsonl -- since task 010 (B.4) at
+the shared launcher's all-zero schedule, so the spawned engine's ladder is
+walked without a real sleep and the non-zero arithmetic stays the unit half's
+job.
 """
 
 from __future__ import annotations
@@ -125,6 +128,14 @@ def test_total_survives_a_resume(tmp_path):
 
 
 def test_status_json_records_infra_wait_total_and_extended_deadline(engine_factory):
+    """Task 010 (B.4): the spawned engine walks its ladder on the shared
+    launcher's all-zero schedule (`tests/conftest.py::_with_zero_backoff`), so
+    this node names no `RALPHD_INFRA_RETRY_BACKOFF_S` of its own and buys no
+    real sleep. What it proves is the plumbing end to end: an `infra_retry` and
+    a `deadline_extended` event per attempt, the SAME number in the events and
+    in `status.json`, and `deadlineAt == startedAt + job_timeout_s + the waited
+    time` -- the arithmetic itself, over non-zero waits, is the unit half above
+    (`waits == [0.1, 0.2, 0.4]`, stubbed, never slept)."""
     e = engine_factory(
         job={"on_complete": "exit", "iterations": 3, "max_approaches": 1,
              "job_timeout_s": 600},
@@ -133,7 +144,6 @@ def test_status_json_records_infra_wait_total_and_extended_deadline(engine_facto
             "STUB_INFRA_HANG_SKIP": "1",   # planning is healthy
             "STUB_INFRA_HANG_COUNT": "3",  # three worker attempts hang
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.5,1",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
     assert e.proc.wait(timeout=90) == 0
@@ -143,11 +153,15 @@ def test_status_json_records_infra_wait_total_and_extended_deadline(engine_facto
     events = [json.loads(line) for line in
               (e.run_dir / "events.jsonl").read_text().splitlines()]
     waits = [ev["backoffS"] for ev in events if ev.get("type") == "infra_retry"]
-    assert waits == [0.5, 1.0, 1.0]
+    assert waits == [0.0, 0.0, 0.0], \
+        "three faults, three ladder steps, none of them waited"
     assert status["infraWaitTotalS"] == pytest.approx(sum(waits))
 
     ext = [ev for ev in events if ev.get("type") == "deadline_extended"]
-    assert [ev["waitedS"] for ev in ext] == waits
+    assert [ev["waitedS"] for ev in ext] == waits, \
+        "one extension booked per wait, of exactly the seconds waited"
+    assert [ev["infraWaitTotalS"] for ev in ext] == [
+        pytest.approx(sum(waits[:i])) for i in range(1, len(waits) + 1)]
     # deadlineAt == start + job_timeout_s + the waited time (the whole point:
     # the outage is added on top, not taken out of the job's budget).
     expected = parse_utc(status["startedAt"]) + 600 + sum(waits)

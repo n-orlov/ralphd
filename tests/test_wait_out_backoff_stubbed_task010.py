@@ -38,10 +38,18 @@ stub-`pi` (subprocess) side of the same "no real sleeps" requirement:
   (`_with_zero_backoff`, exercised below), so a stub-`pi` module that merely
   happens to hit one infra fault can no longer pay `JobConfig`'s shipped
   2 s..300 s ladder;
-* every module that DOES name a non-zero schedule of its own is on
-  `NONZERO_BACKOFF_ALLOWLIST` below with the reason its own subject needs
-  one, and every name on that list still carries a non-zero value (a stale
-  entry fails the check as loudly as an unlisted module does).
+* and NO module outside the three exempt ones names a non-zero schedule of its
+  own any more: the five that used to (`test_status_infra_retry_note.py`,
+  `test_status_health_infra_wait.py`, `test_infra_deadline_extension.py`,
+  `test_cli_fault_explanation.py`, `test_reflection.py`) were converted on this
+  task's third pass -- two of them observe the wait-only status window from
+  *inside* a stubbed `_wait_out_backoff` (in-process, deterministic, no poll
+  race), one bounds its retry episode with an attempt cap instead of a spent
+  outage budget, and two assert their subject against the engine's own
+  zero-cost ladder. `NONZERO_BACKOFF_ALLOWLIST` below is therefore down to the
+  single module that names the knobs without launching anything at all, and
+  `test_the_allowlist_has_no_stale_entries` keeps it from growing back
+  silently.
 """
 
 from __future__ import annotations
@@ -191,34 +199,11 @@ def test_the_checker_actually_fires_on_the_shapes_it_claims_to_catch(
 # Every module that names a NON-ZERO `RALPHD_INFRA_RETRY_BACKOFF_S` /
 # `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` -- the only two knobs a spawned engine
 # reads, and therefore the only ones that can buy a real sleep in a stub-`pi`
-# test -- with the reason its own subject cannot be met on the launcher's
-# all-zero schedule. An in-process module configuring a non-zero schedule is
-# NOT on this list and does not need to be: its `_wait_out_backoff` is stubbed
-# (the clause above), so the numbers are reported, never waited.
+# test -- with the reason it cannot be zero. Exactly one module qualifies, and
+# it launches no engine at all. An in-process module configuring a non-zero
+# schedule is NOT on this list and does not need to be: its `_wait_out_backoff`
+# is stubbed (the clause above), so the numbers are reported, never waited.
 NONZERO_BACKOFF_ALLOWLIST = {
-    "test_status_infra_retry_note.py":
-        "the `currentIteration.note` under test exists only while the engine "
-        "is inside the backoff wait (loop.py writes it immediately before "
-        "`_wait_out_backoff`, and the next attempt's iteration-start status "
-        "write clears it), so an all-zero schedule leaves nothing for the "
-        "0.3s poll loop to observe -- 1s per attempt is the smallest window "
-        "that keeps the observation deterministic (declared as a B.4 residual "
-        "for this wave's petitions file)",
-    "test_status_health_infra_wait.py":
-        "same shape for `health`/`infraWait`: both are only populated between "
-        "`_begin_infra_wait` and `_end_infra_wait`, i.e. only for as long as "
-        "the wait itself lasts",
-    "test_infra_deadline_extension.py":
-        "asserts `infraWaitTotalS == sum(waits)` and `deadlineAt == start + "
-        "job_timeout_s + sum(waits)` through the real engine: on an all-zero "
-        "schedule both sides are 0 and the assertion says nothing",
-    "test_cli_fault_explanation.py":
-        "asserts `budget.totalWaitedS > 0` for a ladder the engine itself "
-        "walked; reduced to 0.05s per attempt, the smallest value that keeps "
-        "that assertion non-vacuous",
-    "test_reflection.py":
-        "the reflect retry episode here ends by spending its 1.0s outage "
-        "budget, and only wall-clock waits spend an outage budget",
     "test_job_config_defaults.py":
         "no engine is launched at all: monkeypatched env, read back through "
         "in-process `JobConfig.load` -- the parsing of the two knobs is the "

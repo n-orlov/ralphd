@@ -758,11 +758,16 @@ def test_engine_infra_fault_is_explained_end_to_end(live):
             "STUB_INFRA_HANG_COUNT": "2",  # then two hung worker attempts
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_MAX": "4",
-            # Task 010 (B.4): the smallest schedule this node's own
-            # assertion (`budget.totalWaitedS > 0` -- the engine really did
-            # wait) can be made with; it is deliberately not the launcher's
-            # all-zero default, which would make that assertion vacuous.
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.05,0.05,0.05",
+            # Task 010 (B.4): no backoff schedule is named here any more, so
+            # this node inherits the shared launcher's all-zero one
+            # (`tests/conftest.py::_with_zero_backoff`) and the engine's two
+            # retries cost no wall clock at all. The budget assertion below
+            # therefore cross-checks the explanation against the engine's OWN
+            # recorded total instead of demanding a non-zero one; the non-zero
+            # rendering of the same field is covered by the hand-written
+            # `totalWaitedS` nodes above (30 s/90 s/900 s), and the wait
+            # accounting itself by `tests/test_infra_outage_budget.py`, one of
+            # B.4's three exempt modules.
         })
     status = e.wait_terminal(timeout=90)
     assert status["state"] == "succeeded"
@@ -777,9 +782,18 @@ def test_engine_infra_fault_is_explained_end_to_end(live):
     assert exp["iteration"] is not None
     # the ladder is the engine's own: two attempts, its own backoffs, its cap
     assert exp["recovered"] is True, "the third attempt reached the model"
-    assert exp["budget"]["totalWaitedS"] > 0
+    # The explanation's budget block exists only for a ladder that actually
+    # SPENT something: at the launcher's all-zero schedule (task 010, B.4) the
+    # two retries cost nothing, so `budget` is honestly absent rather than a
+    # fabricated 0 s spend. The non-zero shape of the same block is pinned by
+    # the hand-written `totalWaitedS` nodes above (30 s/90 s/900 s), and the
+    # accounting itself by `tests/test_infra_outage_budget.py`.
+    assert status.get("infraWaitTotalS", 0.0) == pytest.approx(0.0)
+    assert exp["budget"] is None
     retries = read_events(e.run_dir, ("infra_retry",))
     assert [ev["attempt"] for ev in retries] == [1, 2]
+    assert [ev["backoffS"] for ev in retries] == [0.0, 0.0], \
+        "the launcher's all-zero schedule: the ladder is walked, not waited"
     assert all(ev["maxAttempts"] == 4 for ev in retries)
 
     # ... and the CLI prints exactly that, from the run dir alone.
