@@ -346,7 +346,9 @@ def test_the_loop_threads_who_recorded_the_abort_into_the_explanation(
 
     def reason_for(abort: str, *, recorded: bool):
         root = tmp_path / ("recorded" if recorded else "selfgiveup")
-        sup = loop_mod.LoopSupervisor(JobConfig(run_id="unit"),
+        sup = loop_mod.LoopSupervisor(JobConfig(run_id="unit",
+                                             infra_retry_backoff_s=[0.0],
+                                             infra_retry_backoff_max_s=0.0),
                                       RunDir(root=root), root)
         sup._abort_reason = abort
         sup._operator_abort_recorded = recorded

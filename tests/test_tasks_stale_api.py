@@ -52,7 +52,8 @@ def client(tmp_path):
     _forget_process_cache()
     run = RunDir(root=tmp_path)
     run.update_status(state="running")
-    sup = LoopSupervisor(JobConfig(run_id="unit"), run, tmp_path)
+    sup = LoopSupervisor(JobConfig(run_id="unit", infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run, tmp_path)
     app = create_app(sup.cfg, run, sup)
 
     def open_client() -> httpx.AsyncClient:

@@ -248,6 +248,7 @@ def _sup(root: Path, **cfg_kw) -> LoopSupervisor:
     run = RunDir(root=root)
     run.update_status(state="running")
     kw = {"iterations": 15, "max_approaches": 1, "vigilant": False,
+          "infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
           **cfg_kw}
     sup = LoopSupervisor(JobConfig(run_id="v014-worker-split", **kw), run, root)
     atomic_write_json(run.tasks_file, {"version": 1, "tasks": [_task()]})

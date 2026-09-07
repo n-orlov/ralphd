@@ -169,8 +169,12 @@ def test_a_buggy_step_handler_proposing_an_illegal_target_fails_the_run_loudly(t
 def test_loopsupervisor_builds_its_executor_from_cfg_vigilant_alone(tmp_path):
     root = tmp_path / "run"
     run = RunDir(root=root)
-    vig = LoopSupervisor(JobConfig(run_id="v", iterations=1, vigilant=True), run, root)
-    plain = LoopSupervisor(JobConfig(run_id="p", iterations=1, vigilant=False),
+    vig = LoopSupervisor(JobConfig(run_id="v", iterations=1, vigilant=True,
+                                   infra_retry_backoff_s=[0.0],
+                                   infra_retry_backoff_max_s=0.0), run, root)
+    plain = LoopSupervisor(JobConfig(run_id="p", iterations=1, vigilant=False,
+                                     infra_retry_backoff_s=[0.0],
+                                     infra_retry_backoff_max_s=0.0),
                            run, root)
     assert vig._executor.vigilant is True
     assert plain._executor.vigilant is False

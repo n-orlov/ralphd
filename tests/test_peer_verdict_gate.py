@@ -576,7 +576,9 @@ def test_verdict_gate_run_iteration_call_site_passes_no_extra_context(monkeypatc
     RunDir(root=root).update_status(state="starting")
     sup = LoopSupervisor(
         JobConfig(run_id="task020-unit", iterations=5, max_approaches=1,
-                 vigilant=False, peer_verdict_gate=True), run, root)
+                 vigilant=False, peer_verdict_gate=True,
+                 infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0),
+        run, root)
     sup._approach = 1
 
     calls = []

@@ -131,7 +131,8 @@ def test_tasks_read_blocked_by_includes_the_petitioned_cause(tmp_path):
 def client(tmp_path):
     run = RunDir(root=tmp_path)
     run.update_status(state="running")
-    sup = LoopSupervisor(JobConfig(run_id="unit"), run, tmp_path)
+    sup = LoopSupervisor(JobConfig(run_id="unit", infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run, tmp_path)
     app = create_app(sup.cfg, run, sup)
 
     def get(path: str) -> dict:

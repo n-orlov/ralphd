@@ -137,7 +137,8 @@ def test_a_worker_writable_workspace_file_cannot_supply_the_answer(tmp_path):
     workspace.mkdir()
     run = RunDir(root=run_root)
     run.update_status(state="starting")
-    cfg = JobConfig(run_id="task005-curability")
+    cfg = JobConfig(run_id="task005-curability", infra_retry_backoff_s=[0.0],
+                   infra_retry_backoff_max_s=0.0)
     sup = LoopSupervisor(cfg, run, workspace)
     assert sup.workspace == workspace  # the worker-writable directory
 

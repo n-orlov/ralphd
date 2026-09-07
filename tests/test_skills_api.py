@@ -89,7 +89,7 @@ def test_skills_crud_and_visibility(skills_engine, tmp_path):
     fake_home.mkdir()
     _write_mounted_skill(tmp_path / "config", "greet")
     e = skills_engine(job={"iterations": 20},
-                      stub_env={"HOME": str(fake_home), "STUB_SLEEP": "0.3",
+                      stub_env={"HOME": str(fake_home), "STUB_SLEEP": "0",
                                 "STUB_TASKS": "5"})
     e.wait_api()
 

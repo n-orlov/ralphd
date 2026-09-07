@@ -41,7 +41,9 @@ def _free_port() -> int:
 def client(tmp_path):
     """ASGI client factory over the engine app on a caller-written run dir."""
     run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(JobConfig(run_id="unit", max_approaches=3), run,
+    sup = LoopSupervisor(JobConfig(run_id="unit", max_approaches=3,
+                                  infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run,
                          tmp_path)
     app = create_app(sup.cfg, run, sup)
 

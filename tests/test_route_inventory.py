@@ -80,7 +80,9 @@ def app_routes(app: FastAPI) -> list[tuple[str, str]]:
 
 def _real_app(tmp_path: Path) -> FastAPI:
     run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(JobConfig(run_id="unit", iterations=5), run, tmp_path)
+    sup = LoopSupervisor(JobConfig(run_id="unit", iterations=5,
+                                  infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run, tmp_path)
     return create_app(sup.cfg, sup.run, sup)
 
 

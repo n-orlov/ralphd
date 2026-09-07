@@ -106,7 +106,7 @@ def test_logs_tail_dash_n(live):
 def test_logsf_alias_and_dash_f_follow_across_iterations(live):
     run = live(run_id="logtest-follow",
               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "2",
-                        "STUB_SLEEP": "0.4"})
+                        "STUB_SLEEP": "0"})
 
     results = {}
 

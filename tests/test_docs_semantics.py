@@ -107,7 +107,8 @@ def client(tmp_path):
     """The real engine app over an empty run dir, as an ASGI client factory."""
     run = RunDir(root=tmp_path)
     run.update_status(state="running")
-    sup = LoopSupervisor(JobConfig(run_id="docs"), run, tmp_path)
+    sup = LoopSupervisor(JobConfig(run_id="docs", infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run, tmp_path)
     app = create_app(sup.cfg, run, sup)
 
     def open_client() -> httpx.AsyncClient:

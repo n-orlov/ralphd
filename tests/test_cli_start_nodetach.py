@@ -53,7 +53,7 @@ def test_no_detach_survives_api_dying_at_container_exit(ctl):
     res = ctl.run("start", "--prd", str(ctl.prd), "--run-id", run_id,
                   "--llm", "none", "--on-complete", "exit", "--no-detach",
                   "--iterations", "10",
-                  env={**_live_env(), "STUB_TASKS": "1", "STUB_SLEEP": "0.2"})
+                  env={**_live_env(), "STUB_TASKS": "1", "STUB_SLEEP": "0"})
     run_dir = ctl.registry / "runs" / run_id
     sup = _wait_for_supervisor(run_dir)
     # the point of this test: the supervisor really did SIGKILL the engine
@@ -81,7 +81,7 @@ def test_no_detach_exits_nonzero_when_stub_never_verifies(ctl):
                   # the always-satisfied stub Reviewer would flip this run to
                   # verified despite the deliberately-failing Verifier.
                   env={**_live_env(), "STUB_TASKS": "1", "STUB_VERIFY_FAILS": "99",
-                       "STUB_REVIEW_FAILS": "99", "STUB_SLEEP": "0.6"})
+                       "STUB_REVIEW_FAILS": "99", "STUB_SLEEP": "0"})
     run_dir = ctl.registry / "runs" / run_id
     _wait_for_supervisor(run_dir)
     status = json.loads((run_dir / "status.json").read_text())

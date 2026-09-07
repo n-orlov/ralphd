@@ -253,7 +253,9 @@ def _bare_supervisor(root: Path, **cfg_kw) -> LoopSupervisor:
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
     run.update_status(state="starting")
-    cfg = JobConfig(run_id="task017-reflect-ladder", reflect=True, **cfg_kw)
+    cfg = JobConfig(run_id="task017-reflect-ladder", reflect=True,
+                    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
+                    **cfg_kw)
     return LoopSupervisor(cfg, run, root)
 
 

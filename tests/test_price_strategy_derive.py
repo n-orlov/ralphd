@@ -334,11 +334,14 @@ def test_effective_config_carries_the_price_tables(tmp_path):
 
 def test_the_supervisor_hands_the_resolved_chain_to_the_runner(tmp_path):
     run = RunDir(root=tmp_path / "run")
-    aws_sup = LoopSupervisor(JobConfig(run_id="unit", price_strategy="aws"),
+    aws_sup = LoopSupervisor(JobConfig(run_id="unit", price_strategy="aws",
+                                       infra_retry_backoff_s=[0.0],
+                                       infra_retry_backoff_max_s=0.0),
                              run, tmp_path)
     assert isinstance(aws_sup.runner.pricing, PricingChain)
     assert aws_sup.runner.pricing.table_for(GATEWAY_MODEL) == aws.TABLE_NAME
-    plain = LoopSupervisor(JobConfig(run_id="unit"), run, tmp_path)
+    plain = LoopSupervisor(JobConfig(run_id="unit", infra_retry_backoff_s=[0.0],
+                                     infra_retry_backoff_max_s=0.0), run, tmp_path)
     assert plain.runner.pricing is None
 
 

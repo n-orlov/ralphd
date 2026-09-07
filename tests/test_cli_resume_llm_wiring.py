@@ -216,7 +216,7 @@ def test_resume_reproduces_env_seen_by_real_pi_subprocess(ctl):
                   "--llm", "host", "--on-complete", "idle",
                   "--iterations", "10", "--max-approaches", "1",
                   env={**_live_env(), "ANTHROPIC_API_KEY": secret,
-                       "STUB_TASKS": "1", "STUB_SLEEP": "0.1"})
+                       "STUB_TASKS": "1", "STUB_SLEEP": "0"})
     assert res.returncode == 0, res.stderr
     run_dir = ctl.registry / "runs" / run_id
     sup1 = _wait_for_supervisor(run_dir)

@@ -61,7 +61,8 @@ def _fixture_run(tmp_path):
 
 
 def _client(run: RunDir, tmp_path) -> httpx.AsyncClient:
-    cfg = JobConfig(run_id="logmerge")
+    cfg = JobConfig(run_id="logmerge", infra_retry_backoff_s=[0.0],
+                   infra_retry_backoff_max_s=0.0)
     sup = LoopSupervisor(cfg, run, tmp_path / "workspace")
     app = create_app(cfg, run, sup)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app),

@@ -153,7 +153,8 @@ def test_a_junk_consumed_marker_leaves_everything_pending(tmp_path):
 def _engine_get(tmp_path, path: str):
     run = RunDir(root=tmp_path)
     run.update_status(state="running")
-    sup = LoopSupervisor(JobConfig(run_id="unit"), run, tmp_path)
+    sup = LoopSupervisor(JobConfig(run_id="unit", infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run, tmp_path)
     app = create_app(sup.cfg, run, sup)
 
     async def go():

@@ -356,7 +356,8 @@ def _status(app) -> dict:
 @pytest.fixture
 def engine_app(tmp_path):
     run = RunDir(root=tmp_path)
-    sup = LoopSupervisor(JobConfig(run_id="unit"), run, tmp_path)
+    sup = LoopSupervisor(JobConfig(run_id="unit", infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run, tmp_path)
     run.update_status(state="running")
     return create_app(sup.cfg, run, sup)
 
