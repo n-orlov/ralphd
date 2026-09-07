@@ -82,7 +82,7 @@ def _spawn_under_pty(run, extra_args: list[str]):
 
 def test_sigint_restores_termios_mode(live):
     run = live(run_id="pty-sigint", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.5",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "0.5",
                          "STUB_TASKS": "3"})
     run.wait_api()
 
@@ -118,7 +118,7 @@ def test_sigint_restores_termios_mode(live):
 
 def test_quit_keypress_restores_termios_mode(live):
     run = live(run_id="pty-quit", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.5",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "0.5",
                          "STUB_TASKS": "3"})
     run.wait_api()
 
@@ -145,7 +145,7 @@ def test_quit_keypress_restores_termios_mode(live):
 
 def test_sigterm_exits_clean_and_restores_termios_mode(live):
     run = live(run_id="pty-sigterm", job={"iterations": 20},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.5",
+               stub_env={"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "0.5",
                          "STUB_TASKS": "3"})
     run.wait_api()
 

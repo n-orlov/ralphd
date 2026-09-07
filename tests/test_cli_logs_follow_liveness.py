@@ -35,7 +35,7 @@ from tests.conftest import RALPHCTL
 # implementation's "first" line -- which would only arrive at job end --
 # is trivially distinguishable from a genuinely live first line, which
 # arrives while iterations are still in flight.
-_STUB_ENV = {"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "1.5", "STUB_TASKS": "3"}
+_STUB_ENV = {"STUB_RICH_EVENTS": "1", "STUB_SLEEP": "0.3", "STUB_TASKS": "3"}
 
 
 def _spawn(run, *extra_args: str) -> subprocess.Popen:
