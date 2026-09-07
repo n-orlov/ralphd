@@ -82,7 +82,7 @@ def test_secrets_redacted_from_output_events_and_logs(redact_engine, tmp_path):
     _write_mounted_cred(tmp_path / "config", "probe", f"PROBE_TOKEN={SECRET_CRED}\n")
 
     e = redact_engine(
-        stub_env={"HOME": str(fake_home), "STUB_TASKS": "2", "STUB_SLEEP": "2",
+        stub_env={"HOME": str(fake_home), "STUB_TASKS": "2", "STUB_SLEEP": "0.5",
                  "STUB_ECHO_SECRET": f"{SECRET_CRED},{SECRET_LLM}"})
     e.wait_api()
 

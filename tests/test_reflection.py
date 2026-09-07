@@ -47,7 +47,7 @@ def _sha(path: Path) -> str:
 
 def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_factory):
     e = engine_factory(job={"reflect": True, "iterations": 6, "on_complete": "exit"},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.5"})
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.5"})
     # Task 006: under a loaded whole-tier run, `wait_api()`'s stock 15 s
     # budget is not always enough for this specific engine subprocess to
     # get scheduled and bind its port -- observed failing with "engine API

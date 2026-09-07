@@ -259,7 +259,7 @@ def test_a_sigtermed_engine_records_reflect_as_not_attempted(engine_factory):
     down by a real SIGTERM mid-job (what `ralphctl stop` and `docker stop` both
     do)."""
     e = engine_factory(job={"reflect": True, "iterations": 6},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.5"})
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.5"})
     e.wait_api()
     e.wait_state(("running",), timeout=30)
 

@@ -12,7 +12,7 @@ import json
 
 def test_ralphctl_status_warns_about_unconsumed_steering(live):
     run = live(run_id="unconsumed-steer", job={"iterations": 12},
-               stub_env={"STUB_TASKS": "10", "STUB_SLEEP": "5"})
+               stub_env={"STUB_TASKS": "10", "STUB_SLEEP": "1"})
     run.wait_api()
 
     steer = run.ralphctl("steer", run.run_id, "never gets acted on",
@@ -39,7 +39,7 @@ def test_ralphctl_status_no_warning_when_steering_fully_consumed(live):
     """Negative case: a run that ends with no pending steering (the common
     case) must not print the warning line at all."""
     run = live(run_id="no-unconsumed-steer", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"})
+               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.3"})
     run.wait_terminal(timeout=60)
 
     jres = run.ralphctl("--json", "status", run.run_id)
