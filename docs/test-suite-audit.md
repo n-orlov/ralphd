@@ -173,6 +173,12 @@ remainder ~50 s. Fast tier ~3 min *before* any consolidation; ~1.5-2 min after.
 | **fast** (final sha / PR) | smoke + the 12 stub-pi flows + process-boundary CLI tests | ~5-6 min | ~2 min |
 | **nightly** | docker tier (~20 min), browser (~8 min), the two dev-layout modes (today 40 min each; scale with the fast tier -> ~15 min each) | ~1.5 h | ~45 min |
 
+The three lanes are markers as of task 004 (requirement G.8): `smoke` and `fast` are registered in
+`pyproject.toml` and derived per item by `pytest_collection_modifyitems` in `tests/conftest.py` from
+exactly this table's contents column (nightly is the pre-existing `docker`/`browser` pair plus the
+dev-layout module). `docs/testing.md` carries the recipes and the measured budget per lane, and
+`tests/test_tier_budgets.py` fails when a lane outgrows the budget declared there.
+
 ### (e) Risks: what the merged flows must still catch
 - Ordering/precedence bugs the pins were written for: incurable-over-curable, tamper never cures,
   cure pass once per approach, last-approach pauses instead of failing, petition adjudication

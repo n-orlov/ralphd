@@ -74,9 +74,20 @@ from scratch, trusting nothing the worker wrote about its own work.
   no grace period: an iteration killed at the cap loses its uncommitted work and
   is recorded as a validation failure though nothing was wrong with the work.
   Run only the targeted test modules that cover the criteria in front of you
-  (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
-  chain two whole-suite runs, and background such a run, polling it instead of
-  blocking on it.
+  (seconds, not minutes). When a criterion needs more than the modules it names,
+  select the **smoke tier** -- the per-task tier: in-process engine flows,
+  in-process CLI, records lint, in-process hub, and no real engine or
+  `ralphctl` process:
+
+      .venv/bin/python -m pytest -q -m smoke -n 8 --dist loadfile
+
+  `scripts/final_sha_guards.sh` selects the same tier over the records-guard
+  modules it discovers, and `docs/testing.md` records both tiers with their
+  recipes and measured budgets. Run the whole suite at most ONCE per iteration
+  (the `fast` tier, `-m fast`, which adds the stub-pi flows and the
+  process-boundary CLI tests, belongs to the final sha rather than to a
+  per-task check), never chain two whole-suite runs, and background such a run,
+  polling it instead of blocking on it.
 - **Standing rules are not per-task criteria (#115, second cut).** The notes
   file's harness-pinned `## Standing rules` block (task 107 -- commit title
   format, branch and push target, commit identity, credential paths, the

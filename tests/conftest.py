@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import functools
 import json
 import os
+import re
 import shutil
 import site
 import socket
@@ -247,6 +249,83 @@ def pytest_configure(config):
         "scrub, so its own os.environ (and anything it calls in-process, "
         "e.g. JobConfig.load()) sees the ambient notifier URL",
     )
+
+
+# --- the smoke and fast tiers (task 004, requirement G.8) ------------------
+# docs/test-suite-audit.md § 5(d) "Tiers" names three lanes by CONTENTS, not
+# by module list:
+#
+#   smoke   in-process engine flows (LoopSupervisor + scripted attempts,
+#           backoffs stubbed), CLI in-process, records lint, hub in-process
+#   fast    smoke + the stub-pi flows + process-boundary CLI tests
+#   nightly the docker tier, the browser tier, the two dev-layout modes
+#
+# So membership is DERIVED here, exactly as `scripts/final_sha_guards.sh`
+# derives its guard subset -- never enumerated. A hand-typed module list is
+# the v0.13 failure mode this repo already paid for once (see that script's
+# header): the list omits a module, the omission is invisible, and a new
+# module added tomorrow silently belongs to no tier. With a derivation, a
+# module written after this comment lands in the right tier the first time
+# it is collected.
+#
+# The rules, in order:
+#   - an item carrying `docker` or `browser` is nightly: neither `smoke` nor
+#     `fast` (the two markers this suite already had, unchanged);
+#   - a `tests/test_host_like_dev_layout_script.py` item is nightly too --
+#     that is the dev-layout mode the tier table puts in the nightly lane;
+#   - everything else is `fast`;
+#   - a `fast` item is ALSO `smoke` unless its module spawns a real engine
+#     or a real `ralphctl`/console-script process, i.e. unless its own
+#     source names one of the process-boundary helpers below (the `live`
+#     fixture is named by its CALL, `live(`, because a fixture arrives as a
+#     bare parameter name that a docstring could also mention). Those spawns
+#     are the whole difference between the two tiers in the audit's table
+#     ("smoke + the stub-pi flows + process-boundary CLI tests"), and they
+#     are what the 981 s serial fast tier spends ~75 % of its wall clock on
+#     (audit § 2). Nested `pytest --collect-only` (the records lint's own
+#     shape, tests/test_conformance_ledger.py) is deliberately NOT in this
+#     list: the tier table puts records lint in `smoke`.
+_PROCESS_BOUNDARY_RE = re.compile(
+    r"""
+      \bLiveRun\b          # the shared real-engine harness (task 021 folded EngineProc in)
+    | \bEngineProc\b       # its pre-task-021 spelling, so an old module still sorts right
+    | \bengine_factory\b   # the registry-less LiveRun factory fixture
+    | \blive\(            # the registry LiveRun factory fixture, called
+    | \bRALPHCTL\b         # a real `ralphctl` subprocess
+    | \bRALPHD_ENGINE\b    # a real `ralphd-engine` subprocess
+    | host_like_           # the bash `scripts/host_like_*.sh` runs
+    """,
+    re.VERBOSE,
+)
+
+_NIGHTLY_MODULES = ("test_host_like_dev_layout_script.py",)
+
+
+@functools.lru_cache(maxsize=None)
+def _module_is_in_process(path: str) -> bool:
+    """True when this test module never spawns a real engine/CLI process, so
+    its tests belong to the `smoke` tier as well as to `fast`."""
+    try:
+        source = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _PROCESS_BOUNDARY_RE.search(source) is None
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Stamp every collected item with its tier (`smoke`/`fast`), before the
+    mark plugin's own `-m` deselection runs (hence `tryfirst`)."""
+    for item in items:
+        keywords = item.keywords
+        if "docker" in keywords or "browser" in keywords:
+            continue
+        path = str(getattr(item, "fspath", "") or "")
+        if any(path.endswith(name) for name in _NIGHTLY_MODULES):
+            continue
+        item.add_marker(pytest.mark.fast)
+        if _module_is_in_process(path):
+            item.add_marker(pytest.mark.smoke)
 
 
 def free_port() -> int:

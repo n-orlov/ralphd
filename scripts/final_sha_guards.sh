@@ -59,8 +59,15 @@ echo
 
 # The docker/browser tiers are separate, deliberately excluded lanes (see
 # scripts/host_like_pytest.sh's header for why a nested docker socket makes
-# that tier meaningless here) -- same filter the fast tier already uses, so
-# this stays a *subset* of the fast tier rather than a third, uncomparable
-# lane. Discovery still finds those modules; this only skips their marked
-# tests, so the deselect is fast rather than a real docker/browser run.
-exec "$PYTHON_BIN" -m pytest -q -m 'not docker and not browser' "${MODULES[@]}"
+# that tier meaningless here). Selection is by the `smoke` marker (task 004,
+# requirement G.8): the per-task tier -- in-process engine flows, in-process
+# CLI, records lint, in-process hub -- which excludes docker, browser and the
+# dev-layout lane by construction, and additionally leaves out the modules
+# that spawn a real engine or `ralphctl` process, since those cost ~75 % of
+# the fast tier's wall clock (docs/test-suite-audit.md section 2) and a
+# docs- or report-only commit cannot break them. tests/conftest.py derives
+# the marker; docs/testing.md records both tiers with their budgets.
+# Discovery above still finds every guard module; this only deselects the
+# tests of theirs that are outside the smoke tier, so the run stays a
+# *subset* of the fast tier rather than a third, uncomparable lane.
+exec "$PYTHON_BIN" -m pytest -q -m 'smoke' "${MODULES[@]}"
