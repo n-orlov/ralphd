@@ -111,15 +111,22 @@ def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_pa
     assert all(t["status"] == "pending" for t in infra_tasks)
 
     # Direction 2: work fault (reached the model, failed doing the task) ->
-    # left `in-progress`, never silently reverted to `pending`.
+    # left `in-progress`, never silently reverted to `pending`. Because
+    # this is the run's last (and only) approach, the worker never seeing
+    # a verdict across 3 iterations trips the SAME last-approach
+    # stagnation guard as `test_genuine_stagnation_guard_still_fails_job_
+    # unaffected` below -- task 012 (PRD requirement B.3, #153) means it
+    # now pauses and escalates (`state: "paused"`, `pauseReason:
+    # "stagnation"`) rather than exiting `failed`, so this waits for the
+    # PAUSE, not for process exit (the process never exits on its own).
     e_work = LiveRun(
         tmp_path_factory.mktemp("work_fault"),
         {"run_id": "e2e", "iterations": 12, "max_approaches": 1, "on_complete": "exit"},
         stub_env={"STUB_TASKS": "1", "STUB_WORKER_WORK_FAULT": "1"})
     try:
-        assert e_work.proc.wait(timeout=60) == 1
-        status = json.loads((e_work.run_dir / "status.json").read_text())
-        assert status["state"] == "failed"
+        status = e_work.wait_state(("paused",), timeout=60)
+        assert status["pauseReason"] == "stagnation"
+        assert status["state"] != "failed"
         work_tasks = json.loads((e_work.run_dir / "tasks.json").read_text())["tasks"]
         assert len(work_tasks) == 1
         assert work_tasks[0]["status"] == "in-progress"
@@ -131,10 +138,15 @@ def test_genuine_stagnation_guard_still_fails_job_unaffected(engine_factory):
     """Regression check: genuine no-progress (a worker that runs to
     completion every time but never changes tasks.json -- no crash, no
     instant exit) must still trip the ordinary 3-iterations-no-progress
-    guard and fail the job exactly as before task 059."""
+    guard exactly as before task 059 -- but task 012 (PRD requirement B.3,
+    #153) changed what tripping it means on the LAST approach (`max_
+    approaches=1` here, so every approach is the last one): the run now
+    pauses and escalates (`state: "paused"`, `pauseReason: "stagnation"`)
+    instead of exiting `failed` silently, so this waits for the pause
+    (bounded by `wait_state`'s own deadline) rather than for process exit,
+    which never happens on its own here."""
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
                        stub_env={"STUB_WORKER_STALLS": "1"})
-    assert e.proc.wait(timeout=60) == 1
-    status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    status = e.wait_state(("paused",), timeout=60)
+    assert status["pauseReason"] == "stagnation"
+    assert status["state"] != "failed"

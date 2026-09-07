@@ -57,12 +57,17 @@ def test_review_rejection_starts_new_approach(engine_factory):
 
 
 def test_stagnation_guard_fails_job(engine_factory):
+    """Task 012 (PRD requirement B.3, #153): with `max_approaches=1` this
+    is the run's LAST approach, so genuine no-progress (`STUB_WORKER_
+    STALLS`) now pauses and escalates rather than failing the job
+    silently -- `state: "paused"`, `pauseReason: "stagnation"`. Waits on
+    the pause (bounded by `wait_state`'s own deadline), never on process
+    exit, which does not happen here on its own."""
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
                        stub_env={"STUB_WORKER_STALLS": "1"})
-    assert e.proc.wait(timeout=60) == 1
-    status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    status = e.wait_state(("paused",), timeout=60)
+    assert status["pauseReason"] == "stagnation"
+    assert status["state"] != "failed"
 
 
 def test_budget_exhaustion_fails_job(engine_factory):
