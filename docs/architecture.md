@@ -2238,6 +2238,33 @@ The static bundle served at non-`/api` paths
 (`src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css`, shipped in the
 wheel, no build step) landed in v0.3 task 034.
 
+**Run-detail `ETag`, its two derivation caches, and the client's back-off
+(v0.19.1 tasks 003-005, requirement A).** `GET /api/runs/<id>` answers with
+an `ETag` derived from the run's own on-disk timestamps -- the max `mtime`
+across `status.json`, `tasks.json`, `events.jsonl` and the newest iteration's
+`meta.json` (`run_detail_etag` in `ui_server.py`) -- so the tag changes
+exactly when the payload it would compute would change. A request that
+sends that tag back as `If-None-Match` gets a `304` with the same `ETag` and
+no body, rather than the server recomputing and resending a payload the
+client already has. Two per-run, in-memory caches sit behind that route so a
+miss is cheap too: an iteration-row cache keyed on `(meta.json mtime,
+transcript size)` per iteration number, and a `tasks.json`-shaping cache and
+a `status.json`-shaping cache each keyed on their own file's `mtime`
+(`_ITERATION_ROW_CACHE`, `_TASKS_BLOCK_CACHE`, `_STATUS_BLOCK_CACHE`); all
+three are dropped for a run the moment it is deleted, and a cache entry
+never answers for any run but the one it was keyed on. `app.js`'s run-detail
+poll sends the last `ETag` back as `If-None-Match` on every tick; two
+consecutive `304`s, or the run leaving `state: "running"`, widen its polling
+interval from 4 s (`REFRESH_MS`) to a fixed 20 s (`BACKOFF_POLL_MS`, inside
+the PRD's 15-30s band), snapping back to 4 s the moment a poll's payload
+actually differs again. Every view arms its refresh timer through one
+shared `scheduleRefresh()`, which will not arm one at all while
+`document.hidden`; a single page-level `visibilitychange` listener stops
+whichever timer is running the moment the tab is hidden and restarts it, at
+whatever interval was already in force, the moment the tab is shown again --
+so a backgrounded hub tab neither polls nor advances its own back-off state.
+See [SPEC.md §11.1](../SPEC.md#111-serving-it) for the full walkthrough.
+
 **Shared server-side log renderer (task 014).** `GET /api/runs/<id>/logs`
 does not proxy the run's raw NDJSON `/logs` transcript verbatim to the
 browser: it fetches the FULL raw backlog from the run's live API, then

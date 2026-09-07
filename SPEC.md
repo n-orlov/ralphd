@@ -4247,9 +4247,41 @@ stack into a `pipx` install.
 
 It is also **not a second source of truth**: every JSON endpoint under `/api/`
 either reads `~/.ralphd/runs/*` off disk or proxies the run's live container API
-and falls back to disk when that does not answer. Nothing is cached, no state is
-written, there is no database, and a dead run never produces an error — only
-stale-but-valid data marked as such.
+and falls back to disk when that does not answer. No state is written, there is
+no database, and a dead run never produces an error — only stale-but-valid data
+marked as such.
+
+**`GET /api/runs/<id>` carries an `ETag` (task 003, requirement A.1).** The
+server derives it from the run's own on-disk timestamps — the max `mtime`
+across `status.json`, `tasks.json`, `events.jsonl` and the newest iteration's
+`meta.json` — so it changes exactly when the payload it would compute *would*
+change, never more, never less. A request that sends that same tag back as
+`If-None-Match` gets a bare `304` with the `ETag` repeated and no body; there
+is nothing to recompute or resend, since nothing in the run dir has moved
+since the `200` that produced it. Two small in-memory derivation caches (task
+004, requirement A.2) save the recomputation on a miss too: an
+iteration-row cache keyed per run id and iteration number on `(meta.json
+mtime, transcript size)`, and a `tasks.json`-shaping cache and a
+`status.json`-shaping cache each keyed on their own file's `mtime`. All three
+(`_ITERATION_ROW_CACHE`, `_TASKS_BLOCK_CACHE`, `_STATUS_BLOCK_CACHE` in
+`ui_server.py`) live only in the hub process's memory, are dropped for a run
+the moment that run is deleted, and never answer for any run but the one they
+were keyed on — so this is still not a second source of truth, only a memo of
+a computation the same on-disk files would reproduce.
+
+**The client backs off, and pauses while its tab is hidden (task 005,
+requirement A.3).** The run-detail poll (§11.3) sends the last `ETag` it saw
+back as `If-None-Match` on every tick; two consecutive `304`s, or the run
+leaving `state: "running"`, widen that view's own polling interval from the
+normal 4 seconds (`REFRESH_MS`) to a fixed 20 seconds (`BACKOFF_POLL_MS` —
+inside the PRD's 15-30s band), snapping back to 4 seconds the instant a
+poll's payload actually differs again. Every view arms its refresh timer
+through one shared `scheduleRefresh()`, which refuses to arm one at all while
+`document.hidden`; a single page-level `visibilitychange` listener stops
+whichever timer is currently running the moment the tab is hidden and
+restarts it, at whatever interval was already in force, the moment the tab is
+shown again — so a hub tab left open in the background neither polls nor
+advances its own back-off state while nothing is looking at it.
 
 Everything that is not `/api/` is served from the static bundle packaged in the
 wheel, `src/ralphd/cli/web/`: `index.html`, `app.js`, `style.css`. Plain
@@ -4432,8 +4464,9 @@ dir themselves and a live proxy would only add a way to disagree.
   UI, and the deletion runs through the CLI's own removal code rather than a
   second implementation.
 
-Only one dialog exists at a time and closing it removes it, so the 4-second
-refresh running behind it cannot accumulate copies. Every dialog body is built
+Only one dialog exists at a time and closing it removes it, so the refresh
+loop running behind it — 4 seconds normally, backed off to 20 once the poll
+settles (above) — cannot accumulate copies. Every dialog body is built
 from text nodes — the strings in them are agent- and provider-authored — and is
 formatted by the *server*, using the same modules `ralphctl` prints with, so the
 browser displays exactly what the terminal shows.
