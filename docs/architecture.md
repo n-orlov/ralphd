@@ -1795,10 +1795,12 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   any currently-`completed` task not yet in it, so a task whose completion
   survived a crash but whose verify iteration never ran (or never finished)
   still gets verified before the job can reach a terminal verdict. Tests:
-  `tests/test_vigilant_crash_resume.py` (SIGKILL a specific PID after a
-  task is durably `completed` but its verify iteration's `meta.json` has
-  `startedAt` and no `endedAt`; resume proves a `taskVerified` signal and a
-  passing verify iteration for that task eventually appear).
+  `tests/flows/test_flow_crash_resume_refunds.py::test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifies`
+  (SIGKILL a specific PID after a task is durably `completed` but its
+  verify iteration's `meta.json` has `startedAt` and no `endedAt`; resume
+  proves a `taskVerified` signal and a passing verify iteration for that
+  task eventually appear; formerly `test_vigilant_crash_resume.py`,
+  folded by task 021, requirement C.10).
 
 ## 5. Configuration & injection
 

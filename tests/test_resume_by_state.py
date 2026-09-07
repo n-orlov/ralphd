@@ -1,13 +1,16 @@
 """Task 017: reconstruct FSM position from disk on resume, one test case per
 step state that can genuinely be interrupted mid-invocation or mid-decision,
 driven through the real `ralphd-engine` binary (`engine_factory`, the same
-shared harness `test_e2e.py`/`test_crash_consistency.py` use) -- plus `ralphctl
-repair` diagnosing the same crashed run dirs without ever starting an engine.
+shared harness `test_e2e.py`/`tests/flows/test_flow_crash_resume_refunds.py`
+use) -- plus `ralphctl repair` diagnosing the same crashed run dirs without
+ever starting an engine.
 
 `worker` and `verify` already have dedicated real-binary SIGKILL/resume tests
-(`tests/test_crash_consistency.py::test_sigkill_mid_worker_iteration_then_resume_completes`,
-`tests/test_crash_consistency.py::test_sigkill_at_iteration_boundary_then_resume_completes`,
-`tests/test_vigilant_crash_resume.py::test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifies`)
+(`tests/flows/test_flow_crash_resume_refunds.py::test_sigkill_mid_worker_iteration_then_resume_completes`,
+`tests/flows/test_flow_crash_resume_refunds.py::test_sigkill_at_iteration_boundary_then_resume_completes`,
+`tests/flows/test_flow_crash_resume_refunds.py::test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifies`,
+formerly `tests/test_crash_consistency.py`/`tests/test_vigilant_crash_resume.py`,
+folded by task 021, requirement C.10)
 and are not duplicated here. This module covers the remaining states:
 
 * `planning` -- killed before a single task exists on disk (guard 23: resume

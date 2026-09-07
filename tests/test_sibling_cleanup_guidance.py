@@ -97,7 +97,9 @@ def test_no_cleanup_guidance_without_docker_access(engine):
     # specific real `ralphd-engine` subprocess to get scheduled and exit --
     # observed as `subprocess.TimeoutExpired` at exactly 60 s. Widened, not
     # retried differently, same as task 006's precedent for this class of
-    # flake (tests/test_reflection.py, tests/test_crash_consistency.py).
+    # flake (tests/test_reflection.py,
+    # tests/flows/test_flow_crash_resume_refunds.py, formerly
+    # tests/test_crash_consistency.py, folded by task 021).
     e.proc.wait(timeout=120)
     for p in _prompts(e):
         assert "Docker siblings" not in p
