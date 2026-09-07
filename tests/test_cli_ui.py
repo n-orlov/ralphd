@@ -316,7 +316,7 @@ def test_hub_and_cli_share_one_nonterminal_state_set(tmp_path):
 def test_run_detail_proxies_live_status_tasks_and_logs(tmp_path, live, ui):
     run = live(run_id="hubtest", job={"iterations": 12, "max_approaches": 3,
                                       "on_complete": "idle"},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "3"})
+               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"})
     run.wait_api()
 
     server = ui(run.registry)
@@ -442,7 +442,7 @@ def test_log_endpoint_on_disk_lines_match_the_shared_merge(tmp_path, ui):
 def test_steering_post_proxies_and_creates_steering_file(tmp_path, live, ui):
     run = live(run_id="hubsteer", job={"iterations": 12, "max_approaches": 3,
                                        "on_complete": "idle"},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "3"})
+               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"})
     run.wait_api()
 
     server = ui(run.registry)

@@ -248,7 +248,7 @@ def test_live_run_output_is_unchanged(live):
     """A reachable engine is never diagnosed as a zombie: no warning line,
     the duration keeps its `elapsed`/`total` label, and --json says so."""
     run = live(run_id="dead-live", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "3"})
+               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1"})
     run.wait_api()
     res = run.ralphctl("status", run.run_id)
     assert res.returncode == 0, (res.stdout, res.stderr)

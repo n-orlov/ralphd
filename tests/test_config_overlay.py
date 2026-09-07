@@ -118,7 +118,7 @@ def test_config_mutation_persists_in_overlay_not_readonly_config(overlay_engine)
     e = overlay_engine(
         job={"run_id": "overlay-e2e", "iterations": 8, "max_approaches": 1,
              "on_complete": "exit"},
-        stub_env={"STUB_SLEEP": "2"})
+        stub_env={"STUB_SLEEP": "1"})
     e.wait_api()
 
     # /config is genuinely read-only: confirm the mount mode before we rely on it.
@@ -158,7 +158,7 @@ def test_prompt_override_rejects_empty_body(overlay_engine):
     e = overlay_engine(
         job={"run_id": "overlay-empty", "iterations": 3, "max_approaches": 1,
              "on_complete": "exit"},
-        stub_env={"STUB_SLEEP": "2"})
+        stub_env={"STUB_SLEEP": "1"})
     e.wait_api()
     req = urllib.request.Request(
         f"http://127.0.0.1:{e.port}/config/prompts/worker", method="PUT", data=b"")
