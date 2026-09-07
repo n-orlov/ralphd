@@ -76,13 +76,17 @@ def _fake_pi(tmp_path, *, obey_sigint: bool):
                          ids=["agent-obeys-sigint", "agent-ignores-sigint"])
 def test_runner_returns_a_timed_out_result_instead_of_raising(
         tmp_path, monkeypatch, obey_sigint):
-    # Compressed grace so the deaf-agent case finishes in ~2s, not ~30s.
-    monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 2)
+    # Compressed grace so the deaf-agent case finishes in well under 1s, not
+    # ~30s (task 048, B.5 follow-on): the deaf-agent path waits this grace
+    # out TWICE in `PiRunner.run` (once for the pump, once for the process
+    # itself), so shrinking it here shaves both legs at once without
+    # touching the real 30s production default or the behaviour under test.
+    monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 0.2)
     pi = _fake_pi(tmp_path, obey_sigint=obey_sigint)
     r = PiRunner(tmp_path, pi_bin=str(pi))
 
     async def go():
-        return await r.run("prompt", tmp_path / "output.jsonl", timeout_s=1)
+        return await r.run("prompt", tmp_path / "output.jsonl", timeout_s=0.2)
 
     result = asyncio.run(go())          # must NOT raise CancelledError
     assert result.timed_out is True
@@ -95,14 +99,15 @@ def test_runner_returns_a_timed_out_result_instead_of_raising(
 
 
 def test_runner_timeout_leaves_no_orphan_process(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 2)
+    # Task 048 (B.5 follow-on): same double-grace shrink as the test above.
+    monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 0.2)
     pi = _fake_pi(tmp_path, obey_sigint=False)
     r = PiRunner(tmp_path, pi_bin=str(pi))
     pids: list[int] = []
 
     async def go():
         task = asyncio.ensure_future(
-            r.run("prompt", tmp_path / "output.jsonl", timeout_s=1))
+            r.run("prompt", tmp_path / "output.jsonl", timeout_s=0.2))
         while not pids:
             if r.running:
                 pids.append(r._proc.pid)

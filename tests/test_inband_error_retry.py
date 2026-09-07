@@ -26,7 +26,11 @@ import json
 __all__ = ["engine_factory"]
 
 # > INSTANT_FAILURE_MAX_DURATION_S (5.0), small enough to keep the suite fast.
-INBAND_DELAY_S = "6"
+# Task 048 (B.5 follow-on): shrunk from 6 to 5.3 -- still comfortably clear
+# of the 5.0s instant-failure threshold (the delayed subprocess's own
+# start/IPC overhead adds further margin on top), just less of it wasted
+# per delayed invocation across this module's two tests.
+INBAND_DELAY_S = "5.3"
 
 
 def _events(run_dir, type_):

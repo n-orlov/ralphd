@@ -186,7 +186,10 @@ def test_logs_follow_shows_tool_invocation_before_tool_ends(live):
     `tool_execution_end` so this is a genuine timing proof: after seeing
     the invocation line we assert no completion/outcome line arrives
     within a window comfortably shorter than STUB_TOOL_SLEEP."""
-    stub_env = {"STUB_RICH_EVENTS": "1", "STUB_TOOL_SLEEP": "4"}
+    # Task 048 (B.5 follow-on): shrunk from 4s to 2.0s -- still 0.5s clear
+    # of the 1.5s no-completion check window below, the margin the timing
+    # proof actually needs.
+    stub_env = {"STUB_RICH_EVENTS": "1", "STUB_TOOL_SLEEP": "2.0"}
     run = live(run_id="followtest-toolopen", job={"iterations": 3},
                stub_env=stub_env)
     run.wait_api()

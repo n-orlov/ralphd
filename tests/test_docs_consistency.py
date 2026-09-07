@@ -9,6 +9,7 @@ as the CLI evolves.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import re
 import subprocess
@@ -829,11 +830,19 @@ CORPUS_SUFFIXES = {".py", ".js", ".css", ".html", ".md", ".json", ".yaml",
                    ".yml", ".toml", ".txt", ".sh", ".cfg", ""}
 
 
+@functools.lru_cache(maxsize=1)
 def _code_corpus() -> str:
     """Everything shipped plus the tests, as one blob.
 
     Tests count: a doc may point at a fixture (`engine_factory`) that exists
     nowhere else, and that is still a real name in this repo.
+
+    Cached (task 048, B.5 follow-on): this walks the entire `src/`+`tests/`
+    tree and reads every file, and both tests in this module called it fresh
+    -- the second call paid the same full-tree read the first one did, for
+    an identical result (nothing in this module's own tests mutates the
+    tree). `--dist loadfile` keeps every test of one module on the same
+    xdist worker, so the cache is live for both.
     """
     parts = []
     for base in ("src", "tests"):
@@ -846,10 +855,26 @@ def _code_corpus() -> str:
     return "\n".join(parts)
 
 
+@functools.lru_cache(maxsize=1)
+def _corpus_tokens(corpus: str) -> frozenset[str]:
+    r"""Every whole `\w+` run in `corpus`, once (task 048, B.5 follow-on).
+
+    `_absent_identifiers` used to run one `re.search(rf"\b{name}\b", corpus)`
+    PER candidate identifier -- a fresh linear scan of the whole ~7MB corpus
+    for every name found in every doc, which is what made the doc-check test
+    take seconds. `\bname\b` matches iff `name` occurs as a maximal `\w+`
+    run bounded by non-word characters (or the string's edges) -- exactly
+    the definition of "one token this tokenizer already extracted" -- so
+    tokenizing the corpus ONCE and checking set membership afterwards is the
+    same test, not a looser one, just without the repeated O(corpus) scans.
+    """
+    return frozenset(re.findall(r"\w+", corpus))
+
+
 def _absent_identifiers(text: str, corpus: str) -> list[str]:
+    tokens = _corpus_tokens(corpus)
     return sorted({name for name in IDENTIFIER_RE.findall(text)
-                   if name not in PI_STREAM_EVENTS
-                   and not re.search(rf"\b{re.escape(name)}\b", corpus)})
+                   if name not in PI_STREAM_EVENTS and name not in tokens})
 
 
 def test_every_backticked_identifier_in_the_docs_exists_in_the_code():

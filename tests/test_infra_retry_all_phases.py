@@ -42,8 +42,11 @@ __all__ = ["engine_factory"]
 INFRA_ERROR = "Connection error."
 # > LoopSupervisor.INSTANT_FAILURE_MAX_DURATION_S (5.0): an *instant*
 # no-traffic fault is still owned by the broken-environment carve-out
-# (task 010), and these tests are about the retry path.
-INBAND_DELAY_S = "6"
+# (task 010), and these tests are about the retry path. Task 048 (B.5
+# follow-on): shrunk from 6 to 5.3, still comfortably clear of the 5.0s
+# threshold with the delayed subprocess's own start/IPC overhead as extra
+# margin on top.
+INBAND_DELAY_S = "5.3"
 
 
 def _events(run_dir, type_):
