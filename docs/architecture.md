@@ -494,10 +494,109 @@ the per-task map `state.task_failure_kinds()` is served as `taskFailureKinds` by
 browser renders a derived kind rather than re-deriving it in JS. `ralphctl runs`
 and the hub's TASKS cell flag a `failed` plan as trouble under either meaning.
 
+### The debt ledger's single write path (v0.19 requirement A.3, #155, task 006)
+
+`task-verify.md` may verify a task anyway while leaving structured `notes`
+on the contract payload (v0.19 requirement A.2, #154, task 005 --
+`HAT_SCHEMAS["verify"]`'s optional `notes` array, each item shaped
+`{clause, observed, suggested}`) when a clause is met only in form, not in
+substance -- the gap requirement A.1's "be strict" rewrite tells a verifier
+to NOTE rather than reject over. `_verify_task()` copies that list onto the
+task record verbatim as `verifyNotes` in the very same write that sets
+`status: "validated"` (SPEC §5.3) -- but a task-scoped field alone would
+lose the note the moment a later approach rewrites `tasks.json` fresh from
+"001", so nothing durable would survive the run that raised it.
+
+`RunDir.record_debt(task_id, notes)` is the ONE write path for the second,
+durable copy: called unconditionally from the same `_verify_task()` success
+branch, immediately after the `verifyNotes` write, it delegates to `state.
+record_debt_entries()`, which appends one entry per note (keyed
+`"<task_id>/<n>"`, `n` the 1-based count of entries THIS task id already
+holds in the ledger -- not a run-global counter) to `debt.json`, then
+re-renders `debt.md` from the WHOLE updated list in the same call, so the
+two files can never disagree about what the ledger holds. A non-list or
+empty `notes` is a documented no-op, which is what makes calling it
+unconditionally from every verified path safe. No second caller ever
+writes `debt.json` directly: `render_debt_markdown()`/`debt_entry_line()`
+are the same rendering `ralphctl docs`/the hub's document panel serve
+`debt.md` through (`state.RUN_DOCUMENTS`, key `debt`) and that
+`run_record.py` echoes for the run record's own open/resolved split --
+three readers, one writer, one shared line-renderer so no two of them can
+ever describe the same entry differently. An entry's `status` starts
+`"open"`; nothing in this task ever writes `"resolved"` -- a later worker or
+adjudication remedy resolving one is a future task's write, against the
+same ledger, through the same reader/renderer pair.
+
+### The multi-witness progress counter and its hand-off to verify (v0.19 requirements B.1/B.2, #153, tasks 010/011)
+
+The worker loop's stagnation guard used to read one signal only: did
+`tasks.json` change between the start and the end of a worker iteration? A
+worker that kept landing real commits against the same task, pass after
+pass, without ever tripping a `tasks.json` write, stagnated on paper while
+doing genuine work -- and, symmetrically, a worker that spent a whole
+iteration reading and searching without touching either the plan or the
+repo still reset the counter merely by mentioning `COMPLETE`/being
+interrupted. Task 010 widens the single check to an OR over **four
+progress witnesses**, any one of which resets `stagnant` back to `0` --
+only an iteration with NONE of them still increments it:
+
+1. **(a) `tasks.json` changed** -- the original, sole signal: `before !=
+   after` on the plan document itself.
+2. **(b) a commit landed** -- the workspace's own git `HEAD` moved between
+   `head_before`/`head_after`, captured immediately around the worker
+   iteration's own subprocess call. A non-git workspace reads `None` on
+   both sides and is never a witness by itself.
+3. **(c) contract progress** -- a petition/`unsatisfiable`/`plan_complete`
+   payload was actually APPLIED this pass; necessary because a worker
+   petition can ride on an outer `no_verdict` reply, which would otherwise
+   fall straight through to the stale `before == after` check with no
+   other witness to catch it.
+4. **(d) tool activity above a threshold** -- this iteration's own
+   transcript recorded at least `LoopSupervisor.STAGNATION_TOOL_ACTIVITY_
+   MIN_CALLS` (3) `tool_execution_start` events (`state.count_tool_calls`,
+   a whole-transcript scan, the same shape `detect_verdict_gate_peek`
+   already uses). A THRESHOLD, deliberately not "any tool call counts": a
+   single exploratory `read` must not reset the counter every pass forever
+   and defeat the guard's purpose.
+
+"An iteration with commits and no `tasks.json` change does not increment
+the counter" now falls straight out of the OR -- witness (a) alone no
+longer decides anything on its own.
+
+**A task that absorbs iterations is judged, not starved (task 011).** The
+widened stagnation counter above answers the opposite failure -- an
+iteration with no progress at all -- so it never catches the different
+failure requirement B.2 names: one task absorbing pass after pass of real
+commits with no verdict ever settling it, because witness (b) resets
+`stagnant` to `0` every single time. `LoopSupervisor.
+_record_task_absorption_streak`, called every vigilant worker iteration
+immediately before `_relabel_vigilant_claims`, tracks a SEPARATE counter
+keyed to one task id (`status.json`'s `taskAbsorptionStreak`,
+`{taskId, count}`): it increments only while three facts hold at once --
+the SAME task was assigned again this iteration, its status (after every
+other completion/unsatisfiable/petition/task_status channel this pass
+already applied) is still `in-progress`, and this same iteration landed a
+commit (witness (b), computed by the SAME `head_before`/`head_after` pair).
+Any one of the three failing -- a different task assigned, one legitimately
+resolved, or a pass with no commit -- resets the streak to `0`, exactly
+like `stagnant` itself resets on any witness.
+
+Reaching `count == task_absorption_max_iterations` (default 3, read from
+config) is a hand-off the harness makes on the worker's own behalf, never a
+contract channel the agent reports through: the task is forced straight to
+`awaiting-validation` -- the one move `TASK_STATUS_VIGILANT_DELTA` already
+declares legal from `in-progress` -- with a plain-language `notes` entry
+appended to the task record naming the hand-off, and it is picked up by
+that SAME pass's `pending_verify` collection and routed to `verify`
+immediately, exactly as an ordinary worker completion already would be.
+The streak resets to `{}` the moment it breaks OR the moment a hand-off
+fires, so a task that clears verify and later gets reassigned starts a
+fresh count rather than resuming a stale one.
+
 ### No-progress escalation guard vs. instant startup/infra failures (task 059)
 
-The worker loop's stagnation guard (3 consecutive worker iterations with no
-`tasks.json` change and no `COMPLETE`/interrupt ⇒ fail the approach) and
+The worker loop's stagnation guard (3 consecutive worker iterations with
+none of the four progress witnesses above ⇒ fail the approach) and
 planning's "produced no `tasks.json`" check exist to detect a stuck
 *approach* — an agent that keeps genuinely attempting the task and failing
 or spinning. They must not fire on a completely different failure class:
@@ -795,6 +894,44 @@ same off-budget `grace` channel the grace review already uses, so it never
 competes with the run's iteration budget or a task's own
 `validationAttempts`. See the verdict-values section above for the
 `"adjudicated"` reply value this episode alone may use.
+
+### A `petitioned` task holds its dependents, pending exactly this adjudication (v0.19 requirement C.1, #149, task 013)
+
+A task routed to `petitioned` (the verify-exhaustion branch just above,
+v0.18 requirement C.1, #114) is not `failed`/`skipped`, so `state.
+task_blocked_by()`'s ordinary dead/doomed fixpoint (SPEC §5.3) never marks
+it, or anything depending on it, as doomed -- it can still resolve. But
+leaving a dependent reading merely `pending` is its own lie: nothing can
+actually complete it while its ancestor's obligation is still open, and
+the worker has no way to tell "genuinely actionable" apart from "waiting on
+someone else's petition" from the plan alone.
+
+`task_blocked_by(..., include_petitioned=True)` is the resolution: a
+SEPARATE, opt-in cause joins the same map doom already populates -- a task
+whose `dependsOn` names a `petitioned` ancestor DIRECTLY is listed with
+that ancestor as its cause, one hop only, never propagated through the
+doomed fixpoint (a petitioned task's own dependents are held; a doomed
+task's dependents downstream of THOSE are a different, harder fact this
+widening deliberately does not claim to answer). This is a HOLD, not a
+verdict: the four display surfaces that pass `include_petitioned=True`
+(`ralphctl tasks`, `GET /tasks`, the hub's task-detail dialog, `worker.md`'s
+own prose) say a dependent is blocked on a specific petitioned ancestor,
+never that it is doomed alongside it.
+
+The hold's own resolution is the mid-run adjudication episode just above,
+and nothing else -- there is no separate poll or timer. The SAME petition
+that put the ancestor into `petitioned` is exactly what
+`_maybe_run_midrun_adjudication_episode` settles the next time it runs
+(before the next `pending_verify` hand-off): CONFIRMED leaves the ancestor
+exactly where it is (still `petitioned`, dependents still held, an operator
+ruling is the next move); REFUTED moves the ancestor to `failed` with the
+remedy attached, which -- being a `failed` status, not `petitioned` -- now
+DOES fall under the ordinary dead/doomed fixpoint, so every task that was
+merely held on it becomes properly doomed (or, if the plan permits, gets
+repointed/relabelled through the worker's own two honest resolutions, same
+as any other `failed` task) on the very next read. A held dependent is
+therefore never permanently stuck: either the ancestor resolves and the
+hold lifts, or it fails and the hold becomes an ordinary, actionable doom.
 
 ### The adjudication MAC and its run-secrets mount (v0.19 requirement E.4, #150/#152, task 020)
 

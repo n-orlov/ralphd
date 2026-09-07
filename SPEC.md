@@ -859,7 +859,13 @@ decision already did before this task.
 `verify`'s own claim is `{"task_id": ..., "verdict": "verified"|"rejected",
 "reason": ...}` (`transitions.HAT_SCHEMAS["verify"]`), validated against the task
 under verification by `_verify_task()` itself -- the harness applies the
-resulting status, never the agent's own `tasks.json` write. `review`'s own
+resulting status, never the agent's own `tasks.json` write. A `verified`
+verdict may carry a fourth, optional field, `notes` (v0.19 requirement A.2,
+#154, task 005) -- an array the verifier uses to "verify with a note" a
+clause met only in form rather than reject over it (`prompts/task-verify.md`);
+`_verify_task` persists the list verbatim as the task's own `verifyNotes`
+(§5.3) in the same write that sets `validated`, and appends it to the run's
+debt ledger (below) in the same pass. Absent on an ordinary clean verdict. `review`'s own
 claim is `{"verdict": "verified"|"rejected", "reason": ..., "findings_path":
 ...}` (`transitions.HAT_SCHEMAS["review"]`), read by `_review_verdict()` --
 the harness decides `succeeded`/`verified` or archives the approach from this
@@ -1455,6 +1461,20 @@ summary are synthesized from `tasks.json` and `steering/` on read — the counts
 through the hardened reader of §5.3, which also attaches its
 `tasksStale`/`tasksSource` contract beside them.
 
+`runSecretsMount` (v0.19 requirement E.4, #150/#152, task 020) is host-merged
+the same way: `ralphctl start`/`resume` bind a mode-0700 host directory,
+`run_secrets_dir(run_id)` (`<config>/<run>/run-secrets/`), at the fixed
+container path `petitions.DEFAULT_RUN_SECRETS_DIR`
+(`/var/lib/ralphd/run-secrets`), so a per-run petition-adjudication MAC key an
+earlier episode minted (§4.3's mid-run adjudication) survives a `resume`'s
+fresh container. `ralphctl status`/`doctor` add `{path, target, bound,
+keyAvailable, keyFiles, fallbackCheck}`: `bound` is whether the mount was
+created at all, `keyAvailable`/`keyFiles` (`run_secrets_key_files`) is the
+strictly weaker fact that a non-empty key file actually survived into it, and
+`fallbackCheck` — the `events.jsonl` `petition_adjudications_recorded` MAC
+witness — is named whenever no key is available (a bound-but-empty mount, the
+ordinary single-uid shape, reads identically to one never bound at all).
+
 `model` is the model *observed* in an iteration's own `message_end`, not the
 reference the engine requested: the requested one is `null` exactly when the
 agent picks its own model, which is the case a reader most needs an answer for.
@@ -1547,6 +1567,7 @@ its own bookkeeping fields to it.
 | `tasks[].dependsOn` | array | optional task ids that must be `completed` first |
 | `tasks[].validationAttempts` | int | failed verification verdicts so far; `VALIDATION_ATTEMPT_LIMIT` (3) forces `failed` |
 | `tasks[].validationNotes` | string | what the verifier observed |
+| `tasks[].verifyNotes` | array \| absent | v0.19 requirement A.2 (#154, task 005): a `verified` verdict's optional structured notes (each expected to be `{clause, observed, suggested}`, though only the outer array type is schema-checked), copied verbatim onto the task record by `_verify_task` in the SAME write that sets `status: "validated"` -- a verifier that judges a clause met only in form, not in substance, records the gap here rather than rejecting over it. Task 006 (requirement A.3, #155) appends the identical list, unchanged, to the run's own debt ledger (`RunDir.record_debt` -> `debt.json`/`debt.md`, §5.1) in the same pass; a `rejected` verdict or a non-list `notes` payload leaves `verifyNotes` unset and writes nothing to the ledger |
 | `tasks[].failureKind` | string | engine-written on a `failed` task: `validation-exhausted` \| `requirement-unmet` (below) |
 | `tasks[].criteriaFingerprint` | string | engine-written sha256 of `successCriteria` |
 | `tasks[].criteriaEditedAfterValidationFailure` | bool | engine-written, sticky (§4.4) |
@@ -1665,6 +1686,23 @@ as opposed to `blocked_by`'s own per-task lists, which stop at the first doomed 
 to `review` for a verdict — reusing the mechanism just above rather than a
 dependency-graph replan or a terminal degraded state, because a doomed plan is exactly
 the "work with a hole" shape `blocked_with_failures` already hands a reviewer.
+
+**A `petitioned` dependency is held, not doomed (v0.19 requirement C.1, #149,
+task 013).** `state.task_blocked_by(..., include_petitioned=True)` widens the
+harness-derived `taskBlockedBy` map (`{task id: [dead/doomed ancestor ids]}`,
+above) with a second, unrelated cause: a task whose `dependsOn` names a
+`petitioned` task DIRECTLY (one hop only, never propagated through the doomed
+fixpoint) is included too, with that ancestor as its cause. `petitioned` is
+deliberately never added to `dead`/`doomed` itself -- an open petition can
+still resolve (REFUTED leaves the dependency exactly where it is; CONFIRMED
+moves it to `skipped` and re-points dependents) -- so treating it as
+permanently dead here would make `_doomed_plan_fault`'s "nothing can ever move
+this plan again" verdict fire on a plan that is merely holding for an
+adjudication. `include_petitioned=True` is opt-in, `False` by default, so doom
+detection itself is untouched; the four display surfaces that DO pass it are
+`ralphctl tasks`, `GET /tasks`'s `TasksRead.blocked_by`, the hub's
+`ui_server._with_task_blocked_by`, and `worker.md`'s own prose naming the same
+map for the fourth (a worker reading its own blocked dependents).
 
 **The vocabulary stays eight terms (v0.14, requirement F, #99 suggestion 3, #51).**
 Issue #99's third suggestion was a status that satisfies dependents while recording a
@@ -1800,6 +1838,7 @@ reconstruct the whole run, including its restarts.
 | `reflect_skipped` | `attempted`, `signal`, `reason` | a signal was taking the engine down, so the reflect phase rendered no verdict (§8.4) |
 | `budget_changed` | `field`, `previous`, `iterations`, `delta`, `iterationsUsed`, `source` | the iteration budget was changed in flight |
 | `log` | `level`, `message` | anything the loop wants an operator to see: stagnation, batching violations, instant-failure streaks, abort diagnostics |
+| `operator_escalation` | `approach`, `reason` (`"rejected_last_approach"` \| `"stagnation"`), `outstandingTasks`, `escalation` | the engine paused itself (§4.6): the last approach was rejected on all-curable findings with its cure pass spent, or (v0.19 requirement B.3, #153, task 012) the last approach's worker-stagnation guard would otherwise fail the run silently — same event shape, `reason` is the only thing that tells the two apart |
 | `repair` | `action`, plus the names/ids involved | appended host-side by `ralphctl repair`, which records only names, never values |
 
 ```json
@@ -3174,7 +3213,14 @@ explanations, and each carries a suggested remedy — resume first for a
 dangling run, or record the truth if resuming is not wanted. `doctor --fix`
 auto-resumes exactly what that sweep matches, so both dangling shapes are
 auto-resume-eligible; `resume` itself already removes an exited container
-occupying the name before starting a fresh one.
+occupying the name before starting a fresh one. `doctor` also names the
+run-secrets mount (v0.19 requirement E.4, #150/#152, task 020)
+registry-wide, unconditionally, since it is not tied to any one run: the
+mode-0700 host directory `start`/`resume` bind at
+`petitions.DEFAULT_RUN_SECRETS_DIR` for the petition-adjudication MAC key, and
+the `events.jsonl` `petition_adjudications_recorded` MAC witness that is the
+documented fallback authentication check whenever no key survived into it
+(§5.2's `runSecretsMount` is the per-run answer to whether one actually did).
 
 `repair` is the guarded editor for the run dir. It refuses to touch a run
 whose container is actually running, exiting `5`, because editing state under
@@ -4057,6 +4103,15 @@ the run dir alone (§10.1) and takes `--json`:
 | `fault <id>` | why the run is in trouble: the fault's class, the signature its error text matched, the retry ladder so far, what is left of the outage budget |
 | `cost <id>` | what it spent, per phase and per approach, with quoted, derived and unavailable money each labelled as such (§8.6) |
 | `docs <id> [name]` | the prose the run left behind — `notes.md`, `review-findings.md`, `composite-prd.md`, `debt.md` — and the effective `job.yaml` with secret values redacted |
+
+Each document's operator-facing key (`state.run_document_keys()`, in listing
+order) is `notes`, `findings`, `composite-prd`, `debt`, `job`, `run-record` or
+`run-record-json`; either the key or the file name works for
+`docs <id> <name>`. `debt` is the debt ledger's own key (task 006, requirement
+A.3, #155) — `debt.json` rendered for a human at `debt.md` — and it appears in
+the no-name LISTING (`state.run_documents()`) exactly like every other
+document: with its size when the run wrote one, or `state.RUN_DOCUMENT_ABSENT`
+when it never did.
 
 A missing iteration exits `1` naming the ones that do exist, an unknown document
 name exits `2` listing the keys, and an unknown run is exit `3` as everywhere
