@@ -120,6 +120,20 @@ def flow_steps(run) -> list[str]:
             steps.append(f"steer_tool:{ev.get('tool')}:{ev.get('ok')}")
         elif t == "steer.context_write":
             steps.append(f"steer_write:{ev.get('file')}")
+        # Task 015 (C.4): the infra-retry wrapper's own three step-marking
+        # event types (`loop.py`'s `_run_iteration_with_infra_retry` /
+        # `_begin_infra_wait` / `_reset_infra_episode`) -- one attempt
+        # (`infra_retry`), one backoff wait beginning (`infra_wait`), one
+        # episode ending because an iteration finally reached the model
+        # again (`infra_recovered`). No other flow drives a hung stub-`pi`
+        # invocation, so adding these cannot perturb an existing flow's
+        # reduced sequence.
+        elif t == "infra_retry":
+            steps.append(f"infra_retry:{ev.get('phase')}:{ev.get('attempt')}")
+        elif t == "infra_wait":
+            steps.append(f"infra_wait:{ev.get('phase')}:{ev.get('attempt')}")
+        elif t == "infra_recovered":
+            steps.append("infra_recovered")
     return steps
 
 
