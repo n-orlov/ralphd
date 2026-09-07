@@ -55,7 +55,7 @@ def test_list_shows_builtin_then_mounted_then_api(prompts_engine, tmp_path):
     _write_mounted_prompt(tmp_path / "config", "review",
                           "# Role: Review\n\nmounted override.\n")
     e = prompts_engine(job={"iterations": 8},
-                       stub_env={"HOME": str(fake_home), "STUB_SLEEP": "1",
+                       stub_env={"HOME": str(fake_home), "STUB_SLEEP": "0.3",
                                 "STUB_TASKS": "3"})
     e.wait_api()
 

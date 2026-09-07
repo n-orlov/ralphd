@@ -85,7 +85,7 @@ def _put(port: int, path: str, body: bytes) -> tuple[int, bytes]:
 def test_llm_env_reaches_next_pi_invocation_no_leak(llm_engine, tmp_path):
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
-    e = llm_engine(stub_env={"HOME": str(fake_home), "STUB_SLEEP": "1",
+    e = llm_engine(stub_env={"HOME": str(fake_home), "STUB_SLEEP": "0.3",
                              "STUB_TASKS": "5"})
     e.wait_api()
 
