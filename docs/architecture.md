@@ -1780,10 +1780,11 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   working. `paused` is therefore part of `state.NONTERMINAL_STATES`: a live
   engine still owns the run, no destructive action may open on it, and an
   engine killed while parked leaves it dangling like any other non-terminal
-  run. Tests: `tests/test_last_approach_pause_task011.py` (the edge) and
-  `tests/test_last_approach_pause_persisted_task036.py` (the persisted pause,
+  run. Tests: `tests/test_last_approach.py` (the edge, the persisted pause,
   the resume that clears it over the same approach, and the operator pause
-  that still records nothing).
+  that still records nothing -- absorbed by task 022, requirement D.1, from
+  the former `test_last_approach_pause_task011.py` and
+  `test_last_approach_pause_persisted_task036.py`).
 - Tests: `tests/test_resume.py` (no Docker, real `ralphd-engine` twice over
   the same run dir via `test_e2e.py`'s `engine_factory` fixture).
 - **Vigilant-mode verification across a crash (task 052).** Resuming into an

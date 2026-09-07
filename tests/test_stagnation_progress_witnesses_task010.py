@@ -236,7 +236,7 @@ def test_none_of_the_four_witnesses_still_increments_the_counter(tmp_path):
     the LAST approach) rather than the full `_run_job_core()` dispatch
     loop, because on the LAST approach task 012 (requirement B.3) changes
     what happens once the counter fires: the run now pauses and
-    escalates (`tests/test_stagnation_last_approach_pause_task012.py` is
+    escalates (`tests/test_last_approach.py` is
     that pause's own dedicated coverage) instead of ending `failed` on
     paperwork, and a run parked on that pause inside `_run_job_core()`
     would sit forever awaiting a `resume()` this test never sends. The

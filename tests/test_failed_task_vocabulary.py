@@ -199,7 +199,7 @@ async def _drive_until_paused(sup: LoopSupervisor,
     `_run_job_core()` as a background task, polls `status.json` for
     `state == "paused"`, then cancels the still-pending task so the test's
     own event loop can close cleanly -- the same shape
-    `tests/test_stagnation_last_approach_pause_task012.py` uses for its own
+    `tests/test_last_approach.py` uses for its own
     in-process resume coverage, minus the resume.
 
     The bounded wait AND the pause's identity both live here (task 042,

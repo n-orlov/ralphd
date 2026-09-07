@@ -106,7 +106,7 @@ def test_three_ordinary_work_noop_iterations_still_pause_on_the_last_approach(tm
     the LAST approach) rather than the full `_run_job_core()` loop: on the
     last approach, task 012 (requirement B.3) pauses and escalates instead
     of ending `failed` on paperwork (the pause itself is
-    `tests/test_stagnation_last_approach_pause_task012.py`'s own dedicated
+    `tests/test_last_approach.py`'s own dedicated
     coverage), and a run parked on that pause inside `_run_job_core()`
     would sit forever awaiting a `resume()` this test never sends.
     """
