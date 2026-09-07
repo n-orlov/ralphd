@@ -26,9 +26,15 @@ from env vars set by the test:
                       observed whatever it needed mid-iteration) OR
                       STUB_HOLD_TIMEOUT_S seconds elapse (default 5.0 -- a
                       SMALL bounded fallback, never anything close to the
-                      real iteration timeout), whichever comes first. A
-                      test that never releases the hold therefore fails
-                      fast on that bound instead of hanging. The actual
+                      real iteration timeout), whichever comes first.
+                      Released -> the invocation proceeds to its ordinary
+                      role logic. NOT released by the bound -> this is a
+                      test bug, and the stub treats it as one: it writes
+                      `stub: hold ... never released` to stderr naming the
+                      bound and EXITS NONZERO (exit code 3) without
+                      emitting any role payload, so the invoking test
+                      FAILS on the bound instead of hanging or quietly
+                      passing on a window that never opened. The actual
                       wait duration (seconds) is always recorded to
                       `STUB_HOLD_FILE + ".stub-hold-duration"`, released or
                       timed out either way, so a test can assert its own
@@ -36,6 +42,8 @@ from env vars set by the test:
                       stated margin.
   STUB_HOLD_TIMEOUT_S the fallback bound (seconds) for STUB_HOLD_FILE above
                       (default 5.0). Ignored when STUB_HOLD_FILE is unset.
+                      Exceeding it is a failure (exit code 3), never a
+                      silent continue.
   STUB_HOLD_POLL_S    poll interval (seconds) while waiting on STUB_HOLD_FILE
                       (default 0.02). Ignored when STUB_HOLD_FILE is unset.
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
@@ -823,11 +831,21 @@ if _timeout_hang_count:
 # test that forgets to release the hold must fail on this bound, fast,
 # rather than hang the test process for the run's full iteration budget.
 #
+# Reaching the bound is a FAILURE, not a continue: the invocation exits
+# with HOLD_TIMEOUT_EXIT_CODE (3) after writing a stderr line naming the
+# hold file and the bound, and emits no role payload at all. A test whose
+# window never opened therefore goes red on the bound (nonzero stub exit,
+# or an engine iteration that failed) instead of passing on a race it
+# never actually observed.
+#
 # The actual wait duration (seconds, monotonic) is always recorded to
 # `STUB_HOLD_FILE + ".stub-hold-duration"` -- written whether the hold was
 # released or timed out -- so a test can assert its own recorded duration
 # stayed within the bound plus a stated margin instead of just trusting
 # that the process "returned eventually".
+HOLD_TIMEOUT_EXIT_CODE = 3
+
+
 def _apply_hold():
     hold_file = os.environ.get("STUB_HOLD_FILE")
     if not hold_file:
@@ -835,13 +853,22 @@ def _apply_hold():
     timeout_s = float(os.environ.get("STUB_HOLD_TIMEOUT_S", "5"))
     poll_s = float(os.environ.get("STUB_HOLD_POLL_S", "0.02"))
     start = time.monotonic()
+    timed_out = False
     while not os.path.exists(hold_file):
         if time.monotonic() - start >= timeout_s:
+            timed_out = True
             break
         time.sleep(poll_s)
     duration = time.monotonic() - start
     with open(f"{hold_file}.stub-hold-duration", "w") as _f:
         _f.write(repr(duration))
+    if timed_out:
+        sys.stderr.write(
+            f"stub: hold {hold_file!r} never released; failing on the bounded "
+            f"fallback of {timeout_s}s (STUB_HOLD_TIMEOUT_S) after "
+            f"{duration:.3f}s\n")
+        sys.stderr.flush()
+        sys.exit(HOLD_TIMEOUT_EXIT_CODE)
 
 
 _apply_hold()
