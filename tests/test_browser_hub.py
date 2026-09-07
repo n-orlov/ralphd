@@ -2036,7 +2036,17 @@ def test_run_detail_opens_the_state_document_dialogs(tmp_path, pw):
     """
     from ralphd.cli.llm_profiles import MASK
     from ralphd.cli.ui_server import document_view
-    from ralphd.engine.state import JOB_CONFIG_FILE, RUN_DOCUMENT_ABSENT
+    from ralphd.engine.state import (
+        JOB_CONFIG_FILE, RUN_DOCUMENT_ABSENT, RUN_DOCUMENTS,
+    )
+
+    # this fixture writes exactly these three documents; every other key in
+    # `state.RUN_DOCUMENTS` is absent for a run that never reached
+    # `finishing` -- derived here so a new key (like task 006's `debt` row)
+    # shifts this count automatically instead of going stale.
+    written_keys = {"notes", "findings", "job"}
+    expected_button_count = len(written_keys)
+    expected_absent_count = len(RUN_DOCUMENTS) - len(written_keys)
 
     secret = "ghp_browserDocsSecret0123456789"
     registry = tmp_path / "registry"
@@ -2069,12 +2079,14 @@ def test_run_detail_opens_the_state_document_dialogs(tmp_path, pw):
         # a never-written document is listed, in the server's own wording, and
         # is NOT a button (there is nothing to open)
         assert f"composite-prd composite-prd.md {RUN_DOCUMENT_ABSENT}" in rows, rows
-        assert int(pw.eval_js(_DOCUMENT_BUTTONS)) == 3
-        # 3, not 1: task 007 added two unconditional `run-record` rows to
-        # `state.RUN_DOCUMENTS`, so a run that never reached `finishing` is
-        # missing composite-prd.md, run-record.md and run-record.json.
+        assert int(pw.eval_js(_DOCUMENT_BUTTONS)) == expected_button_count
+        # not 1: task 007 added two unconditional `run-record` rows to
+        # `state.RUN_DOCUMENTS`, and task 006 (B.1) added `debt`, so a run
+        # that never reached `finishing` is missing composite-prd.md,
+        # debt.md, run-record.md and run-record.json.
         assert int(pw.eval_js(
-            "document.querySelectorAll('[data-document-absent]').length")) == 3
+            "document.querySelectorAll('[data-document-absent]').length")
+            ) == expected_absent_count
         assert int(pw.eval_js(_DIALOGS)) == 0
 
         # -- the worker's notes --------------------------------------------
@@ -2099,9 +2111,9 @@ def test_run_detail_opens_the_state_document_dialogs(tmp_path, pw):
 
         # -- it survives a full 4s poll without stacking -------------------
         time.sleep(5.0)
-        # 6, not 4: same task-007 `RUN_DOCUMENTS` growth as the absent count
-        # above (notes, findings, job + the three absent rows).
-        assert int(pw.eval_js(_DOCUMENT_ITEMS)) == 6      # panel re-rendered
+        # one row per `RUN_DOCUMENTS` key: notes, findings, job + every
+        # absent row (composite-prd, debt, run-record, run-record-json).
+        assert int(pw.eval_js(_DOCUMENT_ITEMS)) == len(RUN_DOCUMENTS)  # re-rendered
         assert int(pw.eval_js(_DIALOGS)) == 1             # ...behind ONE dialog
         assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
 
