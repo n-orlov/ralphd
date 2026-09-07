@@ -89,19 +89,20 @@ parallel lane is the one the loop uses.
 The flow modules requirement G.5 asks for live in their own directory, are
 `fast`-only by rule 3 above (each one spawns a real engine), and each has to
 stay under 20 s serial. Measured serially in this container, one module per
-invocation (`.venv/bin/python -m pytest -q tests/flows/<module>.py`), at the sha
-that landed the first four:
+invocation (`.venv/bin/python -m pytest -q tests/flows/<module>.py`), re-measured
+at the sha that landed the fifth (task 012, validation ladder):
 
 | module | tests | wall clock |
 |---|---|---|
-| `tests/flows/test_flow_happy_path.py` | 2 | 1.26 s |
-| `tests/flows/test_flow_review_replan_pause.py` | 3 | 1.88 s |
-| `tests/flows/test_flow_petition_adjudication.py` | 2 | 1.19 s |
-| `tests/flows/test_flow_cure_pass.py` | 2 | 1.39 s |
-| the whole directory (`tests/flows`) | 9 | 5.69 s |
+| `tests/flows/test_flow_happy_path.py` | 2 | 1.41 s |
+| `tests/flows/test_flow_review_replan_pause.py` | 3 | 2.40 s |
+| `tests/flows/test_flow_petition_adjudication.py` | 2 | 1.40 s |
+| `tests/flows/test_flow_cure_pass.py` | 2 | 1.59 s |
+| `tests/flows/test_flow_validation_ladder.py` | 3 | 2.32 s |
+| the whole directory (`tests/flows`) | 12 | 9.01 s |
 
 That table is prose, not a budget row: `tests/test_tier_budgets.py` parses only
-the eleven-column table above it. The 5.69 s the directory adds is inside the
+the eleven-column table above it. The 9.01 s the directory adds is inside the
 fast lane's own recorded measurements.
 
 ### Targets missed, with their numbers
