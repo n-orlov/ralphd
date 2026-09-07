@@ -2092,12 +2092,18 @@ rather than a fresh `status.json` read.
 Full PRD: [`docs/prds/v0.19.1-a-gate-is-not-a-wall.md`](prds/v0.19.1-a-gate-is-not-a-wall.md).
 v0.19 validated 24 tasks in approach 1 and 9 in approach 2 and was failed twice by the same
 0.18.0 stagnation guard it was built to replace. The engine actually running this wave is
-still `ralphd 0.19.0` from `main` `1a3b9bb` (image `ralphd:17b2050a5439`, built at launch): none
-of v0.19's own mechanisms — the verifier's rubric and debt ledger (A), the progress witnesses
-and the last-approach pause (B), the `petitioned` hold and cure inheritance (C), the breaker
-carve-out (D), wave-scoped petitions and the MAC mount (E), C.4 — are live in the process
-running this wave (operator steer 001); tests are the whole of the evidence for them. This
-wave finishes v0.19's suite half on the engine that killed it, in requirements A–I: **A** —
+`ralphd 0.19.0` from `main` `1a3b9bb` (image `ralphd:17b2050a5439`, built at launch) — v0.19's
+own work, so the mechanisms **operator steer 001** enumerates are live in the process running
+this wave: the verifier's materiality rubric and the debt ledger it feeds (v0.19's A), the four
+progress witnesses, absorption-forced verification and the last-approach stagnation pause
+(v0.19's B.1–B.3), cure inheritance of dependents (C.4), the breaker's infra carve-out (D),
+and wave-scoped petitions with adjudication write-back (E). Steer 001 also corrected the PRD's
+opening premise — which had this run on 0.18.0, with a stagnation guard that sees only
+`tasks.json` — as the operator's own error: both of those claims are false, and neither is
+asserted anywhere in this wave's records. Being live is not evidence that they work:
+tests remain the whole of the evidence for every requirement, and this run's own survival of a
+long task is not offered as a demonstration of B. This wave finishes v0.19's suite half on the
+engine that superseded the one that killed it, in requirements A–I: **A** —
 the hub is cheap to leave open (#148, v0.19's F, never started); **B** — no real sleeps
 (v0.19's G.2), the fast-tier `--durations=80` sum from **381.03 s** toward under **120 s**, in
 stages that each fit one iteration; **C** — the eight missing flow modules (v0.19's G.5) and
