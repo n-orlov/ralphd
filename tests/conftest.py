@@ -249,6 +249,18 @@ def pytest_configure(config):
         "scrub, so its own os.environ (and anything it calls in-process, "
         "e.g. JobConfig.load()) sees the ambient notifier URL",
     )
+    # Task 048 (B.5 follow-on): moves an individual node (never a whole
+    # module -- `real_backoff` already marks those three modules, and this
+    # is deliberately narrower) out of `fast`/`smoke` into the nightly lane,
+    # for a node that is inherently slow rather than merely unoptimised.
+    # `pytest_collection_modifyitems` below honours it exactly like
+    # `docker`/`browser`.
+    config.addinivalue_line(
+        "markers",
+        "nightly: this individual node belongs in the nightly lane, not "
+        "fast/smoke -- applied directly to a node (task 048), never "
+        "derived, unlike docker/browser/dev-layout",
+    )
 
 
 # --- the smoke and fast tiers (task 004, requirement G.8) ------------------
@@ -315,10 +327,19 @@ def _module_is_in_process(path: str) -> bool:
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     """Stamp every collected item with its tier (`smoke`/`fast`), before the
-    mark plugin's own `-m` deselection runs (hence `tryfirst`)."""
+    mark plugin's own `-m` deselection runs (hence `tryfirst`).
+
+    An item carrying `nightly` directly (task 048, B.5 follow-on) opts out
+    of `fast`/`smoke` the same way `docker`/`browser` do -- for a handful
+    of individual nodes, not a whole module, that are inherently slow (a
+    real backoff/outage schedule under test, or a real nested-pytest-
+    subset black-box run) rather than merely unoptimised: moving just the
+    node, not its whole module, keeps every genuinely fast sibling test in
+    the same file inside the fast tier.
+    """
     for item in items:
         keywords = item.keywords
-        if "docker" in keywords or "browser" in keywords:
+        if "docker" in keywords or "browser" in keywords or "nightly" in keywords:
             continue
         path = str(getattr(item, "fspath", "") or "")
         if any(path.endswith(name) for name in _NIGHTLY_MODULES):
@@ -694,6 +715,31 @@ class LiveRun:
 
     def stop(self):
         if self.proc.poll() is None:
+            # Task 048 (B.5 follow-on): a run parked in `state: "paused"`
+            # sits forever in `await self._pause.wait()`
+            # (loop.py's `_park_until_resumed`) -- an `asyncio.Event`
+            # nothing wires a signal handler to. `abort_on_signal` records
+            # the abort and interrupts the CHILD process if one happens to
+            # be running, but it never sets that Event, so main.py's own
+            # `await job_task` never returns and the process does not react
+            # to SIGTERM at all while paused. `terminate()` + a 10s wait
+            # therefore always times out and falls through to `kill()`
+            # anyway -- four suite-budget nodes were each paying that full
+            # 10.00s teardown for a grace the engine cannot honour. Detect
+            # the state up front and go straight to a bounded kill instead.
+            try:
+                paused = json.loads(
+                    (self.run_dir / "status.json").read_text()
+                ).get("state") == "paused"
+            except (OSError, json.JSONDecodeError):
+                paused = False
+            if paused:
+                self.proc.kill()
+                try:
+                    self.proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                return
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=10)
