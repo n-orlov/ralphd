@@ -23,7 +23,7 @@ import asyncio
 import json
 
 import pytest
-from test_infra_outage_budget import (
+from test_infra_retry_schedule import (
     _events,
     _infra_result,
     _ok_result,

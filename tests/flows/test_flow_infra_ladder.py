@@ -53,7 +53,10 @@ import json
 import re
 import time
 
-from tests.flows.flowlib import assert_step_sequence, flow_steps, status
+import pytest
+
+from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
+                                 status)
 
 # -- recovered: two hangs, then a healthy attempt ---------------------------
 
@@ -269,3 +272,89 @@ def test_the_startup_watchdog_kills_a_hang_within_its_own_window(engine_factory)
         "flow infra ladder (watchdog): the wall-clock bound must stay an "
         "order of magnitude below the iteration timeout, or passing it says "
         "nothing about which timer fired")
+
+
+# ---------------------------------------------------------------------------
+# Task 021 (requirement C.10): the two black-box nodes folded in from
+# `tests/test_infra_outage_budget.py` (deleted in the same commit, one §
+# "Subsumed" row per node; that module's five UNIT nodes and the shared
+# `_infra_result`/`_ok_result`/`_stub_attempts` helpers its five importers
+# use moved, unchanged, to `tests/test_infra_retry_schedule.py`).
+#
+# Same subject as this flow, one tier up from its own nodes: MORE
+# consecutive infra faults than the historical 3-attempt cap allowed are
+# ridden out free (five, with the escalating backoff ladder and the
+# cumulative `waitedS` book asserted value by value), and a permanently dead
+# endpoint gives up naming the outage duration and the budget spent waiting.
+# Moved verbatim -- same `engine_factory`, same stub knobs, same assertions,
+# only the module and its own event reader changed (`flowlib.events_of`).
+#
+# Both keep `@pytest.mark.nightly` (task 048, B.5 follow-on): they drive a
+# REAL hang-timeout + real backoff ladder in the engine subprocess, so they
+# are inherently multi-second and were moved out of the fast tier rather
+# than have the very schedule they prove shrunk. The autouse class-level
+# `_wait_out_backoff` stub of `tests/conftest.py` (task 047, B.4) is a
+# no-op for them either way: the backoff being waited out here is inside the
+# engine's OWN process, configured through `RALPHD_INFRA_RETRY_BACKOFF_S`,
+# not in this test process -- which is exactly why these two nodes need no
+# `real_backoff` opt-out where the deleted module's unit half does.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.nightly
+def test_five_consecutive_infra_faults_are_ridden_out_free(engine_factory):
+    # No RALPHD_INFRA_RETRY_MAX at all: five hung worker invocations (the old
+    # default would have given up after three) are retried on a compressed
+    # schedule, then the healthy attempt finishes the only task. Charged
+    # budget is exactly the happy path (planning + worker + review == 3), so
+    # the run can only succeed if every retried attempt was refunded.
+    e = engine_factory(
+        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        stub_env={
+            "STUB_TASKS": "1",
+            "STUB_INFRA_HANG_SKIP": "1",   # invocation 1 (planning) is healthy
+            "STUB_INFRA_HANG_COUNT": "5",  # the next five worker attempts hang
+            "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
+            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.2,0.4",
+            "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
+        })
+    assert e.proc.wait(timeout=60) == 0
+
+    st = status(e)
+    assert st["state"] == "succeeded"
+    assert st["verdict"] == "verified"
+    assert st["iterationsUsed"] == 3, "waiting out an outage costs no iterations"
+    assert st["approach"] == 1, "an infra outage never escalates the approach"
+
+    infra = events_of(e, "infra_retry")
+    assert [ev["attempt"] for ev in infra] == [1, 2, 3, 4, 5]
+    assert [ev["backoffS"] for ev in infra] == [0.1, 0.2, 0.4, 0.4, 0.4]
+    assert all(ev["maxAttempts"] is None for ev in infra), "no cap configured"
+    assert [ev["waitedS"] for ev in infra] == [0.0, 0.1, 0.3, 0.7, 1.1]
+
+
+@pytest.mark.nightly
+def test_outage_budget_exhaustion_ends_terminal_naming_the_duration(engine_factory):
+    # A permanently broken endpoint: with a 2s outage budget the run gives up
+    # quickly and the terminal reason tells the operator how long the outage
+    # lasted, how much of the budget went into waiting, and the last error.
+    e = engine_factory(
+        job={"on_complete": "exit", "iterations": 12, "max_approaches": 3},
+        stub_env={
+            "STUB_TASKS": "1",
+            "STUB_INFRA_HANG_SKIP": "1",
+            "STUB_INFRA_HANG_COUNT": "20",  # every worker attempt hangs
+            "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
+            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.5,1",
+            "RALPHD_INFRA_OUTAGE_BUDGET_S": "2",
+        })
+    assert e.proc.wait(timeout=60) == 1
+
+    st = status(e)
+    assert st["state"] == "aborted"
+    reason = st["reason"]
+    assert re.search(r"\d+s infra outage", reason), reason
+    assert "2s outage budget spent waiting" in reason
+    assert "no llm traffic" in reason.lower()
+    assert st["approach"] == 1
+    assert st["iterationsUsed"] == 1, "only the healthy planning iteration"

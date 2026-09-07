@@ -157,7 +157,7 @@ def test_reflect_model_resolved_per_strategy(engine_factory, tmp_path):
 # all-zero schedule (`tests/conftest.py::_with_zero_backoff`) and buys no real
 # sleep at all. The outage budget stays named so the events still carry a
 # `budgetS` an assertion can read; nothing here asserts a non-zero wait (the
-# wait accounting itself is `tests/test_infra_outage_budget.py`'s subject, one
+# wait accounting itself is `tests/test_infra_retry_schedule.py`'s subject, one
 # of B.4's three exempt modules).
 FAST_RETRY = {"RALPHD_INFRA_RETRY_MAX": "2",
               "RALPHD_INFRA_OUTAGE_BUDGET_S": "1.0"}

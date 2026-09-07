@@ -22,7 +22,7 @@ cannot reach it:
 1. the opt-out marker (`@pytest.mark.real_backoff` /
    `pytestmark = pytest.mark.real_backoff`) must be used ONLY by the three
    modules the PRD names as testing the backoff/retry schedule itself
-   (`test_infra_outage_budget.py`, `test_retry_now.py`,
+   (`test_infra_retry_schedule.py`, `test_retry_now.py`,
    `test_reflect_infra_retry.py`) -- a fourth module carrying it would quietly
    reopen the real sleep the fixture exists to close;
 2. a `job.yaml` writer under `tests/` that bypasses `LiveRun.__init__`
@@ -54,7 +54,7 @@ FLOWS_DIR = TESTS_DIR / "flows"
 # schedule itself and are allowed to leave `_wait_out_backoff` real (via the
 # `real_backoff` opt-out marker on tests/conftest.py's autouse fixture).
 EXEMPT_MODULES = {
-    "test_infra_outage_budget.py",
+    "test_infra_retry_schedule.py",
     "test_retry_now.py",
     "test_reflect_infra_retry.py",
 }
@@ -121,7 +121,7 @@ def test_exempt_modules_are_the_prds_named_three_and_carry_the_marker():
     for exempt in EXEMPT_MODULES:
         assert exempt in names, f"exempt module {exempt} no longer exists on disk"
     assert EXEMPT_MODULES == {
-        "test_infra_outage_budget.py", "test_retry_now.py",
+        "test_infra_retry_schedule.py", "test_retry_now.py",
         "test_reflect_infra_retry.py"}
     marked = {p.name for p in _all_files()
               if _REAL_BACKOFF_MARK_RE.search(p.read_text())}

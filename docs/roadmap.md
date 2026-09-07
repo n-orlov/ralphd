@@ -1276,7 +1276,7 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   (`45860c2`, task 012); `settled` is split from `done`, and terminal success is gated on
   steering-origin tasks rather than on a steering file (`a3d31d4`, `3215df4`, task 013) — the
   exact conflation steer 003 fell through (`tests/test_steering_origin_marker.py`,
-  `tests/test_steering_priority_routing_task012.py`, `tests/test_status_unconsumed_steering.py`).
+  `tests/test_steering_priority_routing_task012.py`, and the two unconsumed-steering nodes of `tests/flows/test_flow_steer.py` -- `test_ralphctl_status_warns_about_unconsumed_steering` and its negative twin, folded there from the retired `test_status_unconsumed_steering.py` by task 021, C.10).
 - ✅ **J. Uncharged, laddered, pre-plan left exactly alone (#98).** The steer hat's own
   iteration is uncharged via a third refund kind, malformed output gets the existing contract
   ladder, and pre-plan steering keeps its prompt-injected shape unchanged (`db4a9a2`,

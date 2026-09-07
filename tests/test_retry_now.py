@@ -17,7 +17,7 @@ import time
 
 import httpx
 import pytest
-from test_infra_outage_budget import INFRA_ERROR, _infra_result, _ok_result
+from test_infra_retry_schedule import INFRA_ERROR, _infra_result, _ok_result
 
 from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig

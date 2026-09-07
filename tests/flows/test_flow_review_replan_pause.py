@@ -35,8 +35,10 @@ step the sequence carries and the persisted pair is asserted separately.
 
 from __future__ import annotations
 
-from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks)
+import json
+
+from tests.flows.flowlib import (assert_step_sequence, events, events_of,
+                                 flow_steps, status, tasks)
 
 _PLAN_AND_WORK = [
     "phase:planning@{a}",
@@ -191,3 +193,196 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
     assert all(t["status"] in ("completed", "validated") for t in tasks(run)), (
         f"flow last-approach pause: every task (the cure task included) must end "
         f"completed/validated, got {[(t['id'], t['status']) for t in tasks(run)]}")
+
+
+# ---------------------------------------------------------------------------
+# Task 021 (requirement C.10): the four nodes folded in from
+# `tests/test_ladder_exhaustion_e2e_task033.py` (deleted in the same commit,
+# one § "Subsumed" row per node). Same subject as this flow -- what a
+# judging site's ladder exhaustion does with budget REMAINING -- moved
+# verbatim: same `live` fixture, same stub knobs
+# (`STUB_VERIFY_MALFORMED_COUNT`/`STUB_REVIEW_MALFORMED_COUNT`/
+# `STUB_VERDICT_GATE_MALFORMED_COUNT`), same assertions, only the module and
+# its three local readers changed (`flowlib.status`/`flowlib.events` replace
+# the deleted module's own `_status`/`_events` copies).
+#
+# The three sites: `verify` retries the SAME task in another worker
+# iteration; `review`/`verdict_gate` archive approach 1 (today's
+# `rejected_approach_left` safe default) and approach 2's own invocation of
+# the same site answers normally. The fourth node is task 032's
+# fenced-payload rescue at the `verify` site -- rescued on the FIRST attempt
+# with ZERO extra stub invocations, the direct contrast to exhaustion.
+# ---------------------------------------------------------------------------
+
+
+def _iteration_metas(run) -> list[dict]:
+    iters = sorted((run.run_dir / "iterations").iterdir())
+    return [json.loads((d / "meta.json").read_text()) for d in iters]
+
+
+def _marker(run, name: str) -> str | None:
+    p = run.run_dir / f".stub-{name}"
+    return p.read_text().strip() if p.exists() else None
+
+
+def test_verify_ladder_exhaustion_with_budget_remaining_does_not_end_the_run(live):
+    run = live(run_id="g5-verify-ladder-exhaustion",
+               job={"vigilant": True, "on_complete": "exit"},
+               stub_env={"STUB_TASKS": "1", "STUB_VERIFY_MALFORMED_COUNT": "1"})
+    assert run.proc.wait(timeout=60) == 0
+    st = status(run)
+    assert st.get("state") == "succeeded", st
+    assert st.get("verdict") == "verified", st
+
+    # the run did NOT end at the exhausted verify -- another worker
+    # iteration picked the same task back up (its validation-failed
+    # retry), a second verify invocation passed, and review still ran.
+    metas = _iteration_metas(run)
+    phases = [m["phase"] for m in metas]
+    assert phases == ["planning", "worker", "verify", "worker", "verify",
+                       "review"], phases
+
+    # the ladder genuinely exhausted (never merely "got lucky and passed
+    # first try"): two real verify invocations were made -- the exhausted
+    # one and the successful retry.
+    assert _marker(run, "verify-call-count") == "2"
+
+    # today's ordinary safe default fired exactly once: one validation-
+    # failed round recorded, then the task reached vigilant's own
+    # terminal `validated` -- never stuck at `validation-failed`.
+    all_tasks = tasks(run)
+    assert len(all_tasks) == 1
+    assert all_tasks[0]["status"] == "validated", all_tasks[0]
+    assert all_tasks[0]["validationAttempts"] == 1, all_tasks[0]
+
+    # the exhausted attempt's uncharged re-asks are recorded under
+    # usage.byPhase.contract and the recorded contract.agent_fault --
+    # mirrors task 001's unit-tier invariant, now observed through the
+    # engine's own recorded run state rather than a scripted runner.
+    by_phase = st.get("usage", {}).get("byPhase", {})
+    assert by_phase.get("contract", {}).get("totalTokens", 0) > 0, by_phase
+    faults = events_of(run, "contract.agent_fault")
+    assert len(faults) == 1, events(run)
+    assert faults[0].get("hat") == "verify", faults[0]
+
+    # there was genuine iteration budget left over -- the run did not
+    # merely limp to its own cap.
+    assert st.get("iterationsUsed", 0) < st.get("iterationsBudget", 0), st
+
+
+def test_review_ladder_exhaustion_with_budget_remaining_does_not_end_the_run(live):
+    run = live(run_id="g5-review-ladder-exhaustion",
+               job={"on_complete": "exit", "max_approaches": 2},
+               stub_env={"STUB_REVIEW_MALFORMED_COUNT": "1"})
+    assert run.proc.wait(timeout=60) == 0
+    st = status(run)
+    assert st.get("state") == "succeeded", st
+    assert st.get("verdict") == "verified", st
+    assert st.get("approach") == 2, st
+
+    metas = _iteration_metas(run)
+    phase_approach = [(m["phase"], m["approach"]) for m in metas]
+    assert phase_approach == [
+        ("planning", 1), ("worker", 1), ("worker", 1), ("review", 1),
+        ("planning", 2), ("worker", 2), ("worker", 2), ("review", 2),
+    ], phase_approach
+
+    # only ONE real review invocation happened per approach: the ladder's
+    # own uncharged re-asks never advance this marker (they carry no
+    # `Role: Reviewer` text), so it reads exactly 2 -- one exhausted call
+    # for approach 1, one passing call for approach 2.
+    assert _marker(run, "review-count") == "2"
+
+    # today's ordinary archive-with-safe-default consequences of an
+    # exhausted (unparseable) review reply, unchanged: approach 1 is
+    # archived, approach 2 -- the run's real terminal success -- never is.
+    approaches_dir = run.run_dir / "approaches"
+    assert (approaches_dir / "01").is_dir(), sorted(
+        p.name for p in approaches_dir.iterdir())
+    assert not (approaches_dir / "02").exists()
+    assert (approaches_dir / "01" / "tasks.json").exists()
+
+    all_tasks = tasks(run)
+    assert all_tasks and all(t["status"] == "completed" for t in all_tasks)
+
+    by_phase = st.get("usage", {}).get("byPhase", {})
+    assert by_phase.get("contract", {}).get("totalTokens", 0) > 0, by_phase
+    assert st.get("iterationsUsed", 0) < st.get("iterationsBudget", 0), st
+
+
+def test_verdict_gate_ladder_exhaustion_with_budget_remaining_does_not_end_the_run(live):
+    run = live(run_id="g5-verdict-gate-ladder-exhaustion",
+               job={"peer_verdict_gate": True, "on_complete": "exit",
+                    "max_approaches": 2},
+               stub_env={"STUB_VERDICT_GATE_MALFORMED_COUNT": "1"})
+    assert run.proc.wait(timeout=60) == 0
+    st = status(run)
+    assert st.get("state") == "succeeded", st
+    assert st.get("verdict") == "verified", st
+    assert st.get("approach") == 2, st
+
+    metas = _iteration_metas(run)
+    phase_approach = [(m["phase"], m["approach"]) for m in metas]
+    assert phase_approach == [
+        ("planning", 1), ("worker", 1), ("worker", 1), ("review", 1),
+        ("verdict_gate", 1),
+        ("planning", 2), ("worker", 2), ("worker", 2), ("review", 2),
+        ("verdict_gate", 2),
+    ], phase_approach
+
+    # the marker counts EVERY `Role: Peer verdict gate` invocation seen
+    # (its own `_vg_mseen` counter keeps advancing once armed): 2 total --
+    # the exhausted approach-1 call plus approach 2's own, later, normal
+    # invocation (which falls through once `_vg_mseen >= wanted`).
+    assert _marker(run, "verdict-gate-malformed-count") == "2"
+
+    # the exhausted gate invocation still reaches today's ordinary
+    # archive-with-safe-default path: approach 1 is archived, approach 2
+    # -- the run's real terminal success -- never is.
+    approaches_dir = run.run_dir / "approaches"
+    assert (approaches_dir / "01").is_dir(), sorted(
+        p.name for p in approaches_dir.iterdir())
+    assert not (approaches_dir / "02").exists()
+
+    all_tasks = tasks(run)
+    assert all_tasks and all(t["status"] == "completed" for t in all_tasks)
+
+    by_phase = st.get("usage", {}).get("byPhase", {})
+    assert by_phase.get("contract", {}).get("totalTokens", 0) > 0, by_phase
+    assert st.get("iterationsUsed", 0) < st.get("iterationsBudget", 0), st
+
+
+def test_verify_fenced_payload_rescue_settles_with_no_extra_stub_invocation(live):
+    run = live(run_id="g5-verify-fenced-rescue",
+               job={"vigilant": True, "on_complete": "exit"},
+               stub_env={"STUB_TASKS": "1", "STUB_VERIFY_MALFORMED_COUNT": "1",
+                         "STUB_VERIFY_MALFORMED_FENCED": "1"})
+    assert run.proc.wait(timeout=60) == 0
+    st = status(run)
+    assert st.get("state") == "succeeded", st
+    assert st.get("verdict") == "verified", st
+
+    # the ordinary success shape -- never a validation-failed round, and
+    # never a second worker retry -- because the FIRST verify reply was
+    # rescued in place.
+    metas = _iteration_metas(run)
+    phases = [m["phase"] for m in metas]
+    assert phases == ["planning", "worker", "verify", "review"], phases
+
+    all_tasks = tasks(run)
+    assert len(all_tasks) == 1
+    assert all_tasks[0]["status"] == "validated", all_tasks[0]
+    # never touched -- the rescue fixed the FIRST attempt's own reply, so
+    # no validation-failed round was ever recorded against this task.
+    assert all_tasks[0].get("validationAttempts", 0) == 0, all_tasks[0]
+
+    # exactly ONE real stub-pi invocation for the whole verify episode --
+    # the rescue never asked the model again, unlike the exhaustion test
+    # above (whose own marker reads "2").
+    assert _marker(run, "verify-call-count") == "1"
+
+    # no contract-phase usage at all -- `_ask_contract_fix`'s
+    # fenced-payload branch returns before ever calling `self.runner.run`.
+    by_phase = st.get("usage", {}).get("byPhase", {})
+    assert not by_phase.get("contract"), by_phase
+    assert events_of(run, "contract.agent_fault") == [], events(run)

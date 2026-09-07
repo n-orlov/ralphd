@@ -68,8 +68,8 @@ Per-module slow time in the top 80: `tests/test_interrupt_not_substantive_outcom
 `tests/test_e2e.py` 46 s, `tests/test_cli_logs_follow_liveness.py` 37 s, `tests/test_reflect_infra_retry.py` 35 s, `tests/test_cli_ui.py`
 26 s, `tests/test_durations.py` 25 s, `tests/test_refunds_survive_resume.py` 24 s, `tests/test_resume_by_state.py` 22 s,
 `tests/test_iteration_timeout_contained.py` 21 s, `tests/test_inband_error_retry.py` 19 s, `tests/test_config_overlay.py` 17 s,
-`tests/test_steer_tool_spool_two_uid_task030.py` 16 s, `test_crash_consistency.py` 16 s,
-`tests/test_status_health_infra_wait.py` 14 s, `tests/test_infra_outage_budget.py` 14 s.
+`test_steer_tool_spool_two_uid_task030.py` 16 s, `test_crash_consistency.py` 16 s,
+`tests/test_status_health_infra_wait.py` 14 s, `test_infra_outage_budget.py` 14 s.
 
 **Key finding:** the pinned-prose/per-task tests are a *count and maintenance* problem, not a
 wall-clock problem (4,000 in-process tests run in roughly 100 s). Wall clock is ~75 % real engines,
@@ -125,7 +125,7 @@ and backoffs set to 0 via job.yaml:
 1. happy path + exit modes + durations + cost breakdown + artifacts (absorbs `tests/test_durations.py`,
    `tests/test_cli_cost_breakdown.py`, `tests/test_cli_iteration_detail.py`, `tests/test_cli_artifacts.py`, `test_cli_runs_*`, `test_cli_logs*` x11)
 2. validation rejection -> retry -> three strikes -> review; criteria tamper refusal (absorbs vigilant `tests/test_e2e.py` cases, `tests/test_criteria_tamper_refusal_task024.py`)
-3. review rejection -> replan -> ladder exhaustion -> last-approach pause -> resume with/without ruling (absorbs `tests/test_ladder_exhaustion_e2e_task033.py`, 3 last-approach modules, `tests/test_resume_by_state.py`)
+3. review rejection -> replan -> ladder exhaustion -> last-approach pause -> resume with/without ruling (absorbs `test_ladder_exhaustion_e2e_task033.py`, 3 last-approach modules, `tests/test_resume_by_state.py`)
 4. cure pass: curable-only -> cure tasks -> re-review; bounded; not on tamper; id collision (absorbs 5 cure-pass modules)
 5. petition -> adjudication -> refuted/confirmed -> history persisted (new e2e; today 0 real-engine coverage)
 6. peer gates: plan-review objections, verdict-gate reject/malformed/peek (absorbs task029/031/032, `test_peer_*`)
@@ -222,6 +222,53 @@ Net effect: 6,230 -> ~3,000 tests, 383 -> ~180 modules, 16.3 min -> ~5 min seria
 parallel, with petition/adjudication and last-approach pause gaining the end-to-end coverage they
 lack today.
 
+### Real-engine spawn count after tasks 020/021 (requirements C.9/C.10)
+
+The audit's own target for the twelve flows is section 4(f) item 5: *"modules
+using `live(`/`engine_factory` <= 14"*. Measured on this tree, at the commit
+that folded the second half:
+
+```
+grep -lE '(^|[^_a-zA-Z])live\(|engine_factory\(' tests/*.py | grep -v conftest.py | wc -l
+```
+
+**55** modules under `tests/` still name the shared real-engine spawn helper
+(the twelve `tests/flows/` modules are not counted by that command and are the
+consolidation's own destination, not part of its residue). That is over the
+target of 14, so this section takes the disclosure route the C.10 criterion
+allows and NAMES every module still counted -- the number without the names
+would be unauditable, and none of these were in tasks 020/021's remit (which
+was the audit's own list of real-engine *loop-path* modules the flows now
+cover, 10 modules / 27 nodes, all deleted):
+
+  `test_browser_hub.py`, `test_cli_artifacts.py`, `test_cli_cost_breakdown.py`
+  `test_cli_creds_crud.py`, `test_cli_fault_explanation.py`, `test_cli_iteration_detail.py`
+  `test_cli_logs.py`, `test_cli_logs_dead_run.py`, `test_cli_logs_follow_liveness.py`
+  `test_cli_logs_pty_termios.py`, `test_cli_logs_rendered_tail.py`, `test_cli_logs_signal.py`
+  `test_cli_logs_tail_syntax.py`, `test_cli_prompts_crud.py`, `test_cli_resume.py`
+  `test_cli_runs_tasks_column.py`, `test_cli_skills_crud.py`, `test_cli_status_dead_run.py`
+  `test_cli_steer_list.py`, `test_cli_ui.py`, `test_cli_workspace.py`
+  `test_cost_unknown.py`, `test_cost_zero_quote.py`, `test_crashed_attempt_preserved.py`
+  `test_durations.py`, `test_e2e.py`, `test_engine_child_import_path.py`
+  `test_fault_class_meta.py`, `test_home_isolation_default.py`, `test_hub_steering.py`
+  `test_image_recorded.py`, `test_inband_error_retry.py`, `test_infra_deadline_extension.py`
+  `test_infra_retry_all_phases.py`, `test_instant_infra_retry.py`, `test_iteration_env_strip.py`
+  `test_iteration_timeout_contained.py`, `test_live_run_paused_teardown_task048.py`, `test_no_progress_instant_failures.py`
+  `test_notifier_env_isolation.py`, `test_on_complete_cmd.py`, `test_pricing_map.py`
+  `test_reflect_signal_unwind.py`, `test_reflection.py`, `test_refunds_survive_resume.py`
+  `test_resume.py`, `test_resume_by_state.py`, `test_resume_state_event.py`
+  `test_scheduler.py`, `test_schema_version.py`, `test_stagnation_signature.py`
+  `test_status_health_infra_wait.py`, `test_status_max_approaches.py`, `test_tasks_stale_cli.py`
+  `test_usage_accounting.py`
+
+Reading the list: the great majority are CLI, cost/usage, hub and record
+modules that spawn an engine only to have a live run to address (`test_cli_*`
+21 of the 55, `test_cost_*`/`test_pricing_map.py`/`test_usage_accounting.py` 4)
+-- requirement F's subject, not C's -- plus `tests/test_e2e.py` itself and the
+infra/resume/reflect family whose remaining nodes assert engine behaviour no
+flow claims. Recompute the number with the command above rather than quoting
+this paragraph: it moves with every F-series conversion.
+
 ## Subsumed
 
 Filled in by the v0.19 run as requirement G lands: one row per deleted test node, naming the
@@ -259,6 +306,27 @@ assertions, same hold-then-SIGKILL-then-resume shape, only the module and its tw
 changed) rather than absorbed into a differently-shaped flow, so each row below names the exact
 same-named function in its new home.
 
+Derivation for task 021's second half (requirement C.10): the same `-def test_`
+diff, run over this task's own deletion of the five remaining real-engine
+modules of the audit's list -- `test_ladder_exhaustion_e2e_task033.py` (4
+nodes), `test_e2e_budget_topup.py` (2), `test_steer_tool_spool_two_uid_task030.py`
+(3), `test_status_unconsumed_steering.py` (2) and `test_infra_outage_budget.py`
+(7: 5 unit + 2 black-box) -- gives exactly eighteen deleted nodes, each with its
+OWN row below. Thirteen of them moved into the flow that already owns their loop
+path (ladder exhaustion -> `tests/flows/test_flow_review_replan_pause.py`, the
+mid-flight top-up -> `tests/flows/test_flow_budget_deadline_grace.py`, the spool
+and the unconsumed-steering pair -> `tests/flows/test_flow_steer.py`, the outage
+budget -> `tests/flows/test_flow_infra_ladder.py`), verbatim: same fixture, same
+stub knobs, same assertions, only the module and the local record readers changed
+(`flowlib.status`/`events_of`/`tasks` replace each deleted module's own copies).
+The remaining five are `test_infra_outage_budget.py`'s UNIT nodes, which never
+spawned an engine at all: they moved, unchanged, to
+`tests/test_infra_retry_schedule.py` together with the
+`INFRA_ERROR`/`_infra_result`/`_ok_result`/`_stub_attempts`/`_supervisor` helpers
+that five other modules import by name and the `real_backoff` opt-out marker
+(task 047, operator steer 004) -- the opt-out is still carried by exactly three
+modules, one of them now under this new name.
+
 | deleted node | surviving cover | landed in |
 |---|---|---|
 | `tests/test_command_form_lint_task009.py::test_task_205_fixture_embeds_the_clause_the_prd_names_as_must_catch` | `tests/test_command_form_lint_task009.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` (the fixture is now checked by direct equality against the tracked `deck-phase3k` task 205 record, `tests/data/deck-phase3k-task-205.json`, and still checks the PRD's abbreviated quote as an abbreviation of it) | task 009, requirement A.5 |
@@ -278,3 +346,21 @@ same-named function in its new home.
 | `test_crash_consistency.py::test_sigkill_mid_worker_iteration_then_resume_completes` | `tests/flows/test_flow_crash_resume_refunds.py::test_sigkill_mid_worker_iteration_then_resume_completes` (the exact same scenario, moved verbatim: killed while a task is genuinely `in-progress`, nowhere near an iteration boundary; a fresh engine resumes over the same run dir and the crashed iteration slot is reused, never skipped or duplicated) | task 021, requirement C.10 |
 | `test_crash_consistency.py::test_sigkill_at_iteration_boundary_then_resume_completes` | `tests/flows/test_flow_crash_resume_refunds.py::test_sigkill_at_iteration_boundary_then_resume_completes` (the exact same scenario, moved verbatim: the worker loop's prior work is 100% durable, the freshly-started `review` iteration is 0% done; resume lands the same iteration slot reused, not skipped) | task 021, requirement C.10 |
 | `test_vigilant_crash_resume.py::test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifies` | `tests/flows/test_flow_crash_resume_refunds.py::test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifies` (the exact same scenario, moved verbatim: a task already relabelled `awaiting-validation` survives the crash, and the resumed engine still runs a real, passing verify for it rather than silently skipping it) | task 021, requirement C.10 |
+| `test_ladder_exhaustion_e2e_task033.py::test_verify_ladder_exhaustion_with_budget_remaining_does_not_end_the_run` | `tests/flows/test_flow_review_replan_pause.py::test_verify_ladder_exhaustion_with_budget_remaining_does_not_end_the_run` (moved verbatim: same `live` run with `STUB_VERIFY_MALFORMED_COUNT=1`, the same `planning, worker, verify, worker, verify, review` phase list, the same `.stub-verify-call-count == 2`, the same single `contract.agent_fault` at hat `verify` and the same budget-left assertion) | task 021, requirement C.10 |
+| `test_ladder_exhaustion_e2e_task033.py::test_review_ladder_exhaustion_with_budget_remaining_does_not_end_the_run` | `tests/flows/test_flow_review_replan_pause.py::test_review_ladder_exhaustion_with_budget_remaining_does_not_end_the_run` (moved verbatim: `STUB_REVIEW_MALFORMED_COUNT=1` with `max_approaches: 2`, the same exact eight-entry `(phase, approach)` list, `.stub-review-count == 2`, approach 1 archived and approach 2 not, and non-zero `usage.byPhase.contract`) | task 021, requirement C.10 |
+| `test_ladder_exhaustion_e2e_task033.py::test_verdict_gate_ladder_exhaustion_with_budget_remaining_does_not_end_the_run` | `tests/flows/test_flow_review_replan_pause.py::test_verdict_gate_ladder_exhaustion_with_budget_remaining_does_not_end_the_run` (moved verbatim: `peer_verdict_gate: true` + `STUB_VERDICT_GATE_MALFORMED_COUNT=1`, the same ten-entry `(phase, approach)` list including both `verdict_gate` invocations, the same marker value and the same archive asymmetry) | task 021, requirement C.10 |
+| `test_ladder_exhaustion_e2e_task033.py::test_verify_fenced_payload_rescue_settles_with_no_extra_stub_invocation` | `tests/flows/test_flow_review_replan_pause.py::test_verify_fenced_payload_rescue_settles_with_no_extra_stub_invocation` (moved verbatim: the fenced-payload rescue at the `verify` site -- `planning, worker, verify, review`, `validationAttempts == 0`, `.stub-verify-call-count == 1`, no `usage.byPhase.contract` and no `contract.agent_fault` at all) | task 021, requirement C.10 |
+| `test_e2e_budget_topup.py::test_run_without_topup_dies_of_budget_exhaustion` | `tests/flows/test_flow_budget_deadline_grace.py::test_run_without_topup_dies_of_budget_exhaustion` (moved verbatim: the counterfactual -- a 4-task plan on a 3-iteration budget ends `failed`/`unverified` with `iterationsUsed == 3` and work outstanding) | task 021, requirement C.10 |
+| `test_e2e_budget_topup.py::test_topup_midflight_lets_the_job_reach_a_terminal_state_it_could_not_have` | `tests/flows/test_flow_budget_deadline_grace.py::test_topup_midflight_lets_the_job_reach_a_terminal_state_it_could_not_have` (moved verbatim: the same held second worker iteration, the same `ralphctl budget +10` from another process, the same `succeeded`/`verified` ending at `iterationsUsed == 6`, the same phase list and the same single `budget_changed` audit event asserted field by field) | task 021, requirement C.10 |
+| `test_steer_tool_spool_two_uid_task030.py::test_a_real_steer_iteration_applies_a_task_insert_through_the_spool` | `tests/flows/test_flow_steer.py::test_a_real_steer_iteration_applies_a_task_insert_through_the_spool` (moved verbatim: the same two real process boundaries (steer-hat subprocess -> `pi -m ralphd.engine.hat_tools` -> spool files -> the engine's own process), the same applier-forced `origin == "steer"` against the call's requested `origin: "attacker"`, the same served `steer.tool_call` event naming `001-spool.md`, and the same empty request spool afterwards) | task 021, requirement C.10 |
+| `test_steer_tool_spool_two_uid_task030.py::test_a_malformed_spool_request_is_refused_without_ending_the_run` | `tests/flows/test_flow_steer.py::test_a_malformed_spool_request_is_refused_without_ending_the_run` (moved verbatim: the same hand-written unparseable request, the same `ok: false` answer naming "unreadable", the same `succeeded`/`verified` run, the same consumed steering entry and the same unlinked request) | task 021, requirement C.10 |
+| `test_steer_tool_spool_two_uid_task030.py::test_a_task_update_status_move_still_goes_through_the_transition_validator` | `tests/flows/test_flow_steer.py::test_a_task_update_status_move_still_goes_through_the_transition_validator` (moved verbatim: the same two-call batch, the same refusal of the illegal `pending -> validated` jump with "status change refused", and the same deliberate non-assertion of the task's later, legal final status) | task 021, requirement C.10 |
+| `test_status_unconsumed_steering.py::test_ralphctl_status_warns_about_unconsumed_steering` | `tests/flows/test_flow_steer.py::test_ralphctl_status_warns_about_unconsumed_steering` (moved verbatim: the same held worker iteration, steer-then-abort, the same `unconsumedSteering == ["001-stranded.md"]` in `--json status` and the same `UNCONSUMED STEERING` line in the human output) | task 021, requirement C.10 |
+| `test_status_unconsumed_steering.py::test_ralphctl_status_no_warning_when_steering_fully_consumed` | `tests/flows/test_flow_steer.py::test_ralphctl_status_no_warning_when_steering_fully_consumed` (moved verbatim: the negative case -- a run with nothing pending reports `unconsumedSteering == []` and never prints the warning line) | task 021, requirement C.10 |
+| `test_infra_outage_budget.py::test_five_consecutive_infra_faults_are_ridden_out_free` | `tests/flows/test_flow_infra_ladder.py::test_five_consecutive_infra_faults_are_ridden_out_free` (moved verbatim, `@pytest.mark.nightly` included: the same five hung worker invocations on the same compressed ladder, `iterationsUsed == 3`, `approach == 1`, and the same `infra_retry` attempt/backoffS/maxAttempts/waitedS lists asserted value by value) | task 021, requirement C.10 |
+| `test_infra_outage_budget.py::test_outage_budget_exhaustion_ends_terminal_naming_the_duration` | `tests/flows/test_flow_infra_ladder.py::test_outage_budget_exhaustion_ends_terminal_naming_the_duration` (moved verbatim, `@pytest.mark.nightly` included: the same permanently dead endpoint on a 2s outage budget, the same `aborted` state and the same reason text (`\d+s infra outage`, "2s outage budget spent waiting", "no llm traffic"), `iterationsUsed == 1`) | task 021, requirement C.10 |
+| `test_infra_outage_budget.py::test_retries_past_the_old_attempt_cap_then_succeeds` | `tests/test_infra_retry_schedule.py::test_retries_past_the_old_attempt_cap_then_succeeds` (the same-named unit node, moved unchanged with the module's rename (same body, same `real_backoff` opt-out): six consecutive infra faults then a healthy attempt, the `[0.1, 0.2, 0.4, 0.4, 0.4, 0.4]` schedule, the `infra_retry` attempt/backoffS books and the episode reset) | task 021, requirement C.10 |
+| `test_infra_outage_budget.py::test_backoff_is_capped_by_backoff_max_s` | `tests/test_infra_retry_schedule.py::test_backoff_is_capped_by_backoff_max_s` (the same-named unit node, moved unchanged with the module's rename (same body, same `real_backoff` opt-out): `infra_retry_backoff_max_s` clamping a 100s schedule entry to 2s) | task 021, requirement C.10 |
+| `test_infra_outage_budget.py::test_episode_resets_between_separate_outages` | `tests/test_infra_retry_schedule.py::test_episode_resets_between_separate_outages` (the same-named unit node, moved unchanged with the module's rename (same body, same `real_backoff` opt-out): two independent glitches, the second starting the schedule from the top again) | task 021, requirement C.10 |
+| `test_infra_outage_budget.py::test_budget_exhaustion_reason_names_outage_duration_and_error` | `tests/test_infra_retry_schedule.py::test_budget_exhaustion_reason_names_outage_duration_and_error` (the same-named unit node, moved unchanged with the module's rename (same body, same `real_backoff` opt-out): waits clamped to the budget remainder, the 4th attempt finding it spent, and the give-up reason on the event log) | task 021, requirement C.10 |
+| `test_infra_outage_budget.py::test_explicit_retry_max_still_caps_attempts` | `tests/test_infra_retry_schedule.py::test_explicit_retry_max_still_caps_attempts` (the same-named unit node, moved unchanged with the module's rename (same body, same `real_backoff` opt-out): an operator-pinned `infra_retry_max` keeping the old attempt-count behaviour and wording) | task 021, requirement C.10 |

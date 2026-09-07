@@ -25,7 +25,7 @@ import json
 import time
 
 import pytest
-from test_infra_outage_budget import (
+from test_infra_retry_schedule import (
     _events,
     _infra_result,
     _ok_result,
@@ -44,7 +44,7 @@ def _status(sup) -> dict:
 
 
 def _sampling_attempts(sup, results):
-    """Like test_infra_outage_budget._stub_attempts, but the stubbed backoff
+    """Like test_infra_retry_schedule._stub_attempts, but the stubbed backoff
     wait also snapshots status.json -- that snapshot is what an operator
     polling GET /status mid-wait would have seen."""
     calls: list[str] = []

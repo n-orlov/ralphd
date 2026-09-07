@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from test_infra_outage_budget import _infra_result, _ok_result
+from test_infra_retry_schedule import _infra_result, _ok_result
 
 from ralphd.cli import main as cli_main
 from tests.conftest import supervisor_factory

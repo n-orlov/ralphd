@@ -852,7 +852,7 @@ def _undo_instant_sleep_patches():
 # Opt-out: `@pytest.mark.real_backoff` (module-level `pytestmark =
 # pytest.mark.real_backoff` works too), registered in pyproject.toml and
 # applied ONLY by the three modules the PRD names as testing the
-# backoff/retry schedule itself -- `test_infra_outage_budget.py`,
+# backoff/retry schedule itself -- `test_infra_retry_schedule.py`,
 # `test_retry_now.py`, `test_reflect_infra_retry.py`.
 # `tests/test_wait_out_backoff_stubbed_task010.py` pins both this fixture's
 # presence and that no other module carries the marker.

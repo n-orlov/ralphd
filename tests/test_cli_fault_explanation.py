@@ -766,7 +766,7 @@ def test_engine_infra_fault_is_explained_end_to_end(live):
             # recorded total instead of demanding a non-zero one; the non-zero
             # rendering of the same field is covered by the hand-written
             # `totalWaitedS` nodes above (30 s/90 s/900 s), and the wait
-            # accounting itself by `tests/test_infra_outage_budget.py`, one of
+            # accounting itself by `tests/test_infra_retry_schedule.py`, one of
             # B.4's three exempt modules.
         })
     status = e.wait_terminal(timeout=90)
@@ -787,7 +787,7 @@ def test_engine_infra_fault_is_explained_end_to_end(live):
     # two retries cost nothing, so `budget` is honestly absent rather than a
     # fabricated 0 s spend. The non-zero shape of the same block is pinned by
     # the hand-written `totalWaitedS` nodes above (30 s/90 s/900 s), and the
-    # accounting itself by `tests/test_infra_outage_budget.py`.
+    # accounting itself by `tests/test_infra_retry_schedule.py`.
     assert status.get("infraWaitTotalS", 0.0) == pytest.approx(0.0)
     assert exp["budget"] is None
     retries = read_events(e.run_dir, ("infra_retry",))

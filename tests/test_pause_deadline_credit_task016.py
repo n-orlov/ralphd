@@ -22,7 +22,7 @@ let a real pause actually be in progress before it is resumed, exactly the
 pattern `tests/test_retry_now.py` already uses for the same reason; the
 third test drives the crediting through a stubbed `_park_until_resumed`
 (mirroring `_wait_out_backoff`'s own stubbing in
-`tests/test_infra_outage_budget.py`) so a multi-hundred-second credit can be
+`tests/test_infra_retry_schedule.py`) so a multi-hundred-second credit can be
 asserted without a multi-hundred-second wait. `sup.runner` is stubbed in
 every test; `_run_iteration_once` is exercised directly only to read the
 `timeout_s` it computes and hands to the stub, never to run a real agent.

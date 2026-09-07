@@ -46,7 +46,11 @@ reaching a clean terminal state is itself part of what each node pins.
 
 from __future__ import annotations
 
-from tests.flows.flowlib import assert_step_sequence, assert_steps_include, flow_steps, status
+import json
+import time
+
+from tests.flows.flowlib import (assert_step_sequence, assert_steps_include,
+                                 events_of, flow_steps, status, tasks)
 
 # -- ordinary exhaustion: iteration count runs out, tasks incomplete -------
 
@@ -224,3 +228,107 @@ def test_the_wall_clock_deadline_ends_the_cycle_before_the_iteration_count_does(
         f"flow budget/deadline/grace (deadline): the run must not end "
         f"before its own published deadline, got deadlineAt="
         f"{st.get('deadlineAt')!r} endedAt={st.get('endedAt')!r}")
+
+
+# ---------------------------------------------------------------------------
+# Task 021 (requirement C.10): the two nodes folded in from
+# `tests/test_e2e_budget_topup.py` (deleted in the same commit, one §
+# "Subsumed" row per node). Same subject as this flow -- what the iteration
+# budget does to a live run -- from the other side: a job about to die of
+# exhaustion is topped up MID-FLIGHT from another process (`ralphctl budget`)
+# and reaches a terminal state the counterfactual node proves it could not
+# otherwise reach. Moved verbatim: same `live` fixture (the registry layout
+# the real `ralphctl` executable needs to address the run by id), same
+# STUB_HOLD re-arm shape, same assertions; only the module and its two local
+# readers changed (`flowlib.status`/`flowlib.events_of`/`flowlib.tasks`
+# replace the deleted module's own `_status`/`_events` copies).
+# ---------------------------------------------------------------------------
+
+# 4 tasks -> planning + 4 worker iterations + 1 review = 6 iterations needed.
+TOPUP_PLAN_TASKS = 4
+TOPUP_NEEDED_ITERATIONS = 6
+# Deliberately short: enough for planning + 2 workers, never enough to finish.
+TOPUP_STARTING_BUDGET = 3
+
+
+def _wait_for_last_budget_slot(run, timeout: float = 60.0) -> dict:
+    """Block until the run has *started* its final affordable iteration
+    (`iterationsUsed == TOPUP_STARTING_BUDGET`, written at iteration start),
+    i.e. it is one boundary away from exhausting its budget. Fails loudly if
+    the run went terminal first -- that would mean the window was missed and
+    any later assertion would be meaningless."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st = status(run)
+        if st.get("state") in ("succeeded", "failed", "aborted"):
+            raise AssertionError(
+                f"run went terminal before the top-up window: {st}")
+        if st.get("iterationsUsed", 0) >= TOPUP_STARTING_BUDGET:
+            return st
+        time.sleep(0.1)
+    raise AssertionError(f"never reached the last budget slot; last: {status(run)}")
+
+
+def test_run_without_topup_dies_of_budget_exhaustion(live):
+    """Counterfactual for the test below: this job cannot finish on the
+    budget it started with."""
+    run = live(run_id="budget-control",
+               job={"iterations": TOPUP_STARTING_BUDGET},
+               stub_env={"STUB_TASKS": str(TOPUP_PLAN_TASKS)})
+    st = run.wait_terminal()
+
+    assert st["state"] == "failed"
+    assert st["verdict"] == "unverified"
+    assert st["iterationsUsed"] == TOPUP_STARTING_BUDGET
+    all_tasks = tasks(run)
+    assert len(all_tasks) == TOPUP_PLAN_TASKS
+    assert any(t["status"] != "completed" for t in all_tasks), all_tasks
+
+
+def test_topup_midflight_lets_the_job_reach_a_terminal_state_it_could_not_have(
+        live, tmp_path):
+    hold_file = tmp_path / "hold-budgettopup"
+    run = live(run_id="budget-topup",
+               job={"iterations": TOPUP_STARTING_BUDGET},
+               stub_env={"STUB_TASKS": str(TOPUP_PLAN_TASKS),
+                        "STUB_HOLD_FILE": str(hold_file), "STUB_HOLD_PHASE": "worker",
+                        "STUB_HOLD_TIMEOUT_S": "30", "STUB_HOLD_REARM_MAX": "1"})
+    run.wait_api()
+    # release the first worker iteration (task 1) at once -- nothing to
+    # observe there; the stub's own re-arm immediately re-blocks the SAME
+    # file for the second (task 2 == overall iteration 3, the last one
+    # this budget affords).
+    hold_file.touch()
+    _wait_for_last_budget_slot(run)
+
+    # ...still running, one boundary from exhaustion: top up from outside.
+    res = run.ralphctl("budget", run.run_id, "+10")
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert (f"iteration budget: {TOPUP_STARTING_BUDGET} -> "
+            f"{TOPUP_STARTING_BUDGET + 10}") in res.stdout
+    assert status(run)["state"] == "running", "top-up must apply to a live run"
+    hold_file.touch()  # release the held iteration; no re-arm budget left
+
+    # The run keeps going past the original budget and finishes.
+    st = run.wait_terminal(timeout=120)
+    assert st["state"] == "succeeded", st
+    assert st["verdict"] == "verified"
+    assert st["iterationsBudget"] == TOPUP_STARTING_BUDGET + 10
+    # Further iterations really happened, and the job needed them all.
+    assert st["iterationsUsed"] > TOPUP_STARTING_BUDGET
+    assert st["iterationsUsed"] == TOPUP_NEEDED_ITERATIONS, st
+    phases = [json.loads((d / "meta.json").read_text())["phase"]
+              for d in sorted((run.run_dir / "iterations").iterdir())]
+    assert phases == ["planning"] + ["worker"] * TOPUP_PLAN_TASKS + ["review"]
+    assert all(t["status"] == "completed" for t in tasks(run))
+
+    # The audit trail records who changed what, mid-run.
+    changes = events_of(run, "budget_changed")
+    assert len(changes) == 1, changes
+    change = changes[0]
+    assert change["field"] == "iterations"
+    assert change["previous"] == TOPUP_STARTING_BUDGET
+    assert change["iterations"] == TOPUP_STARTING_BUDGET + 10
+    assert change["delta"] == 10
+    assert change["source"] == "api"
+    assert change["iterationsUsed"] == TOPUP_STARTING_BUDGET

@@ -1,14 +1,27 @@
 """Task 008 (#5, #11): infra retries are driven by a wall-clock outage
 budget with an episode clock, not by an attempt count.
 
-The unit half stubs `_run_iteration_once` and records every backoff wait, so
+This module stubs `_run_iteration_once` and records every backoff wait, so
 the escalating schedule (last value repeating, capped by
 `infra_retry_backoff_max_s` and by what is left of the budget) and the
 episode reset are asserted exactly, with a compressed schedule and no real
-sleeping of any consequence. The black-box half proves the same thing through
-the real engine + stub-pi: more consecutive infra faults than the old
-hardcoded 3-attempt cap allowed are ridden out, cost no iterations and no
-approach, and the job still reaches a verified terminal state.
+sleeping of any consequence.
+
+Task 021 (requirement C.10): this file is `tests/test_infra_outage_budget.py`
+minus its black-box half, under the name the surviving content deserves. The
+two nodes that drove the same claims through a real `ralphd-engine`
+subprocess + stub-`pi` moved to
+`tests/flows/test_flow_infra_ladder.py::test_five_consecutive_infra_faults_are_ridden_out_free`
+and `::test_outage_budget_exhaustion_ends_terminal_naming_the_duration`
+(both § "Subsumed"-rowed in `docs/test-suite-audit.md`), so no `live`/
+`engine_factory` engine is spawned from here any more. Everything below --
+the five unit nodes, `INFRA_ERROR`, `_infra_result`, `_ok_result`,
+`_stub_attempts`, `_supervisor` and the `real_backoff` opt-out -- is
+unchanged, including for the five modules that import these helpers by name
+(`tests/test_infra_deadline_extension.py`, `tests/test_retry_now.py`,
+`tests/test_status_health_infra_wait.py`,
+`tests/test_status_infra_retry_note.py`,
+`tests/test_v05_definition_of_done.py`).
 """
 
 from __future__ import annotations
@@ -19,7 +32,6 @@ import re
 
 import pytest
 
-from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
@@ -29,8 +41,6 @@ from tests.conftest import supervisor_factory
 # so it opts out of tests/conftest.py's autouse class-level
 # LoopSupervisor._wait_out_backoff stub (see REAL_BACKOFF_MARKER there).
 pytestmark = pytest.mark.real_backoff
-
-__all__ = ["engine_factory"]
 
 INFRA_ERROR = "Connection error."
 
@@ -53,7 +63,7 @@ def _ok_result() -> IterationResult:
 # this `_supervisor`) measure the retry wait itself -- how much of the outage
 # budget it consumes, and that `POST /retry` can interrupt it -- so the shared
 # harness's instant stubs would erase the subject. `cfg_defaults=False` for the
-# same reason: the schedule under test is JobConfig's own.
+# same reason: the schedule under test is `ralphd.engine.config.JobConfig`'s own.
 _supervisor = supervisor_factory(run_id="unit", cfg_defaults=False,
                                  no_backoff=False, real_sleep=True)
 
@@ -192,72 +202,3 @@ async def test_explicit_retry_max_still_caps_attempts(tmp_path, monkeypatch):
     assert waits == [0.1]
     assert sup._abort_reason == (
         f"infra fault: worker iteration failed after 2 attempts ({INFRA_ERROR})")
-
-
-# -- black box: through the real engine ------------------------------------
-
-
-@pytest.mark.nightly  # task 048 (B.5 follow-on): real 5x hang + backoff ladder,
-# inherently multi-second by design (this module keeps real backoff,
-# task 047/B.4) -- moved out of fast rather than shrinking the very
-# schedule the test is proving.
-def test_five_consecutive_infra_faults_are_ridden_out_free(engine_factory):
-    # No RALPHD_INFRA_RETRY_MAX at all: five hung worker invocations (the old
-    # default would have given up after three) are retried on a compressed
-    # schedule, then the healthy attempt finishes the only task. Charged
-    # budget is exactly the happy path (planning + worker + review == 3), so
-    # the run can only succeed if every retried attempt was refunded.
-    e = engine_factory(
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
-        stub_env={
-            "STUB_TASKS": "1",
-            "STUB_INFRA_HANG_SKIP": "1",   # invocation 1 (planning) is healthy
-            "STUB_INFRA_HANG_COUNT": "5",  # the next five worker attempts hang
-            "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.2,0.4",
-            "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
-        })
-    assert e.proc.wait(timeout=60) == 0
-
-    status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "succeeded"
-    assert status["verdict"] == "verified"
-    assert status["iterationsUsed"] == 3, "waiting out an outage costs no iterations"
-    assert status["approach"] == 1, "an infra outage never escalates the approach"
-
-    events = [json.loads(line) for line in
-              (e.run_dir / "events.jsonl").read_text().splitlines()]
-    infra = [ev for ev in events if ev.get("type") == "infra_retry"]
-    assert [ev["attempt"] for ev in infra] == [1, 2, 3, 4, 5]
-    assert [ev["backoffS"] for ev in infra] == [0.1, 0.2, 0.4, 0.4, 0.4]
-    assert all(ev["maxAttempts"] is None for ev in infra), "no cap configured"
-    assert [ev["waitedS"] for ev in infra] == [0.0, 0.1, 0.3, 0.7, 1.1]
-
-
-@pytest.mark.nightly  # task 048 (B.5 follow-on): real hang-timeout + outage
-# ladder, same reasoning as the node above -- moved rather than shrinking
-# the real schedule this module exists to test.
-def test_outage_budget_exhaustion_ends_terminal_naming_the_duration(engine_factory):
-    # A permanently broken endpoint: with a 2s outage budget the run gives up
-    # quickly and the terminal reason tells the operator how long the outage
-    # lasted, how much of the budget went into waiting, and the last error.
-    e = engine_factory(
-        job={"on_complete": "exit", "iterations": 12, "max_approaches": 3},
-        stub_env={
-            "STUB_TASKS": "1",
-            "STUB_INFRA_HANG_SKIP": "1",
-            "STUB_INFRA_HANG_COUNT": "20",  # every worker attempt hangs
-            "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
-            "RALPHD_INFRA_RETRY_BACKOFF_S": "0.5,1",
-            "RALPHD_INFRA_OUTAGE_BUDGET_S": "2",
-        })
-    assert e.proc.wait(timeout=60) == 1
-
-    status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "aborted"
-    reason = status["reason"]
-    assert re.search(r"\d+s infra outage", reason), reason
-    assert "2s outage budget spent waiting" in reason
-    assert "no llm traffic" in reason.lower()
-    assert status["approach"] == 1
-    assert status["iterationsUsed"] == 1, "only the healthy planning iteration"
