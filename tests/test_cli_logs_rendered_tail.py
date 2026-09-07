@@ -128,7 +128,7 @@ def test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming(live):
     exit -- it shows N lines of backlog, then keeps following)."""
     run = live(run_id="rendtail-follow-live",
               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "6",
-                        "STUB_SLEEP": "0.8"})
+                        "STUB_SLEEP": "0.3"})
     run.wait_api()
 
     tail_n = 10

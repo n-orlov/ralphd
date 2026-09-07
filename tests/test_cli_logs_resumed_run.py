@@ -179,7 +179,7 @@ def test_logs_follow_streams_past_a_resumed_runs_stale_terminal_marker(episodes)
     # "it kept streaming" is a genuine multi-second observation.
     e2 = episodes("logsresume", {"iterations": 20, "max_approaches": 1,
                                  "on_complete": "idle"},
-                  {"STUB_TASKS": "5", "STUB_SLEEP": "0.5"})
+                  {"STUB_TASKS": "5", "STUB_SLEEP": "0.3"})
     assert e2.run_dir == e1.run_dir  # sanity: genuinely the same run dir
     e2.wait_api()
     # An operator pause parks the loop at an iteration boundary, which puts
