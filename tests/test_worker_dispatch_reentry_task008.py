@@ -1,8 +1,9 @@
 """v0.17 task 008 (requirement B.2, #128): a repaired worker verdict is
 applied by RE-ENTERING the verdict dispatch, at most once per iteration.
 
-Task 008's own module, kept SEPARATE from
-`tests/test_worker_contract_reask_end_to_end_task008.py` -- which shares the
+Task 008's own module, kept SEPARATE from the contract-ladder module's own
+`test_a_malformed_complete_report_is_repaired_by_one_uncharged_re_ask`
+(`tests/test_contract_ladder.py`, folded there by task 024/D.3) -- which shares the
 `task008` filename suffix only because an unrelated, long-finished v0.13
 task also carried the number 008, and whose one test exercises a DIFFERENT
 ladder (the `elif verdict == "complete":` branch's own semantic re-ask, a
@@ -36,13 +37,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from test_worker_contract_reask_end_to_end_task008 import (
+from test_contract_ladder import (
     TASK_1,
     _ok,
     _review_verified,
-    _run_resumed,
     _task,
 )
+from test_contract_ladder import _run_resumed_worker_e2e as _run_resumed
 
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
