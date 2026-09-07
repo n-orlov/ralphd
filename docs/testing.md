@@ -90,7 +90,7 @@ The flow modules requirement G.5 asks for live in their own directory, are
 `fast`-only by rule 3 above (each one spawns a real engine), and each has to
 stay under 20 s serial. Measured serially in this container, one module per
 invocation (`.venv/bin/python -m pytest -q tests/flows/<module>.py`), re-measured
-at the sha that landed the fifth (task 012, validation ladder):
+at the sha that landed the sixth (task 013, peer gates):
 
 | module | tests | wall clock |
 |---|---|---|
@@ -99,10 +99,11 @@ at the sha that landed the fifth (task 012, validation ladder):
 | `tests/flows/test_flow_petition_adjudication.py` | 2 | 1.40 s |
 | `tests/flows/test_flow_cure_pass.py` | 2 | 1.59 s |
 | `tests/flows/test_flow_validation_ladder.py` | 3 | 2.32 s |
-| the whole directory (`tests/flows`) | 12 | 9.01 s |
+| `tests/flows/test_flow_peer_gates.py` | 3 | 2.13 s |
+| the whole directory (`tests/flows`) | 15 | 10.81 s |
 
 That table is prose, not a budget row: `tests/test_tier_budgets.py` parses only
-the eleven-column table above it. The 9.01 s the directory adds is inside the
+the eleven-column table above it. The 10.81 s the directory adds is inside the
 fast lane's own recorded measurements.
 
 ### Targets missed, with their numbers
