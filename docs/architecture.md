@@ -1054,6 +1054,8 @@ container and lets the CLI read state even when the container is dead.
 ├── petition-adjudications.json # run-scope CONFIRMED impossibility-petition adjudications, survives _archive_approach (task 011, #112)
 ├── approach-metadata.json # engine-owned per-approach judge verdicts (review/verdictGate, explicit blocking+residual arrays), written when the judge runs, survives _archive_approach (task 035, requirement B.1)
 ├── vigilant-verified.json # task ids that have passed a verify iteration
+├── debt.json           # per-run debt ledger: verify/petition notes recorded in form but not substance (task 006, requirement A.3, #155)
+├── debt.md             # debt.json rendered for a human, served by `ralphctl docs`/the hub document panel via state.RUN_DOCUMENTS
 ├── operator-termination.json # what the operator asked for (abort/interrupt)
 ├── .lock               # the engine's exclusive flock (self-protection, below)
 ├── steering/           # steering inbox: 001-*.md, 002-*.md …
