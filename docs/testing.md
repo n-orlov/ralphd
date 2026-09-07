@@ -60,8 +60,10 @@ records lint is built that way and the tier table puts records lint in smoke.
 
 ## Budgets
 
-Measured in this container (28 cores) at the sha that landed requirement G.8,
-with the recipes above. The "budget" columns are the declared ceilings this suite
+Measured in this container (28 cores) with the recipes above: the smoke rows and
+the serial fast row at the sha that landed requirement G.8, the parallel fast row
+re-measured at the sha that landed the first four `tests/flows` modules (task
+005). The "budget" columns are the declared ceilings this suite
 is held to; `tests/test_tier_budgets.py` fails when a recorded measurement
 exceeds one, and independently asks pytest what each tier collects right now and
 fails when *that* is over the ceiling. The ceilings carry deliberate headroom
@@ -72,8 +74,8 @@ tightened as the counts come down -- they are a ratchet, not a target.
 |---|---|---|---|---|---|---|---|---|---|---|
 | smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4640 | 263 | 26.97 s | 5100 | 300 | 60 s | n/a | no target of this kind for this lane |
 | smoke, serial | `smoke` | `-m smoke` | 4640 | 263 | 152.63 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 152.63 s measured against the 120 s target |
-| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 6409 | 390 | 112.38 s | 7000 | 430 | 150 s | < 120 s | met -- 112.38 s inside the 120 s target |
-| fast, serial | `fast` | `-m fast` | 6409 | 390 | 981 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 981 s measured against the 300 s target |
+| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 6418 | 394 | 111.79 s | 7000 | 430 | 150 s | < 120 s | met -- 111.79 s inside the 120 s target |
+| fast, serial | `fast` | `-m fast` | 6418 | 394 | 981 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 981 s measured against the 300 s target |
 
 The wall clock of the serial fast lane is the audit's own full serial
 measurement (`docs/test-suite-audit.md` section 2: 981 s at sha 836adc1, under
@@ -81,6 +83,26 @@ the equivalent `not docker and not browser` selector, which differs from `-m
 fast` by the seven dev-layout tests). It is not re-measured per wave: 16 minutes
 of serial run buys nothing the parallel lane does not already show, and the
 parallel lane is the one the loop uses.
+
+### The stub-`pi` flow lane (`tests/flows/`)
+
+The flow modules requirement G.5 asks for live in their own directory, are
+`fast`-only by rule 3 above (each one spawns a real engine), and each has to
+stay under 20 s serial. Measured serially in this container, one module per
+invocation (`.venv/bin/python -m pytest -q tests/flows/<module>.py`), at the sha
+that landed the first four:
+
+| module | tests | wall clock |
+|---|---|---|
+| `tests/flows/test_flow_happy_path.py` | 2 | 1.26 s |
+| `tests/flows/test_flow_review_replan_pause.py` | 3 | 1.88 s |
+| `tests/flows/test_flow_petition_adjudication.py` | 2 | 1.19 s |
+| `tests/flows/test_flow_cure_pass.py` | 2 | 1.39 s |
+| the whole directory (`tests/flows`) | 9 | 5.69 s |
+
+That table is prose, not a budget row: `tests/test_tier_budgets.py` parses only
+the eleven-column table above it. The 5.69 s the directory adds is inside the
+fast lane's own recorded measurements.
 
 ### Targets missed, with their numbers
 
@@ -91,13 +113,13 @@ hidden. Three of G.8's targets are missed at this sha, and one is met:
   sleeps and subprocess-spawning records lint inside the smoke tier --
   requirement G.2's shortfall (the slowest-80 sum is 641 s against a 120 s
   target) rather than a tiering defect. At `-n 8` the same tier is 26.97 s.
-- **6409 tests collected** against a target of at most 3000. The count reduction
+- **6418 tests collected** against a target of at most 3000. The count reduction
   was requirement G.6 (fold the per-task pins) and G.4 (consolidate the records
   lint), which this wave does not land; both are disclosed as shortfalls with
   their numbers under `artifacts/reports/`.
-- **390 modules collected** against a target of at most 180, for the same
+- **394 modules collected** against a target of at most 180, for the same
   reason.
-- Met: **the fast tier at `-n 8` is 112.38 s**, inside its < 120 s target. The
+- Met: **the fast tier at `-n 8` is 111.79 s**, inside its < 120 s target. The
   serial fast target (< 300 s) is missed at 981 s, which is the same real-sleep
   shortfall; the loop runs this tier in parallel.
 

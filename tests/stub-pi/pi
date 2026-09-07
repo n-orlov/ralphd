@@ -19,6 +19,37 @@ from env vars set by the test:
                       through the planner's contract (which task 120's
                       lint now refuses outright).
   STUB_REVIEW_FAILS   how many reviews reject before verifying (default 0)
+  STUB_WORKER_PETITION  task 005 (G.5): a JSON object with the three
+                      strings a worker's structured impossibility petition
+                      declares (`obligation`, `type`, `evidence`,
+                      `docs/petition-format.md`). The FIRST worker
+                      invocation that reports an ordinary
+                      `verdict: "complete"` carries it on that same
+                      payload's `petition` field (its own marker file, so
+                      exactly one declaration is made however many worker
+                      iterations the flow takes -- a second filing of the
+                      same obligation is a duplicate the engine refuses).
+                      Because `petitions.file_worker_petition` only ever
+                      files into a `<wave>-petitions.md` that already
+                      exists under the workspace's `artifacts/reports/`,
+                      the same invocation first creates that file if the
+                      workspace carries none (cwd IS the workspace for a
+                      real `pi` iteration) -- the pre-created petitions
+                      file a real wave's planning phase places. The wave
+                      token is STUB_PETITIONS_WAVE (default `v0.0`).
+  STUB_REVIEW_ADJUDICATIONS  task 005 (G.5): a JSON array of
+                      `petition_adjudications` entries (`obligation` plus
+                      `adjudication`: `CONFIRMED`/`REFUTED`, a REFUTED one
+                      also carrying `remedy`) -- `HAT_SCHEMAS["review"]`'s
+                      own optional field. Every VERIFYING review reply
+                      carries them, which includes the bounded mid-run
+                      adjudication episode the engine runs on the review
+                      hat's own model while a petition is open
+                      (`_maybe_run_midrun_adjudication_episode`); the
+                      engine's own write paths are idempotent, so a later
+                      ordinary review pass repeating the same entries
+                      neither double-appends the adjudication line in the
+                      tracked file nor rewrites the run-scope record.
   STUB_REVIEW_CURABLE_REJECT_COUNT  task 023 (C.3, #141): how many `review`
                       invocations reject with an all-curable BLOCKING
                       findings channel before the next one verifies
@@ -392,6 +423,46 @@ if "Role: Worker" not in prompt:
 
 def marker(name):
     return os.path.join(run, f".stub-{name}")
+
+
+def _declare_worker_petition():
+    """STUB_WORKER_PETITION's declaration, or None (task 005, G.5).
+
+    Exactly one declaration per run (its own marker file): an obligation may
+    carry at most one petition for the life of a run, so a second filing of
+    the same one is a duplicate the engine refuses rather than files.
+    Creates the wave's `<wave>-petitions.md` under the workspace's
+    `artifacts/reports/` when the workspace carries none -- the pre-created
+    file a real wave's planning phase places, and the only thing
+    `petitions.file_worker_petition` will file into. cwd is the workspace
+    for every real `pi` iteration (`runner.py` passes it), so this writes
+    where a worker's own edits go, never into the run dir.
+    """
+    raw = os.environ.get("STUB_WORKER_PETITION")
+    if not raw:
+        return None
+    declared = marker("worker-petition-declared")
+    if os.path.exists(declared):
+        return None
+    reports = os.path.join(os.getcwd(), "artifacts", "reports")
+    os.makedirs(reports, exist_ok=True)
+    wave = os.environ.get("STUB_PETITIONS_WAVE", "v0.0")
+    petitions_file = os.path.join(reports, f"{wave}-petitions.md")
+    if not os.path.exists(petitions_file):
+        with open(petitions_file, "w") as f:
+            f.write(f"# {wave} impossibility petitions\n\n"
+                    "Filed per docs/petition-format.md.\n\n")
+    with open(declared, "w") as f:
+        f.write("1")
+    return json.loads(raw)
+
+
+def _review_adjudications():
+    """STUB_REVIEW_ADJUDICATIONS' entries for a verifying review reply's
+    `petition_adjudications` field, or None when the knob is unset (task
+    005, G.5)."""
+    raw = os.environ.get("STUB_REVIEW_ADJUDICATIONS")
+    return json.loads(raw) if raw else None
 
 
 # STUB_INSTANT_FAIL_COUNT simulates a provider/auth/infra startup fault
@@ -934,7 +1005,15 @@ elif "Role: Worker" in prompt:
                 text += "\neverything finished"
             if echo_secrets:
                 text += " secrets: " + " ".join(echo_secrets) + " NONSECRET_SENTINEL_9f3a"
-            text += "\n" + json.dumps({"verdict": "complete", "task_id": picked["id"]})
+            _payload = {"verdict": "complete", "task_id": picked["id"]}
+            # Task 005 (G.5): STUB_WORKER_PETITION rides alongside the
+            # ordinary completion verdict, exactly as worker.md allows --
+            # the engine (never this stub) is what turns the three declared
+            # strings into a tracked filing.
+            _petition = _declare_worker_petition()
+            if _petition is not None:
+                _payload["petition"] = _petition
+            text += "\n" + json.dumps(_payload)
             emit_final(text, tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Steer" in prompt:
@@ -1094,7 +1173,11 @@ elif "Role: Reviewer" in prompt:
             _stale_json = os.path.join(run, "review-findings.json")
             if os.path.exists(_stale_json):
                 os.remove(_stale_json)
-        emit_final("all requirements hold\n" + json.dumps({"verdict": "verified"}),
+        _review_payload = {"verdict": "verified"}
+        _adjudications = _review_adjudications()
+        if _adjudications is not None:
+            _review_payload["petition_adjudications"] = _adjudications
+        emit_final("all requirements hold\n" + json.dumps(_review_payload),
                     tool_call=tool_call, thinking_text=thinking_text)
 
 elif "Role: Peer verdict gate (BLIND)" in prompt:
