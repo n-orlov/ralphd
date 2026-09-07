@@ -42,9 +42,9 @@ def test_status_shows_total_duration_and_json_fields_when_terminal(live):
 
 def test_status_shows_elapsed_so_far_and_current_iteration_elapsed_while_running(live):
     run = live(run_id="dur-running", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "5"})
+               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "1.5"})
     # Poll until we observe an in-flight iteration (currentIteration set),
-    # well before the job (which sleeps 5s per invocation across several
+    # well before the job (which sleeps 1.5s per invocation across several
     # iterations) reaches a terminal state.
     deadline = time.time() + 30
     status = None
