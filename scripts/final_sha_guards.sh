@@ -33,14 +33,17 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="python3"
 fi
 
-# Discovery, not enumeration: any tests/test_*.py file whose own SOURCE
-# mentions `docs`, `artifacts` or `README` as a word is a guard for this
-# subset -- a test cannot read one of those off disk without naming it,
-# whether as `docs/architecture.md`, as `REPO_ROOT / "docs" / "cli.md"`, or
-# as a bare `README` reference. `\b` keeps `docstring`/`docstrings` out.
-# -l = filenames only, -E = extended regex, sort for a deterministic order.
+# Discovery, not enumeration: any tests/test_*.py file (top-level, or one
+# level down under tests/records/ -- task 032, requirement E.1: the records
+# family is selected BY DIRECTORY, not re-typed into this glob one module at
+# a time) whose own SOURCE mentions `docs`, `artifacts` or `README` as a
+# word is a guard for this subset -- a test cannot read one of those off
+# disk without naming it, whether as `docs/architecture.md`, as `REPO_ROOT /
+# "docs" / "cli.md"`, or as a bare `README` reference. `\b` keeps
+# `docstring`/`docstrings` out. -l = filenames only, -E = extended regex,
+# sort for a deterministic order.
 mapfile -t MODULES < <(
-  grep -lE '\b(docs|artifacts|README)\b' tests/test_*.py 2>/dev/null | sort
+  grep -lE '\b(docs|artifacts|README)\b' tests/test_*.py tests/records/test_*.py 2>/dev/null | sort
 )
 
 if [[ "${1:-}" == "--list" ]]; then

@@ -1,14 +1,21 @@
-"""Task 041 (#22): re-read *every* evidence report under `artifacts/reports/`.
+"""Task 032 (requirement E.1): `tests/test_report_claims.py` collapsed into
+`tests/records/`.
 
-`tests/test_issue_traceability.py` (task 058) proved that a report's claims can
-be machine-checked; it only ever checked its own file, so `traceability.md` and
-`v0.5-definition-of-done.md` -- which name just as many paths and test node ids
--- were free to rot, and one of them had (`fault_classifier.py` was renamed to
-`faults.py` in v0.5 and the report never noticed).
+The original module parametrised five of its checks over every report under
+`artifacts/reports/` (`params=REPORTS`), so its own node count grew with the
+number of reports on disk -- 231 reports times five families was 1,155 of
+this module's 1,165 collected tests. That is the exact shape the PRD's
+records family wants gone: "iterates the reports it discovers by glob"
+inside a FIXED number of tests, not one pytest node per report per check.
 
-The checks are not copied here: they live in `tests/report_claims.py` and this
-module applies them to whatever the reports directory holds, so a report added
-later is covered without touching this file.
+`REPORTS = report_files()` below is still glob-discovered -- a report added
+tomorrow is covered without editing this file -- but the five per-report
+checks (commit/path/node/retired resolution, plus the "not claimless"
+density floor) now run inside ONE test's own `for` loop over that list,
+collecting every problem across every report before a single `assert`. The
+two `!retired`-direction mutation cases are merged into one test the same
+way. Nothing else about `tests/report_claims.py` (the shared parser and
+checks) changes -- only how many pytest nodes apply it.
 """
 
 from __future__ import annotations
@@ -37,18 +44,9 @@ from report_claims import (
 REPORTS = report_files()
 
 
-def _ids(reports: list[Path]) -> list[str]:
-    return [r.name for r in reports]
-
-
-@pytest.fixture(params=REPORTS, ids=_ids(REPORTS))
-def claims(request):
-    return parse_claims(request.param)
-
-
 def test_the_reports_directory_is_discovered_not_enumerated() -> None:
     assert REPORTS_DIR.is_dir(), f"{REPORTS_DIR} is missing"
-    names = set(_ids(REPORTS))
+    names = {r.name for r in REPORTS}
     # The two reports task 041 exists for, plus the one that was already
     # checked: naming them keeps a rename or a deletion visible.
     assert {
@@ -56,73 +54,68 @@ def test_the_reports_directory_is_discovered_not_enumerated() -> None:
         "traceability.md",
         "v0.5-definition-of-done.md",
     } <= names, names
-    # Every report in the directory is parametrized -- no filter, no allowlist.
+    # Every report in the directory is covered -- no filter, no allowlist.
     assert names == {p.name for p in REPORTS_DIR.glob("*.md")}
 
 
-def test_every_listed_commit_sha_exists(claims) -> None:
-    problems = commit_problems(claims)
+def test_every_report_passes_its_claim_checks() -> None:
+    """The five checks the old module ran once per report, per family, now
+    run once per report inside this loop -- still every report (discovered
+    fresh by `report_files()`, imported at module scope above), never a
+    filtered subset, but a fixed number of pytest nodes regardless of how
+    many reports the directory holds."""
+    reports = report_files()
+    assert reports, "no reports discovered under artifacts/reports/"
+    problems: list[str] = []
+    for report in reports:
+        claims = parse_claims(report)
+        problems.extend(commit_problems(claims))
+        problems.extend(path_problems(claims))
+        problems.extend(node_problems(claims))
+        problems.extend(retired_problems(claims))
+        # "not all claimless": a report is evidence, it must point at
+        # something checkable, and this also stops a report from passing
+        # the four checks above by naming nothing at all.
+        total = len(claims.shas) + len(claims.paths) + len(claims.nodes)
+        if total < 5:
+            problems.append(
+                f"{report.name}: makes almost no checkable claim ({total})"
+            )
     assert not problems, "\n".join(problems)
 
 
-def test_every_listed_path_exists(claims) -> None:
-    problems = path_problems(claims)
-    assert not problems, "\n".join(problems)
-
-
-def test_every_listed_test_node_exists(claims) -> None:
-    problems = node_problems(claims)
-    assert not problems, "\n".join(problems)
-
-
-def test_every_retired_claim_stays_retired(claims) -> None:
-    """The STRONG direction: a `!retired` path must not exist, a `!retired`
-    node must not collect."""
-    problems = retired_problems(claims)
-    assert not problems, "\n".join(problems)
-
-
-def test_a_live_path_wrongly_marked_retired_is_caught() -> None:
-    """Mutation case: `retired_problems` must fail loudly when a `!retired`
-    citation names something that is, in fact, still there -- the marker
-    would otherwise be a silent way to switch off a real check."""
+def test_the_retired_marker_direction_is_enforced() -> None:
+    """The STRONG direction, both forms: a `!retired` path/node must not
+    resolve. Merges the two mutation cases the old module ran as separate
+    tests -- a still-existing path marked retired, and a still-collecting
+    node marked retired -- since both exercise the same function
+    (`retired_problems`) in the same direction."""
     live_path = "tests/report_claims.py"
     assert (REPO_ROOT / live_path).exists()
-    claims = ReportClaims(
+    path_claims = ReportClaims(
         report=REPORTS_DIR / "conformance-ledger.md",
         shas=[],
         paths=[],
         nodes=[],
         retired=[RetiredClaim(live_path, None, line=1)],
     )
-    problems = retired_problems(claims)
-    assert problems, "a still-existing path marked !retired must be flagged"
-    assert live_path in problems[0]
+    path_problems_found = retired_problems(path_claims)
+    assert path_problems_found, "a still-existing path marked !retired must be flagged"
+    assert live_path in path_problems_found[0]
 
-
-def test_a_live_node_wrongly_marked_retired_is_caught() -> None:
-    """Same mutation, for the node form: a test that still collects must not
-    be silently accepted just because a report calls it retired."""
-    live_path = "tests/test_report_claims.py"
+    live_node_path = "tests/records/test_report_claims.py"
     live_node = "test_a_node_family_wildcard_needs_a_real_match"
-    assert defines_test((REPO_ROOT / live_path).read_text(), live_node)
-    claims = ReportClaims(
+    assert defines_test((REPO_ROOT / live_node_path).read_text(), live_node)
+    node_claims = ReportClaims(
         report=REPORTS_DIR / "conformance-ledger.md",
         shas=[],
         paths=[],
         nodes=[],
-        retired=[RetiredClaim(live_path, live_node, line=1)],
+        retired=[RetiredClaim(live_node_path, live_node, line=1)],
     )
-    problems = retired_problems(claims)
-    assert problems, "a still-collecting node marked !retired must be flagged"
-    assert live_node in problems[0]
-
-
-def test_the_reports_are_not_all_claimless(claims) -> None:
-    """A report is evidence: it points at something checkable. This also stops
-    a report from passing the three checks above by naming nothing at all."""
-    total = len(claims.shas) + len(claims.paths) + len(claims.nodes)
-    assert total >= 5, f"{claims.name} makes almost no checkable claim ({total})"
+    node_problems_found = retired_problems(node_claims)
+    assert node_problems_found, "a still-collecting node marked !retired must be flagged"
+    assert live_node in node_problems_found[0]
 
 
 def test_the_claim_checks_have_exactly_one_implementation() -> None:
@@ -180,7 +173,7 @@ def test_path_problems_takes_at_most_one_git_ls_files_snapshot(monkeypatch) -> N
     more_claims = ReportClaims(
         report=REPORTS_DIR / "conformance-ledger.md",
         shas=[],
-        paths=[Claim("tests/test_report_claims.py", line=1)],
+        paths=[Claim("tests/records/test_report_claims.py", line=1)],
         nodes=[],
         retired=[],
     )

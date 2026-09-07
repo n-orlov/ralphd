@@ -25,7 +25,7 @@ requirement letters run A-H (the PRD does not use I-L).
 A report that names a commit that never landed, or a test that no longer
 exists, is worse than no report, so its claims are re-read too. That
 extraction and those three checks live in `tests/report_claims.py` (task 041)
-and `tests/test_report_claims.py` applies them to *every* report in the
+and `tests/records/test_report_claims.py` applies them to *every* report in the
 directory; they are re-applied here to this file specifically, because this is
 the report the issue closures are argued from. What is otherwise only ours:
 the per-issue sections of all three waves, the density of the evidence, and the
@@ -184,7 +184,7 @@ def test_the_v07_requirements_with_no_issue_are_traced_to_spec() -> None:
 
 def test_the_report_still_carries_the_evidence_it_promised() -> None:
     """Existence of every claim is checked below (and by
-    `tests/test_report_claims.py` for every report); what is specific to this
+    `tests/records/test_report_claims.py` for every report); what is specific to this
     one is how much it claims -- a mapping of twenty-one issues thinned down to
     a handful of shas would pass the existence checks and be worthless."""
     claims = parse_claims(REPORT)

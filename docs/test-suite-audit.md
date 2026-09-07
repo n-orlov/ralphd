@@ -25,7 +25,7 @@ index row and petitions file staged by the operator. Read-only audit; scratch in
 | tests named as mutation/discriminator pairs | 137 (`mutat|is_caught|is_rejected|tamper|...`) |
 | tests asserting a substring of a `.md` read off disk | ~416 |
 
-Biggest 30 modules by test count: `tests/test_report_claims.py` 1095, `tests/test_conformance_ledger.py` 153,
+Biggest 30 modules by test count: `test_report_claims.py` 1095, `tests/test_conformance_ledger.py` 153,
 `tests/test_host_like_pytest_script.py` 127, `tests/test_tiers.py` 97, `tests/test_cli_fault_explanation.py` 82,
 `tests/test_model_tiers_config.py` 67, `tests/test_spec_state_surface.py` 62, `tests/test_fault_classifier.py` 62,
 `tests/test_cli_suggestions_guards.py` 61, `tests/test_promise_marker_last_line.py` 56, `tests/test_peer_verdict_gate.py` 53,
@@ -48,7 +48,7 @@ e2e 7/46, per-task pins 65/451, report_claims 1/1095, conformance 1/153, host_li
 
 Result: **981 s (16:21)**, 6,221 passed, 4 failed, 5 skipped. The 4 failures are environmental
 (staged-but-uncommitted `v0.19` PRD/report from the live run trip the "directory is discovered not
-enumerated" guards in `tests/test_docs_prd_index.py`, `tests/test_report_claims.py`, `tests/test_sweep_sha_guard.py`); not a
+enumerated" guards in `tests/test_docs_prd_index.py`, `test_report_claims.py`, `tests/test_sweep_sha_guard.py`); not a
 suite defect, but a reminder that record guards depend on working-tree state.
 
 Where the time goes:
@@ -99,7 +99,7 @@ real sleeps and subprocess spawns, and is almost perfectly parallelisable.
   1,591 test functions read a `.md` in the body (e.g. `tests/test_docs_semantics.py` 23, `tests/test_suggestions_patch.py`
   16, `test_seventh_lint_task013.py` 14, `tests/test_cli_suggestions_verb.py` 12, `tests/test_hub_artifacts.py` 12).
   `docs/cli.md` is read by 34 modules, `SPEC.md` by 29, `architecture.md` by 24, `roadmap.md` by 11.
-- **Parametrised explosions:** `tests/test_report_claims.py` (217 reports x 5), `tests/test_conformance_ledger.py`
+- **Parametrised explosions:** `test_report_claims.py` (217 reports x 5), `tests/test_conformance_ledger.py`
   (79 citations + 68 node ids, one `pytest` subprocess each), `tests/test_host_like_pytest_script.py`
   (quantifier x template paraphrase grid, ~100 regex cases). No `parametrize` list >8 literal items
   elsewhere.
@@ -147,7 +147,7 @@ except where the process boundary is the subject (`tests/test_cli_logs_signal.py
 
 ### (b) Records lint: one fast module family, kept
 Move to `tests/records/` (so `final_sha_guards.sh` selects a directory, not a grep) and keep:
-`tests/test_report_claims.py` (collapse to 5 tests that iterate all 217 reports and list every problem),
+`test_report_claims.py` (collapse to 5 tests that iterate all 217 reports and list every problem),
 `tests/test_sweep_sha_guard.py`, `tests/test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
 `pytest --collect-only` over all node ids: 16 s -> <1 s), `tests/test_docs_consistency.py`,
 `tests/test_docs_semantics.py`, `tests/test_spec_cli_surface.py`, `tests/test_spec_state_surface.py`, `tests/test_docs_prd_index.py`,
@@ -203,7 +203,7 @@ dev-layout module). `docs/testing.md` carries the recipes and the measured budge
    --dist loadfile` in `scripts/host_like_pytest.sh` and the verify hat. *Criterion:* fast tier
    green at `-n 8` three consecutive runs; wall clock < 4 min.
 4. **Records lint module family** (section b) in `tests/records/`; `final_sha_guards.sh` selects the
-   directory. *Criterion:* records lane <= 300 tests, < 15 s, `tests/test_report_claims.py` <= 10 tests,
+   directory. *Criterion:* records lane <= 300 tests, < 15 s, `test_report_claims.py` <= 10 tests,
    `tests/test_conformance_ledger.py` spawns 0 subprocesses per node id, roadmap modules == 1.
 5. **Twelve stub-pi flows** (section a) replacing the 44 real-engine modules; petition/adjudication
    and last-approach pause gain real-engine coverage. *Criterion:* modules using `live(`/`engine_factory`
@@ -1145,3 +1145,28 @@ Derivation for task 028 (requirement D.7, the sweep): the per-task pin modules w
 Task 028 (requirement D.7) also repointed one EARLIER row's surviving-node cell -- task 009's own row for the deleted command-form-lint fixture test (that row's first cell names it). Its surviving node `test_task_205_fixture_is_the_verbatim_deck_3k_criterion` lived in test_command_form_lint_task009.py, which this sweep folded away, so the cell now names `tests/test_ingestion_lints.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` -- the same node, the same claim, only the module it resolves against changed. No other pre-existing row cited a surviving node inside any of the 39 folded modules (checked by resolving every row's surviving cell: `tests/test_subsumed_table.py` is green, 746 nodes).
 
 Count correction for task 028's sweep (requirement D.7): the sweep folded away 39 modules holding **343** test functions -- 343 nodes in, 343 nodes out, one Subsumed row above per node (derived here, not carried: `git diff --no-renames --diff-filter=D --name-only cf20afc~1 cf20afc` gives the 39 module paths, and counting `^def test_` in each at `cf20afc~1` gives 343; the same 343 is the sum of the per-destination counts in each derivation paragraph above -- 28 + 113 + 25 + 58 + 58 + 12 + 25 + 13 + 11). Commit `cf20afc`'s own message misstates that total as "331 nodes in, 331 nodes out"; its per-destination counts are the correct ones. This line is the correction -- the commit message itself is left as it landed rather than rewritten after the push.
+
+Derivation for task 032 (requirement E.1): `test_report_claims.py` collapsed into
+`tests/records/test_report_claims.py`. Five of its ten tests were parametrised over every report
+under `artifacts/reports/` (`params=REPORTS`, 231 reports at this task's own HEAD) -- 1,155 of the
+old module's 1,165 collected nodes were one of these five families times 231 reports. The collapse
+runs all five checks inside ONE test's own loop over the same glob-discovered report list
+(`test_every_report_passes_its_claim_checks`), so every family retires as a whole rather than
+node by node; a sixth deleted node pair (the two `!retired`-direction mutation tests) merged into
+one test the same way, since both exercise `retired_problems` in the same direction. The other four
+tests (`test_the_reports_directory_is_discovered_not_enumerated`,
+`test_the_claim_checks_have_exactly_one_implementation`, `test_a_node_family_wildcard_needs_a_real_match`,
+`test_path_problems_takes_at_most_one_git_ls_files_snapshot`,
+`test_untracked_generated_path_fails_with_the_untracked_message`,
+`test_the_same_absolute_run_dir_path_still_passes`, `test_tracked_but_missing_path_fails_with_the_other_message`,
+`test_the_v05_report_still_names_its_own_module`) moved unchanged, same names, no row needed.
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `test_report_claims.py::test_every_listed_commit_sha_exists[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the sha-resolution check, now run once per report inside this test's own loop instead of once per report as a separate pytest node) | task 032, requirement E.1 |
+| `test_report_claims.py::test_every_listed_path_exists[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the path-resolution check, same loop) | task 032, requirement E.1 |
+| `test_report_claims.py::test_every_listed_test_node_exists[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the node-resolution check, same loop) | task 032, requirement E.1 |
+| `test_report_claims.py::test_every_retired_claim_stays_retired[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the `!retired`-direction check, same loop) | task 032, requirement E.1 |
+| `test_report_claims.py::test_the_reports_are_not_all_claimless[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the checkable-claim density floor, same loop) | task 032, requirement E.1 |
+| `test_report_claims.py::test_a_live_path_wrongly_marked_retired_is_caught` | `tests/records/test_report_claims.py::test_the_retired_marker_direction_is_enforced` (merged with the node-mutation case below: both exercise `retired_problems`'s STRONG direction) | task 032, requirement E.1 |
+| `test_report_claims.py::test_a_live_node_wrongly_marked_retired_is_caught` | `tests/records/test_report_claims.py::test_the_retired_marker_direction_is_enforced` (merged with the path-mutation case above) | task 032, requirement E.1 |

@@ -76,11 +76,22 @@ def test_known_docs_reading_modules_are_already_selected() -> None:
     happened to use the slash form. Comparing against the whole rule,
     recomputed here, cannot pass with an incomplete selection -- and it
     still types no module name.
+
+    Task 032 (requirement E.1) moved the records family under
+    `tests/records/`, one directory down from every other test module, and
+    the script's own glob widened to `tests/records/test_*.py` alongside
+    `tests/test_*.py` to keep discovering it -- so the independent scan
+    widens the same way, over both directories, rather than narrowing back
+    to a selection the script itself no longer produces.
     """
     rule = re.compile(r"\b(docs|artifacts|README)\b")
     expected = {
         f"tests/{path.name}"
         for path in sorted((REPO_ROOT / "tests").glob("test_*.py"))
+        if rule.search(path.read_text())
+    } | {
+        f"tests/records/{path.name}"
+        for path in sorted((REPO_ROOT / "tests" / "records").glob("test_*.py"))
         if rule.search(path.read_text())
     }
     assert expected, "the independent scan found nothing -- the rule is broken"

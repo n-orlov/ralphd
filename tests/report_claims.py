@@ -5,7 +5,7 @@ Task 041 (#22): the sha/path/test-node checks that task 058 wrote for
 directory needs -- a report that names a commit that never landed, a file that
 has been renamed away, or a test that no longer exists is worse than no report.
 So the extraction and the checks live here once and
-`tests/test_report_claims.py` applies them to every report the directory
+`tests/records/test_report_claims.py` applies them to every report the directory
 holds (discovered by glob, so a new report is covered the day it lands);
 `tests/test_issue_traceability.py` keeps only what is specific to its report
 and re-uses this parser for its density assertions.
