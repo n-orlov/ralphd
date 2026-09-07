@@ -106,6 +106,7 @@ from ..log_merge import (
     iteration_dir,
     iteration_lines,
     iteration_numbers,
+    iteration_output_path,
     merged_lines,
 )
 from .log_render import new_render_state, render_to_lines
@@ -1096,6 +1097,129 @@ def _with_tasks_read_label(tasks: dict) -> dict:
     return out
 
 
+# Task 004 (A.2): the hub's derivation caches, so a poller that re-fetches
+# `GET /api/runs/<id>` on a fixed interval does not pay to re-derive iteration
+# rows or re-shape the tasks/status blocks when nothing that feeds them has
+# moved on disk since the last request for that SAME run. Keyed per run id
+# (never globally) so one run's cache entries cannot answer for another's --
+# a run id being a fresh directory each time (`ralphctl start` never reuses
+# one while its old entry is still cached) makes a stale cross-run hit a
+# non-concern; `delete_run` below also drops a deleted run's entries rather
+# than leaving them to leak for the life of the hub process.
+#
+# `{run_id: {number: (key, detail)}}` for the iteration rows, `{run_id:
+# (mtime, block)}` for the tasks/status blocks -- plain dicts, no lock: every
+# write here replaces a whole tuple/dict value under one key, which CPython's
+# GIL makes atomic against the `ThreadingHTTPServer`'s concurrent requests: a
+# reader either sees the old value or the new one, never a torn half-write.
+_ITERATION_ROW_CACHE: dict[str, dict[int, tuple[tuple, dict | None]]] = {}
+_TASKS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
+_STATUS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | None:
+    """Task 004 (A.2): the iteration-row cache, keyed per run by (iteration
+    number, meta.json mtime, transcript size) -- not merely "have we built
+    row N once", so a still-running iteration whose meta.json or transcript
+    keeps growing is re-derived through `iteration_detail` on every request
+    that observes a new mtime/size, while every OLDER, finished iteration in
+    the same run is served from cache untouched.
+
+    `iteration_detail` is looked up by its bound global name (the one
+    imported at module scope above), never through a private alias, so a
+    test that patches `ui_server.iteration_detail` to count calls observes
+    every derivation this cache actually performs -- and none it skips.
+
+    Only the two `stat()` calls below run on a cache hit; the shaping
+    `iteration_detail` does (formatting times/cost/tokens, re-deriving the
+    fault cause, counting archived attempts) is exactly the per-row cost a
+    run with hundreds of iterations must not pay again on every poll.
+    """
+    try:
+        meta_mtime = (iteration_dir(run_dir, number) / "meta.json").stat().st_mtime
+    except OSError:
+        meta_mtime = None
+    try:
+        transcript_size = iteration_output_path(run_dir, number).stat().st_size
+    except OSError:
+        transcript_size = 0
+    key = (meta_mtime, transcript_size)
+    per_run = _ITERATION_ROW_CACHE.setdefault(run_id, {})
+    cached = per_run.get(number)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    detail = iteration_detail(run_dir, number)
+    per_run[number] = (key, detail)
+    return detail
+
+
+def _cached_disk_tasks_block(run_dir: Path, run_id: str) -> dict:
+    """Task 004 (A.2): the on-disk `tasks.json` shaping cache.
+
+    Keyed per run by `tasks.json`'s own mtime -- re-derives
+    `read_tasks_doc(run_dir, persist=False)` (the hardened reader, task 004
+    #15, plus the failure-kind/blocked-by derivation it already carries for
+    the local-read path) only when the file has actually moved since the
+    last request for this run, rather than re-parsing and re-labelling an
+    unchanged plan on every poll. Used only as the FALLBACK when the run has
+    no live `/tasks` answer -- a live payload is somebody else's process
+    answering right now and is shaped fresh every time, never cached here.
+    """
+    path = run_dir / "tasks.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    cached = _TASKS_BLOCK_CACHE.get(run_id)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    tasks_read = read_tasks_doc(run_dir, persist=False)
+    tasks = tasks_read.payload
+    tasks.setdefault("tasks", [])
+    _TASKS_BLOCK_CACHE[run_id] = (mtime, tasks)
+    return tasks
+
+
+def _cached_disk_status_block(reg: Path, run_dir: Path, run_id: str,
+                              recorded_status: dict) -> dict:
+    """Task 004 (A.2): the on-disk `status.json` shaping cache.
+
+    Keyed per run by `status.json`'s own mtime -- re-derives the display
+    pipeline (`_with_local_times` -> `_with_cost_display` ->
+    `_with_approach_display` -> `_with_provisioning`) only when the file has
+    moved since the last request for this run. Used only as the FALLBACK
+    when the run has no live `/status` answer -- a live payload is shaped
+    fresh every time, never cached here, since it is somebody else's process
+    answering right now rather than a file this cache can key on.
+
+    `recorded_status` -- the caller's own disk read -- is passed in rather
+    than re-read here, so there is exactly one read of `status.json` per
+    request regardless of whether the shaping that follows it is a cache hit
+    or a miss.
+    """
+    try:
+        mtime = (run_dir / "status.json").stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    cached = _STATUS_BLOCK_CACHE.get(run_id)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    shaped = _with_provisioning(
+        _with_approach_display(_with_cost_display(_with_local_times(recorded_status))),
+        _config_dir(reg, run_id) / "job.yaml")
+    _STATUS_BLOCK_CACHE[run_id] = (mtime, shaped)
+    return shaped
+
+
+def _drop_run_detail_caches(run_id: str) -> None:
+    """Task 004 (A.2): forget a deleted run's cache entries -- called from
+    `delete_run` -- so the hub process does not grow an entry per run id for
+    the life of a long-lived `ralphctl ui`."""
+    _ITERATION_ROW_CACHE.pop(run_id, None)
+    _TASKS_BLOCK_CACHE.pop(run_id, None)
+    _STATUS_BLOCK_CACHE.pop(run_id, None)
+
+
 def run_detail_etag(reg: Path, run_id: str) -> str:
     """Task 003 (A.1): the `ETag` for `GET /api/runs/<id>`.
 
@@ -1136,15 +1260,21 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     run_dir = reg / "runs" / run_id
     if not run_dir.is_dir():
         return None
-    status = _read_json(run_dir / "status.json", {}) or {}
-    # Task 031 (#19): the delete gate's own doc. `status` below may be replaced
-    # by a live proxied answer, but the delete endpoint gates on what the run
-    # dir RECORDS -- so the affordance has to be decided from the same doc, or
-    # the button would promise something the endpoint refuses.
-    recorded_status = status
+    recorded_status = _read_json(run_dir / "status.json", {}) or {}
+    # Task 031 (#19): the delete gate's own doc. The endpoint gates on what the
+    # run dir RECORDS, so the affordance -- and `container_gone` below --
+    # decide from this SAME on-disk read, never from a live proxied answer
+    # (which task 004's cache below shapes separately, into `shaped_status`).
     ok_s, _, live_status = _proxy_json(reg, run_id, "GET", "/status")
     if ok_s and live_status:
-        status = live_status
+        # Task 004 (A.2): a live answer is somebody else's process replying
+        # right now -- shaped fresh every time, never cached, since there is
+        # no on-disk mtime to key a cache entry on.
+        shaped_status = _with_provisioning(
+            _with_approach_display(_with_cost_display(_with_local_times(live_status))),
+            _config_dir(reg, run_id) / "job.yaml")
+    else:
+        shaped_status = _cached_disk_status_block(reg, run_dir, run_id, recorded_status)
 
     # Task 004 (#15): the on-disk path goes through the engine's hardened
     # reader, so a poll that lands inside an agent's rewrite of tasks.json
@@ -1158,12 +1288,10 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     # through verbatim -- including a pre-v0.6 engine's answer, which carries
     # no flags at all; inventing `tasksStale: false` there would claim
     # freshness nobody vouched for.
-    tasks_read = read_tasks_doc(run_dir, persist=False)
-    tasks = tasks_read.payload
-    # The payload has always carried a `tasks` list for a plan-less run
-    # (app.js renders `d.tasks.tasks`); with `tasksSource: "absent"` alongside
-    # it, an empty list here is a stated fact rather than a swallowed error.
-    tasks.setdefault("tasks", [])
+    # Task 004 (A.2): cached per `tasks.json`'s own mtime -- only re-parsed
+    # and re-labelled when the file has actually moved since the last
+    # request for this run.
+    tasks = _cached_disk_tasks_block(run_dir, run_id)
     ok_t, _, live_tasks = _proxy_json(reg, run_id, "GET", "/tasks")
     if ok_t and isinstance(live_tasks, dict):
         # Task 025 (#33): the local read already carries the derived failure
@@ -1188,9 +1316,12 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     # be seen after opening it. Skipped exactly when `_read_json` used to
     # return None -- an unreadable/missing meta.json -- so a dir the engine
     # never finished writing still does not appear as a row of blanks.
+    # Task 004 (A.2): cached per iteration by (meta.json mtime, transcript
+    # size) -- a finished, unchanging iteration is served from cache rather
+    # than re-derived through `iteration_detail` on every request.
     iterations = []
     for number in iteration_numbers(run_dir):
-        detail = iteration_detail(run_dir, number)
+        detail = _cached_iteration_row(run_dir, run_id, number)
         if detail is not None and detail.get("hasMeta"):
             iterations.append(detail)
 
@@ -1201,16 +1332,13 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # run is unreachable by design. Paired with a non-terminal recorded
         # state it means the container died without recording a terminal
         # state, which the card renders with the warning treatment.
-        "containerGone": container_gone(status, ok_s),
+        "containerGone": container_gone(recorded_status, ok_s),
         # Task 031 (#19): `deletable` + `deleteRefusal` (the server's own
         # wording) for the detail page's delete control. Top level, not inside
         # `status`: it is a fact about this run's removability, not a rendering
-        # of the status doc -- and `status` may be a live payload from another
-        # process, which must not be able to claim it.
+        # of the status doc -- and a live payload must not be able to claim it.
         **deletion_fields(recorded_status),
-        "status": _with_provisioning(
-            _with_approach_display(_with_cost_display(_with_local_times(status))),
-            _config_dir(reg, run_id) / "job.yaml"),
+        "status": shaped_status,
         "tasks": tasks,
         "iterations": iterations,
     }
@@ -1322,6 +1450,10 @@ def delete_run(reg: Path, run_id: str) -> tuple[int, dict]:
     container_exists = cli.container_record_exists(run_id)
     cli.remove_run_state(run_id, container_exists=container_exists,
                          reason=DELETE_TERMINATION_REASON)
+    # Task 004 (A.2): a deleted run's directory is gone -- forget its
+    # derivation-cache entries too, rather than leaking them for the life of
+    # this hub process.
+    _drop_run_detail_caches(run_id)
     return 200, {"removed": run_id, "stoppedContainer": container_exists}
 
 
