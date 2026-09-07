@@ -717,7 +717,7 @@ def _scratch_state_content_clause(criteria: str) -> str | None:
 # Two must-pass shapes recur across all six: an existing tracked artifact
 # (a path, a record) named as evidence, and "the code sha this task lands"
 # -- neither states a later event or an impossible relation, both are
-# ordinary evidence citations. `tests/test_seventh_lint_task013.py` is this
+# ordinary evidence citations. `tests/test_ingestion_lints.py` is this
 # task's new fixture module, in both directions for every shape.
 #
 # Scope note for (m): the PRD's prohibition is absolute -- "no criterion
@@ -1012,7 +1012,7 @@ def _clause_count_overrun(criteria: str) -> tuple[int, str] | None:
 #       -v <host runs dir>:/hostruns:ro python:3.12-alpine python -c \
 #       'import json;d=json.load(open("/hostruns/deck-phase3k/tasks.json"))
 #        ;print([t for t in d["tasks"] if t["id"]=="205"][0]["successCriteria"])'
-# `tests/test_command_form_lint_task009.py` asserts direct EQUALITY between
+# `tests/test_ingestion_lints.py` asserts direct EQUALITY between
 # the constant and that tracked record's `successCriteria`, so the
 # "verbatim" claim is checkable without the host run dir.
 #

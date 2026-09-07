@@ -24,7 +24,7 @@ The mechanism under test:
   `src/ralphd/engine/loop.py` changes on disk while any of this happens.
 - The hat is driven end to end through the real dispatch loop (the
   "phase-dispatching scripted runner, no subprocess" technique from
-  tests/test_transition_executor_cutover.py / test_failed_task_vocabulary.py),
+  tests/test_transition_executor_cutover.py / test_worker_hat.py),
   with a real prompt fixture file and a real schema-validated JSON payload,
   proving the generic path actually exercises `contracts.validate_payload`
   (task 009's one validator code path) rather than being driven around it.

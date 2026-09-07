@@ -1,45 +1,193 @@
-"""Task 010 (B.4), cured by task 047 (operator steer 004): no in-process
-test's `LoopSupervisor._wait_out_backoff` is reachable as a real, waiting
-coroutine, and no `LiveRun.__init__`-bypassing `job.yaml` writer buys a
-spawned engine a real backoff/STUB_SLEEP sleep either.
+"""Feature module for the subject below (task 028, requirement D.7): the
+per-task pin modules listed here are folded in whole -- every test body,
+assertion and docstring verbatim, only the module they live in changed.
+Sources absorbed (each was `tests/<name>`, deleted in the same commit, with
+one `docs/test-suite-audit.md` § "Subsumed" row per node):
 
-Task 010's own pass accepted an all-zero backoff SCHEDULE
-(`infra_retry_backoff_s=[0.0]`, `infra_retry_backoff_max_s=0.0`) on a bare
-`LoopSupervisor(...)` construction as equivalent to a stub -- but a zero
-schedule makes the REAL `_wait_out_backoff` return instantly; it is not the
-same thing as the PRD's B.4 "unstubbed" clause, and it left the ~43 modules
-that construct a bare `LoopSupervisor` outside `make_supervisor()` to fend
-for themselves. Task 047 closed that at the harness level instead:
-`tests/conftest.py` now carries an AUTOUSE fixture that patches
-`LoopSupervisor._wait_out_backoff` at the CLASS level for every collected
-test, so no per-module scan for an unstubbed instance is needed any more --
-this module pins that the fixture exists (below) rather than re-deriving the
-old, now-obsolete, per-module scan.
+- `test_stub_pi_hold_primitive_task007.py` -- Pins the stub `pi`'s bounded, env-driven hold primitive (task 007, B.1). `STUB_HOLD_FILE`/`STUB_HOLD_TIMEOUT_S` let a test open a real race window inside a stub `pi` invocation instead of guessing a fixed `STUB_SLEEP` duration. This module invokes `tests/stub-pi/pi` directly (no engine involved) and
+- `test_wait_out_backoff_stubbed_task010.py` -- Task 010 (B.4), cured by task 047 (operator steer 004): no in-process test's `LoopSupervisor._wait_out_backoff` is reachable as a real, waiting coroutine, and no `LiveRun.__init__`-bypassing `job.yaml` writer buys a spawned engine a real backoff/STUB_SLEEP sleep either. Task 010's own pass accepted 
 
-What is still worth scanning the tree for, because the class-level fixture
-cannot reach it:
-
-1. the opt-out marker (`@pytest.mark.real_backoff` /
-   `pytestmark = pytest.mark.real_backoff`) must be used ONLY by the three
-   modules the PRD names as testing the backoff/retry schedule itself
-   (`test_infra_retry_schedule.py`, `test_retry_now.py`,
-   `test_reflect_infra_retry.py`) -- a fourth module carrying it would quietly
-   reopen the real sleep the fixture exists to close;
-2. a `job.yaml` writer under `tests/` that bypasses `LiveRun.__init__`
-   (`LiveRun.__new__(LiveRun)`, the shape `tests/test_config_overlay.py`
-   needs because it must chmod `/config` read-only *before* the engine
-   starts) spawns a SEPARATE PROCESS the in-process fixture above cannot
-   reach at all -- it must name the zero-backoff triple itself:
-   `infra_retry_backoff_s: [0.0]`, `infra_retry_backoff_max_s: 0.0`, and
-   `STUB_SLEEP=0`.
-
-The second half of this module (unchanged since task 010's third pass) pins
-B.4's other clause: no stub-`pi` module outside the one module that parses
-the two env knobs without launching an engine at all names a non-zero
-`RALPHD_INFRA_RETRY_BACKOFF_S`/`_MAX_S`.
+Renamed to resolve cross-source collisions of module-private names (no test
+function was renamed):
+- none: no module-level name was defined by two sources.
 """
 
 from __future__ import annotations
+
+
+# ----------------------------------------------------------------------
+# Folded from tests/test_stub_pi_hold_primitive_task007.py (task 028, requirement D.7).
+# ----------------------------------------------------------------------
+
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+STUB_PI = REPO / "tests" / "stub-pi" / "pi"
+
+# The stub's own documented exit code for "the hold was never released".
+HOLD_TIMEOUT_EXIT_CODE = 3
+
+# Stated margin for every "duration must be within the bound" assertion in
+# this module -- generous enough to absorb interpreter startup and process
+# scheduling jitter on a loaded CI host, small enough that a regression
+# back to something sleep-shaped (e.g. `time.sleep(9999)`) still fails it.
+MARGIN_S = 2.0
+
+
+def _run_stub(run_dir: Path, env_extra: dict) -> tuple[float, subprocess.CompletedProcess]:
+    env = {**os.environ, "STUB_RUN_DIR": str(run_dir), **env_extra}
+    start = time.monotonic()
+    proc = subprocess.run(
+        [sys.executable, str(STUB_PI)],
+        input="unrecognized phase, no Role marker here\n",
+        capture_output=True, text=True, env=env, timeout=30,
+    )
+    wall = time.monotonic() - start
+    return wall, proc
+
+
+def test_hold_releases_promptly_when_the_test_touches_the_file(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    hold_file = tmp_path / "hold-release"
+
+    # Release the hold in a background thread shortly after launch, mirroring
+    # how a real test would release it once it has observed whatever it was
+    # waiting to observe mid-iteration.
+    import threading
+
+    def _release():
+        time.sleep(0.2)
+        hold_file.touch()
+
+    threading.Thread(target=_release, daemon=True).start()
+
+    wall, proc = _run_stub(run_dir, {
+        "STUB_HOLD_FILE": str(hold_file),
+        "STUB_HOLD_TIMEOUT_S": "5",
+    })
+    assert proc.returncode == 0, proc.stderr
+    assert '"type": "message_end"' in proc.stdout
+
+    duration_file = Path(f"{hold_file}.stub-hold-duration")
+    assert duration_file.exists()
+    duration = float(duration_file.read_text())
+
+    # Released around 0.2s in -- nowhere near the 5s fallback bound.
+    assert duration < 1.0, f"released hold should return promptly, got {duration}s"
+    assert wall < 1.0 + MARGIN_S
+
+
+def test_hold_never_released_fails_on_the_bound_not_by_hanging(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    hold_file = tmp_path / "hold-never-released"
+    bound = 1.5
+
+    wall, proc = _run_stub(run_dir, {
+        "STUB_HOLD_FILE": str(hold_file),
+        "STUB_HOLD_TIMEOUT_S": str(bound),
+    })
+    # Reaching the bound is a FAILURE, not a silent continue: nonzero exit,
+    # a stderr line naming the bound, and no role payload emitted at all.
+    assert proc.returncode == HOLD_TIMEOUT_EXIT_CODE, (proc.returncode, proc.stderr)
+    assert "never released" in proc.stderr
+    assert "STUB_HOLD_TIMEOUT_S" in proc.stderr
+    assert str(bound) in proc.stderr
+    assert '"type": "message_end"' not in proc.stdout
+
+    duration_file = Path(f"{hold_file}.stub-hold-duration")
+    assert duration_file.exists()
+    duration = float(duration_file.read_text())
+
+    assert duration >= bound, "must have actually waited out the fallback"
+    assert duration <= bound + MARGIN_S, (
+        f"a never-released hold must fail fast on the bound ({bound}s) plus "
+        f"a stated margin ({MARGIN_S}s), took {duration}s")
+    assert wall <= bound + MARGIN_S
+
+
+INNER_TEST = '''
+import os, subprocess, sys, time
+from pathlib import Path
+
+
+def test_forgets_to_release_the_hold(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    hold_file = tmp_path / "never-touched"
+    env = {**os.environ, "STUB_RUN_DIR": str(run_dir),
+           "STUB_HOLD_FILE": str(hold_file),
+           "STUB_HOLD_TIMEOUT_S": "1.0"}
+    proc = subprocess.run(
+        [sys.executable, %(stub)r],
+        input="unrecognized phase\\n", capture_output=True, text=True,
+        env=env, timeout=30,
+    )
+    proc.check_returncode()   # red on the bound, never a hang
+'''
+
+
+def test_a_test_that_never_releases_the_hold_goes_red_on_the_bound(tmp_path):
+    """End-to-end: forgetting the release makes the TEST fail, on the bound.
+
+    The inner pytest run (its own process, its own tmp dir) contains a test
+    that opens a hold and never releases it. It must come back FAILED --
+    not passed, not still running -- and the whole nested run must finish
+    inside the hold's own bound plus this module's stated margin plus a
+    small allowance for pytest's own start-up.
+    """
+    inner = tmp_path / "test_inner_forgotten_hold.py"
+    inner.write_text(INNER_TEST % {"stub": str(STUB_PI)})
+
+    start = time.monotonic()
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "-p", "no:randomly", str(inner)],
+        capture_output=True, text=True, cwd=str(tmp_path), timeout=120,
+        env={**os.environ, "PYTEST_ADDOPTS": ""},
+    )
+    wall = time.monotonic() - start
+
+    assert proc.returncode != 0, f"inner run should have failed:\n{proc.stdout}"
+    assert "1 failed" in proc.stdout, proc.stdout
+    assert "never released" in proc.stdout, proc.stdout
+    # Bound (1.0s) + this module's stated margin + a pytest start-up
+    # allowance: a regression to a sleep-shaped or unbounded hold blows this.
+    assert wall <= 1.0 + MARGIN_S + 30.0, f"nested run took {wall}s"
+
+
+def test_hold_is_a_noop_when_unset(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    wall, proc = _run_stub(run_dir, {})
+    assert proc.returncode == 0, proc.stderr
+    assert wall < MARGIN_S
+
+
+def test_help_text_documents_the_env_var_and_the_fallback_bound():
+    source = STUB_PI.read_text()
+    assert "STUB_HOLD_FILE" in source
+    assert "STUB_HOLD_TIMEOUT_S" in source
+    # The docstring itself (this stub's own help/usage text) names both the
+    # release mechanism and the numeric default fallback bound.
+    doc = source.split('"""', 2)[1]
+    assert "STUB_HOLD_FILE" in doc
+    assert "STUB_HOLD_TIMEOUT_S" in doc
+    assert "5.0" in doc
+    # The doc must state that reaching the bound FAILS the invocation, not
+    # that it continues quietly.
+    assert "EXITS NONZERO" in doc
+    assert "exit code 3" in doc
+
+
+# ----------------------------------------------------------------------
+# Folded from tests/test_wait_out_backoff_stubbed_task010.py (task 028, requirement D.7).
+# ----------------------------------------------------------------------
 
 import re
 from pathlib import Path

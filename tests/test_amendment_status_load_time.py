@@ -18,7 +18,7 @@ So this module drives the ENGINE, not the function:
   the one applier;
 - `_run_job_core()` calls it before `_resume_point()`, proven end to end
   over a resumed run dir with a scripted agent (same scaffolding as
-  `test_deck_phase3g_regression_task010.py`: `sup.runner` is stubbed and
+  `test_contract_events.py`: `sup.runner` is stubbed and
   `_run_iteration_once` is never called directly);
 - a refused ruling is surfaced, not silently dropped;
 - a `mode: status` entry never reaches review's criteria context, where it

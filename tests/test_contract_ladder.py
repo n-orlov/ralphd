@@ -400,7 +400,7 @@ def test_a_malformed_complete_report_is_repaired_by_one_uncharged_re_ask(
     # directly on the very first pass and is repaired by THAT branch's own
     # pre-existing (task 006) ladder, never touching the generic
     # `elif schema_errors:` site at all -- the counter stays at 0.
-    # `tests/test_worker_dispatch_reentry_task008.py`'s own
+    # `tests/test_worker_hat.py`'s own
     # `test_generic_schema_site_repair_counts_the_re_entry_once` pins the
     # v0.17 task 008 site with a genuinely schema-invalid first payload.
     assert sup._last_worker_dispatch_reentries == 0

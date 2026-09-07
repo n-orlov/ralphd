@@ -72,7 +72,7 @@ def _make_petitions_file(workspace: Path, wave: str = "v0.16") -> Path:
 
 
 class _ScriptedWorker:
-    """The same shape `tests/test_contract_violation_task012.py`'s own
+    """The same shape `tests/test_contract_events.py`'s own
     `_ScriptedWorker` uses to drive a real `_step_worker()` pass: every
     call -- the one charged `run_iteration("worker", ...)` call AND every
     uncharged `_ask_contract_fix` re-ask (both reach `self.runner.run`

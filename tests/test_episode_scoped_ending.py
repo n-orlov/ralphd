@@ -41,7 +41,11 @@ from ralphd.engine.loop import PREVIOUS_ENDINGS_MAX, LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 
-from test_failed_task_vocabulary import _drive_until_paused
+# test_worker_hat.py absorbed test_failed_task_vocabulary.py (task 028,
+# requirement D.7); the aliases restore the names this module already used.
+from test_worker_hat import (
+    _drive_until_paused,
+)
 from tests.conftest import supervisor_with_runner
 
 REPO = Path(__file__).resolve().parents[1]
@@ -160,7 +164,7 @@ def _episode_until_paused(root: Path, script: list, **cfg_kw) -> LoopSupervisor:
     instead of ending the run `failed`, and then parks at `_gate()` forever
     waiting for an operator `resume()` that no scripted test here ever
     sends -- so drive it with the bounded-wait `_drive_until_paused` helper
-    (`tests/test_failed_task_vocabulary.py`) instead of letting
+    (`tests/test_worker_hat.py`) instead of letting
     `asyncio.run(sup._run_job_core())` block forever, and return the
     supervisor for the caller to read `status.json` off of directly.
     """

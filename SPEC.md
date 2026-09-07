@@ -4604,7 +4604,7 @@ going unrendered. Its top-level sections:
 | `notifications` | every `notification.sent` event the run emitted -- correct and empty until the B.3 `notify` tool lands |
 
 Tests: `tests/test_run_record.py` (the module's own unit tests, one per
-section-builder) and `tests/test_run_record_approach_metadata_task035.py`
+section-builder) and `tests/test_run_record.py`
 (a succeeded run and a run with an archived rejected approach, asserting the
 record's own key set equals `RECORD_SECTIONS` and that every section renders).
 

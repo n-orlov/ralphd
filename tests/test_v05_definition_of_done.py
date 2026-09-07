@@ -41,7 +41,7 @@ from ralphd.engine.loop import LoopSupervisor
 # any test's setup fixture runs, so tests/conftest.py's autouse class-level
 # LoopSupervisor._wait_out_backoff stub has not touched the class yet here.
 # This module is not one of the PRD's three exempt modules and must not
-# carry the opt-out marker (tests/test_wait_out_backoff_stubbed_task010.py
+# carry the opt-out marker (tests/test_stub_pi_harness.py
 # pins that), but the one test below genuinely needs the REAL coroutine on
 # the real backoff/retry-now seam -- so it rebinds this captured original
 # onto its OWN instance, an ordinary instance-level shadow of whatever the

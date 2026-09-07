@@ -84,7 +84,7 @@ def test_criteria_change_before_any_failure_is_now_refused_task024(tmp_path):
     # stored fingerprint still names the authoritative text (task 024
     # supersedes task 008's "track the new text forward" behaviour, which
     # now survives only for a task carrying no criteria-of-record --
-    # tests/test_criteria_tamper_refusal_task024.py pins both halves).
+    # tests/test_contract_events.py pins both halves).
     assert t["successCriteria"] == "do X"
     assert t["criteriaFingerprint"] == sup._criteria_fingerprint("do X")
 

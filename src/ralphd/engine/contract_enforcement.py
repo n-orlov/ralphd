@@ -130,7 +130,7 @@ def violation_message(hat: str, errors: list[str]) -> str:
     Deliberately keeps the exact wording this repository already shipped
     (`'worker' contract violation: $.task_id: expected string, got int`,
     the PRD's own `deck-phase3g` example) rather than inventing new prose:
-    `tests/test_interrupt_not_substantive_outcome_task004.py` pins the
+    `tests/test_worker_hat.py` pins the
     substring `"contract violation"` in `_abort_reason` and must keep
     passing unmodified.
     """

@@ -27,7 +27,7 @@ Pinned here, each as its own named test:
    the prompt-asserting module for steering prompt rules.
 
 The `_supervisor`/`_ok` scaffolding is `tests/test_steering_priority_routing_
-task012.py`'s own, the same import `tests/test_settled_vs_done_task013.py`
+task012.py`'s own, the same import `tests/test_worker_hat.py`
 makes -- one scripted-agent harness for every steer-hat production-path test.
 """
 

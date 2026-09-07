@@ -21,7 +21,7 @@ LoopSupervisor, no review pass -- state.py's own contract):
    this fix must not start stamping a fingerprint on every unrelated
    field-only edit.
 
-`tests/test_criteria_tamper_refusal_task024.py` stays green unmodified:
+`tests/test_contract_events.py` stays green unmodified:
 this module never touches `_check_criteria_edits` or the tamper marker,
 only the write path the tamper check reads its baseline from.
 """

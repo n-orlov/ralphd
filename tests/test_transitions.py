@@ -533,7 +533,7 @@ LOOP_PATH = REPO_ROOT / "src" / "ralphd" / "engine" / "loop.py"
 
 
 # ---------------------------------------------------------------------------
-# scaffolding (same shape as tests/test_failed_task_vocabulary.py)
+# scaffolding (same shape as tests/test_worker_hat.py)
 # ---------------------------------------------------------------------------
 
 def _ok_cutover(text: str = "working") -> IterationResult:

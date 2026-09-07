@@ -50,13 +50,17 @@ from ralphd.engine.runner import VERIFIED, IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 from tests.conftest import scripted_supervisor
 
-from test_failed_task_vocabulary import _drive_until_paused
+# test_worker_hat.py absorbed test_failed_task_vocabulary.py (task 028,
+# requirement D.7); the aliases restore the names this module already used.
+from test_worker_hat import (
+    _drive_until_paused,
+)
 
 TASK_1 = "001"
 TASK_2 = "002"
 
 
-# -- scaffolding (mirrors tests/test_failed_task_vocabulary.py) ------------
+# -- scaffolding (mirrors tests/test_worker_hat.py) ------------
 
 
 def _ok(text: str) -> IterationResult:
@@ -128,7 +132,7 @@ def _run_resumed_until_paused(root: Path, handlers: dict, tasks: list[dict],
     (`_pause_and_escalate_stagnation_last_approach`) and then parks at
     `_gate()` forever waiting for an operator `resume()` that no scripted
     test here ever sends. Drives the run with `_drive_until_paused` (the
-    bounded-wait helper `tests/test_failed_task_vocabulary.py` already uses
+    bounded-wait helper `tests/test_worker_hat.py` already uses
     for its own in-process resume coverage) instead of letting
     `asyncio.run(sup._run_job_core())` block forever, and returns the
     supervisor for the caller to read `status.json` off of directly.

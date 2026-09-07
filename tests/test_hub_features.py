@@ -1,22 +1,24 @@
-"""Task 013 (#21): the hub run list carries per-row task progress.
+"""Feature module for the subject below (task 028, requirement D.7): the
+per-task pin modules listed here are folded in whole -- every test body,
+assertion and docstring verbatim, only the module they live in changed.
+Sources absorbed (each was `tests/<name>`, deleted in the same commit, with
+one `docs/test-suite-audit.md` § "Subsumed" row per node):
 
-The run list showed state/phase/iterations but nothing about the plan the
-agent is actually working through, so "is this run nearly done?" required
-opening every run's detail page. The fix is deliberately *local*: one
-hardened `read_tasks_doc` per row (task 002's reader) plus the engine's
-`task_counts`, rendered server-side by the same formatters `ralphctl status`
-uses -- no `GET /tasks` proxy call, so listing N runs still costs no round
-trips and a finished run whose container is long gone shows its fraction just
-like a live one.
+- `test_hub_task_counts.py` -- Task 013 (#21): the hub run list carries per-row task progress. The run list showed state/phase/iterations but nothing about the plan the agent is actually working through, so "is this run nearly done?" required opening every run's detail page. The fix is deliberately *local*: one hardened `read_tas
+- `test_hub_task_dialog.py` -- Task 057 (#2): the hub's task-detail dialog -- rendering discipline. The behavioural half (clicking a task row opens a dialog carrying that task's status/criteria/dependsOn/priority) lives in tests/test_browser_hub.py's `test_run_detail_opens_a_task_in_a_dialog`, in the `browser` tier. This module h
 
-Tiers: unit tests on the shared formatters (including that `ralphctl status`
-now delegates to them, so the wording cannot drift), in-process probes of
-`run_list` for the "exactly one local read per row" contract, and black-box
-HTTP against a real `ralphctl ui` server for the payload -- with a live stub
-engine API that must record ZERO requests while the list is rendered.
+Renamed to resolve cross-source collisions of module-private names (no test
+function was renamed):
+- `APP_JS` -> `hc_APP_JS` (from `test_hub_task_counts.py`)
+- `APP_JS` -> `hd_APP_JS` (from `test_hub_task_dialog.py`)
 """
 
 from __future__ import annotations
+
+
+# ----------------------------------------------------------------------
+# Folded from tests/test_hub_task_counts.py (task 028, requirement D.7).
+# ----------------------------------------------------------------------
 
 import json
 import re
@@ -356,31 +358,31 @@ def test_rows_of_several_runs_do_not_borrow_each_others_counts(tmp_path, ui):
 # these are the cheap fast-lane guards on the contract that test depends on.
 # --------------------------------------------------------------------------
 
-APP_JS = (Path(cli_main.__file__).parent / "web" / "app.js").read_text()
+hc_APP_JS = (Path(cli_main.__file__).parent / "web" / "app.js").read_text()
 
 
 def test_app_js_has_a_tasks_column_between_approach_and_iterations():
-    block = APP_JS.split("const RUN_COLUMNS = [")[1].split("];")[0]
+    block = hc_APP_JS.split("const RUN_COLUMNS = [")[1].split("];")[0]
     labels = re.findall(r'label:\s*"([^"]+)"', block)
     assert labels == ["RUN", "STATE", "VERDICT", "PHASE", "APPROACH", "TASKS",
                       "ITERATIONS", "STARTED"], labels
     # the CELL renders the string the SERVER formatted, and the trouble flags
     # the server worded -- never a second JS spelling of either.
-    assert "r.tasksDisplay" in APP_JS
-    assert "r.tasksTrouble" in APP_JS
-    body = APP_JS.split("function taskCell(")[1].split("\n}")[0]
+    assert "r.tasksDisplay" in hc_APP_JS
+    assert "r.tasksTrouble" in hc_APP_JS
+    body = hc_APP_JS.split("function taskCell(")[1].split("\n}")[0]
     code = "\n".join(ln for ln in body.splitlines()
                      if not ln.strip().startswith("//"))
     assert "completed" not in code, code
 
 
 def test_the_tasks_column_sorts_on_the_ratio_not_the_rendered_text():
-    block = APP_JS.split("const RUN_COLUMNS = [")[1].split("];")[0]
+    block = hc_APP_JS.split("const RUN_COLUMNS = [")[1].split("];")[0]
     tasks_col = next(ln for ln in block.splitlines() if '"TASKS"' in ln)
     assert "taskRatio(r)" in tasks_col, tasks_col
     assert "tasksDisplay" not in tasks_col, tasks_col
     # ascending-first, so the plan-less runs (no ratio) land last
-    desc = APP_JS.split("const desc = ")[1].split(";")[0]
+    desc = hc_APP_JS.split("const desc = ")[1].split(";")[0]
     assert '"tasks"' not in desc, desc
 
 
@@ -406,3 +408,54 @@ def test_the_ratio_orders_five_sevenths_above_a_hundred_of_two_fifty():
     # ascending: least complete first, the plan-less run LAST (not first,
     # which is what treating "no plan" as 0 would do)
     assert order == ["big", "mid", "none"], order
+
+
+# ----------------------------------------------------------------------
+# Folded from tests/test_hub_task_dialog.py (task 028, requirement D.7).
+# ----------------------------------------------------------------------
+
+from pathlib import Path
+
+import ralphd.cli.ui_server as ui_mod
+
+hd_APP_JS = (Path(ui_mod.__file__).parent / "web" / "app.js").read_text()
+STYLE_CSS = (Path(ui_mod.__file__).parent / "web" / "style.css").read_text()
+
+
+def test_task_dialog_reuses_the_single_text_dialog_implementation():
+    assert "function openTaskDialog(" in hd_APP_JS
+    assert "function taskDialogText(" in hd_APP_JS
+    # exactly one dialog builder, and the task dialog goes through it
+    assert hd_APP_JS.count("function openTextDialog(") == 1
+    block = hd_APP_JS.split("function openTaskDialog(")[1].split("\n}")[0]
+    assert "openTextDialog(" in block, block
+
+
+def test_task_rows_are_clickable_and_keyboard_reachable():
+    rows = hd_APP_JS.split("function renderTasks(")[1].split("\nfunction ")[0]
+    # Task 025 (#33) RETARGETED the call from `openTaskDialog(t)`: the dialog
+    # now also needs the payload it derives a failed task's KIND from
+    # (`doc.taskFailureKinds`, server-derived), so the row hands over both the
+    # record and the document it came out of. The affordance itself -- what
+    # this test is about -- is unchanged.
+    assert "openTaskDialog(t, doc)" in rows, rows
+    assert 'class: "task-row"' in rows, rows
+    assert 'tabindex: "0"' in rows, rows
+    assert "onkeydown" in rows and 'ev.key === "Enter"' in rows, rows
+    assert ".task-row" in STYLE_CSS
+
+
+def test_task_dialog_text_uses_text_nodes_only():
+    block = hd_APP_JS.split("function taskDialogText(")[1].split("\n// ----")[0]
+    for forbidden in ("innerHTML", "html:", "insertAdjacentHTML"):
+        assert forbidden not in block, \
+            f"task dialog rendering must not use {forbidden}: {block}"
+
+
+def test_task_dialog_text_carries_the_plan_fields():
+    """The dialog must name the fields an operator came for -- not just the
+    title the row already showed."""
+    block = hd_APP_JS.split("function taskDialogText(")[1].split("\n}")[0]
+    for field in ("status:", "priority:", "dependsOn:", "successCriteria:"):
+        assert field in block, f"{field!r} missing from the task dialog: {block}"
+    assert "t.successCriteria" in block, block

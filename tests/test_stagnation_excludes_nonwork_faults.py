@@ -21,7 +21,7 @@ spent or `infra_retry_max` is reached -- that single returned result must not
 also be scored as stagnation evidence.
 
 Uses the same no-subprocess scripted-runner harness as
-`tests/test_failed_task_vocabulary.py` (milliseconds, not an engine
+`tests/test_worker_hat.py` (milliseconds, not an engine
 subprocess) so three-iteration sequences can be driven and inspected exactly.
 """
 
@@ -35,15 +35,17 @@ import pytest
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import atomic_write_json
 
-from test_failed_task_vocabulary import (
+# test_worker_hat.py absorbed test_failed_task_vocabulary.py (task 028,
+# requirement D.7); the aliases restore the names this module already used.
+from test_worker_hat import (
     TASK_ID,
-    _events,
-    _log_messages,
-    _ok,
+    _fv_events as _events,
+    _fv_log_messages as _log_messages,
+    _fv_ok as _ok,
+    _fv_supervisor as _supervisor,
+    _fv_task as _task,
     _plan_pointer,
     _steps,
-    _supervisor,
-    _task,
     _write_plan,
     _write_proposal,
 )

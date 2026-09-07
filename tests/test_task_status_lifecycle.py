@@ -103,7 +103,7 @@ def test_terminal_statuses_have_no_successors_either_variant():
     # `failed` is deliberately EXCLUDED here as of task 009 (C.1, #123,
     # option a): it is no longer a dead end -- `failed -> skipped` is now
     # a declared, sanctioned move (see
-    # tests/test_failed_to_skipped_status_task009.py), asserting the OLD
+    # tests/test_worker_hat.py), asserting the OLD
     # invariant this test used to pin for that one status. The other three
     # are still genuinely terminal with no successors at all.
     for status in ("completed", "skipped", "validated"):

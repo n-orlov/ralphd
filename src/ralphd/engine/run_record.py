@@ -300,7 +300,7 @@ def build_debt_section(run: "state.RunDir") -> dict:
 # Task 035 (requirement B.1, cure for task 006): every top-level key
 # `build_run_record` writes, and which markdown section renders it. This is
 # not decoration -- `render_run_record_markdown` walks it, and
-# `tests/test_run_record_approach_metadata_task035.py` asserts the record's
+# `tests/test_run_record.py` asserts the record's
 # own key set equals this mapping's, so a field added to the JSON without a
 # renderer for it fails a test instead of quietly going unrendered (which is
 # exactly how `usage`'s input/output token fields and its byPhase/byApproach/

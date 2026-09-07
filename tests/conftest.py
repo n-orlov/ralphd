@@ -854,7 +854,7 @@ def _undo_instant_sleep_patches():
 # applied ONLY by the three modules the PRD names as testing the
 # backoff/retry schedule itself -- `test_infra_retry_schedule.py`,
 # `test_retry_now.py`, `test_reflect_infra_retry.py`.
-# `tests/test_wait_out_backoff_stubbed_task010.py` pins both this fixture's
+# `tests/test_stub_pi_harness.py` pins both this fixture's
 # presence and that no other module carries the marker.
 REAL_BACKOFF_MARKER = "real_backoff"
 

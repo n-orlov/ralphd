@@ -49,7 +49,7 @@ def overlay_engine(tmp_path):
         # the one call that keeps a job.yaml writer off a real infra-retry
         # sleep -- and pin STUB_SLEEP=0 the same explicit way (its own default
         # is already 0, but the guard in
-        # tests/test_wait_out_backoff_stubbed_task010.py wants it named, not
+        # tests/test_stub_pi_harness.py wants it named, not
         # merely defaulted, for any LiveRun.__init__-bypassing writer).
         (config_dir / "job.yaml").write_text(
             "".join(f"{k}: {json.dumps(v)}\n"

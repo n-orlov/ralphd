@@ -55,7 +55,11 @@ from ralphd.engine.state import (
     tasks_doc_excluding_new_entries,
 )
 
-from test_failed_task_vocabulary import _drive_until_paused
+# test_worker_hat.py absorbed test_failed_task_vocabulary.py (task 028,
+# requirement D.7); the aliases restore the names this module already used.
+from test_worker_hat import (
+    _drive_until_paused,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 WORKER_MD = (REPO / "src" / "ralphd" / "prompts" / "worker.md").read_text()
@@ -369,7 +373,7 @@ def _run_resumed_until_paused(root: Path, handlers: dict, tasks: list[dict],
     escalates instead of ending the run `failed`, then parks at `_gate()`
     forever waiting for an operator `resume()` that no scripted test here
     ever sends. Drives the run with the bounded-wait `_drive_until_paused`
-    helper (`tests/test_failed_task_vocabulary.py`) instead of letting
+    helper (`tests/test_worker_hat.py`) instead of letting
     `asyncio.run(sup._run_job_core())` block forever, and returns the
     supervisor for the caller to read `status.json` off of directly.
     """
