@@ -2115,6 +2115,25 @@ settled row and block above, this wave's own row, and `LAUNCH_SHA` bumped to thi
 launch sha; **I** — every lane green at the final code sha, the records, the closing report,
 #148 closed, the terminal summary.
 
+Approach 1 validated 32 of 48 tasks and was failed by the stagnation guard; approach 2
+replanned to a 5-task cure plan, validated all five, and its own independent review found
+three blocking findings rather than terminal ones: requirement F's reported six-module count
+counted string literals (`grep -l RALPHCTL`) rather than actual process-spawning modules — 18
+`test_cli*.py` modules called `LiveRun.ralphctl()` at that review's HEAD; requirement G.2's
+`docs/testing.md` table had no dev-layout row at all; and requirement I's seven-lane sweep was
+recorded at a tree (`c1955eb1`/`b520897`) that later test-only commits (`53763db`, `3246881`)
+had already moved `HEAD` past, so `tests/test_sweep_sha_guard.py` was red at the reviewed sha.
+Approach 3 is a flat 14-task cure plan (001–014) aimed at exactly those three findings, not at
+the rest of the wave: tasks 001–005 convert the remaining CLI-family spawn call sites to
+in-process and pin the surviving spawn set behaviourally instead of by grep (F); tasks 006–008
+add the missing dev-layout PYTHONUSERBASE-unset/-exported budget rows to `docs/testing.md` and
+re-measure smoke/fast/records after the conversions (G.2); tasks 010–014 retire every stale
+sweep-sha declaration, then re-run the seven lanes from scratch at the tree those retirements
+leave behind and record them one file per lane in one commit (I), before the closing report and
+terminal summary. As of this paragraph the CLI conversions and both dev-layout rows are landed
+and task 009 (this refresh) is in progress; the sweep has not been re-launched yet, so this
+entry does not claim any lane result the tree does not yet hold.
+
 The run is `selfdev-v0191-a-gate-is-not-a-wall`. **This entry is written while that run is
 still going**; it records the plan this wave is working and is not a terminal account — the
 operator resettles this row and this block after the run ends, per this wave's own requirement
