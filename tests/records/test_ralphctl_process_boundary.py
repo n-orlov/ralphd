@@ -11,8 +11,18 @@ either
   directly before task 002/003/004's in-process conversions; a module that
   reassigns `run.ralphctl = <closure>` before calling it has overridden the
   method with an in-process stand-in and does not count, or
-* a spawn argv naming the resolved `RALPHCTL` path -- `subprocess.run([str(
-  RALPHCTL), ...])` and its kin.
+* a spawn argv naming the resolved `RALPHCTL` path *inside an actual
+  process-spawning call* -- `subprocess.run([str(RALPHCTL), ...])`,
+  `subprocess.Popen([str(RALPHCTL), ...])`, `check_output`/`check_call`/
+  `call`, `asyncio.create_subprocess_exec`, `pty.spawn`, `os.spawnv*` and
+  their kin. Merely *naming* `RALPHCTL` is not enough: the reference must
+  sit in the argument subtree of one of those calls. That distinction is
+  not hypothetical -- it is the false positive review caught in this
+  module's first version: `tests/test_ralphctl_resolution.py` names
+  `RALPHCTL` exactly once in executable code (`for script in (RALPHCTL,
+  RALPHD_ENGINE): assert script.exists() and os.access(script, os.X_OK)`),
+  imports no `subprocess` at all and spawns nothing, so it is NOT a
+  process-boundary module however often the token appears in its prose.
 
 `_spawns()` below is that rule as an AST walk over one module's own parsed
 source; nothing here follows an import into another module's body. That is
@@ -40,7 +50,10 @@ Two node ids apply the rule and pin its answer:
   one's reason).
 
 Two mutation tests prove both checks can fail: dropping one real member
-from each frozen allowlist must turn the corresponding node red.
+from each frozen allowlist must turn the corresponding node red. A fifth
+node is the classifier's own control pair: a synthetic module that only
+asserts `RALPHCTL` exists and is executable is classified as NOT spawning,
+while the same source with one `subprocess.run([str(RALPHCTL)])` added is.
 """
 
 from __future__ import annotations
@@ -72,6 +85,9 @@ CLI_SCOPE_ALLOWLIST = frozenset({
 # whose own subject is a real ralphctl subprocess contract that the CLI
 # in-process conversion (requirement 7) never targeted -- each one's reason
 # is named in docs/test-suite-audit.md's requirement-7 section.
+# `test_ralphctl_resolution.py` is deliberately NOT a member: it names
+# `RALPHCTL` only to assert the resolved path exists and is executable, and
+# spawns no process at all (see the module docstring).
 TREE_WIDE_ALLOWLIST = CLI_SCOPE_ALLOWLIST | frozenset({
     "test_debt_ledger.py",
     "test_docker_sibling_e2e.py",
@@ -89,7 +105,6 @@ TREE_WIDE_ALLOWLIST = CLI_SCOPE_ALLOWLIST | frozenset({
     "test_image_recorded.py",
     "test_no_transcript_message.py",
     "test_operator_ruling.py",
-    "test_ralphctl_resolution.py",
     "test_reflect_tombstone_cleared.py",
     "test_rm_force_finishing_docs.py",
     "test_sibling_cleanup_job_safe.py",
@@ -114,9 +129,53 @@ def _overrides_ralphctl(tree: ast.Module) -> bool:
     return False
 
 
+# Callables that actually start a child process. Matched on the attribute /
+# function name only, so `subprocess.run(...)`, `sp.run(...)` and a bare
+# `run(...)` imported from subprocess all match.
+_SPAWN_ATTRS = frozenset({
+    "run", "Popen", "call", "check_call", "check_output", "getoutput",
+    "getstatusoutput", "spawn", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+    "spawnl", "spawnlp", "execv", "execve", "execvp", "execvpe",
+    "create_subprocess_exec", "create_subprocess_shell", "fork_exec",
+})
+_SPAWN_NAMES = frozenset({"run", "Popen", "call", "check_call",
+                          "check_output", "spawn"})
+
+
+def _is_spawn_call(node: ast.AST) -> bool:
+    """True if `node` is a call that starts a real child process."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr in _SPAWN_ATTRS
+    if isinstance(func, ast.Name):
+        return func.id in _SPAWN_NAMES
+    return False
+
+
+def _ralphctl_argv_lines(tree: ast.Module) -> list[int]:
+    """Lines where `RALPHCTL` appears in the argument subtree of a real
+    process-spawning call -- never a bare mention (an `os.access`
+    executability check, an import, a docstring) elsewhere in the module."""
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not _is_spawn_call(node):
+            continue
+        for arg in [*node.args, *(kw.value for kw in node.keywords)]:
+            for sub in ast.walk(arg):
+                if isinstance(sub, ast.Name) and sub.id == "RALPHCTL":
+                    lines.add(sub.lineno)
+    return sorted(lines)
+
+
 def _spawns(path: Path) -> list[str]:
     """Reasons `path`'s OWN source spawns a real ralphctl process, or []."""
-    tree = ast.parse(path.read_text(), str(path))
+    return _spawn_reasons(ast.parse(path.read_text(), str(path)))
+
+
+def _spawn_reasons(tree: ast.Module) -> list[str]:
+    """`_spawns()`'s rule applied to an already-parsed module."""
     why: list[str] = []
     calls = sorted({
         node.lineno for node in ast.walk(tree)
@@ -126,12 +185,9 @@ def _spawns(path: Path) -> list[str]:
     })
     if calls and not _overrides_ralphctl(tree):
         why.append(f"unoverridden .ralphctl() call at line(s) {calls}")
-    argv = sorted({
-        node.lineno for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id == "RALPHCTL"
-    })
+    argv = _ralphctl_argv_lines(tree)
     if argv:
-        why.append(f"RALPHCTL argv at line(s) {argv}")
+        why.append(f"RALPHCTL spawn argv at line(s) {argv}")
     return why
 
 
@@ -171,6 +227,40 @@ def test_the_tree_wide_process_boundary_is_exactly_the_named_allowlist() -> None
         f"allowlist {sorted(TREE_WIDE_ALLOWLIST)}; reasons: {derived}"
     )
     assert CLI_SCOPE_ALLOWLIST <= TREE_WIDE_ALLOWLIST
+
+
+def test_a_bare_RALPHCTL_mention_is_not_a_process_boundary() -> None:
+    """The classifier's own control pair (the false positive review caught in
+    this module's first version): asserting the resolved path exists is not
+    spawning; passing it to `subprocess.run` is."""
+    existence_check_only = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "from tests.conftest import RALPHCTL, RALPHD_ENGINE\n"
+        "def test_this_sessions_scripts_actually_exist():\n"
+        "    for script in (RALPHCTL, RALPHD_ENGINE):\n"
+        "        assert isinstance(script, Path)\n"
+        "        assert script.exists()\n"
+        "        assert os.access(script, os.X_OK)\n"
+    )
+    assert _spawn_reasons(ast.parse(existence_check_only)) == [], (
+        "a module that only checks the resolved path's existence and "
+        "executability spawns nothing and must not be classified as a "
+        "process boundary"
+    )
+    really_spawns = existence_check_only + (
+        "def test_it_also_runs_it():\n"
+        "    import subprocess\n"
+        "    subprocess.run([str(RALPHCTL), '--version'], check=True)\n"
+    )
+    assert _spawn_reasons(ast.parse(really_spawns)), (
+        "the same source with a real subprocess.run([str(RALPHCTL), ...]) "
+        "must be classified as a process boundary"
+    )
+    # And the real module the false positive was about is classified the
+    # way the control case says it should be.
+    assert _spawns(TESTS_DIR / "test_ralphctl_resolution.py") == []
+    assert "test_ralphctl_resolution.py" not in TREE_WIDE_ALLOWLIST
 
 
 def test_mutating_the_tree_wide_allowlist_fails_the_check() -> None:

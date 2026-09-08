@@ -143,7 +143,10 @@ become one `test_transitions.py`; `test_e2e.EngineProc` is deleted in favour of 
 
 CLI: 64 modules / 159 `ralphctl` spawns -> call `cli.main.main()` in-process with argv + capsys
 except where the process boundary is the subject (`tests/test_cli_logs_signal.py`, `_pty_termios`,
-`_follow_liveness`, `tests/test_ralphctl_resolution.py`, `tests/test_engine_child_import_path.py`). Saves ~150 s.
+`_follow_liveness`, `tests/test_engine_child_import_path.py`; the allowlists as delivered are in
+§ "Requirement 7's process-boundary allowlists" below -- note that
+`tests/test_ralphctl_resolution.py`, named here in the original plan sketch, is NOT a member: it
+only asserts the resolved path exists and is executable and spawns nothing). Saves ~150 s.
 
 ### (b) Records lint: one fast module family, kept
 Move to `tests/records/` (so `final_sha_guards.sh` selects a directory, not a grep) and keep:
@@ -218,14 +221,16 @@ dev-layout module). `docs/testing.md` carries the recipes and the measured budge
 7. **CLI in-process.** Convert `ralphctl` subprocess call sites to `main()` + capsys except the
    process-boundary modules. *Criterion (behavioural, never a grep count -- operator ruling on task
    001, steer 009 section 4):* `tests/records/test_ralphctl_process_boundary.py` derives, from each
-   module's own AST (an unoverridden `LiveRun.ralphctl()` call site, or a spawn argv naming the
-   resolved `RALPHCTL` path, found in that module's own source only -- never chased through a
-   fixture import into another module's body, the shape that produces false positives), the set of
+   module's own AST (an unoverridden `LiveRun.ralphctl()` call site, or the name `RALPHCTL` in the
+   argument subtree of a real process-spawning call -- `subprocess.run`/`Popen`/`check_output`/
+   `call`, `create_subprocess_exec`, `pty.spawn`, `os.spawnv*` -- found in that module's own source
+   only; never a bare mention of the name outside such a call, and never chased through a fixture
+   import into another module's body, the two shapes that produce false positives), the set of
    `tests/test_cli*.py` modules that spawn a real process. That set is exactly 6, <= the PRD's cap
    of 8: `test_cli_logs_pty_termios.py`, `test_cli_logs_signal.py`, `test_cli_watch_resumed_run.py`,
    `test_cli_logs_follow_liveness.py`, `test_cli_logs_resumed_run.py`, `test_cli_ui.py` -- each
    justified in § "Requirement 7's process-boundary allowlists" below. The same module's second
-   node pins the tree-wide set (every `tests/test_*.py` module) at exactly 32: those 6 plus 26
+   node pins the tree-wide set (every `tests/test_*.py` module) at exactly 31: those 6 plus 25
    modules elsewhere in the tree whose own subject is a real `ralphctl`-subprocess contract that
    this conversion never targeted, each named with its reason in the same section. cli family < 30 s.
 8. **Tiering + budget guard.** Markers `smoke`/`fast`; a test in `tests/records/` fails if the fast
@@ -255,7 +260,7 @@ docstring), never a `grep -c 'RALPHCTL'` count.
 | `test_cli_logs_resumed_run.py` | its `Follower` class observes a live streaming follow across a real engine resume -- task 033's own audit subject, not reproducible via a blocking in-process capsys capture |
 | `test_cli_ui.py` | hosts the `UiServer` class that ~15 modules outside CLI scope construct directly for real-subprocess/playwright coverage; its DELETE-route dependency shells out to real `docker`, which only resolves its env correctly in a genuine child process (task 004's record) |
 
-**Tree-wide -- every `tests/test_*.py` module, 32 of ~317 (the 6 above plus 26 more):**
+**Tree-wide -- every `tests/test_*.py` module, 31 of ~317 (the 6 above plus 25 more):**
 
 | module | why it is a real process boundary |
 |---|---|
@@ -275,7 +280,6 @@ docstring), never a `grep -c 'RALPHCTL'` count.
 | `test_image_recorded.py` | same real-subprocess image-resolution pattern, for the resume-reproduces-the-image case |
 | `test_no_transcript_message.py` | reproduces the empty-`iterations/` rendering as the real CLI prints it to a real child's stdout |
 | `test_operator_ruling.py` | drives `ralphctl amend` as a real subprocess including piped stdin, the actual operator-facing entry point |
-| `test_ralphctl_resolution.py` | its whole subject is whether `RALPHCTL`/`RALPHD_ENGINE` resolve to an executable file at all -- `os.access(..., os.X_OK)` on a real path IS the test |
 | `test_reflect_tombstone_cleared.py` | drives `ralphctl` across a real fail-then-resume-then-succeed cycle to see the tombstone file disappear from the real run dir a real process wrote to |
 | `test_rm_force_finishing_docs.py` | exercises `ralphctl rm --force` on a run mid-`finishing` window; the real return code and stderr text are the documented contract under test |
 | `test_sibling_cleanup_job_safe.py` | a real `ralphctl stop` subprocess proves the job container survives sibling-only cleanup -- the guarantee is about what a real process does, not a text assertion |
@@ -286,8 +290,20 @@ docstring), never a `grep -c 'RALPHCTL'` count.
 | `test_tasks_stale_cli.py` | drives `ralphctl tasks`/`--json tasks` as a real subprocess specifically because its subject is the *host-side* reader falling back to disk when the engine is not the one answering |
 | `test_tier_cost_breakdown.py` | same real-child `--json status` pattern, for the per-tier spend/iteration-count breakdown |
 
-None of the 26 non-CLI members are in `tests/test_cli*.py`'s scope (the family requirement 7
+None of the 25 non-CLI members are in `tests/test_cli*.py`'s scope (the family requirement 7
 converts); each predates or sits outside that conversion and was never a candidate for it.
+
+**Ruled out, on purpose:** `tests/test_ralphctl_resolution.py` names `RALPHCTL` in prose more than
+any other module and this section's first version wrongly listed it as a 32nd member. It is not one:
+its only executable reference to the name is `for script in (RALPHCTL, RALPHD_ENGINE): assert
+script.exists() and os.access(script, os.X_OK)` (line ~202), it imports no `subprocess`, and it
+starts no child process -- its subject is the *resolution rule* (#65: one resolver, in
+`tests/conftest.py`), checked by parsing other modules' sources and by planting decoy scripts in
+`tmp_path`, never by running `ralphctl`. `test_a_bare_RALPHCTL_mention_is_not_a_process_boundary` in
+`tests/records/test_ralphctl_process_boundary.py` is the control that keeps the classifier honest
+about exactly this shape: an existence/executability check is classified as not spawning, the same
+source plus one `subprocess.run([str(RALPHCTL), ...])` is classified as spawning, and the real
+module is asserted to derive no spawn reason at all.
 
 ### Real-engine spawn count after tasks 020/021 (requirements C.9/C.10)
 
