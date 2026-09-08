@@ -24,11 +24,15 @@ agreement assertions, and one real engine via the `live` fixture.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
@@ -43,7 +47,7 @@ from ralphd.engine.state import (
     STEERING_PENDING,
     record_steering_settlement,
 )
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 __all__ = ["UiServer", "ctl", "ui", "unix_sock"]
 
@@ -52,11 +56,33 @@ TWO = "Then ship it.\n"
 
 
 def ralphctl(registry: Path, *argv: str, stdin: str | None = None):
-    """Black-box `ralphctl` against a registry -- no stub docker needed: this
-    command never shells out to docker, live or dead."""
-    return subprocess.run([str(RALPHCTL), *argv],
-                          env={**os.environ, "RALPHD_REGISTRY": str(registry)},
-                          input=stdin, capture_output=True, text=True, timeout=60)
+    """`ralphctl` against a registry, driven in-process (task 038,
+    requirement F.3) -- no stub docker needed: this command never shells
+    out to docker, live or dead. `stdin` (only the one 'never consumed'
+    test uses it) is fed through a real `sys.stdin` swap so a bug that DID
+    try to read it would surface, not hang the whole run."""
+    env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
+    if stdin is None:
+        return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+    old_stdin = sys.stdin
+    sys.stdin = io.StringIO(stdin)
+    try:
+        return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+    finally:
+        sys.stdin = old_stdin
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 038 (F.3): drive `ralphctl` in-process (task 036's helper) --
+    module-global capsys, never concurrent."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 def _seed_steering(run_dir: Path, files: dict[str, str],

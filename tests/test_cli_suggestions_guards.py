@@ -46,7 +46,7 @@ from pathlib import Path
 import pytest
 
 from ralphd.cli import image, main as cli_main, patch
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 from tests.test_cli_suggestions_verb import (CLEAN_DIFF, STALE_DIFF, WORKER_MD,
                                              _checkout, _doc_section)
 
@@ -104,8 +104,20 @@ def _ctl(reg: Path, *argv: str, live: str = "", exists: str = "",
            "RALPHD_DOCKER": str(STUB_DOCKER),
            "STUB_DOCKER_CONTAINERS": names(exists or live),
            "STUB_DOCKER_RUNNING": names(live)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env, capture_output=True,
-                          text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 038 (F.3): drive `ralphctl` in-process (task 036's helper) --
+    module-global capsys, never concurrent."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 @pytest.fixture()

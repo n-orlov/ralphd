@@ -45,7 +45,7 @@ import pytest
 
 from ralphd.cli import image, main as cli_main, patch
 from ralphd.engine.state import ARTIFACT_ALIASES
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 REPO = Path(__file__).parent.parent
 CLI_DOC = REPO / "docs" / "cli.md"
@@ -83,8 +83,20 @@ UNREADABLE_DIFF = "@@ -1,2 +1,3 @@\n a\n+b\n"
 
 def _ctl(registry: Path, *argv: str, timeout: int = 60):
     env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 038 (F.3): drive `ralphctl` in-process (task 036's helper) --
+    module-global capsys, never concurrent."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 def _registry(tmp: Path, diff: str | None = CLEAN_DIFF,

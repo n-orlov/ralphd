@@ -17,7 +17,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from tests.conftest import RALPHCTL
+import pytest
+
+from tests.conftest import call_ralphctl_in_process
 
 REPO = Path(__file__).parent.parent
 SOURCE_SKILL = REPO / "skills" / "ralphd"
@@ -25,8 +27,20 @@ SOURCE_SKILL = REPO / "skills" / "ralphd"
 
 def run(*argv: str, home: Path, timeout: int = 30) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(home)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 038 (F.3): drive `ralphctl` in-process (task 036's helper) --
+    module-global capsys, never concurrent."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 def _installed(home: Path) -> Path:
