@@ -40,6 +40,20 @@ from ralphd.log_merge import boundary_line
 __all__ = ["ctl", "engine_factory", "unix_sock"]
 
 
+# Task cure-01-01 (requirement I): the one engine-exit wait in this module,
+# named once. The black-box node below drives a six-iteration `STUB_SLEEP`-less
+# stub run and needs 0.67 s of `call` time when it runs alone (measured at this
+# tree, `--durations`, both parametrizations 0.67 s) -- but its wait used to be
+# a bare `timeout=60`, and under `-m fast -n 8 --dist loadfile` that expired:
+# one red in the fast lane at code sha `f6781b15`, `--durations` recording
+# `60.00s call` plus the fixture's `10.00s teardown` to kill the child. Same
+# shape as the two engine-exit waits cured in `f6781b15` itself. 180 s is ~270x
+# what the node needs alone and still far inside the 20-minute ceiling this
+# run's rules put on any process wait, so a genuinely stuck engine still fails
+# here rather than hanging the lane -- and the assertion it guards (`== 0`, the
+# engine exiting cleanly) is untouched.
+ENGINE_EXIT_WAIT_S = 180
+
 # The map used across the layers: one gateway alias family, one exact alias,
 # one pinned model and one family default.
 MAP = {
@@ -360,7 +374,7 @@ def test_unpriced_run_with_a_pricing_map(engine_factory, model, expect_derived, 
                             "model": model, "pricing": MAP},
                        stub_env={"STUB_UNPRICED_COUNT": "99",
                                  "HOME": str(fake_home)})
-    assert e.proc.wait(timeout=60) == 0
+    assert e.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]
