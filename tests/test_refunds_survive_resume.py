@@ -38,7 +38,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 from ralphd.log_merge import iteration_attempt_dirs, iteration_numbers
-from tests.conftest import make_supervisor
+from tests.conftest import make_supervisor, stub_contract_reask
 
 __all__ = ["engine_factory"]
 
@@ -150,6 +150,15 @@ async def test_a_grace_review_refund_is_recorded_in_status(tmp_path):
         return r
 
     sup.run_iteration = fake_review  # type: ignore[method-assign]
+    # `fake_review`'s prose reply enters `_review_contract_ladder`, whose
+    # re-ask channel is `_ask_contract_fix` -- NOT `run_iteration`, so the
+    # stub above does not cover it. Left unstubbed it spawns the real `pi`
+    # binary twice (`contract_retry_max` = 2), each spawn bounded only by
+    # `router_timeout_s` = 60 s: 120 s of real waiting for an answer this
+    # test then ignores. The empty reply below is what a failed re-ask
+    # returns anyway, so the ladder still exhausts and every assertion
+    # below is judged on exactly the same outcome (task 050, G.2).
+    stub_contract_reask(sup)
     verified = await sup._maybe_grace_review(1)
 
     assert verified is False

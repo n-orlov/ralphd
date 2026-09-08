@@ -1690,7 +1690,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, read_events
-from tests.conftest import supervisor_factory
+from tests.conftest import supervisor_factory, stub_contract_reask
 
 TEST_STATE = "task004_audit_hat_state"
 TEST_HAT = "task004_audit_hat"
@@ -1833,6 +1833,15 @@ def test_3_mutation_stops_discriminating_generic_hat_reads_interrupt_as_contract
         staticmethod(lambda result: False))
     sup = _inso004_supervisor(tmp_path, iterations=1)
     calls = _stub_attempts(sup, [_interrupted()])
+    # With the discrimination mutated away, the interrupted attempt is read as
+    # a real reply and enters the contract ladder, whose re-ask channel is
+    # `_ask_contract_fix` -- not `_run_iteration_once`, so `_stub_attempts`
+    # does not cover it. Left unstubbed it spawns the real `pi` binary twice
+    # (`contract_retry_max` = 2), each bounded only by `router_timeout_s` =
+    # 60 s: 120 s of real waiting to learn what the empty reply below says
+    # instantly, with the ladder still exhausting exactly as before (task
+    # 050, G.2).
+    stub_contract_reask(sup)
     edges = tr.successors(TEST_STATE, sup.cfg.vigilant)
 
     outcome = asyncio.run(sup._step_generic_hat(TEST_STATE, edges))

@@ -1097,6 +1097,43 @@ def scripted_attempts(sup, script) -> ScriptedRunner:
     return attach_runner(sup, ScriptedRunner(handlers))
 
 
+def stub_contract_reask(sup, reply: str = "") -> list[list[str]]:
+    """Answer the engine's UNCOUNTED contract-repair channel
+    (`LoopSupervisor._ask_contract_fix`) in-process, and record the errors it
+    was asked about. Returns the list of `errors` lists, one per re-ask.
+
+    Why this exists (task 050, requirement G.2): `_ask_contract_fix` is the
+    one hat-facing call in the engine that does NOT go through
+    `run_iteration`/`_run_iteration_once`, so a test that stubs *those* (the
+    usual `_stub_attempts` technique) still reaches `self.runner.run(...)` --
+    and a `make_supervisor` supervisor built with no scripted runner keeps the
+    real `PiRunner`, which spawns the real `pi` binary and makes a REAL
+    provider call, once per re-ask, bounded only by `router_timeout_s`
+    (`JobConfig`'s default 60 s) and repeated `contract_retry_max` (2) times.
+    In this container that is exactly 120 s of pure waiting per test whenever
+    the ambient `pi` config can reach a provider at all -- two such nodes
+    (`tests/test_refunds_survive_resume.py::test_a_grace_review_refund_is_
+    recorded_in_status` and `tests/test_worker_hat.py::test_3_mutation_stops_
+    discriminating_generic_hat_reads_interrupt_as_contract_violation`) each
+    sat at 120.05 s / 114.00 s in the `-m fast -n 8 --dist loadfile` lane.
+
+    `reply=""` is the FAITHFUL default, not a convenience: an empty answer is
+    what a failed/timed-out `pi` re-ask actually hands back, so
+    `enforce_contract` still runs its whole ladder and still exhausts it, and
+    every assertion around the call is judged on the same outcome as before --
+    only the real subprocess and its real provider call are gone. Pass a
+    payload string when a test wants the repair to SUCCEED.
+    """
+    asked: list[list[str]] = []
+
+    async def fake_ask_contract_fix(hat, errors, final_text=None):
+        asked.append(list(errors))
+        return reply, {}
+
+    sup._ask_contract_fix = fake_ask_contract_fix    # type: ignore[method-assign]
+    return asked
+
+
 def supervisor_factory(runner_factory=None, **defaults):
     """A module's own `_supervisor`-shaped callable, built out of the shared
     harness: `(root, *runner_args, **cfg) -> LoopSupervisor`, with this
