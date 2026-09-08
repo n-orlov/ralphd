@@ -510,7 +510,6 @@ def test_set_job_deadline_emits_an_event_distinguishable_from_infra_extension(tm
 
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -520,17 +519,25 @@ from ralphd.engine.contract_enforcement import (
     EVENT_VIOLATION,
     violation_message,
 )
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 HAT = "worker"
 ERRORS = ["$.task_id: expected string, got int"]
 MAX_ATTEMPTS = 3
 
 
-def _ctl(registry: Path, *argv: str, timeout: int = 60):
+def _ctl(registry: Path, *argv: str, capsys, timeout: int = 60):
+    """Task 036 (F.1): drive `ralphctl` through `cli.main.main()` in this same
+    process instead of spawning the console script -- the subject of every
+    test below is what `status`/`iteration N` RENDER for a contract fault,
+    never the process boundary. The running test's own `capsys` is passed in
+    explicitly (this module's other tests are unrelated to the CLI capture,
+    so no autouse fixture), and the helper returns the same
+    `subprocess.CompletedProcess` shape the spawn returned, so every
+    `res.returncode`/`res.stdout`/`res.stderr` assertion is untouched.
+    """
     env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
 
 
 def _write_iteration(run_dir: Path, n: int, meta: dict) -> None:
@@ -616,18 +623,19 @@ def _exhausted_run(tmp_path: Path, run_id: str = "exhausted") -> tuple[Path, Pat
 
 # --------------------------------------------------------------- recovered
 
-def test_iteration_n_names_the_contract_violation_when_it_recovered(tmp_path):
+def test_iteration_n_names_the_contract_violation_when_it_recovered(tmp_path, capsys):
     registry, _ = _recovered_run(tmp_path)
-    res = _ctl(registry, "iteration", "recovered", "1", "--no-log")
+    res = _ctl(registry, "iteration", "recovered", "1", "--no-log", capsys=capsys)
     assert res.returncode == 0, res.stderr
     expected = violation_message(HAT, ERRORS)
     assert f"contract:  {expected}" in res.stdout
     assert "expected string, got int" in res.stdout
 
 
-def test_iteration_n_json_carries_the_contract_fault_recovered(tmp_path):
+def test_iteration_n_json_carries_the_contract_fault_recovered(tmp_path, capsys):
     registry, _ = _recovered_run(tmp_path)
-    res = _ctl(registry, "--json", "iteration", "recovered", "1", "--no-log")
+    res = _ctl(registry, "--json", "iteration", "recovered", "1", "--no-log",
+               capsys=capsys)
     assert res.returncode == 0, res.stderr
     doc = json.loads(res.stdout)
     cf = doc["contractFault"]
@@ -637,21 +645,22 @@ def test_iteration_n_json_carries_the_contract_fault_recovered(tmp_path):
     assert cf["text"] == violation_message(HAT, ERRORS)
 
 
-def test_status_prints_no_reason_line_for_a_run_that_is_still_going(tmp_path):
+def test_status_prints_no_reason_line_for_a_run_that_is_still_going(tmp_path, capsys):
     """The recovered case genuinely never ended -- `status.json` carries no
     `reason`, so `ralphctl status` must print none either (never invent
     one from the mere PRESENCE of a `contract.violation` event)."""
     registry, _ = _recovered_run(tmp_path)
-    res = _ctl(registry, "status", "recovered")
+    res = _ctl(registry, "status", "recovered", capsys=capsys)
     assert res.returncode == 0, res.stderr
     assert "reason:" not in res.stdout
 
 
 # --------------------------------------------------------------- exhausted
 
-def test_status_reason_line_names_the_contract_violation_when_it_did_not_recover(tmp_path):
+def test_status_reason_line_names_the_contract_violation_when_it_did_not_recover(
+        tmp_path, capsys):
     registry, _ = _exhausted_run(tmp_path)
-    res = _ctl(registry, "status", "exhausted")
+    res = _ctl(registry, "status", "exhausted", capsys=capsys)
     assert res.returncode == 0, res.stderr
     # long text is wrapped across `reason:`/continuation lines (task 003) --
     # normalise before checking the full sentence is there, verbatim.
@@ -662,17 +671,18 @@ def test_status_reason_line_names_the_contract_violation_when_it_did_not_recover
     assert violation_message(HAT, ERRORS) in rejoined
 
 
-def test_iteration_n_names_the_contract_violation_when_it_did_not_recover(tmp_path):
+def test_iteration_n_names_the_contract_violation_when_it_did_not_recover(tmp_path, capsys):
     registry, _ = _exhausted_run(tmp_path)
-    res = _ctl(registry, "iteration", "exhausted", "1", "--no-log")
+    res = _ctl(registry, "iteration", "exhausted", "1", "--no-log", capsys=capsys)
     assert res.returncode == 0, res.stderr
     expected = violation_message(HAT, ERRORS)
     assert f"contract:  {expected}" in res.stdout
 
 
-def test_iteration_n_json_carries_the_contract_fault_exhausted(tmp_path):
+def test_iteration_n_json_carries_the_contract_fault_exhausted(tmp_path, capsys):
     registry, _ = _exhausted_run(tmp_path)
-    res = _ctl(registry, "--json", "iteration", "exhausted", "1", "--no-log")
+    res = _ctl(registry, "--json", "iteration", "exhausted", "1", "--no-log",
+               capsys=capsys)
     assert res.returncode == 0, res.stderr
     doc = json.loads(res.stdout)
     cf = doc["contractFault"]
@@ -682,14 +692,14 @@ def test_iteration_n_json_carries_the_contract_fault_exhausted(tmp_path):
     assert cf["text"] == violation_message(HAT, ERRORS)
 
 
-def test_status_and_iteration_agree_on_the_exact_same_sentence(tmp_path):
+def test_status_and_iteration_agree_on_the_exact_same_sentence(tmp_path, capsys):
     """The point of the shared derivation: both surfaces, over the SAME
     fixture, quote byte-identical text -- not two independently-worded
     strings that happen to mention the same error today."""
     registry, _ = _exhausted_run(tmp_path)
-    status_out = _ctl(registry, "status", "exhausted").stdout
+    status_out = _ctl(registry, "status", "exhausted", capsys=capsys).stdout
     iteration_out = _ctl(registry, "iteration", "exhausted", "1",
-                         "--no-log").stdout
+                         "--no-log", capsys=capsys).stdout
     expected = violation_message(HAT, ERRORS)
     rejoined = " ".join(
         line.removeprefix("reason:    ").removeprefix("           ").strip()
