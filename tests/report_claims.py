@@ -183,22 +183,48 @@ def parse_claims(report: Path) -> ReportClaims:
     )
 
 
+_COMMIT_KINDS: dict[str, str] | None = None
+
+
+def _commit_kinds() -> dict[str, str]:
+    """Every sha cited anywhere under `artifacts/reports/`, resolved in ONE
+    `git cat-file --batch-check` call and memoised for the life of the
+    process -- the same one-subprocess-per-process rule `_tracked_paths()`
+    below keeps for `git ls-files`. Before this (task 035, requirement E.4),
+    `commit_problems` ran its own `git cat-file --batch-check` once PER
+    REPORT it was called on, one subprocess per report with any sha claim --
+    about 218 of the ~220 subprocess calls a full `tests/records/` run made.
+    """
+    global _COMMIT_KINDS
+    if _COMMIT_KINDS is None:
+        wanted = sorted({
+            claim.value
+            for report in report_files()
+            for claim in parse_claims(report).shas
+        })
+        if not wanted:
+            _COMMIT_KINDS = {}
+        else:
+            proc = subprocess.run(
+                ["git", "cat-file", "--batch-check"],
+                cwd=REPO_ROOT,
+                input="\n".join(wanted) + "\n",
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            kinds: dict[str, str] = {}
+            for asked, answer in zip(wanted, proc.stdout.splitlines(), strict=True):
+                kinds[asked] = answer.split(" ", 2)[1] if " " in answer else answer
+            _COMMIT_KINDS = kinds
+    return _COMMIT_KINDS
+
+
 def commit_problems(claims: ReportClaims) -> list[str]:
     """Every listed sha must be a commit object in this repo."""
     if not claims.shas:
         return []
-    wanted = sorted({c.value for c in claims.shas})
-    proc = subprocess.run(
-        ["git", "cat-file", "--batch-check"],
-        cwd=REPO_ROOT,
-        input="\n".join(wanted) + "\n",
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    kinds: dict[str, str] = {}
-    for asked, answer in zip(wanted, proc.stdout.splitlines(), strict=True):
-        kinds[asked] = answer.split(" ", 2)[1] if " " in answer else answer
+    kinds = _commit_kinds()
     problems = []
     for claim in claims.shas:
         kind = kinds.get(claim.value, "unknown")

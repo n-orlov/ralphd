@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -149,16 +150,25 @@ def test_a_node_family_wildcard_needs_a_real_match() -> None:
 
 def test_path_problems_takes_at_most_one_git_ls_files_snapshot(monkeypatch) -> None:
     """F: membership is checked against one `git ls-files` snapshot, not a
-    subprocess call per claim -- even across many claims in one report."""
+    subprocess call per claim -- even across many claims in one report.
+
+    No real `git` process here: a canned `CompletedProcess` stands in for
+    it, so this whitebox check of the *memoisation itself* never spends one
+    of the family's own real `git ls-files` calls (task 035, requirement
+    E.4 pins the family to exactly one real such call across a whole run;
+    this test proves the caching logic that makes that true without adding
+    a second real invocation of its own)."""
     monkeypatch.setattr(report_claims_module, "_TRACKED_PATHS", None)
-    real_run = report_claims_module.subprocess.run
     calls = []
+    fake_stdout = "tests/report_claims.py\ntests/records/test_report_claims.py\n"
 
-    def counting_run(*args, **kwargs):
+    def fake_run(*args, **kwargs):
         calls.append(args)
-        return real_run(*args, **kwargs)
+        argv = args[0] if args else kwargs.get("args")
+        return subprocess.CompletedProcess(args=argv, returncode=0,
+                                            stdout=fake_stdout, stderr="")
 
-    monkeypatch.setattr(report_claims_module.subprocess, "run", counting_run)
+    monkeypatch.setattr(report_claims_module.subprocess, "run", fake_run)
     many_claims = ReportClaims(
         report=REPORTS_DIR / "conformance-ledger.md",
         shas=[],

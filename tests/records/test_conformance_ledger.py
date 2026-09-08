@@ -27,6 +27,7 @@ ledger citation if it equals the citation or is one of its parametrisations
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -180,10 +181,26 @@ def _collect_node_ids(targets: list[str]) -> tuple[set[str], int]:
     """ONE in-process pytest collection pass over `targets` (file paths, not
     individual node ids -- passing a single missing node id as a target
     would abort collection of the rest). No `subprocess`/`os.fork` involved:
-    `pytest.main()` runs a fresh `Session` inside THIS interpreter."""
+    `pytest.main()` runs a fresh `Session` inside THIS interpreter.
+
+    Task 035 (E.4): some cited files transitively import
+    `tests/test_docker_sibling_e2e.py` (`test_worker_hat.py` ->
+    `test_steer.py` -> that module), whose module-level skipif spends a real
+    `docker version` subprocess call at IMPORT time -- a real cost this
+    collect-only pass never needs the answer to. `RALPHD_SKIP_DOCKER_PROBE`
+    makes that probe answer "unavailable" without asking the real docker
+    binary, scoped to this one call and restored (or deleted) right after."""
     plugin = _CollectPlugin()
     args = ["-q", "--collect-only", "-p", "no:cacheprovider"] + targets
-    ret = pytest.main(args, plugins=[plugin])
+    previous = os.environ.get("RALPHD_SKIP_DOCKER_PROBE")
+    os.environ["RALPHD_SKIP_DOCKER_PROBE"] = "1"
+    try:
+        ret = pytest.main(args, plugins=[plugin])
+    finally:
+        if previous is None:
+            os.environ.pop("RALPHD_SKIP_DOCKER_PROBE", None)
+        else:
+            os.environ["RALPHD_SKIP_DOCKER_PROBE"] = previous
     return plugin.node_ids, ret
 
 

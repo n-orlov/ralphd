@@ -80,6 +80,7 @@ tightened as the counts come down -- they are a ratchet, not a target.
 | smoke, serial | `smoke` | `-m smoke` | 4640 | 263 | 152.63 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 152.63 s measured against the 120 s target |
 | fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 6418 | 394 | 111.79 s | 7000 | 430 | 150 s | < 120 s | met -- 111.79 s inside the 120 s target |
 | fast, serial | `fast` | `-m fast` | 6418 | 394 | 981 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 981 s measured against the 300 s target |
+| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 194 | 4 | 5.08 s | 300 | 15 | 15 s | < 15 s | met -- 5.08 s inside the 15 s target, 194 tests inside the 300-test target |
 
 The wall clock of the serial fast lane is the audit's own full serial
 measurement (`docs/test-suite-audit.md` section 2: 981 s at sha 836adc1, under
@@ -109,6 +110,36 @@ at the sha that landed the sixth (task 013, peer gates):
 That table is prose, not a budget row: `tests/test_tier_budgets.py` parses only
 the eleven-column table above it. The 10.81 s the directory adds is inside the
 fast lane's own recorded measurements.
+
+### The records-lint family (`tests/records/`, task 035, requirement E.4)
+
+Measured serially (`.venv/bin/python -m pytest -q tests/records/`, repeated
+three times, 5.08-5.64 s): **194 tests collected** across 4 test modules (plus
+a `conftest.py`: `test_conformance_ledger.py`, `test_records_family_budget.py`,
+`test_report_claims.py`, `test_roadmap.py`), against the PRD's **300-test** /
+**15 s** targets -- both met, neither disclosed as a miss.
+
+The PRD/task text for this requirement says the family "spawns no subprocess
+other than one git ls-files"; that undercounts by one kind of call, and this is
+the disclosed correction. `tests/report_claims.py` has always needed TWO
+different git subprocesses, not one: `path_problems()` needs `git ls-files`
+(path membership) and `commit_problems()` needs `git cat-file --batch-check`
+(commit existence + object type) -- a sha claim was never a membership
+question `git ls-files` can answer. Before this task, `commit_problems` ran
+its own `git cat-file --batch-check` once PER REPORT that carried a sha claim
+-- about 218 of the ~220 subprocess calls a full `tests/records/` run made,
+measured on this task's own tree before the fix. The fix batches every sha
+across every report into ONE such call, memoised for the process, mirroring
+`_tracked_paths()`'s existing one-`git-ls-files`-per-process rule; a second,
+unrelated fix (`tests/test_docker_sibling_e2e.py`'s `_docker_available()`,
+opted out via `RALPHD_SKIP_DOCKER_PROBE` from
+`tests/records/test_conformance_ledger.py`'s own nested collection pass)
+removed a third real subprocess (`docker version`) a ledger-cited file's
+import-time skipif was spending on a collect-only pass that never looked at
+the answer. `tests/records/test_records_family_budget.py` pins what is left:
+exactly two real subprocess calls for a fresh run of the whole family -- one
+`git ls-files`, one `git cat-file --batch-check` -- never a third, and never
+either one more than once per process.
 
 ### Targets missed, with their numbers
 
