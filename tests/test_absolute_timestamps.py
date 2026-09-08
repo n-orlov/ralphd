@@ -25,6 +25,9 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
+import test_cli_logs_dead_run as _dead_run_module
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_logs_dead_run import _ctl, _dead_run
 from test_cli_status_degraded import _seed_status
@@ -127,9 +130,26 @@ def test_status_of_a_running_run_shows_started_but_no_ended(ctl: Ctl):
 # `ralphctl logs`
 # --------------------------------------------------------------------------
 
-def test_logs_boundary_lines_carry_absolute_timestamps(tmp_path):
+@pytest.fixture
+def logs_ctl(capsys):
+    """`test_cli_logs_dead_run._ctl` drives `ralphctl` IN-PROCESS (task 037,
+    requirement F.2) and reads its capsys handle from that module's own
+    `_CAPSYS` global, which only that module's autouse fixture sets. An
+    `import` across modules copies the function, never the fixture, so the
+    two tests below wired nothing and `_CAPSYS` stayed `None`
+    (`AttributeError: 'NoneType' object has no attribute 'readouterr'`).
+    Wire the same global here for the duration of each test and clear it
+    after, so the helper behaves identically in both modules."""
+    _dead_run_module._CAPSYS = capsys
+    try:
+        yield _ctl
+    finally:
+        _dead_run_module._CAPSYS = None
+
+
+def test_logs_boundary_lines_carry_absolute_timestamps(tmp_path, logs_ctl):
     registry, _ = _dead_run(tmp_path, "abs-ts-logs")
-    res = _ctl(registry, "logs", "abs-ts-logs")
+    res = logs_ctl(registry, "logs", "abs-ts-logs")
     assert res.returncode == 0, (res.stdout, res.stderr)
     start_stamp = format_local_time(ITER_1_START)
     end_stamp = format_local_time(ITER_1_END)
@@ -144,11 +164,11 @@ def test_logs_boundary_lines_carry_absolute_timestamps(tmp_path):
     assert "took " in dones[0]
 
 
-def test_logs_raw_mode_keeps_the_iso_wire_values(tmp_path):
+def test_logs_raw_mode_keeps_the_iso_wire_values(tmp_path, logs_ctl):
     """`--raw` is a 1:1 wire contract: the boundary lines it emits carry the
     raw ISO timestamps, never the human rendering."""
     registry, _ = _dead_run(tmp_path, "abs-ts-raw")
-    res = _ctl(registry, "logs", "--raw", "abs-ts-raw")
+    res = logs_ctl(registry, "logs", "--raw", "abs-ts-raw")
     assert res.returncode == 0, (res.stdout, res.stderr)
     boundaries = [json.loads(ln) for ln in res.stdout.splitlines()
                   if ln.startswith("{") and "ralphd.iteration" in ln]
