@@ -88,9 +88,32 @@ def test_skills_crud_and_visibility(skills_engine, tmp_path):
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
     _write_mounted_skill(tmp_path / "config", "greet")
+    # Task cure-01-01 (requirement I): the last step of this node PUTs skill
+    # `late` and then waits for a *subsequent* stub invocation to record it in
+    # the `.stub-skills` marker (that marker is written at the top of every
+    # invocation, before any role work). `wait_api()` returns as soon as
+    # /healthz answers, and the job behind it is a `STUB_SLEEP=0` stub over
+    # `STUB_TASKS=5` tasks -- on a loaded machine the whole plan can be worked
+    # and the run parked in `on_complete: idle` before this test even reaches
+    # that PUT, and then no later iteration exists to observe `late` at all.
+    # That is exactly the red the dev-layout lanes hit at tree `4baf046`
+    # ("'late' skill never observed by an iteration; last seen: ['greet']"),
+    # reached through this module's nested subset in
+    # tests/test_skills_discoverability_survives_suite.py.
+    #
+    # Cured with requirement B.1's bounded hold primitive rather than a longer
+    # deadline: the stub parks the run's FIRST worker invocation until this
+    # test releases it (after the `late` PUT), so further invocations -- and
+    # therefore a marker write strictly after the PUT -- provably still lie
+    # ahead. The bound is the stub's own `STUB_HOLD_TIMEOUT_S`, so a release
+    # this test fails to send is a fast red, never a hang.
+    release_worker = tmp_path / "release-worker-hold"
     e = skills_engine(job={"iterations": 20},
                       stub_env={"HOME": str(fake_home), "STUB_SLEEP": "0",
-                                "STUB_TASKS": "5"})
+                                "STUB_TASKS": "5",
+                                "STUB_HOLD_FILE": str(release_worker),
+                                "STUB_HOLD_PHASE": "worker",
+                                "STUB_HOLD_TIMEOUT_S": "90"})
     e.wait_api()
 
     # -- mounted skill visible from the start ------------------------------
@@ -150,6 +173,9 @@ def test_skills_crud_and_visibility(skills_engine, tmp_path):
     # current skill set (proves no restart is needed for CRUD to apply).
     st, _ = _put(e.port, "/config/skills/late", _make_tar({"SKILL.md": "# late\n"}))
     assert st == 204
+    # The PUT is answered, so every invocation from here on must see `late`:
+    # release the held worker iteration (and the iterations behind it).
+    release_worker.touch()
     skills_marker = e.run_dir / ".stub-skills"
     deadline = time.time() + 20
     seen: list[str] = []
