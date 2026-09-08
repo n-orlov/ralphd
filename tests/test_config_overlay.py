@@ -175,11 +175,29 @@ def test_config_mutation_persists_in_overlay_not_readonly_config(overlay_engine,
             assert "OVERLAY-MARKER-xyz987" not in f.read_text(errors="ignore")
 
 
-def test_prompt_override_rejects_empty_body(overlay_engine):
+def test_prompt_override_rejects_empty_body(overlay_engine, tmp_path):
+    # Task cure-01-01 (requirement I): this node used to race its own engine.
+    # `wait_api()` returns as soon as `/healthz` answers -- which is long
+    # before the job is over -- and the job it drives is three iterations of a
+    # `STUB_SLEEP=0` stub with `on_complete: exit`, i.e. a run that can be
+    # finished and the API socket closed within milliseconds. Whenever the
+    # test process was descheduled between `wait_api()` and the PUT (routine
+    # under `-m fast -n 8`), the PUT hit a dead port and the node failed with
+    # `URLError: [Errno 111] Connection refused` instead of the 422 it is
+    # about -- one red in the fast lane at `6e3053e`, green solo.
+    #
+    # The fix is requirement B.1's bounded hold primitive, not a longer wait:
+    # the stub blocks the *planning* invocation (the first one of the run)
+    # until this test releases it, so the engine provably cannot reach its
+    # third iteration -- or close its socket -- until after the PUT has been
+    # answered. The bound is the stub's own (`STUB_HOLD_TIMEOUT_S`), so a
+    # release this test forgets to send is a fast red, never a hang.
+    release = tmp_path / "release-planning-hold"
     e = overlay_engine(
         job={"run_id": "overlay-empty", "iterations": 3, "max_approaches": 1,
              "on_complete": "exit"},
-        stub_env={"STUB_SLEEP": "0"})
+        stub_env={"STUB_SLEEP": "0", "STUB_HOLD_FILE": str(release),
+                  "STUB_HOLD_PHASE": "planning", "STUB_HOLD_TIMEOUT_S": "60"})
     e.wait_api()
     req = urllib.request.Request(
         f"http://127.0.0.1:{e.port}/config/prompts/worker", method="PUT", data=b"")
@@ -190,4 +208,5 @@ def test_prompt_override_rejects_empty_body(overlay_engine):
         raised = True
         assert exc.code == 422
     assert raised
-    e.proc.wait(timeout=60)
+    release.touch()
+    e.proc.wait(timeout=180)
