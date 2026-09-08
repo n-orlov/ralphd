@@ -21,11 +21,11 @@ index row and petitions file staged by the operator. Read-only audit; scratch in
 | modules that define their own `def _supervisor(` harness | 87 (plus 24 `_run(`, 9 `_run_resumed(`) |
 | modules spawning a real engine (`live` fixture / `engine_factory`) | 43 + `test_e2e.py` = 44 modules, ~175 tests |
 | modules shelling out to `ralphctl` | 64 modules, 159 call sites (52 via `RALPHCTL`) |
-| modules spawning a nested `pytest` | 7 (`test_conformance_ledger.py` does it 68x, once per node id) |
+| modules spawning a nested `pytest` | 7 (`test_conformance_ledger.py` did it 68x, once per node id; folded into `tests/records/test_conformance_ledger.py`'s single in-process collection, task 033) |
 | tests named as mutation/discriminator pairs | 137 (`mutat|is_caught|is_rejected|tamper|...`) |
 | tests asserting a substring of a `.md` read off disk | ~416 |
 
-Biggest 30 modules by test count: `test_report_claims.py` 1095, `tests/test_conformance_ledger.py` 153,
+Biggest 30 modules by test count: `test_report_claims.py` 1095, `test_conformance_ledger.py` 153,
 `tests/test_host_like_pytest_script.py` 127, `tests/test_tiers.py` 97, `tests/test_cli_fault_explanation.py` 82,
 `tests/test_model_tiers_config.py` 67, `tests/test_spec_state_surface.py` 62, `tests/test_fault_classifier.py` 62,
 `tests/test_cli_suggestions_guards.py` 61, `tests/test_promise_marker_last_line.py` 56, `tests/test_peer_verdict_gate.py` 53,
@@ -59,7 +59,7 @@ Where the time goes:
 | single worst test | `test_interrupt_not_substantive_outcome_task004::test_3_mutation_...` **80.3 s** -- the mutated path falls into the contract ladder and hits an unstubbed `_wait_out_backoff` (loop.py:1389/3257) | 8 % |
 | next | `test_reflect_infra_retry::test_reflect_survives_the_outage...` 35 s; `tests/test_refunds_survive_resume.py` 22 s; `tests/test_durations.py` 25 s/2 (STUB_SLEEP=3); `tests/test_cli_logs_follow_liveness.py` 37 s/4; `test_e2e.py` 46 s/6 in the top 80 | |
 | `ralphctl` subprocess CLI tests | group of 7 cli modules: 320 tests in 17.3 s (~55 ms each, interpreter start + imports) -> 64 modules ~150-200 s | ~18 % |
-| nested `pytest --collect-only` per node id | `tests/test_conformance_ledger.py`: 153 tests, 16.4 s | 2 % |
+| nested `pytest --collect-only` per node id | `test_conformance_ledger.py`: 153 tests, 16.4 s | 2 % |
 | bash `scripts/host_like_*.sh` runs | `test_host_like_*`: 134 tests, 10.7 s | 1 % |
 | docs/spec derivation checks | `test_docs_consistency/semantics/prd_index/spec_*/sweep_sha`: 224 tests, 11.1 s | 1 % |
 | in-process engine + prose pins | e.g. 7 lint/gate modules: 368 tests in 0.9 s; 9 roadmap modules: 106 tests in 0.45 s; report_claims 1,100 in 2.0 s | ~10 % for all ~4,000 |
@@ -99,7 +99,7 @@ real sleeps and subprocess spawns, and is almost perfectly parallelisable.
   1,591 test functions read a `.md` in the body (e.g. `tests/test_docs_semantics.py` 23, `tests/test_suggestions_patch.py`
   16, `test_seventh_lint_task013.py` 14, `tests/test_cli_suggestions_verb.py` 12, `tests/test_hub_artifacts.py` 12).
   `docs/cli.md` is read by 34 modules, `SPEC.md` by 29, `architecture.md` by 24, `roadmap.md` by 11.
-- **Parametrised explosions:** `test_report_claims.py` (217 reports x 5), `tests/test_conformance_ledger.py`
+- **Parametrised explosions:** `test_report_claims.py` (217 reports x 5), `test_conformance_ledger.py`
   (79 citations + 68 node ids, one `pytest` subprocess each), `tests/test_host_like_pytest_script.py`
   (quantifier x template paraphrase grid, ~100 regex cases). No `parametrize` list >8 literal items
   elsewhere.
@@ -148,8 +148,8 @@ except where the process boundary is the subject (`tests/test_cli_logs_signal.py
 ### (b) Records lint: one fast module family, kept
 Move to `tests/records/` (so `final_sha_guards.sh` selects a directory, not a grep) and keep:
 `test_report_claims.py` (collapse to 5 tests that iterate all 217 reports and list every problem),
-`tests/test_sweep_sha_guard.py`, `tests/test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
-`pytest --collect-only` over all node ids: 16 s -> <1 s), `tests/test_docs_consistency.py`,
+`tests/test_sweep_sha_guard.py`, `test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
+`pytest --collect-only` over all node ids: 16 s -> <1 s -- DONE at task 033, `tests/records/test_conformance_ledger.py`), `tests/test_docs_consistency.py`,
 `tests/test_docs_semantics.py`, `tests/test_spec_cli_surface.py`, `tests/test_spec_state_surface.py`, `tests/test_docs_prd_index.py`,
 `tests/test_roadmap_terminal_claims.py`, `tests/test_issue_traceability.py`, `tests/test_commit_closing_keyword_scope.py`,
 `tests/test_final_sha_guards_discovery.py`, the transition table/diagram docs checks. Fold the 8
@@ -204,7 +204,7 @@ dev-layout module). `docs/testing.md` carries the recipes and the measured budge
    green at `-n 8` three consecutive runs; wall clock < 4 min.
 4. **Records lint module family** (section b) in `tests/records/`; `final_sha_guards.sh` selects the
    directory. *Criterion:* records lane <= 300 tests, < 15 s, `test_report_claims.py` <= 10 tests,
-   `tests/test_conformance_ledger.py` spawns 0 subprocesses per node id, roadmap modules == 1.
+   `test_conformance_ledger.py` spawns 0 subprocesses per node id, roadmap modules == 1.
 5. **Twelve stub-pi flows** (section a) replacing the 44 real-engine modules; petition/adjudication
    and last-approach pause gain real-engine coverage. *Criterion:* modules using `live(`/`engine_factory`
    <= 14; every flow asserts an events.jsonl sequence; each flow < 20 s serial.
@@ -1170,3 +1170,22 @@ tests (`test_the_reports_directory_is_discovered_not_enumerated`,
 | `test_report_claims.py::test_the_reports_are_not_all_claimless[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the checkable-claim density floor, same loop) | task 032, requirement E.1 |
 | `test_report_claims.py::test_a_live_path_wrongly_marked_retired_is_caught` | `tests/records/test_report_claims.py::test_the_retired_marker_direction_is_enforced` (merged with the node-mutation case below: both exercise `retired_problems`'s STRONG direction) | task 032, requirement E.1 |
 | `test_report_claims.py::test_a_live_node_wrongly_marked_retired_is_caught` | `tests/records/test_report_claims.py::test_the_retired_marker_direction_is_enforced` (merged with the path-mutation case above) | task 032, requirement E.1 |
+
+Derivation for task 033 (requirement E.2): `test_conformance_ledger.py` moved to
+`tests/records/test_conformance_ledger.py` and its node-id-collection check converted from 68
+`pytest --collect-only` SUBPROCESSES (one per ledger-cited node id, the 16.4 s baseline this row
+measures against) to ONE in-process `pytest.main()` collection pass over the deduplicated files
+those node ids live in. The old parametrised `test_cited_test_node_id_collects[*]` (66 node-id
+params observed at this task's own HEAD) is the one genuine deletion -- replaced by a single test,
+`test_every_cited_test_node_id_collects`, that runs the in-process collection once and asserts
+every ledger-cited id (exact match or one of its own parametrisations) came back collected. Every
+other test in the module (`test_cited_line_contains_cited_symbol[*]`,
+`test_no_new_expression_todo_cells`, `test_mutation_a_todo_new_expression_cell_is_caught`,
+`test_every_row_has_at_least_one_citation`, `test_gap_cells_are_the_literal_marker_not_a_disguised_citation`,
+`test_mutation_a_wrong_line_number_is_caught`, `test_mutation_a_nonexistent_node_id_is_caught`) moved
+unchanged, same names (the last one's own body converted to the new in-process mechanism, but its
+name, its subject and what it proves are unchanged), no row needed.
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `test_conformance_ledger.py::test_cited_test_node_id_collects[*]` | `tests/records/test_conformance_ledger.py::test_every_cited_test_node_id_collects` (the same node-id-collects claim, now checked in one in-process pytest collection pass instead of one subprocess per cited node id) | task 033, requirement E.2 |

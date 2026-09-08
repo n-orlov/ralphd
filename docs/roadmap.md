@@ -867,7 +867,7 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
   53->52 retirement), and added the retired-guard line naming guard 5's
   `_warn_if_verify_gate_empty` half as the only guard the FSM cutover retires
   outright rather than re-expresses.
-  `tests/test_conformance_ledger.py::test_no_new_expression_todo_cells` parses
+  `test_conformance_ledger.py::test_no_new_expression_todo_cells` parses
   both guard tables' last cell and fails on any literal `TODO`, paired with a
   mutation test that reverts one real filled cell back to `TODO` in memory and
   proves the same parser catches it.

@@ -12,18 +12,27 @@ This module is that check, run as a test:
 Both checks have a mutation case (below) proving they can fail: a citation
 pointing at the wrong line, or a text mangled to look like a node id that does
 not exist, must make the corresponding test fail.
+
+Task 033 (requirement E.2): moved here from `tests/test_conformance_ledger.py`
+and the node-id check converted from 68 separate `pytest --collect-only`
+SUBPROCESSES (one per cited node id, ~16.4 s measured in
+`docs/test-suite-audit.md`) to ONE in-process pytest collection pass over the
+deduplicated set of files those node ids live in -- `pytest.main()` called
+directly inside this process, never `subprocess.run([...python..., "-m",
+"pytest", ...])`. A collected node id satisfies a bare (unparametrised)
+ledger citation if it equals the citation or is one of its parametrisations
+(`<citation>[<param>]`), the same prefix-match semantics the old
+`pytest --collect-only -q <node_id>` subprocess call relied on.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER = REPO_ROOT / "artifacts" / "reports" / "conformance-ledger.md"
 
 CITE_RE = re.compile(
@@ -157,13 +166,49 @@ def test_every_row_has_at_least_one_citation():
     assert not missing, f"guards with a table row but no citation: {missing}"
 
 
-@pytest.mark.parametrize("node_id", _node_ids())
-def test_cited_test_node_id_collects(node_id):
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", node_id],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
-    assert result.returncode == 0, (
-        f"{node_id} did not collect:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+class _CollectPlugin:
+    """Records every item pytest's own collector visits, in-process."""
+
+    def __init__(self) -> None:
+        self.node_ids: set[str] = set()
+
+    def pytest_itemcollected(self, item):
+        self.node_ids.add(item.nodeid)
+
+
+def _collect_node_ids(targets: list[str]) -> tuple[set[str], int]:
+    """ONE in-process pytest collection pass over `targets` (file paths, not
+    individual node ids -- passing a single missing node id as a target
+    would abort collection of the rest). No `subprocess`/`os.fork` involved:
+    `pytest.main()` runs a fresh `Session` inside THIS interpreter."""
+    plugin = _CollectPlugin()
+    args = ["-q", "--collect-only", "-p", "no:cacheprovider"] + targets
+    ret = pytest.main(args, plugins=[plugin])
+    return plugin.node_ids, ret
+
+
+def _satisfied(node_id: str, collected: set[str]) -> bool:
+    """A ledger citation names a bare node id; a collected id satisfies it
+    either exactly or as one of its parametrisations (`<node_id>[<param>]`)
+    -- the same prefix semantics the old per-node subprocess call got for
+    free from pytest's own node-id argument matching."""
+    return node_id in collected or any(
+        c.startswith(node_id + "[") for c in collected)
+
+
+def test_every_cited_test_node_id_collects():
+    """Replaces the former `test_cited_test_node_id_collects` parametrised
+    over 68 `pytest --collect-only` SUBPROCESSES (one per ledger node id,
+    ~16.4 s measured baseline, `docs/test-suite-audit.md`) with a single
+    in-process collection over the deduplicated files those ids live in."""
+    node_ids = _node_ids()
+    files = sorted({node_id.split("::", 1)[0] for node_id in node_ids})
+    collected, ret = _collect_node_ids(files)
+    assert ret == pytest.ExitCode.OK, (
+        f"in-process collection over the ledger's cited files failed "
+        f"(exit code {ret}); ledger node ids: {node_ids}")
+    missing = [n for n in node_ids if not _satisfied(n, collected)]
+    assert not missing, f"ledger-cited node ids that did not collect: {missing}"
 
 
 def test_gap_cells_are_the_literal_marker_not_a_disguised_citation():
@@ -196,8 +241,10 @@ def test_mutation_a_wrong_line_number_is_caught():
 
 
 def test_mutation_a_nonexistent_node_id_is_caught():
-    fake_id = "tests/test_conformance_ledger.py::test_this_function_does_not_exist_xyz"
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", fake_id],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
-    assert result.returncode != 0, "collecting a nonexistent node id must fail"
+    """Same in-process mechanism as the real check above -- collecting a
+    file that does not contain the fake node id must leave it unsatisfied."""
+    fake_id = "tests/records/test_conformance_ledger.py::test_this_function_does_not_exist_xyz"
+    collected, ret = _collect_node_ids([fake_id.split("::", 1)[0]])
+    assert ret == pytest.ExitCode.OK, f"collecting this real file should still succeed: {ret}"
+    assert not _satisfied(fake_id, collected), (
+        "a nonexistent node id must not appear satisfied by the real file's collection")
