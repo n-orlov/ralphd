@@ -14,9 +14,12 @@ which means three renderings, tested here on all three:
 
 Tiers: a unit tier on the one shared formatter
 (`ralphd.engine.state.format_approach`, which the hub also renders through)
-plus a black-box tier running the real `ralphctl` executable over on-disk
-run-dir fixtures with no container at all (stub-docker `Ctl` harness), because
-the rendering an operator sees on a dead run is exactly what #16 is about.
+plus a black-box tier driving the CLI over on-disk run-dir fixtures with no
+container at all (stub-docker `Ctl` harness, in-process via
+`cli.main.main()`), because the rendering an operator sees on a dead run is
+exactly what #16 is about. The hub tier below asks the real hub handler over
+real HTTP through `conftest.hub_in_process` -- the payload is the subject, so
+no `ralphctl ui` process is spawned (task 003, requirement F).
 """
 
 from __future__ import annotations
@@ -26,12 +29,12 @@ import json
 import pytest
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
-from test_cli_ui import StubEngineApi, _write_dead_run, _write_run_with_api, ui
+from test_cli_ui import StubEngineApi, _write_dead_run, _write_run_with_api
 
 from ralphd.cli.main import RUN_SORT_KEYS, sort_run_rows
 from ralphd.engine.state import format_approach
 
-__all__ = ["ctl", "ui", "unix_sock"]
+__all__ = ["ctl", "unix_sock"]
 
 
 # --------------------------------------------------------------------------
@@ -243,10 +246,10 @@ def _seed_hub_runs(registry) -> None:
         _write_dead_run(registry, run_id, **over)
 
 
-def test_hub_run_list_rows_carry_the_rendered_counter(tmp_path, ui):
+def test_hub_run_list_rows_carry_the_rendered_counter(tmp_path, hub_in_process):
     registry = tmp_path / "registry"
     _seed_hub_runs(registry)
-    rows = _hub_rows(ui(registry))
+    rows = _hub_rows(hub_in_process(registry))
     assert {k: v["approachDisplay"] for k, v in rows.items()} == {
         "aaa-with-max": "2/3",
         "bbb-no-max": "2",
@@ -260,18 +263,18 @@ def test_hub_run_list_rows_carry_the_rendered_counter(tmp_path, ui):
     assert rows["ccc-no-approach"]["approach"] is None
 
 
-def test_hub_run_list_never_invents_a_denominator(tmp_path, ui):
+def test_hub_run_list_never_invents_a_denominator(tmp_path, hub_in_process):
     registry = tmp_path / "registry"
     _seed_hub_runs(registry)
-    rows = _hub_rows(ui(registry))
+    rows = _hub_rows(hub_in_process(registry))
     assert "/" not in rows["bbb-no-max"]["approachDisplay"]
     assert "/" not in rows["ccc-no-approach"]["approachDisplay"]
 
 
-def test_hub_run_detail_carries_the_rendered_counter(tmp_path, ui):
+def test_hub_run_detail_carries_the_rendered_counter(tmp_path, hub_in_process):
     registry = tmp_path / "registry"
     _seed_hub_runs(registry)
-    server = ui(registry)
+    server = hub_in_process(registry)
     for run_id, approach, max_approaches in _RUNS_FIXTURE:
         code, body = server.get(f"/api/runs/{run_id}")
         assert code == 200, body
@@ -280,18 +283,18 @@ def test_hub_run_detail_carries_the_rendered_counter(tmp_path, ui):
             approach, max_approaches)
 
 
-def test_hub_and_cli_render_the_same_string_for_the_same_run(tmp_path, ui):
+def test_hub_and_cli_render_the_same_string_for_the_same_run(tmp_path, hub_in_process):
     """One formatter, two surfaces: whatever `ralphctl runs`/`status` print,
     the hub payload says -- computed from the run's own recorded numbers."""
     registry = tmp_path / "registry"
     _seed_hub_runs(registry)
-    rows = _hub_rows(ui(registry))
+    rows = _hub_rows(hub_in_process(registry))
     for row in rows.values():
         assert row["approachDisplay"] == format_approach(row["approach"],
                                                         row["maxApproaches"])
 
 
-def test_hub_run_detail_recomputes_a_forged_display(tmp_path, ui):
+def test_hub_run_detail_recomputes_a_forged_display(tmp_path, hub_in_process):
     """A status doc that carries its own `approachDisplay` cannot claim a
     ladder position its counter fields do not support -- the field is always
     recomputed from `approach`/`maxApproaches` (the discipline task 005 used
@@ -299,12 +302,12 @@ def test_hub_run_detail_recomputes_a_forged_display(tmp_path, ui):
     registry = tmp_path / "registry"
     _write_dead_run(registry, "forged", approach=2, maxApproaches=3,
                     approachDisplay="99/99")
-    code, body = ui(registry).get("/api/runs/forged")
+    code, body = hub_in_process(registry).get("/api/runs/forged")
     assert code == 200, body
     assert body["status"]["approachDisplay"] == "2/3"
 
 
-def test_hub_does_not_guess_a_limit_for_a_pre_v06_live_engine(tmp_path, ui):
+def test_hub_does_not_guess_a_limit_for_a_pre_v06_live_engine(tmp_path, hub_in_process):
     """A live `GET /status` from an engine that predates `maxApproaches`
     (task 006) is proxied verbatim; the hub renders `2` bare rather than
     borrowing a denominator from anywhere."""
@@ -313,7 +316,7 @@ def test_hub_does_not_guess_a_limit_for_a_pre_v06_live_engine(tmp_path, ui):
     registry = tmp_path / "registry"
     try:
         _write_run_with_api(registry, "live-old", engine)
-        code, body = ui(registry).get("/api/runs/live-old")
+        code, body = hub_in_process(registry).get("/api/runs/live-old")
     finally:
         engine.close()
     assert code == 200, body

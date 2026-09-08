@@ -16,6 +16,7 @@ import site
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -443,6 +444,117 @@ def free_port() -> int:
             continue
         return port
     raise RuntimeError("free_port: no free port after 10 EADDRINUSE retries")
+
+
+class InProcessHub:
+    """The hub's own HTTP server, served on a daemon thread in THIS process
+    (task 003, requirement F) instead of a spawned `ralphctl ui` subprocess.
+
+    `ralphd.cli.ui_server.make_server` is the exact object `ralphctl ui`
+    builds and serves, so every request still travels over real HTTP to the
+    real handler over a real registry directory -- what disappears is only
+    the process boundary, which for a test whose subject is a payload the
+    hub renders (`approachDisplay`, a 404 for a route that must not exist)
+    is not part of the subject at all. A test whose subject IS the boundary
+    (the CLI's own startup, a signal, a pty) keeps `test_cli_ui.UiServer`.
+
+    The API is `UiServer`'s -- `base`, `port`, `get`, `post`, `delete`,
+    `wait_ready`, `stop` -- so a converted call site reads unchanged.
+    """
+
+    def __init__(self, registry: Path):
+        from ralphd.cli import ui_server
+
+        self.registry = Path(registry)
+        self.registry.mkdir(parents=True, exist_ok=True)
+        last: OSError | None = None
+        server = None
+        for _ in range(5):
+            port = free_port()
+            try:
+                server = ui_server.make_server(self.registry, "127.0.0.1", port)
+            except OSError as exc:  # lost the free_port race, try another
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                last = exc
+                continue
+            break
+        if server is None:
+            raise RuntimeError(f"InProcessHub: no bindable port ({last})")
+        self._server = server
+        self.port = self._server.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+        self._thread = threading.Thread(target=self._server.serve_forever,
+                                        name="in-process-hub", daemon=True)
+        self._thread.start()
+
+    def wait_ready(self, timeout=15):
+        """Already listening: the socket is bound before `serve_forever`
+        starts, so a connection made now queues rather than being refused.
+        Kept for API parity with `UiServer.wait_ready`."""
+        return None
+
+    def get(self, path: str) -> tuple[int, dict]:
+        try:
+            with urllib.request.urlopen(f"{self.base}{path}", timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def post(self, path: str, body: dict) -> tuple[int, dict]:
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(f"{self.base}{path}", method="POST",
+                                     data=data)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def delete(self, path: str) -> tuple[int, dict]:
+        req = urllib.request.Request(f"{self.base}{path}", method="DELETE")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def stop(self):
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=10)
+
+
+@pytest.fixture
+def hub_in_process():
+    """Factory fixture: `hub_in_process(registry)` -> a live `InProcessHub`,
+    shut down at teardown. Drop-in for `tests/test_cli_ui.py`'s `ui` fixture
+    for the hub tests whose subject is a payload, not the process boundary.
+
+    `env=` overrides are applied to this process's own `os.environ` for the
+    server's lifetime and restored at teardown (a subprocess got them in its
+    child env; in-process there is only one environment).
+    """
+    servers: list[InProcessHub] = []
+    saved: dict | None = None
+
+    def make(registry, env: dict | None = None) -> InProcessHub:
+        nonlocal saved
+        if env:
+            if saved is None:
+                saved = dict(os.environ)
+            os.environ.update(env)
+        server = InProcessHub(registry)
+        servers.append(server)
+        return server
+
+    yield make
+    for server in servers:
+        server.stop()
+    if saved is not None:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 # --- default HOME isolation for spawned engines (#83) ---------------------

@@ -33,8 +33,9 @@ What is pinned here:
     mutation case.
 
 Tiers: in-process tables over `patch.select_patches`, black-box `ralphctl`
-subprocesses over a hand-built registry (stub docker for the liveness question,
-no engine or container anywhere), and one real `ralphctl ui` server for parity.
+runs over a hand-built registry (stub docker for the liveness question,
+no engine or container anywhere), and the hub's own HTTP handler served
+in-process (`conftest.hub_in_process`) for parity.
 """
 
 from __future__ import annotations
@@ -53,9 +54,7 @@ from tests.test_cli_suggestions_verb import (CLEAN_DIFF, WORKER_MD, _checkout,
                                              _doc_section)
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_cli_ui import UiServer, _write_dead_run, ui  # noqa: E402
-
-__all__ = ["UiServer", "ui"]
+from test_cli_ui import _write_dead_run  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 CLI_DOC = REPO / "docs" / "cli.md"
@@ -400,7 +399,7 @@ def test_json_carries_the_selection(tmp_path, tree):
 
 # --------------------------------------------------------------- CLI parity
 
-def test_the_hub_exposes_no_plan_apply_or_select_endpoint(tmp_path, ui):
+def test_the_hub_exposes_no_plan_apply_or_select_endpoint(tmp_path, hub_in_process):
     """CLI parity: the hub surfaces the verb not at all, so it cannot expose
     more than the CLI. Writing the material the loop runs on stays an act typed
     at a terminal."""
@@ -409,7 +408,7 @@ def test_the_hub_exposes_no_plan_apply_or_select_endpoint(tmp_path, ui):
     (rdir / "artifacts" / "reflection").mkdir(parents=True)
     (rdir / "artifacts" / "reflection" / "suggestions.diff").write_text(
         TWO_FILE_DIFF)
-    server = ui(registry)
+    server = hub_in_process(registry)
     for path in ("/api/runs/sug-run/suggestions",
                  "/api/runs/sug-run/suggestions/apply",
                  "/api/runs/sug-run/patch"):
