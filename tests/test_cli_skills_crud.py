@@ -94,7 +94,7 @@ def test_skills_rm_deletes(tmp_path, skills_run):
 
 
 def test_skills_missing_run_exits_3(tmp_path, live):
-    r = live(run_id="skills-cli-exists-only")  # ensures registry/RALPHCTL wiring exists
+    r = live(run_id="skills-cli-exists-only")  # ensures registry/ralphctl wiring exists
     res = r.ralphctl("skills", "no-such-run-at-all", "ls")
     assert res.returncode == 3
 

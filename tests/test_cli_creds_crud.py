@@ -100,7 +100,7 @@ def test_creds_add_rejects_non_env_file(creds_run, tmp_path):
 
 
 def test_creds_missing_run_exits_3(live):
-    r = live(run_id="creds-cli-exists-only")  # ensures registry/RALPHCTL wiring exists
+    r = live(run_id="creds-cli-exists-only")  # ensures registry/ralphctl wiring exists
     res = r.ralphctl("creds", "no-such-run-at-all", "ls")
     assert res.returncode == 3
 
