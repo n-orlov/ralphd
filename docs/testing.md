@@ -64,10 +64,12 @@ records lint is built that way and the tier table puts records lint in smoke.
 
 ## Budgets
 
-Measured in this container (28 cores) with the recipes above: all four smoke
-and fast rows re-measured at sha `3e65963` (task 050, requirement G.2 -- the
-two fix commits `778738b` and `3e65963` are what this measurement is of, and
-`3e65963` is the sha the runs were taken at). The "budget" columns are the
+Measured in this container (28 cores) with the recipes above: the smoke, fast
+and records rows re-measured at sha `9b1a0e2` (task 008, requirement G.2 --
+task 050's two fix commits `778738b` and `3e65963` are still what the code
+underneath these numbers is, and `9b1a0e2` is the sha this task's own runs
+were taken at, five commits later than `3e65963` with no intervening code
+change to either tier). The "budget" columns are the
 declared ceilings this suite is held to; `tests/test_tier_budgets.py` fails when a recorded measurement
 exceeds one, and independently asks pytest what each tier collects right now and
 fails when *that* is over the ceiling. The ceilings carry deliberate headroom
@@ -76,21 +78,30 @@ tightened as the counts come down -- they are a ratchet, not a target.
 
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 3768 | 208 | 24.03 s | 5100 | 300 | 60 s | n/a | no target of this kind for this lane |
-| smoke, serial | `smoke` | `-m smoke` | 3768 | 208 | 136.20 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 136.20 s measured against the 120 s target |
-| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5324 | 321 | 81.89 s | 7000 | 430 | 150 s | < 120 s | met -- 81.89 s inside the 120 s target |
-| fast, serial | `fast` | `-m fast` | 5324 | 321 | 491.68 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 491.68 s measured against the 300 s target |
-| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 194 | 4 | 5.08 s | 300 | 15 | 15 s | < 15 s | met -- 5.08 s inside the 15 s target, 194 tests inside the 300-test target |
+| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 3768 | 208 | 26.85 s | 5100 | 300 | 60 s | n/a | met -- 26.85 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
+| smoke, serial | `smoke` | `-m smoke` | 3768 | 208 | 137.18 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 137.18 s measured against the 120 s target |
+| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5329 | 322 | 81.04 s | 7000 | 430 | 150 s | < 120 s | met -- 81.04 s inside the 120 s target |
+| fast, serial | `fast` | `-m fast` | 5329 | 322 | 540.44 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
+| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 199 | 5 | 9.39 s | 300 | 15 | 15 s | < 15 s | met -- 9.39 s inside the 15 s target, 199 tests inside the 300-test target |
 | dev-layout, `PYTHONUSERBASE` unset | n/a (no marker; the whole suite, unfiltered) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported | n/a (no marker; the whole suite, unfiltered) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
 
-Every number in the first five rows above is a fresh run at `3e65963`, taken
+Every number in the first five rows above is a fresh run at `9b1a0e2`, taken
 sequentially and never two at once, with the wall clock read off each run's own
 summary line (the collected counts come from a `--collect-only` pass at the
 same sha). The serial fast lane is measured directly (`.venv/bin/python -m
-pytest -q -m fast`, 491.68 s) rather than carried forward from the audit's
+pytest -q -m fast`, 540.44 s) rather than carried forward from the audit's
 older 981 s figure at sha 836adc1; the parallel lane is still the one the loop
-uses day to day.
+uses day to day. The serial fast run surfaced one extra failing node beyond
+the two pre-existing `test_sweep_sha_guard.py` reds this table already
+discloses elsewhere:
+`tests/test_reflection.py::test_reflect_runs_after_terminal_state_leaves_run_state_untouched`,
+which passes solo (`.venv/bin/python -m pytest -q
+tests/test_reflection.py::test_reflect_runs_after_terminal_state_leaves_run_state_untouched`
+-- `1 passed in 1.64s`) and did not appear in the parallel run moments before
+it at the same sha, so it is order- or timing-dependent under the serial
+recipe rather than a new red this task introduced; no assertion was touched
+to make it disappear.
 
 **Dev-layout, `PYTHONUSERBASE` unset (task 006).** Measured on this task's own
 tree at sha `852a51d` (the last commit before this task's own docs-only
@@ -143,13 +154,14 @@ cure-01-01 (PRD I) later added 3 tests to `tests/test_packaging_metadata.py`
 fast-tier count from 5321 to **5324**; smoke's 3768 and the module count (321)
 are unaffected.
 
-Live drift since that measurement (disclosed here, not re-measured): task 005
-(requirement F)'s new `tests/records/test_ralphctl_process_boundary.py` (5
-nodes, 1 module) landed in the fast tier, moving today's live collected count
-to **5329 tests / 322 modules** at sha `852a51d` -- both still over the PRD's
-<=3,000-test / <=180-module tier-wide targets (unchanged from the 5324/321
-miss above). The table's own smoke/fast/records rows are not re-measured by
-this note; that full re-measurement, wall clock included, is task 008's.
+Drift since that measurement: task 005 (requirement F)'s new
+`tests/records/test_ralphctl_process_boundary.py` (5 nodes, 1 module) landed in
+the fast tier, moving the live collected count to **5329 tests / 322 modules**
+-- both still over the PRD's <=3,000-test / <=180-module tier-wide targets
+(unchanged in kind from the 5324/321 miss above). Task 008 (requirement G.2)
+re-measured the table's own smoke/fast/records rows, wall clock included, at
+sha `9b1a0e2`; the budget table above and the "Targets missed" section below
+carry those numbers now.
 
 **Dev-layout, `PYTHONUSERBASE` exported (task 007).** Measured on this task's
 own tree at sha `9a9ce6c` (task 006's docs-only commit, the sha named in the
@@ -258,35 +270,35 @@ nothing in the family asks it twice.
 ### Targets missed, with their numbers
 
 Requirement G's rule is that a missed target is disclosed with its number, not
-hidden. Re-measured at sha `3e65963` (task 050, requirement G.2): four of the
-five G.8 wall-clock/count targets checked here are missed, and one is now met.
+hidden. Re-measured at sha `9b1a0e2` (task 008, requirement G.2): four of the
+five G.8 wall-clock/count targets checked here are missed, and one is now met
+-- unchanged in kind from task 050's own measurement, since no code moved
+between `3e65963` and `9b1a0e2` in either tier; only the live drift from
+requirement F's `tests/records/test_ralphctl_process_boundary.py` (5 nodes, 1
+module) is new, already folded into the fast/records counts below.
 
-- **smoke serial 136.20 s** against a target of < 120 s -- MISSED. At `-n 8` the
-  same tier is **24.03 s**, inside its own 60 s ceiling (that lane carries no PRD
+- **smoke serial 137.18 s** against a target of < 120 s -- MISSED. At `-n 8` the
+  same tier is **26.85 s**, inside its own 60 s ceiling (that lane carries no PRD
   target of this kind).
-- **5324 tests collected** (fast tier) against a target of at most 3000 --
-  MISSED. Down from the 6166 recorded at the previous measurement (the Subsumed
-  table's 847 per-row nodes became 5), but still well over target; up by 3 from
-  the 5321 recorded above, from cure-01-01's own new tests (PRD I).
-- **321 modules collected** (fast tier) against a target of at most 180 --
-  MISSED. Unchanged by this task's cures, which removed nodes, not modules.
-- **fast, `-n 8`, 81.89 s** against a target of < 120 s -- **met**. It was missed
-  at the previous measurement (325.40 s); the two cures above are what brought it
-  back inside.
-- **fast serial 491.68 s** against a target of < 300 s -- MISSED, down from
-  802.14 s.
+- **5329 tests collected** (fast tier) against a target of at most 3000 --
+  MISSED. Up by 5 from the 5324 recorded at the previous measurement (task
+  005's `tests/records/test_ralphctl_process_boundary.py` nodes), still well
+  over target.
+- **322 modules collected** (fast tier) against a target of at most 180 --
+  MISSED. Up by 1 from the 321 recorded at the previous measurement (the same
+  new module).
+- **fast, `-n 8`, 81.04 s** against a target of < 120 s -- **met**. Unchanged in
+  kind from the previous measurement's 81.89 s.
+- **fast serial 540.44 s** against a target of < 300 s -- MISSED, up from
+  491.68 s (this run's serial pass also surfaced one order-/timing-dependent
+  red, `tests/test_reflection.py::test_reflect_runs_after_terminal_state_leaves_run_state_untouched`,
+  disclosed above with its solo-pass evidence; not a wall-clock cause).
 
-**No ceiling is breached any more, and none was raised.** The previous
-measurement had three of these four rows over their own declared `budget wall
-clock` (smoke parallel 311.12 s > 60 s, smoke serial 448.34 s > 200 s, fast
-parallel 325.40 s > 150 s) and filed that breach as an impossibility petition,
-blaming a host-level swap condition. Operator steer 008 refuted that diagnosis by
-independent measurement: the eight xdist workers sat at 3-6 % CPU, so the suite
-was *waiting*, not starved. It was: the two 120 s contract re-ask spawns and the
-847 collect-only subprocesses above. With those cured, every lane is inside the
-ceiling it already had (24.03 < 60, 136.20 < 200, 81.89 < 150, 491.68 < 1100) --
-the ceilings in this table are byte-for-byte the ones the wave launched with at
-sha `1a3b9bb`.
+**No ceiling is breached, and none was raised.** Every lane is inside the
+ceiling it already had (26.85 < 60, 137.18 < 200, 81.04 < 150, 540.44 < 1100,
+9.39 < 15) -- the ceilings in this table are unchanged from task 050's own
+measurement, which were themselves byte-for-byte the ones the wave launched
+with at sha `1a3b9bb`.
 
 The slowest node in the parallel fast lane is 11.24 s
 (`tests/test_inband_error_retry.py::test_inband_errors_exhausting_retries_end_terminal_without_burning_budget`),
