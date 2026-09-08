@@ -389,13 +389,22 @@ def test_pull_still_copies_the_tree_with_and_without_a_destination(tmp_path):
 
 
 # -------------------------------------------------------- real engine tier
-def test_real_reflect_run_report_is_printable_after_the_engine_is_gone(live):
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
+
+def test_real_reflect_run_report_is_printable_after_the_engine_is_gone(live, capsys):
     """The fixture is `artifacts/reflection/` as the REFLECT PHASE wrote it:
     `ralphctl artifacts` must list and print it once the engine (the stand-in
     for the container) is gone."""
-    r = live(run_id="artreal", job={"iterations": 2, "max_approaches": 1,
+    r = _in_process_ralphctl(live(run_id="artreal", job={"iterations": 2,
+                                    "max_approaches": 1,
                                     "reflect": True, "on_complete": "idle"},
-             stub_env={"STUB_TASKS": "1"})
+             stub_env={"STUB_TASKS": "1"}), capsys)
     r.wait_terminal(timeout=90)
     report = r.run_dir / "artifacts" / "reflection" / "report.md"
     deadline = time.time() + 30

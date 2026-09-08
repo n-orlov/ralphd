@@ -17,9 +17,11 @@ module pins the CLI half:
     engine;
   * `--list` is a read: it never consumes stdin and never sends a message.
 
-Tiers: unit (the preview formatter), black-box `ralphctl` subprocesses over
-run-dir fixtures, black-box HTTP against a real `ralphctl ui` server for the
-agreement assertions, and one real engine via the `live` fixture.
+Tiers: unit (the preview formatter), black-box `ralphctl` driven in-process
+(task 003/038, requirement F) over run-dir fixtures, black-box HTTP against
+a real `ralphctl ui` server for the agreement assertions, and one real
+engine via the `live` fixture, `ralphctl` itself also driven in-process
+there.
 """
 
 from __future__ import annotations
@@ -328,7 +330,15 @@ def test_a_pre_v06_live_answer_is_completed_from_disk(tmp_path, ui):
         engine.close()
 
 
-def test_real_engine_live_then_container_gone(live, ui, tmp_path):
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
+
+def test_real_engine_live_then_container_gone(live, ui, tmp_path, capsys):
     """The strongest test: steer a REAL engine from the CLI, watch `--list`
     report it pending and then applied, confirm the hub says the same, then
     stop the engine and assert `--list` still shows the same entries from the
@@ -340,12 +350,17 @@ def test_real_engine_live_then_container_gone(live, ui, tmp_path):
     iteration's own prompt was already built before the steer landed, so
     it stays pending until we release the hold and a LATER iteration's
     freshly-built prompt observes and applies it.
+
+    `ralphctl` itself runs in-process (task 003, requirement F) through
+    `_in_process_ralphctl`; the real subprocess boundary that remains is the
+    `ralphd-engine` child `live()` launches, unaffected by this change.
     """
     hold_file = tmp_path / "hold-steercli"
-    run = live(run_id="steercli", job={"iterations": 8, "on_complete": "idle"},
-               stub_env={"STUB_HOLD_FILE": str(hold_file),
-                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
-                        "STUB_TASKS": "4"})
+    run = _in_process_ralphctl(
+        live(run_id="steercli", job={"iterations": 8, "on_complete": "idle"},
+             stub_env={"STUB_HOLD_FILE": str(hold_file),
+                      "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
+                      "STUB_TASKS": "4"}), capsys)
     run.wait_api()
     server = ui(run.registry)
 

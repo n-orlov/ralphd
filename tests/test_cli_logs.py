@@ -2,9 +2,9 @@
 
 Runs a real `ralphd-engine` directly (no Docker) wired up under a temp
 registry's runs/configs layout, writes the `host.json` that `ralphctl`
-expects to find for a "live" run, then drives the real `ralphctl`
-executable against it as a subprocess and asserts on stdout only —
-strictly black-box.
+expects to find for a "live" run, then drives `ralphctl` in-process through
+`tests/conftest.py`'s `call_ralphctl_in_process` (task 003, requirement F)
+and asserts on stdout only — strictly black-box.
 
 The `LiveRun` harness and `live` fixture live in tests/conftest.py (shared
 with tests/test_cli_logs_tail_syntax.py).
@@ -13,12 +13,24 @@ with tests/test_cli_logs_tail_syntax.py).
 from __future__ import annotations
 
 import json
+import os
+
+from tests.conftest import call_ralphctl_in_process
+
+
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
 
 
 # --------------------------------------------------------------------------
-def test_logs_pretty_rendering_default(live):
-    run = live(stub_env={"STUB_RICH_EVENTS": "1", "STUB_BAD_LINE": "1",
-                         "STUB_TASKS": "2"})
+def test_logs_pretty_rendering_default(live, capsys):
+    run = _in_process_ralphctl(
+        live(stub_env={"STUB_RICH_EVENTS": "1", "STUB_BAD_LINE": "1",
+                       "STUB_TASKS": "2"}), capsys)
     run.wait_terminal()
 
     res = run.ralphctl("logs", run.run_id, "--tail", "0")
@@ -56,10 +68,10 @@ def test_logs_pretty_rendering_default(live):
     assert "\x1b[" not in out
 
 
-def test_logs_raw_passthrough(live):
-    run = live(run_id="logtest-raw",
+def test_logs_raw_passthrough(live, capsys):
+    run = _in_process_ralphctl(live(run_id="logtest-raw",
               stub_env={"STUB_RICH_EVENTS": "1", "STUB_BAD_LINE": "1",
-                        "STUB_TASKS": "1"})
+                        "STUB_TASKS": "1"}), capsys)
     run.wait_terminal()
 
     res = run.ralphctl("logs", run.run_id, "--raw", "--tail", "0")
@@ -80,9 +92,9 @@ def test_logs_raw_passthrough(live):
               for l in lines if l.strip().startswith("{"))
 
 
-def test_logs_iteration_filter(live):
-    run = live(run_id="logtest-iter",
-              stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "2"})
+def test_logs_iteration_filter(live, capsys):
+    run = _in_process_ralphctl(live(run_id="logtest-iter",
+              stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "2"}), capsys)
     run.wait_terminal()
 
     res = run.ralphctl("logs", run.run_id, "--iteration", "1")
@@ -94,9 +106,9 @@ def test_logs_iteration_filter(live):
     assert "iteration 2" not in out
 
 
-def test_logs_unknown_event_type_silently_skipped(live):
-    run = live(run_id="logtest-unknown",
-              stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1"})
+def test_logs_unknown_event_type_silently_skipped(live, capsys):
+    run = _in_process_ralphctl(live(run_id="logtest-unknown",
+              stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1"}), capsys)
     run.wait_terminal()
 
     it1_output = run.run_dir / "iterations" / "0001" / "output.jsonl"

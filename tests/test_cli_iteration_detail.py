@@ -24,9 +24,10 @@ What is pinned here:
   * the transcript is rendered by the SAME merge + renderer `ralphctl logs
     --iteration N` uses (asserted line-for-line, not by inspection).
 
-Tiers: unit (the formatters and the shaping), black-box `ralphctl`
-subprocesses over hand-written run dirs (container gone), and one REAL engine
-whose iteration dirs it wrote itself.
+Tiers: unit (the formatters and the shaping), black-box `ralphctl` driven
+in-process through `cli.main.main()` + `capsys` (task 003/036, requirement
+F) over hand-written run dirs (container gone), and one REAL engine whose
+iteration dirs it wrote itself, also driven in-process.
 """
 
 from __future__ import annotations
@@ -458,12 +459,21 @@ def test_iteration_prints_its_own_cause_task014(tmp_path):
 
 
 # ------------------------------------------------------------- real engine tier
-def test_real_engine_iteration_dir_renders_end_to_end(live):
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
+
+def test_real_engine_iteration_dir_renders_end_to_end(live, capsys):
     """The fixture is an iteration dir the ENGINE wrote: `ralphctl iteration`
     must agree with that meta.json, and keep working once the engine (the
     stand-in for the container) is gone."""
-    r = live(run_id="itreal", job={"iterations": 2, "max_approaches": 1,
-                                   "on_complete": "idle"})
+    r = _in_process_ralphctl(live(run_id="itreal", job={"iterations": 2,
+                                   "max_approaches": 1,
+                                   "on_complete": "idle"}), capsys)
     r.wait_terminal(timeout=90)
     r.stop()  # container gone: nothing live to ask
 
