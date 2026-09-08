@@ -21,10 +21,11 @@ from __future__ import annotations
 import json
 import os
 import socket
-import subprocess
 from pathlib import Path
 
-from tests.conftest import RALPHCTL
+import pytest
+
+from tests.conftest import call_ralphctl_in_process
 
 SNAPSHOT_NOTICE = "on-disk snapshot"
 
@@ -69,8 +70,20 @@ def _dead_run(tmp_path: Path, run_id: str = "deadlogs") -> tuple[Path, Path]:
 
 def _ctl(registry: Path, *argv: str, timeout: int = 30):
     env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 037 (F.2): drive `ralphctl` in-process (task 036's helper) --
+    module-global capsys, never concurrent."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 # ------------------------------------------------------------------ pretty

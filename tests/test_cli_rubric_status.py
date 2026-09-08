@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHCTL, with_ralphd_importable
+from tests.conftest import call_ralphctl_in_process, with_ralphd_importable
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
@@ -78,8 +78,9 @@ Ship the thing.
 
 
 class Ctl:
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, capsys):
         self.tmp = tmp
+        self.capsys = capsys
         self.registry = tmp / "registry"
         self.registry.mkdir()
         self.log = tmp / "docker-argv.jsonl"
@@ -92,13 +93,12 @@ class Ctl:
             "STUB_DOCKER_LOG": str(self.log),
             **(env or {}),
         })
-        return subprocess.run([str(RALPHCTL), *argv], env=full_env,
-                              capture_output=True, text=True, timeout=60)
+        return call_ralphctl_in_process(list(argv), env=full_env, capsys=self.capsys)
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _rubric_line(stderr: str) -> str:
@@ -187,9 +187,9 @@ def test_doctor_prints_by_reference_rubric_relative_to_cwd(ctl, tmp_path):
     (tmp_path / "docs" / "review-economics.md").write_text(REFERENCE_DOCUMENT)
     prd = tmp_path / "prd.md"
     prd.write_text(BY_REFERENCE_PRD)
-    res = subprocess.run(
-        [str(RALPHCTL), "doctor", "--prd", str(prd)],
-        cwd=str(tmp_path),
+    res = call_ralphctl_in_process(
+        ["doctor", "--prd", str(prd)],
+        cwd=tmp_path,
         env=with_ralphd_importable({
             **os.environ,
             "RALPHD_DOCKER": str(STUB_DOCKER),
@@ -197,7 +197,7 @@ def test_doctor_prints_by_reference_rubric_relative_to_cwd(ctl, tmp_path):
             "STUB_DOCKER_LOG": str(ctl.log),
             "STUB_DOCKER_INSPECT_OK": "1",
         }),
-        capture_output=True, text=True, timeout=60)
+        capsys=ctl.capsys)
     assert _rubric_line(res.stderr) == \
         "rubric: by reference (docs/review-economics.md)"
 

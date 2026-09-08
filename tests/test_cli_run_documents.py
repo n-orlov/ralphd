@@ -62,7 +62,7 @@ from ralphd.engine.state import (
     run_document_text,
     run_documents,
 )
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
@@ -81,8 +81,20 @@ RUN_RECORD_JSON = json.dumps({"runId": "docs-run", "state": "succeeded"})
 
 def _ctl(registry: Path, *argv: str, timeout: int = 60):
     env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 037 (F.2): drive `ralphctl` in-process (task 036's helper) --
+    module-global capsys, never concurrent."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 def _job_yaml(job: dict) -> str:
@@ -461,11 +473,11 @@ def test_job_yaml_written_by_real_start_prints_redacted(tmp_path):
     env = {**os.environ, "RALPHD_DOCKER": str(STUB_DOCKER),
            "RALPHD_REGISTRY": str(registry),
            "STUB_DOCKER_LOG": str(tmp_path / "docker-argv.jsonl")}
-    res = subprocess.run(
-        [str(RALPHCTL), "start", "--prd", str(prd), "--llm", "none",
+    res = call_ralphctl_in_process(
+        ["start", "--prd", str(prd), "--llm", "none",
          "--run-id", "started", "--creds", str(creds), "--iterations", "7",
          "--on-complete-cmd", f"curl -H 'Authorization: Bearer {SECRET}' https://ci"],
-        env=env, capture_output=True, text=True, timeout=60)
+        env=env, capsys=_CAPSYS)
     assert res.returncode == 0, res.stderr
     raw = (registry / "configs" / "started" / JOB_CONFIG_FILE).read_text()
     assert SECRET in raw  # the file on disk really does hold it
