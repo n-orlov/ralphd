@@ -15,6 +15,7 @@ Two tiers, matching test_cli_status_degraded.py:
 from __future__ import annotations
 
 import json
+import os
 import time
 
 from test_cli_docker import Ctl, ctl, unix_sock
@@ -22,6 +23,7 @@ from test_cli_resume import _seed_run
 
 from ralphd.cli.main import _format_container_gone_lines
 from ralphd.engine.state import task_counts, utc_from_epoch
+from tests.conftest import call_ralphctl_in_process
 
 __all__ = ["ctl", "unix_sock"]
 
@@ -244,11 +246,25 @@ def test_status_of_a_run_whose_container_exists_but_exited_is_dangling(ctl: Ctl)
 # live run: output unchanged
 # --------------------------------------------------------------------------
 
-def test_live_run_output_is_unchanged(live):
+def _in_process_ralphctl(run, capsys):
+    """Task 004 (requirement F): swap `LiveRun`'s default (real-subprocess)
+    `.ralphctl()` for the in-process helper -- this test only compares
+    rendered text/JSON to the run dir's own state, never the process
+    boundary itself."""
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
+
+def test_live_run_output_is_unchanged(live, capsys):
     """A reachable engine is never diagnosed as a zombie: no warning line,
     the duration keeps its `elapsed`/`total` label, and --json says so."""
-    run = live(run_id="dead-live", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"})
+    run = _in_process_ralphctl(
+        live(run_id="dead-live", job={"iterations": 6},
+             stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"}),
+        capsys)
     run.wait_api()
     res = run.ralphctl("status", run.run_id)
     assert res.returncode == 0, (res.stdout, res.stderr)

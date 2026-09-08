@@ -62,7 +62,7 @@ from ralphd.engine.state import (
     format_cost,
     format_token_total,
 )
-from tests.conftest import call_ralphctl_in_process, live  # noqa: F401  (fixture)
+from tests.conftest import call_ralphctl_in_process  # noqa: F401  (fixture helper)
 
 # The verbatim iteration-1 payload of the v0.6 self-development run: the
 # AIGW/Bedrock route quoted $0 for half a million billed tokens (task 049).
@@ -377,13 +377,29 @@ def test_cli_cost_is_documented(tmp_path):
     assert "per phase" in help_out.stdout  # the `cost` verb's own help line
 
 
+def _in_process_ralphctl(run, capsys):
+    """Task 004 (requirement F): the ONE `live`-fixture test below drove its
+    two `ralphctl cost` calls through `LiveRun`'s default (real-subprocess)
+    `.ralphctl()` -- nothing about the assertions needs the process
+    boundary itself (they only compare rendered text/JSON to the run dir's
+    own `status.json`), so this override swaps it for `call_ralphctl_in_process`
+    exactly like `test_cli_logs.py`/`test_cli_steer_list.py` already do."""
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
+
 # ------------------------------------------------------------- one REAL engine
-def test_cost_renders_a_real_engines_own_buckets(live):  # noqa: F811
+def test_cost_renders_a_real_engines_own_buckets(live, capsys):  # noqa: F811
     """A real `ralphd-engine` (stub pi) writes the byPhase/byApproach buckets;
     `ralphctl cost` must render exactly those numbers and nothing else."""
-    r = live(run_id="costly", job={"iterations": 12, "max_approaches": 2,
-                                   "vigilant": True, "on_complete": "exit"},
-             stub_env={"STUB_TASKS": "2"})
+    r = _in_process_ralphctl(
+        live(run_id="costly", job={"iterations": 12, "max_approaches": 2,
+                                  "vigilant": True, "on_complete": "exit"},
+             stub_env={"STUB_TASKS": "2"}),
+        capsys)
     r.wait_api()
     r.wait_terminal(timeout=120)
 

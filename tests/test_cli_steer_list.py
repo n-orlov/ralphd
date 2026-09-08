@@ -19,9 +19,11 @@ module pins the CLI half:
 
 Tiers: unit (the preview formatter), black-box `ralphctl` driven in-process
 (task 003/038, requirement F) over run-dir fixtures, black-box HTTP against
-a real `ralphctl ui` server for the agreement assertions, and one real
-engine via the `live` fixture, `ralphctl` itself also driven in-process
-there.
+an in-process hub (`hub_in_process`, task 004, requirement F -- the real
+`ralphctl ui` subprocess this module used to spawn for the agreement
+assertions was never itself the subject; only the payload `ui_server`
+renders was) for the agreement assertions, and one real engine via the
+`live` fixture, `ralphctl` itself also driven in-process there.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ import pytest
 
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
-from test_cli_ui import StubEngineApi, UiServer, _write_run_with_api, ui
+from test_cli_ui import StubEngineApi, _write_run_with_api
 
 from ralphd.cli.main import _STEER_SNAPSHOT_NOTICE, _steer_preview
 from ralphd.cli.ui_server import NO_STEERING
@@ -51,7 +53,7 @@ from ralphd.engine.state import (
 )
 from tests.conftest import call_ralphctl_in_process
 
-__all__ = ["UiServer", "ctl", "ui", "unix_sock"]
+__all__ = ["ctl", "unix_sock"]
 
 ONE = "Focus on the <tests> & drop the docs task.\n\nSecond paragraph.\n"
 TWO = "Then ship it.\n"
@@ -104,7 +106,12 @@ def _rows(stdout: str) -> list[list[str]]:
     return [ln.split() for ln in lines[1:]]
 
 
-def _hub_entries(server: UiServer, run_id: str) -> tuple[bool, list[dict]]:
+def _hub_entries(server, run_id: str) -> tuple[bool, list[dict]]:
+    """`server` is whatever `hub_in_process(registry)` returned -- task 004
+    (requirement F) moved this module off the real-subprocess `UiServer`
+    onto conftest's in-process `InProcessHub`; both share the same
+    `get`/`base` API so this stays untyped rather than naming either
+    concrete class."""
     code, body = server.get(f"/api/runs/{run_id}/steering")
     assert code == 200, (code, body)
     return body["live"], body["entries"]
@@ -267,11 +274,11 @@ def test_list_refuses_to_be_combined_with_sending(ctl: Ctl):
 # CLI and hub agree
 # --------------------------------------------------------------------------
 
-def test_cli_and_hub_agree_for_a_dead_run(ctl: Ctl, ui):
+def test_cli_and_hub_agree_for_a_dead_run(ctl: Ctl, hub_in_process):
     rdir, _ = _seed_run(ctl, "st-agree")
     _seed_steering(rdir, {"001-focus.md": ONE, "002-ship.md": TWO},
                    consumed=["001-focus.md"])
-    server = ui(ctl.registry)
+    server = hub_in_process(ctl.registry)
 
     hub_live, hub_entries = _hub_entries(server, "st-agree")
     cli_live, cli_entries = _cli_entries(
@@ -280,7 +287,7 @@ def test_cli_and_hub_agree_for_a_dead_run(ctl: Ctl, ui):
     assert hub_live is False
 
 
-def test_cli_and_hub_agree_for_a_live_run(tmp_path, ui):
+def test_cli_and_hub_agree_for_a_live_run(tmp_path, hub_in_process):
     """A stub-live run: the CLI must take the LIVE answer (not the disk it can
     also see) and it must be the very same entries the hub serves."""
     registry = tmp_path / "registry"
@@ -293,7 +300,7 @@ def test_cli_and_hub_agree_for_a_live_run(tmp_path, ui):
     try:
         run_dir = _write_run_with_api(registry, "st-live", engine)
         _seed_steering(run_dir, {"001-live.md": TWO})
-        server = ui(registry)
+        server = hub_in_process(registry)
 
         hub_live, hub_entries = _hub_entries(server, "st-live")
         res = ralphctl(registry, "--json", "steer", "st-live", "--list")
@@ -306,7 +313,7 @@ def test_cli_and_hub_agree_for_a_live_run(tmp_path, ui):
         engine.close()
 
 
-def test_a_pre_v06_live_answer_is_completed_from_disk(tmp_path, ui):
+def test_a_pre_v06_live_answer_is_completed_from_disk(tmp_path, hub_in_process):
     """A pre-v0.6 engine answers `GET /steering` with only file/consumed. The
     CLI table still shows a name, an arrival time and a preview (from disk),
     and still agrees with the hub."""
@@ -315,7 +322,7 @@ def test_a_pre_v06_live_answer_is_completed_from_disk(tmp_path, ui):
     try:
         run_dir = _write_run_with_api(registry, "st-old", engine)
         _seed_steering(run_dir, {"001-old.md": TWO})
-        server = ui(registry)
+        server = hub_in_process(registry)
 
         res = ralphctl(registry, "steer", "st-old", "--list")
         assert res.returncode == 0, (res.stdout, res.stderr)
@@ -338,7 +345,7 @@ def _in_process_ralphctl(run, capsys):
     return run
 
 
-def test_real_engine_live_then_container_gone(live, ui, tmp_path, capsys):
+def test_real_engine_live_then_container_gone(live, hub_in_process, tmp_path, capsys):
     """The strongest test: steer a REAL engine from the CLI, watch `--list`
     report it pending and then applied, confirm the hub says the same, then
     stop the engine and assert `--list` still shows the same entries from the
@@ -362,7 +369,7 @@ def test_real_engine_live_then_container_gone(live, ui, tmp_path, capsys):
                       "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                       "STUB_TASKS": "4"}), capsys)
     run.wait_api()
-    server = ui(run.registry)
+    server = hub_in_process(run.registry)
 
     posted = run.ralphctl("steer", "steercli", ONE, "--name", "from-cli")
     assert posted.returncode == 0, (posted.stdout, posted.stderr)

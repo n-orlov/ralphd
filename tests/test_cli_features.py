@@ -720,7 +720,7 @@ from pathlib import Path
 
 import pytest
 from test_cli_docker import Ctl, ctl, unix_sock
-from test_cli_ui import StubEngineApi, UiServer, ui
+from test_cli_ui import StubEngineApi, UiServer
 
 from ralphd.cli import main as cli_main
 from ralphd.cli import ui_server
@@ -735,7 +735,7 @@ from ralphd.engine.state import (
     task_counts,
 )
 
-__all__ = ["StubEngineApi", "UiServer", "ctl", "ui", "unix_sock"]
+__all__ = ["StubEngineApi", "UiServer", "ctl", "unix_sock"]
 
 APP_JS = Path(ui_server.STATIC_DIR) / "app.js"
 
@@ -1103,11 +1103,11 @@ def _assert_agrees(hub_row: dict, cli_row: dict, status: dict) -> None:
         assert cli_row["tasksSummary"] == format_task_counts(counts)
 
 
-def test_hub_runs_and_status_agree_with_the_container_gone(ctl, ui):
+def test_hub_runs_and_status_agree_with_the_container_gone(ctl, hub_in_process):
     """#21's case: a finished run whose container is long gone. All three
     surfaces read the same `tasks.json` with the same hardened reader."""
     _seed_ctl_runs(ctl)
-    hub = _hub_rows(ui(ctl.registry))
+    hub = _hub_rows(hub_in_process(ctl.registry))
     cli = {r["runId"]: r for r in json.loads(ctl.run("--json", "runs").stdout)}
     for run_id, _t, _lg, cell in _RUNS_FIXTURE:
         status = json.loads(ctl.run("--json", "status", run_id).stdout)
@@ -1120,13 +1120,26 @@ def test_hub_runs_and_status_agree_with_the_container_gone(ctl, ui):
     assert "tasks:     5/7 completed (1 in-progress, 1 validation-failed)" in text
 
 
-def test_hub_runs_and_status_agree_for_a_live_run(live, ui):
+def _in_process_ralphctl(run, capsys):
+    """Task 004 (requirement F): swap `LiveRun`'s default (real-subprocess)
+    `.ralphctl()` for the in-process helper -- this test's two calls only
+    compare rendered text/JSON, never the process boundary itself."""
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
+
+def test_hub_runs_and_status_agree_for_a_live_run(live, hub_in_process, capsys):
     """The same three surfaces against a REAL engine that is still answering:
     `ralphctl status` takes its live `GET /status` path (counts synthesised by
     the engine from `tasks.json`) while `ralphctl runs` and the hub list read
     the file directly -- and they still say the same thing."""
-    run = live(run_id="tasks-column-live", job={"iterations": 6},
-               stub_env={"STUB_TASKS": "3"})
+    run = _in_process_ralphctl(
+        live(run_id="tasks-column-live", job={"iterations": 6},
+             stub_env={"STUB_TASKS": "3"}),
+        capsys)
     run.wait_api()
     run.wait_terminal(timeout=180)
 
@@ -1137,12 +1150,12 @@ def test_hub_runs_and_status_agree_for_a_live_run(live, ui):
 
     cli = {r["runId"]: r
            for r in json.loads(run.ralphctl("--json", "runs").stdout)}
-    hub = _hub_rows(ui(run.registry))
+    hub = _hub_rows(hub_in_process(run.registry))
     _assert_agrees(hub[run.run_id], cli[run.run_id], status)
     assert cli[run.run_id]["tasksDisplay"] == f"{counts['completed']}/3"
 
 
-def test_a_live_run_keeps_the_columns_source_local(tmp_path, ui, ctl):
+def test_a_live_run_keeps_the_columns_source_local(tmp_path, hub_in_process, ctl):
     """`ralphctl runs` must not start proxying: the fraction for a run with a
     live API comes off disk, exactly like the hub list's (task 013). Asserted
     against a stub engine that records every request it receives."""

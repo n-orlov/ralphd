@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHCTL, free_port
+from tests.conftest import RALPHCTL, call_ralphctl_in_process, free_port
 
 
 class UiServer:
@@ -345,19 +345,35 @@ def test_run_detail_proxies_live_status_tasks_and_logs(tmp_path, live, ui):
     run.wait_terminal()
 
 
-def test_ui_log_endpoint_matches_cli_pretty_rendering(tmp_path, live, ui):
+def _in_process_ralphctl(run, capsys):
+    """Task 004 (requirement F): swap `LiveRun`'s default (real-subprocess)
+    `.ralphctl()` for the in-process helper -- the parity assertion below
+    only needs `ralphctl logs`'s rendered text, and `call_ralphctl_in_process`
+    captures that through `capsys` exactly as non-TTY as a real subprocess's
+    piped stdout would."""
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
+
+def test_ui_log_endpoint_matches_cli_pretty_rendering(tmp_path, live, ui, capsys):
     """Task 014: the hub's `/api/runs/<id>/logs` endpoint must render
     through the EXACT SAME `log_render.render_to_lines` function
     `ralphctl logs` uses -- so this asserts the endpoint's `lines` list,
-    joined with newlines, is byte-for-byte identical to what a real
-    `ralphctl logs <id> --tail 0` subprocess prints (both non-TTY: the
-    subprocess's stdout is captured, not a real terminal, matching this
-    endpoint's `tty=False` rendering), modulo the CLI's own trailing
+    joined with newlines, is byte-for-byte identical to what `ralphctl logs
+    <id> --tail 0` prints, driven in-process (task 004, requirement F) so
+    only the process BOUNDARY moved -- the rendering stays non-TTY exactly
+    as a piped subprocess's stdout would be (this endpoint's own
+    `tty=False` rendering), modulo the CLI's own trailing
     newline, which `logs` prints and a list-of-lines representation has
     no equivalent slot for."""
-    run = live(run_id="hubparity", job={"iterations": 12, "max_approaches": 3,
-                                        "on_complete": "idle"},
-               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "0"})
+    run = _in_process_ralphctl(
+        live(run_id="hubparity", job={"iterations": 12, "max_approaches": 3,
+                                      "on_complete": "idle"},
+             stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "1", "STUB_SLEEP": "0"}),
+        capsys)
     run.wait_api()
     run.wait_terminal()
 
