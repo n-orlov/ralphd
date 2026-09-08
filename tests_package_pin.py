@@ -55,7 +55,7 @@ each install a top-level `tests/` *with* `__init__.py` into user
 site-packages. With either present, `python -m pytest -q` in this repository
 died with 42 collection errors and ran zero tests (40 x `ImportError: cannot
 import name 'RALPHCTL' from 'tests.conftest'`, 2 x `ModuleNotFoundError: No
-module named 'tests.test_roadmap_v07'`) -- the site-packages `tests` package
+module named 'tests.records.test_roadmap'`) -- the site-packages `tests` package
 had won outright and this repository's modules simply were not in it. A decoy
 that happens to *define* the names a module imports is worse still: collection
 succeeds and the wrong values are used silently.

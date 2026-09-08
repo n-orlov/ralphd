@@ -12,13 +12,13 @@ v0.7's seven `left_open_issues()` (#24, #26, #27, #50, #51, #54), all of
 which are v0.8 PRD requirements with their own recorded, receipted closure in
 `issue-closure.md`'s v0.8 section. That is the intended shape of the ledger
 growing wave over wave, not the unexplained/unexpected closure #58 exists to
-catch, so this module subtracts `test_roadmap_v08.closed_issues_v08()` from
+catch, so this module subtracts `tests.records.test_roadmap`'s `closed_issues_v08()` from
 v0.7's set before checking -- an issue only fails this check when it is
 reported not-open *and* no later wave's own receipted closure record claims
 it.
 
 It lives beside the other roadmap/closure consistency checks
-(`tests/test_roadmap_v07.py`), reusing that module's `left_open_issues()`
+(`tests/records/test_roadmap.py`), reusing that module's `left_open_issues()`
 rather than retyping the set, and it skips cleanly -- with a reason naming
 exactly what is missing -- when no GITHUB_TOKEN or no network is available,
 so the fast lane stays green on a developer host with no ralphd env vars and
@@ -36,8 +36,8 @@ import urllib.request
 
 import pytest
 
-from tests.test_roadmap_v07 import left_open_issues
-from tests.test_roadmap_v08 import closed_issues_v08
+from tests.records.test_roadmap import left_open_issues_v07 as left_open_issues
+from tests.records.test_roadmap import closed_issues_v08
 
 REPO = "n-orlov/ralphd"
 ISSUE_URL_TEMPLATE = "https://api.github.com/repos/{repo}/issues/{number}"

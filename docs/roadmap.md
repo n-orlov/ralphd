@@ -920,9 +920,9 @@ Requirement letters below are the PRD's; it uses `A`-`J` and `M`, not `K`, `L`,
 - ✅ **I. Docs, SPEC, the roadmap and the version bump.** Land this one early
   rather than last — the lesson v0.9's own requirement O paid for, deferred to
   the tail and lost to the clock. `pyproject.toml` and
-  `src/ralphd/__init__.py` both declare `0.10.0`; `tests/test_roadmap_v09.py`
+  `src/ralphd/__init__.py` both declare `0.10.0`; `test_roadmap_v09.py`
   is pinned to `SERIES = (0, 9)` the same way it once pinned
-  `tests/test_roadmap_v08.py`, and `tests/test_roadmap_v010.py` carries the
+  `test_roadmap_v08.py`, and `test_roadmap_v010.py` carries the
   current-release checks forward. This bullet shipped first, per the PRD's own
   instruction — unlike v0.9's requirement O, deferred to the tail and caught by
   the clock — and does not claim more than its own requirement; the other
@@ -1023,8 +1023,8 @@ below are the PRD's own, `A`-`H`.
   `pyproject.toml` and `src/ralphd/__init__.py` both declare `0.12.0`
   (`82f219e`), this `## v0.12` block exists in the established shape
   (`82f219e`, repaired for E's actual history by this entry), and
-  `tests/test_roadmap_v010.py` was retargeted to the past-milestone shape
-  `tests/test_roadmap_v09.py` already uses (`f4e58c4`, `82f219e`) --
+  `test_roadmap_v010.py` was retargeted to the past-milestone shape
+  `test_roadmap_v09.py` already uses (`f4e58c4`, `82f219e`) --
   #85/#84/#86/#87/#83 are all closed (A-E above), #88
   (`ralphctl skill install`) stays untouched, per the PRD's own exclusion.
   **Corrected by v0.14.1, task 009: both items this bullet once called

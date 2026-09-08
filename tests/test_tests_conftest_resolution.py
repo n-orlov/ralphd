@@ -1,6 +1,6 @@
 """Task 005 (#50), mechanism corrected in #64: `tests.conftest` (and the
 sibling absolute imports several modules use, e.g. `from
-tests.test_roadmap_v07 import closed_issues`) must resolve to *this*
+tests.records.test_roadmap import closed_issues_v07`) must resolve to *this*
 repository's copy no matter what else on `sys.path` also happens to
 provide an importable `tests` package.
 

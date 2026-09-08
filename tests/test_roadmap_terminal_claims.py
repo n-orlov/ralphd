@@ -127,7 +127,7 @@ def roadmap_version_blocks(roadmap_text: str) -> list[tuple[str, str]]:
 
     `block_body` runs from just after its own heading line to the start of
     the next `## ` heading (or end of file) — the same "stop at the next
-    top-level heading" shape `tests/test_roadmap_v014.py`'s `milestone_block`
+    top-level heading" shape `tests/records/test_roadmap.py`'s `milestone_block_v014`
     uses for a single pinned version, generalised here to every block.
     """
     heads = list(_HEADING_RE.finditer(roadmap_text))

@@ -8,7 +8,7 @@ its body explains a *future* step in the sentence "a later wave that closes
 #50 must move it in both places" -- prose about work still to come, not an
 intended closure -- and GitHub closed #50 on push anyway, even though the
 closure record (`artifacts/reports/issue-closure.md`, parsed by
-`closed_issues()`/`left_open_issues()` in `tests/test_roadmap_v07.py`) lists
+`closed_issues_v07()`/`left_open_issues_v07()` in `tests/records/test_roadmap.py`) lists
 #50 as left open deliberately. `tests/test_prompt_git_policy.py` already
 guards the *prompt* against writing that sentence again; this module guards a
 *check* that would have caught it before push, using that same commit's real
@@ -21,7 +21,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from tests.test_roadmap_v07 import closed_issues
+from tests.records.test_roadmap import closed_issues_v07 as closed_issues
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
