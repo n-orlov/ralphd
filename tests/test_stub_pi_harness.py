@@ -361,16 +361,35 @@ def test_the_checker_actually_fires_on_the_shapes_it_claims_to_catch(
 # Every module that names a NON-ZERO `RALPHD_INFRA_RETRY_BACKOFF_S` /
 # `RALPHD_INFRA_RETRY_BACKOFF_MAX_S` -- the only two knobs a spawned engine
 # reads, and therefore the only ones that can buy a real sleep in a stub-`pi`
-# test -- with the reason it cannot be zero. Exactly one module qualifies, and
-# it launches no engine at all. An in-process module configuring a non-zero
-# schedule is NOT on this list and does not need to be: its `_wait_out_backoff`
-# is stubbed at the class level (the fixture above), so the numbers are
-# reported, never waited.
+# test -- with the reason it cannot be zero. An in-process module configuring
+# a non-zero schedule is NOT on this list and does not need to be: its
+# `_wait_out_backoff` is stubbed at the class level (the fixture above), so
+# the numbers are reported, never waited. A module IS on this list only when
+# its subject is the retry-backoff ladder itself, spent across a real process
+# boundary the in-process stub cannot reach, and the value is small (well
+# under a second per node): the two named flow modules keep every LARGER
+# schedule under `@pytest.mark.nightly` already (task 048's B.5 follow-on) --
+# this list is exactly the small remainder that stayed in the fast tier.
 NONZERO_BACKOFF_ALLOWLIST = {
     "test_job_config_defaults.py":
         "no engine is launched at all: monkeypatched env, read back through "
         "in-process `JobConfig.load` -- the parsing of the two knobs is the "
         "subject",
+    "test_flow_infra_ladder.py":
+        "the flow's whole subject (task 015, requirement C.4) is the infra-"
+        "retry ladder's booked-wait arithmetic (`infraWaitTotalS` == the "
+        "backoffs actually spent, e.g. 0.05+0.1=0.15) over a real `ralphd-"
+        "engine` subprocess -- the in-process class-level `_wait_out_backoff` "
+        "stub cannot reach a spawned process, so proving the number booked "
+        "matches the schedule configured needs a real, small wait; every "
+        "schedule that would run longer is already `@pytest.mark.nightly`, "
+        "out of this fast-tier scan's own -m fast selection",
+    "test_flow_crash_resume_refunds.py":
+        "the same infra-retry-ladder subject as test_flow_infra_ladder.py "
+        "(task 016, requirement C.5), here combined with the crash/resume "
+        "refund accounting: one hung attempt must be booked and refunded "
+        "before the crash, which needs a real (0.05s) backoff wait over the "
+        "same real subprocess boundary",
 }
 
 _ENV_BACKOFF_RE = re.compile(
@@ -407,10 +426,11 @@ def test_the_allowlist_has_no_stale_entries():
     longer names a non-zero schedule must lose its entry, so the list can
     never quietly grow into a blanket permission."""
     stale = []
+    by_name = {p.name: p for p in _all_files()}
     for name, reason in NONZERO_BACKOFF_ALLOWLIST.items():
         assert reason.strip(), f"{name} is allowlisted with no reason"
-        path = TESTS_DIR / name
-        if not path.exists() or not nonzero_env_backoffs(path.read_text()):
+        path = by_name.get(name)
+        if path is None or not nonzero_env_backoffs(path.read_text()):
             stale.append(name)
     assert not stale, (
         "these modules are on NONZERO_BACKOFF_ALLOWLIST but no longer "

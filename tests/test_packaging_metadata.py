@@ -54,6 +54,18 @@ VERSION_CLAIM_RES = [
     re.compile(r'^\s*version = "([^"]+)"', re.MULTILINE),  # pyproject snippets
 ]
 
+# An "engine account" claim names the git sha/build a wave actually ran
+# under -- a different observable from the package's own declared release
+# version, and one the roadmap is required to state verbatim for a wave
+# whose engine trails the repo (operator steer 001's `ralphd 0.19.0` from
+# `main` `1a3b9bb` sentence). Recognised only in this exact, narrow shape:
+# a backtick-quoted `ralphd X.Y.Z` immediately followed by `` from `main`
+# `<sha>` `` -- so an ordinary version claim anywhere else is still caught
+# in full; this is not a general carve-out for "ralphd <version>" text.
+ENGINE_ACCOUNT_RE = re.compile(
+    r"`ralphd \d+\.\d+\.\d+` from `main` `[0-9a-f]{7}[0-9a-f]*`"
+)
+
 
 def declared_version() -> str:
     return tomllib.loads(PYPROJECT.read_text())["project"]["version"]
@@ -118,8 +130,12 @@ def test_no_current_doc_claims_a_different_version():
     seen = 0
     for doc in CURRENT_DOCS:
         text = doc.read_text()
+        engine_account_spans = [m.span() for m in ENGINE_ACCOUNT_RE.finditer(text)]
         for pattern in VERSION_CLAIM_RES:
             for m in pattern.finditer(text):
+                if any(start <= m.start() and m.end() <= end
+                       for start, end in engine_account_spans):
+                    continue  # the wave's own engine-account sentence, not a release claim
                 seen += 1
                 if m.group(1) != v:
                     line = text[: m.start()].count("\n") + 1
@@ -131,6 +147,58 @@ def test_no_current_doc_claims_a_different_version():
     # Non-vacuity: at least docs/api.md's `GET /version` example body is a
     # claim, so a broken pattern above cannot quietly check nothing.
     assert seen >= 1, "matched no version claim at all -- VERSION_CLAIM_RES has rotted"
+
+
+def test_the_engine_account_sentence_is_exempt_at_head():
+    """The one sentence this exemption exists for -- docs/roadmap.md's steer-001
+    engine account -- must actually be recognised, or the guard above would be
+    red for the wrong reason (a doc claiming a stale version) and this passing
+    for a different one (nothing left to check)."""
+    text = ROADMAP.read_text()
+    assert ENGINE_ACCOUNT_RE.search(text), (
+        "docs/roadmap.md no longer carries the engine-account sentence "
+        "ENGINE_ACCOUNT_RE targets -- the exemption may now be exempting nothing, "
+        "or (if the sentence moved/changed shape) may be silently over- or "
+        "under-matching"
+    )
+
+
+def test_mutation_an_ordinary_stale_version_claim_is_still_caught():
+    """The exemption is narrow: an ordinary `ralphd X.Y.Z` claim that is NOT
+    followed by the engine-account's own `` from `main` `<sha>` `` shape must
+    still be flagged wrong -- proves the carve-out does not swallow a genuine
+    stale-doc-version drift."""
+    v = declared_version()
+    stale = "0.0.1" if v != "0.0.1" else "0.0.2"
+    text = f"This doc says ralphd {stale} is current.\n"
+    engine_account_spans = [m.span() for m in ENGINE_ACCOUNT_RE.finditer(text)]
+    wrong = []
+    for pattern in VERSION_CLAIM_RES:
+        for m in pattern.finditer(text):
+            if any(start <= m.start() and m.end() <= end for start, end in engine_account_spans):
+                continue
+            if m.group(1) != v:
+                wrong.append(m.group(0))
+    assert wrong, "an ordinary stale ralphd-version claim must not be exempted"
+
+
+def test_mutation_the_engine_account_shape_is_exempted_even_when_stale():
+    """The flip side: the exact engine-account shape, even naming a version
+    that differs from the declared one (as it always will, by construction --
+    that is the whole point of the sentence), is exempt."""
+    v = declared_version()
+    other = "9.9.9" if v != "9.9.9" else "8.8.8"
+    text = f"The engine running this wave is `ralphd {other}` from `main` `1a3b9bb`.\n"
+    engine_account_spans = [m.span() for m in ENGINE_ACCOUNT_RE.finditer(text)]
+    assert engine_account_spans, "ENGINE_ACCOUNT_RE didn't match its own target shape"
+    wrong = []
+    for pattern in VERSION_CLAIM_RES:
+        for m in pattern.finditer(text):
+            if any(start <= m.start() and m.end() <= end for start, end in engine_account_spans):
+                continue
+            if m.group(1) != v:
+                wrong.append(m.group(0))
+    assert not wrong, f"engine-account shape should have been exempted, got {wrong}"
 
 
 # A milestone block records what shipped in one of two forms, and this module

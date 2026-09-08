@@ -78,8 +78,8 @@ tightened as the counts come down -- they are a ratchet, not a target.
 |---|---|---|---|---|---|---|---|---|---|---|
 | smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 3768 | 208 | 24.03 s | 5100 | 300 | 60 s | n/a | no target of this kind for this lane |
 | smoke, serial | `smoke` | `-m smoke` | 3768 | 208 | 136.20 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 136.20 s measured against the 120 s target |
-| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5321 | 321 | 81.89 s | 7000 | 430 | 150 s | < 120 s | met -- 81.89 s inside the 120 s target |
-| fast, serial | `fast` | `-m fast` | 5321 | 321 | 491.68 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 491.68 s measured against the 300 s target |
+| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5324 | 321 | 81.89 s | 7000 | 430 | 150 s | < 120 s | met -- 81.89 s inside the 120 s target |
+| fast, serial | `fast` | `-m fast` | 5324 | 321 | 491.68 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 491.68 s measured against the 300 s target |
 | records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 194 | 4 | 5.08 s | 300 | 15 | 15 s | < 15 s | met -- 5.08 s inside the 15 s target, 194 tests inside the 300-test target |
 
 Every number above is a fresh run at `3e65963`, taken sequentially and never two
@@ -111,7 +111,11 @@ previous measurement at `a1b201c` recorded 311.12 s / 448.34 s / 325.40 s /
    collection and asks membership per row: 2.97 s, all 847 rows still resolved.
 
 The fast tier's collected count fell from 6166 to 5321 (and smoke's from 4613 to
-3768) in the same commit: the 847 per-row nodes became 5.
+3768) in the same commit: the 847 per-row nodes became 5. Review-cure task
+cure-01-01 (PRD I) later added 3 tests to `tests/test_packaging_metadata.py`
+(pinning the engine-account version-claim exemption it introduced), moving the
+fast-tier count from 5321 to **5324**; smoke's 3768 and the module count (321)
+are unaffected.
 
 ### The stub-`pi` flow lane (`tests/flows/`)
 
@@ -190,9 +194,10 @@ five G.8 wall-clock/count targets checked here are missed, and one is now met.
 - **smoke serial 136.20 s** against a target of < 120 s -- MISSED. At `-n 8` the
   same tier is **24.03 s**, inside its own 60 s ceiling (that lane carries no PRD
   target of this kind).
-- **5321 tests collected** (fast tier) against a target of at most 3000 --
+- **5324 tests collected** (fast tier) against a target of at most 3000 --
   MISSED. Down from the 6166 recorded at the previous measurement (the Subsumed
-  table's 847 per-row nodes became 5), but still well over target.
+  table's 847 per-row nodes became 5), but still well over target; up by 3 from
+  the 5321 recorded above, from cure-01-01's own new tests (PRD I).
 - **321 modules collected** (fast tier) against a target of at most 180 --
   MISSED. Unchanged by this task's cures, which removed nodes, not modules.
 - **fast, `-n 8`, 81.89 s** against a target of < 120 s -- **met**. It was missed
