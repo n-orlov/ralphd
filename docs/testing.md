@@ -114,32 +114,48 @@ fast lane's own recorded measurements.
 ### The records-lint family (`tests/records/`, task 035, requirement E.4)
 
 Measured serially (`.venv/bin/python -m pytest -q tests/records/`, repeated
-three times, 5.08-5.64 s): **194 tests collected** across 4 test modules (plus
+three times, 5.35-5.37 s): **194 tests collected** across 4 test modules (plus
 a `conftest.py`: `test_conformance_ledger.py`, `test_records_family_budget.py`,
 `test_report_claims.py`, `test_roadmap.py`), against the PRD's **300-test** /
-**15 s** targets -- both met, neither disclosed as a miss.
+**15 s** targets -- both met, so neither is disclosed here as a miss.
 
-The PRD/task text for this requirement says the family "spawns no subprocess
-other than one git ls-files"; that undercounts by one kind of call, and this is
-the disclosed correction. `tests/report_claims.py` has always needed TWO
-different git subprocesses, not one: `path_problems()` needs `git ls-files`
-(path membership) and `commit_problems()` needs `git cat-file --batch-check`
-(commit existence + object type) -- a sha claim was never a membership
-question `git ls-files` can answer. Before this task, `commit_problems` ran
-its own `git cat-file --batch-check` once PER REPORT that carried a sha claim
--- about 218 of the ~220 subprocess calls a full `tests/records/` run made,
-measured on this task's own tree before the fix. The fix batches every sha
-across every report into ONE such call, memoised for the process, mirroring
-`_tracked_paths()`'s existing one-`git-ls-files`-per-process rule; a second,
-unrelated fix (`tests/test_docker_sibling_e2e.py`'s `_docker_available()`,
-opted out via `RALPHD_SKIP_DOCKER_PROBE` from
-`tests/records/test_conformance_ledger.py`'s own nested collection pass)
-removed a third real subprocess (`docker version`) a ledger-cited file's
-import-time skipif was spending on a collect-only pass that never looked at
-the answer. `tests/records/test_records_family_budget.py` pins what is left:
-exactly two real subprocess calls for a fresh run of the whole family -- one
-`git ls-files`, one `git cat-file --batch-check` -- never a third, and never
-either one more than once per process.
+**The subprocess rule: one `git ls-files` for a whole run, and nothing else.**
+`tests/records/test_records_family_budget.py::test_the_records_family_spawns_only_one_git_ls_files`
+pins it live -- it patches `subprocess.run`, runs the rest of the family
+in-process from a cold cache, and fails on a second `git ls-files` or on any
+other command at all. Three fixes in this task got the count from ~220 down to
+one:
+
+1. `tests/report_claims.py`'s `commit_problems()` used to answer "is this
+   cited sha a commit object in this repo" with a `git cat-file --batch-check`
+   subprocess, once PER REPORT that carried a sha claim -- about 218 of the
+   ~220 subprocess calls a full `tests/records/` run made, measured on this
+   task's own tree before the fix. It now reads the object type out of `.git`
+   in-process (`_ObjectDatabase`: a loose object's zlib type header, a packed
+   object's pack-entry type bits via the v2 `.idx` fanout/sha/offset tables,
+   following an OFS_DELTA/REF_DELTA chain to its base because a delta never
+   changes the object type), returning `git cat-file --batch-check`'s own
+   vocabulary -- the type word for a resolved object, `missing` for a prefix
+   nothing matches, `ambiguous` for one several objects match -- so
+   `commit_problems`'s failure messages are unchanged. That reader is checked
+   against real git's answers by `test_report_claims_git_objects.py`, which
+   sits OUTSIDE this family exactly because the comparison has to spawn the
+   `git cat-file` the family is pinned not to spawn: every sha the reports
+   cite, 400 full shas and 200 seven-char abbreviations sampled from the
+   object store, plus deliberately ambiguous and unresolvable prefixes.
+2. `tests/records/test_conformance_ledger.py`'s `_collect_node_ids()` sets
+   `RALPHD_SKIP_DOCKER_PROBE=1` around its nested in-process collection (new
+   gate in `test_docker_sibling_e2e.py`'s `_docker_available()`), which
+   removed a real `docker version` probe a ledger-cited module's import-time
+   skipif was spending on a collect-only pass that never looked at the answer.
+3. `tests/records/test_report_claims.py`'s whitebox memoisation test fakes
+   `subprocess.run`'s return instead of calling real git, so proving the
+   one-snapshot caching no longer spends a second real `git ls-files` of its
+   own.
+
+The one remaining call is `path_problems()`'s `git ls-files` snapshot, memoised
+for the process: path membership genuinely is a question about git's index, and
+nothing in the family asks it twice.
 
 ### Targets missed, with their numbers
 

@@ -4834,8 +4834,11 @@ shas, paths and node ids so a gutted report fails too; and that neither the tree
 nor the commit history contains a `gh issue close`, which is the process claim
 the report makes about itself.
 
-The *generic* half of that — every 7-to-40-hex sha resolves via `git cat-file`,
-every repo-relative path is **tracked by git** (membership in one `git
+The *generic* half of that — every 7-to-40-hex sha resolves to a **commit**
+object in this repo (read straight out of `.git` in-process, not with a
+`git cat-file` subprocess: requirement E.4 pins the records family at one
+subprocess for a whole run), every repo-relative path is **tracked by git**
+(membership in one `git
 ls-files` snapshot, not merely present on disk — a directory the browser tier
 generates but never commits used to pass just by existing), every `::node_id`
 after such a path is a real `def`/`async def` in that file — is not one

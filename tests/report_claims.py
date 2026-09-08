@@ -56,8 +56,10 @@ The claim vocabulary the reports use, and how it is read:
 
 from __future__ import annotations
 
+import bisect
 import re
 import subprocess
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -183,17 +185,172 @@ def parse_claims(report: Path) -> ReportClaims:
     )
 
 
+# --------------------------------------------------------------------------
+# Object-type lookup WITHOUT spawning git (task 035, requirement E.4).
+#
+# A sha claim asks "is this hex token a commit object in this repo", which is
+# not a question `git ls-files` can answer -- it used to be answered by a
+# `git cat-file --batch-check` subprocess (one per report before this task,
+# then one per process). E.4 pins the records family at exactly ONE
+# subprocess for a whole run, `git ls-files`, so the object-type answer is
+# read straight out of `.git` in this process instead: loose objects give
+# their type in their own zlib header, packed objects give it in the type
+# bits of their pack entry header (following a delta chain to its base when
+# the entry is an OFS_DELTA/REF_DELTA, exactly as git does). The vocabulary
+# returned matches `git cat-file --batch-check`'s own words, so
+# `commit_problems`'s messages are unchanged: `commit`/`blob`/`tree`/`tag`
+# for a resolved object, `missing` for a prefix nothing matches, `ambiguous`
+# for a prefix more than one object matches.
+# --------------------------------------------------------------------------
+
+_PACK_ENTRY_TYPES = {1: "commit", 2: "tree", 3: "blob", 4: "tag"}
+_OFS_DELTA, _REF_DELTA = 6, 7
+
+
+def _git_dir() -> Path:
+    """This checkout's git directory, including the `gitdir:` indirection a
+    worktree's `.git` *file* uses."""
+    dot_git = REPO_ROOT / ".git"
+    if dot_git.is_file():
+        pointer = dot_git.read_text().strip()
+        target = pointer.split(":", 1)[1].strip() if ":" in pointer else pointer
+        return (REPO_ROOT / target).resolve()
+    return dot_git
+
+
+def _object_dirs(git_dir: Path) -> list[Path]:
+    """`<git-dir>/objects` plus any alternates it borrows from."""
+    dirs = [git_dir / "objects"]
+    alternates = git_dir / "objects" / "info" / "alternates"
+    if alternates.is_file():
+        for line in alternates.read_text().splitlines():
+            if line.strip():
+                dirs.append((git_dir / "objects" / line.strip()).resolve())
+    return dirs
+
+
+def _pack_offsets(idx: Path) -> dict[str, int]:
+    """Every object in one pack, as sha -> byte offset in the .pack file,
+    read from the v2 index: magic+version (8 bytes), 256-entry fanout, the
+    sha table, the CRC table, the 4-byte offset table (high bit set means
+    "index into the 8-byte large-offset table that follows")."""
+    data = idx.read_bytes()
+    if data[:4] != b"\xfftOc" or int.from_bytes(data[4:8], "big") != 2:
+        raise AssertionError(f"{idx}: not a version-2 pack index")
+    fanout_end = 8 + 256 * 4
+    count = int.from_bytes(data[fanout_end - 4:fanout_end], "big")
+    shas_at = fanout_end
+    crcs_at = shas_at + count * 20
+    offsets_at = crcs_at + count * 4
+    large_at = offsets_at + count * 4
+    offsets: dict[str, int] = {}
+    for i in range(count):
+        sha = data[shas_at + i * 20:shas_at + i * 20 + 20].hex()
+        raw = int.from_bytes(data[offsets_at + i * 4:offsets_at + i * 4 + 4], "big")
+        if raw & 0x80000000:
+            slot = raw & 0x7FFFFFFF
+            raw = int.from_bytes(data[large_at + slot * 8:large_at + slot * 8 + 8],
+                                 "big")
+        offsets[sha] = raw
+    return offsets
+
+
+class _ObjectDatabase:
+    """Read-only, in-process view of this repo's object store."""
+
+    def __init__(self) -> None:
+        git_dir = _git_dir()
+        self._loose: dict[str, Path] = {}
+        self._packed: dict[str, tuple[Path, int]] = {}
+        for objects in _object_dirs(git_dir):
+            for shard in sorted(objects.glob("[0-9a-f][0-9a-f]")):
+                for obj in shard.iterdir():
+                    if len(obj.name) == 38:
+                        self._loose.setdefault(shard.name + obj.name, obj)
+            for idx in sorted((objects / "pack").glob("pack-*.idx")):
+                pack = idx.with_suffix(".pack")
+                for sha, offset in _pack_offsets(idx).items():
+                    self._packed.setdefault(sha, (pack, offset))
+        self._all = sorted(set(self._loose) | set(self._packed))
+
+    def kind(self, prefix: str) -> str:
+        """`git cat-file --batch-check`'s answer for one (possibly
+        abbreviated) sha."""
+        start = bisect.bisect_left(self._all, prefix)
+        matches = []
+        for sha in self._all[start:]:
+            if not sha.startswith(prefix):
+                break
+            matches.append(sha)
+            if len(matches) > 1:
+                return "ambiguous"
+        if not matches:
+            return "missing"
+        return self._kind_of(matches[0])
+
+    def _kind_of(self, sha: str) -> str:
+        loose = self._loose.get(sha)
+        if loose is not None:
+            header = zlib.decompressobj().decompress(loose.read_bytes(), 64)
+            return header.split(b" ", 1)[0].decode()
+        pack, offset = self._packed[sha]
+        with pack.open("rb") as handle:
+            return self._packed_kind(handle, offset)
+
+    def _packed_kind(self, handle, offset: int) -> str:
+        """The type of one pack entry, resolving a delta to its base's type
+        (a delta never changes the object type)."""
+        seen = 0
+        while True:
+            seen += 1
+            if seen > 64:
+                raise AssertionError("pack delta chain too deep to be real")
+            handle.seek(offset)
+            byte = handle.read(1)[0]
+            entry_type = (byte >> 4) & 7
+            while byte & 0x80:
+                byte = handle.read(1)[0]
+            if entry_type in _PACK_ENTRY_TYPES:
+                return _PACK_ENTRY_TYPES[entry_type]
+            if entry_type == _OFS_DELTA:
+                byte = handle.read(1)[0]
+                back = byte & 0x7F
+                while byte & 0x80:
+                    byte = handle.read(1)[0]
+                    back = ((back + 1) << 7) | (byte & 0x7F)
+                offset = offset - back
+                continue
+            if entry_type == _REF_DELTA:
+                base = handle.read(20).hex()
+                if base in self._packed and self._packed[base][0] == Path(
+                        handle.name):
+                    offset = self._packed[base][1]
+                    continue
+                return self._kind_of(base)
+            raise AssertionError(f"unknown pack entry type {entry_type}")
+
+
+_OBJECTS: _ObjectDatabase | None = None
 _COMMIT_KINDS: dict[str, str] | None = None
 
 
+def _objects() -> _ObjectDatabase:
+    """One scan of `.git`'s object store per process, memoised."""
+    global _OBJECTS
+    if _OBJECTS is None:
+        _OBJECTS = _ObjectDatabase()
+    return _OBJECTS
+
+
 def _commit_kinds() -> dict[str, str]:
-    """Every sha cited anywhere under `artifacts/reports/`, resolved in ONE
-    `git cat-file --batch-check` call and memoised for the life of the
-    process -- the same one-subprocess-per-process rule `_tracked_paths()`
-    below keeps for `git ls-files`. Before this (task 035, requirement E.4),
-    `commit_problems` ran its own `git cat-file --batch-check` once PER
-    REPORT it was called on, one subprocess per report with any sha claim --
-    about 218 of the ~220 subprocess calls a full `tests/records/` run made.
+    """Every sha cited anywhere under `artifacts/reports/`, resolved once for
+    the life of the process and memoised -- with NO subprocess at all (see
+    the block comment above). Before task 035 (requirement E.4) this ran a
+    `git cat-file --batch-check` once PER REPORT it was called on, about 218
+    of the ~220 subprocess calls a full `tests/records/` run made; E.4's rule
+    is that the family spawns no subprocess other than the one `git ls-files`
+    `_tracked_paths()` needs, so the object-type answer is read out of `.git`
+    in-process instead.
     """
     global _COMMIT_KINDS
     if _COMMIT_KINDS is None:
@@ -202,21 +359,8 @@ def _commit_kinds() -> dict[str, str]:
             for report in report_files()
             for claim in parse_claims(report).shas
         })
-        if not wanted:
-            _COMMIT_KINDS = {}
-        else:
-            proc = subprocess.run(
-                ["git", "cat-file", "--batch-check"],
-                cwd=REPO_ROOT,
-                input="\n".join(wanted) + "\n",
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            kinds: dict[str, str] = {}
-            for asked, answer in zip(wanted, proc.stdout.splitlines(), strict=True):
-                kinds[asked] = answer.split(" ", 2)[1] if " " in answer else answer
-            _COMMIT_KINDS = kinds
+        objects = _objects() if wanted else None
+        _COMMIT_KINDS = {sha: objects.kind(sha) for sha in wanted} if wanted else {}
     return _COMMIT_KINDS
 
 

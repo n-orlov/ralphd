@@ -3,32 +3,38 @@ how many tests `tests/records/` collects, how long a real run of it takes,
 and what it actually spawns a subprocess for.
 
 `docs/testing.md`'s budget table carries the measured numbers this module
-pins live: the family collects **192** tests against a **300** budget and
-runs in about **2.6-3.0 s** serial against a **15 s** budget -- both well
+pins live: the family collects **194** tests against a **300** budget and
+runs in about **5.1-5.6 s** serial against a **15 s** budget -- both well
 inside target, so neither is disclosed as a miss.
 
-**The subprocess rule, and a correction to how the task names it.** The
-PRD/task text says the family "spawns no subprocess other than one git
-ls-files"; that undercounts by one kind of call. `tests/report_claims.py`
-has always needed TWO different git subprocesses, not one:
-`path_problems()` needs `git ls-files` (path membership) and
-`commit_problems()` needs `git cat-file --batch-check` (commit existence +
-object type) -- checking a sha claim was never a membership question
-`git ls-files` can answer. Before this task, `commit_problems` ran its own
-`git cat-file --batch-check` once PER REPORT that carried a sha claim --
-about 218 of the ~220 subprocess calls a full `tests/records/` run made
-(measured on this task's own tree, before the fix below). This task's
-change to `tests/report_claims.py` batches every sha across every report
-into ONE such call, memoised for the process, mirroring `_tracked_paths()`'s
-existing one-`git-ls-files`-per-process rule -- and a second fix
-(`tests/test_docker_sibling_e2e.py`'s `_docker_available()`,
-`tests/records/test_conformance_ledger.py`'s `_collect_node_ids()`) removes
-a third, unrelated subprocess a nested collection pass was spending on a
-`docker version` probe it never looked at the answer to. What is left, and
-what `test_the_records_family_spawns_only_its_two_necessary_git_snapshots`
-below pins as the family's real floor, is exactly the two DIFFERENT git
-snapshots the two DIFFERENT checks structurally need -- never a third, and
-never either one more than once per process.
+**The subprocess rule.** A real run of the whole family spawns exactly ONE
+real subprocess, `git ls-files`, and
+`test_the_records_family_spawns_only_one_git_ls_files` below pins that live.
+Getting there took three fixes, all in this task:
+
+1. `tests/report_claims.py`'s `commit_problems()` used to answer "is this
+   sha a commit object" with a `git cat-file --batch-check` subprocess, once
+   PER REPORT that carried a sha claim -- about 218 of the ~220 subprocess
+   calls a full `tests/records/` run made (measured on this task's own tree,
+   before the fix). It now reads the object type straight out of `.git`
+   in-process (`_ObjectDatabase`: loose objects' zlib header, packed
+   objects' pack-entry type bits, following a delta chain to its base), so
+   the sha check spends no subprocess at all. `tests/report_claims.py`'s
+   single remaining `subprocess.run` is the one `git ls-files` snapshot
+   `path_problems()` needs for path membership.
+2. `tests/records/test_conformance_ledger.py`'s `_collect_node_ids()` sets
+   `RALPHD_SKIP_DOCKER_PROBE=1` around its nested in-process collection
+   (new gate in `tests/test_docker_sibling_e2e.py::_docker_available()`),
+   which removed a real `docker version` probe that collection pass spent
+   without ever looking at the answer.
+3. `tests/records/test_report_claims.py`'s whitebox memoisation test fakes
+   `subprocess.run`'s return instead of calling real git, so proving the
+   caching logic no longer spends a second real `git ls-files`.
+
+The reader that replaced the `git cat-file` call is checked against real
+git's own answers by `tests/test_report_claims_git_objects.py`, which lives
+OUTSIDE this family precisely because that comparison has to spawn the very
+subprocess this family is pinned not to spawn.
 """
 
 from __future__ import annotations
@@ -71,12 +77,12 @@ def test_the_records_family_collects_at_most_the_budgeted_count() -> None:
         f"{COLLECTED_BUDGET} budget docs/testing.md declares")
 
 
-def test_the_records_family_spawns_only_its_two_necessary_git_snapshots(
-        monkeypatch) -> None:
-    """A real run of the WHOLE family (not just collecting it) spawns
-    exactly two real subprocesses -- one `git ls-files` and one
-    `git cat-file --batch-check` -- never a third, and never either one
-    more than once no matter how many reports or claims exist.
+def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
+    """A real run of the WHOLE family (not just collecting it) spawns exactly
+    one real subprocess -- a single `git ls-files` -- and nothing else: no
+    second `git ls-files` however many reports or claims exist, and no other
+    command of any kind (requirement E.4's rule, verbatim: the family
+    "spawns no subprocess other than one `git ls-files`").
 
     This file excludes itself from the nested run it launches (it would
     otherwise recurse into calling `pytest.main()` on itself, forever); the
@@ -93,6 +99,7 @@ def test_the_records_family_spawns_only_its_two_necessary_git_snapshots(
     # whatever runs after it in this same process.
     report_claims_module._TRACKED_PATHS = None
     report_claims_module._COMMIT_KINDS = None
+    report_claims_module._OBJECTS = None
 
     calls: list[list[str]] = []
     real_run = subprocess.run
@@ -111,17 +118,10 @@ def test_the_records_family_spawns_only_its_two_necessary_git_snapshots(
         f"a real run of tests/records/ (minus this file) failed (exit "
         f"code {ret}) -- rerun without the subprocess patch to see why")
 
-    kinds = [tuple(c[:2]) for c in calls]
-    others = [c for c in calls
-              if tuple(c[:2]) not in (("git", "ls-files"), ("git", "cat-file"))]
-    assert not others, f"tests/records/ spawned an unexpected subprocess: {others}"
-    assert kinds.count(("git", "ls-files")) == 1, (
-        f"expected exactly one `git ls-files` call from a cold cache, got "
-        f"{kinds.count(('git', 'ls-files'))}: {calls}")
-    assert kinds.count(("git", "cat-file")) == 1, (
-        f"expected exactly one `git cat-file --batch-check` call from a "
-        f"cold cache, got {kinds.count(('git', 'cat-file'))}: {calls}")
-    assert len(calls) == 2, (
+    others = [c for c in calls if tuple(c[:2]) != ("git", "ls-files")]
+    assert not others, (
+        f"tests/records/ spawned a subprocess other than `git ls-files`: "
+        f"{others}")
+    assert len(calls) == 1, (
         f"tests/records/ spawned {len(calls)} subprocess calls from a cold "
-        f"cache, expected exactly 2 (one git ls-files, one git cat-file "
-        f"--batch-check): {calls}")
+        f"cache, expected exactly one `git ls-files`: {calls}")
