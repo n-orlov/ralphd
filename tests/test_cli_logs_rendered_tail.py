@@ -13,15 +13,19 @@ every line, and trims to exactly N lines AFTER rendering.
 
 `--raw` mode (1 raw line == 1 raw event, tail applied engine-side) is
 unchanged and covered by tests/test_cli_logs_tail_syntax.py.
+
+task cure-01-03 (requirement F): every node here drives the CLI through the
+`live` fixture's own helper. The one node of this family that additionally
+needed a REAL `subprocess.Popen([ralphctl, ...])` pipe of its own -- the
+`-Nf` "backlog first, then keeps streaming" liveness proof -- was moved
+verbatim into the canonical process-boundary module
+`tests/test_cli_logs_follow_liveness.py`, so the process boundary lives only
+in the modules `docs/test-suite-audit.md` names for it (see that file's
+§ "Subsumed" for the node's row). Nothing about the proof changed: same
+body, same assertions, same stub hold mechanism.
 """
 
 from __future__ import annotations
-
-import os
-import subprocess
-import time
-
-from tests.conftest import RALPHCTL
 
 _STUB_ENV = {"STUB_RICH_EVENTS": "1", "STUB_TASKS": "4"}
 
@@ -116,85 +120,3 @@ def test_follow_pretty_tail_n_shows_exactly_n_backlog_lines_on_terminal_job(live
     got = res.stdout.splitlines()
     assert len(got) == 10, (got,)
     assert got == full_pretty.stdout.splitlines()[-10:]
-
-
-def test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming(live, tmp_path):
-    """Genuine liveness proof for the follow+tail combo: once the job has
-    already produced more than N rendered lines, spawn `-Nf`, confirm the
-    first line arrives while the job is still running (not buffered until
-    job end -- same liveness bar as task 056), then let the job finish and
-    confirm the total output grew PAST the initial N-line backlog once
-    more content arrived live (proving `-Nf` doesn't just stop at N and
-    exit -- it shows N lines of backlog, then keeps following).
-
-    task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
-    first worker iteration open (mid-preamble) instead of racing a real
-    STUB_SLEEP window to catch the job with backlog already produced but
-    not yet terminal -- a held first iteration's own rich-event preamble
-    (planning + partial worker transcript) already exceeds the smaller
-    `tail_n` used here (confirmed: 6 lines while held vs 3 threshold),
-    so no further real wait is needed before spawning `-Nf`."""
-    hold_file = tmp_path / "hold-rendtail-live"
-    run = live(run_id="rendtail-follow-live",
-              stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "6",
-                        "STUB_HOLD_FILE": str(hold_file),
-                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
-    run.wait_api()
-
-    tail_n = 3
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        full = run.ralphctl("logs", run.run_id, "--tail", "0")
-        if len(full.stdout.splitlines()) > tail_n:
-            break
-        time.sleep(0.3)
-    else:
-        raise TimeoutError("job never produced enough backlog to exercise tail_n")
-
-    env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
-    proc = subprocess.Popen(
-        [str(RALPHCTL), "logs", run.run_id, f"-{tail_n}f"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1)
-    try:
-        deadline = time.time() + 15
-        first_line = ""
-        while time.time() < deadline:
-            line = proc.stdout.readline()
-            if line == "" and proc.poll() is not None:
-                break
-            if line.strip():
-                first_line = line
-                break
-        assert first_line, "ralphctl logs -Nf produced no output in time"
-
-        # No sleep/poll loop between readline() and this check -- a
-        # buffered implementation could only deliver this line after the
-        # job had already reached a terminal state.
-        status = run.run_dir / "status.json"
-        state = None
-        if status.exists():
-            import json
-            state = json.loads(status.read_text()).get("state")
-        assert state not in ("succeeded", "failed", "aborted"), (
-            f"first line only arrived after the job reached a terminal "
-            f"state ({state!r}) -- -Nf buffered instead of following live")
-
-        # Release the held first worker iteration now that the immediate
-        # liveness check above has already run against a deterministically
-        # still-running job -- the hold, not a real sleep, kept it open.
-        hold_file.touch()
-
-        run.wait_terminal(timeout=60)
-        rest = proc.stdout.read()
-        rc = proc.wait(timeout=15)
-        assert rc == 0, (rc, proc.stderr.read())
-
-        total_lines = (first_line + rest).splitlines()
-        # more than tail_n lines total: the backlog (tail_n lines) plus at
-        # least some genuinely new lines that arrived live afterwards.
-        assert len(total_lines) > tail_n, total_lines
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=10)
