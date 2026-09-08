@@ -2,12 +2,20 @@
 `-N`, `-Nf`, `-f`, the `logsf` alias, and default tail 50.
 
 Uses the shared `live` fixture / `LiveRun` harness from tests/conftest.py
-(real `ralphd-engine`, no Docker).
+(real `ralphd-engine`, no Docker); `ralphctl` itself runs in-process through
+`tests/conftest.py`'s `call_ralphctl_in_process` (task 002, requirement F),
+including the follow-across-iterations node, which drives that same
+in-process call from a background thread while the main thread polls the
+run's own `status.json` -- no second real OS process is needed, since the
+thread never overlaps a second `ralphctl` call (the main thread makes none
+until after `t1.join()`), only the concurrently-running child `ralphd-engine`
+subprocess itself (unaffected -- it was never the thing made in-process).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -16,6 +24,15 @@ import urllib.request
 import pytest
 
 from ralphd.cli.main import _preprocess_logs_argv
+from tests.conftest import call_ralphctl_in_process
+
+
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
 
 
 def _wait_api_ready(port: int, timeout: float = 20) -> None:
@@ -63,8 +80,9 @@ def test_preprocess_logs_argv_leaves_unrecognized_forms_for_argparse(argv):
 # --------------------------------------------------------------------------
 
 
-def test_logs_default_tail_is_50(live):
-    run = live(stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "4"})
+def test_logs_default_tail_is_50(live, capsys):
+    run = _in_process_ralphctl(
+        live(stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "4"}), capsys)
     run.wait_terminal()
 
     default_res = run.ralphctl("logs", run.run_id, "--raw")
@@ -91,9 +109,9 @@ def test_logs_default_tail_is_50(live):
     assert len(default_content) == 50
 
 
-def test_logs_tail_dash_n(live):
-    run = live(run_id="logtest-n",
-              stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "4"})
+def test_logs_tail_dash_n(live, capsys):
+    run = _in_process_ralphctl(live(run_id="logtest-n",
+              stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "4"}), capsys)
     run.wait_terminal()
 
     res = run.ralphctl("logs", run.run_id, "-100", "--raw")
@@ -103,10 +121,10 @@ def test_logs_tail_dash_n(live):
     assert len(content) == 100
 
 
-def test_logsf_alias_and_dash_f_follow_across_iterations(live):
-    run = live(run_id="logtest-follow",
+def test_logsf_alias_and_dash_f_follow_across_iterations(live, capsys):
+    run = _in_process_ralphctl(live(run_id="logtest-follow",
               stub_env={"STUB_RICH_EVENTS": "1", "STUB_TASKS": "2",
-                        "STUB_SLEEP": "0"})
+                        "STUB_SLEEP": "0"}), capsys)
 
     results = {}
 
@@ -143,8 +161,9 @@ def test_logsf_alias_and_dash_f_follow_across_iterations(live):
     assert "iteration 1" in res2.stdout
 
 
-def test_logs_invalid_tail_form_exits_2(live):
-    run = live(run_id="logtest-invalid", stub_env={"STUB_RICH_EVENTS": "1"})
+def test_logs_invalid_tail_form_exits_2(live, capsys):
+    run = _in_process_ralphctl(
+        live(run_id="logtest-invalid", stub_env={"STUB_RICH_EVENTS": "1"}), capsys)
     run.wait_terminal()
 
     res = run.ralphctl("logs", run.run_id, "-abc")

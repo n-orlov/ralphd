@@ -23,15 +23,54 @@ verbatim into the canonical process-boundary module
 in the modules `docs/test-suite-audit.md` names for it (see that file's
 § "Subsumed" for the node's row). Nothing about the proof changed: same
 body, same assertions, same stub hold mechanism.
+
+task 002 (requirement F): the four nodes remaining here (the liveness proof
+above having already left) now drive `ralphctl` in-process through
+`tests/conftest.py`'s `call_ralphctl_in_process` -- none of the four needs a
+second real OS process, since each is a single bounded (non-follow, or
+follow-on-an-already-terminal-job) call, not an interleaved
+still-running-process proof.
 """
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
+from tests.conftest import call_ralphctl_in_process
+
 _STUB_ENV = {"STUB_RICH_EVENTS": "1", "STUB_TASKS": "4"}
 
 
+def _ctl(registry, *argv: str):
+    env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 002 (requirement F): module-global capsys, never concurrent --
+    pytest runs one test at a time even under `-n 8`, each worker its own
+    process (same pattern as tests/test_cli_fault_explanation.py)."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
+
+
+def _in_process_ralphctl(run):
+    def ralphctl(*argv: str):
+        return _ctl(run.registry, *argv)
+    run.ralphctl = ralphctl
+    return run
+
+
 def test_pretty_tail_n_counts_rendered_lines_not_raw_events(live):
-    run = live(run_id="rendtail-basic", stub_env=_STUB_ENV)
+    run = _in_process_ralphctl(live(run_id="rendtail-basic", stub_env=_STUB_ENV))
     run.wait_terminal()
 
     # This stub job emits far more raw NDJSON events than any of the N
@@ -70,7 +109,7 @@ def test_pretty_tail_n_counts_rendered_lines_not_raw_events(live):
 
 def test_pretty_dash_n_tail_syntax_also_counts_rendered_lines(live):
     """Same proof via the `-N` tail-style syntax (not just `--tail N`)."""
-    run = live(run_id="rendtail-dashn", stub_env=_STUB_ENV)
+    run = _in_process_ralphctl(live(run_id="rendtail-dashn", stub_env=_STUB_ENV))
     run.wait_terminal()
 
     full_pretty = run.ralphctl("logs", run.run_id, "--tail", "0")
@@ -89,7 +128,8 @@ def test_pretty_iteration_filter_tail_also_counts_rendered_lines(live):
     `follow` semantics differ, see `_stream_logs_pretty_tailed`'s
     docstring; the bounded, non-follow path exercised here shares
     `_render_to_lines` either way)."""
-    run = live(run_id="rendtail-iter", stub_env={**_STUB_ENV, "STUB_TASKS": "1"})
+    run = _in_process_ralphctl(
+        live(run_id="rendtail-iter", stub_env={**_STUB_ENV, "STUB_TASKS": "1"}))
     run.wait_terminal()
 
     full_pretty = run.ralphctl("logs", run.run_id, "--iteration", "2", "--tail", "0")
@@ -108,7 +148,8 @@ def test_follow_pretty_tail_n_shows_exactly_n_backlog_lines_on_terminal_job(live
     closes immediately (nothing more will ever arrive) -- deterministic
     proof that the follow code path (`_stream_logs_pretty_tailed`) applies
     the identical rendered-line trim as the plain bounded path."""
-    run = live(run_id="rendtail-follow-term", stub_env=_STUB_ENV)
+    run = _in_process_ralphctl(
+        live(run_id="rendtail-follow-term", stub_env=_STUB_ENV))
     run.wait_terminal()
 
     full_pretty = run.ralphctl("logs", run.run_id, "--tail", "0")

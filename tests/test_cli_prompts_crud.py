@@ -1,28 +1,41 @@
 """Black-box tests for `ralphctl prompts <run-id> ls|set <phase> <file>`
 (PRD req 12).
 
-Drives the real `ralphctl` binary against a real, directly-launched
-`ralphd-engine` (the `live` fixture from conftest.py) -- no engine internals
-imported, only the CLI's stdout/exit code and the `GET /config/prompts`
-JSON it prints back.
+Drives a real, directly-launched `ralphd-engine` (the `live` fixture from
+conftest.py) -- no engine internals imported -- but `ralphctl` itself now
+runs in-process through `tests/conftest.py`'s `call_ralphctl_in_process`
+(task 002, requirement F): only the CLI's stdout/exit code and the
+`GET /config/prompts` JSON it prints back are asserted on, same as before,
+just without spawning a second real process for every CLI call.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import call_ralphctl_in_process
+
+
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
 
 @pytest.fixture
-def prompts_run(tmp_path, live):
+def prompts_run(tmp_path, live, capsys):
     home = tmp_path / "home"
     home.mkdir()
     r = live(run_id="prompts-cli", job={"iterations": 3, "vigilant": False},
              stub_env={"HOME": str(home)})
     r.wait_api()
-    yield r
+    yield _in_process_ralphctl(r, capsys)
 
 
 def _mounted_prompt(config_dir: Path, name: str, text: str) -> None:
@@ -84,8 +97,9 @@ def test_prompts_set_missing_file_exits_2(prompts_run, tmp_path):
     assert res.returncode == 2
 
 
-def test_prompts_missing_run_exits_3(live):
+def test_prompts_missing_run_exits_3(live, capsys):
     r = live(run_id="prompts-cli-exists-only")
+    r = _in_process_ralphctl(r, capsys)
     res = r.ralphctl("prompts", "no-such-run-at-all", "ls")
     assert res.returncode == 3
 
