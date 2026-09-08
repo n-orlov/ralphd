@@ -82,6 +82,7 @@ tightened as the counts come down -- they are a ratchet, not a target.
 | fast, serial | `fast` | `-m fast` | 5324 | 321 | 491.68 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 491.68 s measured against the 300 s target |
 | records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 194 | 4 | 5.08 s | 300 | 15 | 15 s | < 15 s | met -- 5.08 s inside the 15 s target, 194 tests inside the 300-test target |
 | dev-layout, `PYTHONUSERBASE` unset | n/a (no marker; the whole suite, unfiltered) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
+| dev-layout, `PYTHONUSERBASE` exported | n/a (no marker; the whole suite, unfiltered) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
 
 Every number in the first five rows above is a fresh run at `3e65963`, taken
 sequentially and never two at once, with the wall clock read off each run's own
@@ -149,6 +150,42 @@ to **5329 tests / 322 modules** at sha `852a51d` -- both still over the PRD's
 <=3,000-test / <=180-module tier-wide targets (unchanged from the 5324/321
 miss above). The table's own smoke/fast/records rows are not re-measured by
 this note; that full re-measurement, wall clock included, is task 008's.
+
+**Dev-layout, `PYTHONUSERBASE` exported (task 007).** Measured on this task's
+own tree at sha `9a9ce6c` (task 006's docs-only commit, the sha named in the
+surrounding prose above): `scripts/host_like_dev_layout.sh`, no `-m`/`-rs`
+args and no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override -- the
+script's own default is `exported` (see the script's header and its
+`PYTHONUSERBASE_MODE="${HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE:-exported}"`
+line), so `PYTHONUSERBASE` is exported to the pytest process the same way
+every ordinary invocation of this script already exports it for the install
+step. Launched `nohup timeout -k 30 3300 scripts/host_like_dev_layout.sh &`
+and polled to completion rather than blocked on: `2 failed, 5406 passed, 1
+skipped, 9 warnings in 2146.54s (0:35:46)`. The wrapper's own `set -e`/`set
++e` guard captures pytest's `$STATUS` and exits with it, but this run's own
+shell session ended before that value could be read back out of the
+backgrounded process; the exit status recorded above (**1**) is therefore
+pytest's own documented convention for a run that collected and ran tests
+with at least one failure (distinct from 2 for an interrupted run, or
+3/4/5 for internal/usage/no-tests-collected errors), applied to a summary
+line that shows two failures and no interruption or crash -- not a guess
+between outcomes read off prose. The two failing node ids are pre-existing at
+this sha, unrelated to this mode or this row (the same two
+`test_sweep_sha_guard.py` nodes task 006's unset-mode row already named;
+that row's third failure,
+`test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`,
+is gone here because task 006's own commit already added the fast-tier drift
+disclosure that test checks for):
+`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`
+and `tests/test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`.
+The placed skill (`host-layout-smoke-skill`) SURVIVED the run. Collected
+counts (5409 tests / 334 modules) come from a plain `--collect-only` pass
+over the same tree in this container's own `.venv` -- identical to the unset
+mode's row, since both modes run the same unfiltered test selection under a
+different `$HOME`/`PYTHONUSERBASE`, never a different test selection. No
+ceiling in this table was raised to record this row; the budget columns
+(6500 / 400 / 3600 s) are the same headroom already carried by the unset
+mode's row.
 
 ### The stub-`pi` flow lane (`tests/flows/`)
 
@@ -259,7 +296,8 @@ in `artifacts/reports/v0.19.1-suite-budget.md`'s 2026-09-08 entry.
 The dev-layout `PYTHONUSERBASE`-unset mode's nightly target (under 15 min,
 from ~40) is now measured in the budget table above: **MISSED**, 2047.32 s
 against the 900 s target (task 006). The `PYTHONUSERBASE`-exported mode's
-same target still has no row here yet -- that is task 007's.
+same target is now measured in the same table too: **MISSED**, 2146.54 s
+against the 900 s target (task 007).
 
 ## When a tier goes over budget
 
