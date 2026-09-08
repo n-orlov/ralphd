@@ -12,8 +12,10 @@ engine's `GET /logs` serves from the inside), exits 0, and says on STDERR
 is a snapshot.
 
 Black-box: a hand-written run dir (no engine process at all) whose
-`host.json` points at a closed port, driven through the real `ralphctl`
-executable.
+`host.json` points at a closed port, driven through `ralphctl`'s own
+`cli.main.main()` in this process (task 037, requirement F.2) -- including
+the one live-engine node, converted at task 001 (requirement F) so this
+module spawns no `ralphctl` process at all.
 """
 
 from __future__ import annotations
@@ -212,7 +214,7 @@ def test_logs_live_run_says_nothing_about_snapshots(tmp_path, live):
     run = live(run_id="livelogs", stub_env={"STUB_TASKS": "1"})
     run.wait_terminal()
 
-    res = run.ralphctl("logs", run.run_id, "--tail", "0")
+    res = _ctl(run.registry, "logs", run.run_id, "--tail", "0")
 
     assert res.returncode == 0, (res.stdout, res.stderr)
     assert SNAPSHOT_NOTICE not in res.stderr

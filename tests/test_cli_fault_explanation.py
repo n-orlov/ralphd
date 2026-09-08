@@ -757,7 +757,7 @@ def test_ralphctl_fault_reads_a_live_looking_run_without_a_container(tmp_path):
 
 
 # --------------------------------------------------------- the REAL engine
-def test_engine_infra_fault_is_explained_end_to_end(live):
+def test_engine_infra_fault_is_explained_end_to_end(live, capsys):
     """The fixture is test_fault_class_meta.py's own infra scenario: one worker
     invocation hangs with zero NDJSON output until the startup-window watchdog
     kills it, so the run dir carries a REAL `faultClass: "infra"` iteration,
@@ -812,7 +812,9 @@ def test_engine_infra_fault_is_explained_end_to_end(live):
     assert all(ev["maxAttempts"] == 4 for ev in retries)
 
     # ... and the CLI prints exactly that, from the run dir alone.
-    r = e.ralphctl("fault", e.run_id)
+    r = call_ralphctl_in_process(
+        ["fault", e.run_id],
+        env={**os.environ, "RALPHD_REGISTRY": str(e.registry)}, capsys=capsys)
     assert r.returncode == 0, r.stderr
     assert "fault:     infra" in r.stdout
     assert FAULT_REASON_NO_TRAFFIC_TIMEOUT in r.stdout

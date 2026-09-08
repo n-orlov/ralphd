@@ -5,14 +5,19 @@ the `resume` verb for this feature.
 `resume` reuses the stub-docker recording harness from test_cli_docker.py
 (no real container, no real engine needed to prove the docker-run wiring);
 the `unpause` rename is proven against a real (no-Docker) engine via the
-`live` fixture in conftest.py, since it talks to a live API endpoint.
+`live` fixture in conftest.py, since it talks to a live API endpoint -- the
+CLI itself runs in-process there (`call_ralphctl_in_process`, task 001,
+requirement F), only the engine is a real process.
 """
 
 from __future__ import annotations
 
 import json
+import os
 
 from test_cli_docker import Ctl, ctl, unix_sock
+
+from tests.conftest import call_ralphctl_in_process
 
 __all__ = ["ctl", "unix_sock"]
 
@@ -180,14 +185,16 @@ def test_resume_labels_job_role_and_exports_self_container_id(ctl):
 
 
 # --------------------------------------------------------------------------
-def test_unpause_hits_resume_endpoint(live):
+def test_unpause_hits_resume_endpoint(live, capsys):
     """The rename (old `resume` -> `unpause`) must still hit the engine's
     `POST /resume` (not a no-op / not renamed to a nonexistent route):
     the response body's `resumed: true` only comes from that handler."""
     run = live(run_id="unpause-test",
               job={"iterations": 2, "max_approaches": 1, "on_complete": "idle"})
     run.wait_terminal()
-    res = run.ralphctl("--json", "unpause", run.run_id)
+    res = call_ralphctl_in_process(
+        ["--json", "unpause", run.run_id],
+        env={**os.environ, "RALPHD_REGISTRY": str(run.registry)}, capsys=capsys)
     assert res.returncode == 0, (res.stdout, res.stderr)
     assert json.loads(res.stdout) == {"resumed": True}
 
