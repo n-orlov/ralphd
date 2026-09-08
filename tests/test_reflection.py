@@ -47,14 +47,24 @@ def _sha(path: Path) -> str:
 
 def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_factory):
     e = engine_factory(job={"reflect": True, "iterations": 6, "on_complete": "exit"},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"})
-    # Task 006: under a loaded whole-tier run, `wait_api()`'s stock 15 s
-    # budget is not always enough for this specific engine subprocess to
-    # get scheduled and bind its port -- observed failing with "engine API
-    # never came up" 15 s in, inside the ~883 s fast-tier run at ce85e6e
-    # (log `/run/ralphd/artifacts/plan-a2-fast.log`). Lengthened, not
-    # retried differently: same polling loop, just more real wall-clock
-    # room for a starved process to answer /healthz.
+                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.5"})
+    # STUB_SLEEP is load-bearing HERE and must stay non-zero: this job runs
+    # `on_complete: exit`, so the engine tears its own API down the moment the
+    # job reaches a terminal state. `ac87c13` zeroed this module's STUB_SLEEP
+    # along with 20-odd others, which collapsed the engine's whole lifetime to
+    # ~110 ms (measured: API bound at .886, `job finished: succeeded` at .994)
+    # -- shorter than `wait_api()`'s own 200 ms poll interval, so the poll loop
+    # could step straight over the window and report "engine API never came up"
+    # however long its timeout was. That is the real cause of this node's red in
+    # the dev-layout lanes and solo runs, not host load: raising the timeout from
+    # 15 s to 60 s (task 006, below) could not fix a window the loop jumps over.
+    # Restored to `0.5` (its value before `ac87c13`, and the same window the
+    # snapshot comment below already depends on): four delayed non-worker phases
+    # keep the API up for ~2 s, many poll intervals wide.
+    # Task 006's own reason for the longer timeout still holds and is kept: under
+    # a loaded whole-tier run this subprocess is not always scheduled and bound
+    # inside `wait_api()`'s stock 15 s (observed inside the ~883 s fast-tier run
+    # at ce85e6e, log `/run/ralphd/artifacts/plan-a2-fast.log`).
     e.wait_api(timeout=60)
 
     # STUB_SLEEP delays every non-worker phase (incl. reflect) so we get a
