@@ -208,6 +208,72 @@ RALPHCTL = _resolve_ralphctl(_INTERPRETER_DIR, os.environ) or _INTERPRETER_DIR /
 RALPHD_ENGINE = _resolve_engine(_INTERPRETER_DIR, os.environ) or _INTERPRETER_DIR / "ralphd-engine"
 
 
+def call_ralphctl_in_process(argv: list[str], *, env: dict | None,
+                              capsys, cwd: Path | None = None,
+                              ) -> subprocess.CompletedProcess:
+    """Drive `ralphctl` through `cli.main.main()` in this same process (task
+    036/037, requirement F.1/F.2) instead of spawning the real console
+    script -- for every black-box CLI test whose subject is the CLI's own
+    argument parsing / rendering, never the process boundary itself.
+
+    Swaps `sys.argv` and the *whole* of `os.environ` for the one call (most
+    callers built `env` as a full replacement dict the way `subprocess.run`
+    wanted it, never a delta), restores both in a `finally`, and returns a
+    real `subprocess.CompletedProcess` so every existing
+    `res.returncode`/`res.stdout`/`res.stderr` assertion keeps reading it
+    exactly as it read the spawned process's. `main()` never returns a code
+    on success (`sys.exit` is only called for a nonzero/explicit exit); a
+    bare return -- or any exception other than `SystemExit` -- is exit 0/an
+    uncaught error respectively, matched to the same shape a real process
+    exit would have taken.
+    """
+    from ralphd.cli import main as cli_main
+
+    # `DOCKER`/`IMAGE_ENV` are read from `os.environ` ONCE, at module import
+    # time (main.py's two module-level `RALPHD_DOCKER`/`RALPHD_IMAGE` reads) --
+    # never per-call. A real subprocess re-imports the module fresh every
+    # time, so this never mattered there; in-process it means an `env=`
+    # override is silently ignored and the REAL `docker` binary runs instead
+    # of a test's recording stub (caught the hard way: task 036 first spawned
+    # five real sibling containers on the host daemon before this patch was
+    # added -- cleaned up by exact container id, never by label/pattern).
+    # Patched here, not just `os.environ`, and restored in the same `finally`.
+    old_argv = sys.argv
+    old_environ = dict(os.environ)
+    old_docker = cli_main.DOCKER
+    old_image_env = cli_main.IMAGE_ENV
+    old_cwd = Path.cwd() if cwd is not None else None
+    try:
+        if env is not None:
+            os.environ.clear()
+            os.environ.update(env)
+        cli_main.DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
+        cli_main.IMAGE_ENV = os.environ.get("RALPHD_IMAGE") or None
+        sys.argv = ["ralphctl", *argv]
+        if cwd is not None:
+            os.chdir(cwd)
+        code = 0
+        try:
+            cli_main.main()
+        except SystemExit as exc:
+            if exc.code is None:
+                code = 0
+            elif isinstance(exc.code, int):
+                code = exc.code
+            else:
+                code = 1
+        out = capsys.readouterr()
+        return subprocess.CompletedProcess(list(sys.argv), code, out.out, out.err)
+    finally:
+        sys.argv = old_argv
+        os.environ.clear()
+        os.environ.update(old_environ)
+        cli_main.DOCKER = old_docker
+        cli_main.IMAGE_ENV = old_image_env
+        if old_cwd is not None:
+            os.chdir(old_cwd)
+
+
 def pytest_configure(config):
     """Turn a missing console script into one immediate, self-explaining
     session error (#65) instead of ~45 modules' worth of subprocess

@@ -1,8 +1,9 @@
 """Black-box tests for the enriched `ralphctl doctor` checks (PRD req 20):
 default LLM profile resolution, registry schema, and dangling-container
-checks in both directions. Each test invokes the real `ralphctl` executable
-with RALPHD_DOCKER pointing at the recording stub (tests/stub-docker/docker)
-and RALPHD_REGISTRY at a tmp dir. No CLI internals are imported.
+checks in both directions. Each test drives `ralphctl` in-process through
+`cli.main.main()` + `capsys` (task 036, requirement F.1) with RALPHD_DOCKER
+pointing at the recording stub (tests/stub-docker/docker) and RALPHD_REGISTRY
+at a tmp dir.
 """
 
 from __future__ import annotations
@@ -15,15 +16,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
 
 
 class Ctl:
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, capsys):
         self.tmp = tmp
+        self.capsys = capsys
         self.registry = tmp / "registry"
         self.registry.mkdir()
         self.log = tmp / "docker-argv.jsonl"
@@ -36,8 +38,7 @@ class Ctl:
             "STUB_DOCKER_LOG": str(self.log),
             **(env or {}),
         }
-        return subprocess.run([str(RALPHCTL), *argv], env=full_env,
-                              capture_output=True, text=True, timeout=60)
+        return call_ralphctl_in_process(list(argv), env=full_env, capsys=self.capsys)
 
     def doctor(self, env: dict | None = None) -> dict:
         res = self.run("--json", "doctor", env=env)
@@ -45,8 +46,8 @@ class Ctl:
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _base_env() -> dict:

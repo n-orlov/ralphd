@@ -13,8 +13,8 @@ from test_cli_docker import Ctl
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _template_dir(ctl: Ctl, name: str):

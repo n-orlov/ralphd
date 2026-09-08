@@ -24,8 +24,8 @@ __all__ = ["engine_factory"]
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def docker_run_argv_nth(ctl: Ctl, idx: int) -> list[str]:

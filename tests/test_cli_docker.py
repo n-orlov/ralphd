@@ -1,9 +1,11 @@
 """Black-box tests for ralphctl's docker sibling-container support.
 
-Each test invokes the real `ralphctl` executable as a subprocess with
-RALPHD_DOCKER pointing at a recording stub (tests/stub-docker/docker) and
-RALPHD_REGISTRY at a tmp dir, then asserts on the recorded docker argv,
-stdout/stderr, and exit codes. No CLI internals are imported.
+Each test drives `ralphctl` in-process through `cli.main.main()` + `capsys`
+(task 036, requirement F.1) with RALPHD_DOCKER pointing at a recording stub
+(tests/stub-docker/docker) and RALPHD_REGISTRY at a tmp dir, then asserts on
+the recorded docker argv, stdout/stderr, and exit codes. `docker` itself is
+still a real subprocess spawn (the recording stub) -- only the `ralphctl`
+process boundary is removed.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHCTL, with_ralphd_importable
+from tests.conftest import call_ralphctl_in_process, with_ralphd_importable
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
@@ -25,8 +27,9 @@ STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
 class Ctl:
     """ralphctl runner bound to a tmp registry + recording stub docker."""
 
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, capsys):
         self.tmp = tmp
+        self.capsys = capsys
         self.registry = tmp / "registry"
         self.registry.mkdir()
         self.log = tmp / "docker-argv.jsonl"
@@ -40,7 +43,8 @@ class Ctl:
         # layout that hides `ralphd` from the child just as it does from the
         # engine, so this shared runner -- imported by ~10 modules via the
         # `ctl` fixture -- routes the *merged* env through the same helper the
-        # engine launchers use (#67).
+        # engine launchers use (#67). Task 036 (F.1): driven in-process
+        # through `cli.main.main()` + `capsys` instead of a real spawn.
         full_env = with_ralphd_importable({
             **os.environ,
             "RALPHD_DOCKER": str(STUB_DOCKER),
@@ -48,8 +52,7 @@ class Ctl:
             "STUB_DOCKER_LOG": str(self.log),
             **(env or {}),
         })
-        return subprocess.run([str(RALPHCTL), *argv], env=full_env,
-                              capture_output=True, text=True, timeout=60)
+        return call_ralphctl_in_process(list(argv), env=full_env, capsys=self.capsys)
 
     def recorded(self) -> list[list[str]]:
         if not self.log.exists():
@@ -58,8 +61,8 @@ class Ctl:
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 @pytest.fixture

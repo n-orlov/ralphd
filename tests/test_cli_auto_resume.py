@@ -29,8 +29,8 @@ from ralphd.cli.main import AUTO_RESUME_DEFAULT, _read_auto_resume_setting
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _wiring_path(ctl: Ctl, run_id: str):

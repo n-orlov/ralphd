@@ -1,14 +1,17 @@
 """Real-daemon integration tests for ralphctl's docker support.
 
-Unlike test_cli_docker.py (recording stub — precise argv/exit-code contracts),
-these run the real `ralphctl` against the REAL docker daemon and assert on the
-actual effects: labels on created containers, socket binds, group-add, env,
-and label-based reaping. Skipped automatically when docker is unavailable.
+Unlike test_cli_docker.py (recording stub -- precise argv/exit-code
+contracts), these drive `ralphctl` in-process through `cli.main.main()` +
+`capsys` (task 036, requirement F.1) against the REAL docker daemon and
+assert on the actual effects: labels on created containers, socket binds,
+group-add, env, and label-based reaping. `docker` itself stays a real
+subprocess spawn throughout -- only the `ralphctl` process boundary is
+removed. Skipped automatically when docker is unavailable.
 
 testcontainers-python was considered and deliberately not used: the subject
 under test IS a container launcher (ralphctl runs `docker run` itself), so a
 container-management library would only wrap the two fixture containers these
-tests create — plain docker CLI calls keep the tests dependency-free and
+tests create -- plain docker CLI calls keep the tests dependency-free and
 black-box.
 """
 
@@ -23,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 DOCKER_SOCK = "/var/run/docker.sock"
 IMAGE = "alpine:3"  # tiny stand-in for the job image; entrypoint exits at once
@@ -53,7 +56,8 @@ def inspect(name: str) -> dict:
 class Ctl:
     """ralphctl runner bound to a tmp registry, using the real docker."""
 
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, capsys):
+        self.capsys = capsys
         self.registry = tmp / "registry"
         self.registry.mkdir()
         self.prd = tmp / "prd.md"
@@ -64,8 +68,7 @@ class Ctl:
         full_env = {**os.environ, "RALPHD_REGISTRY": str(self.registry),
                     **(env or {})}
         full_env.pop("RALPHD_DOCKER", None)  # real docker
-        return subprocess.run([str(RALPHCTL), *argv], env=full_env,
-                              capture_output=True, text=True, timeout=120)
+        return call_ralphctl_in_process(list(argv), env=full_env, capsys=self.capsys)
 
     def start(self, run_id: str, *extra: str) -> subprocess.CompletedProcess:
         self.cleanup.append(f"ralphd-{run_id}")
@@ -74,8 +77,8 @@ class Ctl:
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    c = Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    c = Ctl(tmp_path, capsys)
     yield c
     for name in c.cleanup:
         docker("rm", "-f", name)

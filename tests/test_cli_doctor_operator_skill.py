@@ -1,9 +1,9 @@
 """Black-box tests for `ralphctl doctor`'s operator-skill line (task 023,
 requirement R): installed / missing / stale, driven by the install stamp's
-recorded version (never guessed from mere presence). Invokes the real
-`ralphctl` executable with `HOME` pointed at a tmp dir and `RALPHD_DOCKER` at
-the recording stub so the check is isolated from anything else `doctor`
-reports.
+recorded version (never guessed from mere presence). Drives `ralphctl`
+in-process through `cli.main.main()` + `capsys` (task 036, requirement F.1)
+with `HOME` pointed at a tmp dir and `RALPHD_DOCKER` at the recording stub
+so the check is isolated from anything else `doctor` reports.
 
 `_operator_skill_status` (main.py) is the one function both `doctor` and
 this module read: it checks the same two agent layouts `skills install`
@@ -19,15 +19,16 @@ import os
 import subprocess
 from pathlib import Path
 
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
 
 
 class Ctl:
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, capsys):
         self.tmp = tmp
+        self.capsys = capsys
         self.registry = tmp / "registry"
         self.registry.mkdir()
         self.home = tmp / "home"
@@ -44,8 +45,7 @@ class Ctl:
             "STUB_DOCKER_INSPECT_OK": "1",
             **(env or {}),
         }
-        return subprocess.run([str(RALPHCTL), *argv], env=full_env,
-                              capture_output=True, text=True, timeout=60)
+        return call_ralphctl_in_process(list(argv), env=full_env, capsys=self.capsys)
 
     def doctor(self) -> subprocess.CompletedProcess:
         return self.run("--json", "doctor")
@@ -61,8 +61,8 @@ def _installed(home: Path) -> Path:
     return home / ".pi" / "agent" / "skills" / "ralphd"
 
 
-def test_missing_when_never_installed(tmp_path):
-    ctl = Ctl(tmp_path)
+def test_missing_when_never_installed(tmp_path, capsys):
+    ctl = Ctl(tmp_path, capsys)
     res = ctl.doctor()
     body = json.loads(res.stdout)
     assert body["operatorSkill"] == {"status": "missing", "path": None,
@@ -71,8 +71,8 @@ def test_missing_when_never_installed(tmp_path):
     assert "operator skill: missing" in text
 
 
-def test_installed_right_after_a_fresh_install(tmp_path):
-    ctl = Ctl(tmp_path)
+def test_installed_right_after_a_fresh_install(tmp_path, capsys):
+    ctl = Ctl(tmp_path, capsys)
     inst = ctl.install()
     assert inst.returncode == 0, inst.stderr
     res = ctl.doctor()
@@ -85,8 +85,8 @@ def test_installed_right_after_a_fresh_install(tmp_path):
     assert "stale" not in line
 
 
-def test_stale_when_the_stamped_version_is_behind_ralphctls_own(tmp_path):
-    ctl = Ctl(tmp_path)
+def test_stale_when_the_stamped_version_is_behind_ralphctls_own(tmp_path, capsys):
+    ctl = Ctl(tmp_path, capsys)
     inst = ctl.install()
     assert inst.returncode == 0, inst.stderr
     stamp_path = _installed(ctl.home) / ".ralphd-skill-stamp.json"
@@ -105,11 +105,11 @@ def test_stale_when_the_stamped_version_is_behind_ralphctls_own(tmp_path):
     assert f"operator skill: stale (built from {old_version})" in text
 
 
-def test_a_discoverable_skill_with_no_stamp_is_installed_not_guessed_stale(tmp_path):
+def test_a_discoverable_skill_with_no_stamp_is_installed_not_guessed_stale(tmp_path, capsys):
     """A skill placed some other way than `ralphctl skills install` (no
     stamp) is not a version claim `doctor` can compare -- it must not invent
     one and call it stale."""
-    ctl = Ctl(tmp_path)
+    ctl = Ctl(tmp_path, capsys)
     dest = _installed(ctl.home)
     dest.mkdir(parents=True)
     (dest / "SKILL.md").write_text("---\nname: ralphd\n---\nbody\n")
@@ -119,8 +119,8 @@ def test_a_discoverable_skill_with_no_stamp_is_installed_not_guessed_stale(tmp_p
                                      "installedVersion": None}
 
 
-def test_claude_layout_is_also_detected(tmp_path):
-    ctl = Ctl(tmp_path)
+def test_claude_layout_is_also_detected(tmp_path, capsys):
+    ctl = Ctl(tmp_path, capsys)
     inst = ctl.install()
     assert inst.returncode == 0, inst.stderr
     pi_dest = _installed(ctl.home)
@@ -133,11 +133,11 @@ def test_claude_layout_is_also_detected(tmp_path):
     assert body["operatorSkill"]["path"] == str(claude_dest)
 
 
-def test_operator_skill_never_affects_the_overall_verdict(tmp_path):
+def test_operator_skill_never_affects_the_overall_verdict(tmp_path, capsys):
     """Report-only, like image staleness: a missing/stale skill is not one of
     `checks` -- an operator who never installed it is not, on that account,
     a broken one."""
-    ctl = Ctl(tmp_path)
+    ctl = Ctl(tmp_path, capsys)
     res = ctl.doctor()
     body = json.loads(res.stdout)
     assert "operator_skill" not in body["checks"]

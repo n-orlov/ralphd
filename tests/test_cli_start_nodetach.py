@@ -24,8 +24,8 @@ STUB_PI = REPO / "tests" / "stub-pi"
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _live_env() -> dict:

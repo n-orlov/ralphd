@@ -34,8 +34,8 @@ EMPTY_SWEEP = {"resumed": [], "skipped": [], "failed": [], "waiting": [],
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _base_env(**extra) -> dict:

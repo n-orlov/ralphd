@@ -305,19 +305,24 @@ def test_the_engine_script_itself_runs_under_an_overridden_home():
 
 def test_the_shared_ralphctl_runner_keeps_the_tmp_home(tmp_path):
     """`ralphctl` is the same package behind a second console script, and
-    tests/test_cli_docker.py's `Ctl.run` -- the runner ~10 modules get from the
-    `ctl` fixture -- lets callers pass a HOME through. One of them,
-    test_cli_resume_llm_wiring.py, asserts on the ~/.aws mount ralphctl derives
-    from that HOME, so it genuinely needs the override; before the helper was
-    applied there it failed with `ModuleNotFoundError: No module named
-    'ralphd'` from ~/.local/bin/ralphctl line 3. Same defect, other script."""
-    from test_cli_docker import Ctl
+    the real `RALPHCTL` spawn -- exercised directly here rather than through
+    tests/test_cli_docker.py's `Ctl.run` (task 036 moved that shared helper
+    in-process, which would no longer touch this defect at all: this test's
+    whole subject IS the process boundary, so it keeps its own real spawn) --
+    lets a caller pass a HOME through. One import-path caller,
+    test_cli_resume_llm_wiring.py, asserts on the ~/.aws mount ralphctl
+    derives from that HOME, so it genuinely needs the override; before the
+    helper was applied there it failed with `ModuleNotFoundError: No module
+    named 'ralphd'` from ~/.local/bin/ralphctl line 3. Same defect, other
+    script."""
+    from tests.conftest import RALPHCTL, with_ralphd_importable
 
     import ralphd
 
     fake_home = tmp_path / "ctl-home"
     fake_home.mkdir()
-    ctl = Ctl(tmp_path)
-    res = ctl.run("--version", env={"HOME": str(fake_home)})
+    env = with_ralphd_importable({**os.environ, "HOME": str(fake_home)})
+    res = subprocess.run([str(RALPHCTL), "--version"], env=env,
+                         capture_output=True, text=True, timeout=30)
     assert res.returncode == 0, res.stdout + res.stderr
     assert ralphd.__version__ in res.stdout

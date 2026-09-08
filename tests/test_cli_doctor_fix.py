@@ -23,8 +23,8 @@ REPO_MOUNT = ":/run/ralphd"
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _base_env(**extra) -> dict:

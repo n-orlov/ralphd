@@ -15,7 +15,8 @@ Two tiers:
 
 * a unit tier over `main.image_staleness` (pure: every docker fact is passed
   in), covering fresh / stale / missing / each flavour of unknowable, and
-* a black-box tier running the real `ralphctl doctor` against the recording
+* a black-box tier driving `ralphctl doctor` in-process (task 036,
+  requirement F.1: `cli.main.main()` + `capsys`) against the recording
   stub docker (`tests/stub-docker/docker`), covering the text line, the
   `--json` field, the `checks["image"]` verdict in both directions, and the
   per-run report over run state written by task 036.
@@ -32,7 +33,7 @@ import pytest
 
 from ralphd.cli import image
 from ralphd.cli import main as cli
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
@@ -188,8 +189,9 @@ def test_every_verdict_is_one_of_the_declared_words():
 
 # --------------------------------------------------------- black-box tier
 class Ctl:
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, capsys):
         self.tmp = tmp
+        self.capsys = capsys
         self.registry = tmp / "registry"
         (self.registry / "runs").mkdir(parents=True)
         self.log = tmp / "docker-argv.jsonl"
@@ -202,8 +204,7 @@ class Ctl:
             "STUB_DOCKER_LOG": str(self.log),
             **(env or {}),
         })
-        return subprocess.run([str(RALPHCTL), *argv], env=full_env,
-                              capture_output=True, text=True, timeout=90)
+        return call_ralphctl_in_process(list(argv), env=full_env, capsys=self.capsys)
 
     def doctor(self, *argv: str, env: dict | None = None) -> dict:
         res = self.run("--json", "doctor", *argv, env=env)
@@ -229,8 +230,8 @@ class Ctl:
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _images(*refs: str) -> dict:

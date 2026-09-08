@@ -21,18 +21,20 @@ What is pinned here:
   * a binary artifact is described, never printed;
   * the on-disk contract: no container, no live API, no snapshot notice.
 
-Tiers: unit (the shaping and the wordings), black-box `ralphctl` subprocesses
-over hand-written registries (container gone), and one REAL engine reflect run
-whose `artifacts/reflection/` the CLI prints after the engine is stopped.
+Tiers: unit (the shaping and the wordings), black-box `ralphctl` driven
+in-process through `cli.main.main()` + `capsys` (task 036, requirement F.1)
+over hand-written registries (container gone), and one REAL engine reflect
+run whose `artifacts/reflection/` the CLI prints after the engine is stopped.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
+
+import pytest
 
 from ralphd.engine.state import (
     ARTIFACT_ALIASES,
@@ -52,17 +54,33 @@ from ralphd.engine.state import (
     format_artifact_listing,
     format_artifact_size,
 )
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 REPORT = "# Reflection\n\nThe ladder worked; the reviewer was too strict.\n"
 DIFF = "--- a/prompts/worker.md\n+++ b/prompts/worker.md\n@@\n-old\n+new\n"
 PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00"
 
 
-def _ctl(registry: Path, *argv: str, timeout: int = 60):
+def _ctl(registry: Path, *argv: str, timeout: int = 60, cwd: Path | None = None):
     env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS, cwd=cwd)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 036 (F.1): every `_ctl()` call in this module drives `ralphctl`
+    in-process through `cli.main.main()`, which needs the running test's own
+    `capsys` to read stdout/stderr back -- captured here once per test
+    (module-global, never concurrent: pytest runs one test at a time even
+    under `-n 8`, each worker its own process) instead of threading a new
+    fixture parameter through every test function that calls it."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 def _seed(tmp: Path, run_id: str = "art-run", *, report: str | None = REPORT,
@@ -365,10 +383,7 @@ def test_pull_still_copies_the_tree_with_and_without_a_destination(tmp_path):
     # the default destination is relative to the caller's cwd
     cwd = tmp_path / "cwd"
     cwd.mkdir()
-    env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    done = subprocess.run([str(RALPHCTL), "artifacts", "art-run", "pull"],
-                          cwd=cwd, env=env, capture_output=True, text=True,
-                          timeout=60)
+    done = _ctl(registry, "artifacts", "art-run", "pull", cwd=cwd)
     assert done.returncode == 0, done.stderr
     assert (cwd / "artifacts" / "reflection" / "report.md").read_text() == REPORT
 

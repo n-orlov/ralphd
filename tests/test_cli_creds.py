@@ -1,10 +1,11 @@
 """Black-box tests for `ralphctl start --creds <dir>`.
 
-Invokes the real `ralphctl` executable with RALPHD_DOCKER pointing at the
-recording stub (tests/stub-docker/docker) and RALPHD_REGISTRY at a tmp dir,
-then asserts on what landed in the job's config dir (`<registry>/configs/
-<run-id>/creds/`) and that nothing credential-shaped ever touches the run
-dir (`<registry>/runs/<run-id>/`).
+Drives `ralphctl` in-process through `cli.main.main()` + `capsys` (task 036,
+requirement F.1) with RALPHD_DOCKER pointing at the recording stub
+(tests/stub-docker/docker) and RALPHD_REGISTRY at a tmp dir, then asserts on
+what landed in the job's config dir (`<registry>/configs/<run-id>/creds/`)
+and that nothing credential-shaped ever touches the run dir
+(`<registry>/runs/<run-id>/`).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 REPO = Path(__file__).parent.parent
 STUB_DOCKER = REPO / "tests" / "stub-docker" / "docker"
@@ -24,8 +25,9 @@ SECRET = "sk-live-DO-NOT-LEAK-9f3a1c"
 
 
 class Ctl:
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, capsys):
         self.tmp = tmp
+        self.capsys = capsys
         self.registry = tmp / "registry"
         self.registry.mkdir()
         self.log = tmp / "docker-argv.jsonl"
@@ -40,8 +42,7 @@ class Ctl:
             "STUB_DOCKER_LOG": str(self.log),
             **(env or {}),
         }
-        return subprocess.run([str(RALPHCTL), *argv], env=full_env,
-                              capture_output=True, text=True, timeout=60)
+        return call_ralphctl_in_process(list(argv), env=full_env, capsys=self.capsys)
 
     def config_dir(self, run_id: str) -> Path:
         return self.registry / "configs" / run_id
@@ -51,8 +52,8 @@ class Ctl:
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _make_creds_dir(base: Path) -> Path:

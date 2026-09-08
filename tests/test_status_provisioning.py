@@ -95,14 +95,14 @@ def _write_job_yaml_with_worker_hard_tier(config_dir: Path) -> None:
         "model_tiers: " + json.dumps({"worker": {"hard": VERIFIER}}) + "\n")
 
 
-def test_the_two_surfaces_agree_on_a_distinct_worker_hard_rung(tmp_path):
+def test_the_two_surfaces_agree_on_a_distinct_worker_hard_rung(tmp_path, capsys):
     """Task 006 (#68): a job.yaml that configures a distinct `worker.hard`
     rung (different from `worker`'s other two tiers) makes BOTH the hub's
     `run_detail` payload and `ralphctl status`'s plain text carry that
     third rung, and both derive it from the identical
     `provisioning_table`/`format_provisioning_lines` pair -- no second
     formatter anywhere."""
-    ctl = Ctl(tmp_path)
+    ctl = Ctl(tmp_path, capsys)
     run_id = "hat-status-tiers"
     _write_dead_run(ctl.registry, run_id, iterationsUsed=0, iterationsBudget=25)
     cdir = ctl.registry / "configs" / run_id
@@ -137,8 +137,8 @@ def test_the_two_surfaces_agree_on_a_distinct_worker_hard_rung(tmp_path):
     assert doc["provisioningLines"] == hub_lines
 
 
-def test_the_three_surfaces_agree_before_any_iteration_has_run(tmp_path):
-    ctl = Ctl(tmp_path)
+def test_the_three_surfaces_agree_before_any_iteration_has_run(tmp_path, capsys):
+    ctl = Ctl(tmp_path, capsys)
     run_id = "hat-status-surfaces"
     _write_dead_run(ctl.registry, run_id, iterationsUsed=0, iterationsBudget=25)
     cdir = ctl.registry / "configs" / run_id

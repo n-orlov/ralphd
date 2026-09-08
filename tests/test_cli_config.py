@@ -15,8 +15,8 @@ from test_cli_docker import Ctl, docker_run_argv
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _config_yaml(ctl: Ctl) -> dict:

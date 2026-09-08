@@ -434,8 +434,8 @@ def test_the_off_budget_grace_gate_is_checked_too(tmp_path):
 # ===========================================================================
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _job_yaml_path(ctl: Ctl, run_id: str):

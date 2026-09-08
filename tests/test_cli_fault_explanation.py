@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
@@ -80,15 +79,31 @@ from ralphd.engine.state import (
     read_events,
     utc_from_epoch,
 )
-from tests.conftest import RALPHCTL
+from tests.conftest import call_ralphctl_in_process
 
 DNS_ERROR = "request to https://aigw.internal/v1 failed, reason: getaddrinfo EAI_AGAIN aigw.internal"
 
 
 def _ctl(registry: Path, *argv: str, timeout: int = 60):
     env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 036 (F.1): every `_ctl()` call in this module drives `ralphctl`
+    in-process through `cli.main.main()`, which needs the running test's own
+    `capsys` to read stdout/stderr back -- captured here once per test
+    (module-global, never concurrent: pytest runs one test at a time even
+    under `-n 8`, each worker its own process) instead of threading a new
+    fixture parameter through every test function that calls it."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 def _dead_run(tmp_path: Path, run_id: str = "faulty", **status) -> tuple[Path, Path]:

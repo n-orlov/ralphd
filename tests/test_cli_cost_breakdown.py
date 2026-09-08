@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -63,7 +62,7 @@ from ralphd.engine.state import (
     format_cost,
     format_token_total,
 )
-from tests.conftest import RALPHCTL, live  # noqa: F401  (fixture)
+from tests.conftest import call_ralphctl_in_process, live  # noqa: F401  (fixture)
 
 # The verbatim iteration-1 payload of the v0.6 self-development run: the
 # AIGW/Bedrock route quoted $0 for half a million billed tokens (task 049).
@@ -94,8 +93,24 @@ MIXED_USAGE = {
 
 def _ctl(registry: Path, *argv: str, timeout: int = 60):
     env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
-    return subprocess.run([str(RALPHCTL), *argv], env=env,
-                          capture_output=True, text=True, timeout=timeout)
+    return call_ralphctl_in_process(list(argv), env=env, capsys=_CAPSYS)
+
+
+@pytest.fixture(autouse=True)
+def _capture_cli_output(capsys):
+    """Task 036 (F.1): every `_ctl()` call in this module drives `ralphctl`
+    in-process through `cli.main.main()`, which needs the running test's own
+    `capsys` to read stdout/stderr back -- captured here once per test
+    (module-global, never concurrent: pytest runs one test at a time even
+    under `-n 8`, each worker its own process) instead of threading a new
+    fixture parameter through every test function that calls it."""
+    global _CAPSYS
+    _CAPSYS = capsys
+    yield
+    _CAPSYS = None
+
+
+_CAPSYS = None
 
 
 def _dead_run(tmp_path: Path, run_id: str = "spender", **status) -> tuple[Path, Path]:

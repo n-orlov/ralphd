@@ -23,8 +23,8 @@ from ralphd.engine.config import JobConfig
 
 
 @pytest.fixture
-def ctl(tmp_path):
-    return Ctl(tmp_path)
+def ctl(tmp_path, capsys):
+    return Ctl(tmp_path, capsys)
 
 
 def _job_yaml_path(ctl: Ctl, run_id: str):
