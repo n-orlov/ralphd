@@ -81,13 +81,38 @@ tightened as the counts come down -- they are a ratchet, not a target.
 | fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5324 | 321 | 81.89 s | 7000 | 430 | 150 s | < 120 s | met -- 81.89 s inside the 120 s target |
 | fast, serial | `fast` | `-m fast` | 5324 | 321 | 491.68 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 491.68 s measured against the 300 s target |
 | records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 194 | 4 | 5.08 s | 300 | 15 | 15 s | < 15 s | met -- 5.08 s inside the 15 s target, 194 tests inside the 300-test target |
+| dev-layout, `PYTHONUSERBASE` unset | n/a (no marker; the whole suite, unfiltered) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 
-Every number above is a fresh run at `3e65963`, taken sequentially and never two
-at once, with the wall clock read off each run's own summary line (the collected
-counts come from a `--collect-only` pass at the same sha). The serial fast lane
-is measured directly (`.venv/bin/python -m pytest -q -m fast`, 491.68 s) rather
-than carried forward from the audit's older 981 s figure at sha 836adc1; the
-parallel lane is still the one the loop uses day to day.
+Every number in the first five rows above is a fresh run at `3e65963`, taken
+sequentially and never two at once, with the wall clock read off each run's own
+summary line (the collected counts come from a `--collect-only` pass at the
+same sha). The serial fast lane is measured directly (`.venv/bin/python -m
+pytest -q -m fast`, 491.68 s) rather than carried forward from the audit's
+older 981 s figure at sha 836adc1; the parallel lane is still the one the loop
+uses day to day.
+
+**Dev-layout, `PYTHONUSERBASE` unset (task 006).** Measured on this task's own
+tree at sha `852a51d` (the last commit before this task's own docs-only
+commit): `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset
+scripts/host_like_dev_layout.sh`, no `-m`/`-rs` args (the script runs the whole
+suite unfiltered, which is what the nightly lane actually does), launched
+`nohup timeout -k 30 3300 ... &` and polled to completion rather than blocked
+on: `3 failed, 5405 passed, 1 skipped, 9 warnings in 2047.32s (0:34:07)`, exit
+status **1** (captured by the wrapper's own `$?`, not inferred). The three
+failing node ids are pre-existing at this sha, unrelated to this mode or this
+row (confirmed against a plain in-container run at the same sha):
+`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`,
+`tests/test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`, and
+`tests/test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
+(the live fast-tier drift disclosed further below, in the "What moved the
+numbers" section). The placed skill
+(`host-layout-smoke-skill`) SURVIVED the run. Collected counts (5409 tests /
+334 modules) come from a plain `--collect-only` pass over the same tree in
+this container's own `.venv` (no marker, the same set the dev-layout script's
+unfiltered `pytest` invocation collects, since it runs the same checkout under
+a different `$HOME`/`PYTHONUSERBASE`, not a different test selection). No
+ceiling in this table was raised to record this row; the budget columns
+(6500 / 400 / 3600 s) are new headroom for a row that had none before.
 
 **What moved the numbers (task 050, requirement G.2, operator steer 008).** The
 previous measurement at `a1b201c` recorded 311.12 s / 448.34 s / 325.40 s /
@@ -116,6 +141,14 @@ cure-01-01 (PRD I) later added 3 tests to `tests/test_packaging_metadata.py`
 (pinning the engine-account version-claim exemption it introduced), moving the
 fast-tier count from 5321 to **5324**; smoke's 3768 and the module count (321)
 are unaffected.
+
+Live drift since that measurement (disclosed here, not re-measured): task 005
+(requirement F)'s new `tests/records/test_ralphctl_process_boundary.py` (5
+nodes, 1 module) landed in the fast tier, moving today's live collected count
+to **5329 tests / 322 modules** at sha `852a51d` -- both still over the PRD's
+<=3,000-test / <=180-module tier-wide targets (unchanged from the 5324/321
+miss above). The table's own smoke/fast/records rows are not re-measured by
+this note; that full re-measurement, wall clock included, is task 008's.
 
 ### The stub-`pi` flow lane (`tests/flows/`)
 
@@ -223,8 +256,10 @@ The slowest node in the parallel fast lane is 11.24 s
 and the whole `--durations=40` list sums to 127.96 s; the per-node detail lives
 in `artifacts/reports/v0.19.1-suite-budget.md`'s 2026-09-08 entry.
 
-The two dev-layout modes' nightly target (under 15 min each, from ~40) is
-measured by the sweep lanes, not here.
+The dev-layout `PYTHONUSERBASE`-unset mode's nightly target (under 15 min,
+from ~40) is now measured in the budget table above: **MISSED**, 2047.32 s
+against the 900 s target (task 006). The `PYTHONUSERBASE`-exported mode's
+same target still has no row here yet -- that is task 007's.
 
 ## When a tier goes over budget
 
