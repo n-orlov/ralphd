@@ -1,26 +1,40 @@
 """Black-box tests for `ralphctl skills <run-id> ls|get|add|rm` (PRD req 12).
 
-Drives the real `ralphctl` binary against a real, directly-launched
-`ralphd-engine` (the `live` fixture from conftest.py) — no engine internals
-imported, only the CLI's stdout/exit code and files it writes back to disk.
+Drives a real, directly-launched `ralphd-engine` (the `live` fixture from
+conftest.py) — no engine internals imported -- but `ralphctl` itself now
+runs in-process through `tests/conftest.py`'s `call_ralphctl_in_process`
+(task 001, requirement F): only the CLI's stdout/exit code and files it
+writes back to disk are asserted on, same as before, just without spawning
+a second real process for every CLI call.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import call_ralphctl_in_process
+
+
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
 
 @pytest.fixture
-def skills_run(tmp_path, live):
+def skills_run(tmp_path, live, capsys):
     home = tmp_path / "home"
     home.mkdir()
     r = live(run_id="skills-cli", job={"iterations": 3, "vigilant": False},
              stub_env={"HOME": str(home)})
     r.wait_api()
-    yield r
+    yield _in_process_ralphctl(r, capsys)
 
 
 def _mounted_skill(config_dir: Path, name: str) -> None:
@@ -93,8 +107,9 @@ def test_skills_rm_deletes(tmp_path, skills_run):
     assert res.returncode != 0
 
 
-def test_skills_missing_run_exits_3(tmp_path, live):
+def test_skills_missing_run_exits_3(tmp_path, live, capsys):
     r = live(run_id="skills-cli-exists-only")  # ensures registry/ralphctl wiring exists
+    r = _in_process_ralphctl(r, capsys)
     res = r.ralphctl("skills", "no-such-run-at-all", "ls")
     assert res.returncode == 3
 

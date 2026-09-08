@@ -1,26 +1,40 @@
 """Black-box tests for `ralphctl creds <run-id> ls|get|add|rm` (PRD req 12).
 
-Drives the real `ralphctl` binary against a real, directly-launched
-`ralphd-engine` (the `live` fixture from conftest.py) — no engine internals
-imported, only the CLI's stdout/exit code and files it writes back to disk.
+Drives a real, directly-launched `ralphd-engine` (the `live` fixture from
+conftest.py) — no engine internals imported -- but `ralphctl` itself now
+runs in-process through `tests/conftest.py`'s `call_ralphctl_in_process`
+(task 001, requirement F): only the CLI's stdout/exit code and files it
+writes back to disk are asserted on, same as before, just without spawning
+a second real process for every CLI call.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import call_ralphctl_in_process
+
+
+def _in_process_ralphctl(run, capsys):
+    def ralphctl(*argv: str):
+        env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+        return call_ralphctl_in_process(list(argv), env=env, capsys=capsys)
+    run.ralphctl = ralphctl
+    return run
+
 
 @pytest.fixture
-def creds_run(tmp_path, live):
+def creds_run(tmp_path, live, capsys):
     home = tmp_path / "home"
     home.mkdir()
     r = live(run_id="creds-cli", job={"iterations": 3, "vigilant": False},
              stub_env={"HOME": str(home)})
     r.wait_api()
-    yield r
+    yield _in_process_ralphctl(r, capsys)
 
 
 def _mounted_cred(config_dir: Path, name: str, value: str) -> None:
@@ -99,8 +113,9 @@ def test_creds_add_rejects_non_env_file(creds_run, tmp_path):
     assert ".env" in res.stderr
 
 
-def test_creds_missing_run_exits_3(live):
+def test_creds_missing_run_exits_3(live, capsys):
     r = live(run_id="creds-cli-exists-only")  # ensures registry/ralphctl wiring exists
+    r = _in_process_ralphctl(r, capsys)
     res = r.ralphctl("creds", "no-such-run-at-all", "ls")
     assert res.returncode == 3
 
