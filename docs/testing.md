@@ -64,11 +64,10 @@ records lint is built that way and the tier table puts records lint in smoke.
 
 ## Budgets
 
-Measured in this container (28 cores) with the recipes above: the smoke rows and
-the serial fast row at the sha that landed requirement G.8, the parallel fast row
-re-measured at the sha that landed the first four `tests/flows` modules (task
-005). The "budget" columns are the declared ceilings this suite
-is held to; `tests/test_tier_budgets.py` fails when a recorded measurement
+Measured in this container (28 cores) with the recipes above: all four smoke
+and fast rows re-measured at sha `a1b201c` (task 039, requirement G.2 -- the
+sha this task's own commit is built on top of). The "budget" columns are the
+declared ceilings this suite is held to; `tests/test_tier_budgets.py` fails when a recorded measurement
 exceeds one, and independently asks pytest what each tier collects right now and
 fails when *that* is over the ceiling. The ceilings carry deliberate headroom
 over today's measurements so the wave's remaining flow modules can land, and are
@@ -76,18 +75,18 @@ tightened as the counts come down -- they are a ratchet, not a target.
 
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4640 | 263 | 26.97 s | 5100 | 300 | 60 s | n/a | no target of this kind for this lane |
-| smoke, serial | `smoke` | `-m smoke` | 4640 | 263 | 152.63 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 152.63 s measured against the 120 s target |
-| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 6418 | 394 | 111.79 s | 7000 | 430 | 150 s | < 120 s | met -- 111.79 s inside the 120 s target |
-| fast, serial | `fast` | `-m fast` | 6418 | 394 | 981 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 981 s measured against the 300 s target |
+| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4613 | 208 | 311.12 s | 5100 | 300 | 60 s | n/a | no target of this kind for this lane |
+| smoke, serial | `smoke` | `-m smoke` | 4613 | 208 | 448.34 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 448.34 s measured against the 120 s target |
+| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 6166 | 321 | 325.40 s | 7000 | 430 | 150 s | < 120 s | MISSED -- 325.40 s measured against the 120 s target |
+| fast, serial | `fast` | `-m fast` | 6166 | 321 | 802.14 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 802.14 s measured against the 300 s target |
 | records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 194 | 4 | 5.08 s | 300 | 15 | 15 s | < 15 s | met -- 5.08 s inside the 15 s target, 194 tests inside the 300-test target |
 
-The wall clock of the serial fast lane is the audit's own full serial
-measurement (`docs/test-suite-audit.md` section 2: 981 s at sha 836adc1, under
-the equivalent `not docker and not browser` selector, which differs from `-m
-fast` by the seven dev-layout tests). It is not re-measured per wave: 16 minutes
-of serial run buys nothing the parallel lane does not already show, and the
-parallel lane is the one the loop uses.
+Task 039 (requirement G.2) re-measured the serial fast lane directly
+(`.venv/bin/python -m pytest -q -m fast`, 802.14 s at sha `a1b201c`) rather than
+carrying forward the audit's older 981 s figure at sha 836adc1 -- the two
+selectors differ by the seven dev-layout tests, and letting the number drift
+further from the audit's own sha risked understating how much the tier had
+changed since. The parallel lane is still the one the loop uses day to day.
 
 ### The stub-`pi` flow lane (`tests/flows/`)
 
@@ -160,21 +159,33 @@ nothing in the family asks it twice.
 ### Targets missed, with their numbers
 
 Requirement G's rule is that a missed target is disclosed with its number, not
-hidden. Three of G.8's targets are missed at this sha, and one is met:
+hidden. Re-measured at sha `a1b201c` (task 039, requirement G.2): all five of
+G.8's wall-clock/count targets checked here are missed.
 
-- **smoke serial 152.63 s** against a target of < 120 s. The residue is real
-  sleeps and subprocess-spawning records lint inside the smoke tier --
-  requirement G.2's shortfall (the slowest-80 sum is 641 s against a 120 s
-  target) rather than a tiering defect. At `-n 8` the same tier is 26.97 s.
-- **6418 tests collected** against a target of at most 3000. The count reduction
-  was requirement G.6 (fold the per-task pins) and G.4 (consolidate the records
-  lint), which this wave does not land; both are disclosed as shortfalls with
-  their numbers under `artifacts/reports/`.
-- **394 modules collected** against a target of at most 180, for the same
-  reason.
-- Met: **the fast tier at `-n 8` is 111.79 s**, inside its < 120 s target. The
-  serial fast target (< 300 s) is missed at 981 s, which is the same real-sleep
-  shortfall; the loop runs this tier in parallel.
+- **smoke serial 448.34 s** against a target of < 120 s. At `-n 8` the same
+  tier is **311.12 s** -- also over its own (n/a-target) row, see below.
+- **6166 tests collected** (fast tier) against a target of at most 3000. Down
+  from the 6418 recorded at the previous measurement, but still well over
+  target; the count reduction from folding the per-task pins (D.7) and
+  consolidating the records lint (E) was not enough to clear it.
+- **321 modules collected** (fast tier) against a target of at most 180, for
+  the same reason -- down from 394.
+- **fast, `-n 8`, 325.40 s** against a target of < 120 s. This target was met
+  at the previous measurement (111.79 s); it is missed now.
+- **fast serial 802.14 s** against a target of < 300 s -- down from the prior
+  981 s figure, but still over target.
+
+**A ceiling was breached, not just a PRD target.** Three of the four re-measured
+rows now exceed their own declared `budget wall clock` (smoke parallel 311.12 s
+> 60 s, smoke serial 448.34 s > 200 s, fast parallel 325.40 s > 150 s; fast
+serial 802.14 s stays inside its 1100 s ceiling). Repeated measurement in this
+container gave consistent numbers for the parallel recipes (two independent
+`-m smoke -n 8` runs: 312.21 s and 311.12 s) while this same container showed
+~22 GiB of swap in use out of 39 GiB against 62 GiB total RAM at the time of
+measurement (`free -h`), a host-level condition this run does not control and
+did not create. Per the ratchet rule below, the ceilings are not raised here;
+the breach is filed as an impossibility petition (`artifacts/reports/
+v0.19.1-petitions.md`) rather than absorbed into this table silently.
 
 The two dev-layout modes' nightly target (under 15 min each, from ~40) is
 measured by the sweep lanes, not here.
