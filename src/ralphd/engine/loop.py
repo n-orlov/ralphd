@@ -6269,6 +6269,45 @@ class LoopSupervisor:
                     >= int(budget_before_dispatch.get("budget", 0)))
             except (TypeError, ValueError):
                 forced_split_required = False
+            # Task 018 (PRD requirement B.3, #156): THE SECOND EXHAUSTION.
+            # A task that is itself a split child of a now-`superseded`
+            # parent (task 016's forced split already happened on this
+            # plan) and has now spent its OWN progress budget is the PRD's
+            # "if a superseded task's children exhaust their budgets too"
+            # case verbatim. Forcing a SECOND split here only recurses --
+            # child becomes `superseded`, a grandchild is created, and the
+            # same wall arrives one generation smaller -- so the engine
+            # takes the v0.19 B.3 pause instead, BEFORE dispatching the
+            # doomed forced-split iteration: `reason: "stagnation"`, the
+            # same string `_step_paused` already routes straight back into
+            # `worker`, so `resume` re-enters THIS approach rather than
+            # replanning over the work the parent and child already did.
+            # Escalated at most once per child: `_second_exhaustion_already_
+            # escalated` reads the operator_escalation events back (a fresh
+            # process resuming mid-approach sees them too, unlike an
+            # in-memory set), so an operator who resumes anyway gets the
+            # forced split they implicitly asked for rather than an
+            # unbreakable pause/resume ping-pong.
+            exhausted_split_child = (
+                self._exhausted_split_child_of_superseded_parent(
+                    tasks_before, selected, budget_before_dispatch)
+                if forced_split_required else None)
+            if (exhausted_split_child is not None
+                    and not self._second_exhaustion_already_escalated(
+                        exhausted_split_child["id"])):
+                outstanding_tasks = [
+                    {"id": t.get("id"), "status": t.get("status", "pending")}
+                    for t in tasks_before.get("tasks", [])
+                    if isinstance(t, dict)
+                ]
+                self._pause_and_escalate_stagnation_last_approach(
+                    approach, outstanding_tasks,
+                    is_last_approach=(
+                        self._approach == self.cfg.max_approaches),
+                    approach_progressed=True,
+                    exhausted_split_child=exhausted_split_child)
+                self._advance("worker", "paused", "stagnation_last_approach")
+                return ("advance", "paused", "stagnation_last_approach")
             extra = self._worker_assignment_extra(
                 selected,
                 spent_budget=(budget_before_dispatch
@@ -8524,6 +8563,7 @@ class LoopSupervisor:
     def _stagnation_last_approach_escalation_text(
         self, approach: int, outstanding_tasks: list[dict],
         is_last_approach: bool = True, approach_progressed: bool = False,
+        exhausted_split_child: dict | None = None,
     ) -> str:
         """The operator-facing escalation body for a `stagnation_last_
         approach` pause (task 012, PRD requirement B.3, #153; generalised
@@ -8541,6 +8581,34 @@ class LoopSupervisor:
         plainly is not -- the two flags are never both False at the call
         site (the caller only reaches this pause when at least one holds).
         """
+        if exhausted_split_child is not None:
+            # Task 018's SECOND-exhaustion pause: no three-strike counter
+            # was involved at all, so this variant replaces the opening
+            # sentence outright rather than only its reason clause.
+            used = exhausted_split_child.get("used")
+            budget = exhausted_split_child.get("budget")
+            spent = (f" ({used}/{budget})" if used is not None
+                     and budget is not None else "")
+            lines = [
+                f"Run {self.cfg.run_id} approach {approach}: task "
+                f"{exhausted_split_child.get('id')} -- itself a split of "
+                f"task {exhausted_split_child.get('splitFrom')}, which is "
+                f"already `superseded` by that earlier forced split -- has "
+                f"now spent its OWN progress budget{spent}. Splitting it "
+                "again would only recurse one generation smaller, so the "
+                "run has been paused (existing pause machinery) instead of "
+                "forcing a second split, and instead of replanning over "
+                "work already done; it will not proceed until an operator "
+                "ruling is recorded and the run is resumed "
+                f"(`ralphctl resume {self.cfg.run_id}`), which re-enters "
+                f"approach {approach} rather than starting a fresh one.",
+                "",
+                "Outstanding tasks:",
+            ]
+            for task in outstanding_tasks:
+                lines.append(
+                    f"  {task.get('id')} ({task.get('status', 'pending')})")
+            return "\n".join(lines).rstrip() + "\n"
         if is_last_approach:
             reason_clause = "this is the LAST available approach"
         else:
@@ -8565,9 +8633,65 @@ class LoopSupervisor:
                 f"  {task.get('id')} ({task.get('status', 'pending')})")
         return "\n".join(lines).rstrip() + "\n"
 
+    def _exhausted_split_child_of_superseded_parent(
+        self, tasks_doc: dict, task, budget: dict | None,
+    ) -> dict | None:
+        """Task 018 (PRD requirement B.3, #156): is `task` -- whose progress
+        budget the caller has already established is SPENT -- one of a
+        `superseded` task's own split children? A dict describing the
+        second exhaustion (`id`, `splitFrom`, `used`, `budget`) when it is,
+        `None` otherwise.
+
+        Two facts, both read from `tasks.json` itself rather than inferred:
+        `splitFrom` (stamped on every child by `state.insert_worker_split_
+        tasks`, so "this task exists only because an earlier budget was
+        spent" is an auditable row field, not a guess), and that parent's
+        own status being `superseded` (written by `state.supersede_task`
+        the instant a forced split is accepted). A `splitFrom` naming a
+        task that is absent from the plan, or present with any other
+        status, is NOT this case: a voluntary `proposed_tasks` split leaves
+        its parent schedulable, and its child hitting its own budget is an
+        ordinary FIRST exhaustion which must still force a split.
+        """
+        if not isinstance(task, dict):
+            return None
+        parent_id = task.get("splitFrom")
+        if not isinstance(parent_id, str) or not parent_id:
+            return None
+        parent = next(
+            (t for t in tasks_doc.get("tasks", [])
+             if isinstance(t, dict) and t.get("id") == parent_id), None)
+        if parent is None or parent.get("status") != state.TASK_STATUS_SUPERSEDED:
+            return None
+        budget = budget if isinstance(budget, dict) else {}
+        return {"id": task.get("id"), "splitFrom": parent_id,
+                "used": budget.get("used"), "budget": budget.get("budget")}
+
+    def _second_exhaustion_already_escalated(self, task_id) -> bool:
+        """Task 018 (PRD requirement B.3, #156): has this run ALREADY paused
+        and escalated `task_id`'s second exhaustion? Read back from the
+        `operator_escalation` events themselves (`state.read_events`, the
+        same seam `_signal_episodes` already reads for its own dedupe)
+        rather than an in-memory flag, so a fresh process resuming
+        mid-approach reaches the same answer as the episode that paused.
+
+        Why it is bounded at one: the pause happens BEFORE the doomed
+        forced-split dispatch, so a still-spent budget would re-pause the
+        instant an operator resumes, forever, with no lever inside the run
+        to change it. One escalation says "splitting this further only
+        recurses"; an operator who resumes past it has been told, and the
+        ordinary forced split then proceeds.
+        """
+        for ev in state.read_events(self.run.root, types={"operator_escalation"}):
+            child = ev.get("exhaustedSplitChild")
+            if isinstance(child, dict) and child.get("id") == task_id:
+                return True
+        return False
+
     def _pause_and_escalate_stagnation_last_approach(
         self, approach: int, outstanding_tasks: list[dict],
         is_last_approach: bool = True, approach_progressed: bool = False,
+        exhausted_split_child: dict | None = None,
     ) -> None:
         """Task 012 (PRD requirement B.3, #153): pause the run through the
         EXISTING pause machinery -- the same seam `_pause_and_escalate_
@@ -8582,11 +8706,14 @@ class LoopSupervisor:
         text = self._stagnation_last_approach_escalation_text(
             approach, outstanding_tasks,
             is_last_approach=is_last_approach,
-            approach_progressed=approach_progressed)
+            approach_progressed=approach_progressed,
+            exhausted_split_child=exhausted_split_child)
+        extra_payload = ({"exhaustedSplitChild": exhausted_split_child}
+                         if exhausted_split_child is not None else {})
         self.run.emit("operator_escalation", approach=approach,
                       reason="stagnation", outstandingTasks=outstanding_tasks,
                       approachProgressed=approach_progressed,
-                      escalation=text)
+                      escalation=text, **extra_payload)
         self.pause(reason="stagnation")
         if self.notifier is not None:
             self.notifier(text)

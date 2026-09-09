@@ -1121,6 +1121,145 @@ def test_a_superseded_task_present_pauses_a_stagnant_non_last_approach_too(
 
 
 # ===========================================================================
+# 11c. Task 018 (PRD requirement B.3, #156): the SECOND exhaustion -- a
+#      `superseded` parent's own split child spending ITS budget pauses
+#      instead of forcing yet another split.
+# ===========================================================================
+
+
+class _SplitProposingRunner:
+    """Every dispatch returns a well-formed forced-split report. If the
+    engine dispatches at all when it should have paused, the split lands and
+    the assertions below see the grandchild -- so `calls == 0` is a real
+    observation, not an absence of evidence."""
+
+    def __init__(self, child_ids=("018c-a", "018c-b")) -> None:
+        self.calls = 0
+        self.child_ids = list(child_ids)
+
+    def interrupt(self) -> bool:
+        return False
+
+    async def run(self, prompt, transcript, **kw):
+        self.calls += 1
+        return _result(json.dumps({
+            "verdict": "no_verdict",
+            "proposed_tasks": [
+                {"id": cid, "title": f"part {cid}",
+                 "successCriteria": f"{cid} works on its own end to end"}
+                for cid in self.child_ids],
+        }))
+
+
+_PARENT = {"id": "018p", "title": "the split parent",
+           "status": "superseded", "successCriteria": "the whole thing works"}
+
+
+def _second_exhaustion_supervisor(tmp_path: Path, parent_status="superseded",
+                                  **cfg) -> LoopSupervisor:
+    """A plan in exactly the shape a forced split leaves behind: parent
+    `superseded` (task 016's own write), one child stamped `splitFrom` the
+    parent, and `progressBudget` on status.json spent against THAT CHILD."""
+    child = {"id": "018c", "title": "the split child", "status": "pending",
+             "successCriteria": "the child's own slice works",
+             "origin": "worker", "splitFrom": _PARENT["id"]}
+    return make_supervisor(
+        tmp_path / "run", run_id="task018-second-exhaustion",
+        cfg_defaults=False, prd="# task 018 fixture PRD\n\nDo the thing.\n",
+        vigilant=False, max_approaches=3, iterations=4,
+        contract_retry_max=1,
+        tasks=[{**_PARENT, "status": parent_status}, child],
+        status={"state": "running",
+                "progressBudget": {"taskId": "018c", "used": 3, "budget": 3}},
+        runner_factory=lambda sup: _SplitProposingRunner(),
+        **cfg)
+
+
+def test_a_superseded_parents_child_exhausting_its_budget_pauses(tmp_path):
+    sup = _second_exhaustion_supervisor(tmp_path)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    outcome = asyncio.run(sup._step_worker())
+
+    # the pause path, on approach 1 of 3 -- never another forced split.
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert sup.runner.calls == 0, "a forced-split iteration was dispatched"
+    status = sup.run.read_status()
+    assert status.get("state") == PAUSED_STATE
+    assert status.get("pauseReason") == "stagnation"
+    assert sup._approach == 1
+    assert not (sup.run.root / "approaches" / "01").exists()
+
+    # no recursion: no grandchild inserted, the child not superseded.
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert set(tasks) == {"018p", "018c"}
+    assert tasks["018c"]["status"] != "superseded"
+
+    escalations = _events(sup.run.root, "operator_escalation")
+    assert len(escalations) == 1
+    assert escalations[0]["reason"] == "stagnation"
+    assert escalations[0]["approach"] == 1
+    assert escalations[0]["approachProgressed"] is True
+    assert escalations[0]["exhaustedSplitChild"] == {
+        "id": "018c", "splitFrom": "018p", "used": 3, "budget": 3}
+
+    assert len(notifier.messages) == 1
+    text = notifier.messages[0]
+    assert "018c" in text and "018p" in text and "3/3" in text
+    assert "LAST" not in text  # approach 1 of 3 has two left
+    assert "ralphctl resume task018-second-exhaustion" in text
+
+
+def test_resume_after_a_second_exhaustion_pause_re_enters_the_same_approach(
+        tmp_path):
+    sup = _second_exhaustion_supervisor(tmp_path)
+    sup._approach = 1
+
+    assert asyncio.run(sup._step_worker()) == (
+        "advance", "paused", "stagnation_last_approach")
+
+    async def _resume_flow():
+        task = asyncio.ensure_future(sup._step_paused())
+        await asyncio.sleep(0)
+        sup.resume()
+        return await task
+
+    assert asyncio.run(_resume_flow()) == (
+        "advance", "worker", "paused_resumed_stagnation")
+    assert sup._approach == 1
+    # and the escalation is bounded at one per child: an operator who
+    # resumes past it gets the ordinary forced split rather than an
+    # unbreakable pause/resume ping-pong.
+    asyncio.run(sup._step_worker())
+    assert sup.runner.calls >= 1
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert "018c-a" in tasks and tasks["018c"]["status"] == "superseded"
+
+
+def test_a_child_of_a_still_live_parent_still_forces_its_first_split(tmp_path):
+    """The negative: `splitFrom` alone is not the second exhaustion. A
+    voluntary `proposed_tasks` split leaves its parent schedulable, so its
+    child's FIRST budget exhaustion must still force a split, unchanged."""
+    sup = _second_exhaustion_supervisor(tmp_path, parent_status="completed")
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    asyncio.run(sup._step_worker())
+
+    assert sup.runner.calls >= 1
+    status = sup.run.read_status()
+    assert status.get("state") != PAUSED_STATE
+    assert status.get("pauseReason") is None
+    assert _events(sup.run.root, "operator_escalation") == []
+    assert notifier.messages == []
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert "018c-a" in tasks and tasks["018c"]["status"] == "superseded"
+
+
+# ===========================================================================
 # 12. The escalation reaching the CONFIGURED notifier (task 007).
 # ===========================================================================
 

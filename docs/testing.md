@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5425 tests across 331 modules** at task 018's own commit, over the
-PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3861
+collects **5428 tests across 331 modules** at task 018's re-take commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3864
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -267,7 +267,13 @@ its FIRST iteration then goes quiet for three more, pausing (never
 replanning) exactly like the last-approach case; that same pause's
 in-process resume back into `worker` over the same approach; and a
 `superseded` task present in the plan (no git at all) pausing a stagnant
-non-last approach for the SAME reason -- all also `smoke`.
+non-last approach for the SAME reason -- all also `smoke`, and 5428 (smoke
+3864, modules unchanged at 331) by task 018's RE-TAKE, 3 further nodes in that
+same module (no new module): the second budget exhaustion pausing instead of
+splitting again (a `superseded` parent's own split child with its
+`progressBudget` spent), that pause's resume proceeding to the ordinary forced
+split rather than re-pausing, and the negative case where a child of a still-
+live parent must still force its FIRST split -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
