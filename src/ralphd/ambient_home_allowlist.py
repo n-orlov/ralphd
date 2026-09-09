@@ -207,8 +207,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # (tasks 001-011: the live `unconsumedSteering` patch, the SIGTERM
         # pause-gate wake, the terminal-event ordering and the worker
         # contract's `progress` block) shifted it once more -- now at 1112,
-        # same method, same read, same reason.
-        "line": "1112",
+        # same method, same read, same reason. Task 012 (PRD requirement
+        # A.2, #156) added `_workspace_fingerprint`/`_progress_claim_delta_
+        # size` and the `_progress_external_streak`/`_progress_streak_
+        # task_id` __init__ fields above `_creds_note` in this same module,
+        # shifting this read once more -- now at 1122, same method, same
+        # read, same reason.
+        "line": "1122",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

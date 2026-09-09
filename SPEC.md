@@ -1129,6 +1129,36 @@ granted at most once per approach, never loops back into the worker, and is
 refunded from the charged count; a run that succeeds this way records
 `graceReview: true`.
 
+**A worker's optional `progress` claim is corroborated against the workspace tree,
+not merely logged (PRD requirement A.2, #156, task 012).** Alongside
+`verdict: "no_verdict"` a worker may report `progress: {"summary": ..., "evidence":
+[{"kind": "commit"|"file"|"external", "ref": ...}, ...]}` (task 011, requirement
+A.1); the engine takes a content-hash fingerprint of the workspace tree
+(`LoopSupervisor._workspace_fingerprint()`) immediately before the worker's
+subprocess starts and again immediately after it returns -- the same before/after
+bracketing `_workspace_head_sha()` already uses for the git-HEAD stagnation
+witness (§5.3), but over file CONTENT rather than a commit sha, so it works
+unchanged in a workspace with no `.git` at all. The fingerprint lists tracked and
+untracked-but-not-ignored files (`git ls-files -z --cached --others
+--exclude-standard`, falling back to a plain recursive walk when there is no git
+repository to ask) and hashes each file's bytes (`sha256`); `_progress_claim_delta_size()`
+counts how many paths differ between the two snapshots -- added, removed or
+content-changed each count once.
+
+`commit`/`file` evidence is corroborated **iff** that count is nonzero -- the tree
+actually moved. `external` evidence (a claim about something outside the tree: a
+dashboard watched, a manual reproduction) is honoured at face value **once
+consecutively**: `LoopSupervisor._progress_external_streak` counts consecutive
+iterations, on the same task, whose claim was external-only with zero tree delta,
+and only the first such claim in a run of them is corroborated -- the second
+consecutive one is not. The streak resets the moment the assigned task changes,
+a real tree delta lands, or the claim carries `commit`/`file` evidence instead.
+Every accepted claim records a `progress_claim` event (§5.4) carrying `taskId`,
+`corroborated` and `deltaSize` -- `_apply_worker_progress_report()`'s own record,
+consumed by nothing downstream yet: the per-task progress budget that reads
+`corroborated` for something beyond the record, and the stagnation-counter
+exemption it grants, are a later task's own scope.
+
 ### 4.6 Steering, pause, interrupt, abort
 
 Steering is a file, not a message queue. Each message lands in
@@ -1870,6 +1900,7 @@ reconstruct the whole run, including its restarts.
 | `iteration.end` | `number`, `phase`, `exitCode`, `interrupted`, `sawComplete`, `sawVerified`, `error`, `faultClass` | that iteration finished |
 | `task` | `taskId`, `oldStatus`, `newStatus` | a task's status changed in `tasks.json` (polled while the agent runs, so it lands mid-iteration) |
 | `signal` | `signal` (`COMPLETE` \| `VERIFIED` \| `taskVerified`), `taskId` | a sentinel was accepted |
+| `progress_claim` | `taskId`, `corroborated`, `deltaSize` | a worker's `progress` block (§4.5) was accepted alongside `no_verdict` -- `corroborated` iff `commit`/`file` evidence lined up with a nonzero workspace-fingerprint delta, or `external` evidence was the first of a consecutive run of tree-delta-free claims on that task; `deltaSize` is `_progress_claim_delta_size()`'s own count of changed paths (task 012, PRD requirement A.2, #156) |
 | `steering.received` | `file` | a steering message was stored |
 | `steering.consumed` | `file`, `iteration` | an actionable phase finished cleanly with it (§4.6) |
 | `infra_wait` | the whole `infraWait` payload plus `backoffS` | a backoff wait starts |

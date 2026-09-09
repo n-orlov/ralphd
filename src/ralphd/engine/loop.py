@@ -189,6 +189,16 @@ class LoopSupervisor:
         self.cfg = cfg
         self.run = run
         self.workspace = workspace
+        # Task 012 (PRD requirement A.2, #156): cross-iteration state for the
+        # "external evidence honoured at face value once consecutively"
+        # rule -- `_progress_external_streak` counts consecutive iterations
+        # (on the SAME task) whose progress claim was external-only with no
+        # workspace fingerprint delta; reset the moment the task changes,
+        # a real tree delta lands, or the claim isn't external-only. Purely
+        # in-memory (never persisted to `tasks.json`/`status.json`), the
+        # same scope `stagnant`/`_last_fault_class` already use.
+        self._progress_external_streak = 0
+        self._progress_streak_task_id: str | None = None
         # Task 052 (#10): the host-side rate table (usually inlined into
         # job.yaml by `ralphctl start`) is parsed once, here -- the runner
         # consults it only for messages the provider quoted no price for.
@@ -4435,7 +4445,10 @@ class LoopSupervisor:
             self.workspace, petition["obligation"], petition["type"],
             petition["evidence"])
 
-    def _apply_worker_progress_report(self, payload: dict) -> list[str]:
+    def _apply_worker_progress_report(
+            self, payload: dict, assigned_task_id: str | None = None,
+            fp_before: dict[str, str] | None = None,
+            fp_after: dict[str, str] | None = None) -> list[str]:
         """Task 011 (PRD requirement A.1, #156): the ACCEPT side of a
         worker's optional "still working" `progress` claim, called only
         once the call site below has already confirmed `verdict ==
@@ -4446,12 +4459,24 @@ class LoopSupervisor:
         Same two-layer split every sibling `_apply_*` method in this class
         uses: the SEMANTIC check first (`transitions.
         worker_progress_report_errors` -- outer shape is already
-        `contracts.validate_payload`'s job), then the accept step. Nothing
-        downstream reads an accepted claim for anything beyond this log
-        record yet -- fingerprint corroboration (task 012) and the
-        per-task progress budget (task 013) are what will consume it; this
-        task's own job is only to accept the shape and make the claim
-        appear in the record, not to corroborate or budget it.
+        `contracts.validate_payload`'s job), then the accept step.
+
+        Task 012 (PRD requirement A.2, #156) adds the corroboration this
+        method's own docstring used to defer: `fp_before`/`fp_after` are
+        the `_workspace_fingerprint()` snapshots the call site took
+        straddling `_run_worker_iteration` (same bracketing
+        `head_before`/`head_after` already uses for the git-HEAD
+        stagnation witness). `commit`/`file` evidence is corroborated iff
+        the fingerprint changed (any path added, removed or content-
+        changed between the two snapshots); `external`-only evidence with
+        NO delta is honoured at face value once consecutively --
+        `self._progress_external_streak` (reset the instant the task
+        changes, a real delta lands, or the claim is not external-only)
+        is what makes the SECOND such claim in a row uncorroborated. Every
+        call records a `progress_claim` event carrying `taskId`,
+        `corroborated` and `deltaSize` -- consumed by nothing downstream
+        yet (the per-task progress budget, task 013, is what will finally
+        read `corroborated` for something other than the record).
         """
         errors = transitions.worker_progress_report_errors(payload)
         if errors:
@@ -4459,13 +4484,43 @@ class LoopSupervisor:
         progress = payload.get("progress")
         if not isinstance(progress, dict):
             return []
+        evidence = progress.get("evidence") or []
+        kinds = {e.get("kind") for e in evidence if isinstance(e, dict)}
+        before = fp_before if fp_before is not None else {}
+        after = fp_after if fp_after is not None else {}
+        delta_size = self._progress_claim_delta_size(before, after)
+        tree_changed = delta_size > 0
+        external_only = bool(evidence) and kinds and kinds <= {"external"}
+
+        if assigned_task_id != self._progress_streak_task_id:
+            self._progress_external_streak = 0
+            self._progress_streak_task_id = assigned_task_id
+
+        if tree_changed:
+            corroborated = True
+            self._progress_external_streak = 0
+        elif external_only:
+            self._progress_external_streak += 1
+            corroborated = self._progress_external_streak == 1
+        else:
+            # `commit`/`file` evidence claimed but the fingerprint did not
+            # move -- not corroborated, and not an external-only claim
+            # either, so it does not feed the once-consecutively grace
+            # period at all.
+            corroborated = False
+            self._progress_external_streak = 0
+
+        self.run.emit(
+            "progress_claim", taskId=assigned_task_id,
+            corroborated=corroborated, deltaSize=delta_size)
         self.run.emit(
             "log", level="info",
             message=(
                 f"worker reported progress on the assigned task: "
                 f"{progress.get('summary')!r} "
                 f"({len(progress.get('evidence', []))} evidence item(s)) "
-                "(task 011, #156)"))
+                f"corroborated={corroborated} deltaSize={delta_size} "
+                "(task 011/012, #156)"))
         return []
 
     def _worker_assignment_extra(self, task: dict | None) -> str:
@@ -4686,6 +4741,76 @@ class LoopSupervisor:
             return None
         sha = result.stdout.strip()
         return sha or None
+
+    def _workspace_fingerprint(self) -> dict[str, str]:
+        """Task 012 (PRD requirement A.2, #156): a content-hash fingerprint
+        over the workspace tree -- tracked AND untracked-but-not-ignored
+        files -- git-agnostic so a workspace with no `.git` at all still
+        fingerprints cleanly (the corroboration this feeds needs to work
+        the same way whether or not the job happens to be a git repo).
+
+        `git ls-files -z --cached --others --exclude-standard` already IS
+        exactly "tracked + untracked, minus ignored" in one call when the
+        workspace is a real repo; a non-zero exit (no `.git`, `git`
+        missing, not a work tree) falls back to a plain recursive walk of
+        every file under `self.workspace` (skipping only the VCS metadata
+        directory itself, which does not exist in that fallback's own
+        target case anyway) -- there is no gitignore to consult without a
+        repo, so "not ignored" degrades to "every file", same spirit as
+        `_workspace_head_sha`'s own None-degrades-to-never-a-witness rule
+        one method up.
+
+        Returns `{relative_path: sha256_hex}` -- a plain dict, never a
+        single combined hash, so `_progress_claim_delta_size` below can
+        report how MANY paths changed, not merely THAT something did.
+        An unreadable path (raced away mid-hash, a broken symlink) is
+        skipped rather than raising -- advisory, like every other
+        workspace read this class does.
+        """
+        paths: list[str] | None = None
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.workspace), "ls-files", "-z",
+                 "--cached", "--others", "--exclude-standard"],
+                capture_output=True, timeout=10)
+        except OSError:
+            result = None
+        if result is not None and result.returncode == 0:
+            raw = result.stdout.decode("utf-8", "surrogateescape")
+            paths = [p for p in raw.split("\0") if p]
+        if paths is None:
+            paths = []
+            for root, dirs, files in os.walk(self.workspace):
+                dirs[:] = [d for d in dirs if d != ".git"]
+                for name in files:
+                    full = Path(root) / name
+                    try:
+                        paths.append(str(full.relative_to(self.workspace)))
+                    except ValueError:
+                        continue
+            paths.sort()
+        fingerprint: dict[str, str] = {}
+        for rel in paths:
+            full = self.workspace / rel
+            try:
+                data = full.read_bytes()
+            except OSError:
+                continue
+            fingerprint[rel] = hashlib.sha256(data).hexdigest()
+        return fingerprint
+
+    @staticmethod
+    def _progress_claim_delta_size(before: dict[str, str],
+                                    after: dict[str, str]) -> int:
+        """Task 012 (PRD requirement A.2, #156): how many paths differ
+        between two `_workspace_fingerprint()` snapshots -- added, removed
+        or content-changed all count once each. `0` iff the two
+        fingerprints are identical, which is exactly the "fingerprint
+        changed" test the corroboration rule below reads."""
+        changed = set(before) ^ set(after)
+        common = set(before) & set(after)
+        changed |= {p for p in common if before[p] != after[p]}
+        return len(changed)
 
     def _apply_worker_debt_resolution(self, debt_resolved) -> list[str]:
         """Task 007 (PRD requirement A.3 prompt half, #155): applies a
@@ -5900,8 +6025,16 @@ class LoopSupervisor:
             # on both sides is simply never a witness (a plain directory
             # never "gains a commit").
             head_before = self._workspace_head_sha()
+            # Task 012 (PRD requirement A.2, #156): the same before/after
+            # bracketing as `head_before`/`head_after` just above, but a
+            # content-hash fingerprint over the whole tree rather than the
+            # git HEAD alone -- what the progress-claim corroboration
+            # below reads, and what still works in a workspace with no
+            # `.git` (`_workspace_fingerprint`'s own fallback).
+            fp_before = self._workspace_fingerprint()
             result = await self._run_worker_iteration(extra, worker_tier)
             head_after = self._workspace_head_sha()
+            fp_after = self._workspace_fingerprint()
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)
@@ -6126,7 +6259,9 @@ class LoopSupervisor:
                         "worker", respond,
                         max_retries=self.cfg.contract_retry_max,
                         state=self.run,
-                        extra_validate=lambda p: self._apply_worker_progress_report(p),
+                        extra_validate=lambda p: self._apply_worker_progress_report(
+                            p, assigned_task_id=assigned_id,
+                            fp_before=fp_before, fp_after=fp_after),
                     )
                     if progress_enforcement.ok:
                         # Deliberately NOT `stagnant = 0` / `contract_progress
