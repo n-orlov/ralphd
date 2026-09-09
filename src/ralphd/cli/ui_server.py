@@ -56,7 +56,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from ..engine.config import JobConfig
+from ..engine.config import MUTATING_METHODS, JobConfig
 from ..engine.state import (
     NO_ARTIFACTS,
     NONTERMINAL_STATES,
@@ -377,6 +377,20 @@ def _proxy_json(reg: Path, run_id: str, method: str, path: str,
     token_file = reg / "runs" / run_id / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
+    # #155: the run's mutating routes (POST /steering, POST /retry, ...)
+    # ask for a SECOND, independent secret -- `X-Ralphd-Control-Token`,
+    # checked against `JobConfig.control_token` -- which `ralphctl start`/
+    # `resume` provisions unconditionally into `.control-token` beside
+    # `.api-token` (see main.py's `api()` helper, which forwards it the
+    # same way for the CLI's own mutating commands). The hub's proxy is a
+    # THIRD caller of that same contract; before this fix it forwarded only
+    # `.api-token` and every hub-initiated steer/retry 401'd against a real
+    # run.
+    if method in MUTATING_METHODS:
+        control_file = reg / "runs" / run_id / ".control-token"
+        if control_file.exists():
+            req.add_header("X-Ralphd-Control-Token",
+                          control_file.read_text().strip())
     if body is not None:
         req.add_header("Content-Type", "application/json")
     try:

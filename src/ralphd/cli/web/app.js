@@ -1459,7 +1459,16 @@ async function renderRunDetail(runId, myGen) {
         // making the operator wait out the 4s poll to see their own message.
         loadSteering(runId);
       } else {
-        statusEl.textContent = "failed: " + (j.error || resp.status);
+        // #155: the hub wraps a proxy rejection as {error, detail:
+        // <engine body>} (ui_server.py's `do_POST`); the engine's own
+        // problem body carries the actual reason under `detail.detail`
+        // (e.g. "mutating routes require the control token" for a 401
+        // from the control-token gate) or `detail.title`. Same fallback
+        // order `renderRetryNow` already uses for the retry button, so
+        // both control surfaces show the SAME reason for the SAME cause
+        // instead of the steer form collapsing it to a bare status code.
+        const reason = (j.detail && (j.detail.detail || j.detail.title)) || j.error;
+        statusEl.textContent = "failed: " + String(reason || resp.status);
       }
     } catch (e) {
       statusEl.textContent = "failed: " + e;

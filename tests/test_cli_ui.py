@@ -118,14 +118,20 @@ class StubEngineApi:
     """Minimal stand-in for a run's *live* container API (task 017), so a
     hub test can exercise the proxy routes without booting a real engine
     container: answers the GETs the run-detail view issues (`/status`,
-    `/tasks`, `/logs`, and -- task 056 -- `/prd`) plus `POST /retry`, and
-    records every request (method, path, Authorization header) for
-    assertions."""
+    `/tasks`, `/logs`, and -- task 056 -- `/prd`) plus `POST /retry` and
+    (#155) `POST /steering`, and records every request (method, path,
+    Authorization header) for assertions -- plus, in parallel,
+    `control_tokens` (one `X-Ralphd-Control-Token` header value per
+    request, `None` when absent), since that header shares no tuple shape
+    with the many existing 3-tuple `requests` assertions across this
+    module's callers."""
 
     def __init__(self, status: dict | None = None, retry_status: int = 200,
                  retry_body: dict | None = None, tasks: dict | None = None,
-                 prd: str | None = None, steering: list | None = None):
+                 prd: str | None = None, steering: list | None = None,
+                 steer_status: int = 202, steer_body: dict | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
+        self.control_tokens: list[str | None] = []
         self.status_body = status if status is not None else {"state": "running"}
         self.tasks_body = tasks if tasks is not None else {"tasks": []}
         self.retry_status = retry_status
@@ -135,6 +141,10 @@ class StubEngineApi:
         # `None` means "route not there" (404) so a test can exercise the
         # hub's fallback while the container is still up.
         self.steering_body = steering
+        # #155: what this run's live `POST /steering` answers with -- default
+        # 202 mirrors the real engine's `POST /steering` (engine/api.py).
+        self.steer_status = steer_status
+        self.steer_body = steer_body if steer_body is not None else {"file": "001-x.md"}
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -153,6 +163,8 @@ class StubEngineApi:
                     self.rfile.read(length)
                 outer.requests.append(
                     (self.command, self.path, self.headers.get("Authorization")))
+                outer.control_tokens.append(
+                    self.headers.get("X-Ralphd-Control-Token"))
 
             def do_GET(self):  # BaseHTTPRequestHandler API name
                 self._record()
@@ -178,8 +190,11 @@ class StubEngineApi:
 
             def do_POST(self):  # BaseHTTPRequestHandler API name
                 self._record()
-                if self.path.split("?", 1)[0] == "/retry":
+                path = self.path.split("?", 1)[0]
+                if path == "/retry":
                     self._reply(outer.retry_status, outer.retry_body)
+                elif path == "/steering":
+                    self._reply(outer.steer_status, outer.steer_body)
                 else:
                     self._reply(404, {"detail": "no such route"})
 
@@ -198,15 +213,23 @@ class StubEngineApi:
 
 
 def _write_run_with_api(registry: Path, run_id: str, engine: StubEngineApi,
-                        token: str | None = None, **status_fields) -> Path:
+                        token: str | None = None,
+                        control_token: str | None = None,
+                        **status_fields) -> Path:
     """A registry run dir whose `host.json` points at `engine`, so the hub
-    treats it as a LIVE run (`live: true`, proxied status/tasks/logs)."""
+    treats it as a LIVE run (`live: true`, proxied status/tasks/logs).
+    `control_token` (#155) seeds `.control-token` beside `.api-token`, the
+    file `_proxy_json` forwards as `X-Ralphd-Control-Token` on a mutating
+    request -- the same file `ralphctl start`/`resume` provision on every
+    real run."""
     run_dir = _write_dead_run(registry, run_id, **status_fields)
     (run_dir / "host.json").write_text(json.dumps(
         {"runId": run_id, "port": engine.port,
          "apiUrl": f"http://127.0.0.1:{engine.port}"}))
     if token:
         (run_dir / ".api-token").write_text(token)
+    if control_token:
+        (run_dir / ".control-token").write_text(control_token)
     return run_dir
 
 
@@ -517,6 +540,71 @@ def test_retry_proxy_posts_to_the_runs_retry_and_forwards_the_token(tmp_path, ui
         assert posts[0][2] == "Bearer hub-token"
     finally:
         engine.close()
+
+
+def test_steer_and_retry_proxies_forward_the_control_token_and_surface_a_401_reason(
+        tmp_path, ui):
+    """#155: the hub's steering form (`POST /api/runs/<id>/steer`) and its
+    "retry now" button (`POST /api/runs/<id>/retry`) are the two mutating
+    proxies `_proxy_json` forwards to a run's live container API. A real
+    run's mutating routes gate on a SECOND, independent secret --
+    `X-Ralphd-Control-Token`, checked against `.control-token` -- which
+    `ralphctl start`/`resume` provisions unconditionally (see main.py's
+    `api()` helper forwarding the same header for the CLI's own mutating
+    commands). Before this fix `_proxy_json` forwarded only `.api-token`
+    (`Authorization`), so every hub-initiated steer/retry against a real
+    run 401'd.
+
+    Two things pinned in one node, both against the SAME engine double so
+    there is no room for the two proxies to drift out of sync with each
+    other: (1) the control token is present, unforged, on BOTH requests;
+    (2) when the engine refuses with the control-token gate's own 401 (the
+    literal shape `engine/api.py`'s `auth` middleware sends), the hub's JSON
+    answer still carries that reason rather than flattening it away -- the
+    same body shape `app.js`'s steer-form and retry-button failure branches
+    both parse (`j.detail.detail`/`j.detail.title`) to render it."""
+    registry = tmp_path / "registry"
+    token = "the-run-control-token"
+    unauthorized = {"title": "unauthorized", "status": 401,
+                    "detail": "mutating routes require the control token"}
+    engine = StubEngineApi()
+    try:
+        _write_run_with_api(registry, "run-ctl", engine, control_token=token,
+                            state="running", health="degraded")
+        server = ui(registry)
+
+        # -- (1) the token is present, and correct, on both mutating proxies
+        code, body = server.post("/api/runs/run-ctl/steer", {"message": "hi"})
+        assert code == 202, body
+        code, body = server.post("/api/runs/run-ctl/retry", {})
+        assert code == 200, body
+        posts = [(p, t) for m, p, t in engine.requests if m == "POST"]
+        assert [p for p, _t in posts] == ["/steering", "/retry"], engine.requests
+        assert engine.control_tokens == [token, token], engine.control_tokens
+
+        # -- (2) a control-token rejection's reason survives the proxy
+        engine.steer_status, engine.steer_body = 401, dict(unauthorized)
+        engine.retry_status, engine.retry_body = 401, dict(unauthorized)
+        code, steer_resp = server.post("/api/runs/run-ctl/steer", {"message": "hi"})
+        assert code == 401, steer_resp
+        assert steer_resp["detail"]["detail"] == \
+            "mutating routes require the control token"
+        code, retry_resp = server.post("/api/runs/run-ctl/retry", {})
+        assert code == 401, retry_resp
+        assert retry_resp["detail"] == "mutating routes require the control token"
+    finally:
+        engine.close()
+
+    # -- both failure branches in app.js render exactly that nested reason,
+    # not the generic wrapper string or a bare status code -- same
+    # vocabulary, same fallback order, for the same underlying cause.
+    app_js = (Path(__file__).parents[1] / "src" / "ralphd" / "cli" / "web"
+              / "app.js").read_text()
+    steer_branch = app_js[app_js.index('getElementById("steer-form").addEventListener'):]
+    steer_branch = steer_branch[:steer_branch.index("function renderRetryNow")]
+    assert "j.detail.detail" in steer_branch
+    retry_branch = app_js[app_js.index("function renderRetryNow"):]
+    assert "j.detail" in retry_branch
 
 
 def test_retry_proxy_passes_the_engines_409_refusal_through(tmp_path, ui):
