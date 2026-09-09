@@ -269,6 +269,59 @@ stateDiagram-v2
 
 <!-- END GENERATED TRANSITION DIAGRAM -->
 
+### `superseded`, and the every-approach pause widening (v0.20 requirement B, #156, tasks 013/016/018)
+
+**`superseded` is a task status, not a step in the diagram above.** It never
+appears as a target in `transitions.TABLE`/`TASK_STATUS_TABLE` at all -- the
+only writer is `state.supersede_task()` (`LoopSupervisor._apply_forced_split_
+result`), called the moment a task's own `progressBudget` (SPEC §5.2,
+`{taskId, used, budget}`, requirement A.3/A.4, task 013) is spent with no
+`proposed_tasks` split arriving to relieve it: the harness forces the split
+itself, inserts the worker-origin child(ren) with the parent's own `dependsOn`
+inherited onto every one of them (task 016's `_fold_inherited_dependsOn`, so a
+child never schedules ahead of what the parent itself was waiting on), and
+moves the parent to `superseded` in the same write. `superseded` is terminal
+for scheduling for free -- no reader ever needs a transition out of it,
+because the work it names has already moved to the child(ren) the same write
+created. Three tuples in `engine.state` say so explicitly: `TASK_COMPLETION_NONBLOCKING_STATUSES` (a `superseded` parent never
+holds the steering-origin exit gate open, same reasoning as `awaiting-
+validation`), `TASK_DEPENDENCY_SATISFIED_STATUSES` (a task whose `dependsOn`
+names a now-`superseded` parent is schedulable, not blocked -- the parent's
+own obligation moved, it did not vanish) and `TASK_TERMINAL_STATUSES` (nothing
+further moves a `superseded` task on its own, exactly like `petitioned`
+before it, for the same reason: terminality here means "nothing further moves
+it on its own", not "the plan is done"). `ralphctl amend --status` still
+refuses it as a target (`transitions.TASK_STATUSES` -- the operator-facing
+enum this CLI validates against -- has no `superseded` entry, deliberately:
+an operator never RULES a task superseded, the engine only ever forces the
+split itself).
+
+**The every-approach pause widening reuses the SAME declared edge, unchanged
+by name.** `worker --> paused : stagnation_last_approach` above is exactly the
+edge task 012 (#153) added for a stagnant LAST approach only; task 018 (#156)
+widens the *guard's own condition*, not the table -- so this row and its
+mermaid arrow are unchanged, and regenerating both from `transitions.py` right
+now reproduces them byte-for-byte. The widened condition:
+any approach that PROGRESSED (a workspace commit somewhere in the approach,
+or a `superseded` task left behind by a forced split --
+`LoopSupervisor._approach_progressed`) but still stalled for three
+consecutive no-progress worker iterations now takes this edge instead of
+falling through to the ordinary `stagnation_exhausted` -> `replan` edge one
+row up, which still fires exactly as before for a genuinely silent approach
+with a successor left. A SECOND budget exhaustion is folded into the same
+widened condition: once a `superseded` parent's own split child spends its
+own `progressBudget` too, `_exhausted_split_child_of_superseded_parent()`
+recognises the shape (`splitFrom` present, naming a parent whose status is
+already `superseded`) and takes this pause instead of forcing yet another
+split, naming the exhausted child on the `operator_escalation` event's
+`exhaustedSplitChild` field (SPEC §4.6) -- bounded at one escalation per
+child, so an operator who resumes past it gets the ordinary forced split on
+that child's own next exhaustion. Either way `_step_paused` reads which
+reason parked the run and routes `stagnation_last_approach` straight back to
+`worker` over the SAME approach (never `review` -- there is no verdict
+pending), exactly as task 012 already declared for the last-approach case;
+widening the condition changed nothing about the target or the resume path.
+
 ### The router: one constrained question, deterministic-first (task 018, requirement E)
 
 Not every state above resolves to a single edge from disk alone. Where

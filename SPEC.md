@@ -1629,7 +1629,7 @@ its own bookkeeping fields to it.
 | `tasks[]` | array | the plan, in intended execution order |
 | `tasks[].id` | string | zero-padded ordinal, e.g. `"001"` |
 | `tasks[].title` | string | imperative, one deliverable |
-| `tasks[].status` | string | `pending` \| `in-progress` \| `awaiting-validation` \| `validated` \| `completed` \| `validation-failed` \| `failed` \| `skipped` — the last two of those eight (task 019, requirement F) are the vigilant mini-FSM's own claim/terminal pair, applied by the harness off a hat's declared transition, never written by an agent itself; see the note below the actionable-statuses paragraph |
+| `tasks[].status` | string | `pending` \| `in-progress` \| `awaiting-validation` \| `validated` \| `completed` \| `validation-failed` \| `failed` \| `skipped` \| `superseded` — of those nine, `awaiting-validation`/`validated` (task 019, requirement F) are the vigilant mini-FSM's own claim/terminal pair, applied by the harness off a hat's declared transition, never written by an agent itself (see the note below the actionable-statuses paragraph); `superseded` (v0.20 requirement B.1, #156, task 016) is the one status `engine.transitions.TASK_STATUS_TABLE` never targets at all — `state.supersede_task()` writes it directly at a forced split, terminal for scheduling from the moment it lands (see the `superseded` paragraph below the doomed-plan one) |
 | `tasks[].successCriteria` | string | independently checkable, in natural language |
 | `tasks[].priority` | int | optional scheduler hint, missing means `0` |
 | `tasks[].dependsOn` | array | optional task ids that must be `completed` first |
@@ -1779,6 +1779,48 @@ detection itself is untouched; the four display surfaces that DO pass it are
 `ralphctl tasks`, `GET /tasks`'s `TasksRead.blocked_by`, the hub's
 `ui_server._with_task_blocked_by`, and `worker.md`'s own prose naming the same
 map for the fourth (a worker reading its own blocked dependents).
+
+**`superseded` unblocks its own dependents and never strands plan completion
+(v0.20 requirement B.1, #156, task 016).** A forced split -- triggered when a
+task's own progress budget (§5.2's `progressBudget` field, above) is spent
+with no `proposed_tasks` split arriving to relieve it -- moves the exhausted
+parent to `superseded` and inserts its child(ren) with the parent's own
+`dependsOn` inherited onto every one of them (task 016's fold,
+widened by task 017 to resolve a WORKER-proposed split's `dependsOn` against
+the live `tasks.json`, not only the batch just proposed). `superseded` joins
+`TASK_DEPENDENCY_SATISFIED_STATUSES` alongside `completed`/`validated` --
+deliberately, not `TASK_STATUS_TABLE`'s wider membership, this one tuple is
+about what "downstream is unblocked" means -- so a task whose `dependsOn`
+names a now-`superseded` parent reads schedulable, never doomed the way a
+`failed`/`skipped` ancestor would leave it: the parent's obligation moved to
+the child, it did not die. It joins `TASK_COMPLETION_NONBLOCKING_STATUSES`
+for the identical reason `awaiting-validation` is in that tuple: a
+steering-origin task that gets force-split must not hold the whole-plan exit
+gate open forever waiting for a status (`superseded`) that has no further
+transition to reach. And it joins `TASK_TERMINAL_STATUSES` alongside
+`petitioned` -- terminal here means "nothing further moves it on its own",
+not "the plan is done" -- so `state.task_is_terminal()` and every counts
+surface treat a `superseded` parent as settled without ever reading it as a
+failure. `ralphctl amend --status` still refuses `superseded` as a ruling
+target (`transitions.TASK_STATUSES` has no such entry): the engine forces this
+move itself, at the one moment a progress budget is spent with nothing to
+relieve it, and an operator never rules a task superseded by hand.
+
+**The every-approach pause widening reuses the SAME declared FSM edge
+(v0.20 requirement B.3, #156, task 018).** `docs/architecture.md`'s
+generated transition table already carries `worker -> paused` on guard
+`stagnation_last_approach` (task 012, #153) for a stagnant LAST approach; task
+018 widens the guard's own *condition*, never the table row or the mermaid
+arrow it renders as, to any approach that PROGRESSED (a workspace commit, or
+a `superseded` task left behind) but still stalled three iterations running,
+and to a SECOND budget exhaustion -- a `superseded` parent's own split child
+spending its own `progressBudget` too pauses instead of forcing a further
+split, naming that child on the `operator_escalation` event's
+`exhaustedSplitChild` field (§5.4, below) rather than splitting the plan a
+second time for the same stall. `_step_paused` still routes
+`stagnation_last_approach` straight back to `worker` over the same approach
+in both cases -- the resume path is exactly what task 012 already declared,
+unchanged by which condition triggered the pause.
 
 **The vocabulary stays eight terms (v0.14, requirement F, #99 suggestion 3, #51).**
 Issue #99's third suggestion was a status that satisfies dependents while recording a
