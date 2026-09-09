@@ -6525,6 +6525,59 @@ def _dangling_registry_entries() -> list[dict]:
 _TAIL_SYNTAX_RE = re.compile(r"^-(\d+)(f)?$")
 
 
+# #182: on some argparse patch levels (the operator measured Python 3.12.3;
+# this container runs 3.12.14, where the bug does not reproduce -- every
+# form below already parses correctly here, so the nodes this fix targets
+# pass VACUOUSLY in this container and are not the evidence the fix works)
+# an optional positional (`nargs="?"`) that follows a flag on the same
+# command line is dropped or misrouted instead of being assigned, and the
+# leftover token either surfaces as argparse's own generic "unrecognized
+# arguments" error or silently vanishes. `nargs="*"` was tried by the
+# operator and does not fix it. `_LEFTOVER_POSITIONAL_FIELDS` names, for each
+# affected subcommand, the ordered `nargs="?"` destinations argparse itself
+# still declares (so `--help`/docs/cli.md are untouched) that a leftover
+# token may be folded into when `main()`'s own `parse_known_args()` sees
+# argparse leave it unconsumed.
+_LEFTOVER_POSITIONAL_FIELDS: dict[str, tuple[str, ...]] = {
+    "amend": ("task_id", "text"),
+    "steer": ("message",),
+}
+
+
+def _place_leftover_positional(command: str, leftovers: list[str],
+                               namespace: argparse.Namespace,
+                               positional_fields: tuple[str, ...]) -> None:
+    """Fold ONE leftover token `main()`'s `parser.parse_known_args()` did
+    not consume into the first still-empty `nargs="?"` positional of
+    `command`, independent of whatever argparse version produced that
+    leftover (#182).
+
+    This is the one place that decides where such a token goes -- called
+    from `main()` with whatever `parse_known_args()` left over, and called
+    directly by tests with a hand-built `namespace`/`leftovers` pair so the
+    placement logic is exercised without depending on any particular
+    argparse behaviour (never by shelling out to the CLI, never relying on
+    the ambient interpreter's own argparse quirks).
+
+    Raises the CLI's own clear error (via `die`, exit 2) -- naming the
+    subcommand and the leftover tokens -- when there is more than one
+    leftover, or when every named positional field is already filled and
+    there is nowhere left to put the one leftover token.
+    """
+    if not leftovers:
+        return
+    if len(leftovers) > 1:
+        die(2, f"{command}: too many extra arguments "
+               f"({', '.join(repr(t) for t in leftovers)}); only one "
+               "positional slot is still open")
+    unfilled = [f for f in positional_fields
+                if getattr(namespace, f, None) is None]
+    if not unfilled:
+        die(2, f"{command}: extra argument {leftovers[0]!r} does not fit "
+               "any positional slot (all are already filled)")
+    setattr(namespace, unfilled[0], leftovers[0])
+
+
 def _preprocess_logs_argv(argv: list[str]) -> list[str]:
     """Rewrite `tail`-style `logs` syntax (`-N`, `-Nf`, `-f`) and the
     `logsf` alias into `--tail`/`--follow` before argparse sees them, since
@@ -7081,7 +7134,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = build_parser().parse_args(_preprocess_logs_argv(sys.argv[1:]))
+    parser = build_parser()
+    args, extras = parser.parse_known_args(_preprocess_logs_argv(sys.argv[1:]))
+    if extras:
+        # #182: an affected subcommand gets one chance to fold a leftover
+        # token back into its own still-unfilled nargs="?" positional
+        # (_place_leftover_positional) instead of failing here; every other
+        # command gets argparse's own generic error, unchanged.
+        fields = _LEFTOVER_POSITIONAL_FIELDS.get(args.command)
+        if fields is None:
+            parser.error("unrecognized arguments: %s" % " ".join(extras))
+        _place_leftover_positional(args.command, extras, args, fields)
     args.func(args)
 
 
