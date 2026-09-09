@@ -39,12 +39,23 @@ out to — Google Chrome, which is the channel that CLI opens by default, and a
 shared browser cache at `/opt/ms-playwright` exported to the runner through its
 `.env`.
 
-The runner runs as a dedicated unprivileged user in the `docker` group. That is
-a deliberate operator decision, not an oversight: a socket is root-equivalent on
-its host, so a CI job on this box is trusted with the box. It is chosen over
-rootless docker because `tests/test_engine_uid_boundary_docker.py` and
+The runner runs as a user in the `docker` group. That is a deliberate operator
+decision, not an oversight: a socket is root-equivalent on its host, so a CI job
+on this box is trusted with the box. It is chosen over rootless docker because
+`tests/test_engine_uid_boundary_docker.py` and
 `tests/test_root_owned_record_operability_docker.py` inspect real uid and
 ownership semantics, which a uid-remapping daemon would falsify.
+
+**That user's uid must be 1000, and that is a bug being worked around, not a
+requirement worth having.** The image's engine user is uid 1000
+(`container/Dockerfile:37`) and the engine drops to that effective uid before
+reading `/config/job.yaml`, which `ralphctl start` writes `0700` owned by the
+invoking host user — so on any other account every container dies at startup
+with `PermissionError: [Errno 13] Permission denied: '/config/job.yaml'` and the
+host only sees `Connection refused`. This runner was first installed as a
+dedicated uid-1001 account and 13 of the docker tier's 24 tests failed that way.
+See **#180**; when it is fixed, move the runner back to a dedicated account and
+delete this paragraph. The diagnosability half is **#181**.
 
 Nothing in this suite needs a credential — pi is stubbed (`tests/stub-pi`), and
 no test wants an LLM key, an AWS key or the gateway. So the runner holds no
