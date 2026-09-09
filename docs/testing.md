@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5393 tests across 329 modules** at task 071's own commit, over the
-PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3829
+collects **5402 tests across 330 modules** at task 072's own commit, over the
+PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3838
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -230,7 +230,13 @@ all also `smoke`), and 5393 (smoke 3829, modules 328->329) by task 071's
 new `tests/test_cli_leftover_positional_182.py` (9 new in-process nodes
 exercising `_place_leftover_positional` directly for #182 -- the five
 amend forms, the matching `steer --list` form, both of the function's own
-error paths and its no-op case -- all also `smoke`).
+error paths and its no-op case -- all also `smoke`), and 5402 (smoke 3838,
+modules 329->330) by task 072's new `tests/test_cli_argparse_walker_182.py`
+(9 new in-process nodes: the parser-walking guard itself, a pin of its
+discovered affected-subcommand set, the fixture proving the walk is
+non-vacuous, the fixture's harmless-sibling check, and four direct-unit
+nodes exercising `_place_leftover_positional` for the two newly-discovered
+subcommands (`budget`, `suggestions`) -- all also `smoke`).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

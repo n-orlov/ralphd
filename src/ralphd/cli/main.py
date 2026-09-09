@@ -6538,15 +6538,29 @@ _TAIL_SYNTAX_RE = re.compile(r"^-(\d+)(f)?$")
 # still declares (so `--help`/docs/cli.md are untouched) that a leftover
 # token may be folded into when `main()`'s own `parse_known_args()` sees
 # argparse leave it unconsumed.
-_LEFTOVER_POSITIONAL_FIELDS: dict[str, tuple[str, ...]] = {
-    "amend": ("task_id", "text"),
-    "steer": ("message",),
+# Task 072 (#182 item 2): the parser-walking guard in
+# tests/test_cli_argparse_walker_182.py discovered two more subcommands
+# that match task 071's own antecedent (an `nargs="?"` positional beside
+# at least one optional flag) -- `budget`'s `iterations` and
+# `suggestions`'s `action` -- so both join `amend`/`text` and `steer`.
+# `suggestions`'s `action` is choice-constrained and defaults to "show"
+# (never `None`), unlike the three free-text fields above it, so each
+# entry is now a (field, default, choices) triple: a field counts as
+# still-unfilled when its current value equals `default` (not always
+# `None`), and a `choices` tuple validates the leftover token before it is
+# folded in, refusing an out-of-band value the same way argparse's own
+# `choices=` would have.
+_LEFTOVER_POSITIONAL_FIELDS: dict[str, tuple[tuple[str, object, tuple[str, ...] | None], ...]] = {
+    "amend": (("task_id", None, None), ("text", None, None)),
+    "steer": (("message", None, None),),
+    "budget": (("iterations", None, None),),
+    "suggestions": (("action", "show", ("show", "apply")),),
 }
 
 
 def _place_leftover_positional(command: str, leftovers: list[str],
                                namespace: argparse.Namespace,
-                               positional_fields: tuple[str, ...]) -> None:
+                               positional_fields: tuple[tuple[str, object, tuple[str, ...] | None], ...]) -> None:
     """Fold ONE leftover token `main()`'s `parser.parse_known_args()` did
     not consume into the first still-empty `nargs="?"` positional of
     `command`, independent of whatever argparse version produced that
@@ -6561,8 +6575,10 @@ def _place_leftover_positional(command: str, leftovers: list[str],
 
     Raises the CLI's own clear error (via `die`, exit 2) -- naming the
     subcommand and the leftover tokens -- when there is more than one
-    leftover, or when every named positional field is already filled and
-    there is nowhere left to put the one leftover token.
+    leftover, when every named positional field is already filled (holds
+    something other than its own recorded `default`) and there is nowhere
+    left to put the one leftover token, or when the field a token would
+    fill declares `choices` and the leftover token is not one of them.
     """
     if not leftovers:
         return
@@ -6570,12 +6586,16 @@ def _place_leftover_positional(command: str, leftovers: list[str],
         die(2, f"{command}: too many extra arguments "
                f"({', '.join(repr(t) for t in leftovers)}); only one "
                "positional slot is still open")
-    unfilled = [f for f in positional_fields
-                if getattr(namespace, f, None) is None]
+    unfilled = [(field, choices) for field, default, choices in positional_fields
+                if getattr(namespace, field, None) == default]
     if not unfilled:
         die(2, f"{command}: extra argument {leftovers[0]!r} does not fit "
                "any positional slot (all are already filled)")
-    setattr(namespace, unfilled[0], leftovers[0])
+    field, choices = unfilled[0]
+    if choices is not None and leftovers[0] not in choices:
+        die(2, f"{command}: extra argument {leftovers[0]!r} is not one of "
+               f"{', '.join(choices)} for positional {field!r}")
+    setattr(namespace, field, leftovers[0])
 
 
 def _preprocess_logs_argv(argv: list[str]) -> list[str]:
