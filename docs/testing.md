@@ -82,7 +82,7 @@ tightened as the counts come down -- they are a ratchet, not a target.
 | smoke, serial | `smoke` | `-m smoke` | 3768 | 208 | 137.18 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 137.18 s measured against the 120 s target |
 | fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5329 | 322 | 81.04 s | 7000 | 430 | 150 s | < 120 s | met -- 81.04 s inside the 120 s target |
 | fast, serial | `fast` | `-m fast` | 5329 | 322 | 540.44 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
-| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 200 | 5 | 9.40 s | 300 | 15 | 15 s | < 15 s | met -- 9.40 s inside the 15 s target, 200 tests inside the 300-test target |
+| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 201 | 6 | 20.60 s | 300 | 15 | 30 s | < 15 s | MISSED -- 20.60 s measured against the 15 s target (still inside the 30 s ceiling's own headroom); 201 tests inside the 300-test target |
 | dev-layout, `PYTHONUSERBASE` unset | n/a (no marker; the whole suite, unfiltered) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported | n/a (no marker; the whole suite, unfiltered) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
 
@@ -221,13 +221,17 @@ That table is prose, not a budget row: `tests/test_tier_budgets.py` parses only
 the eleven-column table above it. The 10.81 s the directory adds is inside the
 fast lane's own recorded measurements.
 
-### The records-lint family (`tests/records/`, task 035, requirement E.4; subprocess count updated task 009, #176)
+### The records-lint family (`tests/records/`, task 035, requirement E.4; subprocess count updated task 009, #176; fresh-clone node added task 010, #176)
 
 Measured serially (`.venv/bin/python -m pytest -q tests/records/`, repeated,
-~9.4 s): **200 tests collected** across 4 test modules (plus a `conftest.py`:
+~20.6 s): **201 tests collected** across 5 test modules (plus a `conftest.py`:
 `test_conformance_ledger.py`, `test_records_family_budget.py`,
-`test_report_claims.py`, `test_roadmap.py`), against the PRD's **300-test** /
-**15 s** targets -- both met, so neither is disclosed here as a miss.
+`test_records_family_fresh_clone.py`, `test_report_claims.py`,
+`test_roadmap.py`), against the PRD's **300-test** target (met) and **15 s**
+target (MISSED at 20.6 s -- see "Targets missed" below for why: task 010's
+new fresh-clone node spawns a real `git clone` plus a nested `pytest`
+subprocess on purpose, and that is where nearly all of the added ~11 s
+goes).
 
 **The subprocess rule: `git ls-files` and `git rev-list HEAD` for a whole
 run, and nothing else.**
@@ -274,6 +278,28 @@ task 009), each memoised for the process: path membership and commit
 reachability genuinely are questions about git's own state, and nothing in
 the family asks either one twice.
 
+**The fresh-clone exemption (task 010, #176).**
+`tests/records/test_records_family_fresh_clone.py`'s one node clones this
+repository for real (`git clone --local --no-hardlinks`, into a throwaway
+directory) and then runs `tests/records/` there too, as a real nested
+`pytest` subprocess, to prove the family passes against a genuine fresh
+clone and not merely against this checkout's own working tree -- catching a
+hidden dependency on some file the clone would not carry that the family's
+own `Path(__file__)`-relative `REPO_ROOT` resolution would otherwise hide.
+That node is marked `@pytest.mark.nightly` directly (task 048's B.5
+follow-on precedent for "a real nested-pytest-subset run"), so it stays out
+of the `smoke`/`fast` tiers, but it still lives inside `tests/records/` and
+still runs whenever this directory is selected by path, which is why the
+family's own wall clock and test count above both include it. Its nested
+run excludes its own path inside the clone (the same self-exclusion shape
+`test_the_records_family_spawns_only_one_git_ls_files` already uses),
+without which it would recurse into cloning its own clone without bound.
+It is also named as the single exemption from the two-subprocess budget
+above: `test_the_records_family_spawns_only_one_git_ls_files`'s own nested
+run excludes this module by path (alongside itself) so its deliberate `git
+clone` and nested `pytest` subprocess are never mistaken for a second real
+`git ls-files` or `git rev-list HEAD`.
+
 ### Targets missed, with their numbers
 
 Requirement G's rule is that a missed target is disclosed with its number, not
@@ -296,6 +322,16 @@ module) is new, already folded into the fast/records counts below.
   new module).
 - **fast, `-n 8`, 81.04 s** against a target of < 120 s -- **met**. Unchanged in
   kind from the previous measurement's 81.89 s.
+- **records serial 20.60 s** against a target of < 15 s -- MISSED (new, task
+  010, #176): the lane was **met** at 9.40 s before this task's own
+  `test_records_family_fresh_clone.py` node landed; that one node's real
+  `git clone` plus nested `pytest` subprocess run accounts for essentially
+  all of the added ~11.2 s. The lane's own "budget wall clock" ceiling
+  moved from 15 s to 30 s (headroom over the new 20.60 s measurement, the
+  same shape every other lane in this table already carries between its
+  ceiling and its tighter PRD target) -- the 15 s PRD target itself is
+  unchanged and is the number disclosed as missed here, not loosened to
+  match.
 - **fast serial 540.44 s** against a target of < 300 s -- MISSED, up from
   491.68 s (this run's serial pass also surfaced one order-/timing-dependent
   red, `tests/test_reflection.py::test_reflect_runs_after_terminal_state_leaves_run_state_untouched`,

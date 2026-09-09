@@ -40,6 +40,17 @@ The reader that replaced the `git cat-file` call is checked against real
 git's own answers by `tests/test_report_claims_git_objects.py`, which lives
 OUTSIDE this family precisely because that comparison has to spawn the very
 subprocess this family is pinned not to spawn.
+
+**The single exemption.** Task 010 (#176) added
+`test_records_family_fresh_clone.py`, whose one node deliberately spawns a
+real `git clone` plus a nested `pytest` subprocess to prove the family
+passes against a genuine fresh clone, not merely this checkout's own
+working tree. That node is marked `@pytest.mark.nightly` directly (so it
+stays out of `smoke`/`fast`) but still lives inside this directory and
+still runs whenever `tests/records/` is selected by directory, so the
+nested run below excludes it by name alongside this file itself -- the one
+deliberate exemption from the two-subprocess count, never a second real
+`git ls-files` or `git rev-list HEAD` slipping in uncounted.
 """
 
 from __future__ import annotations
@@ -91,9 +102,13 @@ def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
     command of any kind.
 
     This file excludes itself from the nested run it launches (it would
-    otherwise recurse into calling `pytest.main()` on itself, forever); the
-    other 190+ nodes in the directory are exactly "the rest of the family"
-    this test measures.
+    otherwise recurse into calling `pytest.main()` on itself, forever), and
+    also excludes `test_records_family_fresh_clone.py` -- task 010's (#176)
+    one deliberate exemption: that module's own node spawns a real `git
+    clone` plus a nested `pytest` subprocess on purpose, which would
+    otherwise show up here as an uncounted extra call. The other 190+ nodes
+    in the directory are exactly "the rest of the family" this test
+    measures.
     """
     import report_claims as report_claims_module
 
@@ -120,7 +135,13 @@ def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
     monkeypatch.setattr(subprocess, "run", counting_run)
 
     this_file = str(Path(__file__).resolve())
-    args = ["-q", "-p", "no:cacheprovider", "--ignore", this_file, str(RECORDS_DIR)]
+    fresh_clone_file = str(
+        Path(__file__).resolve().parent / "test_records_family_fresh_clone.py")
+    args = [
+        "-q", "-p", "no:cacheprovider",
+        "--ignore", this_file, "--ignore", fresh_clone_file,
+        str(RECORDS_DIR),
+    ]
     ret = pytest.main(args)
     assert ret == pytest.ExitCode.OK, (
         f"a real run of tests/records/ (minus this file) failed (exit "
