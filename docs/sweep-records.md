@@ -153,7 +153,7 @@ The failure message names the record's path, its declared sha, the current
 -- if the intervening commits are the report/roadmap/index tail requirement B
 exists for -- run that subset at `HEAD` and add a `discharge-sha` block.
 
-## Parent-of-HEAD acceptance: the terminating fixed point (#106)
+## Parent-of-HEAD acceptance: the terminating fixed point (#106, generalized by #174)
 
 **#106** named the defect this section closes: the rule "the last commit is
 followed by the guard subset, green, recorded" has no fixed point, because
@@ -176,32 +176,70 @@ as its verified-at sha. Requiring an explicit discharge for that gap would
 make the guard permanently red the moment *any* record's own commit landed
 -- not a corner case, the typical one.
 
-**The mechanism chosen is parent-of-HEAD acceptance**, not an extension of
-the existing `discharge-sha` pair form: a record anchors itself directly off
-`HEAD` when the tip commit is its own add-commit, with no second block and
-no pair of shas to write.
+**The mechanism originally chosen** (task 005, v0.14.1) was narrow by
+construction and checked once, never walked: it accepted a declared sha with
+no `discharge-sha` block at all only when `HEAD` was *exactly* the commit
+that ADDED the declaring record (`git diff --name-status` reports it as `A`,
+not `M`), that commit's diff touched the record's own path and nothing
+else, and the declared sha was precisely that commit's single parent
+(`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`, kept in the
+module only because pre-v0.20 reports still cite that node id). That shape
+refused the moment a *second* report/docs commit landed on top of the
+record's own add-commit -- even though that second commit changed nothing
+the guard subset would re-check -- which is exactly the shape a wave's own
+tail (a roadmap block, a PRD index row, a closing report) actually
+produces, one hop at a time.
 
-`check_reports` therefore also accepts a declared sha with no
-`discharge-sha` block at all when `HEAD` is *exactly* the commit that ADDED
-the declaring record (`git diff --name-status` reports it as `A`, not `M`),
-that commit's diff touches the record's own path and nothing else, and the
-declared sha is precisely that commit's single parent
- (`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`). This is narrow
-by construction: refused the moment the tip commit touches any path outside
-the one record, and refused for a second commit stacked on top of the
-first -- an edit to an already-existing record is git status `M`, so only
-the literal add commit ever qualifies; report/docs commits are never
-exempted as a class. The invariant preserved: the guard subset ran green
-over every line of content that ships, and a record-only commit -- one that
-does nothing but add a record naming its own true parent -- cannot change
-what that subset would report if run again right now.
+**Task 008 (v0.20, #174) generalizes parent-of-HEAD acceptance into the
+self-anchoring acceptance WALK.** `check_reports` now also accepts a
+declared sha with no `discharge-sha` block at all whenever:
 
-`tests/test_sweep_sha_guard.py::test_a_records_own_add_commit_naming_its_parent_passes_with_no_discharge`,
-`::test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path`
+1. the declared sha is `HEAD` itself, or a genuine git ancestor of it
+ (`git merge-base --is-ancestor`, the same plumbing call `archived-sha`
+ ancestry already uses); AND
+2. every commit in the range `declared..HEAD` touches only
+ `artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`.
+
+`tests/sweep_sha_guard.py::_self_anchoring_reaches_head` implements this: the
+ancestry check is the single `_is_ancestor` call, and the changed-path check
+is **one** `git log --name-only --pretty=format: declared..HEAD` call over
+the *whole* range -- gathering every path touched by every commit in the
+range in a single invocation, rather than a subprocess per hop. Unlike the
+original single-hop mechanism, the walk is no longer refused by a second
+report-only commit stacked on top: the record's own add-commit is just the
+first hop of a range that can now carry any number of further
+report/roadmap/index-only commits. It is still refused outright -- exactly
+like an ordinary undischarged stale sha -- the moment any commit in the
+range touches a path outside that allow-list (`src/`, `tests/`, or any other
+doc), and refused outright whenever the declared sha is not actually an
+ancestor of `HEAD`, even on a divergent history whose own commits would
+otherwise look report-only.
+
+The invariant preserved is unchanged by the generalization: the guard
+subset (`scripts/final_sha_guards.sh`) ran green over every line of content
+that ships, and a *chain* of commits that touches nothing but
+`artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md` can never
+change what that subset would report if run again right now -- so accepting
+such a chain's declaration without a discharge block never widens what
+counts as "the suite was green at the sha the wave shipped."
+
+`tests/test_sweep_sha_guard.py::test_a_record_only_add_commit_naming_its_parent_passes_with_no_discharge`
+pins the original single-hop shape still passing under the walk;
+`::test_a_self_anchoring_record_followed_by_a_report_only_commit_passes` pins
+the walk's own generalization -- a self-anchoring record followed by a
+second report commit, then a roadmap-only commit, then a PRD-index-only
+commit, all still accepted with no discharge block;
+`::test_a_self_anchoring_record_followed_by_a_src_commit_fails` pins the
+allow-list's refusal the moment one commit in the range touches `src/`; and
+`::test_a_self_anchoring_declared_sha_not_an_ancestor_of_head_fails` pins the
+ancestry requirement against a divergent-history sha whose reachable commits
+look report-only but which was never merged into `HEAD` at all. These four
+supersede the two single-hop refusal tests the walk retired
+(`::test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path`
 and
 `::test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top`
-pin the mechanism and its two refusals, in real throwaway git repos under
-`tmp_path`.
+-- see `docs/test-suite-audit.md` § "Subsumed"), all built in real
+throwaway git repos under `tmp_path`.
 
 ## The companion rule: every sweep record declares one
 

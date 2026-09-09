@@ -445,7 +445,14 @@ def test_the_real_notification_log_is_not_misclassified_as_a_sweep_record() -> N
 # that makes the rule satisfiable at all. Each of the first two fails
 # against the pre-change `_reaches_head`, which only ever compared for
 # literal string equality with HEAD and had no `repo_root` to run `git
-# diff` against.
+# diff` against. The third pinned, at task 003, that this same allowance
+# never bridges a bare, never-discharged sweep-sha -- true of the discharge
+# chain's OWN report-only-tail allowance to this day, but task 008 (v0.20,
+# #174) added a SECOND, independent acceptance path (the self-anchoring
+# walk) that does not care whether a discharge ever happened at all, so
+# that exact fixture is now this module's proof of the opposite: see
+# `test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`
+# below, which supersedes it (docs/test-suite-audit.md § "Subsumed").
 # --------------------------------------------------------------------------
 
 
@@ -504,14 +511,31 @@ def test_a_discharge_ending_short_of_head_fails_when_one_tail_commit_touches_src
     assert stale in problems[0] and head in problems[0]
 
 
-def test_an_undischarged_sha_still_fails_even_with_a_report_only_tail(
+def test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring(
     tmp_path,
 ) -> None:
-    """The allowance only bridges the LAST leg of a chain a real
-    `discharge-sha` entry actually walked to -- it must not let a bare,
-    never-discharged sweep-sha pass just because nothing but reports
-    happened to change since. Without this, the guard would stop being a
-    hard failure and become a warning that clears itself with time."""
+    """Task 008 (v0.20, #174) generalizes acceptance far enough to reverse
+    this exact scenario on purpose. The discharge chain's OWN
+    report-only-tail allowance (`_report_only_tail`) still only ever
+    bridges the LAST leg of a chain a real `discharge-sha` entry actually
+    walked -- a bare, never-discharged sweep-sha still cannot ride *that*
+    allowance, and nothing about it changed here. But the self-anchoring
+    acceptance WALK is a second, independent path
+    (`_self_anchoring_reaches_head`), and it does not care whether a
+    discharge ever happened at all: any declared sha that is a genuine
+    ancestor of `HEAD`, with every commit in `declared..HEAD` touching only
+    `artifacts/reports/**`/`docs/roadmap.md`/`docs/prds/README.md`, is
+    accepted through that path -- discharged or not. This exact fixture (a
+    bare `sweep-sha` naming a `src/`-touching commit, one report-only
+    commit later) used to be this module's proof that a report-only tail
+    alone was never enough without an explicit discharge; it is now this
+    module's proof that requirement #174 deliberately widens acceptance
+    past that boundary -- the guard subset's own verdict is unchanged by a
+    report-only commit landing, whether or not anyone ever wrote a
+    `discharge-sha` block saying so. Supersedes the pre-#174
+    `test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`
+    (docs/test-suite-audit.md § "Subsumed"), whose scenario this walk now
+    accepts on purpose."""
     repo = _init_throwaway_repo(tmp_path)
     stale = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
     head = _commit(
@@ -523,19 +547,21 @@ def test_an_undischarged_sha_still_fails_even_with_a_report_only_tail(
 
     problems = guard.check_reports([record], head, repo_root=repo)
 
-    assert len(problems) == 1, problems
-    assert stale in problems[0] and head in problems[0]
+    assert problems == [], problems
 
 
 # --------------------------------------------------------------------------
 # Task 005 (v0.14.1): the terminating fixed point. A record's own add-commit
 # always leaves its declared sha one commit behind HEAD, with no possible
 # discharge-sha entry any commit could add yet (it would have to name its
-# own not-yet-computed resulting sha). `_is_self_anchoring_add_commit`
-# accepts exactly that shape without a discharge block -- and only that
-# shape. Built in real throwaway git repos under tmp_path (never inside the
-# real artifacts/reports/), same pattern as the report-only-tail fixtures
-# above.
+# own not-yet-computed resulting sha). Task 008 (v0.20, #174) generalized
+# the acceptance from a single literal add-commit into a WALK
+# (`_self_anchoring_reaches_head`): a declared sha is accepted whenever it
+# is a git ancestor of HEAD and every commit in `declared..HEAD` touches
+# only `artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`,
+# however many hops that range spans. Built in real throwaway git repos
+# under tmp_path (never inside the real artifacts/reports/), same pattern
+# as the report-only-tail fixtures above.
 # --------------------------------------------------------------------------
 
 
@@ -570,84 +596,94 @@ def test_a_record_only_add_commit_naming_its_parent_passes_with_no_discharge(
     assert guard.check_reports([record], head, repo_root=repo) == []
 
 
-def test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path(
+def test_a_self_anchoring_record_followed_by_a_report_only_commit_passes(
     tmp_path,
 ) -> None:
-    """Task 006 (#106, requirement B), fixture (2) -- a report/docs commit
-    that also touches another file does NOT get the exemption, and stays
-    flagged. Requirement B's invariant, stated out loud: the exemption
-    exists only because a record-only commit 'cannot change what the
-    [guard] subset would find'; a commit that touches ANY other path --
-    even a second report -- might, so it is narrow by construction: the
-    add commit must touch the record's own path and NOTHING else. One
-    extra file in the same commit refuses the exemption."""
-    repo = _init_throwaway_repo(tmp_path)
-    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
-    record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n")
-    other = repo / "artifacts" / "reports" / "note.md"
-    other.write_text("unrelated note\n")
-    _run_git(
-        repo,
-        "add",
-        "artifacts/reports/v0.14-fixture-self-anchor.md",
-        "artifacts/reports/note.md",
-    )
-    head = _commit(
-        repo,
-        "artifacts/reports/note.md",
-        other.read_text(),
-        "add the sweep record plus an unrelated note",
-    )
-
-    problems = guard.check_reports([record], head, repo_root=repo)
-
-    assert len(problems) == 1, problems
-    assert parent in problems[0] and head in problems[0]
-
-
-def test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top(
-    tmp_path,
-) -> None:
-    """Task 006 (#106, requirement B), fixture (3) -- a second record
-    commit stacked on top of the record does NOT get the exemption, and
-    stays flagged. Requirement B's invariant, stated out loud: the fixed
-    point is the SINGLE add commit whose diff is exactly 'nothing but its
-    own guard/sweep record' relative to HEAD's one true parent -- a later
-    commit that edits the already-existing record (even if it, too,
-    touches only that one path) is not an ADD -- git reports it as a
-    modification -- so this mechanism must not exempt it. Report/docs
-    commits are not exempted as a class; only the literal add commit is.
+    """Task 008 (v0.20, #174): the self-anchoring acceptance now WALKS
+    report-only history instead of accepting only the literal single
+    add-commit -- a self-anchoring record followed by any number of
+    further report/roadmap/index-only commits stays accepted, because none
+    of them can change what the guard subset would find. This is the walk
+    doing what the old, single-hop mechanism (`_is_self_anchoring_add_commit`,
+    kept only for historical report citations) refused by construction:
+    a wave's own tail always lands MORE than one commit after a record's
+    add-commit (a roadmap block, a PRD index row, a closing report), and
+    every one of those has to stay accepted with no discharge block.
+    Supersedes
+    `test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path`
+    and
+    `test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top`
+    (docs/test-suite-audit.md § "Subsumed"), whose scenarios this walk now
+    accepts on purpose.
     """
     repo = _init_throwaway_repo(tmp_path)
     parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
 
     record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
     record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n")
-    add_head = _commit(
+    _commit(
         repo,
         "artifacts/reports/v0.14-fixture-self-anchor.md",
-        record.read_text(),
+        f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n",
         "add the sweep record",
     )
-
-    # Stack a second, record-only commit on top: still declares the SAME
-    # (now stale-by-two) parent sha, still touches only this one path.
-    record.write_text(
-        f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n\nfixed a typo\n"
-    )
+    # A second report -- the shape the old mechanism refused outright.
+    _commit(repo, "artifacts/reports/note.md", "unrelated note\n", "add a note")
+    # The wave's own tail: a roadmap block and a PRD index row, neither
+    # under artifacts/reports/ at all.
+    _commit(repo, "docs/roadmap.md", "roadmap update\n", "update the roadmap")
     head = _commit(
+        repo, "docs/prds/README.md", "index row\n", "update the PRD index"
+    )
+
+    assert guard.check_reports([record], head, repo_root=repo) == []
+
+
+def test_a_self_anchoring_record_followed_by_a_src_commit_fails(tmp_path) -> None:
+    """Task 008 (v0.20, #174): the walk's allow-list is still an allow-list
+    -- the moment any commit in `declared..HEAD` touches a path outside
+    `artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`, the
+    whole walk is refused, exactly like an ordinary undischarged stale sha.
+    Supersedes the same two tests named in the sibling green fixture above
+    (docs/test-suite-audit.md § "Subsumed").
+    """
+    repo = _init_throwaway_repo(tmp_path)
+    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    _commit(
         repo,
         "artifacts/reports/v0.14-fixture-self-anchor.md",
-        record.read_text(),
-        "fix a typo in the sweep record",
+        f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n",
+        "add the sweep record",
     )
+    head = _commit(repo, "src/thing.py", "print('v2')\n", "change thing")
 
     problems = guard.check_reports([record], head, repo_root=repo)
 
     assert len(problems) == 1, problems
     assert parent in problems[0] and head in problems[0]
-    assert add_head not in problems[0]
+
+
+def test_a_self_anchoring_declared_sha_not_an_ancestor_of_head_fails(
+    tmp_path,
+) -> None:
+    """Task 008 (v0.20, #174): the walk requires genuine ANCESTRY, not
+    merely a report-only-looking diff -- a declared sha on a divergent
+    history (never merged into HEAD) is refused even though every commit
+    actually reachable from HEAD since the branch point is report-only.
+    """
+    repo = _init_throwaway_repo(tmp_path)
+    base = _commit(repo, "artifacts/reports/base.md", "base\n", "base report")
+    side = _commit(repo, "artifacts/reports/side.md", "side\n", "side report")
+    _run_git(repo, "checkout", "-q", base)
+    head = _commit(repo, "artifacts/reports/head.md", "head\n", "head report")
+
+    record = repo / "artifacts" / "reports" / "v0.14-fixture-non-ancestor.md"
+    record.write_text(f"```sweep-sha\n{side}\n```\n\n1 passed in 0.01s\n")
+
+    problems = guard.check_reports([record], head, repo_root=repo)
+
+    assert len(problems) == 1, problems
+    assert side in problems[0] and head in problems[0]

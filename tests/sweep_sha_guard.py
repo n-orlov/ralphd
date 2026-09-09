@@ -21,35 +21,52 @@ Demanding an explicit discharge for that gap would make the guard subset
 permanently red the moment any record's own commit landed, for every record,
 forever -- not a corner case, the *typical* case.
 
-The mechanism chosen to close that gap is **parent-of-HEAD acceptance**: a
-sha declaration is also accepted, with no `discharge-sha` block at all, when
-`HEAD` is *exactly* the commit that ADDED the declaring record (git status
-`A`, not `M`), that commit's diff touches the record's own path and nothing
-else, and the declared sha is precisely that commit's single parent
-(`_is_self_anchoring_add_commit`, used from `_reaches_head`/`check_reports`
-alongside the discharge chain). This is narrow by construction: it names the
-record's own path and only that path, it is refused outright the moment the
-tip commit touches any other path, and it is refused for a second commit
-stacked on top of the first (an edit to an already-existing record shows
-git status `M`, not `A`, so the "added the record" test alone -- not the
-resolver's cycle/visited-set logic used for a multi-hop discharge chain --
-is what keeps this specific mechanism from ever iterating: it is checked
-once, against literal `HEAD`, never walked). Report and docs commits are
-never exempted as a *class* -- only the one commit that adds the one record
-naming its own literal parent gets this, exactly as a hand-written
-`discharge-sha` would have to be added for any other commit shape.
+The mechanism originally chosen to close that gap (task 005) was narrow by
+construction: `HEAD` had to be *exactly* the commit that ADDED the
+declaring record (git status `A`, not `M`), that commit's diff had to touch
+the record's own path and nothing else, and the declared sha had to be
+precisely that commit's single parent. It was checked once, against
+literal `HEAD`, never walked -- so it was refused the instant a second
+report/docs commit landed on top, even though that second commit changed
+nothing the guard subset would re-check.
+
+Task 008 (v0.20, #174) generalizes this into **the self-anchoring
+acceptance walk**: a declared sha is accepted with no `discharge-sha` block
+at all when it is a genuine git ancestor of `HEAD` (`git merge-base
+--is-ancestor`, the same plumbing call `archived-sha` ancestry already
+uses) and every commit in `declared..HEAD` touches only
+`artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`
+(`_self_anchoring_reaches_head`, used from `check_reports` alongside the
+discharge chain). One `git log --name-only` call over the whole range
+gathers every changed path in a single invocation, rather than walking
+commit-by-commit with a subprocess per hop. Unlike the original mechanism,
+this is no longer refused by a second report-only commit stacked on top --
+the record's own add-commit is just the first hop of a range that can now
+carry any number of further report/roadmap/index-only commits, which is
+exactly the shape a wave's tail (roadmap block, PRD index row, closing
+report) actually produces. It is still refused outright the moment any
+commit in the range touches a path outside that allow-list -- `src/`,
+`tests/`, or any other doc.
+
+`_is_self_anchoring_add_commit` (the original, narrower check) is kept as a
+real function, unused by `check_reports`, purely because several pre-v0.20
+reports under `artifacts/reports/` cite it by node id
+(`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`) and
+`tests/report_claims.py::node_problems` requires that exact `def` to still
+exist for those citations to keep resolving -- the same reason
+`is_wave_sweep_record` survives below.
 
 **The invariant this preserves:** the guard subset
 (`scripts/final_sha_guards.sh`) ran green over every line of content that
-ships, and a record-only commit -- one that does nothing but add a record
-naming its own true parent sha -- can never change what that subset would
-report if run again right now. Accepting such a commit's declaration
-without a discharge block does not widen what counts as "the suite was
-green at the sha the wave shipped" (`docs/sweep-records.md`'s own framing):
-the commit contributed no `src/`/`tests/`/behaviour-affecting change of its
-own, so the guard subset's own verdict is unchanged by its landing, and the
-record's claim about its parent sha remains exactly as true after the
-add-commit as before it.
+ships, and a chain of commits that touches nothing but
+`artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md` can never
+change what that subset would report if run again right now. Accepting
+such a chain's declaration without a discharge block does not widen what
+counts as "the suite was green at the sha the wave shipped"
+(`docs/sweep-records.md`'s own framing): none of those commits contribute a
+`src/`/`tests/`/behaviour-affecting change, so the guard subset's own
+verdict is unchanged by their landing, and the record's claim about its
+declared sha remains exactly as true after the whole walk as before it.
 """
 
 from __future__ import annotations
@@ -557,6 +574,16 @@ def _rel_to(path: Path, root: Path) -> str:
         return str(path)
 
 
+# Historical alias, kept for the same reason as `is_wave_sweep_record`
+# above: task 008 (#174) replaced this narrow, single-hop check with the
+# self-anchoring acceptance WALK (`_self_anchoring_reaches_head`, below
+# `_is_ancestor`) -- but several pre-v0.20 reports under
+# `artifacts/reports/` still cite this exact node id
+# (`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`), and
+# `tests/report_claims.py::node_problems` requires the `def` to keep
+# existing for those citations to keep resolving. `check_reports` no
+# longer calls this function; it is dead code retained only so those
+# citations are never a stale one.
 def _is_self_anchoring_add_commit(
     path: Path, sha: str, head: str, repo_root: Path
 ) -> bool:
@@ -640,6 +667,52 @@ def _is_ancestor(sha: str, descendant: str, repo_root: Path) -> bool:
     return out.returncode == 0
 
 
+def _self_anchoring_reaches_head(sha: str, head: str, repo_root: Path) -> bool:
+    """The self-anchoring acceptance walk (task 008, #174): True when `sha`
+    is `head` itself or a genuine git ancestor of it, AND every commit in
+    `sha..head` touches only `artifacts/reports/**`, `docs/roadmap.md` or
+    `docs/prds/README.md` -- the terminating fixed point for a record's own
+    sweep-sha (see the module docstring and
+    docs/sweep-records.md's "Parent-of-HEAD acceptance").
+
+    Ancestry is confirmed by the same `git merge-base --is-ancestor`
+    plumbing call `_is_ancestor` already makes for `archived-sha`. The
+    changed-path check is ONE `git log --name-only` call over the whole
+    range -- it gathers every path touched by every commit in the range in
+    a single invocation rather than walking commit-by-commit with a
+    subprocess per hop, and a declared sha with an empty range (equal to
+    `head`) trivially passes with no git-log call needed at all.
+
+    False (never an exemption) on any git failure, and False whenever `sha`
+    is not actually an ancestor of `head` -- a declared sha on a divergent
+    history is refused even if the paths it would otherwise touch look
+    report-only, because ancestry, not a coincidental diff, is what the
+    rule requires.
+    """
+    if sha == head:
+        return True
+    if not _is_ancestor(sha, head, repo_root):
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "log", "--name-only", "--pretty=format:", f"{sha}..{head}"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    if out.returncode != 0:
+        return False
+    changed = {line.strip() for line in out.stdout.splitlines() if line.strip()}
+    return all(
+        path.startswith("artifacts/reports/")
+        or path in ("docs/roadmap.md", "docs/prds/README.md")
+        for path in changed
+    )
+
+
 def _archived_message(path: Path, sha: str) -> str:
     rel = _rel(path)
     return (
@@ -690,7 +763,7 @@ def check_reports(
         for sha in sweep_shas(text):
             if _reaches_head(sha, head, chain, repo_root=repo_root):
                 continue
-            if _is_self_anchoring_add_commit(path, sha, head, repo_root):
+            if _self_anchoring_reaches_head(sha, head, repo_root):
                 continue
             problems.append(_discharge_message(path, sha, head))
         for sha in archived_shas(text):
