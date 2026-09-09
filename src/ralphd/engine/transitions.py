@@ -1217,6 +1217,34 @@ HAT_SCHEMAS: dict[str, dict] = {
                 },
                 "additionalProperties": False,
             },
+            # Task 011 (PRD requirement A.1, #156): the worker contract's
+            # OPTIONAL "still working" claim -- "the worker claims it, the
+            # engine corroborates it" (PRD requirement A's own framing) --
+            # rides alongside `verdict: "no_verdict"` ONLY (PRD: "a
+            # progress block on any other verdict is ignored and logged",
+            # `LoopSupervisor._step_worker`'s dedicated site is what does
+            # the ignoring/logging -- this schema entry only fixes the
+            # SHAPE, not which verdict it may accompany). `evidence` is a
+            # bare `{"type": "array"}` for the same reason
+            # `proposed_tasks`/`debt_resolved` above are -- this restricted
+            # schema engine has no `items` sub-schema for array elements,
+            # by design (`contracts.py`'s own docstring) -- so each
+            # element's `kind` (one of "commit"/"file"/"external", PRD
+            # requirement A.1) is checked by the semantic half instead,
+            # `worker_progress_report_errors` below, the same two-layer
+            # split every sibling optional channel in this schema already
+            # uses. Nothing here yet reads an ACCEPTED claim for anything
+            # beyond a log record -- fingerprint corroboration (task 012)
+            # and the per-task budget (task 013) are what will consume it.
+            "progress": {
+                "type": "object",
+                "required": ["summary", "evidence"],
+                "properties": {
+                    "summary": {"type": "string"},
+                    "evidence": {"type": "array"},
+                },
+                "additionalProperties": False,
+            },
         },
         "additionalProperties": False,
     },
@@ -1492,6 +1520,60 @@ def worker_petition_report_errors(payload: Any) -> list[str]:
     evidence = petition.get("evidence")
     if not isinstance(evidence, str) or not evidence.strip():
         errors.append("petition.evidence must be a non-empty string")
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Task 011 (PRD requirement A.1, #156): the semantic half of the worker's
+# optional "still working" progress claim -- the same schema/semantic split
+# every sibling optional channel in this module already uses.
+# `HAT_SCHEMAS["worker"]["properties"]["progress"]` already enforces the
+# OUTER shape (`summary`/`evidence` present, `summary` a string, `evidence`
+# an array); this catches what that restricted schema engine cannot -- a
+# blank `summary`, an empty `evidence` list, and each evidence element's own
+# shape (`kind` one of "commit"/"file"/"external", a non-empty `ref`) --
+# `contracts.py` has no `items` sub-schema for array elements, by design.
+# Deliberately independent of `verdict`: this function only checks the
+# `progress` block's own SHAPE, never whether the accompanying `verdict` is
+# `"no_verdict"` -- that gate ("ignored and logged" for any other verdict,
+# PRD requirement A.1) is `LoopSupervisor._step_worker`'s own site, not a
+# shape violation this function should ever raise over.
+# ---------------------------------------------------------------------------
+
+
+def worker_progress_report_errors(payload: Any) -> list[str]:
+    """Errors in a worker's optional `payload["progress"]` claim, or an
+    empty list when there is none, or when the one present is well-formed.
+    A payload carrying no `progress` key at all is never in violation here
+    -- the same "nothing declared, nothing to check" shape
+    `worker_petition_report_errors` above uses for a payload with no
+    `petition`.
+    """
+    if not isinstance(payload, dict):
+        return []
+    progress = payload.get("progress")
+    if not isinstance(progress, dict):
+        return []
+    errors = []
+    summary = progress.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        errors.append("progress.summary must be a non-empty string")
+    evidence = progress.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        errors.append("progress.evidence must be a non-empty array")
+        return errors
+    for index, item in enumerate(evidence):
+        if not isinstance(item, dict):
+            errors.append(f"progress.evidence[{index}] must be an object")
+            continue
+        kind = item.get("kind")
+        if kind not in ("commit", "file", "external"):
+            errors.append(
+                f"progress.evidence[{index}].kind must be one of "
+                "'commit', 'file', 'external', got " + repr(kind))
+        ref = item.get("ref")
+        if not isinstance(ref, str) or not ref.strip():
+            errors.append(f"progress.evidence[{index}].ref must be a non-empty string")
     return errors
 
 

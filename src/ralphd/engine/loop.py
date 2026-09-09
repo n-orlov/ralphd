@@ -4435,6 +4435,39 @@ class LoopSupervisor:
             self.workspace, petition["obligation"], petition["type"],
             petition["evidence"])
 
+    def _apply_worker_progress_report(self, payload: dict) -> list[str]:
+        """Task 011 (PRD requirement A.1, #156): the ACCEPT side of a
+        worker's optional "still working" `progress` claim, called only
+        once the call site below has already confirmed `verdict ==
+        "no_verdict"` -- a progress block riding alongside any other
+        verdict is ignored and logged at that call site, and never reaches
+        this method at all.
+
+        Same two-layer split every sibling `_apply_*` method in this class
+        uses: the SEMANTIC check first (`transitions.
+        worker_progress_report_errors` -- outer shape is already
+        `contracts.validate_payload`'s job), then the accept step. Nothing
+        downstream reads an accepted claim for anything beyond this log
+        record yet -- fingerprint corroboration (task 012) and the
+        per-task progress budget (task 013) are what will consume it; this
+        task's own job is only to accept the shape and make the claim
+        appear in the record, not to corroborate or budget it.
+        """
+        errors = transitions.worker_progress_report_errors(payload)
+        if errors:
+            return errors
+        progress = payload.get("progress")
+        if not isinstance(progress, dict):
+            return []
+        self.run.emit(
+            "log", level="info",
+            message=(
+                f"worker reported progress on the assigned task: "
+                f"{progress.get('summary')!r} "
+                f"({len(progress.get('evidence', []))} evidence item(s)) "
+                "(task 011, #156)"))
+        return []
+
     def _worker_assignment_extra(self, task: dict | None) -> str:
         """Task 116 (#60 pillar 3, fact 9): the one thing a worker
         iteration needs told to it now that the HARNESS -- not the agent --
@@ -6053,6 +6086,71 @@ class LoopSupervisor:
                 # `_abort_reason`, no early `return`; `enforce_contract`
                 # already emitted the `contract.violation`/`contract.
                 # agent_fault` events for the record.
+
+            # Task 011 (PRD requirement A.1, #156): the worker contract's
+            # OPTIONAL "still working" `progress` claim. Unlike the
+            # `petition`/`task_status`/`debt_resolved` side channels above
+            # (each riding beside ANY verdict value), a `progress` block
+            # is only meaningful beside `verdict: "no_verdict"` -- there
+            # is no task left to charge a progress budget against once
+            # `"complete"`/`"unsatisfiable"`/`"plan_complete"` has already
+            # decided the iteration, so the PRD's own text is explicit:
+            # "a progress block on any other verdict is ignored and
+            # logged". Checked here, AFTER the `task_status` site above
+            # (so a `task_status` escape's own possibly-repaired `verdict`
+            # is what this gate actually sees) and BEFORE the
+            # verdict-specific branches below.
+            if isinstance(payload, dict) and "progress" in payload:
+                if verdict != "no_verdict":
+                    self.run.emit(
+                        "log", level="info",
+                        message=(
+                            "worker reported a progress block alongside "
+                            f"verdict {verdict!r}; ignored (task 011, #156 "
+                            "-- a progress block only applies alongside "
+                            "no_verdict)"))
+                else:
+                    event_loop = asyncio.get_running_loop()
+
+                    def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                        if attempt == 0:
+                            return worker_final_text
+                        raw, _usage = asyncio.run_coroutine_threadsafe(
+                            self._ask_contract_fix("worker", prior_errors or [],
+                                final_text=result.final_text),
+                            event_loop).result()
+                        return last_nonblank_line(raw)
+
+                    progress_enforcement = await asyncio.to_thread(
+                        contract_enforcement.enforce_contract,
+                        "worker", respond,
+                        max_retries=self.cfg.contract_retry_max,
+                        state=self.run,
+                        extra_validate=lambda p: self._apply_worker_progress_report(p),
+                    )
+                    if progress_enforcement.ok:
+                        # Deliberately NOT `stagnant = 0` / `contract_progress
+                        # = True` here (contrast the petition site above):
+                        # task 011's own scope is only the CLAIM half of
+                        # requirement A -- accept the shape, ignore/log a
+                        # misplaced one. Corroborating the claim against a
+                        # workspace fingerprint (task 012) and exempting a
+                        # CORROBORATED claim from the stagnation counter
+                        # (task 013) do not exist yet; granting a stagnation
+                        # exemption for a bare, uncorroborated claim here
+                        # would pre-empt task 012/013's own design (PRD
+                        # requirement A.3: "an uncorroborated no_verdict
+                        # keeps today's three-strike witness rule").
+                        if progress_enforcement.payload is not None:
+                            payload = progress_enforcement.payload
+                            verdict = payload.get("verdict")
+                            worker_final_text = json.dumps(payload)
+                    # Ladder exhausted: same fall-through as the petition
+                    # site above -- nothing applied, no `_advance`, no
+                    # `_abort_reason`, no early `return`; `enforce_contract`
+                    # already emitted the `contract.violation`/`contract.
+                    # agent_fault` events for the record.
+
             if verdict is not None:
               # Task 008 (requirement B.2, #128): the generic schema site
               # (the `elif schema_errors:` branch below) used to have no

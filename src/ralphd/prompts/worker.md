@@ -203,6 +203,25 @@ follows. An id this run's ledger does not recognise, or one already
 resolved, is silently ignored rather than rejected. `debt_resolved` may ride
 alongside ANY verdict value, including `"no_verdict"`.
 
+## Reporting progress while still working
+
+When you report `"no_verdict"` because the assigned task genuinely is not
+done yet, you may add an optional `progress` block to that same reply so the
+loop's stagnation guard sees what changed instead of only counting the
+iteration as one more strike. Its shape is: a `summary` (a short string
+describing what you did) and an `evidence` list, each entry naming a `kind`
+of `commit`, `file`, or `external`, plus a `ref` (a commit sha, a file path,
+or a description of the external action, matching the `kind`). The engine
+fingerprints the workspace and corroborates `commit`/`file` evidence against
+that fingerprint; an `external` claim is honoured at face value only once
+consecutively.
+
+A `progress` block riding alongside any verdict other than `"no_verdict"` is
+ignored and logged -- the task is already decided one way or another by that
+point, so there is nothing left for a progress claim to charge against.
+Never invent evidence: an entry naming a commit you did not make, or a file
+you did not touch, corroborates against nothing and only wastes the claim.
+
 ## Sandbox safety: you run inside the thing you are changing
 
 Your shell runs in the job's own container, as the same user, beside the
