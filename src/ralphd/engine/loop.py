@@ -199,6 +199,16 @@ class LoopSupervisor:
         # same scope `stagnant`/`_last_fault_class` already use.
         self._progress_external_streak = 0
         self._progress_streak_task_id: str | None = None
+        # Task 013 (PRD requirement A.3, #156): the LATEST progress claim
+        # `_apply_worker_progress_report` accepted this iteration --
+        # `{"taskId": ..., "corroborated": ...}`, or `None` when no
+        # claim was accepted this pass. Read (and reset) once per worker
+        # iteration, right beside `contract_progress`'s own reset, purely
+        # in-memory like `_progress_external_streak` above -- the disk-
+        # persisted counterpart is `PROGRESS_BUDGET_STATUS_KEY` below,
+        # which tracks the BUDGET a corroborated claim spends, not the
+        # claim itself.
+        self._last_progress_claim: dict | None = None
         # Task 052 (#10): the host-side rate table (usually inlined into
         # job.yaml by `ralphctl start`) is parsed once, here -- the runner
         # consults it only for messages the provider quoted no price for.
@@ -4474,9 +4484,16 @@ class LoopSupervisor:
         changes, a real delta lands, or the claim is not external-only)
         is what makes the SECOND such claim in a row uncorroborated. Every
         call records a `progress_claim` event carrying `taskId`,
-        `corroborated` and `deltaSize` -- consumed by nothing downstream
-        yet (the per-task progress budget, task 013, is what will finally
-        read `corroborated` for something other than the record).
+        `corroborated` and `deltaSize`, and -- task 013 (PRD requirement
+        A.3, #156) -- stashes the same `taskId`/`corroborated` pair on
+        `self._last_progress_claim` for `_step_worker`'s own call site to
+        read right after this call returns: a corroborated claim spends
+        the assigned task's own progress budget (`_record_progress_
+        budget_usage`, `estimatedIterations + 2`, default 1) instead of
+        the approach's three-strike stagnation counter, and exempts a
+        task under budget from `taskAbsorptionStreak`'s forced verify for
+        this iteration; an uncorroborated claim does neither and simply
+        keeps today's three-strike witness rule.
         """
         errors = transitions.worker_progress_report_errors(payload)
         if errors:
@@ -4510,6 +4527,17 @@ class LoopSupervisor:
             corroborated = False
             self._progress_external_streak = 0
 
+        # Task 013 (PRD requirement A.3, #156): the ONE piece of state
+        # the stagnation/budget bookkeeping further down `_step_worker`
+        # actually needs from this method -- `extra_validate` itself may
+        # only return a `list[str]` of errors (`contract_enforcement.
+        # enforce_contract`'s own contract), so an instance attribute is
+        # the only channel back to the call site. Overwritten every time
+        # this method runs; the call site reads it exactly once, right
+        # after `progress_enforcement.ok`, and only trusts it when its
+        # own `taskId` still matches the iteration's `assigned_id`.
+        self._last_progress_claim = {
+            "taskId": assigned_task_id, "corroborated": corroborated}
         self.run.emit(
             "progress_claim", taskId=assigned_task_id,
             corroborated=corroborated, deltaSize=delta_size)
@@ -4811,6 +4839,57 @@ class LoopSupervisor:
         common = set(before) & set(after)
         changed |= {p for p in common if before[p] != after[p]}
         return len(changed)
+
+    # Task 013 (PRD requirement A.3, #156): the disk-persisted counterpart
+    # to `taskAbsorptionStreak` above -- same one-entry-at-a-time shape
+    # (this run's own scheduler never has more than one task genuinely
+    # "in progress" at once), holding `{"taskId", "used", "budget"}` for
+    # whichever task most recently spent a corroborated progress claim.
+    # `docs/prds/v0.20-a-commit-is-progress.md` requirement A.4 ("the
+    # surface") is task 014's job -- exposing this key on `ralphctl
+    # status`/`tasks`/the hub -- not this task's; this task only WRITES it.
+    PROGRESS_BUDGET_STATUS_KEY = "progressBudget"
+
+    def _progress_budget_for(self, task: dict | None) -> int:
+        """`estimatedIterations + 2` (PRD requirement A.3) -- the estimate
+        defaults to 1 when the field is absent, which is every task in
+        this run today: `plan_ingestion` defaulting a missing estimate
+        and recording that it defaulted is requirement D.1, not yet
+        built. A non-dict task (nothing assigned this pass) or a
+        non-numeric estimate both degrade to the same default of 1,
+        never raise."""
+        if not isinstance(task, dict):
+            return 1 + 2
+        try:
+            estimated = int(task.get("estimatedIterations", 1))
+        except (TypeError, ValueError):
+            estimated = 1
+        return estimated + 2
+
+    def _record_progress_budget_usage(self, assigned_id: str | None,
+                                      task: dict | None) -> tuple[int, int]:
+        """Called EXACTLY when this iteration's own progress claim was
+        corroborated (the call site above gates it on `claim.get(
+        "corroborated")`) -- an uncorroborated claim never reaches here,
+        matching requirement A.3's "an uncorroborated no_verdict keeps
+        today's three-strike witness rule" (nothing budget-related happens
+        to it at all). `used` starts at 1 the moment `assigned_id` differs
+        from whatever task the persisted record last named -- the same
+        reset-on-task-change `taskAbsorptionStreak` already relies on,
+        here for free from the equality check itself rather than a
+        separate clear step. Returns `(used, budget)` for the call
+        site's own `taskAbsorptionStreak` exemption decision (task 013's
+        third criterion) -- "under budget" is `used <= budget`, computed
+        by that caller, not this method, so a raised-past-budget usage
+        is still recorded honestly rather than clamped."""
+        budget = self._progress_budget_for(task)
+        record = dict(
+            self.run.read_status().get(self.PROGRESS_BUDGET_STATUS_KEY) or {})
+        used = (int(record.get("used", 0)) + 1
+                if record.get("taskId") == assigned_id else 1)
+        self.run.update_status(**{self.PROGRESS_BUDGET_STATUS_KEY: {
+            "taskId": assigned_id, "used": used, "budget": budget}})
+        return used, budget
 
     def _apply_worker_debt_resolution(self, debt_resolved) -> list[str]:
         """Task 007 (PRD requirement A.3 prompt half, #155): applies a
@@ -6106,6 +6185,21 @@ class LoopSupervisor:
             # "no_verdict") that falls all the way through to it, which is
             # exactly the gap this task closes for the petition case.
             contract_progress = False
+            # Task 013 (PRD requirement A.3, #156): the same shape as
+            # `contract_progress` just above -- computed once, right after
+            # `_apply_worker_progress_report`'s own `progress_enforcement.ok`
+            # site below, and consulted (never reassigned) by the ordinary
+            # stagnation formula further down. `progress_claim_corroborated`
+            # is the exemption from the approach's three-strike counter;
+            # `progress_budget_used`/`progress_budget_total` are this same
+            # pass's own read of the task's progress budget (`None` unless
+            # a corroborated claim landed THIS iteration), consulted by the
+            # `taskAbsorptionStreak` call inside the vigilant block to
+            # decide whether THIS iteration's forced-verify streak still
+            # counts.
+            progress_claim_corroborated = False
+            progress_budget_used: int | None = None
+            progress_budget_total: int | None = None
             # Task 005 PART 1 (requirement A.1/A.2, #114, closes task 004's
             # residual gap -- operator steer 001): route EVERY worker
             # payload carrying a `petition` field through the declaration
@@ -6266,16 +6360,40 @@ class LoopSupervisor:
                     if progress_enforcement.ok:
                         # Deliberately NOT `stagnant = 0` / `contract_progress
                         # = True` here (contrast the petition site above):
-                        # task 011's own scope is only the CLAIM half of
-                        # requirement A -- accept the shape, ignore/log a
-                        # misplaced one. Corroborating the claim against a
-                        # workspace fingerprint (task 012) and exempting a
-                        # CORROBORATED claim from the stagnation counter
-                        # (task 013) do not exist yet; granting a stagnation
-                        # exemption for a bare, uncorroborated claim here
-                        # would pre-empt task 012/013's own design (PRD
-                        # requirement A.3: "an uncorroborated no_verdict
-                        # keeps today's three-strike witness rule").
+                        # this call site's own job stops at accepting the
+                        # CLAIM shape (task 011) and reading back what
+                        # `_apply_worker_progress_report` corroborated
+                        # (task 012) -- an uncorroborated claim must NOT
+                        # get the same exemption a corroborated one does
+                        # (PRD requirement A.3: "an uncorroborated
+                        # no_verdict keeps today's three-strike witness
+                        # rule"), so `progress_claim_corroborated` below is
+                        # gated on `claim.get("corroborated")` specifically,
+                        # never on `progress_enforcement.ok` alone (which
+                        # only means "the shape was valid").
+                        #
+                        # Task 013 (PRD requirement A.3, #156): read back
+                        # `self._last_progress_claim`, the ONE piece of
+                        # state `_apply_worker_progress_report` can hand
+                        # this call site (`extra_validate` itself may only
+                        # return `list[str]`) -- guarded on `taskId`
+                        # matching `assigned_id` so a claim is never
+                        # misread as this iteration's own. A corroborated
+                        # claim spends the task's own progress budget
+                        # here, immediately -- never deferred to the
+                        # stagnation-formula site further down, so that
+                        # site only ever READS the flag this sets, exactly
+                        # like `contract_progress`.
+                        claim = self._last_progress_claim
+                        if claim is not None and claim.get("taskId") == assigned_id \
+                                and claim.get("corroborated"):
+                            progress_claim_corroborated = True
+                            claimed_task = next(
+                                (t for t in tasks_after.get("tasks", [])
+                                 if t.get("id") == assigned_id), None)
+                            progress_budget_used, progress_budget_total = \
+                                self._record_progress_budget_usage(
+                                    assigned_id, claimed_task)
                         if progress_enforcement.payload is not None:
                             payload = progress_enforcement.payload
                             verdict = payload.get("verdict")
@@ -6694,8 +6812,23 @@ class LoopSupervisor:
                 commits_this_iteration = (
                     (head_before is not None or head_after is not None)
                     and head_before != head_after)
+                # Task 013 (PRD requirement A.3, #156): budget_exempt reads
+                # progress_claim_corroborated / progress_budget_used /
+                # progress_budget_total, set a few hundred lines up right
+                # after this SAME iteration's own progress_enforcement.ok
+                # site, iff a corroborated claim landed on assigned_id this
+                # pass. An over-budget task (used <= budget fails) falls
+                # back to the unexempted pre-013 behaviour -- forcing that
+                # task's exhaustion into a split (PRD requirement B) is
+                # task 016's job, never this one's.
+                budget_exempt = (
+                    progress_claim_corroborated
+                    and progress_budget_used is not None
+                    and progress_budget_total is not None
+                    and progress_budget_used <= progress_budget_total)
                 tasks_after = self._record_task_absorption_streak(
-                    tasks_after, assigned_id, commits_this_iteration)
+                    tasks_after, assigned_id, commits_this_iteration,
+                    budget_exempt=budget_exempt)
                 tasks_after = self._relabel_vigilant_claims(tasks_after)
                 pending_verify = [
                     t for t in tasks_after.get("tasks", [])
@@ -6859,8 +6992,19 @@ class LoopSupervisor:
             tool_activity = (
                 state.count_tool_calls(self.run.root, worker_iter_n)
                 >= self.STAGNATION_TOOL_ACTIVITY_MIN_CALLS)
+            # Task 013 (PRD requirement A.3, #156): a corroborated
+            # progress claim on the assigned task joins the same OR --
+            # "a corroborated no_verdict ... [counts] not against the
+            # approach's stagnation counter". `progress_claim_corroborated`
+            # is unconditional on the task's own budget (unlike the
+            # taskAbsorptionStreak exemption a few dozen lines up): the
+            # PRD draws no budget line for THIS witness, only for that
+            # one -- an over-budget corroborated claim still spent the
+            # budget (`_record_progress_budget_usage` already recorded
+            # it honestly), it simply also still resets this counter.
             progress = (before != after or commits_gained
-                       or contract_progress or tool_activity)
+                       or contract_progress or tool_activity
+                       or progress_claim_corroborated)
             stagnant = 0 if (progress or result.interrupted) else stagnant + 1
             blocked = self._unresolved_failures(tasks_after)
             if stagnant and blocked:
@@ -10263,7 +10407,8 @@ class LoopSupervisor:
 
     def _record_task_absorption_streak(self, tasks_after: dict,
                                        assigned_id: str | None,
-                                       commits_this_iteration: bool) -> dict:
+                                       commits_this_iteration: bool,
+                                       budget_exempt: bool = False) -> dict:
         """Task 011 (PRD requirement B.2, #153): "a task that absorbs
         iterations is judged, not starved." `stagnant`
         (`STAGNATION_TOOL_ACTIVITY_MIN_CALLS` and friends, task 010,
@@ -10319,10 +10464,22 @@ class LoopSupervisor:
         if assigned_id is not None:
             task = next((t for t in tasks_after.get("tasks", [])
                         if t.get("id") == assigned_id), None)
+        # Task 013 (PRD requirement A.3, #156): "taskAbsorptionStreak's
+        # forced verify no longer fires for a task under budget with
+        # corroborated progress" -- `budget_exempt` (computed by the
+        # caller from THIS SAME iteration's own progress claim and its
+        # task's own progress budget) makes this pass read exactly like
+        # one with no commit at all: `still_absorbing` is False, so the
+        # streak resets to zero below rather than accumulating. An
+        # over-budget task (the caller's own `used <= budget` check
+        # failed) never sets `budget_exempt`, so it keeps today's
+        # pre-013 behaviour -- forcing that exhaustion into a split (PRD
+        # requirement B) is task 016's job, never this one's.
         still_absorbing = (
             assigned_id is not None and task is not None
             and task.get("status") == "in-progress"
-            and commits_this_iteration)
+            and commits_this_iteration
+            and not budget_exempt)
         if not still_absorbing:
             if record:
                 self.run.update_status(**{self.TASK_ABSORPTION_STATUS_KEY: {}})

@@ -200,9 +200,9 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5364 tests across 325 modules** at `1663dc8`, over the PRD's
-`< 3000` tests / `<= 180` modules targets, and the smoke tier **3800 tests**,
-all re-measured directly with
+collects **5367 tests across 326 modules** at task 013's own commit, over the
+PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3803
+tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
 requires the live number to be *stated* once it exceeds a target -- disclosure
@@ -212,9 +212,12 @@ at the wave's first commit (`1ba8c46`, task 001's new
 `tests/test_unconsumed_steering_live.py`), 5358 by task 011, 5363 by task
 012's `fed9096c` (`tests/test_progress_claim_corroboration.py`, 5 new nodes,
 plus the fingerprint-corroboration coverage it added to
-`tests/test_worker_progress_claim.py`), and 5364 (smoke 3800) by task 067's
+`tests/test_worker_progress_claim.py`), 5364 (smoke 3800) by task 067's
 one new node in `tests/records/test_report_claims.py` pinning the
-check-run-id guidance in the report-claims guard's own failure message.
+check-run-id guidance in the report-claims guard's own failure message, and
+5367 (smoke 3803) by task 013's new `tests/test_progress_budget_task013.py`
+(3 new in-process nodes covering the per-task progress budget, all also
+`smoke`).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

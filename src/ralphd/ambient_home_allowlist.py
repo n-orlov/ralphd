@@ -212,8 +212,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # size` and the `_progress_external_streak`/`_progress_streak_
         # task_id` __init__ fields above `_creds_note` in this same module,
         # shifting this read once more -- now at 1122, same method, same
-        # read, same reason.
-        "line": "1122",
+        # read, same reason. Task 013 (PRD requirement A.3, #156) added the
+        # `_last_progress_claim` __init__ field, the `_progress_budget_for`/
+        # `_record_progress_budget_usage` methods and their own
+        # `PROGRESS_BUDGET_STATUS_KEY` class attribute above `_creds_note` in
+        # this same module, shifting this read once more -- now at 1132,
+        # same method, same read, same reason.
+        "line": "1132",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
