@@ -45,41 +45,59 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_factory):
+def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_factory, tmp_path):
+    # Task cure-02-01 (B.4, review-cure): converted from a fixed
+    # STUB_SLEEP=0.5 pad to the bounded hold primitive (task 007, B.1);
+    # STUB_SLEEP is left at its default 0 (B.4's "zero the padding"). The
+    # old real-time padding served two purposes and the hold below covers
+    # both, deterministically instead of by guessed duration:
+    #   1. keep the engine process (and its API) alive long enough for
+    #      `wait_api()`'s own 200 ms poll interval to observe the API bound
+    #      before `on_complete: exit` tears it down. At STUB_SLEEP=0 with
+    #      nothing held, the whole job+reflect lifetime collapsed to ~110 ms
+    #      (measured: API bound at .886, `job finished: succeeded` at .994)
+    #      -- shorter than one poll tick, so the poll loop could step
+    #      straight over the window and report "engine API never came up"
+    #      however long its timeout was (`ac87c13`'s regression). Holding
+    #      reflect open keeps the process alive as long as the test needs,
+    #      with no dependence on wall-clock padding at all.
+    #   2. open a real, test-controlled window between "job core settled its
+    #      outcome" (`state: finishing`, `pendingTerminalState` recorded --
+    #      see `LoopSupervisor._finish()`) and "reflect finished writing its
+    #      report", to snapshot run-state/workspace before vs. after. Unlike
+    #      the old padding, the "before" snapshot below is now genuinely
+    #      taken BEFORE the reflect iteration ever runs, not merely before
+    #      the later terminal-state promotion.
+    hold_file = tmp_path / "hold-reflect"
     e = engine_factory(job={"reflect": True, "iterations": 6, "on_complete": "exit"},
-                       stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0.5"})
-    # STUB_SLEEP is load-bearing HERE and must stay non-zero: this job runs
-    # `on_complete: exit`, so the engine tears its own API down the moment the
-    # job reaches a terminal state. `ac87c13` zeroed this module's STUB_SLEEP
-    # along with 20-odd others, which collapsed the engine's whole lifetime to
-    # ~110 ms (measured: API bound at .886, `job finished: succeeded` at .994)
-    # -- shorter than `wait_api()`'s own 200 ms poll interval, so the poll loop
-    # could step straight over the window and report "engine API never came up"
-    # however long its timeout was. That is the real cause of this node's red in
-    # the dev-layout lanes and solo runs, not host load: raising the timeout from
-    # 15 s to 60 s (task 006, below) could not fix a window the loop jumps over.
-    # Restored to `0.5` (its value before `ac87c13`, and the same window the
-    # snapshot comment below already depends on): four delayed non-worker phases
-    # keep the API up for ~2 s, many poll intervals wide.
-    # Task 006's own reason for the longer timeout still holds and is kept: under
-    # a loaded whole-tier run this subprocess is not always scheduled and bound
-    # inside `wait_api()`'s stock 15 s (observed inside the ~883 s fast-tier run
-    # at ce85e6e, log `/run/ralphd/artifacts/plan-a2-fast.log`).
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                 "STUB_HOLD_PHASE": "reflect",
+                                 "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api(timeout=60)
 
-    # STUB_SLEEP delays every non-worker phase (incl. reflect) so we get a
-    # real window between "job reached terminal state" and "reflect finished
-    # writing its report" to snapshot run-state/workspace before vs. after.
-    status = e.wait_state(("succeeded", "failed", "aborted"), timeout=30)
-    assert status["state"] == "succeeded"
-    assert status["verdict"] == "verified"
+    # `_finish()` writes `state: finishing` + `pendingTerminalState` the
+    # moment the job core's outcome is settled, strictly before the reflect
+    # invocation ever runs -- reflect is now blocked on the hold, so this is
+    # exactly the "before" instant the old padding was trying to land in.
+    status_mid = e.wait_state(("finishing", "succeeded", "failed", "aborted"),
+                              timeout=30)
+    assert status_mid["state"] == "finishing", (
+        "job core did not settle into the held `finishing` window before "
+        "reflect ran -- the hold should have blocked it there")
+    assert status_mid["verdict"] == "verified"
 
     tasks_before = e.run_dir / "tasks.json"
     ws_file = e.workspace / "probe.txt"
     ws_file.write_text("workspace probe content\n")
     before_tasks_sha = _sha(tasks_before)
     before_ws_sha = _sha(ws_file)
-    before_verdict = status["verdict"]
+    before_verdict = status_mid["verdict"]
+
+    hold_file.touch()  # release: let the held reflect invocation proceed
+
+    status = e.wait_state(("succeeded", "failed", "aborted"), timeout=30)
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
 
     report = e.run_dir / "artifacts" / "reflection" / "report.md"
     diff = e.run_dir / "artifacts" / "reflection" / "suggestions.diff"
