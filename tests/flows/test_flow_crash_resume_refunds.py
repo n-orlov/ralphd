@@ -74,7 +74,7 @@ import os
 import signal
 import time
 
-from tests.flows.flowlib import assert_step_sequence, flow_steps, status
+from tests.flows.flowlib import assert_step_sequence, flow_steps, status, wait_terminal_recorded
 
 __all__ = ["engine_factory"]
 
@@ -209,6 +209,13 @@ def test_crash_mid_review_then_resume_preserves_the_infra_refund(engine_factory,
     assert e2.proc.wait(timeout=60) == 0, (
         "flow crash/resume/refunds: the resumed engine did not exit 0")
 
+    # Task 006 (#169): read the terminal state through the barrier, not by
+    # re-reading events.jsonl inline here -- the process has already exited
+    # by this point, so the terminal `state` event (guaranteed to precede
+    # status.json's own terminal write) is already on disk and this
+    # returns immediately.
+    wait_terminal_recorded(e2)
+
     assert_step_sequence(flow_steps(e2), CRASH_RESUME_REFUND_STEPS,
                          flow="flow crash/resume/refunds")
 
@@ -319,6 +326,8 @@ def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory, tmp_
     assert e2.run_dir == e1.run_dir
     assert e2.proc.wait(timeout=60) == 0
 
+    wait_terminal_recorded(e2)  # task 006 (#169): the barrier, not a raw poll
+
     st = status(e2)
     assert st.get("state") == "succeeded" and st.get("verdict") == "verified", (
         f"flow crash/resume/refunds (mid-worker): expected succeeded/"
@@ -400,6 +409,8 @@ def test_sigkill_at_iteration_boundary_then_resume_completes(engine_factory, tmp
         stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "0"})
     assert e2.run_dir == e1.run_dir
     assert e2.proc.wait(timeout=60) == 0
+
+    wait_terminal_recorded(e2)  # task 006 (#169): the barrier, not a raw poll
 
     st = status(e2)
     assert st.get("state") == "succeeded" and st.get("verdict") == "verified", (
@@ -498,6 +509,8 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
         stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"})
     assert e2.run_dir == e1.run_dir
     assert e2.proc.wait(timeout=60) == 0
+
+    wait_terminal_recorded(e2)  # task 006 (#169): the barrier, not a raw poll
 
     st = status(e2)
     assert st.get("state") == "succeeded" and st.get("verdict") == "verified", (

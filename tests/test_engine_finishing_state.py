@@ -194,13 +194,14 @@ def test_succeeded_outcome_goes_through_finishing_before_promoting(tmp_path):
     # the settled endedAt survives promotion unchanged
     assert final["endedAt"] == mid["endedAt"]
 
-    # exactly one extra state event ("finishing") beyond the ordinary
-    # `running` startup one -- the terminal state event is emitted by
-    # main.py (engine/main.py: `run.emit("state", state=final_state)`) once
-    # run_job() returns, not by loop.py itself, so calling run_job() directly
-    # (no real engine process here) never adds it either.
+    # `running`/`finishing` startup pair, plus the terminal `succeeded`
+    # event -- task 006 (#169) moved the terminal `state` event's emission
+    # INTO loop.py itself (`_promote_finishing_state()`), strictly before
+    # the status.json write that promotes `finishing` to the real terminal
+    # state, so a bare `run_job()` call (no real engine process, no
+    # main.py involved at all) now shows it too.
     state_events = _events(root, "state")
-    assert [ev["state"] for ev in state_events] == ["running", "finishing"]
+    assert [ev["state"] for ev in state_events] == ["running", "finishing", "succeeded"]
 
 
 def test_failed_outcome_goes_through_finishing_before_promoting(tmp_path):
@@ -281,11 +282,12 @@ def test_reflect_false_never_records_a_finishing_state_or_event(tmp_path):
     assert sup._pending_terminal is None
 
     state_events = _events(root, "state")
-    assert [ev["state"] for ev in state_events] == ["running"], (
+    assert [ev["state"] for ev in state_events] == ["running", "succeeded"], (
         "reflect: false must never write a `finishing` state event -- the "
-        "terminal state event itself comes from main.py, not loop.py, so a "
-        "bare run_job() call (no real engine process here) shows none of it "
-        "either way")
+        "terminal `succeeded` event is written by loop.py's `_finish()` "
+        "itself now (task 006, #169), strictly before the matching "
+        "status.json write, so a bare run_job() call shows it even with no "
+        "real engine process involved")
 
 
 # -- a crash mid-window: resume reaches the same terminal outcome ----------

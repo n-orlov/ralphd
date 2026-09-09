@@ -2781,11 +2781,22 @@ class LoopSupervisor:
         fields.setdefault("endedAt", utcnow())
         if self.cfg.reflect:
             self._pending_terminal = (state, verdict, dict(fields))
+            self.run.emit("state", state="finishing")
             self.run.update_status(state="finishing", phase=None,
                                    verdict=verdict, pendingTerminalState=state,
                                    **fields)
-            self.run.emit("state", state="finishing")
         else:
+            # Task 006 (#169): the terminal `state` event is appended to
+            # events.jsonl BEFORE the status.json write that makes `state`
+            # itself read as terminal -- never after, the way it used to be
+            # (main.py emitted it only once `run_job()` had already
+            # returned, by which point every terminal write below had long
+            # since landed). A reader polling status.json for a terminal
+            # value and then immediately checking events.jsonl for the
+            # matching `state` event must never be able to observe the
+            # first without the second (SPEC.md's events table, `state`
+            # row).
+            self.run.emit("state", state=state)
             self.run.update_status(state=state, verdict=verdict, phase=None,
                                    **fields)
         self._write_run_record()
@@ -2829,6 +2840,9 @@ class LoopSupervisor:
             return
         state, verdict, fields = self._pending_terminal
         self._pending_terminal = None
+        # Task 006 (#169): event before the write that makes `state` read as
+        # terminal, same rule as `_finish()`'s own non-reflect branch.
+        self.run.emit("state", state=state)
         self.run.update_status(state=state, verdict=verdict, phase=None,
                                pendingTerminalState=None, **fields)
         self._write_run_record()
@@ -2857,6 +2871,7 @@ class LoopSupervisor:
             # Should never happen (state.py's own write contract), but a
             # hand-edited or corrupted status.json must not crash the
             # engine -- fail loudly and terminally instead of looping.
+            self.run.emit("state", state="failed")
             self.run.update_status(
                 state="failed", verdict="unverified", phase=None,
                 endedAt=utcnow(),
@@ -2869,6 +2884,9 @@ class LoopSupervisor:
             message=(f"resuming a run dir recorded `finishing`; promoting "
                      f"directly to the settled outcome {state!r} without "
                      "redoing any of the job (task 012, #56)"))
+        # Task 006 (#169): event before the write that makes `state` read
+        # as terminal, same rule as `_finish()`'s own non-reflect branch.
+        self.run.emit("state", state=state)
         self.run.update_status(state=state, verdict=verdict, phase=None,
                                pendingTerminalState=None)
         self._write_run_record()

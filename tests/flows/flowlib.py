@@ -26,7 +26,10 @@ The two things this file exists to keep identical across the four flows:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+
+TERMINAL_STATES = ("succeeded", "failed", "aborted")
 
 # --- reading the run's own record -----------------------------------------
 
@@ -50,6 +53,40 @@ def events(run) -> list[dict]:
 
 def events_of(run, type_: str) -> list[dict]:
     return [ev for ev in events(run) if ev.get("type") == type_]
+
+
+def wait_terminal_recorded(run, timeout: float = 60, interval: float = 0.05) -> dict:
+    """Bounded barrier (task 006, #169): block until `events.jsonl` itself
+    carries the run's terminal `state` event, then return it.
+
+    Every flow used to read the terminal state through `status.json`
+    (`LiveRun.wait_terminal()`, which polls status.json) or a bare
+    `proc.wait()`, and only then reach for `flow_steps()`/`events_of(run,
+    'state')` to assert the step sequence -- trusting that by the time
+    status.json read terminal, the matching event was already on disk too.
+    That trust is now a documented engine invariant (SPEC.md's events
+    table, task 006/#169: the event is appended strictly BEFORE the write
+    that makes status.json terminal), so polling status.json first and
+    events.jsonl second happens to work, but it is the wrong barrier to
+    poll on directly in a *test* -- it duplicates the polling loop in every
+    module that needs it, each with its own timeout and its own way of
+    rendering a timeout failure. This is the one barrier: it polls
+    `events.jsonl` directly for the terminal `state` event (never
+    status.json), and raises with the events actually seen so far -- never a
+    bare `TimeoutError()` -- when the deadline passes first.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        for ev in events(run):
+            if ev.get("type") == "state" and ev.get("state") in TERMINAL_STATES:
+                return ev
+        if time.monotonic() >= deadline:
+            seen = [ev.get("type") for ev in events(run)]
+            raise TimeoutError(
+                f"wait_terminal_recorded: no terminal `state` event landed in "
+                f"events.jsonl within {timeout}s; event types seen so far: "
+                f"{seen!r}")
+        time.sleep(interval)
 
 
 def status(run) -> dict:

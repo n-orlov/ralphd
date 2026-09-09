@@ -289,7 +289,12 @@ async def amain() -> int:
     job_task = asyncio.create_task(loop.run_job())
     final_state = await job_task
     log.info("job finished: %s", final_state)
-    run.emit("state", state=final_state)
+    # Task 006 (#169): the terminal `state` event is no longer emitted here.
+    # `run_job()` itself now appends it (LoopSupervisor._finish()/
+    # _promote_finishing_state()/_promote_recorded_finishing_state()) BEFORE
+    # the status.json write that makes `state` read as terminal -- by the
+    # time this coroutine resumes, both have already happened, in that
+    # order. Emitting it again here would double it.
 
     await _run_on_complete_cmd(cfg, run, final_state)
 

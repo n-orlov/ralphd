@@ -1886,6 +1886,18 @@ reconstruct the whole run, including its restarts.
 | `operator_escalation` | `approach`, `reason` (`"rejected_last_approach"` \| `"stagnation"`), `outstandingTasks`, `escalation` | the engine paused itself (§4.6): the last approach was rejected on all-curable findings with its cure pass spent, or (v0.19 requirement B.3, #153, task 012) the last approach's worker-stagnation guard would otherwise fail the run silently — same event shape, `reason` is the only thing that tells the two apart |
 | `repair` | `action`, plus the names/ids involved | appended host-side by `ralphctl repair`, which records only names, never values |
 
+**A run's terminal `state` event is appended before the status.json write
+that makes `state` itself read as terminal (task 006, #169).**
+`LoopSupervisor._finish()`'s non-reflect branch, `_promote_finishing_state()`,
+and `_promote_recorded_finishing_state()` -- the three places `state` is ever
+set to `succeeded`/`failed`/`aborted` -- each call `self.run.emit("state",
+state=...)` immediately before the matching `update_status(state=...)`, never
+after. A reader that polls `status.json` until it sees a terminal `state` and
+only then reads `events.jsonl` for the matching event is therefore guaranteed
+to find it already there; the reverse order (write first, event later, as
+`engine/main.py` used to do once `run_job()` had already returned) could let
+such a reader observe the terminal status with no event to explain it yet.
+
 ```json
 {"id": 1, "ts": "2026-08-18T18:01:26Z", "type": "phase", "phase": "planning", "approach": 1}
 {"id": 2, "ts": "2026-08-18T18:01:26Z", "type": "iteration.start", "number": 1, "phase": "planning", "model": "amazon-bedrock/eu.anthropic.claude-opus-5"}

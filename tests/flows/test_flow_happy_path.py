@@ -25,7 +25,7 @@ Everything is read back off the run's own record -- `events.jsonl`,
 from __future__ import annotations
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks)
+                                 status, tasks, wait_terminal_recorded)
 
 # The reference path, in the step vocabulary `flowlib.flow_steps` defines.
 # Two tasks (the stub planner's default), one worker iteration each, one
@@ -49,6 +49,13 @@ def test_the_happy_path_walks_plan_two_workers_review_and_exits(engine_factory):
     run = engine_factory(job={"run_id": "flow-happy-exit", "on_complete": "exit"})
     assert run.proc.wait(timeout=60) == 0, (
         "flow happy path: the engine did not exit 0 under `on_complete: exit`")
+
+    # The barrier (task 006, #169): read the terminal state through
+    # `events.jsonl` itself rather than through `status.json` -- the engine
+    # is guaranteed (SPEC.md's events table) to have appended this event
+    # before status.json's own terminal write, and by the time the process
+    # has exited both are long since on disk, so this returns immediately.
+    wait_terminal_recorded(run)
 
     assert_step_sequence(flow_steps(run), HAPPY_PATH_STEPS,
                          flow="flow happy path")
@@ -89,7 +96,13 @@ def test_the_happy_path_walks_plan_two_workers_review_and_exits(engine_factory):
 
 def test_the_same_path_under_on_complete_idle_keeps_the_engine_serving(engine_factory):
     run = engine_factory(job={"run_id": "flow-happy-idle", "on_complete": "idle"})
-    st = run.wait_terminal(timeout=60)
+    # Task 006 (#169): read the terminal state through the barrier, not
+    # through `LiveRun.wait_terminal()`'s status.json poll -- the barrier
+    # blocks on `events.jsonl`'s own terminal `state` event, which the
+    # engine now guarantees lands no later than the status.json write this
+    # replaces polling for.
+    wait_terminal_recorded(run)
+    st = status(run)
     assert st.get("state") == "succeeded", (
         f"flow happy path (idle): the run must reach 'succeeded', got "
         f"{st.get('state')!r} (status.json: {st})")
