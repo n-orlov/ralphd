@@ -267,7 +267,7 @@ def test_the_superseded_ending_is_kept_as_history(aborted_then_resumed):
     _root, first, _mid, final = aborted_then_resumed
     assert final["previousEndings"] == [
         {"endedAt": first["endedAt"], "reason": first["reason"],
-         "verdict": first["verdict"]}]
+         "verdict": first["verdict"], "termination": first["termination"]}]
     assert ABORT_REASON in final["previousEndings"][0]["reason"], (
         "the evidence an operator needs -- why the earlier episode ended -- "
         "is still in the run dir")
@@ -333,7 +333,8 @@ def test_a_crashed_episode_appends_nothing_and_no_ending_is_recorded_twice(
     assert status3["previousEndings"] == \
         crashed["previousEndings"] == [
             {"endedAt": after_abort["endedAt"], "reason": after_abort["reason"],
-             "verdict": after_abort["verdict"]}]
+             "verdict": after_abort["verdict"],
+             "termination": after_abort["termination"]}]
     assert status3["state"] == "paused", status3
     assert status3["pauseReason"] == "stagnation", status3
 
@@ -379,17 +380,41 @@ def test_a_garbled_history_does_not_crash_the_new_episode(tmp_path):
         {"a": 1}, {"endedAt": "e1", "reason": None, "verdict": None}]
 
 
-# -- what is deliberately NOT reset ---------------------------------------
+# -- what is now archived, not carried forward (task 005, #173) -----------
 
 
-def test_the_termination_record_is_not_cleared_by_a_resume(
+def test_the_termination_record_is_archived_into_previous_endings_on_resume(
         aborted_then_resumed):
-    """It records WHO stopped the run -- what doctor/auto-resume reason about
-    -- and a later abort overwrites it wholesale."""
-    _root, first, _mid, final = aborted_then_resumed
-    assert final.get("termination") == first.get("termination")
-    assert final["termination"]["class"] == "operator"
-    assert ABORT_REASON in final["termination"]["reason"]
+    """Task 005 (#173): what USED to be true (`termination` carried forward
+    unreset across a resume) is now the bug -- the record is folded into the
+    matching `previousEndings` entry instead of left at the top level, and
+    the on-disk marker is archived out of the run dir root alongside it."""
+    root, first, _mid, final = aborted_then_resumed
+    assert first["termination"]["class"] == "operator"
+    assert ABORT_REASON in first["termination"]["reason"]
+    assert final["previousEndings"][-1]["termination"] == first["termination"]
+    assert not (root / "operator-termination.json").exists(), (
+        "the marker must not still be readable at the run dir root once the "
+        "episode it recorded is superseded")
+    archived = sorted((root / "previous-endings").glob(
+        "*-operator-termination.json"))
+    assert len(archived) == 1, archived
+    on_disk = json.loads(archived[0].read_text())
+    assert on_disk["class"] == first["termination"]["class"] == "operator"
+    assert on_disk["reason"] == first["termination"]["reason"]
+
+
+def test_a_resume_after_an_operator_termination_leaves_no_termination_key_once_it_ends_clean(
+        aborted_then_resumed):
+    """THE regression this task fixes, as reported by #173: a run stopped by
+    an operator two episodes ago, then resumed into a clean success, must
+    not still carry `termination` (a `--json` consumer, the hub, or any
+    future classifier reading it would see an aborted run that in fact
+    succeeded)."""
+    _root, _first, _mid, final = aborted_then_resumed
+    assert final["state"] == "succeeded" and final["verdict"] == "verified"
+    assert "termination" not in final or final["termination"] is None, (
+        final.get("termination"))
 
 
 # -- the operator surface --------------------------------------------------
@@ -421,7 +446,7 @@ def test_ralphctl_status_of_the_resumed_run_shows_no_stale_reason(ctl: Ctl):
       "| `previousEndings` | array | earlier episodes' endings, oldest first",
       "reset when the next episode enters `running`",
       "**episode-scoped** like `endedAt`",
-      "`termination` is deliberately\n*not* reset"]),
+      "the SAME write that appends the superseded ending also\nfolds that episode's `termination`"]),
     ("docs/api.md",
      ["| `previousEndings` | earlier episodes' endings, oldest first",
       "reset when a resumed episode starts (so it can never predate "

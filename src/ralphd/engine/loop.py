@@ -63,6 +63,7 @@ from .state import (
     TERMINAL_STATES,
     VALIDATION_ATTEMPT_LIMIT,
     RunDir,
+    archive_operator_termination,
     atomic_write_json,
     format_last_tool_call,
     last_tool_call,
@@ -3458,10 +3459,24 @@ class LoopSupervisor:
         record anyway. What the event does not carry -- reason and verdict --
         is exactly what is kept here.
 
-        `termination` is deliberately NOT reset: it records *who* stopped the
-        run and is what doctor/auto-resume reason about (§8.4), a later abort
-        overwrites it wholesale, and clearing it here would erase the only
-        status-side trace of an operator's intent.
+        Task 005 (#173): `termination` USED to be left alone here on the
+        theory that clearing it would erase the only status-side trace of an
+        operator's intent -- but that made it stale instead: a run stopped by
+        `docker stop` two episodes ago, then resumed and edited into a clean
+        success, still read `termination: {class: "operator", action:
+        "abort", ...}` at the top level, which is exactly the bug #173
+        reports (a succeeded run's `status.json`/`--json` consumer/the hub
+        all see an aborted run). The trace is not lost, only relocated: this
+        method folds the current episode's `termination` (if any) into the
+        SAME `previousEndings` entry its `endedAt`/`reason` are going into,
+        and archives the on-disk `operator-termination.json` marker
+        alongside it (`archive_operator_termination`) -- the caller then
+        clears the top-level field. A crash between here and that write would
+        leave the file archived but the field still set; the next resume's
+        call to this same method is idempotent about it (the entry it would
+        fold `termination` into is by then already carrying it, since
+        `previousEndings` itself was already rewritten by the write that
+        follows this call).
         """
         status = self.run.read_status()
         endings = [e for e in (status.get("previousEndings") or [])
@@ -3470,9 +3485,14 @@ class LoopSupervisor:
         # fields when it started), so nothing is appended and no ending can be
         # recorded twice.
         if status.get("endedAt") or status.get("reason"):
-            endings.append({"endedAt": status.get("endedAt"),
-                            "reason": status.get("reason"),
-                            "verdict": status.get("verdict")})
+            entry = {"endedAt": status.get("endedAt"),
+                     "reason": status.get("reason"),
+                     "verdict": status.get("verdict")}
+            termination = status.get("termination")
+            if termination:
+                entry["termination"] = termination
+                archive_operator_termination(self.run.root, len(endings) + 1)
+            endings.append(entry)
         return endings[-PREVIOUS_ENDINGS_MAX:]
 
     async def _run_job_core(self) -> str:
@@ -3526,6 +3546,15 @@ class LoopSupervisor:
                                # Task 022 (#30): the ending fields are
                                # episode-scoped -- see _previous_endings.
                                endedAt=None, reason=None,
+                               # Task 005 (#173): folded into the matching
+                               # previousEndings entry by _previous_endings
+                               # (called above, before this write), and the
+                               # on-disk marker archived alongside it -- the
+                               # top-level field describes the CURRENT
+                               # episode only, so a fresh/resumed episode
+                               # that has not been told to stop yet starts
+                               # with none.
+                               termination=None,
                                previousEndings=previous_endings,
                                # #164: rebuilt from `steering/`'s actual
                                # contents at the top of every episode --

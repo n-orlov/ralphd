@@ -473,6 +473,15 @@ mid-abort still leaves the class on disk; a marker with no `class` field (any
 run dir written before v0.7) reads as `operator`. `ralphctl status` prints a
 `termination:` line for the self-inflicted class only.
 
+`termination` describes the CURRENT episode only (task 005, #173): a resume
+that opens a fresh episode folds the superseded episode's `termination` (if
+any) into the `previousEndings` entry that already carries its `endedAt`/
+`reason`/`verdict`, archives `operator-termination.json` out of the run dir
+root into `previous-endings/NN-operator-termination.json`, and clears the
+top-level field — so a run stopped two episodes ago and since resumed into a
+clean success is absent from `termination` entirely, rather than still
+reading as an aborted run.
+
 ### `GET /tasks`
 Full `tasks.json`, plus the same `tasksStale`/`tasksSource` pair `GET /status`
 carries and the derived `taskFailureKinds` map (both appended after the file's

@@ -1375,7 +1375,7 @@ strictly append-only.
 ├── petition-adjudications.json # run-scope CONFIRMED impossibility-petition adjudications, survives approach archiving (task 011, requirement C.3, #112)
 ├── approach-metadata.json   # engine-owned per-approach judge verdicts: review/verdictGate, each with explicit blocking+residual arrays, written as the judge runs, survives approach archiving (task 035, requirement B.1)
 ├── vigilant-verified.json   # engine-owned ids of tasks that passed verification
-├── operator-termination.json # the operator's abort/stop intent (§4.6), when recorded
+├── operator-termination.json # the operator's abort/stop intent (§4.6), when recorded -- archived on resume (below), never carried forward
 ├── auto-resume.json         # host-side crash-loop guard bookkeeping
 ├── host.json                # host-side container/registry metadata
 ├── .tasks-last-good.json    # last `tasks.json` that parsed; written only on a failed read (§5.3)
@@ -1393,6 +1393,8 @@ strictly append-only.
 │       └── attempts/NN/     # earlier attempt(s) at this same number, archived on resume (§5.5)
 ├── approaches/
 │   └── NN/                  # archived tasks.json/notes.md/review-findings.md
+├── previous-endings/        # superseded episodes' operator-termination markers, archived on resume (task 005, #173, §5.2)
+│   └── NN-operator-termination.json # NN is the matching `previousEndings` entry's 1-based position
 └── artifacts/               # agent-produced deliverables; reflection/ for §4.1
 ```
 
@@ -1437,7 +1439,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `verdict` | string \| null | `verified` \| `verified-with-residuals` \| `unverified` \| `unreviewed`; `null` until terminal -- `verified-with-residuals` (task 012, requirement D.3) is review's own VERIFIED edge written instead of plain `verified` when the settled findings channel carries at least one `severity: "residual"` finding (`LoopSupervisor._review_success_verdict_label`), so a clean approach still reads `verified`; `unverified` is the ordinary negative (review ran and rejected with no approach/budget left, or the run was aborted); `unreviewed` (task 016, requirement F.3, #146) is the narrower case where the deadline took the run mid-review -- self-loop exhaustion or the off-budget grace attempt -- before review produced any contract payload at all, so `reason` reads `"deadline during review"` rather than a real rejection reason (never overrides an actual operator abort, which keeps `unverified`) |
 | `pendingTerminalState` | string | present only while `state` is `finishing`: the terminal state this run is going to become once the reflect window closes (§12.2) |
 | `reason` | string | why a non-succeeded run ended, or the grace-review note; **episode-scoped** like `endedAt` |
-| `termination` | object \| null | present once the run was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null` |
+| `termination` | object \| null | present only for the CURRENT episode, and only once it was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null`. Task 005 (#173): a resume that opens a fresh episode folds the SUPERSEDED episode's `termination` into the matching `previousEndings` entry (below) and clears the top-level field to `null` -- absent entirely once that episode ends clean, so a `--json` consumer/the hub/any future classifier reading a terminal run's `termination` is reading the CURRENT episode's own record, never a stale one two episodes old |
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
 | `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
@@ -1448,7 +1450,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` |
 | `endedAt` | string | this **episode**'s terminal write, reset when the next episode enters `running` (see "Ending fields are episode-scoped" below), so it can never predate `startedAt` and a terminal run's value is exactly what its final episode wrote |
-| `previousEndings` | array | earlier episodes' endings, oldest first: `{endedAt, reason, verdict}` per superseded ending, capped at the 50 most recent, `[]` in a first episode |
+| `previousEndings` | array | earlier episodes' endings, oldest first: `{endedAt, reason, verdict}` per superseded ending, plus `termination` (task 005, #173) when that episode was told to stop, capped at the 50 most recent, `[]` in a first episode |
 | `updatedAt` | string | last write of any field |
 | `deadlineAt` | string | wall-clock deadline, extended by every infra wait |
 | `blockerSignatures` | object | `{"<approach>": "<signature>"}` — per-approach worker-stagnation blocker signature (task 101, #61), written the moment an approach fails on stagnation; `_step_replan`'s `repeated_blocker_signature` guard compares the entry for the approach that just failed against its immediate predecessor's, and a genuine match ends the run rather than spending another approach on the identical structural wall. Absent for a run that has never stagnated |
@@ -1561,9 +1563,19 @@ document is rewritten in full on every status update). The terminal `state` even
 in `events.jsonl` records *which* state an earlier episode reached but neither
 its reason nor its verdict, so discarding the field would lose the only record of
 why a run was killed two episodes ago. A crashed episode appends nothing (it left
-no ending), so no ending can be recorded twice. `termination` is deliberately
-*not* reset: it records who stopped the run, is what `doctor` and auto-resume
-reason about (§8.4), and a later abort overwrites it wholesale.
+no ending), so no ending can be recorded twice. Task 005 (#173): `termination`
+was ONCE deliberately left unreset here on the theory that clearing it would
+erase the only status-side trace of an operator's intent — but that made a
+terminal run's `status.json` lie instead: a run stopped by `docker stop` two
+episodes ago, resumed and then edited into a clean success, still read
+`termination: {class: "operator", ...}` at the top level, which any consumer
+of `termination` reasonably reads as "this run was aborted". The trace is not
+lost, only relocated: the SAME write that appends the superseded ending also
+folds that episode's `termination` (if any) into it, and archives the on-disk
+`operator-termination.json` marker into `previous-endings/NN-operator-
+termination.json` (§5.1) — the top-level field is then cleared for the fresh
+episode, exactly like `endedAt`/`reason`, so it describes the CURRENT episode
+only and is absent once that episode ends clean.
 
 ### 5.3 tasks.json
 

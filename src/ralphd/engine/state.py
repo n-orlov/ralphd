@@ -565,6 +565,40 @@ def record_operator_termination(run_root: Path, action: str,
     return doc
 
 
+# Task 005 (#173): where a superseded episode's operator-termination marker
+# is archived on resume -- see archive_operator_termination() below.
+PREVIOUS_ENDINGS_DIR = "previous-endings"
+
+
+def archive_operator_termination(run_root: Path, index: int) -> Path | None:
+    """Move OPERATOR_TERMINATION_FILE out of the run dir root into
+    `previous-endings/NN-operator-termination.json` (task 005, #173).
+
+    The file (and status.json's `termination` field, cleared by the caller
+    in the same episode-opening write) describes the episode that just
+    ended -- once a resume moves the run into a fresh episode, the marker at
+    the root is stale, and a `--json` consumer, the hub or any future
+    classifier reading it sees an aborted run that may since have succeeded
+    (the exact symptom #173 reports). `index` is the 1-based position of
+    the matching `previousEndings` entry, zero-padded to 2 digits, so the
+    archived name lines up with the entry that now carries the same record
+    under `termination`.
+
+    No-op (returns None) when there is nothing to archive -- a clean
+    episode never wrote the file at all. `shutil.move` is used rather than
+    a copy-then-delete: the root file must not be readable as current once
+    this returns.
+    """
+    src = run_root / OPERATOR_TERMINATION_FILE
+    if not src.is_file():
+        return None
+    dest_dir = run_root / PREVIOUS_ENDINGS_DIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{index:02d}-{OPERATOR_TERMINATION_FILE}"
+    shutil.move(str(src), str(dest))
+    return dest
+
+
 def read_operator_termination(run_root: Path) -> dict | None:
     """The recorded operator-initiated termination for a run dir, or None.
     Malformed/absent -> None (never raises: every caller is diagnostic)."""
