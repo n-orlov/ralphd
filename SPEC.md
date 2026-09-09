@@ -839,14 +839,33 @@ alone. `_apply_worker_plan_complete_report()` then cross-checks it against
 `_outstanding_for_completion(tasks_doc)`, the IDENTICAL helper the retired
 marker's own `honoured_complete` cross-check used (below): any task not
 `completed`/`skipped`/`validated` refuses the claim, naming the outstanding
-tasks. Both refusals -- the wrong structural moment, or a plan that is not
-really finished -- reach `enforce_contract`'s re-ask ladder like every other
-malformed claim, so a badly-formed attempt is recoverable rather than
-reading as silent no-progress; the retired marker's equivalent miss only
-ever logged a warning and left the loop working. An accepted claim still
-emits `signal: "COMPLETE"` (surfaces and `IterationResult.saw_complete`
-below both still read it) and ends the worker loop into `review`, exactly as
-the retired marker did.
+tasks. The structural refusal (a task WAS assigned this iteration) still
+reaches `enforce_contract`'s re-ask ladder like every other malformed claim,
+so a badly-formed attempt is recoverable rather than reading as silent
+no-progress; the retired marker's equivalent miss only ever logged a warning
+and left the loop working.
+
+**Task 003 (#166): one semantic refusal shape skips the ladder entirely.**
+When `assigned_task_id` IS `None` (the structural check already passed) and
+the reason `_outstanding_for_completion` is non-empty is `LoopSupervisor.
+_unresolved_failures(tasks_doc)` itself non-empty -- nothing else in the plan
+is actionable and at least one task is `failed` -- a `plan_complete` claim
+refused for exactly that reason is checked and routed to `review` with
+`blocked_with_failures` (§5.3's own guard 9 mechanism, reused rather than
+duplicated) BEFORE `enforce_contract` is ever invoked: worker.md's two
+honest resolutions (carve the residual into a new task, or relabel
+`skipped`) are both already proven unavailable by the claim itself, so
+re-asking the SAME worker to fix it is not a legitimate retry, only a
+wasted one. Any other semantic refusal shape (an outstanding task that is
+still `pending`/`in-progress`/`validation-failed` -- `_unresolved_failures`
+returns `[]` the instant anything is actionable, and such a task is always
+this iteration's `assigned_task_id` under `scheduler.select_next_task()`'s
+own priority order, making the claim structurally invalid instead) reaches
+the ordinary ladder exactly as before this task.
+
+An accepted claim still emits `signal: "COMPLETE"` (surfaces and
+`IterationResult.saw_complete` below both still read it) and ends the
+worker loop into `review`, exactly as the retired marker did.
 
 `IterationResult.saw_complete` (`engine/runner.py`, still matched against the
 literal `<promise>COMPLETE</promise>` text) and `saw_verified` are both now
@@ -1664,7 +1683,15 @@ acts itself: `LoopSupervisor._unresolved_failures()` reports the `failed` tasks 
 a plan with nothing actionable left in it, and the worker loop routes to `review`
 — entry to review only, the reviewer still decides the verdict — instead of
 stagnating. Both kinds of `failed` route, because both block the worker's
-signal identically and the reviewer is the right judge of either.
+signal identically and the reviewer is the right judge of either. Task 003
+(#166) reuses this SAME `_unresolved_failures()` check one layer up: a
+`plan_complete` claim (§4.3) refused for no reason other than this exact
+shape -- nothing else actionable, at least one `failed` -- is routed to
+`review` with `blocked_with_failures` directly out of the contract-dispatch
+site itself, never through `enforce_contract`'s re-ask ladder, so the same
+plan shape reaches the same verdict whether the worker noticed it (an
+honest `plan_complete` attempt) or simply ran out of iterations first (the
+end-of-loop routing above).
 
 **A doomed plan gets the same routing, one hop earlier (v0.14, requirement D, #99).**
 `_unresolved_failures()` just above is itself dependency-blind: `state.task_is_actionable()`

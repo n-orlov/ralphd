@@ -6169,6 +6169,56 @@ class LoopSupervisor:
                     # ladder rather than read as silence. Attempt 0 reuses
                     # THIS already-completed work iteration's own final
                     # line -- no extra hat call, no double-charge.
+                    #
+                    # Task 003 (#166): BEFORE any of that, check whether
+                    # the semantic refusal `_apply_worker_plan_complete_
+                    # report` is about to hand back is one this run's own
+                    # guard 9 (`_unresolved_failures`, `T("review",
+                    # "blocked_with_failures")`) already has a dedicated
+                    # answer for: nothing else in the plan is actionable
+                    # and at least one task is `failed` -- exactly "every
+                    # other task is terminal and the only non-terminal-
+                    # for-completion task is `failed` with its residual
+                    # carved out" (#166's own words). That is not a
+                    # mistake for the SAME worker to fix on a re-ask --
+                    # the honest resolutions (carve the gap into a new
+                    # task, or relabel `skipped`) are worker.md's own
+                    # escape hatch and this claim already proves neither
+                    # one is available -- so it is routed straight to
+                    # review for a verdict, reusing guard 9's own
+                    # mechanism, and the ladder below is skipped entirely.
+                    # Gated on `assigned_id is None` -- the exact
+                    # structural fact `_apply_worker_plan_complete_report`
+                    # itself requires -- so a worker that claims
+                    # `plan_complete` despite being handed real work this
+                    # iteration still meets the ordinary ladder's
+                    # structural refusal, unchanged. `_unresolved_
+                    # failures` returns `[]` the moment ANY task is still
+                    # pending/in-progress/validation-failed (`task_is_
+                    # actionable`), so a genuinely in-progress task
+                    # blocking `plan_complete` never takes this branch --
+                    # it falls straight through to the unchanged ladder
+                    # re-ask a few lines down, exactly as before this task.
+                    blocked = (self._unresolved_failures(tasks_after)
+                               if assigned_id is None else [])
+                    if blocked:
+                        names = ", ".join(
+                            f"{t['id']} ({task_failure_kind(t)})"
+                            for t in blocked)
+                        self.run.emit(
+                            "log", level="warning",
+                            message=(
+                                f"worker reported 'plan_complete' but "
+                                f"{len(blocked)} failed task(s) block it and "
+                                "nothing else is actionable: " + names +
+                                "; routing to review for a verdict instead "
+                                "of re-asking on the ladder (task 003, #166)"))
+                        self._record_worker_iteration_verdict(
+                            worker_iter_n, "plan_complete", None)
+                        verdict_ready = True
+                        guard_ready = "blocked_with_failures"
+                        dispatch_outcome = "break"
+                        break
                     event_loop = asyncio.get_running_loop()
 
                     def respond(attempt: int, prior_errors: list[str] | None) -> str | None:

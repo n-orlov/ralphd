@@ -668,19 +668,26 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
     belongs to the worker, so `worker.md`'s first resolution (a NEW task for the
     residual gap) still happens and the run reaches review with the gap closed.
 
-    RETARGETED by task 046 (#55), and the retarget is the point of that task.
-    This test used to assert the run entered review through the worker's own
-    COMPLETE, with `routing to review` absent. It cannot any more: `failed` is
-    not one of the two statuses that make a task done for completion purposes
-    (`state.TASK_COMPLETION_STATUSES`), which is exactly what `worker.md`'s
-    completion signal has always said, so the engine now REFUSES a COMPLETE
-    while task 001 stands `failed` -- naming it in a log line -- instead of
-    taking the worker's word for it. Resolution A leaves that task as history,
-    so the plan it leaves behind is precisely the one this module's own
-    route-to-review path (#33) exists for, and that is how the run reaches its
-    verdict now. What the test still pins is unchanged in substance: the worker
-    was not pre-empted (it got its carve iteration), the follow-up task is in
-    the plan, and the run ends succeeded/verified after a real review."""
+    RETARGETED by task 046 (#55): the run entered review through the ladder
+    (an unearned COMPLETE refused, exhausted, then guard 9's own end-of-loop
+    `_unresolved_failures` check caught it on the NEXT stagnant pass).
+
+    RETARGETED AGAIN by task 003 (#166): `plan_complete` is the untyped
+    claim's contract value now (task 015), and this scenario -- 001
+    `failed` with its residual carved into 002, 002 `completed`, nothing
+    else in the plan actionable -- is EXACTLY "a `plan_complete` refused
+    for a `failed` task whose residual was carved out" (#166's own
+    words). The engine now recognises that shape directly (`_unresolved_
+    failures` non-empty, `assigned_id is None`) and routes straight to
+    review with `blocked_with_failures`, the SAME guard 9 already uses at
+    the end of the worker loop -- never through `contract_enforcement.
+    enforce_contract`'s re-ask ladder at all, because there is no
+    legitimate re-ask here: worker.md's own two resolutions (carve a new
+    task, or relabel `skipped`) are both already proven unavailable by
+    this very claim. What the test still pins is unchanged in substance:
+    the worker was not pre-empted (it got its carve iteration), the
+    follow-up task is in the plan, and the run ends succeeded/verified
+    after a real review."""
     def carve_follow_up(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
         doc = sup.run.read_tasks()
         doc["tasks"].append(_fv_task(id="002", status="completed",
@@ -689,15 +696,12 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
         return _fv_ok("carved 002 for the residual gap")
 
     def signal_complete(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-        # Task 015 (requirement O, #100): the retired
-        # `<promise>COMPLETE</promise>` marker's replacement -- reported
-        # here with nothing assigned this iteration (both 001 and 002 are
-        # terminal, `failed`/`completed`), so it is a structurally valid
-        # `plan_complete` claim, but a semantically UNEARNED one: 001 is
-        # `failed`, which blocks completion. The claim must be refused
-        # and reach `contract_enforcement.enforce_contract`'s ladder
-        # rather than silently taken, exactly like any other malformed
-        # verdict -- see the assertions below.
+        # Task 015 (requirement O, #100)/task 003 (#166): reported here
+        # with nothing assigned this iteration (both 001 and 002 are
+        # terminal, `failed`/`completed`) -- structurally valid, but a
+        # semantically UNEARNED claim: 001 is `failed`, which blocks
+        # completion. Task 003 (#166) means this is no longer carried to
+        # the ladder at all -- see the assertions below.
         return _fv_ok("every task resolved\n" + json.dumps({"verdict": "plan_complete"}))
 
     root = tmp_path / "run"
@@ -713,14 +717,64 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
     assert ids == ["001", "002"], "the worker got its carve iteration"
     assert "review" in _phases_recorded(root)
     events = _fv_events(root)
-    violations = [ev for ev in events if ev.get("type") == "contract.violation"]
-    assert violations, "the unearned plan_complete claim must reach the ladder"
-    all_errors = " ".join(" ".join(ev.get("errors", [])) for ev in violations)
-    assert "001 (failed)" in all_errors, all_errors
-    fault_events = [ev for ev in events if ev.get("type") == "contract.agent_fault"]
-    assert len(fault_events) == 1, "the ladder must be exhausted exactly once"
+    assert not [ev for ev in events if ev.get("type") == "contract.violation"], \
+        "task 003 (#166): this claim is routed directly, never through the ladder"
+    assert not [ev for ev in events if ev.get("type") == "contract.agent_fault"], \
+        "no ladder exhaustion either -- there was no ladder pass to exhaust"
     msgs = _fv_log_messages(root)
-    assert "routing to review" in msgs, msgs
+    assert ("worker reported 'plan_complete' but 1 failed task(s) block it "
+            "and nothing else is actionable: 001") in msgs, msgs
+    assert "routing to review for a verdict instead of re-asking on the ladder" in msgs, msgs
+    assert not [ev for ev in events
+                if ev.get("type") == "signal" and ev.get("signal") == "COMPLETE"], \
+        "an unearned COMPLETE is never signalled"
+
+
+def test_a_pending_carved_follow_up_still_faces_the_ordinary_ladder(tmp_path):
+    """Companion to the test above (task 003, #166): the new direct-to-review
+    shortcut fires ONLY when nothing else in the plan is actionable
+    (`_unresolved_failures`). Here the carved follow-up, 002, is left
+    `pending` instead of `completed` -- a genuinely outstanding task the
+    scheduler still has work to hand out for -- so it is THIS iteration's
+    `assigned_id` (task 116's own scheduler: a pending task with no unmet
+    dependency is always picked over nothing), which makes the very same
+    `plan_complete` claim structurally invalid (`_apply_worker_plan_
+    complete_report`'s "only valid when no task was assigned" check, task
+    015) rather than caught by the new shortcut -- the shortcut is gated on
+    `assigned_id is None` and never even runs `_unresolved_failures` when a
+    task was assigned. So this claim reaches `contract_enforcement.
+    enforce_contract`'s ordinary re-ask ladder exactly as it did before
+    task 003, unrepaired every pass (002 stays `pending` forever -- the
+    scripted worker only ever repeats the same illegal claim) -- and, since
+    this is the (default, `max_approaches=1`) LAST approach, three such
+    no-progress passes pause the run and escalate rather than route it to
+    review, exactly like `test_a_plan_with_work_left_is_never_routed_to_
+    review` above pins for its own (already-`failed`-vs-`pending`) shape."""
+    def claim_plan_complete(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
+        return _fv_ok("every task resolved\n" + json.dumps({"verdict": "plan_complete"}))
+
+    root = tmp_path / "run"
+    RunDir(root=root).update_status(state="starting")
+    sup = _fv_supervisor(root, {"worker": claim_plan_complete})
+    _write_plan(sup, [_fv_task(status="failed", validationAttempts=3),
+                      _fv_task(id="002", status="pending",
+                            title="close the residual gap of 001")])
+    sup.iterations_used = 1
+    asyncio.run(_drive_until_paused(sup))
+
+    events = _fv_events(root)
+    violations = [ev for ev in events if ev.get("type") == "contract.violation"]
+    assert violations, "a genuinely in-progress/pending task must still reach the ladder"
+    all_errors = " ".join(" ".join(ev.get("errors", [])) for ev in violations)
+    assert "only valid when no task was assigned" in all_errors, all_errors
+    assert "'002'" in all_errors, all_errors
+    fault_events = [ev for ev in events if ev.get("type") == "contract.agent_fault"]
+    assert fault_events, "the ladder is exhausted, never skipped, for this shape"
+    msgs = _fv_log_messages(root)
+    assert "routing to review for a verdict instead of re-asking on the ladder" not in msgs, msgs
+    task_002 = next(t for t in sup.run.read_tasks()["tasks"] if t["id"] == "002")
+    assert task_002["status"] == "in-progress", \
+        "a contract violation must not silently take the move anyway"
     assert not [ev for ev in events
                 if ev.get("type") == "signal" and ev.get("signal") == "COMPLETE"], \
         "an unearned COMPLETE is never signalled"

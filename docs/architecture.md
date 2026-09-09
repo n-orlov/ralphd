@@ -484,6 +484,15 @@ warning `log` event naming them and their kinds, and enters `review`. Entry only
 chain gets the same routing one hop earlier, when it covers the entire
 actionable remainder rather than leaving `_unresolved_failures()` anything to
 find (v0.14 requirement D, #99, `doomed_plan_unverifiable` in the table below).
+Task 003 (#166) reuses the SAME `_unresolved_failures()` check one layer up,
+at the worker's own contract-dispatch site: a `plan_complete` verdict (§4.3
+above) refused for no reason other than this exact shape is routed to
+`review` with `blocked_with_failures` directly, before `contract_
+enforcement.enforce_contract`'s re-ask ladder is ever invoked -- the ladder
+still runs for every other refusal shape (a task was assigned this
+iteration, or an outstanding task is genuinely `pending`/`in-progress`/
+`validation-failed`, in which case `_unresolved_failures()` returns `[]` and
+that task is this iteration's `assigned_task_id` anyway).
 
 Every surface that *counts* task statuses reports both meanings (task 025, #33)
 without learning a sixth status: `state.task_counts()` keeps counting both kinds
