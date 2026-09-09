@@ -443,10 +443,19 @@ def commit_problems(claims: ReportClaims) -> list[str]:
     for claim in claims.shas:
         kind = kinds.get(claim.value, "unknown")
         if kind != "commit":
-            problems.append(
-                f"{claims.where(claim.line)}: {claim.value} is not a commit in "
-                f"this repo ({kind})"
-            )
+            if kind == "missing":
+                problems.append(
+                    f"{claims.where(claim.line)}: {claim.value} is not a "
+                    f"commit in this repo (missing) -- if this is a "
+                    f"check-run, job or run id, do not backtick it: see "
+                    f"docs/sweep-records.md; otherwise it is an orphaned or "
+                    f"never-pushed commit sha"
+                )
+            else:
+                problems.append(
+                    f"{claims.where(claim.line)}: {claim.value} is not a commit in "
+                    f"this repo ({kind})"
+                )
             continue
         full = fulls.get(claim.value)
         if full not in reachable:

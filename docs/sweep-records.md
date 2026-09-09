@@ -367,3 +367,19 @@ the old filename exemption is gone.
 * `tests/test_sweep_sha_guard.py` -- applies them to every report the
   directory currently holds, plus the tmp-dir fixtures that prove the guard
   actually fires and actually clears.
+
+## Never backtick a check-run, job or run id (task 067, steer 004)
+
+`tests/report_claims.py`'s `SHA_RE` reads *any* backticked 7-40 character
+lowercase-hex token in a report as a claimed commit sha -- and a GitHub
+check-run, job or run id is a decimal number, which is entirely hex
+characters, so it matches `SHA_RE` too. Backticking one (`` `102507184201` ``)
+gets it read as a sha claim, and since no commit in this repo is ever going
+to hash to that value, `commit_problems()` fails it as
+`is not a commit in this repo (missing)`. This is not a false positive to
+work around: it is the guard doing exactly what it is for, applied to a
+citation it was never meant to receive. Write such an id as bare prose
+("check run 102507184201") followed by its `html_url`, which is
+unambiguous and independently resolvable; reserve backticked hex for actual
+commit shas. The failure message itself now names this convention, so a
+report author who trips it does not have to already know where to look.

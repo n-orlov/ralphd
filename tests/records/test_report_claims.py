@@ -153,6 +153,38 @@ def test_a_dangling_commit_sha_fails_and_a_reachable_one_passes(monkeypatch) -> 
     assert reachable not in problems[0]
 
 
+def test_a_missing_decimal_id_names_the_check_run_convention(monkeypatch) -> None:
+    """Task 067 (steer 004, "optional and cheap"): a decimal check-run/job/
+    run id caught by `SHA_RE` reads exactly like a missing commit sha, and
+    the operator lost time to that once (`102507184201 is not a commit in
+    this repo (missing)`). The failure text for the `missing` kind must now
+    also point at the convention that avoids it, without touching `SHA_RE`,
+    the reachability check or the dangling-object refusal -- a real
+    dangling/missing sha still fails, just with more guidance attached."""
+    decimal_id = "102507184011"
+    monkeypatch.setattr(
+        report_claims_module, "_COMMIT_KINDS", {decimal_id: "missing"}
+    )
+    monkeypatch.setattr(
+        report_claims_module, "_COMMIT_FULL_SHAS", {decimal_id: None}
+    )
+    monkeypatch.setattr(report_claims_module, "_REACHABLE_COMMITS", set())
+    claims = ReportClaims(
+        report=REPORTS_DIR / "conformance-ledger.md",
+        shas=[Claim(decimal_id, line=1)],
+        paths=[],
+        nodes=[],
+        retired=[],
+    )
+    problems = commit_problems(claims)
+    assert len(problems) == 1, problems
+    assert decimal_id in problems[0]
+    assert "is not a commit in this repo" in problems[0]
+    assert "check-run, job or run id" in problems[0]
+    assert "do not backtick it" in problems[0]
+    assert "docs/sweep-records.md" in problems[0]
+
+
 def test_the_claim_checks_have_exactly_one_implementation() -> None:
     """The point of this module: generalised, not copy-pasted. A sha regex or a
     `def <node>` probe anywhere else under tests/ means someone started a
