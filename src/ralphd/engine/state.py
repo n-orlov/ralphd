@@ -3851,6 +3851,14 @@ def format_task_status(task: dict, blocked_by: list | None = None,
     would misdescribe both. Optional and keyword-friendly, like
     `blocked_by` above, so every existing call site keeps working
     unchanged.
+
+    Task 023 (PRD requirement C.1, #156): a task still carrying its own
+    `deferredUntil` (a worker's `verdict: "deferred"` report, task 021)
+    appends ` (deferred until <t>)` verbatim from that field -- the exact
+    words `ralphctl tasks`, the hub and the worker prompt's own rendered
+    section all use, read straight off the record itself rather than
+    re-derived, so it renders even for a task record no other overlay in
+    this function recognises.
     """
     if not isinstance(task, dict):
         return "unknown"
@@ -3869,6 +3877,8 @@ def format_task_status(task: dict, blocked_by: list | None = None,
             and str(progress_budget.get("taskId")) == str(task.get("id"))):
         text += (f" (progress budget {progress_budget.get('used')}"
                  f"/{progress_budget.get('budget')})")
+    if task.get("deferredUntil"):
+        text += f" (deferred until {task['deferredUntil']})"
     return text
 
 

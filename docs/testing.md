@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5460 tests across 333 modules** at task 022's own commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3895
+collects **5472 tests across 334 modules** at task 023's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3907
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -316,7 +316,17 @@ modules 332->333) by task 022's deferred-wait sleep (PRD requirement C.1,
 `until` before `deadlineAt` wakes the task and clears its deferral, an
 `until` past `deadlineAt` is bounded by the deadline instead and left
 deferred with no busy-spin, and the contract refuses an `until` past
-`deadlineAt` naming the deadline in its hint) -- all also `smoke`.
+`deadlineAt` naming the deadline in its hint) -- all also `smoke`, and 5472
+(smoke 3907, modules 333->334) by task 023's surface for a deferred task
+(PRD requirement C.1, #156): 12 new in-process nodes in a NEW
+`tests/test_deferred_tasks_surface.py` -- `format_task_status()`'s new
+` (deferred until <t>)` suffix and its composition with the blocked-by
+suffix, `ralphctl tasks`'s and `--json`'s on-disk snapshot rendering,
+`app.js`'s `taskStatusText`/`renderTasks` pill read as text, and
+`LoopSupervisor._worker_assignment_extra`'s new "## Deferred tasks" section
+(present with a task assigned, present with none selectable, absent when
+nothing is deferred, and never fencing a contract-shaped object) pinned both
+directly and through the real `_step_worker` dispatch -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

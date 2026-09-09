@@ -655,6 +655,12 @@ function taskStatusText(doc, t) {
   if (isWorkerOrigin(t)) text += " (worker-origin)";
   const by = taskBlockedBy(doc, t);
   if (by) text += " (blocked by " + by.join(", ") + ")";
+  // Task 023 (#156, PRD requirement C.1): a task still carrying its own
+  // `deferredUntil` (a worker's `verdict: "deferred"` report, task 021)
+  // gets " (deferred until <t>)" appended verbatim from that field --
+  // the same words `engine.state.format_task_status` renders server-side,
+  // read straight off the raw record rather than re-derived.
+  if (t && t.deferredUntil) text += " (deferred until " + String(t.deferredUntil) + ")";
   return text;
 }
 
@@ -2190,6 +2196,7 @@ function renderTasks(el, tasks, progressBudget) {
         ...(steering ? [" ", pill("steering-origin")] : []),
         ...(workerOrigin ? [" ", pill("worker-origin")] : []),
         ...(blockedBy ? [" ", pill("blocked by " + blockedBy.join(", "))] : []),
+        ...(t.deferredUntil ? [" ", pill("deferred until " + String(t.deferredUntil))] : []),
         ...(budget ? [" ", pill("budget " + budget.used + "/" + budget.budget)] : []),
       ]),
       h("td", {}, [String(t.title || "")]),

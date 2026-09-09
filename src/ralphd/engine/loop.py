@@ -4744,7 +4744,8 @@ class LoopSupervisor:
         return []
 
     def _worker_assignment_extra(self, task: dict | None, *,
-                                 spent_budget: dict | None = None) -> str:
+                                 spent_budget: dict | None = None,
+                                 tasks_doc: dict | None = None) -> str:
         """Task 116 (#60 pillar 3, fact 9): the one thing a worker
         iteration needs told to it now that the HARNESS -- not the agent --
         runs `engine.scheduler.select_next_task` and owns every task-status
@@ -4771,7 +4772,31 @@ class LoopSupervisor:
         report` refuses it and the contract ladder re-asks. Absent
         entirely while the task is still under budget, same "presence is
         the signal" discipline the retry block above already uses.
+
+        Task 023 (PRD requirement C.1, #156): `tasks_doc`, when given (the
+        caller's own `tasks_before` read), also appends a "## Deferred
+        tasks" section listing every OTHER pending task still carrying its
+        own `deferredUntil`/`deferredReason` -- so a fresh-context worker
+        iteration understands why some tasks are missing from the runnable
+        pool rather than reading their absence as evidence they are done.
+        Absent entirely when nothing is deferred, same "presence is the
+        signal" discipline the budget-exhausted block above already uses.
         """
+        deferred = (self._pending_deferred_tasks(tasks_doc)
+                    if isinstance(tasks_doc, dict) else [])
+        deferred_block = ""
+        if deferred:
+            lines = "\n".join(
+                f"- task {t.get('id', '')}: deferred until "
+                f"{t.get('deferredUntil', '')} ({t.get('deferredReason', '')})"
+                for t in deferred)
+            deferred_block = (
+                "\n## Deferred tasks\n\n"
+                "Other pending tasks in this plan are waiting on "
+                "something outside anyone's control right now and are "
+                "not runnable -- do not attempt them, and their absence "
+                "from the pool is not evidence they are done:\n\n"
+                f"{lines}\n")
         if not isinstance(task, dict):
             return (
                 "## Task assigned this iteration\n\n"
@@ -4779,7 +4804,7 @@ class LoopSupervisor:
                 "in-progress or validation-failed with satisfied "
                 "dependencies). Read tasks.json and the notes file to "
                 "understand why and report back -- do not invent a "
-                "task_id.\n")
+                "task_id.\n") + deferred_block
         block = (
             "## Task assigned this iteration\n\n"
             f"- **id**: {task.get('id', '')}\n"
@@ -4816,7 +4841,7 @@ class LoopSupervisor:
                 "will be asked again until it carries one. On acceptance "
                 f"task {task.get('id', '')} becomes `superseded` and the "
                 "split children are picked up next.\n")
-        return block
+        return block + deferred_block
 
     def _apply_worker_completion_report(self, payload: dict,
                                          assigned_task_id: str | None) -> list[str]:
@@ -6522,7 +6547,8 @@ class LoopSupervisor:
             extra = self._worker_assignment_extra(
                 selected,
                 spent_budget=(budget_before_dispatch
-                              if forced_split_required else None))
+                              if forced_split_required else None),
+                tasks_doc=tasks_before)
             # Task 016 (requirement I/J): the in-hand task's EFFECTIVE tier
             # (post-escalation) drives this dispatch's model; a pass with
             # nothing actionable to assign (`selected` is not a task dict)
