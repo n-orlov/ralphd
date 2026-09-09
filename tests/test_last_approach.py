@@ -976,6 +976,151 @@ def test_a_stagnant_approach_with_approaches_left_still_fails_as_today(tmp_path)
 
 
 # ===========================================================================
+# 11b. Task 018 (PRD requirement B.3, #156): a PROGRESSING approach --
+#      neither the last, nor genuinely silent -- pauses too, not just the
+#      last approach.
+# ===========================================================================
+
+
+def _git(cwd: Path, *args: str) -> None:
+    import subprocess
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _init_git_workspace(workspace: Path) -> None:
+    workspace.mkdir(parents=True, exist_ok=True)
+    _git(workspace, "init", "-q")
+    _git(workspace, "config", "user.email", "t@example.com")
+    _git(workspace, "config", "user.name", "t")
+    (workspace / "seed.txt").write_text("seed")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "seed")
+
+
+class _CommitsThenGoesQuietRunner:
+    """The FIRST call commits a real file into `workspace` (the approach
+    gains a commit); every call after that leaves the tree untouched and
+    reports plain text with no structured claim -- so the per-iteration
+    `commits_gained` witness (task 010) is true ONLY on call 1, and the
+    three-strike counter still trips on calls 2-4, exactly as it would for a
+    genuinely silent approach. The only difference from silence is that
+    THIS approach's own HEAD, read once before call 1, no longer equals the
+    HEAD read at the stagnation-exhaustion decision point."""
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.calls = 0
+
+    def interrupt(self) -> bool:
+        return False
+
+    async def run(self, prompt, transcript, **kw) -> IterationResult:
+        self.calls += 1
+        if self.calls == 1:
+            (self.workspace / "progress.txt").write_text("real work")
+            _git(self.workspace, "add", "-A")
+            _git(self.workspace, "commit", "-q", "-m", "real progress")
+        return _result(f"iteration {self.calls}: nothing further to report")
+
+
+def _progressing_approach_supervisor(tmp_path: Path, **cfg_kw) -> LoopSupervisor:
+    workspace = tmp_path / "workspace"
+    _init_git_workspace(workspace)
+    root = tmp_path / "run"
+    run = RunDir(root=root)
+    run.update_status(state="running")
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [_task()]})
+    kw = {"run_id": "task018-progressing-approach", "vigilant": False,
+          "on_complete": "exit", "iterations": 20,
+          "infra_retry_backoff_s": [0.0], "infra_retry_backoff_max_s": 0.0,
+          "infra_outage_budget_s": 1000.0, "max_approaches": 3, **cfg_kw}
+    cfg = loop_mod.JobConfig(**kw)
+    sup = LoopSupervisor(cfg, run, workspace)
+    sup._approach = 1
+    sup.runner = _CommitsThenGoesQuietRunner(workspace)  # type: ignore[assignment]
+    return sup
+
+
+def test_a_progressing_approach_1_of_3_with_commits_present_pauses(tmp_path):
+    sup = _progressing_approach_supervisor(tmp_path)
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    outcome = asyncio.run(sup._step_worker())
+
+    # paused, not replanned -- even though approach 1 is NOT the last of 3.
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "stagnation"
+    assert sup._approach == 1
+    # unarchived -- resume re-enters the SAME approach, same as the
+    # last-approach case.
+    assert not (sup.run.root / "approaches" / "01").exists()
+
+    escalations = _events(sup.run.root, "operator_escalation")
+    assert len(escalations) == 1
+    assert escalations[0]["reason"] == "stagnation"
+    assert escalations[0]["approach"] == 1
+    assert escalations[0]["approachProgressed"] is True
+
+    assert len(notifier.messages) == 1
+    text = notifier.messages[0]
+    # this is NOT the last-approach wording -- approach 1 of 3 has 2 left.
+    assert "LAST" not in text
+    assert "approach 1" in text
+    assert "ralphctl resume task018-progressing-approach" in text
+
+
+def test_in_process_resume_re_enters_worker_over_the_same_progressing_approach(
+        tmp_path):
+    sup = _progressing_approach_supervisor(tmp_path)
+
+    outcome = asyncio.run(sup._step_worker())
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+
+    async def _resume_flow():
+        task = asyncio.ensure_future(sup._step_paused())
+        await asyncio.sleep(0)
+        sup.resume()
+        return await task
+
+    outcome2 = asyncio.run(_resume_flow())
+    assert outcome2 == ("advance", "worker", "paused_resumed_stagnation")
+    assert sup._approach == 1
+
+
+def test_a_superseded_task_present_pauses_a_stagnant_non_last_approach_too(
+        tmp_path):
+    """The PRD's OTHER B.3 witness (#156): "a superseded task's children
+    exhaust their budgets too" -- no git commit anywhere, but a forced
+    split (task 016) already happened THIS approach, so the plan itself
+    carries the evidence: `tasks.json` holds a `superseded` parent whose
+    child is the one now stagnating."""
+    root = tmp_path / "run"
+    sup = _supervisor_worker(
+        root, max_approaches=3,
+        tasks=[
+            {"id": "parent", "title": "the split parent", "status": "superseded",
+             "successCriteria": "n/a"},
+            _task(id="child"),
+        ])
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    outcome = asyncio.run(sup._step_worker())
+
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "stagnation"
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    assert escalations[0]["approachProgressed"] is True
+
+
+# ===========================================================================
 # 12. The escalation reaching the CONFIGURED notifier (task 007).
 # ===========================================================================
 

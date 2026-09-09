@@ -239,19 +239,27 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("review", "unsatisfiable_and_nothing_left"),
         # Task 012 (PRD requirement B.3, #153): a stagnant LAST approach
         # (`self._approach == self.cfg.max_approaches`) must not end
-        # `failed` silently -- the ordinary `stagnation_exhausted` edge
-        # above still fires for every approach that has a successor left
-        # ("a genuinely silent approach with approaches left still fails
-        # as today"), but on the final approach the run instead takes
-        # THIS edge: `_pause_and_escalate_stagnation_last_approach`
-        # (loop.py) pauses the run through the same existing pause
-        # machinery `rejected_last_approach` already uses, emits an
-        # `operator_escalation` event with `reason: "stagnation"`, and
-        # notifies -- the approach is left unarchived, exactly like
-        # `rejected_last_approach`, so `resume` re-enters the SAME
-        # approach (`_step_paused` routes a `stagnation_last_approach`
-        # pause back to `worker`, never `review` -- there is no verdict
-        # pending, only unfinished tasks).
+        # `failed` silently. Task 018 (PRD requirement B.3, #156)
+        # generalises this SAME edge to any approach that PROGRESSED --
+        # gained a workspace commit somewhere during the approach, or left
+        # a `superseded` task behind from a forced split (task 016) --
+        # before its own three-strike counter stalled: a `superseded`
+        # task's children exhausting THEIR budgets too, or a stagnant
+        # counter tripping over a branch that gained commits this
+        # approach, is not the "genuinely silent" case the ordinary
+        # `stagnation_exhausted` edge above is for -- that edge still
+        # fires for exactly that case, on every approach that has a
+        # successor left ("a genuinely silent approach with approaches
+        # left still fails as today"). Either way -- last approach or a
+        # progressing earlier one -- the run instead takes THIS edge:
+        # `_pause_and_escalate_stagnation_last_approach` (loop.py) pauses
+        # the run through the same existing pause machinery `rejected_
+        # last_approach` already uses, emits an `operator_escalation`
+        # event with `reason: "stagnation"`, and notifies -- the approach
+        # is left unarchived, exactly like `rejected_last_approach`, so
+        # `resume` re-enters the SAME approach (`_step_paused` routes a
+        # `stagnation_last_approach` pause back to `worker`, never
+        # `review` -- there is no verdict pending, only unfinished tasks).
         T("paused", "stagnation_last_approach"),
     ),
     "review": (

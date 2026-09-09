@@ -6037,6 +6037,15 @@ class LoopSupervisor:
         stagnant = 0
         verdict_ready = False
         guard_ready: str | None = None
+        # Task 018 (PRD requirement B.3, #156): the head this approach
+        # STARTED at, read once, before any of this approach's own
+        # iterations run -- compared against the current head at the
+        # stagnation-exhaustion decision point below, so "the branch
+        # gained commits during that approach" is answered over the whole
+        # approach, not just the final (stagnant) iteration. A non-git
+        # workspace reads `None` on both sides and is never a witness by
+        # itself, exactly like `commits_gained` a few hundred lines below.
+        approach_start_head = self._workspace_head_sha()
         while self.budget_left():
             await self._gate()
             # Task 012 (requirement I, #98): unsettled operator steering is
@@ -7315,14 +7324,49 @@ class LoopSupervisor:
                 return ("done", "succeeded")
             return ("tail",)
         if not verdict_ready:
-            if self._approach == self.cfg.max_approaches:
-                # Task 012 (PRD requirement B.3, #153): the LAST approach
-                # never fails silently on stagnation alone -- pause and
+            # Task 018 (PRD requirement B.3, #156): generalising task
+            # 012's "the LAST approach never fails silently on stagnation
+            # alone" -- a PROGRESSING approach (one that is not genuinely
+            # silent) must not be replanned either, on ANY approach, not
+            # only the last. Two witnesses of "this approach progressed",
+            # either sufficient on its own:
+            #   * the workspace branch gained commits SOMEWHERE during
+            #     this approach (`approach_start_head` captured before the
+            #     approach's first iteration, compared against the head
+            #     right now) -- a `no_verdict` earlier in the approach may
+            #     have committed real work before the final 3 stagnant
+            #     iterations ran, and the four-witness formula above only
+            #     ever looks at ONE iteration at a time, so it can miss
+            #     exactly this case.
+            #   * a `superseded` task is present in the plan -- the PRD's
+            #     "a superseded task's children exhaust their budgets too"
+            #     case: a forced split (task 016) already happened this
+            #     approach (the parent moved to `superseded`, real work
+            #     recorded against it), so the plan itself already carries
+            #     evidence this approach was not silent, even if the
+            #     children now stagnating never touched git themselves.
+            approach_head_now = self._workspace_head_sha()
+            commits_this_approach = (
+                (approach_start_head is not None or approach_head_now is not None)
+                and approach_start_head != approach_head_now)
+            superseded_present = any(
+                isinstance(t, dict)
+                and t.get("status") == state.TASK_STATUS_SUPERSEDED
+                for t in tasks_after.get("tasks", []))
+            approach_progressed = commits_this_approach or superseded_present
+            if self._approach == self.cfg.max_approaches or approach_progressed:
+                # The LAST approach never fails silently on stagnation
+                # alone (task 012); a progressing approach with successors
+                # left does not either (task 018) -- both pause and
                 # escalate exactly like `review`'s `rejected_last_
                 # approach` edge, leaving the approach unarchived so
-                # `resume` re-enters it directly.
+                # `resume` re-enters it directly. A genuinely silent
+                # approach (neither witness present) with approaches left
+                # still replans, unchanged.
                 self._pause_and_escalate_stagnation_last_approach(
-                    approach, outstanding_tasks)
+                    approach, outstanding_tasks,
+                    is_last_approach=(self._approach == self.cfg.max_approaches),
+                    approach_progressed=approach_progressed)
                 self._advance("worker", "paused", "stagnation_last_approach")
                 return ("advance", "paused", "stagnation_last_approach")
             self._archive_approach(approach)
@@ -8478,23 +8522,40 @@ class LoopSupervisor:
             self.notifier(text)
 
     def _stagnation_last_approach_escalation_text(
-        self, approach: int, outstanding_tasks: list[dict]
+        self, approach: int, outstanding_tasks: list[dict],
+        is_last_approach: bool = True, approach_progressed: bool = False,
     ) -> str:
         """The operator-facing escalation body for a `stagnation_last_
-        approach` pause (task 012, PRD requirement B.3, #153) -- the same
-        shape as `_last_approach_rejection_escalation_text`, but for a
-        stagnant last approach rather than a rejected one: there are no
-        findings to list, only the tasks the plan still holds open after
-        three consecutive worker iterations made no progress against any
-        of the stagnation counter's four witnesses.
+        approach` pause (task 012, PRD requirement B.3, #153; generalised
+        to a progressing NON-last approach by task 018, PRD requirement
+        B.3, #156) -- the same shape as `_last_approach_rejection_
+        escalation_text`, but for a stagnant approach rather than a
+        rejected one: there are no findings to list, only the tasks the
+        plan still holds open after three consecutive worker iterations
+        made no progress against any of the stagnation counter's four
+        witnesses.
+
+        `is_last_approach`/`approach_progressed` (task 018) shape the
+        opening sentence's own reason so an operator reading `approach 1
+        of 3` never sees "this is the LAST available approach" when it
+        plainly is not -- the two flags are never both False at the call
+        site (the caller only reaches this pause when at least one holds).
         """
+        if is_last_approach:
+            reason_clause = "this is the LAST available approach"
+        else:
+            reason_clause = (
+                "this approach gained real progress (a workspace commit "
+                "and/or a forced split leaving a `superseded` task behind) "
+                "before stalling, so it is not the genuinely silent case "
+                "a replan is for")
         lines = [
             f"Run {self.cfg.run_id} approach {approach}: 3 consecutive "
-            "worker iterations made no progress and this is the LAST "
-            "available approach -- the run has been paused (existing "
-            "pause machinery) rather than ended `failed` on stagnation "
-            "alone; it will not proceed until an operator ruling is "
-            "recorded and the run is resumed "
+            f"worker iterations made no progress and {reason_clause} -- "
+            "the run has been paused (existing pause machinery) rather "
+            "than ended `failed` on stagnation alone, or replanned over "
+            "work already in progress; it will not proceed until an "
+            "operator ruling is recorded and the run is resumed "
             f"(`ralphctl resume {self.cfg.run_id}`).",
             "",
             "Outstanding tasks:",
@@ -8505,7 +8566,8 @@ class LoopSupervisor:
         return "\n".join(lines).rstrip() + "\n"
 
     def _pause_and_escalate_stagnation_last_approach(
-        self, approach: int, outstanding_tasks: list[dict]
+        self, approach: int, outstanding_tasks: list[dict],
+        is_last_approach: bool = True, approach_progressed: bool = False,
     ) -> None:
         """Task 012 (PRD requirement B.3, #153): pause the run through the
         EXISTING pause machinery -- the same seam `_pause_and_escalate_
@@ -8518,9 +8580,12 @@ class LoopSupervisor:
         straight back into `worker` rather than `review`.
         """
         text = self._stagnation_last_approach_escalation_text(
-            approach, outstanding_tasks)
+            approach, outstanding_tasks,
+            is_last_approach=is_last_approach,
+            approach_progressed=approach_progressed)
         self.run.emit("operator_escalation", approach=approach,
                       reason="stagnation", outstandingTasks=outstanding_tasks,
+                      approachProgressed=approach_progressed,
                       escalation=text)
         self.pause(reason="stagnation")
         if self.notifier is not None:

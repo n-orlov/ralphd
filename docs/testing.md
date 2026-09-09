@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5422 tests across 331 modules** at task 017's own commit, over the
-PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3858
+collects **5425 tests across 331 modules** at task 018's own commit, over the
+PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3861
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -260,7 +260,14 @@ naming both sets), and three in `tests/test_worker_split_proposal.py`
 pinning `lint_worker_split`'s widened `dependsOn` resolution against the
 caller's live `tasks.json` id set -- including the parent task itself --
 alongside the pre-existing batch-only acceptance and refusal cases --
-all also `smoke`).
+all also `smoke`), and 5425 (smoke 3861, modules unchanged at 331) by task
+018's 3 new nodes in the SAME `tests/test_last_approach.py` module (no new
+module): a git-backed workspace whose approach 1 of 3 commits real work on
+its FIRST iteration then goes quiet for three more, pausing (never
+replanning) exactly like the last-approach case; that same pause's
+in-process resume back into `worker` over the same approach; and a
+`superseded` task present in the plan (no git at all) pausing a stagnant
+non-last approach for the SAME reason -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
