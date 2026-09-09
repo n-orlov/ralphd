@@ -1921,6 +1921,15 @@ class LoopSupervisor:
         if pending and fault_class is None:
             self.run.consume_steering(pending, n)
             consumed_now = [p.name for p in pending]
+            # #164: status.json's `unconsumedSteering` is a live field, not
+            # only a terminal-write one (`_unconsumed_steering_patch`'s own
+            # docstring) -- without this, a run that consumes its last
+            # pending note keeps reporting it stranded (and `ralphctl
+            # status`/the hub keep printing "run ended without acting on
+            # this steering") for every iteration between the consume and
+            # whatever eventually happens to write status.json next, even
+            # though the run is alive and the note was actually acted on.
+            self.run.update_status(**self._unconsumed_steering_patch())
         elif pending:
             names = ", ".join(p.name for p in pending)
             self.run.emit("log", level="warning",
@@ -3499,7 +3508,17 @@ class LoopSupervisor:
                                # Task 022 (#30): the ending fields are
                                # episode-scoped -- see _previous_endings.
                                endedAt=None, reason=None,
-                               previousEndings=previous_endings)
+                               previousEndings=previous_endings,
+                               # #164: rebuilt from `steering/`'s actual
+                               # contents at the top of every episode --
+                               # never trusted forward from whatever an
+                               # earlier episode's status.json happened to
+                               # say, the same distrust `_previous_endings`
+                               # above applies to `endedAt`/`reason`. A
+                               # resume that skipped this could carry a
+                               # stale name forward (already consumed on
+                               # disk, still listed here) indefinitely.
+                               **self._unconsumed_steering_patch())
         # Task 032 (#13): the move to `running` is a *state* event, not just a
         # status.json field. events.jsonl is append-only across resumes and
         # followers replay it from id 0, so without this a resumed run's log
@@ -7934,7 +7953,20 @@ class LoopSupervisor:
         left a just-landed steering file pending, with no further
         actionable iteration to consume it) is loudly discoverable from
         status.json alone -- not just from combing steering/.consumed.json
-        by hand. Empty list when nothing is stranded (the common case)."""
+        by hand. Empty list when nothing is stranded (the common case).
+
+        #164: also applied twice more, LIVE, so it is never allowed to go
+        stale while the run is still running: right after `consume_steering`
+        in `_run_iteration_once` (a consumed note is cleared the same
+        iteration, not left showing stranded until the run happens to go
+        terminal) and in `_run_job_core`'s per-episode `running` write (a
+        resume rebuilds it from `steering/`'s actual contents rather than
+        trusting whatever an earlier episode's status.json last recorded --
+        the same distrust `_previous_endings` applies to `endedAt`/`reason`).
+        Recomputed fresh from `self.run.pending_steering()` every call, so
+        all three call sites always agree with the one live truth: the
+        steering directory plus `.consumed.json`, never a cached copy.
+        """
         return {"unconsumedSteering": [p.name for p in self.run.pending_steering()]}
 
     def _doomed_plan_fault(self, tasks_doc: dict,

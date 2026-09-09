@@ -254,6 +254,39 @@ def test_run_detail_shows_unconsumed_steering_warning(tmp_path, pw):
         server.stop()
 
 
+def test_run_detail_header_says_nothing_run_ended_for_a_live_run(tmp_path, pw):
+    """Task 001 (#164): the run-detail header's steering warning reads
+    literally 'run ended without acting on' -- if `unconsumedSteering` ever
+    goes stale (carried forward across a resume, or left uncleared right
+    after a live consume) a run that is genuinely alive and that DID act on
+    the note would render that wording anyway. A genuinely live run
+    (`StubEngineApi`, no container-gone treatment) whose `unconsumedSteering`
+    is correctly empty must render neither the warning card nor the wording.
+    """
+    registry = tmp_path / "registry"
+    engine = StubEngineApi(status={
+        "runId": "run-alive-steered", "state": "running", "verdict": None,
+        "phase": "worker", "approach": 1, "iterationsUsed": 2,
+        "iterationsBudget": 25, "startedAt": "2026-01-01T00:00:00Z",
+        "unconsumedSteering": [],
+    })
+    _write_run_with_api(registry, "run-alive-steered", engine, state="running",
+                        verdict=None, unconsumedSteering=[])
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-alive-steered")
+        body_text = _wait_for(pw, "document.body.innerText", "running")
+        assert "UNCONSUMED STEERING" not in body_text, body_text
+        assert "run ended" not in body_text, body_text
+        n_warn = int(pw.eval_js("document.querySelectorAll('.steering-warning').length"))
+        assert n_warn == 0
+    finally:
+        server.stop()
+        engine.close()
+
+
 def test_run_detail_hides_the_terminal_record_during_the_finishing_window(tmp_path, pw):
     """Task 015 (#56): task 012's `finishing` state settles `verdict`/`endedAt`
     into status.json before the post-terminal reflect iteration is actually
