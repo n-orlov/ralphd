@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5448 tests across 331 modules** at task 020's own commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3883
+collects **5457 tests across 332 modules** at task 021's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3892
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -299,7 +299,18 @@ child being picked next, and that child's OWN budget exhaustion pausing
 rather than recursing into a second split) chained for real in one
 continuous `_step_worker()` call, driven through corroborated `file`-
 evidence progress claims against a real (separate) workspace tree rather
-than pre-seeded `progressBudget` -- also `smoke`.
+than pre-seeded `progressBudget` -- also `smoke`), and 5457 (smoke 3892,
+modules 331->332) by task 021's `verdict: "deferred"` reorder (PRD
+requirement C.1, #156): 3 new nodes in the SAME `tests/test_worker_hat.py`
+scheduler-unit block (no new module) pinning `select_next_task`'s new
+`deferredUntil` exclusion directly (a deferred task never preempts a
+runnable one on priority, only-deferred-left still returns `None`, and a
+deferred task never blocks a lower-priority runnable one), and 6 new nodes
+in a NEW `tests/test_deferred_verdict.py` (schema/semantic checks in
+isolation, the declared `worker_deferred_reordered` table edge, and a
+whole-run reorder proving the picker's next choice really is the OTHER
+runnable task while `status.json`'s `progressBudget` and the approach
+counter both stay untouched) -- all 9 also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

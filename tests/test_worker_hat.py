@@ -3017,6 +3017,46 @@ def test_bucket_precedence_is_unchanged_even_with_priority_set():
     assert picked["id"] == "002"
 
 
+# v0.20 task 021 (PRD requirement C.1, #156): a `pending` task carrying
+# `deferredUntil` (a worker's `verdict: "deferred"` report,
+# `LoopSupervisor._apply_worker_deferred_report`) is excluded from the
+# ordinary pending-task candidate pool entirely -- "moves behind every
+# runnable task", pinned directly against the pure function.
+
+
+def test_a_deferred_pending_task_is_never_picked_over_a_runnable_one():
+    tasks = [
+        _ssn_task("001", status="pending", priority=100,
+                  deferredUntil="2099-01-01T00:00:00Z"),
+        _ssn_task("002", status="pending"),
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "002", (
+        "the deferred task's own higher priority must not preempt an "
+        "ordinary runnable task -- it moved BEHIND every runnable one")
+
+
+def test_only_deferred_tasks_left_returns_none():
+    tasks = [
+        _ssn_task("001", status="pending", deferredUntil="2099-01-01T00:00:00Z"),
+        _ssn_task("002", status="completed"),
+    ]
+    assert select_next_task(tasks) is None, (
+        "a deferred task is not itself runnable -- whether it is ever "
+        "picked back up once nothing else is left is task 022's sleep "
+        "mechanism, not this pure function's own fallback")
+
+
+def test_a_deferred_task_does_not_block_a_lower_priority_runnable_one():
+    tasks = [
+        _ssn_task("001", status="pending", priority=5,
+                  deferredUntil="2099-01-01T00:00:00Z"),
+        _ssn_task("002", status="pending", priority=-5),
+    ]
+    picked = select_next_task(tasks)
+    assert picked["id"] == "002"
+
+
 # ----------------------------------------------------------------------
 # Folded from tests/test_engine_owns_terminal_record_task008.py (task 028, requirement D.7).
 # ----------------------------------------------------------------------

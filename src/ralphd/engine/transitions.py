@@ -18,6 +18,7 @@ comments next to each entry.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from ralphd.engine import petitions
@@ -237,6 +238,19 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # reasoning as `blocked_with_failures` just above.
         T("worker", "unsatisfiable_targeted_replan"),
         T("review", "unsatisfiable_and_nothing_left"),
+        # v0.20 task 021 (PRD requirement C.1, #156): a worker's `verdict:
+        # "deferred"` report -- the task moves BEHIND every runnable task
+        # (back to `pending`, with `deferredUntil` recorded) rather than
+        # absorbing further iterations on it right now. This is a real
+        # `tasks.json` write the moment the harness applies it, so it is
+        # progress, not the silence the stagnation guard exists to catch
+        # (`stagnant` resets to 0) -- but, unlike `unsatisfiable_targeted_
+        # replan` just above, it never spends the deferred task's own
+        # `progressBudget` either: deferring is a reorder, not an attempt.
+        # A worker self-loop, same shape as the unsatisfiable route just
+        # above: the SAME approach continues, the scheduler picks whatever
+        # independent task is next in line.
+        T("worker", "worker_deferred_reordered"),
         # Task 012 (PRD requirement B.3, #153): a stagnant LAST approach
         # (`self._approach == self.cfg.max_approaches`) must not end
         # `failed` silently. Task 018 (PRD requirement B.3, #156)
@@ -1212,11 +1226,25 @@ HAT_SCHEMAS: dict[str, dict] = {
             # refused on the same evidence, and a malformed attempt reaches
             # `contract_enforcement.enforce_contract`'s re-ask ladder
             # instead of reading as a silent no-progress iteration.
+            # v0.20 task 021 (PRD requirement C.1, #156) adds
+            # `"deferred"`: a task that must wait (a gated time, a
+            # dependency that is not yet ripe in practice even though the
+            # scheduler's own `dependsOn` graph does not say so) moves
+            # behind every runnable task instead of absorbing further
+            # iterations or tripping the stagnation guard. Carries `until`
+            # (an ISO-8601 timestamp, checked below by `worker_deferred_
+            # report_errors` -- `contracts.py`'s restricted schema engine
+            # has no date-format keyword) and reuses the existing `reason`
+            # property just below rather than adding a second one. Applies
+            # to the task ASSIGNED this iteration -- there is no separate
+            # `task_id` field for it, unlike `"unsatisfiable"`, because a
+            # worker can only defer the one task the harness handed it.
             "verdict": {"type": "string",
                         "enum": ["complete", "no_verdict", "unsatisfiable",
-                                 "plan_complete"]},
+                                 "plan_complete", "deferred"]},
             "task_id": {"type": "string"},
             "reason": {"type": "string"},
+            "until": {"type": "string"},
             "notes": {"type": "string"},
             # Task 021 (requirement N, #102): an OPTIONAL split proposal --
             # "the assigned task is too big; here is how I'd break it up" --
@@ -1588,6 +1616,46 @@ def worker_unsatisfiable_report_errors(payload: Any) -> list[str]:
     if not isinstance(reason, str) or not reason.strip():
         errors.append(
             "verdict 'unsatisfiable' requires a non-empty reason")
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# v0.20 task 021 (PRD requirement C.1, #156): the semantic half of a
+# worker's `verdict: "deferred"` report -- same split as `worker_
+# unsatisfiable_report_errors` just above (schema shape -- both fields are
+# strings -- is `contracts.validate_payload`'s job; this is the business
+# rule). `until` must be a non-empty, PARSEABLE ISO-8601 timestamp --
+# `contracts.py`'s restricted schema engine has no date-format keyword, so
+# a malformed timestamp string still passes schema validation and must be
+# caught here instead -- and `reason` (the shared top-level property) must
+# be non-empty, same rule `worker_unsatisfiable_report_errors` already
+# applies to its own `reason`.
+# ---------------------------------------------------------------------------
+
+
+def worker_deferred_report_errors(payload: Any) -> list[str]:
+    """Errors in a worker's `verdict: "deferred"` report, or an empty list
+    when the report is well-formed. A payload that does not claim
+    `verdict == "deferred"` at all is never in violation here -- the same
+    "nothing proposed, nothing to check" shape every sibling check in this
+    module uses.
+    """
+    if not isinstance(payload, dict) or payload.get("verdict") != "deferred":
+        return []
+    errors = []
+    until = payload.get("until")
+    if not isinstance(until, str) or not until.strip():
+        errors.append("verdict 'deferred' requires a non-empty ISO-8601 'until'")
+    else:
+        try:
+            datetime.fromisoformat(until.strip().replace("Z", "+00:00"))
+        except ValueError:
+            errors.append(
+                "verdict 'deferred' requires 'until' to be a valid "
+                f"ISO-8601 timestamp, got {until!r}")
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        errors.append("verdict 'deferred' requires a non-empty reason")
     return errors
 
 

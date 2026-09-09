@@ -73,6 +73,8 @@ immediately starts the next iteration.
      continue); note where you got stuck in the notes file.
    - the `verdict: "unsatisfiable"` report below, for a task whose criteria
      cannot be met as written.
+   - the `verdict: "deferred"` report below, for a task that is satisfiable
+     but must wait on something outside your control right now.
    - `{"verdict": "plan_complete"}`, the separate whole-plan claim described
      under `## Completion signal` below — valid ONLY when `## Task assigned
      this iteration` said nothing was selectable this same iteration.
@@ -382,6 +384,36 @@ missing `reason`, or a `task_id` that does not match a task in `tasks.json`,
 is a contract violation and ends the run rather than being silently
 accepted. Do not use this to avoid ordinary work you could actually do —
 it is for criteria that are wrong, not for criteria that are merely hard.
+
+## Deferring a task that must wait
+
+Sometimes a task is entirely satisfiable, and you are not stuck on it in the
+ordinary stagnating sense — but it genuinely cannot move forward again until
+some external condition changes (a downstream service ships a field this
+task needs, another team's migration finishes, a fixed calendar date
+arrives). Unlike `unsatisfiable`, this is not a claim that the criteria are
+wrong — only that the task must wait, and other runnable work should not
+wait behind it in the meantime. Report it directly: end this iteration's
+reply with, as its LAST non-blank line (nothing after it — same placement
+rule as `plan_complete`/`unsatisfiable` above, and never together with
+either in the same reply), exactly one JSON object:
+
+{"verdict": "deferred", "until": "<ISO-8601 timestamp — the earliest moment it is worth trying this task again>", "reason": "<why, specifically, this task must wait, and for what>"}
+
+The harness applies this itself: it moves the assigned task back to
+`pending` and records `until`/`reason` on the task's own record
+(`deferredUntil`/`deferredReason`) in the same write — you do not
+separately edit the task's `status` for this one. The task moves BEHIND
+every other runnable task, and the harness picks the next independent one
+for the following iteration; deferring does not count as a stagnating,
+no-progress iteration and does not spend any of this task's own progress
+budget. Both `until` and `reason` are required and must be non-empty, and
+`until` must parse as an ISO-8601 timestamp — a blank `reason`, a missing
+`until`, or an `until` that does not parse, is a contract violation and
+ends the run rather than being silently accepted. Do not use this in place
+of ordinary work you could actually do right now, or as a way to avoid
+`unsatisfiable`/`skipped` for a task that is genuinely impossible rather
+than merely waiting.
 
 ## Declaring a structured impossibility petition on a single obligation
 

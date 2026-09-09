@@ -1111,8 +1111,12 @@ def code_vocabulary_v09() -> dict[str, str]:
     # "plan_complete" (task 015, requirement O) is a completion claim like
     # "complete", not a refusal -- exclude it alongside "complete"/
     # "no_verdict" so this only counts the actual refusal verdict.
+    # "deferred" (v0.20 task 021, requirement C.1, #156) is neither: it is
+    # a reorder claim ("this task must wait"), not "this criterion cannot
+    # be satisfied" -- excluded the same way, for the same reason.
     refusals = [v for v in verdicts
-                if v not in ("complete", "no_verdict", "plan_complete")]
+                if v not in ("complete", "no_verdict", "plan_complete",
+                             "deferred")]
     assert len(refusals) == 1, f"worker verdicts are {verdicts!r}"
 
     return {

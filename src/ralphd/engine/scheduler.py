@@ -38,6 +38,16 @@ rather than a third independent copy in a new location:
 A plan with no `dependsOn`/`priority` field anywhere degenerates to exactly
 "the first pending task in list order", same as `worker.md`'s prose promises
 and the stub's emulation already behaves.
+
+v0.20 task 021 (PRD requirement C.1, #156): step 3's candidate pool also
+excludes any `pending` task carrying `deferredUntil` -- a worker's
+`verdict: "deferred"` report moved it there deliberately, asking to be
+reordered behind every runnable task. It is excluded unconditionally, the
+same way a task with an unmet `dependsOn` is: never picked ahead of an
+ordinary runnable task, and (for this function alone) never picked even
+when it is the only `pending` task left -- resuming a deferred task once
+nothing else is runnable is task 022's sleep mechanism, layered on top of
+this function's `None` return, not a rule this function encodes itself.
 """
 from __future__ import annotations
 
@@ -86,6 +96,17 @@ def select_next_task(tasks: list) -> dict | None:
     candidates = []
     for t in entries:
         if t.get("status", "pending") != "pending":
+            continue
+        # v0.20 task 021 (PRD requirement C.1, #156): a task carrying
+        # `deferredUntil` (a worker's `verdict: "deferred"` report,
+        # `LoopSupervisor._apply_worker_deferred_report`) has explicitly
+        # asked to move BEHIND every runnable task -- excluded from the
+        # ordinary candidate pool entirely, the same way an unmet
+        # `dependsOn` excludes a task just below, but for a different
+        # reason: it is not blocked, it was asked to wait. Whether it is
+        # ever picked back up once nothing else is runnable is task 022's
+        # sleep mechanism's business, not this pure function's.
+        if t.get("deferredUntil"):
             continue
         raw_deps = t.get("dependsOn")
         deps = raw_deps if isinstance(raw_deps, list) else []

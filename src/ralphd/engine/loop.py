@@ -4405,6 +4405,67 @@ class LoopSupervisor:
                       "marked skipped"))
         return []
 
+    def _apply_worker_deferred_report(
+            self, payload: dict, assigned_task_id: str | None) -> list[str]:
+        """v0.20 task 021 (PRD requirement C.1, #156): apply a worker's
+        `verdict: "deferred"` report -- the task ASSIGNED this iteration
+        must wait until `payload["until"]`, so it moves BEHIND every
+        runnable task (back to `pending`, never a terminal status) with
+        `deferredUntil` (and `deferredReason`) recorded on its own record,
+        the same single-write discipline `_apply_unsatisfiable_report`
+        just above already uses (one write, through `RunState.
+        write_tasks`, strictly after the hat's own subprocess has exited).
+
+        Schema validation (`contracts.validate_payload`) is the caller's
+        job; `transitions.worker_deferred_report_errors` is the semantic
+        half (non-empty, parseable `until`; non-empty `reason`). Unlike
+        `"unsatisfiable"`, there is no separate `task_id` field -- a
+        worker can only defer the ONE task the harness handed it this
+        iteration, so `assigned_task_id is None` (no task assigned at
+        all) is refused here directly, the same structural check
+        `_apply_worker_plan_complete_report` already makes for its own
+        opposite case.
+
+        Deliberately does NOT touch `progressBudget`/`taskAbsorptionStreak`
+        for this task -- deferring is a reorder, not an attempt, so it
+        must never spend the task's own budget (PRD: "never spends the
+        task's budget"). The scheduler (`engine.scheduler.select_next_task`)
+        is what actually keeps a `deferredUntil`-carrying task from being
+        picked ahead of an ordinary runnable one -- this method only
+        writes the field, never re-derives the ordering rule itself.
+        """
+        errors = transitions.worker_deferred_report_errors(payload)
+        if errors:
+            return errors
+        if not assigned_task_id:
+            return ["verdict 'deferred' requires a task assigned this "
+                    "iteration to defer -- there is no separate task_id "
+                    "field for this verdict"]
+        until = payload.get("until")
+        reason = payload.get("reason")
+        tasks_data = self.run.read_tasks()
+        current = None
+        for t in tasks_data.get("tasks", []):
+            if t.get("id") == assigned_task_id:
+                current = t
+                break
+        if current is None:
+            return [f"deferred: assigned task_id {assigned_task_id!r} not "
+                    "found in tasks.json"]
+        old_status = current.get("status", "pending")
+        current["status"] = "pending"
+        current["deferredUntil"] = until
+        current["deferredReason"] = reason
+        self.run.write_tasks(tasks_data)
+        self._emit_task_status(assigned_task_id, old_status, "pending",
+                               deferredUntil=until, deferredReason=reason)
+        self.run.emit(
+            "log", level="info",
+            message=(f"worker deferred task {assigned_task_id!r} until "
+                      f"{until}: {reason} (task 021, requirement C.1, "
+                      "#156); moved behind every runnable task"))
+        return []
+
     def _apply_worker_petition_declaration(self, payload: dict) -> list[str]:
         """Task 005 PART 1 (#114, closes task 004's residual gap -- see
         004's `validationNotes`, operator steer 001): the production write
@@ -6954,6 +7015,70 @@ class LoopSupervisor:
                         guard_ready = "verdict_ready"
                         self.run.emit("signal", signal="COMPLETE")
                         dispatch_outcome = "break"
+                    # Ladder exhausted: falls through to the SAME ordinary
+                    # stagnation bookkeeping every other exhausted site
+                    # already takes -- no `_advance` call, no early
+                    # `return`, `self.budget_left()` still owns when this
+                    # run actually ends. `enforce_contract` already
+                    # emitted the `contract.violation`/`contract.
+                    # agent_fault` events for the record.
+                elif verdict == "deferred":
+                    # v0.20 task 021 (PRD requirement C.1, #156): same
+                    # ladder shape as "unsatisfiable"/"complete"/
+                    # "plan_complete" above -- a schema violation or an
+                    # illegal `_apply_worker_deferred_report` (no task
+                    # assigned, a blank/unparseable `until`, a blank
+                    # `reason`) is carried back to the SAME worker through
+                    # `contract_enforcement.enforce_contract`'s uncharged
+                    # `_ask_contract_fix` re-ask ladder rather than read as
+                    # silence. Attempt 0 reuses THIS already-completed work
+                    # iteration's own final line -- no extra hat call, no
+                    # double-charge.
+                    event_loop = asyncio.get_running_loop()
+
+                    def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                        if attempt == 0:
+                            return worker_final_text
+                        raw, _usage = asyncio.run_coroutine_threadsafe(
+                            self._ask_contract_fix("worker", prior_errors or [],
+                                final_text=result.final_text),
+                            event_loop).result()
+                        return last_nonblank_line(raw)
+
+                    enforcement = await asyncio.to_thread(
+                        contract_enforcement.enforce_contract,
+                        "worker", respond,
+                        max_retries=self.cfg.contract_retry_max,
+                        state=self.run,
+                        extra_validate=lambda p: self._apply_worker_deferred_report(
+                            p, assigned_id),
+                    )
+                    if enforcement.ok:
+                        # The reorder just applied is a genuine `tasks.json`
+                        # write -- progress, not the silence the stagnation
+                        # guard exists to catch (PRD: "never counts as
+                        # stagnation") -- and it never touched
+                        # `progressBudget` at all (PRD: "never spends the
+                        # task's budget"), so there is nothing further to
+                        # exempt beyond resetting `stagnant` here, exactly
+                        # like the unsatisfiable route's own reset.
+                        self._record_worker_iteration_verdict(
+                            worker_iter_n, "deferred", assigned_id)
+                        tasks_after = self.run.read_tasks()
+                        stagnant = 0
+                        contract_progress = True
+                        self._advance("worker", "worker",
+                                     "worker_deferred_reordered")
+                        # `continue`s the OUTER `while self.budget_left():`
+                        # loop directly -- skipping this pass's ordinary
+                        # post-iteration bookkeeping entirely, the same as
+                        # `unsatisfiable_targeted_replan` above -- so the
+                        # very next pass re-runs `scheduler.select_next_
+                        # task`, which now sees this task carrying
+                        # `deferredUntil` and offers whatever independent
+                        # task is next in line instead (PRD: "the picker
+                        # offers the next independent task").
+                        dispatch_outcome = "continue"
                     # Ladder exhausted: falls through to the SAME ordinary
                     # stagnation bookkeeping every other exhausted site
                     # already takes -- no `_advance` call, no early

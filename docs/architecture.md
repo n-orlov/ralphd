@@ -168,6 +168,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `worker` | worker | both | `review` | `doomed_plan_unverifiable` |
 | `worker` | worker | both | `worker` | `unsatisfiable_targeted_replan` |
 | `worker` | worker | both | `review` | `unsatisfiable_and_nothing_left` |
+| `worker` | worker | both | `worker` | `worker_deferred_reordered` |
 | `worker` | worker | both | `paused` | `stagnation_last_approach` |
 | `worker` | worker | vigilant only | `verify` | `completed_task_pending_verification` |
 | `verify` | verify | vigilant only | `worker` | `verify_failed_retry_same_task` |
@@ -242,6 +243,7 @@ stateDiagram-v2
     worker --> review : doomed_plan_unverifiable
     worker --> worker : unsatisfiable_targeted_replan
     worker --> review : unsatisfiable_and_nothing_left
+    worker --> worker : worker_deferred_reordered
     worker --> paused : stagnation_last_approach
     review --> worker : steering_pending_at_verified
     review --> finishing : verified
