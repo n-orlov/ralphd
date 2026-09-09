@@ -18,14 +18,13 @@ fold itself) is pinned directly, unit-level, as well as end to end: the
 end-to-end case gives the parent a `dependsOn` naming one of its own
 pre-existing neighbours in `tasks.json` and a batch whose second child
 chains itself behind the first, so the union is exercised through the
-real pipeline too. That works because the fold runs strictly AFTER
-`plan_ingestion.lint_worker_split` -- an EXTERNAL inherited id does not
-resolve against that lint's current batch-only `dependsOn` check, and
-task 017 ("Resolve a worker split's dependsOn against the current
-tasks.json as well as the batch (#162)") is the task that widens the
-lint to accept an id in that shape being PROPOSED.
+real pipeline too. Task 017 ("Resolve a worker split's dependsOn against
+the current tasks.json as well as the batch (#162)") widened `plan_
+ingestion.lint_proposal`'s `dependsOn` resolution (its `extra_known_ids`
+parameter) to accept exactly that externally-inherited shape, so this
+fold's own output now reaches that lint resolved either way -- fold-
+then-lint in `_apply_forced_split_report`, unchanged.
 """
-
 from __future__ import annotations
 
 import asyncio

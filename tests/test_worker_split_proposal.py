@@ -139,13 +139,53 @@ def test_reuses_lint_proposal_for_duplicate_ids():
 
 
 def test_reuses_lint_proposal_for_dependson_coherence():
-    """`dependsOn` is scoped to the proposed batch itself -- a split cannot
-    silently wire itself to unrelated plan work."""
+    """`dependsOn` is resolved against the union of the proposed batch and
+    the caller's `existing_ids` (task 017, #162) -- an id in neither is
+    still refused."""
     errors = plan_ingestion.lint_worker_split(
         [{"id": "021a", "title": "x", "successCriteria": "y",
           "dependsOn": ["999-not-in-batch"]}],
         assigned_task_id=TASK_1, existing_ids=set())
     assert any("unknown task" in e for e in errors)
+
+
+def test_dependson_may_resolve_against_the_live_plan_including_the_parent():
+    """Task 017 (PRD requirement B.2, #162): a child's `dependsOn` may
+    name an id already live in `tasks.json` -- including the very task
+    being split (`assigned_task_id`, always a member of `existing_ids`
+    since it is itself a task in the live plan) -- and not only a sibling
+    in the same proposed batch."""
+    errors = plan_ingestion.lint_worker_split(
+        [{"id": "021a", "title": "part a", "successCriteria": "a works",
+          "dependsOn": [TASK_1, "017-neighbour"]}],
+        assigned_task_id=TASK_1, existing_ids={TASK_1, "017-neighbour"})
+    assert errors == []
+
+
+def test_dependson_within_the_batch_still_resolves_cleanly():
+    """Acceptance WITHIN the proposed batch itself, unaffected by widening
+    resolution to also cover the live plan (task 017, #162)."""
+    errors = plan_ingestion.lint_worker_split(
+        [{"id": "021a", "title": "part a", "successCriteria": "a works"},
+         {"id": "021b", "title": "part b", "successCriteria": "b works",
+          "dependsOn": ["021a"]}],
+        assigned_task_id=TASK_1, existing_ids={TASK_1})
+    assert errors == []
+
+
+def test_dependson_in_neither_the_batch_nor_the_plan_names_both_sets_in_the_hint():
+    """An id resolving against NEITHER set is still refused, and the
+    refusal's own text names both sets that were checked (task 017,
+    #162) -- not just the offending id."""
+    errors = plan_ingestion.lint_worker_split(
+        [{"id": "021a", "title": "part a", "successCriteria": "a works",
+          "dependsOn": ["totally-unknown"]}],
+        assigned_task_id=TASK_1, existing_ids={TASK_1, "017-neighbour"})
+    assert len(errors) == 1
+    assert "unknown task" in errors[0] and "totally-unknown" in errors[0]
+    assert "021a" in errors[0]              # the proposed batch's own id
+    assert TASK_1 in errors[0]               # the live plan's id set
+    assert "017-neighbour" in errors[0]      # ... including a neighbour
 
 
 def test_reuses_lint_proposal_for_cycles():

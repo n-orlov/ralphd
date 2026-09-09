@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5417 tests across 331 modules** at task 016's own commit, over the
-PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3853
+collects **5422 tests across 331 modules** at task 017's own commit, over the
+PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3858
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -245,13 +245,21 @@ re-asked on the contract ladder then accepted once it arrives, the parent
 task moving to `superseded` and its split child becoming schedulable next,
 the superseded parent no longer blocking a dependent, `state.supersede_
 task's own writer, and `LoopSupervisor._fold_inherited_dependsOn`'s
-dependsOn-inheritance fold in isolation -- all also `smoke`), and 5417
+dependsOn-inheritance fold in isolation -- all also `smoke`), 5417
 (smoke 3853, modules unchanged at 331) by task 016's follow-up commit in the
 SAME module (3 more nodes, no new module: the parent's `dependsOn` reaching
 EVERY child through the real pipeline rather than only a child that declared
 none of its own, the superseded parent not stranding plan completion once its
 children are done, and `superseded`'s membership of
 `state.TASK_COMPLETION_NONBLOCKING_STATUSES`/`TASK_TERMINAL_STATUSES` --
+all also `smoke`), and 5422 (smoke 3858, modules unchanged at 331) by task
+017's new nodes across two EXISTING modules (no new module): two in
+`tests/test_plan_ingestion.py` pinning `lint_proposal`'s new
+`extra_known_ids` parameter directly (accepted, and refused with a hint
+naming both sets), and three in `tests/test_worker_split_proposal.py`
+pinning `lint_worker_split`'s widened `dependsOn` resolution against the
+caller's live `tasks.json` id set -- including the parent task itself --
+alongside the pre-existing batch-only acceptance and refusal cases --
 all also `smoke`).
 
 **This count must be updated in the same commit that adds tests**, now that CI

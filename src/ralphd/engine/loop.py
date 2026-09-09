@@ -4768,14 +4768,15 @@ class LoopSupervisor:
         """Task 016 (PRD requirement B.1, #156): "its dependsOn inherited
         by the children" -- a plain dict-comprehension fold, split out of
         `_apply_forced_split_report` as its own `@staticmethod` so it is
-        pinned directly rather than only through the fuller pipeline (a
-        genuinely EXTERNAL inherited id -- one of the parent's own
-        neighbours in `tasks.json`, rather than a sibling in the same
-        batch -- does not resolve against `plan_ingestion.lint_worker_
-        split`'s current batch-only `dependsOn` check; PRD B.2/task 017 is
-        the task that widens the lint to accept that shape too, not this
-        one -- which is why this fold runs strictly AFTER that lint in
-        `_apply_forced_split_report`, never before it).
+        pinned directly rather than only through the fuller pipeline. This
+        fold runs strictly AFTER `plan_ingestion.lint_worker_split` in
+        `_apply_forced_split_report`, never before it -- so an id it folds
+        onto a child (a genuinely EXTERNAL neighbour of the parent's own
+        pre-existing `dependsOn` in `tasks.json`, not a sibling in the same
+        batch) reaches the lint already folded in, resolved against
+        `existing_ids` rather than the batch alone (task 017, PRD
+        requirement B.2, #162, widened `lint_proposal`'s `extra_known_ids`
+        for exactly this shape).
 
         EVERY child inherits, not only a child that declared no
         `dependsOn` of its own: the fold is a UNION -- the child's own

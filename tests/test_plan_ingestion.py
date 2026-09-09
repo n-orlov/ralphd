@@ -96,6 +96,24 @@ def test_unresolved_dependson_is_named():
     assert any("001" in e and "999" in e and "dependsOn" in e for e in errors)
 
 
+def test_extra_known_ids_resolves_a_dependson_outside_the_batch():
+    """Task 017 (#162): `extra_known_ids` widens `dependsOn` resolution
+    past the batch itself -- the default (`None`, every planner call site)
+    leaves the batch-only behaviour above byte for byte unchanged."""
+    payload = {"tasks": [_basic_task("001", dependsOn=["live-neighbour"])]}
+    assert pi.lint_proposal(payload, extra_known_ids={"live-neighbour"}) == []
+
+
+def test_extra_known_ids_still_refuses_an_id_in_neither_set_with_a_hint():
+    payload = {"tasks": [_basic_task("001", dependsOn=["nowhere"])]}
+    errors = pi.lint_proposal(payload, extra_known_ids={"live-neighbour"})
+    assert len(errors) == 1
+    assert "unknown task" in errors[0] and "nowhere" in errors[0]
+    # the hint names BOTH sets that were checked and came up empty
+    assert "001" in errors[0]                 # the proposed batch's own id
+    assert "live-neighbour" in errors[0]       # the extra (live-plan) id
+
+
 def test_a_dependson_cycle_is_named():
     payload = {
         "tasks": [

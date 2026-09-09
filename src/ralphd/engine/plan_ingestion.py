@@ -1217,7 +1217,7 @@ TASK_205_SUCCESS_CRITERIA = (
 )
 
 
-def lint_proposal(payload: dict) -> list[str]:
+def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
     requirement H's own-terminal-state rule -- that lint is task 012's
@@ -1235,7 +1235,21 @@ def lint_proposal(payload: dict) -> list[str]:
     literal text of a shell command, a wrapper, a polling cadence, a
     "nothing else" clause) or a launch form paired with a demand for the
     same process's captured status -- see the
-    block comments immediately above."""
+    block comments immediately above.
+
+    `extra_known_ids` (task 017, PRD requirement B.2, #162): the ordinary
+    planner call site never passes this -- a planner's file-borne proposal
+    has no "live plan" outside itself, so `dependsOn` stays scoped to
+    exactly the ids the proposal itself declares (`known_ids` below, byte
+    for byte the same set it has always been). `plan_ingestion.
+    lint_worker_split` is the one caller that passes it: a worker's split
+    batch lives ALONGSIDE the current `tasks.json`, not instead of it, so
+    a child naming the parent (or any other already-live task) in its own
+    `dependsOn` is not an "unknown task" -- it is a real dependency this
+    lint has no reason to refuse. `known_ids` becomes the UNION of the
+    batch's own ids and this extra set; a dep in neither is still refused,
+    with the same message, unchanged for every existing caller that leaves
+    this at its default `None` (treated as empty)."""
     errors: list[str] = []
     tasks = payload.get("tasks", [])
     seen: dict[Any, int] = {}
@@ -1376,12 +1390,20 @@ def lint_proposal(payload: dict) -> list[str]:
                 "form"
             )
 
-    known_ids = set(seen)
+    known_ids = set(seen) | (extra_known_ids or set())
     for t in tasks:
         tid = t.get("id")
         for dep in (t.get("dependsOn") or []):
             if dep not in known_ids:
-                errors.append(f"task {tid!r}: dependsOn references unknown task {dep!r}")
+                if extra_known_ids is not None:
+                    errors.append(
+                        f"task {tid!r}: dependsOn references unknown task "
+                        f"{dep!r} -- not in the proposed batch "
+                        f"{sorted(str(i) for i in seen)!r} and not in the "
+                        f"current plan {sorted(str(i) for i in extra_known_ids)!r}"
+                    )
+                else:
+                    errors.append(f"task {tid!r}: dependsOn references unknown task {dep!r}")
 
     errors.extend(_detect_cycles(tasks))
     return errors
@@ -1538,16 +1560,28 @@ def lint_worker_split(proposed_tasks: Any, *, assigned_task_id: str | None,
 
     * `assigned_task_id` must be real -- nothing to split if the harness
       handed this worker no task at all this pass.
-    * `lint_proposal`'s own `dependsOn` resolution is already scoped to
-      exactly the ids present in `proposed_tasks` itself (see that
-      function's `known_ids`) -- a split cannot silently wire itself to
-      unrelated plan work, which is the coherence check requirement N asks
-      for. The one thing that reused check has no way to know is whether a
-      proposed id collides with one already LIVE in the plan (it only ever
-      sees the proposed batch) -- checked here against `existing_ids`,
-      the caller's live `tasks.json` id set.
+    * `lint_proposal`'s own `dependsOn` resolution now accepts an id from
+      EITHER of two sets (task 017, PRD requirement B.2, #162): the ids
+      present in `proposed_tasks` itself, or `existing_ids`, the caller's
+      live `tasks.json` id set -- passed through as `lint_proposal`'s
+      `extra_known_ids`. A child chaining itself behind a sibling in the
+      same batch, a child inheriting the parent's own pre-existing
+      `dependsOn` (`LoopSupervisor._fold_inherited_dependsOn`, task 016),
+      and a child that simply names the parent (`assigned_task_id`, which
+      `existing_ids` always contains -- it is a live task in the plan
+      being split) all resolve cleanly; an id in NEITHER set is still
+      refused, and `lint_proposal` now names both sets in that refusal's
+      own text so the caller can see exactly what was and was not
+      considered known.
 
-    Called from `LoopSupervisor._apply_worker_proposed_tasks`
+      The one thing that widened check still has no way to know is
+      whether a proposed id COLLIDES with one already LIVE in the plan
+      (`lint_proposal` only ever sees the proposed batch's own ids as
+      candidates for a NEW task) -- checked here, unchanged, against
+      `existing_ids` directly.
+
+    Called from `LoopSupervisor._apply_worker_proposed_tasks` and
+    `LoopSupervisor._apply_forced_split_report`
     (`engine/loop.py`) -- this module stays engine-loop-agnostic, exactly
     like `lint_proposal`/`lint_own_terminal_state` already are; it does not
     read or write `tasks.json` itself.
@@ -1559,7 +1593,8 @@ def lint_worker_split(proposed_tasks: Any, *, assigned_task_id: str | None,
     shape_errors = validate_proposal_shape(payload)
     if shape_errors:
         return shape_errors
-    errors = lint_proposal(payload) + lint_own_terminal_state(payload)
+    errors = (lint_proposal(payload, extra_known_ids=existing_ids)
+              + lint_own_terminal_state(payload))
     collisions = sorted({
         t.get("id") for t in payload["tasks"]
         if isinstance(t, dict) and t.get("id") in existing_ids
