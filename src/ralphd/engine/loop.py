@@ -742,6 +742,18 @@ class LoopSupervisor:
         delivers this signal too, and the operator's intent is the one that
         counts. The reason text and the evidence are still recorded, because
         "and then a signal arrived" is true either way.
+
+        Task 004 (#163): a run parked in `state: "paused"` sits in
+        `await self._pause.wait()` (`_park_until_resumed`), a plain
+        `asyncio.Event` this signal never touched on its own -- recording the
+        abort and interrupting the child runner (`_record_abort` below) does
+        nothing for a paused engine, which has no running iteration to
+        interrupt in the first place, so `main.py`'s `await job_task` never
+        returned and the process sat there past its SIGTERM/SIGINT. `POST
+        /abort` (`engine/api.py`) never had this problem because its handler
+        calls `loop.resume()` right after `loop.abort()`; this method now does
+        the same thing after recording the signal, so a paused engine wakes
+        and unwinds exactly like an operator-aborted one already does.
         """
         claimed = self._operator_abort_recorded
         # Task 016 (#47): remember that the *process* is going down, not just
@@ -774,6 +786,12 @@ class LoopSupervisor:
             reason,
             TERMINATION_CLASS_OPERATOR if claimed else TERMINATION_CLASS_SELF,
             signal=str(sig), evidence=evidence)
+        # Task 004 (#163): wake a paused loop the same way `POST /abort`
+        # already does. `resume()` is a no-op unless `status.json` actually
+        # records the engine-persisted pause (`_clear_persisted_pause`'s own
+        # guard), so this is safe to call unconditionally on a run that was
+        # never paused at all.
+        self.resume()
 
     def _record_abort(self, reason: str, termination_class: str,
                       signal: str | None = None,

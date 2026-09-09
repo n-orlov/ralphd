@@ -725,3 +725,71 @@ def test_stop_on_a_paused_engine_skips_the_sigterm_grace_it_cannot_honour(
     started = time.monotonic()
     e.stop()
     assert time.monotonic() - started < 1.0
+
+
+# ===========================================================================
+# Section E -- task 004 (#163): a paused engine now honours SIGTERM instead
+# of blocking on the pause gate.
+#
+# `LoopSupervisor.abort_on_signal` used to record the abort and interrupt the
+# child runner but never touch `self._pause` -- so an engine parked in
+# `state: "paused"` (`_park_until_resumed`'s `await self._pause.wait()`)
+# never woke up in-process at all: `main.py`'s `await job_task` never
+# returned, and the process sat past SIGTERM/SIGINT until something signalled
+# it harder (SIGKILL). The fix makes `abort_on_signal` call `self.resume()`
+# right after recording the abort, exactly the way `POST /abort`'s own
+# handler already calls `loop.abort()` then `loop.resume()`. Section D's own
+# `LiveRun.stop()` optimisation (skip the ordinary grace on a paused engine)
+# stays in place regardless -- it is now a fast path rather than the only
+# path, but a real SIGTERM sent directly (bypassing `stop()`'s special case)
+# must still end the engine well inside a short, test-controlled grace.
+# ===========================================================================
+
+import os
+import signal
+
+
+def test_a_paused_engine_stops_on_sigterm_inside_a_test_grace_period(
+        engine_factory):
+    e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
+                       stub_env={"STUB_WORKER_STALLS": "1"})
+    status = e.wait_state(("paused",), timeout=60)
+    assert status["pauseReason"] == "stagnation"
+    assert e.proc.poll() is None, "still alive and parked, precondition"
+
+    # A direct SIGTERM, not `e.stop()`'s own paused-state fast path (section
+    # D) -- this pins the engine's own signal handling, not the test
+    # harness's teardown shortcut.
+    os.kill(e.proc.pid, signal.SIGTERM)
+
+    deadline = time.monotonic() + 10.0
+    while e.proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    assert e.proc.poll() is not None, (
+        "a paused engine must react to SIGTERM by waking the pause gate "
+        "and unwinding, not by blocking on it forever")
+
+
+def test_ralphctl_abort_against_a_paused_engine_stops_it_too(live):
+    e = live(run_id="paused-abort", job={"on_complete": "exit",
+                                         "max_approaches": 1},
+             stub_env={"STUB_WORKER_STALLS": "1"})
+    status = e.wait_state(("paused",), timeout=60)
+    assert status["pauseReason"] == "stagnation"
+    assert e.proc.poll() is None, "still alive and parked, precondition"
+
+    res = e.ralphctl("abort", e.run_id)
+    assert res.returncode == 0, res.stderr
+
+    aborted = e.wait_terminal(timeout=10)
+    assert aborted["state"] == "aborted"
+    # The process itself exits a moment after status.json goes terminal
+    # (uvicorn's own shutdown, `on_complete: exit`) -- poll for it rather
+    # than asserting the exact instant `wait_terminal` returns.
+    deadline = time.monotonic() + 10.0
+    while e.proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert e.proc.poll() is not None, (
+        "`ralphctl abort` must actually end a paused engine's process, not "
+        "just record the termination on disk")
