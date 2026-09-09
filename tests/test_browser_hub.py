@@ -34,6 +34,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from test_cli_ui import StubEngineApi, UiServer, _write_dead_run, _write_run_with_api
 
+from ralphd.log_merge import iteration_output_path
+
 PLAYWRIGHT_CLI = shutil.which("playwright-cli")
 
 
@@ -637,67 +639,135 @@ def test_steering_form_submit_creates_steering_file(tmp_path, pw, live):
     assert any("browser e2e steering message" in f.read_text() for f in steering_files)
 
 
+def _assert_content_advanced(before: str, after: str, what: str) -> None:
+    """Task 064: the one assertion
+    `test_run_detail_keeps_updating_through_a_long_worker_iteration` relies
+    on to prove the run-detail page is still live -- `after` must differ
+    from `before`. Named and factored out (rather than inlined as a bare
+    `assert before != after`) so the test can demonstrate, in the same
+    module, that this check genuinely fails on a page that stopped
+    updating: see the inline self-check right before its real use below.
+    """
+    assert before != after, (
+        f"{what} did not advance between the two observations -- the page "
+        f"looks stalled rather than still refreshing (before={before!r} "
+        f"after={after!r})")
+
+
 def test_run_detail_keeps_updating_through_a_long_worker_iteration(tmp_path, pw, live):
     """Task 022 (requirement F): before this task, the engine ran a
     0.25s background poller (`_poll_task_changes`) purely so a task-status
     transition written mid-iteration surfaced as a live `task` event; that
     poller is retired. This is the black-box proof that retiring it did
     not cost the hub's run-detail view its in-step liveness during a long
-    worker iteration: the log tail (`#logbox`, server-rendered from
-    `output.jsonl` via the shared `log_render` module) and the task table
-    (`#task-box`, re-read from `tasks.json` on every `GET /tasks`) both
-    stay populated -- never blank, never reverting to the empty-state
-    placeholders -- across a worker iteration long enough (`STUB_SLEEP`)
-    to span several of the hub's own `REFRESH_MS` (4s) polls, with no
-    engine-side poller involved at all.
+    worker iteration.
+
+    Task 064 reshaped the proof itself: the previous version sampled
+    `#logbox`/`#task-box` on a fixed real-time loop and asserted it managed
+    `>= 4` samples inside an 8s window -- a host-throughput floor, not a
+    liveness proof (a fast host could always clear it without the page ever
+    actually refreshing with new content, and a slow host could fail it
+    while the page was working perfectly). This version instead CAUSES a
+    change mid-iteration -- appending a distinguishing event straight to
+    the currently-running iteration's own transcript file, the same file
+    `#logbox` is server-rendered from on every poll (`log_merge`/
+    `log_render`, never cached) -- and asserts the page's rendered content
+    genuinely advances to reflect it (`_assert_content_advanced`), which is
+    the actual property this test exists for. The task table (`#task-box`)
+    is still checked never to blank out or revert to its empty-state
+    placeholder across the same window.
     """
-    # task 009 (B.3): a genuine wall-clock requirement (the sampling loop
-    # below has its own fixed 8s real-time window, spanning several of the
-    # hub's REFRESH_MS polls by construction). STUB_HOLD_FILE was tried and
-    # rejected: holding the worker indefinitely (rather than a bounded real
-    # sleep) measurably destabilized this same sampling loop (a live-run
-    # hub GET/eval round trip occasionally stalled several seconds while
-    # the worker sat silent with no output at all, dropping the collected
-    # sample count below the loop's own >=4 floor across repeated runs) in
-    # a way a fixed STUB_SLEEP never did. 8.5s was tried too and also
-    # measured unstable (3 failed runs, "not enough samples") -- 9s (the
-    # original value) is the smallest value confirmed to pass three
-    # consecutive runs; left unchanged.
+    # A hold (task 008/B.2's `STUB_HOLD_FILE`/`STUB_HOLD_PHASE`), not a
+    # fixed `STUB_SLEEP`, is what actually keeps the worker iteration open
+    # here: planning and review run at their normal (near-instant) speed,
+    # so the task table appears the moment planning hands off -- no window
+    # where the hub's run-detail poll sees `tasks.json` missing for two
+    # polls running and widens itself to `BACKOFF_POLL_MS` (task 005, A.3)
+    # before there is even anything to show. The worker iteration alone
+    # stays open until this test explicitly releases it (`hold_file.touch()`
+    # below), which is exactly the bounded real-time window this test
+    # needs and no more -- `STUB_HOLD_TIMEOUT_S` is a safety net, not the
+    # thing driving the test's own timing.
+    hold_file = tmp_path / "hold-browser-liveness"
     run = live(run_id="browser-liveness",
                job={"iterations": 12, "max_approaches": 3, "on_complete": "idle"},
-               stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "9"})
+               stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
 
     server = UiServer(run.registry)
     server.wait_ready()
     try:
         pw.open(f"{server.base}/#/run/{run.run_id}")
-        # wait for the worker iteration itself (iteration 2 -- iteration 1
-        # is planning) to actually start before sampling: the task table has
-        # at least one row only once planning has finished and the stub
-        # worker's long STUB_SLEEP window has begun, so this is the signal
-        # that the samples below fall inside that window rather than before it.
+
+        # Wait for the worker iteration itself (iteration 2 -- iteration 1
+        # is planning) to actually start AND for the hub's own run-detail
+        # view to have caught up to it: the task table has at least one row
+        # only once planning has finished and the held worker iteration has
+        # begun.
         _wait_for_count_ge(
             pw, "document.querySelectorAll('#task-box tbody tr').length", 1, timeout=30)
 
-        samples = []
-        deadline = time.time() + 8
-        while time.time() < deadline:
-            log_text = pw.eval_js("document.getElementById('logbox').innerText")
-            task_text = pw.eval_js("document.getElementById('task-box').innerText")
-            samples.append((log_text, task_text))
-            assert log_text.strip(), "log tail went blank mid-iteration"
-            assert task_text.strip(), "task table went blank mid-iteration"
-            assert "(no tasks)" not in task_text, (
-                f"task table reverted to the empty placeholder mid-iteration: "
-                f"{task_text!r}")
-            time.sleep(0.3)
+        # The exact worker iteration number, read directly off the run's own
+        # `status.json` -- reliable now that the task row above proves the
+        # harness has already assigned it -- rather than inferred from a
+        # directory listing that could itself be mid-write.
+        status = json.loads((run.run_dir / "status.json").read_text())
+        cur = status.get("currentIteration") or {}
+        iter_no = cur.get("number")
+        assert cur.get("phase") == "worker" and iter_no, (
+            f"expected the worker iteration to still be current; got {cur!r}")
 
-        assert len(samples) >= 4, (
-            f"not enough samples taken during the sleep window: {len(samples)}")
+        # Companion self-check (task 064): prove `_assert_content_advanced`
+        # is not vacuously true -- it must raise when nothing changed --
+        # right here, inline, every time this test runs, rather than
+        # trusted on faith. This is the "still fails if the page stops
+        # updating" guarantee the real assertion below depends on.
+        try:
+            _assert_content_advanced("same text", "same text", "self-check")
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                "_assert_content_advanced failed to raise on identical "
+                "before/after content -- it would not catch a genuinely "
+                "stalled page either, so the real assertion below would be "
+                "meaningless")
+
+        log_text_before = pw.eval_js("document.getElementById('logbox').innerText")
+        task_text_before = pw.eval_js("document.getElementById('task-box').innerText")
+        assert log_text_before.strip(), "log tail went blank mid-iteration"
+        assert task_text_before.strip(), "task table went blank mid-iteration"
+        assert "(no tasks)" not in task_text_before, (
+            f"task table reverted to the empty placeholder mid-iteration: "
+            f"{task_text_before!r}")
+
+        # Cause the change ourselves: append a distinguishing event to the
+        # in-progress worker iteration's own output.jsonl. merge_entries
+        # (log_merge.py) re-reads that file from disk on every /logs
+        # request -- never cached -- so this is a change the hub's server
+        # side has no way to see except by genuinely re-polling.
+        marker = f"LIVENESS-MARKER-{os.getpid()}-{time.time_ns()}"
+        out_path = iteration_output_path(run.run_dir, iter_no)
+        with open(out_path, "a") as f:
+            f.write(json.dumps({
+                "type": "message_update",
+                "assistantMessageEvent": {"type": "text_delta", "delta": marker + "\n"},
+            }) + "\n")
+
+        log_text_after = _wait_for(
+            pw, "document.getElementById('logbox').innerText", marker, timeout=20)
+        _assert_content_advanced(log_text_before, log_text_after, "logbox")
+
+        task_text_after = pw.eval_js("document.getElementById('task-box').innerText")
+        assert task_text_after.strip(), "task table went blank mid-iteration"
+        assert "(no tasks)" not in task_text_after, (
+            f"task table reverted to the empty placeholder mid-iteration: "
+            f"{task_text_after!r}")
 
         pw.screenshot(SCREENSHOTS_DIR / "05-run-detail-liveness.png")
     finally:
+        hold_file.touch()  # release: let the held worker iteration finish
         run.wait_terminal(timeout=60)
         server.stop()
 
