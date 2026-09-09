@@ -2115,43 +2115,51 @@ settled row and block above, this wave's own row, and `LAUNCH_SHA` bumped to thi
 launch sha; **I** — every lane green at the final code sha, the records, the closing report,
 #148 closed, the terminal summary.
 
-Approach 1 validated 32 of 48 tasks and was failed by the stagnation guard; approach 2
-replanned to a 5-task cure plan, validated all five, and its own independent review found
-three blocking findings rather than terminal ones: requirement F's reported six-module count
-counted string literals (`grep -l RALPHCTL`) rather than actual process-spawning modules — 18
-`test_cli*.py` modules called `LiveRun.ralphctl()` at that review's HEAD; requirement G.2's
-`docs/testing.md` table had no dev-layout row at all; and requirement I's seven-lane sweep was
-recorded at a tree (`c1955eb1`/`b520897`) that later test-only commits (`53763db`, `3246881`)
-had already moved `HEAD` past, so `tests/test_sweep_sha_guard.py` was red at the reviewed sha.
-Approach 3 is a flat 14-task cure plan (001–014) aimed at exactly those three findings, not at
-the rest of the wave: tasks 001–005 convert the remaining CLI-family spawn call sites to
-in-process and pin the surviving spawn set behaviourally instead of by grep (F); tasks 006–008
-add the missing dev-layout PYTHONUSERBASE-unset/-exported budget rows to `docs/testing.md` and
-re-measure smoke/fast/records after the conversions (G.2); tasks 010–014 retire every stale
-sweep-sha declaration, then re-run the seven lanes from scratch at the tree those retirements
-leave behind and record them one file per lane in one commit (I), before the closing report and
-terminal summary. Approach 3 validated all 14 tasks and shipped `1927c39` (the missing
-`tests/test_reflection.py` ledger row, report-only); its own independent review found two
-blocking findings only, rather than terminal ones — the conformance ledger still had no
-`tests/test_reflection.py` row at review time, and the seven-lane sweep was recorded at a tree
-(`9ed10e7`/`3b26ea4`) that `93b6849` (the still-current final code sha) had already moved past,
-so `tests/test_sweep_sha_guard.py` was red at the reviewed sha.
+The run is `selfdev-v0191-a-gate-is-not-a-wall`, launched at `1a3b9bb` with
+`--max-approaches 3`, started 2026-09-07T06:56:31Z. **This wave ended `succeeded` /
+verified-with-residuals — settled history, not a mid-wave snapshot.** The worker loop ended
+2026-09-09T08:53:27Z and the terminal state landed after reflect at 09:02:34Z; **260
+iterations** (241 charged; refunds 11 infra, 8 steer, 1 grace), **~646.1M tokens**, **~$407.01
+derived**, ~50 h of wall clock with the deadline extended once by +24 h. Every requirement A–I
+landed: the hub's ETag, caches and back-off (#148 closed); the stub-`pi` hold primitive and the
+race-window conversions (B, with the `--durations=80` sum's 188.25 s a disclosed miss against
+120 s); twelve flow modules and the real-engine fold (C); the per-task pins folded to zero (D);
+the records-lint family at 199 tests in ~10 s (E); the CLI family in-process with the
+process-boundary set pinned behaviourally at 6 modules (F); both G nodes green and
+`docs/testing.md` carrying measured rows with every miss stated (G); version `0.19.1`, v0.19's
+row and block settled (H); all seven lanes green at the final code sha `93b6849`, recorded one
+file per lane, the suite-budget record and the closing report (I).
 
-Approach 4 is a flat 8-task cure plan (`a4-01`–`a4-08`) aimed at exactly those two findings: a4-01
-added the missing ledger row (`1927c39`, report-only; `93b6849` stays the final code sha); a4-03
-retires every stale sweep-sha declaration; a4-04–a4-07 re-run the seven lanes from scratch at
-the tree those retirements leave behind and record them one file per lane in one commit; a4-08
-re-verifies the guards at the true final sha before the closing report (a4-07) and terminal
-summary (a4-08) — the whole approach adds no code commit, per its own freeze order (code is
-anything outside `artifacts/reports/`, this block and `docs/prds/README.md`, and this task,
-a4-02, is the last one allowed to touch either of those last two). As of this paragraph a4-01
-is `validated` and a4-02 (this refresh) is `in-progress`; the sweep has not been (re-)launched
-yet, so this entry does not claim any lane result the tree does not yet hold.
-
-The run is `selfdev-v0191-a-gate-is-not-a-wall`. **This entry is written while that run is
-still going**; it records the plan this wave is working and is not a terminal account — the
-operator resettles this row and this block after the run ends, per this wave's own requirement
-H.
+It took three engine approaches to get there, each with exactly one review cure pass (#141),
+and the loop's own machinery — not the work — cost most of the excess. Approach 1 (a flat plan
+grown to 52 tasks, 50 `validated`, 2 `skipped` under operator rulings) landed A–H in full and
+was rejected at 2026-09-08T07:17:54Z on three curable findings: I red at the final code sha,
+F's six-module count a literal `grep -l RALPHCTL` rather than a spawn count, G.2's dev-layout
+rows absent; the cure pass fixed each and was rejected again at 14:20:27Z on the same three
+clauses, because the cure tasks' own `tests/` commits had moved the final code sha past the
+recorded sweep (#167). Approach 2 (14 tasks + one cure task, all 15 `validated`) drove the CLI
+family in-process, pinned F behaviourally, added the dev-layout rows and re-swept all seven
+lanes green at `3b26ea4`; it was rejected at 2026-09-09T01:55:33Z on one finding — that fix had
+restored `STUB_SLEEP=0.5`, a B.4 regression — cured correctly by `93b6849`, a one-file test
+commit that landed *after* the sweep and the closing report and so manufactured both findings
+of the second rejection at 02:16:54Z: the seven lanes at a stale code sha, and a
+`LoopSupervisor` literal with no conformance-ledger row. Approach 3 (8 tasks + one cure task,
+all 9 `validated`; the run's own records call it "approach 4", having counted cure passes as
+approaches, #172) was report-only throughout: the ledger row, the sweep re-taken at the
+unchanged code sha `93b6849` — six lanes green first time, dev-layout-unset red on one flaky
+harness node (`tests/flows/test_flow_happy_path.py`, a `status.json`-before-`events.jsonl`
+write-ordering race, #169) and green on its third re-run under the cure task; review `verified`
+with 3 residuals at 08:09:50Z and the blind verdict gate `verified` with 6 residuals at
+08:53:27Z. The same seven-lane sweep ran nine times in all (~13 h). The shipped sha is
+`a77df38`, installed host-side by the operator, who also corrected one shipped record that cited
+an amended-away commit — an object only the run's own workspace held, so `a77df38` was red in
+the records family on every fresh clone, and neither judging hat could see it (#176).
+The reflection (`artifacts/reflection/report.md` and `suggestions.diff` in the run dir) named
+the freeze rule, the same-environment re-measure protocol, the fenced-contract defect and the
+cure-specification gap; those are #175, #170 and #171. Ten operator steers and seven rulings
+were needed; the post-mortem is #167–#176 and the next wave,
+`docs/prds/v0.20-a-commit-is-progress.md`. This paragraph and `docs/prds/README.md`'s row are
+settled host-side by the operator from the run's own terminal `status.json`/`tasks.json`.
 
 ## Later / explicitly deferred
 
