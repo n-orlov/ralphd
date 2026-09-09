@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5472 tests across 334 modules** at task 023's own commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3907
+collects **5473 tests across 335 modules** at task 024's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3908
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -326,7 +326,16 @@ suffix, `ralphctl tasks`'s and `--json`'s on-disk snapshot rendering,
 `LoopSupervisor._worker_assignment_extra`'s new "## Deferred tasks" section
 (present with a task assigned, present with none selectable, absent when
 nothing is deferred, and never fencing a contract-shaped object) pinned both
-directly and through the real `_step_worker` dispatch -- all also `smoke`.
+directly and through the real `_step_worker` dispatch -- all also `smoke`),
+and 5473 (smoke 3908, modules 334->335) by task 024's replay of the v0.19
+#156 approach-2 incident (PRD requirement C.5, #156): 1 new in-process node
+in a NEW `tests/test_deferred_pin_task024.py` driving a real
+`LoopSupervisor._run_job_core()` over the incident's own shape -- the
+cut-record task starting `in-progress` and reporting `deferred` on a
+06:00Z gate, the run continuing with the plan's other runnable task, the
+sleep-and-wake mechanism clearing the deferral once `until` passes, and
+both tasks landing `completed` with the run reaching `succeeded` --
+unlike the real incident's `failed` -- also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
