@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5379 tests across 327 modules** at task 014's own commit, over the
-PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3815
+collects **5384 tests across 328 modules** at task 015's own commit, over the
+PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3820
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -217,12 +217,16 @@ one new node in `tests/records/test_report_claims.py` pinning the
 check-run-id guidance in the report-claims guard's own failure message,
 5367 (smoke 3803) by task 013's new `tests/test_progress_budget_task013.py`
 (3 new in-process nodes covering the per-task progress budget, all also
-`smoke`), and 5379 (smoke 3815, modules 326->327) by task 014's new
+`smoke`), 5379 (smoke 3815, modules 326->327) by task 014's new
 `tests/test_progress_budget_surface_task014.py` (12 new nodes covering the
 `progressBudget` surface on `format_task_status()`, `ralphctl status`/
 `tasks` and the health-unaffected pin, all also `smoke`; the module's new
 browser-tier node in `tests/test_browser_hub.py` is neither fast nor
-smoke, so it does not move either count).
+smoke, so it does not move either count), and 5384 (smoke 3820, modules
+327->328) by task 015's new `tests/test_progress_pin_task015.py` (5 new
+in-process nodes pinning the corroborated/uncorroborated/two-external-
+only/budget-reset behaviours and the v0.19 approach-1 incident replay,
+all also `smoke`).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
