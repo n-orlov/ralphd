@@ -379,7 +379,7 @@ to hash to that value, `commit_problems()` fails it as
 `is not a commit in this repo (missing)`. This is not a false positive to
 work around: it is the guard doing exactly what it is for, applied to a
 citation it was never meant to receive. Write such an id as bare prose
-("check run 102507184201") followed by its `html_url`, which is
+("check run 102507184201") followed by its html_url field, which is
 unambiguous and independently resolvable; reserve backticked hex for actual
 commit shas. The failure message itself now names this convention, so a
 report author who trips it does not have to already know where to look.
