@@ -3,14 +3,17 @@ how many tests `tests/records/` collects, how long a real run of it takes,
 and what it actually spawns a subprocess for.
 
 `docs/testing.md`'s budget table carries the measured numbers this module
-pins live: the family collects **194** tests against a **300** budget and
-runs in about **5.1-5.6 s** serial against a **15 s** budget -- both well
-inside target, so neither is disclosed as a miss.
+pins live: the family collects tests against a **300** budget and runs in
+a few seconds against a **15 s** budget -- both well inside target, so
+neither is disclosed as a miss.
 
-**The subprocess rule.** A real run of the whole family spawns exactly ONE
-real subprocess, `git ls-files`, and
-`test_the_records_family_spawns_only_one_git_ls_files` below pins that live.
-Getting there took three fixes, all in this task:
+**The subprocess rule.** A real run of the whole family spawns exactly TWO
+real subprocesses -- one `git ls-files` and one `git rev-list HEAD` -- and
+`test_the_records_family_spawns_only_one_git_ls_files` below pins
+that live. Getting to one (from ~220) took three fixes in task 035; task 009
+(#176) then added the second, deliberately, so a report-cited sha that only
+exists as a dangling object (present in `.git` but not an ancestor of
+`HEAD`) is a claim problem instead of a silent pass:
 
 1. `tests/report_claims.py`'s `commit_problems()` used to answer "is this
    sha a commit object" with a `git cat-file --batch-check` subprocess, once
@@ -19,9 +22,11 @@ Getting there took three fixes, all in this task:
    before the fix). It now reads the object type straight out of `.git`
    in-process (`_ObjectDatabase`: loose objects' zlib header, packed
    objects' pack-entry type bits, following a delta chain to its base), so
-   the sha check spends no subprocess at all. `tests/report_claims.py`'s
-   single remaining `subprocess.run` is the one `git ls-files` snapshot
-   `path_problems()` needs for path membership.
+   the sha check spends no subprocess at all. `commit_problems()` also
+   requires that resolved commit to be reachable from `HEAD` (task 009,
+   #176), checked against one `git rev-list HEAD` snapshot
+   (`_reachable_commits()`), memoised the same way `_tracked_paths()`
+   memoises its own `git ls-files` snapshot.
 2. `tests/records/test_conformance_ledger.py`'s `_collect_node_ids()` sets
    `RALPHD_SKIP_DOCKER_PROBE=1` around its nested in-process collection
    (new gate in `tests/test_docker_sibling_e2e.py::_docker_available()`),
@@ -79,10 +84,11 @@ def test_the_records_family_collects_at_most_the_budgeted_count() -> None:
 
 def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
     """A real run of the WHOLE family (not just collecting it) spawns exactly
-    one real subprocess -- a single `git ls-files` -- and nothing else: no
-    second `git ls-files` however many reports or claims exist, and no other
-    command of any kind (requirement E.4's rule, verbatim: the family
-    "spawns no subprocess other than one `git ls-files`").
+    two real subprocesses -- one `git ls-files` (`path_problems()`'s tracked-
+    path snapshot) and one `git rev-list HEAD` (`commit_problems()`'s
+    reachable-commit snapshot, task 009/#176) -- and nothing else: no second
+    call of either however many reports or claims exist, and no other
+    command of any kind.
 
     This file excludes itself from the nested run it launches (it would
     otherwise recurse into calling `pytest.main()` on itself, forever); the
@@ -99,6 +105,8 @@ def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
     # whatever runs after it in this same process.
     report_claims_module._TRACKED_PATHS = None
     report_claims_module._COMMIT_KINDS = None
+    report_claims_module._COMMIT_FULL_SHAS = None
+    report_claims_module._REACHABLE_COMMITS = None
     report_claims_module._OBJECTS = None
 
     calls: list[list[str]] = []
@@ -118,10 +126,18 @@ def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
         f"a real run of tests/records/ (minus this file) failed (exit "
         f"code {ret}) -- rerun without the subprocess patch to see why")
 
-    others = [c for c in calls if tuple(c[:2]) != ("git", "ls-files")]
+    expected = {("git", "ls-files"), ("git", "rev-list", "HEAD")}
+    others = [c for c in calls if tuple(c) not in expected]
     assert not others, (
-        f"tests/records/ spawned a subprocess other than `git ls-files`: "
-        f"{others}")
-    assert len(calls) == 1, (
+        f"tests/records/ spawned a subprocess other than `git ls-files` or "
+        f"`git rev-list HEAD`: {others}")
+    ls_files_calls = [c for c in calls if tuple(c) == ("git", "ls-files")]
+    rev_list_calls = [c for c in calls if tuple(c) == ("git", "rev-list", "HEAD")]
+    assert len(ls_files_calls) == 1, (
+        f"expected exactly one `git ls-files`, got {len(ls_files_calls)}: {calls}")
+    assert len(rev_list_calls) == 1, (
+        f"expected exactly one `git rev-list HEAD`, got {len(rev_list_calls)}: "
+        f"{calls}")
+    assert len(calls) == 2, (
         f"tests/records/ spawned {len(calls)} subprocess calls from a cold "
-        f"cache, expected exactly one `git ls-files`: {calls}")
+        f"cache, expected exactly two: {calls}")

@@ -90,6 +90,7 @@ CLI_SCOPE_ALLOWLIST = frozenset({
 # spawns no process at all (see the module docstring).
 TREE_WIDE_ALLOWLIST = CLI_SCOPE_ALLOWLIST | frozenset({
     "test_debt_ledger.py",
+    "test_deadline.py",
     "test_docker_sibling_e2e.py",
     "test_docs_semantics.py",
     "test_durations.py",

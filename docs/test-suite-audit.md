@@ -260,10 +260,11 @@ docstring), never a `grep -c 'RALPHCTL'` count.
 | `test_cli_logs_resumed_run.py` | its `Follower` class observes a live streaming follow across a real engine resume -- task 033's own audit subject, not reproducible via a blocking in-process capsys capture |
 | `test_cli_ui.py` | hosts the `UiServer` class that ~15 modules outside CLI scope construct directly for real-subprocess/playwright coverage; its DELETE-route dependency shells out to real `docker`, which only resolves its env correctly in a genuine child process (task 004's record) |
 
-**Tree-wide -- every `tests/test_*.py` module, 31 of ~317 (the 6 above plus 25 more):**
+**Tree-wide -- every `tests/test_*.py` module, 32 of ~317 (the 6 above plus 26 more):**
 
 | module | why it is a real process boundary |
 |---|---|
+| `test_deadline.py` | its SIGTERM/pause section (task 004, #163) drives `ralphctl abort` as a real subprocess against a real paused child engine, proving the CLI verb itself wakes a parked process, not just the in-process `LoopSupervisor.resume()` call it wraps |
 | `test_debt_ledger.py` | reads `ralphctl docs`'s real stdout so the debt ledger is checked through the actual host-side CLI contract, not the in-process object |
 | `test_docker_sibling_e2e.py` | `@pytest.mark.docker` container-level e2e; every command is a real subprocess by design, and the module skips cleanly when docker is unreachable |
 | `test_docs_semantics.py` | drives `ralphctl ... watch` as a real piped subprocess to check the semantic doc pass's claims against genuine CLI behaviour |
@@ -290,7 +291,7 @@ docstring), never a `grep -c 'RALPHCTL'` count.
 | `test_tasks_stale_cli.py` | drives `ralphctl tasks`/`--json tasks` as a real subprocess specifically because its subject is the *host-side* reader falling back to disk when the engine is not the one answering |
 | `test_tier_cost_breakdown.py` | same real-child `--json status` pattern, for the per-tier spend/iteration-count breakdown |
 
-None of the 25 non-CLI members are in `tests/test_cli*.py`'s scope (the family requirement 7
+None of the 26 non-CLI members are in `tests/test_cli*.py`'s scope (the family requirement 7
 converts); each predates or sits outside that conversion and was never a candidate for it.
 
 **Ruled out, on purpose:** `tests/test_ralphctl_resolution.py` names `RALPHCTL` in prose more than

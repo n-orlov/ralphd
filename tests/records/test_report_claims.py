@@ -119,6 +119,40 @@ def test_the_retired_marker_direction_is_enforced() -> None:
     assert live_node in node_problems_found[0]
 
 
+def test_a_dangling_commit_sha_fails_and_a_reachable_one_passes(monkeypatch) -> None:
+    """H.2 (#176): `commit_problems()` requires a cited sha to be reachable
+    from `HEAD`, not merely present as an object -- a sha git still keeps on
+    disk as the pre-image of an amended, reset or rebased-away commit is a
+    claim problem, exactly like a sha that never resolved to a commit at
+    all. The three memoised dicts/set are set directly (bypassing the real
+    "every sha the reports cite" population, which never sees a sha this
+    fabricated) the same way the whitebox path test above fakes
+    `_TRACKED_PATHS` -- no subprocess spent either way."""
+    dangling = "d" * 40
+    reachable = "e" * 40
+    monkeypatch.setattr(
+        report_claims_module, "_COMMIT_KINDS",
+        {dangling: "commit", reachable: "commit"},
+    )
+    monkeypatch.setattr(
+        report_claims_module, "_COMMIT_FULL_SHAS",
+        {dangling: dangling, reachable: reachable},
+    )
+    monkeypatch.setattr(report_claims_module, "_REACHABLE_COMMITS", {reachable})
+    claims = ReportClaims(
+        report=REPORTS_DIR / "conformance-ledger.md",
+        shas=[Claim(dangling, line=1), Claim(reachable, line=2)],
+        paths=[],
+        nodes=[],
+        retired=[],
+    )
+    problems = commit_problems(claims)
+    assert len(problems) == 1, problems
+    assert dangling in problems[0]
+    assert "reachable from HEAD" in problems[0]
+    assert reachable not in problems[0]
+
+
 def test_the_claim_checks_have_exactly_one_implementation() -> None:
     """The point of this module: generalised, not copy-pasted. A sha regex or a
     `def <node>` probe anywhere else under tests/ means someone started a

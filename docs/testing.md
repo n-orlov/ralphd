@@ -82,7 +82,7 @@ tightened as the counts come down -- they are a ratchet, not a target.
 | smoke, serial | `smoke` | `-m smoke` | 3768 | 208 | 137.18 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 137.18 s measured against the 120 s target |
 | fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5329 | 322 | 81.04 s | 7000 | 430 | 150 s | < 120 s | met -- 81.04 s inside the 120 s target |
 | fast, serial | `fast` | `-m fast` | 5329 | 322 | 540.44 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
-| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 199 | 5 | 9.39 s | 300 | 15 | 15 s | < 15 s | met -- 9.39 s inside the 15 s target, 199 tests inside the 300-test target |
+| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 200 | 5 | 9.40 s | 300 | 15 | 15 s | < 15 s | met -- 9.40 s inside the 15 s target, 200 tests inside the 300-test target |
 | dev-layout, `PYTHONUSERBASE` unset | n/a (no marker; the whole suite, unfiltered) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported | n/a (no marker; the whole suite, unfiltered) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
 
@@ -221,20 +221,25 @@ That table is prose, not a budget row: `tests/test_tier_budgets.py` parses only
 the eleven-column table above it. The 10.81 s the directory adds is inside the
 fast lane's own recorded measurements.
 
-### The records-lint family (`tests/records/`, task 035, requirement E.4)
+### The records-lint family (`tests/records/`, task 035, requirement E.4; subprocess count updated task 009, #176)
 
-Measured serially (`.venv/bin/python -m pytest -q tests/records/`, repeated
-three times, 5.35-5.37 s): **194 tests collected** across 4 test modules (plus
-a `conftest.py`: `test_conformance_ledger.py`, `test_records_family_budget.py`,
+Measured serially (`.venv/bin/python -m pytest -q tests/records/`, repeated,
+~9.4 s): **200 tests collected** across 4 test modules (plus a `conftest.py`:
+`test_conformance_ledger.py`, `test_records_family_budget.py`,
 `test_report_claims.py`, `test_roadmap.py`), against the PRD's **300-test** /
 **15 s** targets -- both met, so neither is disclosed here as a miss.
 
-**The subprocess rule: one `git ls-files` for a whole run, and nothing else.**
+**The subprocess rule: `git ls-files` and `git rev-list HEAD` for a whole
+run, and nothing else.**
 `tests/records/test_records_family_budget.py::test_the_records_family_spawns_only_one_git_ls_files`
 pins it live -- it patches `subprocess.run`, runs the rest of the family
-in-process from a cold cache, and fails on a second `git ls-files` or on any
-other command at all. Three fixes in this task got the count from ~220 down to
-one:
+in-process from a cold cache, and fails on a second call of either, or on any
+other command at all. Three fixes in task 035 got the count from ~220 down to
+one (`git ls-files`); task 009 (#176) then added the second, deliberately,
+so `commit_problems()` requires a cited sha to be reachable from `HEAD`, not
+merely present as an object -- a sha that only exists as a dangling object
+(git keeps an amended, reset or rebased-away commit's pre-image on disk
+until `git gc` reclaims it) is now a claim problem instead of a silent pass:
 
 1. `tests/report_claims.py`'s `commit_problems()` used to answer "is this
    cited sha a commit object in this repo" with a `git cat-file --batch-check`
@@ -263,9 +268,11 @@ one:
    one-snapshot caching no longer spends a second real `git ls-files` of its
    own.
 
-The one remaining call is `path_problems()`'s `git ls-files` snapshot, memoised
-for the process: path membership genuinely is a question about git's index, and
-nothing in the family asks it twice.
+The two remaining calls are `path_problems()`'s `git ls-files` snapshot and
+`commit_problems()`'s `git rev-list HEAD` snapshot (`_reachable_commits()`,
+task 009), each memoised for the process: path membership and commit
+reachability genuinely are questions about git's own state, and nothing in
+the family asks either one twice.
 
 ### Targets missed, with their numbers
 

@@ -13,7 +13,10 @@ and re-uses this parser for its density assertions.
 The claim vocabulary the reports use, and how it is read:
 
 * A backticked 7-40 char hex token is a commit sha, and must resolve to a
-  commit object in this repo.
+  commit object in this repo that is reachable from `HEAD` (task 009, #176)
+  -- a sha that exists only as a dangling object (git keeps an amended,
+  reset or rebased-away commit's pre-image on disk until `git gc` reclaims
+  it) is not evidence a report can point at either.
 * A backticked path under one of `REPO_DIRS` is a repo-relative path and must
   be tracked by git (task 012, #86) -- one `git ls-files` snapshot per
   process, not a subprocess per claim. Existence on disk is not membership:
@@ -191,15 +194,15 @@ def parse_claims(report: Path) -> ReportClaims:
 # A sha claim asks "is this hex token a commit object in this repo", which is
 # not a question `git ls-files` can answer -- it used to be answered by a
 # `git cat-file --batch-check` subprocess (one per report before this task,
-# then one per process). E.4 pins the records family at exactly ONE
-# subprocess for a whole run, `git ls-files`, so the object-type answer is
-# read straight out of `.git` in this process instead: loose objects give
-# their type in their own zlib header, packed objects give it in the type
-# bits of their pack entry header (following a delta chain to its base when
-# the entry is an OFS_DELTA/REF_DELTA, exactly as git does). The vocabulary
-# returned matches `git cat-file --batch-check`'s own words, so
-# `commit_problems`'s messages are unchanged: `commit`/`blob`/`tree`/`tag`
-# for a resolved object, `missing` for a prefix nothing matches, `ambiguous`
+# then one per process). E.4 pins the records family's object-type question
+# at NO subprocess of its own, so the object-type answer is read straight
+# out of `.git` in this process instead: loose objects give their type in
+# their own zlib header, packed objects give it in the type bits of their
+# pack entry header (following a delta chain to its base when the entry is
+# an OFS_DELTA/REF_DELTA, exactly as git does). The vocabulary returned
+# matches `git cat-file --batch-check`'s own words, so `commit_problems`'s
+# messages are unchanged: `commit`/`blob`/`tree`/`tag` for a resolved
+# object, `missing` for a prefix nothing matches, `ambiguous`
 # for a prefix more than one object matches.
 # --------------------------------------------------------------------------
 
@@ -273,9 +276,9 @@ class _ObjectDatabase:
                     self._packed.setdefault(sha, (pack, offset))
         self._all = sorted(set(self._loose) | set(self._packed))
 
-    def kind(self, prefix: str) -> str:
-        """`git cat-file --batch-check`'s answer for one (possibly
-        abbreviated) sha."""
+    def _matches(self, prefix: str) -> list[str]:
+        """Every full sha in the store starting with `prefix`, capped at two
+        (an ambiguous prefix never needs a third to be reported as such)."""
         start = bisect.bisect_left(self._all, prefix)
         matches = []
         for sha in self._all[start:]:
@@ -283,10 +286,26 @@ class _ObjectDatabase:
                 break
             matches.append(sha)
             if len(matches) > 1:
-                return "ambiguous"
+                break
+        return matches
+
+    def kind(self, prefix: str) -> str:
+        """`git cat-file --batch-check`'s answer for one (possibly
+        abbreviated) sha."""
+        matches = self._matches(prefix)
+        if len(matches) > 1:
+            return "ambiguous"
         if not matches:
             return "missing"
         return self._kind_of(matches[0])
+
+    def resolve(self, prefix: str) -> str | None:
+        """The one full 40-char sha `prefix` resolves to, or `None` when it
+        is missing or ambiguous -- `kind()` already reports which. Needed
+        because a reachability check (`_reachable_commits()`) only ever
+        holds full shas, and a report's own citation may be abbreviated."""
+        matches = self._matches(prefix)
+        return matches[0] if len(matches) == 1 else None
 
     def _kind_of(self, sha: str) -> str:
         loose = self._loose.get(sha)
@@ -332,6 +351,8 @@ class _ObjectDatabase:
 
 _OBJECTS: _ObjectDatabase | None = None
 _COMMIT_KINDS: dict[str, str] | None = None
+_COMMIT_FULL_SHAS: dict[str, str | None] | None = None
+_REACHABLE_COMMITS: set[str] | None = None
 
 
 def _objects() -> _ObjectDatabase:
@@ -342,33 +363,82 @@ def _objects() -> _ObjectDatabase:
     return _OBJECTS
 
 
+def _cited_shas() -> list[str]:
+    """Every sha cited anywhere under `artifacts/reports/`, the population
+    both `_commit_kinds()` and `_commit_full_shas()` resolve once each."""
+    return sorted({
+        claim.value
+        for report in report_files()
+        for claim in parse_claims(report).shas
+    })
+
+
 def _commit_kinds() -> dict[str, str]:
-    """Every sha cited anywhere under `artifacts/reports/`, resolved once for
-    the life of the process and memoised -- with NO subprocess at all (see
-    the block comment above). Before task 035 (requirement E.4) this ran a
+    """Every cited sha's object type, resolved once for the life of the
+    process and memoised -- with NO subprocess at all (see the block
+    comment above). Before task 035 (requirement E.4) this ran a
     `git cat-file --batch-check` once PER REPORT it was called on, about 218
-    of the ~220 subprocess calls a full `tests/records/` run made; E.4's rule
-    is that the family spawns no subprocess other than the one `git ls-files`
-    `_tracked_paths()` needs, so the object-type answer is read out of `.git`
-    in-process instead.
+    of the ~220 subprocess calls a full `tests/records/` run made; the
+    object-type answer is read out of `.git` in-process instead.
     """
     global _COMMIT_KINDS
     if _COMMIT_KINDS is None:
-        wanted = sorted({
-            claim.value
-            for report in report_files()
-            for claim in parse_claims(report).shas
-        })
+        wanted = _cited_shas()
         objects = _objects() if wanted else None
         _COMMIT_KINDS = {sha: objects.kind(sha) for sha in wanted} if wanted else {}
     return _COMMIT_KINDS
 
 
+def _commit_full_shas() -> dict[str, str | None]:
+    """Every cited (possibly abbreviated) sha's resolved full 40-char sha,
+    memoised alongside `_commit_kinds()` -- needed to check a resolved
+    commit against `_reachable_commits()`, which only ever holds full
+    shas."""
+    global _COMMIT_FULL_SHAS
+    if _COMMIT_FULL_SHAS is None:
+        wanted = _cited_shas()
+        objects = _objects() if wanted else None
+        _COMMIT_FULL_SHAS = (
+            {sha: objects.resolve(sha) for sha in wanted} if wanted else {}
+        )
+    return _COMMIT_FULL_SHAS
+
+
+def _reachable_commits() -> set[str]:
+    """Every commit sha reachable from `HEAD`, one `git rev-list HEAD`
+    snapshot per process, memoised the same way `_tracked_paths()` memoises
+    its own `git ls-files` snapshot (task 009, #176).
+
+    A sha can resolve to a real `commit` object in `_commit_kinds()` and
+    still not be evidence of anything: `git` keeps a commit's pre-image on
+    disk, as an ordinary loose or packed object, for as long as it takes
+    `git gc` to reclaim it, even after an amend, a reset or a rebase drops
+    every ref that used to point at it. Existing as an object is not the
+    same claim as being part of this repo's history; only the second one is
+    what a report's citation means.
+    """
+    global _REACHABLE_COMMITS
+    if _REACHABLE_COMMITS is None:
+        proc = subprocess.run(
+            ["git", "rev-list", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        _REACHABLE_COMMITS = set(proc.stdout.splitlines())
+    return _REACHABLE_COMMITS
+
+
 def commit_problems(claims: ReportClaims) -> list[str]:
-    """Every listed sha must be a commit object in this repo."""
+    """Every listed sha must be a commit object in this repo AND reachable
+    from `HEAD` -- a sha that only exists as a dangling object (task 009,
+    #176) is not evidence a report can point at either."""
     if not claims.shas:
         return []
     kinds = _commit_kinds()
+    fulls = _commit_full_shas()
+    reachable = _reachable_commits()
     problems = []
     for claim in claims.shas:
         kind = kinds.get(claim.value, "unknown")
@@ -376,6 +446,13 @@ def commit_problems(claims: ReportClaims) -> list[str]:
             problems.append(
                 f"{claims.where(claim.line)}: {claim.value} is not a commit in "
                 f"this repo ({kind})"
+            )
+            continue
+        full = fulls.get(claim.value)
+        if full not in reachable:
+            problems.append(
+                f"{claims.where(claim.line)}: {claim.value} is a commit but "
+                f"not reachable from HEAD (dangling)"
             )
     return problems
 

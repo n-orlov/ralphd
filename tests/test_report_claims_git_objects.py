@@ -2,14 +2,17 @@
 git (task 035, requirement E.4).
 
 `commit_problems()` answers "is this backticked hex token a commit object in
-this repo" without spawning anything, because requirement E.4 pins the
-records family (`tests/records/`) to exactly one subprocess for a whole run
--- a single `git ls-files` -- and a sha claim is not a membership question
-that snapshot can answer. The reader that replaced the old
-`git cat-file --batch-check` call parses `.git` itself: loose objects' zlib
-type header, packed objects' pack-entry type bits (v2 `.idx` fanout/sha/
-offset tables, following an OFS_DELTA/REF_DELTA chain to its base, since a
-delta never changes the object type).
+this repo, reachable from HEAD" without spawning a subprocess of its own for
+the object-type half of that question (task 035, requirement E.4) -- the
+reachability half (task 009, #176) does spend one `git rev-list HEAD`,
+alongside `path_problems()`'s own `git ls-files`, the two subprocesses the
+records family (`tests/records/`) is pinned to for a whole run. A sha claim
+is not a membership question the `git ls-files` snapshot can answer either
+way. The reader that replaced the old `git cat-file --batch-check` call
+parses `.git` itself: loose objects' zlib type header, packed objects'
+pack-entry type bits (v2 `.idx` fanout/sha/offset tables, following an
+OFS_DELTA/REF_DELTA chain to its base, since a delta never changes the
+object type).
 
 That is real plumbing, so it is checked the only way worth checking: against
 git's own answers, for every sha this repo's reports actually cite plus a
@@ -119,21 +122,29 @@ def test_missing_and_ambiguous_prefixes_get_gits_own_answer() -> None:
     assert [database.kind(token) for token in absent] == ["missing"] * len(absent)
 
 
-def test_report_claims_spawns_git_for_nothing_but_ls_files() -> None:
+def test_report_claims_spawns_git_for_nothing_but_ls_files_and_rev_list_head() -> None:
     """The rule this reader exists to make true, asserted against the
     implementation module's own source: `tests/report_claims.py` runs exactly
-    one kind of command, `git ls-files`."""
+    two kinds of command, `git ls-files` (path membership) and
+    `git rev-list HEAD` (commit reachability, task 009/#176) -- never a
+    third, and never `git cat-file` again."""
     source = (REPO_ROOT / "tests" / "report_claims.py").read_text()
     spawn_sites = [
         line.strip() for line in source.splitlines()
         if "subprocess.run(" in line
     ]
-    assert len(spawn_sites) == 1, (
+    assert len(spawn_sites) == 2, (
         f"tests/report_claims.py has {len(spawn_sites)} subprocess.run call "
-        f"sites, expected exactly one (git ls-files): {spawn_sites}")
+        f"sites, expected exactly two (git ls-files, git rev-list HEAD): "
+        f"{spawn_sites}")
     assert '"git", "ls-files"' in source, (
-        "the one subprocess tests/report_claims.py may spawn is git ls-files")
+        "one of the two subprocesses tests/report_claims.py may spawn is "
+        "git ls-files")
+    assert '"git", "rev-list", "HEAD"' in source, (
+        "the other of the two subprocesses tests/report_claims.py may spawn "
+        "is git rev-list HEAD (task 009, #176)")
     assert '"cat-file"' not in source, (
         "no git cat-file argv may return to tests/report_claims.py -- "
-        "requirement E.4 pins the records family to one git ls-files "
-        "(prose about the call it replaced is fine, an argv is not)")
+        "requirement E.4 pins the records family's object-type question to "
+        "no subprocess of its own (prose about the call it replaced is "
+        "fine, an argv is not)")
