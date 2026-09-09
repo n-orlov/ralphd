@@ -89,6 +89,39 @@ def wait_terminal_recorded(run, timeout: float = 60, interval: float = 0.05) -> 
         time.sleep(interval)
 
 
+def wait_step_recorded(run, step: str, timeout: float = 30,
+                       interval: float = 0.05) -> list[str]:
+    """Bounded barrier (task 063, #179): block until `step` (exactly as
+    `flow_steps()` renders it, e.g. `"iteration:worker"`) has actually
+    landed in `events.jsonl`, then return the full reduced sequence seen at
+    that moment.
+
+    `tests/flows/test_flow_steer.py` used to POST to `/steering` the
+    instant `wait_api()` returned -- proving only that the HTTP server was
+    up, never that the engine had gotten as far as dispatching the worker
+    iteration whose `iteration.start` event the flow's asserted sequence
+    expects to precede `steering.received`. On a slow or loaded host the
+    POST's own event could land in `events.jsonl` first, reversing the two
+    steps and failing `assert_step_sequence` at that index (observed on
+    GitHub-hosted 2-core runners: run 34350174011 attempt 1, and the push
+    of d2ec329, run 34361695755). This barrier polls the same reduced
+    sequence `assert_step_sequence` itself checks and returns the moment
+    the named step is actually there -- never a fixed sleep, never a wider
+    or order-insensitive assertion -- so a caller can order its own next
+    action strictly after that step without guessing how long the engine
+    takes to reach it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        seen = flow_steps(run)
+        if step in seen:
+            return seen
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"wait_step_recorded: step {step!r} never landed in "
+                f"events.jsonl within {timeout}s; steps seen so far: {seen!r}")
+        time.sleep(interval)
+
+
 def status(run) -> dict:
     f = run.run_dir / "status.json"
     if not f.exists():

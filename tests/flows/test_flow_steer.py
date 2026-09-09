@@ -50,7 +50,7 @@ from __future__ import annotations
 import json
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks)
+                                 status, tasks, wait_step_recorded)
 
 INSERTED_TASK = {"id": "steer-inserted", "title": "landed by the steer hat",
                  "successCriteria": "criteria via steer",
@@ -110,6 +110,18 @@ def test_a_steer_message_is_received_consumed_and_settled_with_a_task_insert_and
                  "STUB_HOLD_TIMEOUT_S": "30",
                  "STUB_STEER_TOOL_CALLS": json.dumps(STEER_TOOL_CALLS)})
     run.wait_api()
+
+    # Task 063 (#179): wait for the worker iteration's own `iteration.start`
+    # event to actually land in events.jsonl before POSTing, instead of
+    # POSTing straight after `wait_api()` -- the latter only proves the API
+    # is reachable, not that the engine has dispatched the worker iteration
+    # this flow's asserted sequence expects `steering:received` to follow.
+    # Racing that (see wait_step_recorded's own docstring for the two
+    # observed hosted-runner failures) could land `steering.received`
+    # BEFORE `iteration.start`, reversing steps [3]/[4] below. This barrier
+    # is bounded and returns the moment the worker phase has engaged --
+    # never a fixed sleep, and the expected sequence itself is unchanged.
+    wait_step_recorded(run, "iteration:worker", timeout=30)
 
     # Land the message while the first worker iteration is held open, so
     # `pending_steering()` is guaranteed non-empty the instant that
