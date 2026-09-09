@@ -562,7 +562,8 @@ def test_steer_and_retry_proxies_forward_the_control_token_and_surface_a_401_rea
     literal shape `engine/api.py`'s `auth` middleware sends), the hub's JSON
     answer still carries that reason rather than flattening it away -- the
     same body shape `app.js`'s steer-form and retry-button failure branches
-    both parse (`j.detail.detail`/`j.detail.title`) to render it."""
+    both parse (via the shared `innermostReason` helper, task 069) to
+    render it."""
     registry = tmp_path / "registry"
     token = "the-run-control-token"
     unauthorized = {"title": "unauthorized", "status": 401,
@@ -596,15 +597,17 @@ def test_steer_and_retry_proxies_forward_the_control_token_and_surface_a_401_rea
         engine.close()
 
     # -- both failure branches in app.js render exactly that nested reason,
-    # not the generic wrapper string or a bare status code -- same
-    # vocabulary, same fallback order, for the same underlying cause.
+    # not the generic wrapper string or a bare status code -- same shared
+    # helper, so the same fallback order, for the same underlying cause
+    # (task 069, #155, requirement G.7: `innermostReason` walks the nested
+    # `detail` chain instead of each branch spelling its own `||` chain).
     app_js = (Path(__file__).parents[1] / "src" / "ralphd" / "cli" / "web"
               / "app.js").read_text()
     steer_branch = app_js[app_js.index('getElementById("steer-form").addEventListener'):]
     steer_branch = steer_branch[:steer_branch.index("function renderRetryNow")]
-    assert "j.detail.detail" in steer_branch
+    assert "innermostReason(j" in steer_branch
     retry_branch = app_js[app_js.index("function renderRetryNow"):]
-    assert "j.detail" in retry_branch
+    assert "innermostReason(j" in retry_branch
 
 
 def test_retry_proxy_passes_the_engines_409_refusal_through(tmp_path, ui):

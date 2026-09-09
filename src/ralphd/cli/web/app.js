@@ -406,6 +406,38 @@ function openTextDialog(title, text, note) {
   return showDialog(dlg);
 }
 
+// ------------------------------------------- mutating-proxy reason (#155, G.7)
+
+// Task 069 (#155, requirement G.7): the hub wraps a proxy rejection as
+// `{error, detail: <engine body>}` (`ui_server.py`'s `do_POST`), and the
+// engine's OWN problem body can itself carry a `detail` key -- so a rejection
+// forwarded through a second hop (e.g. the steer proxy relaying the engine's
+// `409 {"detail": {"title": ..., "detail": "steering has no effect"}}` for a
+// run that finished between the browser's submit and the proxy's forward)
+// nests one `detail` object inside another. The steer form's error branch
+// and `renderRetryNow`'s fallback used to each spell their own `||` chain
+// (`j.detail && (j.detail.detail || j.detail.title)) || j.error` and
+// `j.detail || j.title || j.error || status` respectively) that stops at the
+// first TRUTHY value -- which, for a doubly-nested body, is an object, and
+// `String()` on an object renders the literal text `[object Object]` instead
+// of the reason underneath it. This helper instead walks down the `detail`
+// chain while it keeps finding an OBJECT, then reads the innermost level's
+// own `detail` (if it is a string) or `title`, falling back to the
+// outermost `error` and finally to the numeric status -- one walk, shared by
+// both control surfaces, so they render the SAME reason for the SAME cause.
+function innermostReason(body, fallback) {
+  let cur = body;
+  while (cur && typeof cur === "object" && cur.detail && typeof cur.detail === "object") {
+    cur = cur.detail;
+  }
+  if (cur && typeof cur === "object") {
+    if (typeof cur.detail === "string") return cur.detail;
+    if (typeof cur.title === "string") return cur.title;
+  }
+  if (body && typeof body === "object" && typeof body.error === "string") return body.error;
+  return fallback;
+}
+
 // ------------------------------------------------------- delete a run (#19)
 
 // Task 031 (#19): deleting a finished run used to mean leaving the hub for
@@ -1459,16 +1491,12 @@ async function renderRunDetail(runId, myGen) {
         // making the operator wait out the 4s poll to see their own message.
         loadSteering(runId);
       } else {
-        // #155: the hub wraps a proxy rejection as {error, detail:
-        // <engine body>} (ui_server.py's `do_POST`); the engine's own
-        // problem body carries the actual reason under `detail.detail`
-        // (e.g. "mutating routes require the control token" for a 401
-        // from the control-token gate) or `detail.title`. Same fallback
-        // order `renderRetryNow` already uses for the retry button, so
-        // both control surfaces show the SAME reason for the SAME cause
-        // instead of the steer form collapsing it to a bare status code.
-        const reason = (j.detail && (j.detail.detail || j.detail.title)) || j.error;
-        statusEl.textContent = "failed: " + String(reason || resp.status);
+        // #155/G.7 (task 069): `innermostReason` walks the nested `detail`
+        // chain instead of stopping at the first truthy (possibly object)
+        // value, so both control surfaces show the SAME reason for the SAME
+        // cause and neither can render the literal `[object Object]`.
+        const reason = innermostReason(j, resp.status);
+        statusEl.textContent = "failed: " + String(reason);
       }
     } catch (e) {
       statusEl.textContent = "failed: " + e;
@@ -1837,8 +1865,9 @@ function renderRetryNow(box, runId, live, wait) {
       if (resp.ok) {
         statusEl.textContent = " retrying now (outage budget clock reset)";
       } else {
-        statusEl.textContent = " failed: " +
-          String(j.detail || j.title || j.error || resp.status);
+        // #155/G.7 (task 069): shared with the steer form's error branch --
+        // see `innermostReason`'s own comment above.
+        statusEl.textContent = " failed: " + String(innermostReason(j, resp.status));
       }
     } catch (e) {
       statusEl.textContent = " failed: " + e;

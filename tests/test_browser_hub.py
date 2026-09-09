@@ -505,6 +505,121 @@ def test_degraded_card_offers_a_retry_now_button_with_a_ticking_countdown(tmp_pa
         healthy_engine.close()
 
 
+def test_reason_extraction_walks_a_nested_problem_body_to_the_innermost_string(tmp_path, pw):
+    """Task 069 (#155, requirement G.7): both the steer form's error branch
+    and `renderRetryNow`'s fallback used to stop at the first TRUTHY value
+    in their own `||` chain -- which, for a body nested one `detail` deeper
+    than either chain expected, is an OBJECT, and `String()` on an object
+    renders the literal text `[object Object]`. This is exactly the shape
+    the hub's own proxy produces when the run's live API answers a mutating
+    request with a problem document that itself carries a `detail` key
+    (`ui_server.py`'s `do_POST`: `{"error": ..., "detail": <engine body>}`,
+    and the engine's own body here is `{"detail": {"title": ..., "detail":
+    "steering has no effect"}}`) -- e.g. a run that finishes between the
+    browser's submit and the proxy's forward (#179's family).
+
+    Confirmed this node genuinely pins the defect: reverted `app.js` to the
+    pre-069 `||` chains (`git show HEAD:src/ralphd/cli/web/app.js` before
+    this commit) and re-ran this node solo -- both of the first two
+    assertions failed with the rendered text containing the literal
+    `[object Object]` instead of `steering has no effect`. Restored the fix
+    before this commit landed.
+
+    The rest of the node then re-drives the RETRY surface (the two share
+    one helper, already proven identical above by the nested-body checks)
+    against the three shapes that worked before this task and must keep
+    working: a flat `{error: ...}`, the 401 control-token body task 007
+    introduced (`{detail: {title, status, detail: "mutating routes require
+    the control token"}}`), and a body with no string anywhere, which must
+    still fall back to the numeric status. The retry proxy passes the
+    engine's body through verbatim with no added wrapper key (unlike the
+    steer proxy, which always adds its own top-level `error` string), so
+    driving these three through retry tests the helper against exactly the
+    named shape with nothing else in play.
+    """
+    nested_body = {
+        "error": "run's API unreachable or rejected the request",
+        "detail": {"detail": {"title": "job finished", "status": 409,
+                              "detail": "steering has no effect"}},
+    }
+    next_attempt = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 180))
+    infra_wait = {
+        "since": "2026-01-01T00:00:00Z", "attempt": 3,
+        "error": "socket hang up", "phase": "worker",
+        "nextAttemptAt": next_attempt,
+        "waitedS": 20, "budgetS": 14400, "remainingS": 14380,
+    }
+    degraded_status = {
+        "runId": "run-nested-reason", "state": "running", "verdict": None,
+        "phase": "worker", "approach": 1, "iterationsUsed": 5,
+        "iterationsBudget": 25, "startedAt": "2026-01-01T00:00:00Z",
+        "health": "degraded", "infraWait": infra_wait,
+    }
+    # Both surfaces are fed the SAME body shape the task names -- the retry
+    # proxy passes a dict response through verbatim (`ui_server.py`'s
+    # `do_POST`), so setting the stub's own retry body to the already-
+    # hub-wrapped shape reproduces exactly that `j` at the browser for the
+    # retry button too, not just the steer form.
+    engine = StubEngineApi(status=degraded_status, steer_status=409,
+                           steer_body={"detail": {"title": "job finished",
+                                                  "status": 409,
+                                                  "detail": "steering has no effect"}},
+                           retry_status=409, retry_body=dict(nested_body))
+    registry = tmp_path / "registry"
+    try:
+        _write_run_with_api(registry, "run-nested-reason", engine, **degraded_status)
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-nested-reason")
+            _wait_for(pw, "document.body.innerText", "Steer")
+
+            pw.fill("#steer-message", "trigger the nested rejection")
+            pw.click("#steer-form button[type=submit]")
+            steer_text = _wait_for(pw, "document.getElementById('steer-status').textContent", "failed")
+            assert "steering has no effect" in steer_text, steer_text
+            assert "[object Object]" not in steer_text, steer_text
+
+            _wait_for(pw, "document.body.innerText", "retry now")
+            pw.click("button.retry-now")
+            retry_text = _wait_for(
+                pw, "document.querySelector('.retry-now-status').textContent", "failed")
+            assert "steering has no effect" in retry_text, retry_text
+            assert "[object Object]" not in retry_text, retry_text
+
+            pw.screenshot(SCREENSHOTS_DIR / "07-nested-reason.png")
+
+            # -- previously working shapes keep working, on the RETRY
+            # surface -- it passes the stub's body through with no added
+            # wrapper key, so each shape below is exactly what the task
+            # names, nothing else in play. Each wait targets the shape's OWN
+            # distinguishing text, never the generic "failed" prefix already
+            # on screen from the previous click, so a stale render cannot
+            # pass for a fresh one.
+            engine.retry_body = {"error": "flat failure, no detail key at all"}
+            pw.click("button.retry-now")
+            flat_text = _wait_for(pw, "document.querySelector('.retry-now-status').textContent",
+                                  "flat failure")
+            assert "[object Object]" not in flat_text, flat_text
+
+            engine.retry_body = {"detail": {"title": "unauthorized", "status": 401,
+                                           "detail": "mutating routes require the control token"}}
+            pw.click("button.retry-now")
+            control_text = _wait_for(pw, "document.querySelector('.retry-now-status').textContent",
+                                     "mutating routes require the control token")
+            assert "[object Object]" not in control_text, control_text
+
+            engine.retry_body = {"noStringAnywhere": 1}
+            pw.click("button.retry-now")
+            fallback_text = _wait_for(pw, "document.querySelector('.retry-now-status').textContent",
+                                      "failed: 409")
+            assert "[object Object]" not in fallback_text, fallback_text
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
 def test_run_detail_shows_a_failed_reflection(tmp_path, pw):
     """Task 020 (#5): a run whose post-terminal `reflect` iteration failed
     keeps its terminal state/verdict/reason untouched (docs/api.md's
