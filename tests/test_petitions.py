@@ -1094,6 +1094,47 @@ def test_an_obligation_naming_a_task_still_in_the_plan_stays_open(tmp_path):
     assert found[0]["obligation"] == "Task 018: scope petition discovery"
 
 
+def test_an_obligation_naming_a_task_with_a_possessive_stays_open(tmp_path):
+    """Task 002 (#165): the task-anchor extraction used to capture `039's`
+    verbatim (possessive apostrophe and all) instead of stopping at the id,
+    so an obligation phrased as "Task 039's ..." -- the possessive shape a
+    plain-English filing takes -- never resolved against `task_ids` even
+    when 039 is squarely in the current plan, and was wrongly dropped as
+    history. Stripping the possessive (and any trailing punctuation) before
+    the membership check fixes that: the obligation names a task this plan
+    still carries, so it is adjudicated, not history."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("Task 039's obligation cannot be met as written"))
+    tasks = [{"id": "039", "title": "still in the plan"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks)
+
+    assert len(found) == 1
+    assert found[0]["obligation"] == (
+        "Task 039's obligation cannot be met as written")
+
+
+def test_an_obligation_naming_a_possessive_task_absent_from_the_plan_is_history(
+        tmp_path):
+    """Companion to the test above: the possessive-stripping fix must not
+    turn every possessive task reference into an anchor -- only one whose
+    id is actually in `task_ids`. `039` is not in this plan, so the
+    obligation is still classified as history."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("Task 039's obligation cannot be met as written"))
+    tasks = [{"id": "018", "title": "still in the plan"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks)
+
+    assert found == []
+
+
 def test_an_obligation_naming_a_requirement_the_contract_declares_stays_open(
         tmp_path):
     ws = tmp_path / "ws"

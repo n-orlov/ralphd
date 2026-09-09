@@ -363,7 +363,8 @@ def ensure_petitions_file(workspace: Path, contract_text: str = "") -> Path | No
     return default_path
 
 
-_TASK_OBLIGATION_REF_RE = re.compile(r"\btask\s+(\S+?)\b[:\s]", re.IGNORECASE)
+_TASK_OBLIGATION_REF_RE = re.compile(
+    r"\btask\s+(\S+?)(?:['\u2019]s)?\b[:\s]", re.IGNORECASE)
 _REQUIREMENT_OBLIGATION_REF_RE = re.compile(
     r"\brequirement\s+([A-Za-z](?:\.\d+)*)\b", re.IGNORECASE)
 
