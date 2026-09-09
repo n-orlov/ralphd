@@ -477,9 +477,10 @@ run dir written before v0.7) reads as `operator`. `ralphctl status` prints a
 that opens a fresh episode folds the superseded episode's `termination` (if
 any) into the `previousEndings` entry that already carries its `endedAt`/
 `reason`/`verdict`, archives `operator-termination.json` out of the run dir
-root into `previous-endings/NN-operator-termination.json`, and clears the
-top-level field — so a run stopped two episodes ago and since resumed into a
-clean success is absent from `termination` entirely, rather than still
+root into `previous-endings/NN-operator-termination.json`, and REMOVES the
+top-level key (not `termination: null` — presence is how a consumer asks
+"was this run told to stop?") — so a run stopped two episodes ago and since
+resumed into a clean success carries no `termination` key at all, rather than
 reading as an aborted run.
 
 ### `GET /tasks`

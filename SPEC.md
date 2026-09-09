@@ -1439,7 +1439,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `verdict` | string \| null | `verified` \| `verified-with-residuals` \| `unverified` \| `unreviewed`; `null` until terminal -- `verified-with-residuals` (task 012, requirement D.3) is review's own VERIFIED edge written instead of plain `verified` when the settled findings channel carries at least one `severity: "residual"` finding (`LoopSupervisor._review_success_verdict_label`), so a clean approach still reads `verified`; `unverified` is the ordinary negative (review ran and rejected with no approach/budget left, or the run was aborted); `unreviewed` (task 016, requirement F.3, #146) is the narrower case where the deadline took the run mid-review -- self-loop exhaustion or the off-budget grace attempt -- before review produced any contract payload at all, so `reason` reads `"deadline during review"` rather than a real rejection reason (never overrides an actual operator abort, which keeps `unverified`) |
 | `pendingTerminalState` | string | present only while `state` is `finishing`: the terminal state this run is going to become once the reflect window closes (§12.2) |
 | `reason` | string | why a non-succeeded run ended, or the grace-review note; **episode-scoped** like `endedAt` |
-| `termination` | object \| null | present only for the CURRENT episode, and only once it was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null`. Task 005 (#173): a resume that opens a fresh episode folds the SUPERSEDED episode's `termination` into the matching `previousEndings` entry (below) and clears the top-level field to `null` -- absent entirely once that episode ends clean, so a `--json` consumer/the hub/any future classifier reading a terminal run's `termination` is reading the CURRENT episode's own record, never a stale one two episodes old |
+| `termination` | object \| null | present only for the CURRENT episode, and only once it was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null`. Task 005 (#173): a resume that opens a fresh episode folds the SUPERSEDED episode's `termination` into the matching `previousEndings` entry (below) and **removes the top-level key outright** (not `null`: a presence test is how consumers ask "was this run told to stop?"), so a run stopped by an operator and then resumed into a clean ending carries no `termination` key at all, and a `--json` consumer/the hub/any future classifier reading a terminal run's `termination` is reading the CURRENT episode's own record, never a stale one two episodes old |
 | `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
 | `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
@@ -1573,9 +1573,14 @@ of `termination` reasonably reads as "this run was aborted". The trace is not
 lost, only relocated: the SAME write that appends the superseded ending also
 folds that episode's `termination` (if any) into it, and archives the on-disk
 `operator-termination.json` marker into `previous-endings/NN-operator-
-termination.json` (§5.1) — the top-level field is then cleared for the fresh
-episode, exactly like `endedAt`/`reason`, so it describes the CURRENT episode
-only and is absent once that episode ends clean.
+termination.json` (§5.1) — the top-level key is then REMOVED for the fresh
+episode (`state.REMOVE_STATUS_KEY`, the `update_status` sentinel that deletes a
+key rather than nulling it), exactly like `endedAt`/`reason` are reset, so it
+describes the CURRENT episode only. Removal rather than `termination: null`
+matters because a presence test is how a `--json` consumer, the hub or a
+classifier asks "was this run told to stop?": a run stopped by an operator two
+episodes ago and then resumed into `succeeded / verified` carries no
+`termination` key at all.
 
 ### 5.3 tasks.json
 

@@ -62,6 +62,7 @@ from .state import (
     TERMINATION_CLASS_SELF,
     TERMINAL_STATES,
     VALIDATION_ATTEMPT_LIMIT,
+    REMOVE_STATUS_KEY,
     RunDir,
     archive_operator_termination,
     atomic_write_json,
@@ -3471,7 +3472,10 @@ class LoopSupervisor:
         SAME `previousEndings` entry its `endedAt`/`reason` are going into,
         and archives the on-disk `operator-termination.json` marker
         alongside it (`archive_operator_termination`) -- the caller then
-        clears the top-level field. A crash between here and that write would
+        REMOVES the top-level field outright (`REMOVE_STATUS_KEY`), rather
+        than setting it to `null`, so a resumed episode that was never told
+        to stop carries no `termination` key at all. A crash between here and
+        that write would
         leave the file archived but the field still set; the next resume's
         call to this same method is idempotent about it (the entry it would
         fold `termination` into is by then already carrying it, since
@@ -3552,9 +3556,13 @@ class LoopSupervisor:
                                # on-disk marker archived alongside it -- the
                                # top-level field describes the CURRENT
                                # episode only, so a fresh/resumed episode
-                               # that has not been told to stop yet starts
-                               # with none.
-                               termination=None,
+                               # that has not been told to stop yet carries
+                               # NO `termination` key at all (removed, not
+                               # set to null: `"termination": null` on a run
+                               # that later ends clean still reads as "this
+                               # key is here" to a `--json` consumer, the hub
+                               # or a classifier that only tests presence).
+                               termination=REMOVE_STATUS_KEY,
                                previousEndings=previous_endings,
                                # #164: rebuilt from `steering/`'s actual
                                # contents at the top of every episode --

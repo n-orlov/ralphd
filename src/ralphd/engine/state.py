@@ -570,6 +570,23 @@ def record_operator_termination(run_root: Path, action: str,
 PREVIOUS_ENDINGS_DIR = "previous-endings"
 
 
+class _RemoveStatusKey:
+    """Type of REMOVE_STATUS_KEY below; instantiated exactly once."""
+
+    def __repr__(self) -> str:      # pragma: no cover - diagnostics only
+        return "REMOVE_STATUS_KEY"
+
+
+# Task 005 (#173): pass this as a value to `RunDir.update_status()` to REMOVE
+# that key from status.json instead of writing it. `None` is not good enough
+# for `termination`: a run stopped by an operator and then resumed into a
+# clean success would still carry `"termination": null`, and a consumer that
+# only asks whether the key is present (a `--json` reader, the hub, a future
+# classifier) cannot tell that from "this episode was told to stop". Absence
+# is the only honest encoding of "never told to stop".
+REMOVE_STATUS_KEY = _RemoveStatusKey()
+
+
 def archive_operator_termination(run_root: Path, index: int) -> Path | None:
     """Move OPERATOR_TERMINATION_FILE out of the run dir root into
     `previous-endings/NN-operator-termination.json` (task 005, #173).
@@ -6006,8 +6023,19 @@ class RunDir:
         return read_json(self.status_file, {})
 
     def update_status(self, **patch: Any) -> dict:
+        """Merge-patch status.json.
+
+        Task 005 (#173): a patch value of `REMOVE_STATUS_KEY` (above) DELETES
+        that key instead of setting it -- `termination=None` and "this
+        episode was never told to stop" are different claims to a `--json`
+        consumer, and only key absence states the second one.
+        """
         status = self.read_status()
-        status.update(patch)
+        for key, value in patch.items():
+            if value is REMOVE_STATUS_KEY:
+                status.pop(key, None)
+            else:
+                status[key] = value
         status["updatedAt"] = utcnow()
         atomic_write_json(self.status_file, status)
         return status

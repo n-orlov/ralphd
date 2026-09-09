@@ -39,7 +39,7 @@ from test_cli_resume import _seed_run
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import PREVIOUS_ENDINGS_MAX, LoopSupervisor
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import RunDir, atomic_write_json
+from ralphd.engine.state import REMOVE_STATUS_KEY, RunDir, atomic_write_json
 
 # test_worker_hat.py absorbed test_failed_task_vocabulary.py (task 028,
 # requirement D.7); the aliases restore the names this module already used.
@@ -243,6 +243,9 @@ def test_the_ending_fields_are_cleared_while_the_episode_is_still_running(
     assert mid["endedAt"] is None, mid["endedAt"]
     assert mid["reason"] is None, mid["reason"]
     assert mid["verdict"] is None, mid["verdict"]
+    # Task 005 (#173): and the same for `termination`, which is REMOVED rather
+    # than nulled -- a live resumed episode is not "an aborted run" either.
+    assert "termination" not in mid, mid["termination"]
 
 
 def test_a_terminal_runs_ending_is_exactly_what_its_final_episode_wrote(
@@ -410,11 +413,42 @@ def test_a_resume_after_an_operator_termination_leaves_no_termination_key_once_i
     an operator two episodes ago, then resumed into a clean success, must
     not still carry `termination` (a `--json` consumer, the hub, or any
     future classifier reading it would see an aborted run that in fact
-    succeeded)."""
-    _root, _first, _mid, final = aborted_then_resumed
+    succeeded).
+
+    Absence, not `termination: null`: the ONE question every consumer of this
+    field asks is "was this run told to stop?", and a present-but-null key
+    answers that with "the key is here" for anyone testing presence (`"in"`,
+    `hasOwnProperty`, a jq `has("termination")`). So this asserts the key is
+    gone from status.json outright -- the first attempt at this task left it
+    at `null` and the looser "absent OR null" assertion hid it.
+    """
+    root, _first, _mid, final = aborted_then_resumed
     assert final["state"] == "succeeded" and final["verdict"] == "verified"
-    assert "termination" not in final or final["termination"] is None, (
-        final.get("termination"))
+    assert "termination" not in final, final["termination"]
+    # ... and not merely absent from the parsed dict this test was handed:
+    # gone from the bytes on disk any other reader would parse.
+    on_disk = json.loads((root / "status.json").read_text())
+    assert "termination" not in on_disk, on_disk["termination"]
+    assert on_disk["previousEndings"][-1]["termination"]["class"] == "operator", (
+        "the record is relocated, not deleted")
+
+
+def test_update_status_removes_a_key_given_the_remove_sentinel(tmp_path):
+    """The primitive the fix above rests on (task 005, #173): `update_status`
+    can DELETE a key, not only overwrite it with `None`, and asking it to
+    delete a key that is not there is a no-op rather than an error."""
+    root = tmp_path / "run"
+    root.mkdir()
+    run = RunDir(root=root)
+    run.update_status(state="aborted", termination={"class": "operator"})
+    assert run.read_status()["termination"] == {"class": "operator"}
+
+    after = run.update_status(termination=REMOVE_STATUS_KEY, state="running")
+
+    assert "termination" not in after, after["termination"]
+    assert "termination" not in json.loads((root / "status.json").read_text())
+    assert after["state"] == "running", "ordinary keys still patch normally"
+    assert "termination" not in run.update_status(termination=REMOVE_STATUS_KEY)
 
 
 # -- the operator surface --------------------------------------------------
