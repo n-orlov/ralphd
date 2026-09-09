@@ -1372,6 +1372,47 @@ def test_run_detail_opens_a_task_in_a_dialog(tmp_path, pw):
 
 
 # --------------------------------------------------------------------------
+# task 014 (#156, requirement A.4): the in-progress task's own progress
+# budget, on the task row
+# --------------------------------------------------------------------------
+
+def test_run_detail_shows_the_progress_budget_pill_on_the_in_progress_task_row(
+        tmp_path, pw):
+    """Task 013's `progressBudget` status.json key (`{taskId, used, budget}`)
+    flows through `ui_server.run_detail` untouched (a plain dict merge, no
+    field allowlist) into `body.status.progressBudget`; this pins that the
+    hub actually RENDERS it -- a `budget 2/3` pill on the NAMED task's own
+    row, and on no other row, matching `ralphctl tasks`'s
+    ` (progress budget 2/3)` suffix in spirit (same numbers, same task).
+    """
+    registry = tmp_path / "registry"
+    tasks = {"tasks": [
+        {"id": "001", "title": "already done", "status": "completed"},
+        {"id": "002", "title": "spending its budget", "status": "in-progress"},
+        {"id": "003", "title": "not started", "status": "pending"},
+    ]}
+    dead = _write_dead_run(registry, "run-budget", state="running", verdict=None,
+                           progressBudget={"taskId": "002", "used": 2, "budget": 3})
+    (dead / "tasks.json").write_text(json.dumps(tasks))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-budget")
+        _wait_for(pw, "document.body.innerText", "spending its budget")
+        rows = ("[...document.querySelectorAll('tr.task-row')]"
+               ".map(tr => tr.dataset.taskId + '=' + tr.textContent).join('|')")
+        text = pw.eval_js(rows).strip('"')
+        by_id = dict(pair.split("=", 1) for pair in text.split("|") if "=" in pair)
+        assert "budget 2/3" not in by_id["001"], by_id
+        assert "budget 2/3" in by_id["002"], by_id
+        assert "budget 2/3" not in by_id["003"], by_id
+        pw.screenshot(SCREENSHOTS_DIR / "18-progress-budget.png")
+    finally:
+        server.stop()
+
+
+# --------------------------------------------------------------------------
 # task 021 (#60 pillar 3): dead dependencies are harness-derived, and the
 # dead subtree is visible in the hub -- not just `ralphctl tasks`
 # --------------------------------------------------------------------------

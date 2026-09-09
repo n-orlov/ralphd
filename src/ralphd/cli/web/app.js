@@ -1560,7 +1560,8 @@ async function renderRunDetail(runId, myGen) {
       renderDelete(document.getElementById("delete-box"), runId, body);
       renderUsage(document.getElementById("usage-box"),
                   body.status && body.status.usage, runId);
-      renderTasks(document.getElementById("task-box"), body.tasks);
+      renderTasks(document.getElementById("task-box"), body.tasks,
+                  body.status && body.status.progressBudget);
       renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
     }
     await loadLogs(runId);
@@ -2087,7 +2088,25 @@ async function loadApproaches(runId) {
   renderApproachHistory(box, sec, ok, body, runId);
 }
 
-function renderTasks(el, tasks) {
+// Task 014 (#156, requirement A.4): the in-progress task's own progress
+// budget (status.json's `progressBudget`, task 013, `{taskId, used,
+// budget}`) -- passed in separately from `doc` above because it lives on
+// status.json, not the tasks payload (the hub's own
+// `body.status.progressBudget`, unchanged from GET /status's own key, see
+// `renderRunDetail`'s call site). Gated on the task's OWN status being
+// `"in-progress"`, the same discipline `engine.state.format_task_status`
+// uses server-side: the record persists after the task it named moves on,
+// so showing it beside a finished (or a different) task would misdescribe
+// both.
+function taskProgressBudget(progressBudget, t) {
+  if (!progressBudget || typeof progressBudget !== "object") return null;
+  if (String(t && t.status) !== "in-progress") return null;
+  const id = t && t.id == null ? "" : String(t.id);
+  if (String(progressBudget.taskId) !== id) return null;
+  return progressBudget;
+}
+
+function renderTasks(el, tasks, progressBudget) {
   el.innerHTML = "";
   const doc = tasks || {};
   const list = doc.tasks || [];
@@ -2133,6 +2152,7 @@ function renderTasks(el, tasks) {
     const blockedBy = taskBlockedBy(doc, t);
     const steering = isSteeringOrigin(t);
     const workerOrigin = isWorkerOrigin(t);
+    const budget = taskProgressBudget(progressBudget, t);
     tbody.appendChild(h("tr", {
       class: "task-row" + (blockedBy ? " task-row-blocked" : ""),
       "data-task-id": String(t.id == null ? "" : t.id),
@@ -2170,6 +2190,7 @@ function renderTasks(el, tasks) {
         ...(steering ? [" ", pill("steering-origin")] : []),
         ...(workerOrigin ? [" ", pill("worker-origin")] : []),
         ...(blockedBy ? [" ", pill("blocked by " + blockedBy.join(", "))] : []),
+        ...(budget ? [" ", pill("budget " + budget.used + "/" + budget.budget)] : []),
       ]),
       h("td", {}, [String(t.title || "")]),
     ]));

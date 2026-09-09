@@ -3740,7 +3740,8 @@ def task_failure_kinds(tasks: list) -> dict:
     return out
 
 
-def format_task_status(task: dict, blocked_by: list | None = None) -> str:
+def format_task_status(task: dict, blocked_by: list | None = None,
+                        progress_budget: dict | None = None) -> str:
     """Task 025 (#33): ONE task record's status as a human reads it --
     `failed (validation-exhausted)` / `failed (requirement-unmet)` for a failed
     task, the bare status for everything else.
@@ -3770,6 +3771,17 @@ def format_task_status(task: dict, blocked_by: list | None = None) -> str:
     origin)` in the same slot -- mutually exclusive with steering-origin
     (a task has exactly one `origin` value or none), so this is `elif`, not
     a second independent append.
+
+    Task 014 (PRD requirement A.4, #156): `progress_budget` -- this run's
+    `progressBudget` status.json record (`{taskId, used, budget}`, task
+    013) -- appends ` (progress budget 2/3)` after the blocked-by suffix,
+    but ONLY when this task's own `status` is `"in-progress"` and its id
+    matches `progress_budget["taskId"]`: the record persists on disk after
+    the task it named moves on, and re-showing a stale usage count next to
+    a task that finished (or a DIFFERENT task that is now in progress)
+    would misdescribe both. Optional and keyword-friendly, like
+    `blocked_by` above, so every existing call site keeps working
+    unchanged.
     """
     if not isinstance(task, dict):
         return "unknown"
@@ -3783,6 +3795,11 @@ def format_task_status(task: dict, blocked_by: list | None = None) -> str:
         text += " (worker-origin)"
     if blocked_by:
         text += f" (blocked by {', '.join(str(b) for b in blocked_by)})"
+    if (isinstance(progress_budget, dict) and status == "in-progress"
+            and task.get("id") is not None
+            and str(progress_budget.get("taskId")) == str(task.get("id"))):
+        text += (f" (progress budget {progress_budget.get('used')}"
+                 f"/{progress_budget.get('budget')})")
     return text
 
 

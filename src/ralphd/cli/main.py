@@ -2998,6 +2998,24 @@ def _summarize_tasks(tasks: dict) -> str:
     return format_task_counts(tasks)
 
 
+def _format_progress_budget_lines(progress_budget) -> list[str]:
+    """Task 014 (#156, requirement A.4): `ralphctl status`'s own rendering
+    of status.json's `progressBudget` key (`{taskId, used, budget}`, task
+    013) -- a pure formatting helper in the same shape as
+    `_format_reason_lines` above, so it is unit-testable without a live
+    engine or a run dir.
+
+    Nothing at all for a run that has never recorded a corroborated
+    progress claim (the key absent, or not a dict) -- the same "absent,
+    not a crash" discipline every other optional status.json field in
+    this command follows."""
+    if not isinstance(progress_budget, dict) or not progress_budget.get("taskId"):
+        return []
+    return [f"progress budget: task {progress_budget.get('taskId')}  "
+            f"{progress_budget.get('used')}/{progress_budget.get('budget')} "
+            "iterations used"]
+
+
 def _format_token_count(n) -> str:
     n = n or 0
     if n >= 10_000:
@@ -3299,6 +3317,10 @@ def cmd_status(args):
     # operator nothing they could act on.
     lines.extend(_format_termination_lines(status.get("termination")))
     lines.append(f"tasks:     {_summarize_tasks(status.get('tasks') or {})}")
+    # Task 014 (#156, requirement A.4): the per-task progress budget task
+    # 013 persists on status.json -- named here so a corroborated
+    # no_verdict's own usage is visible without `--json`.
+    lines.extend(_format_progress_budget_lines(status.get("progressBudget")))
     lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
     # Task 020 (E.4): name the run-secrets MAC-key mount, and name the
     # documented fallback check in the same line whenever NO KEY is
@@ -3352,6 +3374,29 @@ _TASKS_SNAPSHOT_NOTICE = (
     "recorded in the run dir")
 
 
+def _progress_budget_doc(run_id: str) -> dict | None:
+    """`ralphctl tasks`'s cross-reference into status.json for task 014
+    (#156, requirement A.4): `progressBudget` (`{taskId, used, budget}`,
+    task 013) lives on status.json, not tasks.json, so annotating a task
+    row with it means one more read alongside `_tasks_doc`'s own -- same
+    live-with-on-disk-fallback shape as `cmd_status` uses for the exact
+    same key. Best-effort: a run dir this run cannot read at all yields
+    `None` (no suffix printed) rather than raising -- absent/unreadable
+    budget data must never make `ralphctl tasks` itself fail.
+    """
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            status = api(run_id, "GET", "/status")
+        if isinstance(status, dict):
+            return status.get("progressBudget")
+    except SystemExit as e:
+        if e.code != 4:
+            return None
+    status = _read_json(run_root(run_id) / "status.json") or {}
+    return status.get("progressBudget")
+
+
 def _tasks_doc(run_id: str) -> tuple[bool, dict]:
     """Fetch a run's task document live, falling back to the run dir on disk
     (task 004, #15).
@@ -3401,25 +3446,29 @@ def _tasks_doc(run_id: str) -> tuple[bool, dict]:
 _TASK_STATUS_MIN_WIDTH = 17
 
 
-def _task_status_width(tasks: list, blocked_by: dict | None = None) -> int:
+def _task_status_width(tasks: list, blocked_by: dict | None = None,
+                       progress_budget: dict | None = None) -> int:
     widths = []
     for t in tasks:
         if not isinstance(t, dict):
             continue
         tid = str(t.get("id")) if t.get("id") is not None else None
         by = (blocked_by or {}).get(tid) if tid else None
-        widths.append(len(format_task_status(t, by)))
+        widths.append(len(format_task_status(t, by, progress_budget)))
     return max([_TASK_STATUS_MIN_WIDTH, *widths])
 
 
-def _task_status_cell(task: dict, width: int, blocked_by: list | None = None) -> str:
+def _task_status_cell(task: dict, width: int, blocked_by: list | None = None,
+                      progress_budget: dict | None = None) -> str:
     """The status column of one `ralphctl tasks` line: the shared
     `format_task_status` wording (so a failed task says WHICH kind of failed it
     is, derived for a plan written before task 024; task 021 (#60 pillar 3)
     adds the ` (blocked by ...)` suffix when `blocked_by` -- this task's own
-    entry in the harness-derived `taskBlockedBy` map -- is non-empty), padded
+    entry in the harness-derived `taskBlockedBy` map -- is non-empty;
+    task 014 (#156, requirement A.4) adds the ` (progress budget N/M)`
+    suffix for the in-progress task named by `progress_budget`), padded
     to `width`."""
-    return f"{format_task_status(task, blocked_by):<{width}}"
+    return f"{format_task_status(task, blocked_by, progress_budget):<{width}}"
 
 
 def _archived_approaches_dir(run_id: str) -> Path:
@@ -3444,17 +3493,25 @@ def _archived_approach_numbers(run_id: str) -> list[int]:
     return archived_approach_numbers(run_root(run_id))
 
 
-def _print_task_lines(tasks: list, blocked_by: dict | None = None) -> None:
+def _print_task_lines(tasks: list, blocked_by: dict | None = None,
+                      progress_budget: dict | None = None) -> None:
     """Task 021 (#60 pillar 3): `blocked_by` is the harness-derived
     `{task id: [dead/doomed ancestor ids]}` map (`taskBlockedBy` on the wire,
     `TasksRead.blocked_by` on disk) -- optional, so a caller with no such map
     handy (or an older engine's payload with no such key) prints exactly as
-    it always did."""
-    width = _task_status_width(tasks, blocked_by)
+    it always did.
+
+    Task 014 (#156, requirement A.4): `progress_budget`, when given, is
+    this run's `progressBudget` status.json record (`{taskId, used,
+    budget}`, task 013) -- optional the same way, so a caller with no
+    budget handy (an archived approach's own task table, which has none)
+    prints exactly as before."""
+    width = _task_status_width(tasks, blocked_by, progress_budget)
     for t in tasks:
         tid = str(t.get("id")) if t.get("id") is not None else None
         by = (blocked_by or {}).get(tid) if tid else None
-        print(f"[{_task_status_cell(t, width, by)}] {t.get('id')} {t.get('title')}")
+        print(f"[{_task_status_cell(t, width, by, progress_budget)}] "
+              f"{t.get('id')} {t.get('title')}")
 
 
 def _cmd_tasks_approach(args, approach: int) -> None:
@@ -3527,7 +3584,11 @@ def cmd_tasks(args):
     if args.json:
         print(json.dumps({**tasks, "live": live}, indent=2))
         return
-    _print_task_lines(tasks.get("tasks", []), tasks.get(TASK_BLOCKED_FIELD) or {})
+    # Task 014 (#156, requirement A.4): the in-progress task's own progress
+    # budget (status.json's `progressBudget`, task 013), fetched the same
+    # live-with-on-disk-fallback way as everything else in this command.
+    budget = _progress_budget_doc(args.run_id)
+    _print_task_lines(tasks.get("tasks", []), tasks.get(TASK_BLOCKED_FIELD) or {}, budget)
 
 
 # Task 040 (#6): what `ralphctl logs` says on stderr when it served the
