@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5447 tests across 331 modules** at task 019's re-take commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3882
+collects **5448 tests across 331 modules** at task 020's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3883
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -291,7 +291,15 @@ derivation, and `ralphctl doctor` reading a `superseded` record as a known
 status) -- these 18 all also `smoke` -- and 1 fast-only node in
 `tests/test_operator_ruling.py` driving the real `ralphctl amend --status
 superseded` refusal through a subprocess (fast, not `smoke`, like every other
-node in that module's CLI-subprocess family).
+node in that module's CLI-subprocess family), and 5448 (smoke 3883, modules
+unchanged at 331) by task 020's one new node in the SAME `tests/test_last_
+approach.py` module (no new module): tasks 016/017/018's own three stages
+(budget exhaustion forcing a split, the parent reaching `superseded`, its
+child being picked next, and that child's OWN budget exhaustion pausing
+rather than recursing into a second split) chained for real in one
+continuous `_step_worker()` call, driven through corroborated `file`-
+evidence progress claims against a real (separate) workspace tree rather
+than pre-seeded `progressBudget` -- also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

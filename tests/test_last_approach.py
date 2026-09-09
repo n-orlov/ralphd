@@ -46,7 +46,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from ralphd.engine import findings, hat_tools, run_record, state as state_mod, transitions
+from ralphd.engine import findings, hat_tools, run_record, scheduler, state as state_mod, transitions
 from ralphd.engine import loop as loop_mod
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -1257,6 +1257,138 @@ def test_a_child_of_a_still_live_parent_still_forces_its_first_split(tmp_path):
     assert notifier.messages == []
     tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
     assert "018c-a" in tasks and tasks["018c"]["status"] == "superseded"
+
+
+# ===========================================================================
+# 11d. Task 020 (#156): the three stages chained for real, in ONE continuous
+#      `_step_worker()` call, instead of each pre-seeded on its own -- 016's
+#      forced split, 018's second-exhaustion pause, and the schedulable
+#      picked child in between, all driven from a fresh budget of zero.
+# ===========================================================================
+
+FLOW_PARENT = "020p"
+FLOW_CHILD = "020c"
+
+
+class _FlowStepRunner:
+    """Same shape as `tests/test_progress_pin_task015.py`'s own
+    `_ScriptedWorker`: every dispatch calls `step(sup, call_index)`, which
+    performs whatever real workspace side effect this pass's own claim
+    needs and returns the reply text."""
+
+    def __init__(self, sup: LoopSupervisor, step) -> None:
+        self.sup = sup
+        self.step = step
+        self.calls = 0
+
+    def interrupt(self) -> bool:
+        return False
+
+    async def run(self, prompt, transcript, **kw):
+        text = self.step(self.sup, self.calls)
+        self.calls += 1
+        return _result(text)
+
+
+# Task 020's own supervisor -- `workspace="ws"` deliberately separates the
+# fingerprinted tree from the run dir's own tasks.json/events.jsonl/
+# status.json writes (`tests/test_progress_pin_task015.py`'s own
+# `_worker_sup` docstring: without the split, every pass's harness-owned
+# bookkeeping write would itself look like a real tree delta and every
+# claim below would be corroborated for the wrong reason).
+_supervisor_split_flow = supervisor_with_runner(
+    lambda sup, step: _FlowStepRunner(sup, step),
+    run_id="task020-split-flow", cfg_defaults=False, workspace="ws",
+    prd="# task 020 fixture PRD\n\nDo the thing.\n",
+    status={"state": "running"}, max_approaches=3, vigilant=False,
+    iterations=12)
+
+
+def _flow_step(sup, i):
+    if i < 3:
+        (sup.workspace / f"p{i}.txt").write_text(f"parent progress {i}")
+        return json.dumps({"verdict": "no_verdict", "progress": {
+            "summary": f"still working on {FLOW_PARENT}, pass {i}",
+            "evidence": [{"kind": "file", "ref": f"p{i}.txt"}]}})
+    if i == 3:
+        return json.dumps({
+            "verdict": "no_verdict",
+            "proposed_tasks": [
+                {"id": FLOW_CHILD, "title": "the split child",
+                 "successCriteria": f"{FLOW_CHILD} works on its own end to end"}]})
+    j = i - 4
+    (sup.workspace / f"c{j}.txt").write_text(f"child progress {j}")
+    return json.dumps({"verdict": "no_verdict", "progress": {
+        "summary": f"still working on {FLOW_CHILD}, pass {j}",
+        "evidence": [{"kind": "file", "ref": f"c{j}.txt"}]}})
+
+
+def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_child_and_a_second_stall_pause(
+        tmp_path):
+    """Three corroborated `file`-evidence progress claims spend
+    `020p`'s own default budget (`estimatedIterations` absent, 1+2==3) to
+    3/3; the fourth dispatch carries the \"Progress budget exhausted\"
+    notice and reports a `proposed_tasks` split -- accepted, `020p`
+    becomes `superseded` and `020c` is inserted, worker-origin,
+    `splitFrom: \"020p\"`; the scheduler picks `020c` next with a FRESH
+    budget (the stale record still names `020p`, so `_record_progress_
+    budget_usage` resets rather than carries the parent's spent 3/3
+    forward); three more corroborated claims spend `020c`'s own budget to
+    3/3; the eighth pass -- `020c`'s own `splitFrom` parent already
+    `superseded` -- is the SECOND exhaustion (task 018, B.3): the run
+    pauses BEFORE dispatching a doomed second split, never recursing into
+    a grandchild."""
+    root = tmp_path / "run"
+    sup = _supervisor_split_flow(
+        root, _flow_step,
+        tasks=[_task(id=FLOW_PARENT, status="in-progress")])
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    outcome = asyncio.run(sup._step_worker())
+
+    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert sup.runner.calls == 7, (
+        f"flow: expected 7 dispatched iterations (3 on the parent, the "
+        f"split itself, 3 on the child), got {sup.runner.calls}")
+
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert set(tasks) == {FLOW_PARENT, FLOW_CHILD}
+    assert tasks[FLOW_PARENT]["status"] == "superseded"
+    assert tasks[FLOW_CHILD]["status"] == "in-progress"
+    assert tasks[FLOW_CHILD]["splitFrom"] == FLOW_PARENT
+    assert state_mod.is_worker_origin(tasks[FLOW_CHILD])
+    # nothing PENDING left to pick: the only actionable candidate is the
+    # child's own resumed `in-progress` claim -- its superseded parent is
+    # not a candidate `select_next_task` ever returns again.
+    picked = scheduler.select_next_task(list(tasks.values()))
+    assert picked is not None and picked["id"] == FLOW_CHILD
+
+    status = sup.run.read_status()
+    assert status.get("state") == PAUSED_STATE
+    assert status.get("pauseReason") == "stagnation"
+    budget_record = status.get("progressBudget")
+    assert budget_record == {
+        "taskId": FLOW_CHILD, "used": 3, "budget": 3}, budget_record
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    assert escalations[0]["exhaustedSplitChild"] == {
+        "id": FLOW_CHILD, "splitFrom": FLOW_PARENT, "used": 3, "budget": 3}
+
+    claims = [e for e in
+              (json.loads(x) for x in
+               (root / "events.jsonl").read_text().splitlines() if x.strip())
+              if e.get("type") == "progress_claim"]
+    assert len(claims) == 6
+    assert all(c["corroborated"] for c in claims), claims
+    assert [c["taskId"] for c in claims] == (
+        [FLOW_PARENT] * 3 + [FLOW_CHILD] * 3)
+
+    assert len(notifier.messages) == 1
+    assert FLOW_CHILD in notifier.messages[0]
+    assert FLOW_PARENT in notifier.messages[0]
 
 
 # ===========================================================================
