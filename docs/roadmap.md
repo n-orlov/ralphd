@@ -2130,9 +2130,23 @@ add the missing dev-layout PYTHONUSERBASE-unset/-exported budget rows to `docs/t
 re-measure smoke/fast/records after the conversions (G.2); tasks 010–014 retire every stale
 sweep-sha declaration, then re-run the seven lanes from scratch at the tree those retirements
 leave behind and record them one file per lane in one commit (I), before the closing report and
-terminal summary. As of this paragraph the CLI conversions and both dev-layout rows are landed
-and task 009 (this refresh) is in progress; the sweep has not been re-launched yet, so this
-entry does not claim any lane result the tree does not yet hold.
+terminal summary. Approach 3 validated all 14 tasks and shipped `1927c39` (the missing
+`tests/test_reflection.py` ledger row, report-only); its own independent review found two
+blocking findings only, rather than terminal ones — the conformance ledger still had no
+`tests/test_reflection.py` row at review time, and the seven-lane sweep was recorded at a tree
+(`9ed10e7`/`3b26ea4`) that `93b6849` (the still-current final code sha) had already moved past,
+so `tests/test_sweep_sha_guard.py` was red at the reviewed sha.
+
+Approach 4 is a flat 8-task cure plan (`a4-01`–`a4-08`) aimed at exactly those two findings: a4-01
+added the missing ledger row (`1927c39`, report-only; `93b6849` stays the final code sha); a4-03
+retires every stale sweep-sha declaration; a4-04–a4-07 re-run the seven lanes from scratch at
+the tree those retirements leave behind and record them one file per lane in one commit; a4-08
+re-verifies the guards at the true final sha before the closing report (a4-07) and terminal
+summary (a4-08) — the whole approach adds no code commit, per its own freeze order (code is
+anything outside `artifacts/reports/`, this block and `docs/prds/README.md`, and this task,
+a4-02, is the last one allowed to touch either of those last two). As of this paragraph a4-01
+is `validated` and a4-02 (this refresh) is `in-progress`; the sweep has not been (re-)launched
+yet, so this entry does not claim any lane result the tree does not yet hold.
 
 The run is `selfdev-v0191-a-gate-is-not-a-wall`. **This entry is written while that run is
 still going**; it records the plan this wave is working and is not a terminal account — the
