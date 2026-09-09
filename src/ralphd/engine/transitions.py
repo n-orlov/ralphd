@@ -801,6 +801,46 @@ def fallback_guard(state: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Declared conditions for guards whose NAME is narrower than what they fire
+# on (v0.20 requirement B.3, #156, task 019)
+# ---------------------------------------------------------------------------
+# A guard name is an identifier, not a specification, and one of them has
+# outgrown its name: `stagnation_last_approach` was task 012's LAST-approach
+# pause and task 018 widened the condition it fires on to EVERY approach
+# that progressed, without renaming the guard or adding a row (the edge, the
+# target and the resume path are all unchanged -- see the entry's own
+# comment above). A reader of the generated table would otherwise have to
+# infer that from the name, so the condition is declared HERE, as data, and
+# rendered into the generated table block by
+# `scripts/render_transition_table.py` -- the same discipline the table
+# itself follows: one source, no hand-kept copy in the docs.
+#
+# Only guards whose name genuinely under-states their condition belong here;
+# a guard whose name already says what it fires on needs no entry, and the
+# renderer emits nothing for it.
+GUARD_CONDITION_NOTES: dict[str, str] = {
+    "stagnation_last_approach": (
+        "fires on EVERY approach that progressed, not only the last one "
+        "(v0.20 requirement B.3, #156, task 018): the run's last approach "
+        "stalling three iterations running, OR any earlier approach that "
+        "gained a workspace commit or left a `superseded` task behind from "
+        "a forced split and then stalled, OR a `superseded` parent's own "
+        "split child spending its own `progressBudget` (escalated once per "
+        "child, naming it on the `operator_escalation` event's "
+        "`exhaustedSplitChild` field) instead of forcing a second split. A "
+        "genuinely silent approach with a successor left still takes "
+        "`stagnation_exhausted` to `replan` exactly as before, and either "
+        "pause resumes into `worker` over the SAME approach."),
+}
+
+
+def guard_condition_note(guard: str) -> str | None:
+    """The declared condition note for `guard`, or None when its name
+    already states what it fires on."""
+    return GUARD_CONDITION_NOTES.get(guard)
+
+
+# ---------------------------------------------------------------------------
 # The task-status mini-FSM the harness advances at transitions (task 019,
 # requirement F, #60 pillar 3)
 # ---------------------------------------------------------------------------
@@ -833,6 +873,22 @@ def fallback_guard(state: str) -> str | None:
 # table: it is never the TARGET of a transition a hat proposes, only a
 # read-time annotation the harness computes from a dependency's own status,
 # so there is nothing to validate here for it.
+#
+# `superseded` (v0.20 requirement B.1, #156, tasks 016/019) IS in this
+# table, and the distinction from `blocked` is exactly why: it is a real
+# TARGET of a real transition the harness takes -- `in-progress ->
+# superseded`, written by `engine.state.supersede_task()` the instant a
+# task's `progressBudget` is spent and the forced split's children are
+# inserted -- so the declared table would be lying by omission without it,
+# and every reader that checks a move against the table (`ralphctl doctor`'s
+# tasks.json diagnosis, the rendered table/diagram in
+# `docs/architecture.md`) would read the engine's own write as an unknown
+# status. It is terminal, with no successors in either variant, and it is
+# the one declared move NO hat may claim through the `task_status` contract
+# channel (`task_status_report_errors` refuses it below) and NO operator may
+# rule by hand (`OPERATOR_RULEABLE_TASK_STATUSES` excludes it): the engine
+# forces this move itself, at the one moment a progress budget is spent with
+# nothing to relieve it.
 
 TASK_STATUSES: tuple[str, ...] = (
     "pending",
@@ -844,13 +900,31 @@ TASK_STATUSES: tuple[str, ...] = (
     "failed",
     "skipped",
     "petitioned",
+    "superseded",
 )
+
+# The statuses `ralphctl amend --status` accepts as an operator ruling:
+# every declared status EXCEPT `superseded`, which the engine forces itself
+# at a spent progress budget and an operator therefore never rules by hand
+# (see the paragraph above and `docs/architecture.md`'s `superseded`
+# section). Derived from `TASK_STATUSES` rather than re-typed, so a status
+# added to the vocabulary is operator-ruleable by default and only an
+# explicit exclusion here narrows it.
+ENGINE_FORCED_TASK_STATUSES: tuple[str, ...] = ("superseded",)
+OPERATOR_RULEABLE_TASK_STATUSES: tuple[str, ...] = tuple(
+    s for s in TASK_STATUSES if s not in ENGINE_FORCED_TASK_STATUSES)
 
 TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
     "pending": ("in-progress",),
     # non-vigilant's claim path -- vigilant overrides this entry entirely
     # (see TASK_STATUS_VIGILANT_DELTA below).
-    "in-progress": ("completed", "failed", "skipped"),
+    # `superseded` (v0.20 requirement B.1, #156, tasks 016/019) is declared
+    # in the BASE table, like `failed -> skipped` below and for the same
+    # reason: the engine takes this edge identically in both variants (a
+    # spent `progressBudget` is not a verification concern), so the
+    # vigilant delta below re-states it rather than dropping it when it
+    # overwrites this whole tuple.
+    "in-progress": ("completed", "failed", "skipped", "superseded"),
     # a task a worker iteration can still act on (state.TASK_ACTIONABLE_
     # STATUSES) may be judged unmeetable and relabelled `skipped`, or may
     # simply be picked back up -- same rule as `pending`/`in-progress`
@@ -891,12 +965,24 @@ TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
     # from the base table with no successors, exactly like the other
     # terminal-shaped entries above.
     "petitioned": (),
+    # v0.20 requirement B.1 (#156, tasks 016/019): terminal, with no
+    # successors in either variant -- the work a `superseded` parent named
+    # moved to the split children `state.insert_worker_split_tasks` created
+    # in the same write, so nothing ever moves the parent again.
+    # `state.TASK_TERMINAL_STATUSES` and `TASK_DEPENDENCY_SATISFIED_
+    # STATUSES` say the same thing from the scheduler's side.
+    "superseded": (),
 }
 
 TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
     # replaces the non-vigilant claim path: a vigilant worker's completed
-    # claim is not trusted on its own word, it waits for verify.
-    "in-progress": ("awaiting-validation", "failed", "skipped"),
+    # claim is not trusted on its own word, it waits for verify. The
+    # engine-forced `superseded` edge is RE-STATED here, unchanged, because
+    # this entry overwrites the base table's whole tuple: a spent
+    # `progressBudget` is not a verification concern and forces the split
+    # identically in both variants (v0.20 requirement B.1, #156).
+    "in-progress": ("awaiting-validation", "failed", "skipped",
+                    "superseded"),
     # verify's own verdict: `validated` is the vigilant terminal, a
     # negative verdict loops to `validation-failed` for a retry, and an
     # exhausted validation budget (`state.VALIDATION_ATTEMPT_LIMIT`) may
@@ -970,6 +1056,17 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool)
     # `!=`) so it also fires correctly for the one caller
     # (`_apply_reported_task_status`) that calls this on every report
     # regardless of whether it turns out to be a no-op.
+    # v0.20 requirement B.1 (#156, tasks 016/019): `in-progress ->
+    # superseded` is a declared edge above because the ENGINE really takes
+    # it (`state.supersede_task`, the one writer, at a spent
+    # `progressBudget`) -- and it is the one declared move no HAT may claim
+    # through this channel. Refused here, in the semantic layer, so the
+    # declared table stays an honest inventory of what the engine does
+    # without widening the vocabulary a report may carry.
+    if target == "superseded" and current_status != target:
+        return ["task_status: 'superseded' is applied by the harness itself "
+                "at a forced split (a spent progressBudget); a hat never "
+                "reports it -- carry the split in `proposed_tasks` instead"]
     if current_status == "failed" and target == "skipped":
         justification = payload.get("justification")
         if not isinstance(justification, str) or not justification.strip():

@@ -10,10 +10,14 @@ calls the same function) is the ONLY place that turns `transitions.py`'s
 data into prose, so a changed table entry shows up as doc drift instead of
 silently going stale.
 
+Two blocks, both generated from the same module: the step-state table
+(`transitions.TABLE`) and the task-status mini-FSM table
+(`transitions.TASK_STATUS_TABLE`, v0.20 requirement B.1/F, #156, task 019).
+
 Usage:
-    python scripts/render_transition_table.py            # print the block
-    python scripts/render_transition_table.py --write     # rewrite the
-                                                           # block in place
+    python scripts/render_transition_table.py            # print both blocks
+    python scripts/render_transition_table.py --write     # rewrite both
+                                                           # blocks in place
                                                            # inside
                                                            # docs/architecture.md
 """
@@ -29,6 +33,20 @@ from ralphd.engine import transitions  # noqa: E402
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED TRANSITION TABLE (scripts/render_transition_table.py) -->"
 END_MARKER = "<!-- END GENERATED TRANSITION TABLE -->"
+
+# v0.20 requirement B.1/F (#156, task 019): the SECOND generated block this
+# script owns -- the task-status mini-FSM (`transitions.TASK_STATUS_TABLE` /
+# `TASK_STATUS_VIGILANT_DELTA`, composed by `task_status_table_for`), which
+# governs one task record's `status` field rather than the run's own FSM
+# position. Same discipline as the block above: generated, never
+# hand-edited, drift caught by `tests/test_transitions.py`. It exists
+# because `superseded` is a real transition TARGET the engine writes
+# (`state.supersede_task`) and a table nobody renders is a table nobody
+# reads.
+TASK_STATUS_BEGIN_MARKER = (
+    "<!-- BEGIN GENERATED TASK-STATUS TABLE "
+    "(scripts/render_transition_table.py) -->")
+TASK_STATUS_END_MARKER = "<!-- END GENERATED TASK-STATUS TABLE -->"
 
 ARCHITECTURE_DOC = REPO_ROOT / "docs" / "architecture.md"
 
@@ -101,17 +119,103 @@ def render() -> str:
     lines.append("|---|---|---|---|---|")
     for state, hat, variant, target, guard in _rows():
         lines.append(f"| `{state}` | {hat} | {variant} | `{target}` | `{guard}` |")
+    notes = [(guard, transitions.guard_condition_note(guard))
+             for guard in dict.fromkeys(
+                 guard for _s, _h, _v, _t, guard in _rows())]
+    notes = [(guard, note) for guard, note in notes if note]
+    if notes:
+        lines.append("")
+        lines.append(
+            "Guards whose declared condition is wider than their name "
+            "(`transitions.GUARD_CONDITION_NOTES`, rendered here so the "
+            "table states it instead of a reader inferring it):")
+        lines.append("")
+        for guard, note in notes:
+            lines.append(f"- `{guard}` — {note}")
     lines.append("")
     lines.append(END_MARKER)
     return "\n".join(lines) + "\n"
 
 
+def _task_status_rows() -> list[tuple[str, str, str]]:
+    """One row per (status, variant, target) of the task-status mini-FSM, in
+    `transitions.TASK_STATUSES` order.
+
+    `variant` is `"both"` when the edge is declared in both variants,
+    `"vigilant only"` when it exists only because
+    `TASK_STATUS_VIGILANT_DELTA` replaced that status's successor tuple, and
+    `"non-vigilant only"` when the delta's replacement DROPPED it (which is
+    exactly what happens to `in-progress -> completed`: `awaiting-
+    validation` replaces `completed` as a vigilant worker's claim state).
+    Computed from `transitions.task_status_table_for` -- the ONE producer of
+    a variant's task-status table -- for both variants, never from the raw
+    dicts.
+    """
+    non_vigilant = transitions.task_status_table_for(False)
+    vigilant = transitions.task_status_table_for(True)
+    rows: list[tuple[str, str, str]] = []
+    for status in transitions.TASK_STATUSES:
+        plain = non_vigilant.get(status, ())
+        vig = vigilant.get(status, ())
+        seen: set[str] = set()
+        for target in plain:
+            seen.add(target)
+            rows.append((status, "both" if target in vig
+                         else "non-vigilant only", target))
+        for target in vig:
+            if target in seen:
+                continue
+            seen.add(target)
+            rows.append((status, "vigilant only", target))
+        if not seen:
+            rows.append((status, "\u2014", "\u2014 (terminal)"))
+    return rows
+
+
+def render_task_status_table() -> str:
+    """Return the full markdown block for the task-status mini-FSM, markers
+    included."""
+    engine_forced = ", ".join(
+        f"`{s}`" for s in transitions.ENGINE_FORCED_TASK_STATUSES)
+    lines = [TASK_STATUS_BEGIN_MARKER, ""]
+    lines.append(
+        f"Generated from `src/ralphd/engine/transitions.py`'s task-status "
+        f"mini-FSM (`TASK_STATUS_TABLE` / `TASK_STATUS_VIGILANT_DELTA`, "
+        f"composed by `task_status_table_for`) by "
+        f"`scripts/render_transition_table.py` — do not hand-edit this "
+        f"block; regenerate it with `python "
+        f"scripts/render_transition_table.py --write` and let "
+        f"`tests/test_transitions.py` catch drift. This table governs one "
+        f"`tasks.json` record's `status` field, not the run's own FSM "
+        f"position. Every move here is applied by the harness at a step "
+        f"transition, never written by an agent itself; "
+        f"{engine_forced} is forced by the engine alone — no hat may report "
+        f"it (`task_status_report_errors`) and no operator may rule it "
+        f"(`ralphctl amend --status`, which validates against "
+        f"`OPERATOR_RULEABLE_TASK_STATUSES`)."
+    )
+    lines.append("")
+    lines.append("| Status | Variant | Target |")
+    lines.append("|---|---|---|")
+    for status, variant, target in _task_status_rows():
+        lines.append(f"| `{status}` | {variant} | `{target}` |")
+    lines.append("")
+    lines.append(TASK_STATUS_END_MARKER)
+    return "\n".join(lines) + "\n"
+
+
+def _replace_block(text: str, begin: str, end: str, block: str) -> str:
+    start = text.index(begin)
+    stop = text.index(end) + len(end)
+    return text[:start] + block.rstrip("\n") + text[stop:]
+
+
 def write_into_doc() -> None:
     text = ARCHITECTURE_DOC.read_text()
-    start = text.index(BEGIN_MARKER)
-    end = text.index(END_MARKER) + len(END_MARKER)
-    new_text = text[:start] + render().rstrip("\n") + text[end:]
-    ARCHITECTURE_DOC.write_text(new_text)
+    text = _replace_block(text, BEGIN_MARKER, END_MARKER, render())
+    text = _replace_block(text, TASK_STATUS_BEGIN_MARKER,
+                          TASK_STATUS_END_MARKER, render_task_status_table())
+    ARCHITECTURE_DOC.write_text(text)
 
 
 if __name__ == "__main__":
@@ -119,3 +223,5 @@ if __name__ == "__main__":
         write_into_doc()
     else:
         print(render(), end="")
+        print()
+        print(render_task_status_table(), end="")

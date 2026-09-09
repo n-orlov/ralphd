@@ -1629,7 +1629,7 @@ its own bookkeeping fields to it.
 | `tasks[]` | array | the plan, in intended execution order |
 | `tasks[].id` | string | zero-padded ordinal, e.g. `"001"` |
 | `tasks[].title` | string | imperative, one deliverable |
-| `tasks[].status` | string | `pending` \| `in-progress` \| `awaiting-validation` \| `validated` \| `completed` \| `validation-failed` \| `failed` \| `skipped` \| `superseded` — of those nine, `awaiting-validation`/`validated` (task 019, requirement F) are the vigilant mini-FSM's own claim/terminal pair, applied by the harness off a hat's declared transition, never written by an agent itself (see the note below the actionable-statuses paragraph); `superseded` (v0.20 requirement B.1, #156, task 016) is the one status `engine.transitions.TASK_STATUS_TABLE` never targets at all — `state.supersede_task()` writes it directly at a forced split, terminal for scheduling from the moment it lands (see the `superseded` paragraph below the doomed-plan one) |
+| `tasks[].status` | string | `pending` \| `in-progress` \| `awaiting-validation` \| `validated` \| `completed` \| `validation-failed` \| `failed` \| `skipped` \| `petitioned` \| `superseded` — every one of them declared in `engine.transitions.TASK_STATUSES` and in the task-status mini-FSM `TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA` (rendered as a generated table and mermaid diagram in `docs/architecture.md`); `awaiting-validation`/`validated` (task 019, requirement F) are the vigilant mini-FSM's own claim/terminal pair, applied by the harness off a hat's declared transition, never written by an agent itself (see the note below the actionable-statuses paragraph); `superseded` (v0.20 requirement B.1, #156, tasks 016/019) is the one status the ENGINE forces on its own — `in-progress -> superseded`, declared in both variants and written by `state.supersede_task()` at a forced split, terminal for scheduling from the moment it lands, and reportable by no hat and rulable by no operator (see the `superseded` paragraph below the doomed-plan one) |
 | `tasks[].successCriteria` | string | independently checkable, in natural language |
 | `tasks[].priority` | int | optional scheduler hint, missing means `0` |
 | `tasks[].dependsOn` | array | optional task ids that must be `completed` first |
@@ -1801,10 +1801,23 @@ transition to reach. And it joins `TASK_TERMINAL_STATUSES` alongside
 `petitioned` -- terminal here means "nothing further moves it on its own",
 not "the plan is done" -- so `state.task_is_terminal()` and every counts
 surface treat a `superseded` parent as settled without ever reading it as a
-failure. `ralphctl amend --status` still refuses `superseded` as a ruling
-target (`transitions.TASK_STATUSES` has no such entry): the engine forces this
-move itself, at the one moment a progress budget is spent with nothing to
-relieve it, and an operator never rules a task superseded by hand.
+failure. `superseded` is a declared TARGET in the task-status mini-FSM --
+`in-progress -> superseded`, present identically in both variants (a spent
+budget is not a verification concern), which is what makes the engine's own
+write legal against the same table every other status move is checked
+against and legible to every reader of it (`ralphctl doctor` diagnoses a
+`superseded` record as a known status; `docs/architecture.md`'s generated
+task-status table and mermaid diagram both show the edge). Declared is not
+claimable: `transitions.ENGINE_FORCED_TASK_STATUSES` names `superseded`, and
+two refusals derive from that one tuple -- `task_status_report_errors`
+refuses any REPORTED `task_status: "superseded"` (so neither a hat's contract
+channel nor `apply_task_status_change`'s operator/steer callers can take it),
+and `ralphctl amend --status` validates against
+`OPERATOR_RULEABLE_TASK_STATUSES` (`TASK_STATUSES` minus exactly that tuple)
+so a status ruling naming it is rejected on the host before a file is
+written. The engine forces this move itself, at the one moment a progress
+budget is spent with nothing to relieve it, and an operator never rules a
+task superseded by hand.
 
 **The every-approach pause widening reuses the SAME declared FSM edge
 (v0.20 requirement B.3, #156, task 018).** `docs/architecture.md`'s
@@ -1820,20 +1833,28 @@ split, naming that child on the `operator_escalation` event's
 second time for the same stall. `_step_paused` still routes
 `stagnation_last_approach` straight back to `worker` over the same approach
 in both cases -- the resume path is exactly what task 012 already declared,
-unchanged by which condition triggered the pause.
+unchanged by which condition triggered the pause. Because the guard's NAME
+now under-states what it fires on, the widened condition is itself declared
+as data (`transitions.GUARD_CONDITION_NOTES`, task 019) and rendered into
+`docs/architecture.md`'s generated step-state table block under "Guards whose
+declared condition is wider than their name" -- so the generated table states
+the every-approach condition instead of leaving a reader to infer it from a
+row whose guard is still spelled `stagnation_last_approach`.
 
-**The vocabulary stays eight terms (v0.14, requirement F, #99 suggestion 3, #51).**
+**No status for "landed short of the letter" (v0.14, requirement F, #99 suggestion 3, #51).**
 Issue #99's third suggestion was a status that satisfies dependents while recording a
 shortfall -- the case where the substantive work landed but one stated property
 did not, which `skipped` overstates as loss and `completed` overstates as full
 delivery. The decision is to leave `TASK_STATUSES`, `TASK_STATUS_TABLE`,
-`TASK_DEPENDENCY_SATISFIED_STATUSES` and `state.task_counts()`'s mapping exactly
-as they stand, and to name `ralphctl amend --status` (requirement E,
+`TASK_DEPENDENCY_SATISFIED_STATUSES` and `state.task_counts()`'s mapping
+unwidened for THAT case (the vocabulary was eight terms when this was decided;
+`petitioned` (#114) and `superseded` (#156) have since joined it for two
+different reasons, neither of them this one), and to name `ralphctl amend --status` (requirement E,
 `state.apply_amendment_status_rulings()`) as the sanctioned resolution instead: an
 operator who judges a task's shortfall honest, not disqualifying, rules it
 `completed` (or any other legal transition) through that channel, in the
 operator's own words in `validationNotes`, without the engine ever having to
-guess the distinction from an agent's report. Adding a ninth term would not stop
+guess the distinction from an agent's report. Adding a term for it would not stop
 at the enum -- `TASK_STATUS_TABLE`'s transitions, the counts mapping, `worker.md`'s
 and `verify`'s completion contracts, and every hub/CLI label that renders a
 status would all have to move with it, on the strength of one nine-issue wave's

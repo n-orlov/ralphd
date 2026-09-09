@@ -418,6 +418,161 @@ def test_render_is_idempotent():
     assert rtt.render() == rtt.render()
 
 
+# ---------------------------------------------------------------------------
+# The task-status mini-FSM's own generated table and diagram (v0.20
+# requirement B.1/F, #156, task 019) -- same discipline, second pair of
+# blocks: `superseded` is a real transition TARGET the engine writes, so the
+# declared table names it and the docs render it from that declaration
+# instead of describing it in hand-written prose.
+# ---------------------------------------------------------------------------
+
+def _embedded_task_status_table_block() -> str:
+    text = ARCHITECTURE_DOC.read_text()
+    start = text.index(rtt.TASK_STATUS_BEGIN_MARKER)
+    end = text.index(rtt.TASK_STATUS_END_MARKER) + len(rtt.TASK_STATUS_END_MARKER)
+    return text[start:end]
+
+
+def _embedded_task_status_diagram_block() -> str:
+    text = ARCHITECTURE_DOC.read_text()
+    start = text.index(rtd.TASK_STATUS_BEGIN_MARKER)
+    end = text.index(rtd.TASK_STATUS_END_MARKER) + len(rtd.TASK_STATUS_END_MARKER)
+    return text[start:end]
+
+
+def test_task_status_block_markers_present_exactly_once():
+    text = ARCHITECTURE_DOC.read_text()
+    for marker in (rtt.TASK_STATUS_BEGIN_MARKER, rtt.TASK_STATUS_END_MARKER,
+                   rtd.TASK_STATUS_BEGIN_MARKER, rtd.TASK_STATUS_END_MARKER):
+        assert text.count(marker) == 1, marker
+    assert (text.index(rtt.TASK_STATUS_BEGIN_MARKER)
+            < text.index(rtt.TASK_STATUS_END_MARKER)
+            < text.index(rtd.TASK_STATUS_BEGIN_MARKER)
+            < text.index(rtd.TASK_STATUS_END_MARKER))
+
+
+def test_task_status_table_block_matches_the_generator_right_now():
+    assert _embedded_task_status_table_block() == \
+        rtt.render_task_status_table().rstrip("\n"), (
+        "docs/architecture.md's task-status table block has drifted from "
+        "src/ralphd/engine/transitions.py -- regenerate it with "
+        "`python scripts/render_transition_table.py --write`")
+
+
+def test_task_status_diagram_block_matches_the_generator_right_now():
+    block = _embedded_task_status_diagram_block()
+    assert block == rtd.render_task_status_diagram().rstrip("\n"), (
+        "docs/architecture.md's task-status diagram block has drifted from "
+        "src/ralphd/engine/transitions.py -- regenerate it with "
+        "`python scripts/render_transition_diagram.py --write`")
+    assert block.count("```mermaid") == 1
+    assert "stateDiagram-v2" in block
+
+
+def test_both_task_status_renders_are_idempotent():
+    assert rtt.render_task_status_table() == rtt.render_task_status_table()
+    assert rtd.render_task_status_diagram() == rtd.render_task_status_diagram()
+
+
+def test_every_declared_task_status_appears_in_both_renders():
+    table = rtt.render_task_status_table()
+    diagram = rtd.render_task_status_diagram()
+    for status in transitions.TASK_STATUSES:
+        assert f"`{status}`" in table, status
+        assert f'"{status}"' in diagram, status
+
+
+def test_superseded_is_rendered_as_a_declared_edge_in_both_blocks():
+    """The deliverable the prose alone could not carry: the GENERATED table
+    and mermaid say `in-progress -> superseded`, from the declaration."""
+    table = _embedded_task_status_table_block()
+    diagram = _embedded_task_status_diagram_block()
+    assert "| `in-progress` | both | `superseded` |" in table
+    assert "| `superseded` | — | `— (terminal)` |" in table
+    assert "in_progress --> superseded" in diagram
+
+
+def test_the_one_non_vigilant_only_claim_edge_is_labelled_in_both_blocks():
+    """`in-progress -> completed` is the only edge the vigilant delta drops
+    (`awaiting-validation` replaces `completed` as a vigilant worker's claim
+    state), so the table calls it `non-vigilant only` and the diagram labels
+    the arrow `non_vigilant_only` instead of drawing it as if both variants
+    had it."""
+    assert "| `in-progress` | non-vigilant only | `completed` |" in \
+        _embedded_task_status_table_block()
+    assert "in_progress --> completed : non_vigilant_only" in \
+        _embedded_task_status_diagram_block()
+
+
+def test_every_declared_task_status_edge_appears_in_the_diagram():
+    diagram = rtd.render_task_status_diagram()
+    for vigilant in (False, True):
+        table = transitions.task_status_table_for(vigilant)
+        for status, targets in table.items():
+            for target in targets:
+                line = (f"{status.replace('-', '_')} --> "
+                        f"{target.replace('-', '_')}")
+                assert line in diagram, (line, vigilant)
+
+
+def test_task_status_renders_track_the_declaration_not_a_constant():
+    """Mutation case, mirroring the step-table one above: drop
+    `superseded` from the composed table and both renders must change."""
+    baseline_table = rtt.render_task_status_table()
+    baseline_diagram = rtd.render_task_status_diagram()
+    original = transitions.task_status_table_for
+
+    def _without_superseded(vigilant):  # noqa: ANN001
+        table = dict(original(vigilant))
+        table["in-progress"] = tuple(
+            t for t in table["in-progress"] if t != "superseded")
+        return table
+
+    transitions.task_status_table_for = _without_superseded
+    try:
+        mutated_table = rtt.render_task_status_table()
+        mutated_diagram = rtd.render_task_status_diagram()
+    finally:
+        transitions.task_status_table_for = original
+
+    assert "| `in-progress` | both | `superseded` |" not in mutated_table
+    assert "in_progress --> superseded" not in mutated_diagram
+    assert mutated_table != baseline_table
+    assert mutated_diagram != baseline_diagram
+
+
+def test_the_widened_stagnation_guard_condition_is_declared_and_rendered():
+    """The every-approach pause edge: the row's guard name is still
+    `stagnation_last_approach`, so the widened CONDITION is declared as data
+    (`GUARD_CONDITION_NOTES`) and rendered into the same generated block
+    rather than left to a reader's inference (v0.20 requirement B.3, #156,
+    tasks 018/019)."""
+    note = transitions.guard_condition_note("stagnation_last_approach")
+    assert note and "EVERY approach that progressed" in note
+    block = _embedded_block_table_docs()
+    assert "| `worker` | worker | both | `paused` | `stagnation_last_approach` |" in block
+    assert "Guards whose declared condition is wider than their name" in block
+    assert note in block
+    # A guard whose name already states its condition gets no note and no
+    # bullet -- the section is not a running commentary on every guard.
+    assert transitions.guard_condition_note("stagnation_exhausted") is None
+    assert "- `stagnation_exhausted`" not in block
+
+
+def test_a_declared_guard_note_actually_reaches_the_render():
+    """Mutation case for the note section: a note declared for another
+    guard shows up, so the containment check above is not vacuous."""
+    original = dict(transitions.GUARD_CONDITION_NOTES)
+    transitions.GUARD_CONDITION_NOTES["verified"] = "decoy note for a test"
+    try:
+        rendered = rtt.render()
+    finally:
+        transitions.GUARD_CONDITION_NOTES.clear()
+        transitions.GUARD_CONDITION_NOTES.update(original)
+    assert "- `verified` — decoy note for a test" in rendered
+    assert "decoy note for a test" not in rtt.render()
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-q"]))
 

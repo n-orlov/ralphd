@@ -22,6 +22,12 @@ Two acceptance tests own the harder half of the requirement:
    disk must not move until after the hat's own subprocess has already
    returned, matching the PRD's operator ruling ("task state changes only
    at step transitions ... in-step there is no task-state change at all").
+
+Section 1b (v0.20 requirement B.1, #156, task 019) covers `superseded`, the
+one status the ENGINE forces on itself: it is a declared TARGET here
+(`in-progress -> superseded`, both variants) because `state.supersede_task()`
+really takes that edge at a spent `progressBudget`, and it is refused on
+every OTHER channel -- no hat may report it, no operator may rule it.
 """
 
 from __future__ import annotations
@@ -122,6 +128,70 @@ def test_blocked_is_deliberately_not_a_status_in_this_table():
     assert "blocked" not in tr.TASK_STATUSES
     assert "blocked" not in tr.TASK_STATUS_TABLE
     assert "blocked" not in tr.TASK_STATUS_VIGILANT_DELTA
+
+
+# ---------------------------------------------------------------------------
+# 1b. `superseded` -- declared because the ENGINE takes the edge, claimable
+# by nobody else (v0.20 requirement B.1, #156, task 019)
+# ---------------------------------------------------------------------------
+
+def test_superseded_is_a_declared_status_with_an_in_progress_edge_both_variants():
+    assert "superseded" in tr.TASK_STATUSES
+    for vigilant in (False, True):
+        assert tr.is_legal_task_status_transition(
+            "in-progress", "superseded", vigilant), vigilant
+        assert "superseded" in tr.task_status_table_for(vigilant)["in-progress"]
+
+
+def test_superseded_is_terminal_in_both_variants():
+    assert tr.legal_next_task_statuses("superseded", True) == ()
+    assert tr.legal_next_task_statuses("superseded", False) == ()
+
+
+def test_only_in_progress_declares_an_edge_into_superseded():
+    """The forced split happens to the task a worker iteration is holding,
+    which the harness has already moved to `in-progress` -- no other status
+    reaches `superseded`."""
+    for vigilant in (False, True):
+        table = tr.task_status_table_for(vigilant)
+        sources = {s for s, targets in table.items() if "superseded" in targets}
+        assert sources == {"in-progress"}, (vigilant, sources)
+
+
+@pytest.mark.parametrize("vigilant", [False, True])
+def test_no_hat_may_report_superseded_through_the_contract_channel(vigilant):
+    """Declared is not claimable: `task_status_report_errors` refuses a
+    reported `superseded` even though the edge is in the table, because
+    `state.supersede_task()` (the engine, at a spent progressBudget) is its
+    one writer."""
+    errors = tr.task_status_report_errors(
+        {"task_status": "superseded"}, "in-progress", vigilant)
+    assert errors and "applied by the harness itself" in errors[0]
+    assert "proposed_tasks" in errors[0]
+    # an ordinary declared move from the same status is still accepted, so
+    # the refusal is about this status and not about the channel.
+    ok_target = "awaiting-validation" if vigilant else "completed"
+    assert tr.task_status_report_errors(
+        {"task_status": ok_target}, "in-progress", vigilant) == []
+
+
+def test_superseded_is_not_an_operator_ruleable_status():
+    assert tr.ENGINE_FORCED_TASK_STATUSES == ("superseded",)
+    assert "superseded" not in tr.OPERATOR_RULEABLE_TASK_STATUSES
+    # every OTHER declared status stays operator-ruleable -- the exclusion
+    # is exactly the engine-forced tuple, derived, not a second hand list.
+    assert set(tr.OPERATOR_RULEABLE_TASK_STATUSES) == (
+        set(tr.TASK_STATUSES) - set(tr.ENGINE_FORCED_TASK_STATUSES))
+
+
+def test_ralphctl_doctor_reads_a_superseded_task_as_a_known_status(tmp_path):
+    rdir = tmp_path / "run"
+    rdir.mkdir()
+    (rdir / "tasks.json").write_text(json.dumps({"version": 1, "tasks": [
+        {"id": "1", "title": "a", "status": "superseded"},
+    ]}))
+    issues = cli_main._diagnose_tasks_json(rdir)
+    assert not any("unrecognized status" in i for i in issues), issues
 
 
 # ---------------------------------------------------------------------------

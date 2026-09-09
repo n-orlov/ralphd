@@ -294,6 +294,28 @@ def test_amend_status_rejects_a_status_not_in_task_statuses(tmp_path):
         not any((cdir_ / "amendments").glob("*.md"))
 
 
+def test_amend_status_rejects_the_engine_forced_superseded(tmp_path):
+    """v0.20 requirement B.1 (#156, task 019): `superseded` IS a declared
+    task status now (the engine takes `in-progress -> superseded` itself at a
+    spent progress budget), and it is still not an operator ruling target --
+    `--status` validates against `OPERATOR_RULEABLE_TASK_STATUSES`, so the
+    refusal happens on the host and names why, before a file is written."""
+    registry = tmp_path / "registry"
+    cdir_ = _seed(registry, "s6")[1]
+    res = ralphctl(registry, "amend", "s6", "007", "--status", "superseded")
+    assert res.returncode == 2
+    assert "superseded" in res.stderr
+    assert "forced by the engine itself" in res.stderr
+    assert not (cdir_ / "amendments").exists() or \
+        not any((cdir_ / "amendments").glob("*.md"))
+    # a legal ruling target on the same surface still works, so the refusal
+    # is about this status and not about the flag.
+    ok = ralphctl(registry, "amend", "s6", "007", "--status", "skipped",
+                  "operator drops it")
+    assert ok.returncode == 0, ok.stderr
+    assert (cdir_ / "amendments" / "001-007.md").exists()
+
+
 def test_amend_status_mutex_with_waive(tmp_path):
     registry = tmp_path / "registry"
     _seed(registry, "s4")

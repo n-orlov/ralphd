@@ -46,7 +46,7 @@ from ..engine.config import (
 from ..engine import findings
 from ..engine import petitions
 from ..engine.tiers import TIERS
-from ..engine.transitions import TASK_STATUSES
+from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
     IMAGE_RECORD_KEYS,
@@ -4758,7 +4758,10 @@ def cmd_amend(args):
     successCriteria. Goes through the SAME `write_amendment` writer as
     every other ruling (`status=` kwarg instead of `waive=`) -- there is no
     second writer. `<status>` must be one of `engine.transitions.
-    TASK_STATUSES`; anything else is rejected here, on the host, before a
+    OPERATOR_RULEABLE_TASK_STATUSES` -- every declared task status EXCEPT
+    the engine-forced ones (`superseded`, which `state.supersede_task()`
+    writes itself at a spent progress budget; v0.20 requirement B.1, #156)
+    -- and anything else is rejected here, on the host, before a
     file is ever written, so a typo never reaches the run dir as an inert
     file the engine silently ignores. The trailing text/`--file`/stdin
     argument becomes the operator's OPTIONAL reason (never required, never
@@ -4780,9 +4783,16 @@ def cmd_amend(args):
         if args.waive:
             die(2, "--status and --waive are two different ruling kinds; "
                    "drop one")
-        if args.status not in TASK_STATUSES:
+        if args.status not in OPERATOR_RULEABLE_TASK_STATUSES:
+            engine_forced = [s for s in TASK_STATUSES
+                             if s not in OPERATOR_RULEABLE_TASK_STATUSES]
+            extra = ""
+            if args.status in engine_forced:
+                extra = (f"; {args.status!r} is forced by the engine itself "
+                         "at a spent progress budget and is never an "
+                         "operator ruling target")
             die(2, f"unknown status {args.status!r}; must be one of "
-                   f"{', '.join(TASK_STATUSES)}")
+                   f"{', '.join(OPERATOR_RULEABLE_TASK_STATUSES)}{extra}")
         reason = args.text or (Path(args.file).read_text() if args.file else "")
         fname = write_amendment(cdir, args.task_id, reason,
                                 status=args.status)
@@ -5078,11 +5088,16 @@ def _append_run_event(rdir: Path, type_: str, **data) -> dict:
 
 _TASK_STATUSES = ("pending", "in-progress", "awaiting-validation", "validated",
                   "completed", "validation-failed", "failed", "skipped",
-                  "petitioned")
+                  "petitioned", "superseded")
 # Task 019 (requirement F, #60 pillar 3): now SEVEN statuses plus `pending`
 # -- `awaiting-validation` (the vigilant worker's claim state) and
 # `validated` (the vigilant verifier-granted terminal) joined the five
 # task 025 counted, mirroring `engine.transitions.TASK_STATUSES` exactly.
+# v0.20 requirement B.1 (#156, task 019) added `superseded` to that mirror:
+# the engine writes it itself at a forced split, so a tasks.json carrying it
+# must diagnose CLEAN here rather than as an unrecognized status. `ralphctl
+# amend --status` deliberately does NOT accept it -- that surface validates
+# against `OPERATOR_RULEABLE_TASK_STATUSES` instead (see `cmd_amend`).
 # The two meanings of `failed` are told apart by the `failureKind` label
 # (engine/state.py's `TASK_FAILURE_KINDS`), never by a sixth status, which
 # is what keeps every surface that counts statuses adding up.
@@ -6984,7 +6999,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "replacement of its criteria text")
     s.add_argument("--status", metavar="STATUS",
                    help="record a status ruling instead (must be one of "
-                        "engine.transitions.TASK_STATUSES); the trailing "
+                        "engine.transitions.OPERATOR_RULEABLE_TASK_STATUSES "
+                        "-- every declared status except the engine-forced "
+                        "`superseded`); the trailing "
                         "text/--file/stdin argument becomes an optional "
                         "reason, never required")
     s.add_argument("--list", action="store_true",

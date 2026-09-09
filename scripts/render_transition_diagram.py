@@ -31,6 +31,16 @@ from ralphd.engine import transitions  # noqa: E402
 BEGIN_MARKER = "<!-- BEGIN GENERATED TRANSITION DIAGRAM (scripts/render_transition_diagram.py) -->"
 END_MARKER = "<!-- END GENERATED TRANSITION DIAGRAM -->"
 
+# v0.20 requirement B.1/F (#156, task 019): the SECOND generated block this
+# script owns -- the mermaid rendering of the task-status mini-FSM, whose
+# markdown table `scripts/render_transition_table.py` renders. Both are
+# derived from `transitions.task_status_table_for(...)`, so the diagram
+# matches the table by construction rather than by anyone's care.
+TASK_STATUS_BEGIN_MARKER = (
+    "<!-- BEGIN GENERATED TASK-STATUS DIAGRAM "
+    "(scripts/render_transition_diagram.py) -->")
+TASK_STATUS_END_MARKER = "<!-- END GENERATED TASK-STATUS DIAGRAM -->"
+
 ARCHITECTURE_DOC = REPO_ROOT / "docs" / "architecture.md"
 
 
@@ -89,12 +99,76 @@ def render() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _task_status_edges(vigilant: bool) -> list[tuple[str, str]]:
+    """One `(status, target)` tuple per declared edge of the task-status
+    mini-FSM for the given variant, in `transitions.TASK_STATUSES` order."""
+    table = transitions.task_status_table_for(vigilant)
+    edges: list[tuple[str, str]] = []
+    for status in transitions.TASK_STATUSES:
+        for target in table.get(status, ()):
+            edges.append((status, target))
+    return edges
+
+
+def render_task_status_diagram() -> str:
+    """Return the full markdown block for the task-status mini-FSM's
+    mermaid diagram, markers and fence included.
+
+    Renders the VIGILANT variant (`task_status_table_for(True)`) because it
+    is the superset the shipped default runs -- every non-vigilant edge
+    except the `in-progress -> completed` claim is in it, and that one edge
+    is labelled explicitly below so the picture stays complete. Mermaid ids
+    replace `-` with `_` (`in-progress` is not a legal bare id); the label
+    on each state keeps the real status spelling.
+    """
+    def ident(status: str) -> str:
+        return status.replace("-", "_")
+
+    lines = [TASK_STATUS_BEGIN_MARKER, ""]
+    lines.append(
+        "Generated from `src/ralphd/engine/transitions.py`'s task-status "
+        "mini-FSM (`transitions.task_status_table_for(vigilant=True)`, the "
+        "superset variant) by `scripts/render_transition_diagram.py` \u2014 do "
+        "not hand-edit this block; regenerate it with `python "
+        "scripts/render_transition_diagram.py --write` and let "
+        "`tests/test_transitions.py` catch drift. The one non-vigilant edge "
+        "the vigilant variant replaces (`in-progress -> completed`) is drawn "
+        "as `non_vigilant_only`; every other edge is declared in both "
+        "variants."
+    )
+    lines.append("")
+    lines.append("```mermaid")
+    lines.append("stateDiagram-v2")
+    for status in transitions.TASK_STATUSES:
+        lines.append(f"    state \"{status}\" as {ident(status)}")
+    lines.append(f"    [*] --> {ident('pending')}")
+    vigilant_edges = _task_status_edges(vigilant=True)
+    for status, target in vigilant_edges:
+        lines.append(f"    {ident(status)} --> {ident(target)}")
+    for status, target in _task_status_edges(vigilant=False):
+        if (status, target) in vigilant_edges:
+            continue
+        lines.append(f"    {ident(status)} --> {ident(target)} : "
+                     f"non_vigilant_only")
+    lines.append("```")
+    lines.append("")
+    lines.append(TASK_STATUS_END_MARKER)
+    return "\n".join(lines) + "\n"
+
+
+def _replace_block(text: str, begin: str, end: str, block: str) -> str:
+    start = text.index(begin)
+    stop = text.index(end) + len(end)
+    return text[:start] + block.rstrip("\n") + text[stop:]
+
+
 def write_into_doc() -> None:
     text = ARCHITECTURE_DOC.read_text()
-    start = text.index(BEGIN_MARKER)
-    end = text.index(END_MARKER) + len(END_MARKER)
-    new_text = text[:start] + render().rstrip("\n") + text[end:]
-    ARCHITECTURE_DOC.write_text(new_text)
+    text = _replace_block(text, BEGIN_MARKER, END_MARKER, render())
+    text = _replace_block(text, TASK_STATUS_BEGIN_MARKER,
+                          TASK_STATUS_END_MARKER,
+                          render_task_status_diagram())
+    ARCHITECTURE_DOC.write_text(text)
 
 
 if __name__ == "__main__":
@@ -102,3 +176,5 @@ if __name__ == "__main__":
         write_into_doc()
     else:
         print(render(), end="")
+        print()
+        print(render_task_status_diagram(), end="")

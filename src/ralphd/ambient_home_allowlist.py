@@ -71,6 +71,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # entries below, shifting each of them by +61: 4250->4311,
         # 4452->4513, 4456->4517, 6193->6254, 6197->6258. Same reads, same
         # reasons.
+        #
+        # Task 019 (#156, requirement B.1/F, the `superseded` status) widened
+        # `cmd_amend`'s `--status` validation (`OPERATOR_RULEABLE_TASK_
+        # STATUSES`) and `_TASK_STATUSES`, both between the 4517 entry and
+        # the two `doctor` entries below, shifting only those two by +15:
+        # 6254->6269, 6258->6273. Same reads, same reasons; the three entries
+        # above them are untouched.
         "line": "1903",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
@@ -111,7 +118,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6254",
+        "line": "6269",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -119,7 +126,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6258",
+        "line": "6273",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

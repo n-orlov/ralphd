@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5428 tests across 331 modules** at task 018's re-take commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3864
+collects **5447 tests across 331 modules** at task 019's re-take commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3882
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -273,7 +273,25 @@ same module (no new module): the second budget exhaustion pausing instead of
 splitting again (a `superseded` parent's own split child with its
 `progressBudget` spent), that pause's resume proceeding to the ordinary forced
 split rather than re-pausing, and the negative case where a child of a still-
-live parent must still force its FIRST split -- all also `smoke`.
+live parent must still force its FIRST split -- all also `smoke`), and 5447
+(smoke 3882, modules unchanged at 331) by task 019's re-take, 19 new nodes
+across three EXISTING modules (no new module): 11 in
+`tests/test_transitions.py` covering the two NEW generated blocks in
+`docs/architecture.md` (the task-status table and its mermaid diagram --
+markers, byte-for-byte match with their generators, idempotence, every
+declared status and every declared edge present, the `superseded` edge and the
+one `non_vigilant_only`-labelled edge in both blocks, a mutation case proving
+both renders track the declaration, and the `GUARD_CONDITION_NOTES` rendering
+of the widened `stagnation_last_approach` condition plus its own mutation
+case), 7 in `tests/test_task_status_lifecycle.py` covering `superseded` as a
+declared status (its `in-progress` edge in both variants, its terminality,
+`in-progress` being its only source, the refusal of a hat-reported
+`superseded` in both variants, the `ENGINE_FORCED`/`OPERATOR_RULEABLE`
+derivation, and `ralphctl doctor` reading a `superseded` record as a known
+status) -- these 18 all also `smoke` -- and 1 fast-only node in
+`tests/test_operator_ruling.py` driving the real `ralphctl amend --status
+superseded` refusal through a subprocess (fast, not `smoke`, like every other
+node in that module's CLI-subprocess family).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

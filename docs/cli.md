@@ -1563,7 +1563,7 @@ re-failing the same finding.
 | Option | Meaning |
 |--------|---------|
 | `--waive` | a full waiver: that task's criteria are satisfied by operator decision, not a text replacement |
-| `--status <status>` | record a status ruling instead (task 006/029, #26 requirement E) — see below |
+| `--status <status>` | record a status ruling instead (task 006/029, #26 requirement E; every declared status except the engine-forced `superseded`) — see below |
 | `--file <f>` | read the ruling text from a file instead of the trailing argument |
 | `--list` | **show** this run's recorded rulings instead of recording one |
 
@@ -1582,9 +1582,13 @@ only binds review's judgement of successCriteria. Goes through the exact same
 gets `mode: status` and a `status: <status>` header line instead of
 `mode: waive`/`mode: replace`.
 
-`<status>` must be one of `engine.transitions.TASK_STATUSES`
+`<status>` must be one of `engine.transitions.OPERATOR_RULEABLE_TASK_STATUSES`
 (`pending`, `in-progress`, `awaiting-validation`, `validated`,
-`validation-failed`, `completed`, `failed`, `skipped`); anything else is
+`validation-failed`, `completed`, `failed`, `skipped`, `petitioned`) —
+every declared task status EXCEPT the engine-forced ones
+(`transitions.ENGINE_FORCED_TASK_STATUSES`, today just `superseded`, which
+`state.supersede_task()` writes itself at a spent progress budget; v0.20
+requirement B.1, #156). Anything else is
 rejected right here, on the host, with the full list of legal statuses in the
 error, exit `2` — no file is ever written for a bad status, so a typo can
 never land as an inert file the engine silently ignores. The trailing
