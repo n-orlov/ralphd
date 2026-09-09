@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import RALPHD_ENGINE
+from tests.conftest import RALPHD_ENGINE, wait_hold_entered
 
 
 # --------------------------------------------------------------------------
@@ -234,6 +234,14 @@ def test_abort_via_api(engine_factory, tmp_path):
                                  "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     e.wait_state(("running",))
+    # Task 019 follow-on: wait for the worker child to be provably INSIDE the
+    # hold before aborting. `running` is already true during planning, so the
+    # abort could otherwise land in the gap before the worker child is
+    # spawned -- the child-killer then has nothing to interrupt and the run
+    # stays `running` until the hold's own bound expires, which is exactly how
+    # the hosted gate failed at `e7115f2` (check run 102652158913: "never
+    # reached ('aborted',)", state `running`, phase `worker`).
+    assert wait_hold_entered(hold_file) == "worker"
     code, _ = e.api("POST", "/abort", {"reason": "test abort"})
     assert code == 200
     status = e.wait_state(("aborted",), timeout=30)
@@ -265,6 +273,9 @@ def test_terminal_status_surfaces_unconsumed_steering(engine_factory, tmp_path):
                                  "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     e.wait_api()
     e.wait_state(("running",))
+    # Task 019 follow-on: same latent race as test_abort_via_api above --
+    # observe the worker child inside its hold before posting anything.
+    assert wait_hold_entered(hold_file) == "worker"
     code, res = e.api("POST", "/steering",
                       {"message": "never gets acted on", "name": "stranded"})
     assert code == 202 and res["file"] == "001-stranded.md"

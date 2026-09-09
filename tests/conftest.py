@@ -748,6 +748,41 @@ def _with_zero_backoff(job: dict, stub_env: dict | None) -> dict:
     return out
 
 
+def wait_hold_entered(hold_file, timeout: float = 30.0) -> str:
+    """Block until the stub `pi` invocation held by `hold_file` has ENTERED
+    its hold, and return the phase name it recorded.
+
+    Task 019 follow-on (the hosted gate's own two flakes at `7e685e2` and
+    `e7115f2`). A test that needs the run to be *provably inside* a held
+    child iteration -- to abort it, or to measure real elapsed time from a
+    point the run has already reached -- cannot get that from
+    `wait_state(("running",))`: `running` is true from the first iteration
+    onward, and status.json's `currentIteration` is written by the ENGINE
+    around the spawn rather than by the child. Both gate failures were that
+    inference losing the race on a 2-core hosted runner: `test_abort_via_api`
+    posted /abort while the worker child did not exist yet (so the abort's
+    child-killer had nothing to interrupt and the run stayed `running` past
+    the test's own deadline), and `test_durations`' 3.5s sleep began before
+    the run's own `startedAt`, yielding `durationSeconds == 2` against an
+    `>= 3` assertion.
+
+    The stub writes `<hold_file>.stub-hold-entered` as its first act inside
+    `_apply_hold`, so this marker's existence means the child process is
+    running and parked. This is the CAUSE-and-OBSERVE fix the standing rules
+    require -- never a longer sleep, a bigger timeout or a retry around the
+    assertion.
+    """
+    marker = Path(f"{hold_file}.stub-hold-entered")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if marker.exists():
+            return marker.read_text()
+        time.sleep(0.02)
+    raise TimeoutError(
+        f"stub hold {hold_file} was never entered within {timeout}s "
+        f"(marker {marker} absent) -- the held phase never ran")
+
+
 class LiveRun:
     """A real ralphd-engine with its run/config dirs and API helpers.
 

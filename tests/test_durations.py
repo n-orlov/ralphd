@@ -9,6 +9,31 @@ import calendar
 import json
 import time
 
+from tests.conftest import wait_hold_entered
+
+
+def _started_epoch(run, timeout: float = 30.0) -> int:
+    """The run's own `startedAt`, as epoch seconds, once it exists.
+
+    Task 019 follow-on: a duration the ENGINE measures is anchored to the
+    engine's `startedAt`, not to the moment the `live` fixture's constructor
+    returned -- engine boot sits between the two, and on a slow host it is
+    seconds wide. The test therefore has to read that anchor rather than
+    assume it.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        sf = run.run_dir / "status.json"
+        if sf.exists():
+            try:
+                started = json.loads(sf.read_text()).get("startedAt")
+            except json.JSONDecodeError:
+                started = None
+            if started:
+                return calendar.timegm(time.strptime(started, "%Y-%m-%dT%H:%M:%SZ"))
+        time.sleep(0.05)
+    raise TimeoutError("the run never recorded a startedAt")
+
 
 def test_status_shows_total_duration_and_json_fields_when_terminal(live, tmp_path):
     # task 010 (B.4): the whole point of this test is that `durationSeconds`
@@ -20,7 +45,20 @@ def test_status_shows_total_duration_and_json_fields_when_terminal(live, tmp_pat
     run = live(run_id="dur-terminal", job={"iterations": 6},
                stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
                         "STUB_HOLD_PHASE": "planning", "STUB_HOLD_TIMEOUT_S": "30"})
-    time.sleep(3.5)
+    # Task 019 follow-on -- CAUSE and OBSERVE the elapsed window instead of
+    # assuming a sleep taken from the test's own timeline lands inside the
+    # run's. A bare `time.sleep(3.5)` here began before the engine had even
+    # recorded `startedAt`, so on the hosted gate at `7e685e2` the run's
+    # measured span was only part of it: `durationSeconds` came back 2
+    # against this test's own `>= 3` (check run 102649436814). Wait for the
+    # planning child to be parked in its hold, read the engine's OWN
+    # `startedAt`, and release the hold only once the run itself has
+    # provably been alive long enough -- no bigger timeout, no looser
+    # assertion, and the >=3 threshold below is untouched.
+    wait_hold_entered(hold_file)
+    release_at = _started_epoch(run) + 5.0
+    while time.time() < release_at:
+        time.sleep(0.05)
     hold_file.touch()
     run.wait_terminal()
 
@@ -35,7 +73,8 @@ def test_status_shows_total_duration_and_json_fields_when_terminal(live, tmp_pat
     assert jres.returncode == 0, (jres.stdout, jres.stderr)
     status = json.loads(jres.stdout)
     assert isinstance(status["durationSeconds"], (int, float))
-    # the real 3.5s sleep held above guarantees a genuinely-measurable
+    # the real >=5s window held open above (measured from the engine's own
+    # `startedAt`, task 019 follow-on) guarantees a genuinely-measurable
     # (>=3s) duration -- tight enough that a broken/zeroed-out duration
     # computation cannot hide behind slack the way a near-instant job's
     # duration would.

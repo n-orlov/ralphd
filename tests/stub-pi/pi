@@ -48,6 +48,21 @@ from env vars set by the test:
                       timed out either way, so a test can assert its own
                       recorded duration stayed within the bound plus a
                       stated margin.
+                      Task 019 follow-on (steer 003/004's "CAUSE and
+                      OBSERVE" rule): the moment an invocation ENTERS the
+                      hold -- before its first poll -- it writes
+                      `STUB_HOLD_FILE + ".stub-hold-entered"` containing
+                      the phase name (or `"*"` when STUB_HOLD_PHASE is
+                      unset). A test that must act only once the held
+                      child is genuinely in flight (POST /abort against a
+                      mid-worker iteration; measuring real elapsed time
+                      from a point the run has provably reached) waits for
+                      that marker instead of waiting on `state: running`
+                      and hoping the child has been spawned by then --
+                      status.json's `currentIteration` is written around
+                      the spawn, so it is not proof the child process is
+                      running. `tests/conftest.py::wait_hold_entered` is
+                      the shared reader.
   STUB_HOLD_TIMEOUT_S the fallback bound (seconds) for STUB_HOLD_FILE above
                       (default 5.0). Ignored when STUB_HOLD_FILE is unset.
                       Exceeding it is a failure (exit code 3), never a
@@ -940,6 +955,17 @@ def _apply_hold(phase=None):
     poll_s = float(os.environ.get("STUB_HOLD_POLL_S", "0.02"))
     start = time.monotonic()
     timed_out = False
+    # Task 019 follow-on: publish "this invocation is now inside the hold"
+    # BEFORE the first poll, so a test can wait for the held child to be
+    # genuinely in flight rather than inferring it from status.json's
+    # `currentIteration` (written around the spawn, not by the child) or
+    # from `state: running` (true from the first iteration onwards). Two
+    # hosted-runner failures came from exactly that inference: the gate's
+    # `test_abort_via_api` posted /abort before the worker child existed,
+    # so nothing was there to interrupt, and `test_durations`' 3.5s sleep
+    # started before the run's own `startedAt`.
+    with open(f"{hold_file}.stub-hold-entered", "w") as _f:
+        _f.write(phase or "*")
     while not os.path.exists(hold_file):
         if time.monotonic() - start >= timeout_s:
             timed_out = True
