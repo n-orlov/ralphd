@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5402 tests across 330 modules** at task 072's own commit, over the
-PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3838
+collects **5414 tests across 331 modules** at task 016's own commit, over the
+PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3850
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -236,7 +236,16 @@ modules 329->330) by task 072's new `tests/test_cli_argparse_walker_182.py`
 discovered affected-subcommand set, the fixture proving the walk is
 non-vacuous, the fixture's harmless-sibling check, and four direct-unit
 nodes exercising `_place_leftover_positional` for the two newly-discovered
-subcommands (`budget`, `suggestions`) -- all also `smoke`).
+subcommands (`budget`, `suggestions`) -- all also `smoke`), and 5414 (smoke
+3850, modules 330->331) by task 016's new `tests/test_forced_split_budget_
+task016.py` (12 new in-process nodes covering the forced-split-on-budget-
+exhaustion mechanism (PRD requirement B.1, #156): the budget-exhausted
+prompt notice appearing/absent, the no-`proposed_tasks` report refused and
+re-asked on the contract ladder then accepted once it arrives, the parent
+task moving to `superseded` and its split child becoming schedulable next,
+the superseded parent no longer blocking a dependent, `state.supersede_
+task`'s own writer, and `LoopSupervisor._fold_inherited_dependsOn`'s
+dependsOn-inheritance fold in isolation -- all also `smoke`).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

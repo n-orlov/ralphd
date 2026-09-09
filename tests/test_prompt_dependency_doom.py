@@ -61,10 +61,18 @@ def test_dependency_satisfied_statuses_constant_matches_the_prose_claim():
     m = re.search(r'TASK_DEPENDENCY_SATISFIED_STATUSES\s*=\s*\(([^)]*)\)', text)
     assert m, "state.py no longer defines TASK_DEPENDENCY_SATISFIED_STATUSES"
     values = {v.strip().strip('"\'') for v in m.group(1).split(',') if v.strip()}
-    assert values == {"completed", "validated"}, (
+    # Task 016 (PRD requirement B.1, #156) added `superseded` -- the status
+    # a forced split leaves on the task it just split -- to this tuple, so
+    # a dependent of a superseded task is not blocked forever waiting for a
+    # status the parent will never reach again. That addition is orthogonal
+    # to worker.md's own `## Completion signal` prose this module pins,
+    # which is entirely about `failed`/`skipped` staying OUTSIDE the pair --
+    # both stay excluded here too, so this check keeps a real bite.
+    assert values == {"completed", "validated", "superseded"}, (
         f"TASK_DEPENDENCY_SATISFIED_STATUSES changed to {values}; "
         "the worker.md prose asserted by this module must be updated too"
     )
+    assert "failed" not in values and "skipped" not in values
 
 
 def test_completion_signal_names_the_dependency_satisfied_statuses():

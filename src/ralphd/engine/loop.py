@@ -4551,7 +4551,8 @@ class LoopSupervisor:
                 "(task 011/012, #156)"))
         return []
 
-    def _worker_assignment_extra(self, task: dict | None) -> str:
+    def _worker_assignment_extra(self, task: dict | None, *,
+                                 spent_budget: dict | None = None) -> str:
         """Task 116 (#60 pillar 3, fact 9): the one thing a worker
         iteration needs told to it now that the HARNESS -- not the agent --
         runs `engine.scheduler.select_next_task` and owns every task-status
@@ -4567,6 +4568,17 @@ class LoopSupervisor:
         "## Why the previous attempt was rejected" block with the attempt
         count and `validationNotes` verbatim -- absent entirely at
         `validationAttempts == 0` (see below).
+
+        Task 016 (PRD requirement B.1, #156): `spent_budget`, when given
+        (the caller's own pre-dispatch read of `status.json`'s
+        `progressBudget`, only ever passed when its `taskId` matches
+        `task`'s own id AND `used >= budget`), appends the budget-exhausted
+        notice the PRD's own text requires: this iteration's report --
+        whatever verdict it carries -- MUST also carry a non-empty
+        `proposed_tasks` split of THIS task, or `_apply_forced_split_
+        report` refuses it and the contract ladder re-asks. Absent
+        entirely while the task is still under budget, same "presence is
+        the signal" discipline the retry block above already uses.
         """
         if not isinstance(task, dict):
             return (
@@ -4600,6 +4612,18 @@ class LoopSupervisor:
                 "\n## Why the previous attempt was rejected\n\n"
                 f"- **validationAttempts**: {attempts}\n"
                 f"- **validationNotes**: {notes}\n")
+        if isinstance(spent_budget, dict):
+            block += (
+                "\n## Progress budget exhausted (PRD requirement B.1, #156)\n\n"
+                f"This task's progress budget is spent: "
+                f"{spent_budget.get('used')}/{spent_budget.get('budget')} "
+                "corroborated no_verdict claims already used. Your report "
+                "THIS iteration -- whatever verdict it carries -- MUST also "
+                "carry a non-empty `proposed_tasks` array splitting this "
+                "task; a report without one is a contract violation and you "
+                "will be asked again until it carries one. On acceptance "
+                f"task {task.get('id', '')} becomes `superseded` and the "
+                "split children are picked up next.\n")
         return block
 
     def _apply_worker_completion_report(self, payload: dict,
@@ -4738,6 +4762,119 @@ class LoopSupervisor:
             message=(f"worker proposed a split of task {assigned_task_id}: "
                       f"{len(inserted)} new task(s) created "
                       f"({', '.join(str(i) for i in inserted)})"))
+
+    @staticmethod
+    def _fold_inherited_dependsOn(proposed: list, inherited: list | None) -> list:
+        """Task 016 (PRD requirement B.1, #156): "its dependsOn inherited
+        by the children" -- a plain dict-comprehension fold, split out of
+        `_apply_forced_split_report` as its own `@staticmethod` so it is
+        pinned directly rather than only through the fuller pipeline (a
+        genuinely EXTERNAL inherited id -- one of the parent's own
+        neighbours in `tasks.json`, rather than a sibling in the same
+        batch -- does not resolve against `plan_ingestion.lint_worker_
+        split`'s current batch-only `dependsOn` check; PRD B.2/task 017 is
+        the task that widens the lint to accept that shape too, not this
+        one). A proposed child dict that already declares its own
+        `dependsOn` (however it resolves) is returned untouched -- only a
+        child that named NONE of its own gets the parent's, so a batch
+        that deliberately chains its own children together is never
+        overridden. Never mutates `proposed`'s own dicts -- each folded
+        entry is a fresh shallow copy.
+        """
+        if not inherited:
+            return list(proposed)
+        return [
+            ({**t, "dependsOn": list(inherited)}
+             if isinstance(t, dict) and "dependsOn" not in t else t)
+            for t in proposed]
+
+    def _apply_forced_split_report(self, payload: dict,
+                                   assigned_task_id: str | None,
+                                   approach: int) -> list[str]:
+        """Task 016 (PRD requirement B.1, #156): the MANDATORY sibling of
+        `_apply_worker_proposed_tasks` just above -- called only from
+        `_step_worker`'s own forced-split gate, itself gated on this
+        iteration's PRE-dispatch read of `progressBudget` showing
+        `assigned_task_id`'s budget already spent (`_worker_assignment_
+        extra`'s `spent_budget` carried the same fact into the prompt).
+        Unlike the voluntary channel -- an optional side channel that is
+        silently refused-and-logged on a bad proposal, never fed back to
+        the worker -- THIS check is routed through `contract_enforcement.
+        enforce_contract`'s re-ask ladder as an `extra_validate` hook: a
+        report with no valid `proposed_tasks` is a contract violation, and
+        the SAME worker is asked again, up to `contract_retry_max` times,
+        until one arrives or the ladder gives up (PRD: "a report without
+        one is a contract violation on the ladder").
+
+        Reuses `plan_ingestion.lint_worker_split`, the SAME lint the
+        voluntary channel already reuses (fact 16/#65 -- no second lint),
+        and the same per-approach split budget (`JobConfig.worker_split_
+        budget_per_approach`) -- returned here as an ordinary validation
+        error instead of a silent log, because this caller's obligation is
+        not optional.
+
+        On acceptance: `state.insert_worker_split_tasks` inserts the batch
+        (worker-origin, `splitFrom` stamped -- identical to the voluntary
+        path) FIRST, folding the parent's own `dependsOn` onto any child
+        that declared none of its own ("its dependsOn inherited by the
+        children", PRD B.1) -- then, only once the children actually
+        exist, `state.supersede_task` moves the PARENT to `superseded`
+        (never the other order: a crash between the two writes must never
+        leave a superseded parent with no children to pick up its work).
+        Returns `[]` the instant that succeeds -- `_step_worker`'s caller
+        must not re-apply the SAME batch a second time through the
+        voluntary channel further down its own dispatch (it clears its
+        local `proposed_split_tasks` the moment this returns clean).
+        """
+        proposed = (payload.get("proposed_tasks")
+                   if isinstance(payload, dict) else None)
+        if not isinstance(proposed, list) or not proposed:
+            return [
+                f"task {assigned_task_id!r}'s progress budget is spent -- "
+                "this report must carry a non-empty `proposed_tasks` split "
+                "of it (PRD requirement B.1, #156); a report without one "
+                "is a contract violation"]
+        tasks_doc = self.run.read_tasks()
+        existing_ids = {t.get("id") for t in tasks_doc.get("tasks", [])
+                        if isinstance(t, dict)}
+        errors = plan_ingestion.lint_worker_split(
+            proposed, assigned_task_id=assigned_task_id,
+            existing_ids=existing_ids)
+        if errors:
+            return errors
+        usage = dict(self.run.read_status().get("workerSplitProposals") or {})
+        used = int(usage.get(str(approach), 0))
+        budget = self.cfg.worker_split_budget_per_approach
+        if used + len(proposed) > budget:
+            return [
+                f"forced split refused: approach {approach} has already "
+                f"used {used}/{budget} of its worker split budget and this "
+                f"proposal would add {len(proposed)} more"]
+        parent = next(
+            (t for t in tasks_doc.get("tasks", [])
+             if isinstance(t, dict) and t.get("id") == assigned_task_id), None)
+        parent_depends_on = (parent or {}).get("dependsOn")
+        inherited = (list(parent_depends_on)
+                    if isinstance(parent_depends_on, list) else None)
+        to_insert = self._fold_inherited_dependsOn(proposed, inherited)
+        inserted = state.insert_worker_split_tasks(
+            self.run, to_insert, assigned_task_id)
+        if not inserted:
+            return ["forced split refused: every proposed id already "
+                    "exists in the plan -- nothing was inserted"]
+        usage[str(approach)] = used + len(inserted)
+        self.run.update_status(workerSplitProposals=usage)
+        old_status = (parent or {}).get("status")
+        state.supersede_task(self.run, assigned_task_id)
+        self._emit_task_status(assigned_task_id, old_status, "superseded",
+                               splitChildren=inserted)
+        self.run.emit(
+            "log", level="warning",
+            message=(
+                f"task {assigned_task_id!r}'s progress budget was spent; "
+                f"forced a split into {inserted} and superseded the "
+                "parent (task 016, PRD requirement B.1, #156)"))
+        return []
 
     def _workspace_head_sha(self) -> str | None:
         """The workspace's current commit sha, or `None` when `git` is
@@ -6086,7 +6223,30 @@ class LoopSupervisor:
                 t.get("id") for t in tasks_before.get("tasks", [])
                 if isinstance(t, dict)
             }
-            extra = self._worker_assignment_extra(selected)
+            # Task 016 (PRD requirement B.1, #156): read `progressBudget`
+            # exactly as it stands BEFORE this iteration is dispatched --
+            # spent iff its `taskId` matches this pass's own assignment and
+            # `used >= budget` from an EARLIER pass's own corroborated
+            # claims (this pass's own claim, if any, is recorded later and
+            # must never retroactively make THIS dispatch look forced).
+            # `forced_split_required` (read again, unchanged, after the
+            # iteration returns) is what both the prompt notice below and
+            # the post-report enforcement gate further down key off.
+            budget_before_dispatch = self.run.read_status().get(
+                self.PROGRESS_BUDGET_STATUS_KEY)
+            try:
+                forced_split_required = bool(
+                    isinstance(selected, dict)
+                    and isinstance(budget_before_dispatch, dict)
+                    and budget_before_dispatch.get("taskId") == assigned_id
+                    and int(budget_before_dispatch.get("used", 0))
+                    >= int(budget_before_dispatch.get("budget", 0)))
+            except (TypeError, ValueError):
+                forced_split_required = False
+            extra = self._worker_assignment_extra(
+                selected,
+                spent_budget=(budget_before_dispatch
+                              if forced_split_required else None))
             # Task 016 (requirement I/J): the in-hand task's EFFECTIVE tier
             # (post-escalation) drives this dispatch's model; a pass with
             # nothing actionable to assign (`selected` is not a task dict)
@@ -6403,6 +6563,57 @@ class LoopSupervisor:
                     # `_abort_reason`, no early `return`; `enforce_contract`
                     # already emitted the `contract.violation`/`contract.
                     # agent_fault` events for the record.
+
+            # Task 016 (PRD requirement B.1, #156): the FORCED split gate --
+            # `forced_split_required` was computed above, BEFORE this
+            # iteration was even dispatched, from `progressBudget` as it
+            # stood at that moment, so it reflects an EARLIER pass's own
+            # spent budget, never this pass's. Independent of `verdict`'s
+            # own value, exactly like the petition/task_status/progress
+            # side channels above: a report of ANY shape that lacks a
+            # valid `proposed_tasks` is refused and re-asked until one
+            # arrives or the ladder is exhausted (PRD: "a report without
+            # one is a contract violation on the ladder").
+            if forced_split_required:
+                event_loop = asyncio.get_running_loop()
+
+                def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                    if attempt == 0:
+                        return worker_final_text
+                    raw, _usage = asyncio.run_coroutine_threadsafe(
+                        self._ask_contract_fix("worker", prior_errors or [],
+                            final_text=result.final_text),
+                        event_loop).result()
+                    return last_nonblank_line(raw)
+
+                split_enforcement = await asyncio.to_thread(
+                    contract_enforcement.enforce_contract,
+                    "worker", respond,
+                    max_retries=self.cfg.contract_retry_max,
+                    state=self.run,
+                    extra_validate=lambda p: self._apply_forced_split_report(
+                        p, assigned_id, approach),
+                )
+                if split_enforcement.ok:
+                    stagnant = 0
+                    contract_progress = True
+                    if split_enforcement.payload is not None:
+                        payload = split_enforcement.payload
+                        verdict = payload.get("verdict")
+                        worker_final_text = json.dumps(payload)
+                    # Already applied inside `_apply_forced_split_report` --
+                    # clear the local copy so the voluntary `proposed_tasks`
+                    # side channel further down (which still reads this
+                    # SAME payload for whatever verdict-specific branch it
+                    # reaches) never re-applies the identical batch a
+                    # second time and collides on the now-existing ids.
+                    proposed_split_tasks = None
+                    tasks_after = self.run.read_tasks()
+                # Ladder exhausted: same fall-through as every side channel
+                # above -- nothing applied, no `_advance`, no `_abort_
+                # reason`, no early `return`; `enforce_contract` already
+                # emitted the `contract.violation`/`contract.agent_fault`
+                # events for the record.
 
             if verdict is not None:
               # Task 008 (requirement B.2, #128): the generic schema site

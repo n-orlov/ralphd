@@ -3178,8 +3178,47 @@ TASK_COUNT_OVERLAY_KEYS = TASK_COUNT_SUBKEYS + ("blocked",)
 # `failed` AND `skipped` "terminal dead" for a dependency chain's purposes
 # (docs/prds/v0.9-declarative-loop.md, requirement F) -- a skipped dependency
 # never did the work a dependent needs, any more than a failed one did.
-TASK_DEPENDENCY_SATISFIED_STATUSES = ("completed", "validated")
+# Task 016 (PRD requirement B.1, #156): `superseded` -- the status a
+# forced split (a task whose progress budget is spent, #156 requirement B)
+# leaves on the PARENT it just split -- joins this tuple too, deliberately,
+# unlike `skipped`/`failed` just below. The PRD's own words for the status
+# are "not schedulable, not blocking": "not schedulable" is free (a
+# superseded task matches none of `scheduler.select_next_task`'s three
+# buckets -- `validation-failed`/`in-progress`/`pending` -- so it is never
+# picked again without this tuple's help); "not blocking" is what adding it
+# HERE buys -- a task whose `dependsOn` names the now-superseded parent
+# reads that dependency as satisfied rather than staying stuck forever
+# waiting for a status the parent will never reach again, because the
+# parent's own obligation moved to whichever children `insert_worker_split_
+# tasks` just inserted (`_apply_forced_split_report`, `engine/loop.py`).
+TASK_DEPENDENCY_SATISFIED_STATUSES = ("completed", "validated", "superseded")
 TASK_DEPENDENCY_DEAD_STATUSES = ("failed", "skipped")
+
+
+def supersede_task(run: "RunDir", task_id: str) -> bool:
+    """Task 016 (PRD requirement B.1, #156): the ONE writer of the
+    `superseded` status -- called by `LoopSupervisor._apply_forced_split_
+    report` the instant a forced split (a spent progress budget's
+    mandatory `proposed_tasks` report) is accepted, strictly AFTER the
+    split's own children are already inserted (`insert_worker_split_
+    tasks`), so a crash between the two writes never leaves a plan with a
+    superseded parent and no children to pick up its work.
+
+    `superseded` is terminal for scheduling for free (see the tuple's own
+    comment just above this function) -- this function's only job is the
+    one write, plain and unconditional, same discipline `insert_worker_
+    split_tasks`/`steer_task_insert` already apply to their own field.
+    Returns True iff `task_id` resolved and was moved, False otherwise
+    (never raises -- a caller that already knows `task_id` is real, as
+    `_apply_forced_split_report` does, never needs to inspect this).
+    """
+    data = run.read_tasks()
+    for t in data.get("tasks", []):
+        if isinstance(t, dict) and t.get("id") == task_id:
+            t["status"] = "superseded"
+            run.write_tasks(data)
+            return True
+    return False
 
 # Task 011 (PRD requirement I, #98): a task the steer hat inserted carries
 # this `origin` value in `tasks.json` -- `tasks.json` being planner-proposed

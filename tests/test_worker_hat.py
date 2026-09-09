@@ -2416,7 +2416,12 @@ def test_applier_emits_the_task_status_event_for_the_move(tmp_path):
 
 def test_skipped_is_still_absent_from_dependency_satisfied_statuses():
     assert "skipped" not in TASK_DEPENDENCY_SATISFIED_STATUSES
-    assert TASK_DEPENDENCY_SATISFIED_STATUSES == ("completed", "validated")
+    # Task 016 (PRD requirement B.1, #156) added `superseded` alongside the
+    # original pair -- a forced split's parent goes there, and a dependent
+    # of it is not left blocked forever waiting for a status the parent
+    # will never reach again. `skipped`/`failed` stay outside the tuple,
+    # which is this test's own point and is unchanged by that addition.
+    assert TASK_DEPENDENCY_SATISFIED_STATUSES == ("completed", "validated", "superseded")
 
 
 # ----------------------------------------------------------------------
