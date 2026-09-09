@@ -1398,3 +1398,16 @@ same git shape.
 | `tests/test_sweep_sha_guard.py::test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path` | `tests/test_sweep_sha_guard.py::test_a_self_anchoring_record_followed_by_a_src_commit_fails` (same shape -- a self-anchoring record's tip commit touching a path outside the record -- generalized from "any other path" to the walk's own allow-list of `artifacts/reports/**`, `docs/roadmap.md`, `docs/prds/README.md`: a `src/` commit after the record still fails the walk exactly as the single-hop check refused it) | task 008, #174 |
 | `tests/test_sweep_sha_guard.py::test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top` | `tests/test_sweep_sha_guard.py::test_a_self_anchoring_record_followed_by_a_report_only_commit_passes` (same git shape -- a second report-only commit stacked on the self-anchoring record's own add-commit -- but the walk's verdict is now the opposite of the deleted node's: task 008 (#174) exists precisely to let a wave's tail of report/roadmap/index-only commits stack on a self-anchoring record without going stale, so this shape now PASSES rather than fails; the reversal is the requirement, not a regression) | task 008, #174 |
 | `tests/test_sweep_sha_guard.py::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail` | `tests/test_sweep_sha_guard.py::test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring` (same git shape -- a bare, never-discharged `sweep-sha` naming a `src/`-touching commit, one report-only commit later -- but the walk's independent acceptance path does not care whether a discharge ever happened, so this shape now PASSES rather than fails; the reversal is the same #174 generalization, not a regression) | task 008, #174 |
+
+Derivation for task 016 (PRD requirement B.1, #156): the same `-def test_` diff,
+run over this task's own follow-up commit, gives exactly one removed name that
+never reappears as an added one --
+`test_fold_inherited_dependsOn_applies_only_when_absent`, which pinned the
+weaker inherit-only-when-absent shape of
+`LoopSupervisor._fold_inherited_dependsOn`. It was replaced in the SAME module
+by a node asserting the union the PRD's "its `dependsOn` inherited by the
+children" actually requires, so the row below names that replacement.
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `tests/test_forced_split_budget_task016.py::test_fold_inherited_dependsOn_applies_only_when_absent` | `tests/test_forced_split_budget_task016.py::test_fold_inherited_dependsOn_unions_onto_a_childs_own_deps` (same `@staticmethod`, same inherited value, a widened three-child batch -- but pinning the UNION: a child that declared no `dependsOn` gets the parent's, a child that chained itself behind a sibling gets `["own-dep", "p-dep"]` rather than keeping the sibling alone, and an inherited id the child already names is never duplicated; `tests/test_forced_split_budget_task016.py::test_parent_dependsOn_is_inherited_by_every_child_end_to_end` asserts the same union through the real forced-split pipeline) | task 016, requirement B.1 |

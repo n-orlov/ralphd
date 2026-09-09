@@ -8,21 +8,22 @@ three success-criteria behaviours the task's own text names:
    ladder `_apply_worker_task_status_report`'s petition/task_status side
    channels already ride, never a second mechanism;
 3. on acceptance the parent task becomes `superseded` (not schedulable,
-   not blocking -- its own `dependsOn` inherited by any child that named
-   none of its own) and its split children become schedulable next.
+   not blocking -- and not stranding the plan's own completion either --
+   with its own `dependsOn` inherited by EVERY child, unioned onto
+   whatever that child declared for itself) and its split children become
+   schedulable next.
 
 `LoopSupervisor._fold_inherited_dependsOn` (the dependsOn-inheritance
-fold itself) is pinned directly, unit-level, separately from the fuller
-pipeline: a genuinely EXTERNAL inherited id (one of the parent's own
-pre-existing neighbours in `tasks.json`, rather than a sibling freshly
-proposed in the SAME batch) does not resolve against `plan_ingestion.
-lint_worker_split`'s current batch-only `dependsOn` check -- task 017
-("Resolve a worker split's dependsOn against the current tasks.json as
-well as the batch (#162)") is the task that widens the lint to accept
-that shape; this file's own end-to-end acceptance test therefore only
-exercises a parent with NO `dependsOn` of its own for the full pipeline,
-and pins the fold's own behaviour on inherited values through the
-`@staticmethod` directly.
+fold itself) is pinned directly, unit-level, as well as end to end: the
+end-to-end case gives the parent a `dependsOn` naming one of its own
+pre-existing neighbours in `tasks.json` and a batch whose second child
+chains itself behind the first, so the union is exercised through the
+real pipeline too. That works because the fold runs strictly AFTER
+`plan_ingestion.lint_worker_split` -- an EXTERNAL inherited id does not
+resolve against that lint's current batch-only `dependsOn` check, and
+task 017 ("Resolve a worker split's dependsOn against the current
+tasks.json as well as the batch (#162)") is the task that widens the
+lint to accept an id in that shape being PROPOSED.
 """
 
 from __future__ import annotations
@@ -37,10 +38,15 @@ from ralphd.engine import scheduler
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
+    TASK_COMPLETION_NONBLOCKING_STATUSES,
+    TASK_COMPLETION_STATUSES,
     TASK_DEPENDENCY_SATISFIED_STATUSES,
+    TASK_TERMINAL_STATUSES,
     is_worker_origin,
+    steering_origin_outstanding,
     supersede_task,
     task_blocked_by,
+    task_blocks_completion,
 )
 
 from tests.conftest import make_supervisor
@@ -254,17 +260,28 @@ def test_supersede_task_writer_returns_false_for_an_unknown_id(tmp_path):
 # LoopSupervisor._fold_inherited_dependsOn -- the inheritance fold itself
 # ---------------------------------------------------------------------------
 
-def test_fold_inherited_dependsOn_applies_only_when_absent():
+def test_fold_inherited_dependsOn_unions_onto_a_childs_own_deps():
+    """The parent's own `dependsOn` reaches EVERY child, unioned onto
+    whatever that child declared -- a child that chains itself behind a
+    sibling is expressing an intra-batch order, not waiving the parent's
+    own preconditions. (Replaces this module's own earlier
+    `test_fold_inherited_dependsOn_applies_only_when_absent`, which pinned
+    the weaker inherit-only-when-absent fold; see docs/test-suite-audit.md
+    § Subsumed.)"""
     proposed = [
         {"id": "a", "title": "a", "successCriteria": "a"},
         {"id": "b", "title": "b", "successCriteria": "b",
          "dependsOn": ["own-dep"]},
+        {"id": "c", "title": "c", "successCriteria": "c",
+         "dependsOn": ["p-dep"]},
     ]
     folded = LoopSupervisor._fold_inherited_dependsOn(proposed, ["p-dep"])
-    a = next(t for t in folded if t["id"] == "a")
-    b = next(t for t in folded if t["id"] == "b")
-    assert a["dependsOn"] == ["p-dep"]
-    assert b["dependsOn"] == ["own-dep"]           # untouched
+    by_id = {t["id"]: t for t in folded}
+    assert by_id["a"]["dependsOn"] == ["p-dep"]
+    # own deps first, in their own order, then the inherited ones
+    assert by_id["b"]["dependsOn"] == ["own-dep", "p-dep"]
+    # already named: inherited once, never duplicated
+    assert by_id["c"]["dependsOn"] == ["p-dep"]
 
 
 def test_fold_inherited_dependsOn_is_a_noop_when_parent_had_none():
@@ -276,6 +293,85 @@ def test_fold_inherited_dependsOn_is_a_noop_when_parent_had_none():
 
 def test_fold_inherited_dependsOn_never_mutates_its_input():
     original = {"id": "a", "title": "a", "successCriteria": "a"}
-    proposed = [original]
+    chained = {"id": "b", "title": "b", "successCriteria": "b",
+               "dependsOn": ["a"]}
+    proposed = [original, chained]
     LoopSupervisor._fold_inherited_dependsOn(proposed, ["p-dep"])
     assert "dependsOn" not in original
+    assert chained["dependsOn"] == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# the union reaches every child through the REAL pipeline, and a superseded
+# parent never strands the plan's own completion
+# ---------------------------------------------------------------------------
+
+def test_parent_dependsOn_is_inherited_by_every_child_end_to_end(tmp_path):
+    """End-to-end (not the `@staticmethod` alone): a parent whose own
+    `dependsOn` names a pre-existing neighbour, split into a child with no
+    deps of its own and a child that chains itself behind its sibling.
+    BOTH children carry the parent's `root` afterwards."""
+    root = {"id": "root", "title": "the parent's own dependency",
+            "status": "completed", "successCriteria": "root works"}
+    payload = {"verdict": "no_verdict",
+               "proposed_tasks": [
+                   {"id": "016t-a", "title": "part a",
+                    "successCriteria": "a on its own works"},
+                   {"id": "016t-b", "title": "part b",
+                    "successCriteria": "b on its own works",
+                    "dependsOn": ["016t-a"]}]}
+    sup = _sup(tmp_path, [json.dumps(payload)],
+               [root, _task(dependsOn=["root"])], budget=_spent_budget())
+    asyncio.run(sup._step_worker())
+    data = sup.run.read_tasks()
+    by_id = {t["id"]: t for t in data["tasks"]}
+    assert by_id[TASK_1]["status"] == "superseded"
+    assert by_id["016t-a"]["dependsOn"] == ["root"]
+    assert by_id["016t-b"]["dependsOn"] == ["016t-a", "root"]
+    # b waits for its sibling; a is what a fresh dispatch picks next.
+    picked = scheduler.select_next_task(data["tasks"])
+    assert picked is not None and picked["id"] == "016t-a"
+
+
+def test_superseded_parent_does_not_strand_plan_completion(tmp_path):
+    """Once the replacement children are done, NOTHING is outstanding: the
+    superseded parent has no transition out of `superseded`, so counting
+    it against completion would strand every plan that force-splits."""
+    payload = {"verdict": "no_verdict",
+               "proposed_tasks": [
+                   {"id": "016t-a", "title": "part a",
+                    "successCriteria": "a on its own works"},
+                   {"id": "016t-b", "title": "part b",
+                    "successCriteria": "b on its own works"}]}
+    sup = _sup(tmp_path, [json.dumps(payload)], [_task()],
+               budget=_spent_budget())
+    asyncio.run(sup._step_worker())
+    data = sup.run.read_tasks()
+    # the plan is NOT complete while the children are still pending
+    assert [t["id"] for t in sup._outstanding_for_completion(data)] == [
+        "016t-a", "016t-b"]
+    assert sup._all_tasks_completed() is False
+    for t in data["tasks"]:
+        if t["id"] in ("016t-a", "016t-b"):
+            t["status"] = "completed"
+    sup.run.write_tasks(data)
+    data = sup.run.read_tasks()
+    assert next(t for t in data["tasks"]
+                if t["id"] == TASK_1)["status"] == "superseded"
+    assert sup._outstanding_for_completion(data) == []
+    assert sup._all_tasks_completed() is True
+    assert scheduler.select_next_task(data["tasks"]) is None
+
+
+def test_superseded_is_nonblocking_for_completion_and_terminal():
+    assert task_blocks_completion({"id": "p", "status": "superseded"}) is False
+    # not COUNTED as completion, only not blocking it
+    assert "superseded" not in TASK_COMPLETION_STATUSES
+    assert "superseded" in TASK_COMPLETION_NONBLOCKING_STATUSES
+    # and terminal, so a force-split STEERING-origin task cannot hold the
+    # exit gate (`steering_origin_outstanding`) open for the whole run
+    assert "superseded" in TASK_TERMINAL_STATUSES
+    assert steering_origin_outstanding({"tasks": [
+        {"id": "s", "origin": "steer", "status": "superseded"}]}) == []
+    assert [t["id"] for t in steering_origin_outstanding({"tasks": [
+        {"id": "s", "origin": "steer", "status": "in-progress"}]})] == ["s"]

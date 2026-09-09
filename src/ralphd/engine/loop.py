@@ -4774,19 +4774,35 @@ class LoopSupervisor:
         batch -- does not resolve against `plan_ingestion.lint_worker_
         split`'s current batch-only `dependsOn` check; PRD B.2/task 017 is
         the task that widens the lint to accept that shape too, not this
-        one). A proposed child dict that already declares its own
-        `dependsOn` (however it resolves) is returned untouched -- only a
-        child that named NONE of its own gets the parent's, so a batch
-        that deliberately chains its own children together is never
-        overridden. Never mutates `proposed`'s own dicts -- each folded
-        entry is a fresh shallow copy.
+        one -- which is why this fold runs strictly AFTER that lint in
+        `_apply_forced_split_report`, never before it).
+
+        EVERY child inherits, not only a child that declared no
+        `dependsOn` of its own: the fold is a UNION -- the child's own
+        declared ids first, in its own order, then each inherited id the
+        child does not already name. "Its dependsOn inherited by the
+        children" is a property of the whole split, and the parent could
+        not run before its own dependencies were satisfied; a child that
+        chains itself behind a SIBLING (`dependsOn: ["a"]`) is expressing
+        an intra-batch order, not a waiver of the parent's own
+        preconditions, so an earlier "inherit only when absent" fold let
+        exactly that child start ahead of a dependency the parent itself
+        would have waited for. Never mutates `proposed`'s own dicts --
+        each folded entry is a fresh shallow copy, and a non-dict entry
+        (already refused by the lint) passes straight through.
         """
         if not inherited:
             return list(proposed)
-        return [
-            ({**t, "dependsOn": list(inherited)}
-             if isinstance(t, dict) and "dependsOn" not in t else t)
-            for t in proposed]
+        folded = []
+        for t in proposed:
+            if not isinstance(t, dict):
+                folded.append(t)
+                continue
+            own = t.get("dependsOn")
+            own = list(own) if isinstance(own, list) else []
+            merged = own + [d for d in inherited if d not in own]
+            folded.append({**t, "dependsOn": merged})
+        return folded
 
     def _apply_forced_split_report(self, payload: dict,
                                    assigned_task_id: str | None,
@@ -8799,6 +8815,16 @@ class LoopSupervisor:
         reviewer ever looking at it, which is the failure shape task 002's
         grace review and task 024's route-to-review both exist to avoid.
 
+        Task 016 (PRD requirement B.1, #156): a `superseded` task -- the
+        parent of an accepted forced split -- does not show up here, for
+        the same reason `awaiting-validation` does not: `task_blocks_
+        completion` reads both from `state.TASK_COMPLETION_NONBLOCKING_
+        STATUSES`. The parent's own obligation moved to the children the
+        same acceptance inserted, and those children are ordinary tasks
+        that block here until they resolve; the parent itself has no
+        transition out of `superseded`, so counting it outstanding would
+        strand every plan that ever force-splits a task.
+
         Task 010 (requirement C.2, #114): a `petitioned` task -- outside
         `state.TASK_COMPLETION_STATUSES` by design, so `task_blocks_
         completion` alone would block here forever, exactly like an
@@ -9162,15 +9188,24 @@ class LoopSupervisor:
         """True iff tasks.json exists, is non-empty, and every task's
         `status` is a vigilant-or-not TERMINAL-completion status
         (`state.TASK_COMPLETION_STATUSES` -- `completed`, `validated` or
-        `skipped`), not just the literal `completed`. Task 002's grace-review
+        `skipped` -- plus `superseded`, task 016's forced-split parent:
+        `state.TASK_COMPLETION_NONBLOCKING_STATUSES` is where that one is
+        reasoned about, and a plan whose only non-completed record is a
+        parent whose children are all done must be able to reach this
+        gate; `awaiting-validation`, the other non-blocking status, is
+        deliberately NOT accepted here -- it is waiting on verify, which
+        is work this gate must not skip past), not just the literal
+        `completed`. Task 002's grace-review
         gate: an empty or missing tasks list (e.g. planning never ran/
         produced nothing) must never be treated as "all done". Task 018
         (#77/#78): without this, a vigilant run whose plan is entirely
         `validated` could never reach this gate at all -- `completed` is a
         status only the non-vigilant table ever assigns."""
         tasks = self.run.read_tasks().get("tasks") or []
+        accepted = state.TASK_COMPLETION_STATUSES + (
+            state.TASK_STATUS_SUPERSEDED,)
         return bool(tasks) and all(
-            t.get("status") in state.TASK_COMPLETION_STATUSES for t in tasks)
+            t.get("status") in accepted for t in tasks)
 
     async def _maybe_grace_review(self, approach: int) -> bool:
         """Task 002: invariant -- a job whose tasks are ALL completed by the

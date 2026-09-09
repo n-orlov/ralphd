@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5414 tests across 331 modules** at task 016's own commit, over the
-PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3850
+collects **5417 tests across 331 modules** at task 016's own commit, over the
+PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3853
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -244,8 +244,15 @@ prompt notice appearing/absent, the no-`proposed_tasks` report refused and
 re-asked on the contract ladder then accepted once it arrives, the parent
 task moving to `superseded` and its split child becoming schedulable next,
 the superseded parent no longer blocking a dependent, `state.supersede_
-task`'s own writer, and `LoopSupervisor._fold_inherited_dependsOn`'s
-dependsOn-inheritance fold in isolation -- all also `smoke`).
+task's own writer, and `LoopSupervisor._fold_inherited_dependsOn`'s
+dependsOn-inheritance fold in isolation -- all also `smoke`), and 5417
+(smoke 3853, modules unchanged at 331) by task 016's follow-up commit in the
+SAME module (3 more nodes, no new module: the parent's `dependsOn` reaching
+EVERY child through the real pipeline rather than only a child that declared
+none of its own, the superseded parent not stranding plan completion once its
+children are done, and `superseded`'s membership of
+`state.TASK_COMPLETION_NONBLOCKING_STATUSES`/`TASK_TERMINAL_STATUSES` --
+all also `smoke`).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

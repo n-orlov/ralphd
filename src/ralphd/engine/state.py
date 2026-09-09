@@ -2913,6 +2913,23 @@ TASK_ACTIONABLE_STATUSES = ("pending", "in-progress", "validation-failed")
 # loop while the plan itself still says otherwise.
 TASK_COMPLETION_STATUSES = ("completed", "validated", "skipped")
 
+# Task 016 (PRD requirement B.1, #156): the statuses that do NOT count as
+# completion (they are not in the tuple above, and no surface reports them
+# as done) but must not BLOCK a completion signal either.
+#
+# `awaiting-validation` was always this shape -- see `task_blocks_
+# completion`'s own docstring for why. `superseded`, the status a forced
+# split leaves on the PARENT it just split, is the second: the parent's
+# whole obligation moved to the children `insert_worker_split_tasks`
+# inserted in the same acceptance, and those children are ordinary plan
+# tasks that block completion themselves until they resolve. Leaving the
+# parent blocking as well would stall the plan on a record nothing can
+# ever move again -- `superseded` is written once, by `supersede_task`,
+# and has no transition out of it -- i.e. exactly the strand `failed`
+# deliberately causes (there a worker still has two honest resolutions
+# open to it) and this status deliberately must not.
+TASK_COMPLETION_NONBLOCKING_STATUSES = ("awaiting-validation", "superseded")
+
 
 def task_blocks_completion(task: dict) -> bool:
     """True iff this task record must stop a COMPLETE signal being honoured.
@@ -2940,7 +2957,7 @@ def task_blocks_completion(task: dict) -> bool:
     if not isinstance(task, dict):
         return True
     return task.get("status", "pending") not in (
-        TASK_COMPLETION_STATUSES + ("awaiting-validation",))
+        TASK_COMPLETION_STATUSES + TASK_COMPLETION_NONBLOCKING_STATUSES)
 
 
 # ---------------------------------------------------------------------------
@@ -3193,6 +3210,11 @@ TASK_COUNT_OVERLAY_KEYS = TASK_COUNT_SUBKEYS + ("blocked",)
 # tasks` just inserted (`_apply_forced_split_report`, `engine/loop.py`).
 TASK_DEPENDENCY_SATISFIED_STATUSES = ("completed", "validated", "superseded")
 TASK_DEPENDENCY_DEAD_STATUSES = ("failed", "skipped")
+
+# The one spelling of the status itself, so a caller outside this module
+# (`LoopSupervisor._all_tasks_completed`) names it rather than re-typing
+# the literal a fourth time.
+TASK_STATUS_SUPERSEDED = "superseded"
 
 
 def supersede_task(run: "RunDir", task_id: str) -> bool:
@@ -3534,8 +3556,16 @@ def tasks_doc_excluding_new_entries(tasks_doc: dict, known_ids: set, *,
 # STATUSES` or `TASK_DEPENDENCY_SATISFIED_STATUSES`/`_DEAD_STATUSES` here --
 # whether an un-adjudicated `petitioned` task counts as done or as doomed
 # for a dependent task is task 010's `plan_complete` scope, not this one's.
+# Task 016 (PRD requirement B.1, #156): `superseded` joins this tuple for
+# the same reason `petitioned` did not join `TASK_COMPLETION_STATUSES` --
+# terminality here means "nothing further moves it on its own", and a
+# superseded parent has no transition out of `superseded` at all (its work
+# moved to the children the same acceptance inserted). Without it a
+# STEERING-ORIGIN task that gets force-split would hold the exit gate
+# (`steering_origin_outstanding` -> `LoopSupervisor._terminal_success_
+# blockers`) open for the rest of the run.
 TASK_TERMINAL_STATUSES = ("validated", "completed", "failed", "skipped",
-                          "petitioned")
+                          "petitioned", "superseded")
 
 
 def task_is_terminal(task: dict) -> bool:
