@@ -1967,10 +1967,27 @@ def test_steering_entry_appears_pending_then_flips_to_applied(tmp_path, pw, live
 
     Steered through the hub's own form (the write surface #17 says was the
     only surface), then watched through the same page.
+
+    Task 070 (steer 005 defect 2): the run's FIRST worker iteration is held
+    open (`STUB_HOLD_FILE`/`STUB_HOLD_PHASE="worker"`, the same bounded
+    barrier task 064 used for the liveness proof) from before the browser
+    even opens the page, and released only once `#steer-status` has shown
+    "sent" -- i.e. the POST /steering has already been accepted -- so the
+    engine can never answer 409 "job finished / steering has no effect"
+    because the loop raced ahead to a terminal state while Playwright was
+    still filling the form. Before this fix the hold did not exist: a
+    fast loop (STUB_SLEEP="1" across 8 iterations, no barrier) could finish
+    the whole run inside the real wall-clock time Playwright needs to open
+    the page and submit, which is exactly the failure this bounded hold
+    rules out rather than papering over with a longer sleep or more
+    iterations.
     """
+    hold_file = tmp_path / "hold-browser-steering-entry"
     run = live(run_id="steer-hub-ui",
                job={"iterations": 8, "on_complete": "idle"},
-               stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "4"})
+               stub_env={"STUB_SLEEP": "1", "STUB_TASKS": "4",
+                        "STUB_HOLD_FILE": str(hold_file),
+                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
 
     server = UiServer(run.registry)
@@ -1983,6 +2000,8 @@ def test_steering_entry_appears_pending_then_flips_to_applied(tmp_path, pw, live
         pw.fill("#steer-name", "from-browser")
         pw.click("#steer-form button[type=submit]")
         _wait_for(pw, "document.getElementById('steer-status').textContent", "sent")
+
+        hold_file.touch()  # release: let the held worker iteration finish
 
         # appears within one poll cycle, flagged pending
         _wait_for(pw, _STEERING_STATES, "pending", timeout=20)
@@ -2002,6 +2021,7 @@ def test_steering_entry_appears_pending_then_flips_to_applied(tmp_path, pw, live
         assert "state: applied" in body, body
         assert "on-disk snapshot" not in body, body      # this run is live
     finally:
+        hold_file.touch()  # safety: release even if an assertion above raised
         run.wait_terminal(timeout=120)
         server.stop()
 
