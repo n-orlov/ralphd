@@ -79,7 +79,7 @@ def test_wrong_shape_json_reuses_validate_payload_errors():
     assert payload is None
     assert errors == ["$.verdict: 'maybe' is not one of "
                        "['complete', 'no_verdict', 'unsatisfiable', "
-                       "'plan_complete']"]
+                       "'plan_complete', 'deferred']"]
 
 
 def test_a_valid_payload_comes_back_with_no_errors():
