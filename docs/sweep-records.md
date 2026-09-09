@@ -111,15 +111,29 @@ The chain terminates successfully when it reaches a sha that either
 * has a report-only gap to `HEAD` -- `git diff --name-only <sha>..HEAD`
   names nothing outside `artifacts/reports/**`.
 
-The second form is what makes the rule satisfiable at all: it is precisely
-wide enough to cover the discharge commit itself (and any further
-report/roadmap/index-only tail commits after it), and no wider -- a single
-intervening `src/` or `tests/` change still fails the chain. The allowance
-only ever applies to a sha the chain actually walked to by following a real
-`discharge-sha` hop; the bare `sweep-sha` a record declares never gets it on
-its own, so an entirely undischarged stale sha is still a hard failure no
-matter how report-only the time since has been -- discharge has to be
-*stated*, not merely true by accident of what else did not change.
+The second form is what makes the *discharge chain* satisfiable at all: it is
+precisely wide enough to cover the discharge commit itself (and any further
+commits after it that touch nothing outside `artifacts/reports/` -- this
+path's allow-list is narrower than the walk's below, which also permits
+`docs/roadmap.md` and `docs/prds/README.md`), and no wider -- a single
+intervening `src/` or `tests/` change still fails the chain. Inside the
+discharge machinery the allowance stays exactly as narrow as it always was:
+`_report_only_tail` only ever bridges the last leg of a chain that a real
+`discharge-sha` hop actually walked to, and the bare `sweep-sha` a record
+declares never rides *that* path on its own.
+
+**What a bare, never-discharged sha does get instead is the separate
+self-anchoring acceptance walk** (`_self_anchoring_reaches_head` -- next
+section, task 008/#174). That walk is an independent acceptance path and does
+not care whether a discharge was ever stated: it accepts any declared sha
+that is a genuine git ancestor of `HEAD` whose whole `declared..HEAD` range
+touches only `artifacts/reports/**`, `docs/roadmap.md` or
+`docs/prds/README.md`. So since #174 a stale, entirely undischarged sha whose
+history since is genuinely report-only IS accepted -- through the walk, not
+through discharge, and with no `discharge-sha` block written anywhere.
+Discharge remains the only way to clear a stale sha whose range contains even
+one `src/`, `tests/` or other-doc commit: for those the re-verification has
+to be *stated*, not merely true by accident of what else did not change.
 
 So when the wave's tail moves `HEAD` again, the previous discharge does not
 silently keep covering the record forever: either the new tail is itself
@@ -127,12 +141,13 @@ report-only (already covered), or re-verify at the new `HEAD` and add
 `<old-verified-at-sha> <new-HEAD>`, extending the chain, or re-take the
 sweep.
 
-**A stale, undischarged sha is always a hard failure, never a warning.**
+**A stale sha that neither discharge nor the self-anchoring walk clears is a
+hard failure, never a warning.**
 `tests/test_sweep_sha_guard.py::test_stale_undischarged_sha_fails` proves
 this with a fixture record built in a temporary directory (never inside the
 real `artifacts/reports/`, so the fixture cannot itself trip the guard it is
-testing) -- a `sweep-sha` naming a sha that is neither `HEAD` nor discharged
-must be rejected.
+testing) -- a `sweep-sha` naming a sha that is neither `HEAD`, nor discharged,
+nor an ancestor of `HEAD` across a report-only range must be rejected.
 `tests/test_sweep_sha_guard.py::test_discharged_stale_sha_passes` and
 `::test_a_transitive_discharge_chain_ending_at_head_passes` prove the
 discharge path actually clears the same failure, one hop and two hops;
@@ -141,12 +156,18 @@ discharge path actually clears the same failure, one hop and two hops;
 `::test_a_one_sha_discharge_block_is_rejected_as_malformed` prove the three
 ways a discharge can fail to be one. `::test_a_discharge_ending_short_of_head_passes_when_the_tail_is_report_only`,
 `::test_a_discharge_ending_short_of_head_fails_when_one_tail_commit_touches_src`
-and `::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`
+and
+`::test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`
 build real throwaway git repos (never inside the real `artifacts/reports/`)
-to prove the report-only-tail allowance itself: it bridges a genuinely
-report-only gap, it does not bridge a gap with even one `src/`-touching
-commit in it, and it never applies to a sha that was never discharged in the
-first place.
+to prove where the two paths part: the discharge chain's own tail allowance
+bridges a genuinely report-only last leg, it does not bridge a leg with even
+one `src/`-touching commit in it, and -- since #174 -- a bare,
+never-discharged sha whose tail is fully report-only is accepted anyway, by
+the self-anchoring walk rather than by discharge. That third node is the
+renamed, assertion-flipped successor of the pre-#174
+`::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`, whose
+scenario the walk now accepts on purpose (`docs/test-suite-audit.md` §
+"Subsumed" records the reversal).
 
 The failure message names the record's path, its declared sha, the current
 `HEAD`, and what to do: re-take the sweep at `HEAD` and update the record, or
