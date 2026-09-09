@@ -199,6 +199,23 @@ ceiling in this table was raised to record this row; the budget columns
 (6500 / 400 / 3600 s) are the same headroom already carried by the unset
 mode's row.
 
+**Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
+collects **5358 tests** at `6961c97`, over the PRD's `< 3000` target, and the
+smoke tier **3794**. Recorded here because
+`test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
+requires the live number to be *stated* once it exceeds a target -- disclosure
+is a visible, reviewable act rather than a silent drift. The number moved
+because this wave's own tasks add test modules: it was 5329 at `9b1a0e2`, 5332
+at the wave's first commit (`1ba8c46`, task 001's new
+`tests/test_unconsumed_steering_live.py`) and 5358 by task 011.
+
+**This count must be updated in the same commit that adds tests**, now that CI
+runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
+leaves this number stale turns the blocking gate red for the next commit rather
+than at the end of the wave. That is the intended behaviour of the guard -- it
+went unnoticed for the first ten tasks of this wave precisely because nothing
+ran the tier per commit.
+
 ### The stub-`pi` flow lane (`tests/flows/`)
 
 The flow modules requirement G.5 asks for live in their own directory, are

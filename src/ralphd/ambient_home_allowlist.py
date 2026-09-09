@@ -121,7 +121,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/ui_server.py",
-        "line": "1463",
+        # Was line 1463 when this entry was written; this wave's hub work
+        # above it (task 007, #155: forwarding the run's control token from
+        # the steering form and the retry button) shifted the class-level
+        # default -- now at 1477, same read, same reason.
+        "line": "1477",
         "reason": ("`Handler.registry`'s class-level default. Every real server "
                    "binds a concrete registry via `make_handler_class(reg)` "
                    "(see its own docstring, \"Bound to a registry path via "
@@ -199,8 +203,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `_debt_ledger_context`/`_apply_worker_debt_resolution`/
         # `_workspace_head_sha` above `_creds_note` in this same module,
         # shifting this read again -- it is now at 1092, same method, same
-        # read, same reason.
-        "line": "1092",
+        # read, same reason. This wave's engine work above `_creds_note`
+        # (tasks 001-011: the live `unconsumedSteering` patch, the SIGTERM
+        # pause-gate wake, the terminal-event ordering and the worker
+        # contract's `progress` block) shifted it once more -- now at 1112,
+        # same method, same read, same reason.
+        "line": "1112",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
