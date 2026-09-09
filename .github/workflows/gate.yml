@@ -1,0 +1,97 @@
+# The blocking gate (#113 step 1): the fast tier, on GitHub-hosted runners.
+#
+# This is the only lane a merge waits on for correctness of the pure-Python
+# surface, and the only lane that runs on every push and every pull request.
+# It runs on GitHub's own runners deliberately: it is the most frequently
+# executed lane, it needs no docker socket and no browser, and a check run
+# signed by GitHub's app is the attestation the review contract is meant to
+# read (docs/sweep-records.md's self-authored ledger is what this replaces).
+#
+# `-m fast` is a superset of `-m smoke` and of `tests/records/` (5329 of 5409
+# collected at 3bd7199; records is 199 of them, the sweep-sha guard 26), so
+# this one selection covers the records lint and both per-task tiers. The
+# records step runs first anyway -- it is ~10 s and a docs- or report-only
+# commit that breaks a claim checker should say so in seconds rather than
+# after the whole tier.
+#
+# What this lane deliberately does NOT cover: the docker tier, the browser
+# tier and the two dev-layout modes. Those are heavy.yml and nightly.yml, on
+# the self-hosted VPS runner.
+name: gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A superseded push or PR head is not worth a runner: cancel the older run.
+# Keyed per ref so main and a PR never cancel each other.
+concurrency:
+  group: gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    name: fast tier (records + smoke + fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The records lint and the sweep-sha guard read real git history
+          # (tests/report_claims.py resolves declared shas against the object
+          # store), so a depth-1 checkout would fail them for the wrong reason.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install the package and its dev extra
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+
+      - name: Report the environment
+        run: |
+          python -V
+          echo "cores: $(nproc)"
+          python -m pytest --version
+
+      # THE ONE CARVE-OUT, and the reason this whole workflow exists.
+      #
+      # `test_every_declared_sweep_sha_is_current_or_discharged` asserts that
+      # every `sweep-sha` declared in artifacts/reports/ is either literally
+      # HEAD or discharged to HEAD by a hand-maintained chain. That claim is
+      # HEAD-relative by construction, so it can only hold on the one commit a
+      # wave ends at: at 3bd7199 it already fails for 17 records, because three
+      # report-only commits (edce034, 9c3de22, 3bd7199) moved HEAD past the
+      # v0.19.1 sweep shas. On a pull request it can never hold -- a PR head is
+      # never the sha the records were swept at -- so leaving it in would make
+      # every gate red for a reason that has nothing to do with the change
+      # under review.
+      #
+      # It is deselected by exact node id, and nothing else in that module is:
+      # `test_every_sweep_record_declares_a_sha` and the other 24 tests still
+      # run. #174 is the guard's own bug (self-anchoring reopens on every
+      # report-only commit); #113 step 4 retires this machinery outright, and a
+      # GitHub-signed check run keyed to the sha is what replaces it. Until
+      # then, main itself is red on this node whenever a wave is mid-flight.
+      - name: Records lint and sha guards
+        run: |
+          python -m pytest -q tests/records/ tests/test_sweep_sha_guard.py \
+            --deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'
+
+      # `-n auto --dist loadfile`: loadfile keeps a module's tests on one
+      # worker, which is what this suite's module-scoped fixtures assume
+      # (docs/testing.md, "Recipes"). `auto` rather than a fixed 8 because a
+      # hosted runner is not the 28-core box the budgets were measured on.
+      - name: Fast tier
+        run: |
+          python -m pytest -q -m fast -n auto --dist loadfile --durations=15 \
+            --deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'

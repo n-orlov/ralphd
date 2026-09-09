@@ -1,0 +1,78 @@
+# The nightly lane (#113 step 2): the two host-like dev-layout modes, on the
+# self-hosted runner.
+#
+# `scripts/host_like_dev_layout.sh` runs the whole suite *unfiltered* under a
+# fresh $HOME with a user-base editable install and a shadowing `tests`
+# package on PYTHONPATH ahead of the repo (#50/#64), in the two
+# PYTHONUSERBASE modes the script documents. Unfiltered means it also picks up
+# the docker and browser tiers, which are present on this runner -- so each
+# mode here is strictly more than the 34-36 min the budgets table records for
+# it (that measurement was taken in a job container with no docker socket).
+# Budget 180 min per mode; two modes, serialised by the single runner.
+#
+# Nightly rather than per-merge because it is the most expensive lane we have
+# and the least likely to catch something the fast tier missed. A red nightly
+# is a wave-scope finding, not a merge blocker.
+#
+# NOTE: `schedule` only fires on the repository's default branch, so this
+# workflow does nothing until it is merged to main. Use `workflow_dispatch` to
+# exercise it from a branch.
+name: nightly
+
+on:
+  schedule:
+    # 02:00 UTC -- the VPS is otherwise idle, and this must not sit in front of
+    # a pull request's heavy lanes on the single self-hosted runner.
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dev-layout:
+    name: dev-layout (PYTHONUSERBASE ${{ matrix.mode }})
+    runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
+    timeout-minutes: 180
+    strategy:
+      # Never in parallel: one runner, 4 cores, and each mode wants all of it.
+      max-parallel: 1
+      # One red mode must not cancel the other -- they are separate claims.
+      fail-fast: false
+      matrix:
+        mode: [exported, unset]
+    env:
+      HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE: ${{ matrix.mode }}
+      RALPHD_RUN_ID: ci-nightly-${{ github.run_id }}-${{ matrix.mode }}
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The script installs the package itself, into a user base under its own
+      # scratch $HOME -- deliberately not into a .venv. Nothing to install here.
+      - name: Report the environment
+        run: |
+          echo "mode: $HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE"
+          echo "cores: $(nproc)  mem: $(free -m | awk '/^Mem/{print $2}') MB  swap: $(free -m | awk '/^Swap/{print $2}') MB"
+          python3 -V
+          docker version --format 'docker server={{.Server.Version}}'
+          df -h / | tail -1
+
+      # The script forwards its arguments to its own `pytest` invocation. The
+      # one deselected node is the HEAD-relative sweep-sha drift check that
+      # cannot hold on any commit but a wave's last one -- see the long comment
+      # in gate.yml, #174, and #113 step 4. Everything else runs unfiltered,
+      # which is the whole point of this lane.
+      - name: Dev-layout mode
+        run: |
+          scripts/host_like_dev_layout.sh \
+            --deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'
+
+      - name: Remove this run's test images
+        if: always()
+        run: |
+          docker image rm -f "ralphd:test-${RALPHD_RUN_ID}" || true
+          docker image rm -f "ralphd:test-${RALPHD_RUN_ID}-base" || true
+          df -h / | tail -1

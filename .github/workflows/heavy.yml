@@ -1,0 +1,144 @@
+# The heavy lanes (#113 step 2): the docker tier and the browser tier, on the
+# self-hosted runner.
+#
+# Why self-hosted: both lanes need something a hosted runner cannot give
+# cheaply. The docker tier builds the real job image and drives real sibling
+# containers over a real socket (tests/test_docker_sibling_e2e.py,
+# test_image_real_build.py, test_run_secrets.py,
+# test_sibling_cleanup_job_safe.py -- 24 tests); the browser tier drives a real
+# Google Chrome through `playwright-cli` (45 tests). On a 4-core hosted runner
+# they would also be several times slower than the measured budgets.
+#
+# Where: `ralphd-vps` is the operator's VPS (4 x86_64 cores, 7 GB + 4 GB swap,
+# docker 29.4.0, Chrome installed under /opt/google/chrome with the playwright
+# browser cache shared at /opt/ms-playwright). It runs one job at a time, so
+# the two lanes below serialise rather than contend for those four cores --
+# which is what we want, and why they are separate jobs with separate check
+# runs rather than one job with two steps.
+#
+# When: on every pull request (these are required checks -- a merge waits for
+# them, and auto-merge fires when they go green), and on pushes to main so the
+# shipped sha carries its own attestation. The main-branch runs are
+# cancel-in-progress under a single group: if several merges land in a row, the
+# newest main is the one that gets attested rather than every intermediate sha.
+name: heavy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-tier:
+    name: docker tier
+    runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
+    timeout-minutes: 120
+    concurrency:
+      group: heavy-docker-${{ github.event_name == 'push' && 'main' || github.ref }}
+      cancel-in-progress: true
+    env:
+      # Per-run image tag isolation: tests/test_docker_sibling_e2e.py builds
+      # `ralphd:test-$RALPHD_RUN_ID` (+ `-base`) and labels its siblings
+      # `ralphd.run=$RALPHD_RUN_ID`. Without this the whole tier collapses onto
+      # the shared `ralphd:test-local-dev` fallback, which is exactly the
+      # collision the tag-per-run scheme exists to prevent (F1, #73).
+      # tests/conftest.py strips this variable from every spawned engine's
+      # environment, so it cannot leak into a child as if this were a job
+      # container.
+      RALPHD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Build a clean venv
+        run: |
+          rm -rf .venv
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet --upgrade pip
+          .venv/bin/python -m pip install --quiet -e '.[dev]'
+          .venv/bin/python -V
+
+      - name: Report the environment
+        run: |
+          echo "cores: $(nproc)  mem: $(free -m | awk '/^Mem/{print $2}') MB  swap: $(free -m | awk '/^Swap/{print $2}') MB"
+          docker version --format 'docker client={{.Client.Version}} server={{.Server.Version}}'
+          df -h / | tail -1
+
+      # Serial on purpose for the first measured run: these 24 tests build real
+      # images and run real containers on a 4-core / 7 GB box. Once we have a
+      # number, `-n 2 --dist loadfile` is the next thing to try.
+      - name: Docker tier
+        run: .venv/bin/python -m pytest -q -m docker --durations=15
+
+      # Exact tags only -- never a wildcard or label filter (see the repo's
+      # cleanup discipline: a ralphd host runs other people's containers).
+      # `|| true` because a green tier is expected to have removed them itself;
+      # this is the belt for a red one.
+      - name: Remove this run's test images
+        if: always()
+        run: |
+          docker image rm -f "ralphd:test-${RALPHD_RUN_ID}" || true
+          docker image rm -f "ralphd:test-${RALPHD_RUN_ID}-base" || true
+          df -h / | tail -1
+
+  browser-tier:
+    name: browser tier
+    runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
+    timeout-minutes: 60
+    concurrency:
+      group: heavy-browser-${{ github.event_name == 'push' && 'main' || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Build a clean venv
+        run: |
+          rm -rf .venv
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet --upgrade pip
+          .venv/bin/python -m pip install --quiet -e '.[dev]'
+
+      # The module skips itself when `playwright-cli` is absent
+      # (tests/test_browser_hub.py: `shutil.which("playwright-cli")`), so a
+      # broken toolchain would silently produce a green lane with 45 skips.
+      # Fail here instead, loudly, before the tier runs.
+      - name: Assert the browser toolchain is present
+        run: |
+          command -v playwright-cli
+          playwright-cli --version
+          google-chrome --version
+          echo "PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-<unset>}"
+
+      - name: Browser tier
+        run: .venv/bin/python -m pytest -q -m browser --durations=15
+
+      # A playwright-cli session is a daemon that outlives a killed pytest.
+      # The suite force-closes its own sessions; this catches a cancelled job.
+      # Resolve each candidate PID, verify what it is and who owns it, then
+      # signal that PID -- never a pattern kill, which is how you take out a
+      # process you never meant to touch.
+      - name: Close stray browser sessions
+        if: always()
+        run: |
+          mine=$(id -u)
+          for pid in $(pgrep -u "$mine" -f 'cliDaemon\.js' || true); do
+            cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+            owner=$(stat -c %u "/proc/$pid" 2>/dev/null || true)
+            case "$cmd" in
+              *cliDaemon.js*)
+                if [ "$owner" = "$mine" ]; then
+                  echo "closing stray daemon pid=$pid: $cmd"
+                  kill "$pid" || true
+                fi
+                ;;
+            esac
+          done
