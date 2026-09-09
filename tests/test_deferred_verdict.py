@@ -198,7 +198,15 @@ def test_deferring_the_assigned_task_reorders_it_behind_the_other_runnable_task(
                                           "dependency to open"),
                   lambda s, p: _complete(TASK_2)],
         "review": [],
-    }, tasks, iterations=3)  # _run_resumed seeds iterations_used=1: 2 dispatches
+    # v0.20 task 022 (PRD requirement C.1, #156): an `until` past the job's
+    # own `deadlineAt` is refused at the contract now -- `UNTIL` (2099) is
+    # deliberately "some far future ISO-8601 string" for this module's own
+    # purpose (a task that must wait, not a deadline probe), so this one
+    # real-supervisor accept path widens `job_timeout_s` far enough that
+    # 2099 sits comfortably inside the job's own deadline; the pure
+    # schema/semantic checks above never construct a supervisor at all and
+    # are unaffected.
+    }, tasks, iterations=3, job_timeout_s=10**10)  # _run_resumed seeds iterations_used=1: 2 dispatches
 
     doc = sup.run.read_tasks()
     by_id = {t["id"]: t for t in doc["tasks"]}

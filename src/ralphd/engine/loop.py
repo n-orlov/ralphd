@@ -26,6 +26,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -4437,6 +4438,27 @@ class LoopSupervisor:
         errors = transitions.worker_deferred_report_errors(payload)
         if errors:
             return errors
+        # v0.20 task 022 (PRD requirement C.1, #156): an `until` past the
+        # job's own `deadlineAt` is refused HERE, at the contract -- never
+        # written to the task's record -- because task 022's own sleep
+        # mechanism (`_sleep_until_earliest_deferred`) can never actually
+        # wake a task whose wait outlives the run: the deadline bound
+        # would fire first every time and the task would sit deferred
+        # forever, exactly the "no wake-up mechanism" gap task 021's own
+        # test module flagged as task 022's to close. `transitions.
+        # worker_deferred_report_errors` stays pure/stateless (no
+        # `deadlineAt` of its own to check against), so this half of the
+        # check lives here, where `self._deadline_epoch` actually is --
+        # the same split `worker_unsatisfiable_report_errors`/this
+        # module's other `_apply_worker_*_report` pairs already use
+        # throughout. The hint names the deadline itself so a worker's
+        # re-ask (the contract-fix ladder) has something concrete to
+        # correct `until` against.
+        until = payload.get("until")
+        deadline_at = utc_from_epoch(self._deadline_epoch)
+        if self._parse_iso_epoch(until) > self._parse_iso_epoch(deadline_at):
+            return [f"verdict 'deferred' requires 'until' ({until}) to be "
+                    f"no later than the job deadline ({deadline_at})"]
         if not assigned_task_id:
             return ["verdict 'deferred' requires a task assigned this "
                     "iteration to defer -- there is no separate task_id "
@@ -4465,6 +4487,115 @@ class LoopSupervisor:
                       f"{until}: {reason} (task 021, requirement C.1, "
                       "#156); moved behind every runnable task"))
         return []
+
+    @staticmethod
+    def _parse_iso_epoch(ts: str) -> float:
+        """v0.20 task 022 (PRD requirement C.1, #156): parse an ISO-8601
+        timestamp -- either a worker's own `until` (any form `datetime.
+        fromisoformat` accepts, checked for parseability already by
+        `transitions.worker_deferred_report_errors`) or one of this
+        engine's own `state.utc_from_epoch` strings -- into UTC epoch
+        seconds, so the two can be compared/subtracted directly. A
+        timestamp with no explicit offset is treated as UTC, the same
+        convention `state.utc_from_epoch`/`state.parse_utc` already use
+        everywhere else in this codebase; one WITH an offset (or `Z`) is
+        honoured as given."""
+        parsed = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+
+    @staticmethod
+    def _pending_deferred_tasks(tasks_doc: dict) -> list[dict]:
+        """v0.20 task 022 (PRD requirement C.1, #156): every `pending`
+        task still carrying `deferredUntil` (task 021's own reorder) --
+        the pool `_sleep_until_earliest_deferred` below picks the
+        earliest of. `scheduler.select_next_task` already excludes every
+        one of these from its own candidate pool UNCONDITIONALLY (see
+        that module's own docstring: "whether it is ever picked back up
+        once nothing else is runnable is task 022's sleep mechanism's
+        business, not this pure function's") -- this is that mechanism,
+        layered on top of `select_next_task`'s `None` return rather than
+        a change to the scheduler itself."""
+        return [t for t in tasks_doc.get("tasks", [])
+                if isinstance(t, dict)
+                and t.get("status", "pending") == "pending"
+                and t.get("deferredUntil")]
+
+    async def _sleep_until_earliest_deferred(self, tasks_doc: dict) -> bool:
+        """v0.20 task 022 (PRD requirement C.1, #156): nothing is
+        runnable this pass (`scheduler.select_next_task` returned `None`)
+        and at least one `pending` task is deferred -- sleep until the
+        EARLIEST `deferredUntil` among them, bounded by the job's own
+        `deadlineAt` (never overshoot the run's own clock chasing a wait
+        that outlives it), and record a `deferred_wait` event naming the
+        bound actually used (`boundedBy`: `"until"` or `"deadlineAt"`).
+
+        Returns `True` iff the task's own `until` was the bound used (and
+        was therefore cleared, ready for the very next dispatch) -- the
+        caller `continue`s the outer dispatch loop only in that case; see
+        the two outcomes below.
+
+        Two outcomes, both correct by construction:
+
+        * the task's own `until` arrives first (`boundedBy == "until"`,
+          returns `True`) -- its record is cleared (`deferredUntil`/
+          `deferredReason` popped) in the SAME write this method makes,
+          so `scheduler.select_next_task`'s very next call sees an
+          ordinary, unblocked candidate again -- the caller's `continue`
+          re-enters the dispatch loop immediately, and THAT pass either
+          picks this task up or (another task now outranks it by
+          priority) offers whatever independent task is next in line
+          instead.
+        * the deadline arrives first (`boundedBy == "deadlineAt"`,
+          returns `False`) -- the task's own wait never actually
+          elapsed, so its record is left untouched; the caller must NOT
+          `continue`, and instead falls through to the ordinary "nothing
+          selectable" worker dispatch exactly as it would have without
+          this method existing, which is what keeps this mechanism from
+          ever spinning: a bound that keeps resolving to `"deadlineAt"`
+          would otherwise repeat this SAME sleep forever under this
+          suite's globally instant `asyncio.sleep` (`tests/conftest.py`),
+          since a mocked sleep never actually advances `time.monotonic()`
+          for `budget_left()` to catch. The ordinary dispatch below
+          spends a real iteration instead, so the run converges on
+          budget exhaustion exactly as any other "nothing selectable"
+          pass already does.
+        """
+        deferred = self._pending_deferred_tasks(tasks_doc)
+        earliest_task, earliest_epoch = min(
+            ((t, self._parse_iso_epoch(t["deferredUntil"])) for t in deferred),
+            key=lambda pair: pair[1])
+        deadline_epoch = self._deadline_epoch
+        if earliest_epoch <= deadline_epoch:
+            bound_epoch, bounded_by = earliest_epoch, "until"
+        else:
+            bound_epoch, bounded_by = deadline_epoch, "deadlineAt"
+        wait_s = max(0.0, bound_epoch - time.time())
+        self.run.emit(
+            "deferred_wait", taskId=earliest_task.get("id"),
+            until=earliest_task["deferredUntil"],
+            deadlineAt=utc_from_epoch(deadline_epoch),
+            boundedBy=bounded_by,
+            sleptUntil=utc_from_epoch(bound_epoch),
+            waitedS=round(wait_s, 3))
+        await asyncio.sleep(wait_s)
+        if bounded_by != "until":
+            return False
+        tasks_data = self.run.read_tasks()
+        for t in tasks_data.get("tasks", []):
+            if t.get("id") == earliest_task.get("id"):
+                t.pop("deferredUntil", None)
+                t.pop("deferredReason", None)
+                break
+        self.run.write_tasks(tasks_data)
+        self.run.emit(
+            "log", level="info",
+            message=(f"deferred task {earliest_task.get('id')!r}'s "
+                      f"wait elapsed ({earliest_task['deferredUntil']}); "
+                      "cleared and offered to the scheduler again "
+                      "(task 022, requirement C.1, #156)"))
+        return True
 
     def _apply_worker_petition_declaration(self, payload: dict) -> list[str]:
         """Task 005 PART 1 (#114, closes task 004's residual gap -- see
@@ -6271,6 +6402,25 @@ class LoopSupervisor:
                             "requirement C.2, #149)"),
                         blockedTaskIds=sorted(actionable_ids))
                     await self._maybe_run_midrun_adjudication_episode()
+                # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
+                # and-wake mechanism task 021's own scheduler docstring
+                # promised, "layered on top of this function's `None`
+                # return" -- nothing is runnable this pass and at least
+                # one `pending` task is deferred (excluded from `selected`
+                # by `scheduler.select_next_task` itself, unconditionally).
+                # Skipped when this pass is already busy holding on a
+                # petitioned ancestor just above: that branch still wants
+                # its ordinary worker dispatch a few lines below (a held
+                # plan's normal chance to report `plan_complete`/a fresh
+                # petition), and the two conditions cannot both be true of
+                # the SAME task set anyway -- a deferred task carries no
+                # doomed/petitioned `dependsOn` of its own, so it is never
+                # a member of `blocked_incl_petitioned`.
+                deferred_tasks = self._pending_deferred_tasks(tasks_before)
+                if deferred_tasks and not petition_held_this_pass:
+                    woken = await self._sleep_until_earliest_deferred(tasks_before)
+                    if woken:
+                        continue
             claimed_from = None
             claimed_from_tier: str | None = None
             if isinstance(selected, dict) and selected.get("status") in (

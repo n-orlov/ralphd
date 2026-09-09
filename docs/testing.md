@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5457 tests across 332 modules** at task 021's own commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3892
+collects **5460 tests across 333 modules** at task 022's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3895
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -310,7 +310,13 @@ in a NEW `tests/test_deferred_verdict.py` (schema/semantic checks in
 isolation, the declared `worker_deferred_reordered` table edge, and a
 whole-run reorder proving the picker's next choice really is the OTHER
 runnable task while `status.json`'s `progressBudget` and the approach
-counter both stay untouched) -- all 9 also `smoke`.
+counter both stay untouched) -- all 9 also `smoke`), and 5460 (smoke 3895,
+modules 332->333) by task 022's deferred-wait sleep (PRD requirement C.1,
+#156): 3 new nodes in a NEW `tests/test_deferred_wait.py` (the earliest
+`until` before `deadlineAt` wakes the task and clears its deferral, an
+`until` past `deadlineAt` is bounded by the deadline instead and left
+deferred with no busy-spin, and the contract refuses an `until` past
+`deadlineAt` naming the deadline in its hint) -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

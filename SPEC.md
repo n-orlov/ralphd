@@ -1965,6 +1965,7 @@ reconstruct the whole run, including its restarts.
 | `task` | `taskId`, `oldStatus`, `newStatus` | a task's status changed in `tasks.json` (polled while the agent runs, so it lands mid-iteration) |
 | `signal` | `signal` (`COMPLETE` \| `VERIFIED` \| `taskVerified`), `taskId` | a sentinel was accepted |
 | `progress_claim` | `taskId`, `corroborated`, `deltaSize` | a worker's `progress` block (§4.5) was accepted alongside `no_verdict` -- `corroborated` iff `commit`/`file` evidence lined up with a nonzero workspace-fingerprint delta, or `external` evidence was the first of a consecutive run of tree-delta-free claims on that task; `deltaSize` is `_progress_claim_delta_size()`'s own count of changed paths (task 012, PRD requirement A.2, #156) |
+| `deferred_wait` | `taskId`, `until`, `deadlineAt`, `boundedBy` (`"until"` \| `"deadlineAt"`), `sleptUntil`, `waitedS` | nothing is runnable and at least one `pending` task carries `deferredUntil` (§4.5's `"deferred"` verdict, task 021) -- the engine sleeps until the earliest `deferredUntil`, bounded by the job's own `deadlineAt`; `boundedBy` names which of the two the sleep actually stopped at (v0.20 requirement C.1, #156, task 022) |
 | `steering.received` | `file` | a steering message was stored |
 | `steering.consumed` | `file`, `iteration` | an actionable phase finished cleanly with it (§4.6) |
 | `infra_wait` | the whole `infraWait` payload plus `backoffS` | a backoff wait starts |
