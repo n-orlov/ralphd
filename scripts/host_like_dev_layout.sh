@@ -196,12 +196,45 @@ DEV_USERBASE="$(env -u PYTHONUSERBASE HOME="$DEV_HOME" "$PY" -c 'import site; pr
 PIP_CACHE_DIR="${HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR:-/tmp/host-like-dev-layout-pip-cache}"
 mkdir -p "$PIP_CACHE_DIR"
 
+# Task 066: a developer host's system python3 is frequently PEP 668
+# "externally managed" (Debian/Ubuntu ship an EXTERNALLY-MANAGED marker file
+# in the stdlib dir since python3.11), which makes a bare `pip install --user`
+# against it fail outright with "externally-managed-environment" -- the
+# nightly dev-layout lane's own host hits exactly this. Detect the marker on
+# the SELECTED interpreter ($PY, already checked above to be a non-venv
+# interpreter with user-site enabled) rather than assuming either way, and
+# pass --break-system-packages ONLY when it is present; an interpreter with
+# no marker is invoked exactly as before, with no extra flag.
+EXTERNALLY_MANAGED_MARKER="$("$PY" -c \
+  'import os, sysconfig; print(os.path.join(sysconfig.get_path("stdlib"), "EXTERNALLY-MANAGED"))')"
+PIP_EXTRA_ARGS=()
+if [ -f "$EXTERNALLY_MANAGED_MARKER" ]; then
+  # PEP 668's marker refuses the pip install *action* for this interpreter
+  # no matter what target it is pointed at -- it has no notion of "this
+  # target is a throwaway dir, not the system site-packages", so it blocks
+  # `--user` here exactly as it would block a plain, unqualified install.
+  # --break-system-packages' name describes what it does to the SYSTEM
+  # python (nothing stops you clobbering /usr/lib/python3/dist-packages);
+  # it does the opposite of its name in this script specifically, because
+  # this install's *target* is never the system site-packages: $DEV_USERBASE
+  # was computed above from `site.getuserbase()` evaluated under $DEV_HOME,
+  # and $DEV_HOME is this script's own `mktemp -d` scratch dir (`$SCRATCH`,
+  # removed by the `trap ... EXIT` at the top) -- never `/usr`, and never the
+  # invoking user's real $HOME. So the flag only lifts a blanket refusal that
+  # was never protecting anything reachable from that throwaway path.
+  PIP_EXTRA_ARGS+=(--break-system-packages)
+  echo "host_like_dev_layout.sh: '$PY' is externally managed" \
+       "($EXTERNALLY_MANAGED_MARKER exists) -- installing with" \
+       "--break-system-packages into the throwaway user base" \
+       "$DEV_USERBASE (never the system site-packages)"
+fi
+
 # `.[dev]` pulls in ralphd's own runtime deps (fastapi/uvicorn/pyyaml) AND
 # the test-time deps (pytest, pytest-asyncio, httpx, ...) in one step -- a
 # real developer host's `pip install --user -e ".[dev]"`, not a hand-picked
 # subset that could quietly drift from pyproject.toml's own `dev` extra.
 HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
-  "$PY" -m pip install --user -q --no-warn-script-location -e "$REPO_ROOT[dev]"
+  "$PY" -m pip install --user -q --no-warn-script-location "${PIP_EXTRA_ARGS[@]}" -e "$REPO_ROOT[dev]"
 
 # Verify the install actually did what (a) claims: `ralphd` must now import
 # from under $DEV_HOME's user base, not from wherever this container's own
