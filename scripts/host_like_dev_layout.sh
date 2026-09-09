@@ -239,7 +239,19 @@ HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
 # Verify the install actually did what (a) claims: `ralphd` must now import
 # from under $DEV_HOME's user base, not from wherever this container's own
 # system-wide install lives.
-IMPORT_PATH="$(HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" \
+#
+# Task 068 (steer 005 defect 1): `pip install --user` writes its console
+# scripts (ralphctl, ralphd-engine) into $DEV_USERBASE/bin, a directory that
+# is on no process's PATH by default -- a real developer host gets it onto
+# PATH via ~/.profile (Debian's stock one appends ~/.local/bin), which this
+# throwaway, non-interactive $HOME never sources. Every invocation below that
+# is meant to resolve those console scripts (this import-path check included,
+# since it shares $DEV_HOME/$DEV_USERBASE with both pytest modes and is the
+# cheapest place to prove the directory is findable) must therefore put
+# $DEV_USERBASE/bin first on PATH itself, exactly once, computed here and
+# reused below.
+DEV_USERBASE_BIN_PATH="$DEV_USERBASE/bin:$PATH"
+IMPORT_PATH="$(HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PATH="$DEV_USERBASE_BIN_PATH" \
   "$PY" -c 'import ralphd; print(ralphd.__file__)')"
 case "$IMPORT_PATH" in
   "$REPO_ROOT"/*) ;; # editable install resolves into this checkout's src/
@@ -260,11 +272,19 @@ set +e
 if [ "$PYTHONUSERBASE_MODE" = "unset" ]; then
   echo "host_like_dev_layout.sh: PYTHONUSERBASE_MODE=unset -- running pytest" \
        "with PYTHONUSERBASE unset; \$HOME alone decides the import path"
-  HOME="$DEV_HOME" PIP_CACHE_DIR="$PIP_CACHE_DIR" env -u PYTHONUSERBASE \
-    "$PY" -m pytest -q "$@"
+  # `unset` mode is ONLY about which env var decides the pytest subprocess's
+  # own IMPORT path ($HOME alone, via env -u PYTHONUSERBASE, per the header
+  # above) -- it says nothing about where `pip install --user` put the
+  # console scripts this suite shells out to. Those landed in the SAME
+  # $DEV_USERBASE/bin in both modes (the install step above always exports
+  # PYTHONUSERBASE explicitly), so both modes need that directory on PATH;
+  # putting it on PATH here does not re-introduce PYTHONUSERBASE into the
+  # subprocess's environment and does not weaken this mode's own claim.
+  HOME="$DEV_HOME" PIP_CACHE_DIR="$PIP_CACHE_DIR" PATH="$DEV_USERBASE_BIN_PATH" \
+    env -u PYTHONUSERBASE "$PY" -m pytest -q "$@"
 else
   HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
-    "$PY" -m pytest -q "$@"
+    PATH="$DEV_USERBASE_BIN_PATH" "$PY" -m pytest -q "$@"
 fi
 STATUS=$?
 set -e

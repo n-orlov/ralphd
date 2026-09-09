@@ -160,3 +160,94 @@ def test_script_exits_with_pytests_own_status_on_a_failing_subset(tmp_path):
     result = _run([str(probe)])
     assert result.returncode == 1, result.stdout + result.stderr
     assert "SURVIVED the run" in result.stdout, result.stdout
+
+
+def test_script_puts_the_userbase_bin_directory_on_path_for_the_import_check():
+    """Task 068 (steer 005 defect 1): `pip install --user` writes its console
+    scripts (ralphctl, ralphd-engine) into $DEV_USERBASE/bin, a directory on
+    no process's PATH by default. The import-path check shares $DEV_HOME /
+    $DEV_USERBASE with both pytest invocations below it, so it must resolve
+    PATH the same way they do -- computed once and reused, not recomputed."""
+    text = SCRIPT.read_text()
+    assert 'DEV_USERBASE_BIN_PATH="$DEV_USERBASE/bin:$PATH"' in text, (
+        "the userbase bin directory must be prepended onto PATH, computed"
+        " once from $DEV_USERBASE"
+    )
+    computed_idx = text.index('DEV_USERBASE_BIN_PATH="$DEV_USERBASE/bin:$PATH"')
+    import_idx = text.index("IMPORT_PATH=")
+    assert computed_idx < import_idx, (
+        "DEV_USERBASE_BIN_PATH must be computed before the import-path check"
+        " uses it"
+    )
+    stmt_end = text.index(')"', import_idx)
+    import_stmt = text[import_idx:stmt_end]
+    assert 'PATH="$DEV_USERBASE_BIN_PATH"' in import_stmt, (
+        "the import-path check must hand the pytest/install PATH override to"
+        f" its own subprocess too, got: {import_stmt!r}"
+    )
+
+
+def test_script_puts_the_userbase_bin_directory_first_on_path_for_both_pytest_modes():
+    """Both PYTHONUSERBASE_MODE branches (exported and unset) run pytest
+    against the SAME $DEV_USERBASE/bin console scripts -- the mode only
+    decides whether PYTHONUSERBASE itself reaches the pytest subprocess's
+    *import* path, a separate question from where the console scripts this
+    suite shells out to live. Both branches must therefore export PATH."""
+    text = SCRIPT.read_text()
+    branches_text = text[text.index('if [ "$PYTHONUSERBASE_MODE" = "unset" ]; then'):]
+    assert branches_text.count('PATH="$DEV_USERBASE_BIN_PATH"') >= 2, (
+        "both the 'unset' and 'exported' pytest invocations must put"
+        " $DEV_USERBASE/bin on PATH"
+    )
+    unset_branch = branches_text[: branches_text.index("else")]
+    assert "env -u PYTHONUSERBASE" in unset_branch, (
+        "the 'unset' branch must still strip PYTHONUSERBASE from the pytest"
+        " subprocess's environment -- putting the console-script bin"
+        " directory on PATH must not reintroduce PYTHONUSERBASE"
+    )
+
+
+@pytest.mark.parametrize(
+    "mode_env",
+    [
+        pytest.param(None, id="exported-default-mode"),
+        pytest.param(
+            {"HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE": "unset"}, id="unset-mode"
+        ),
+    ],
+)
+def test_ralphctl_console_script_resolves_into_the_userbase_bin_directory(
+    tmp_path, mode_env
+):
+    """Task 068 (steer 005 defect 1), driven end to end: in EACH
+    PYTHONUSERBASE_MODE, the pytest subprocess's own PATH must resolve
+    `ralphctl` (a console script `pip install --user` wrote into
+    $DEV_USERBASE/bin) to a path under this invocation's own $HOME/userbase --
+    never to this container's system-wide copy at /usr/local/bin/ralphctl
+    (container/Dockerfile:42), which is exactly the copy that has silently
+    masked this defect on every prior green run of this script (steer 005)."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    probe = probe_dir / "test_ralphctl_on_path_probe.py"
+    probe.write_text(
+        "import os\n"
+        "import shutil\n"
+        "\n"
+        "\n"
+        "def test_ralphctl_resolves_under_the_dev_userbase_not_the_system_copy():\n"
+        "    home = os.environ.get('HOME')\n"
+        "    assert home, 'HOME was not exported to the pytest subprocess'\n"
+        "    resolved = shutil.which('ralphctl')\n"
+        "    assert resolved is not None, (\n"
+        "        'ralphctl is not on PATH inside the pytest subprocess -- '\n"
+        "        f'PATH={os.environ.get(\"PATH\")!r}'\n"
+        "    )\n"
+        "    assert resolved.startswith(home), (\n"
+        "        f'ralphctl resolved to {resolved!r}, not under $HOME '\n"
+        "        f'({home!r}) -- PATH did not put $DEV_USERBASE/bin first, '\n"
+        "        'so this resolved the system-wide copy instead'\n"
+        "    )\n"
+    )
+    result = _run([str(probe)], extra_env=mode_env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout, result.stdout
