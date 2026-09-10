@@ -9,7 +9,7 @@ budgets are checked by `tests/test_tier_budgets.py`, which reads this file.
 |---|---|---|---|
 | smoke | `smoke` | the per-task verify pass, and `scripts/final_sha_guards.sh` over the records-guard modules it discovers | in-process engine flows (a supervisor plus scripted attempts, backoffs stubbed), in-process CLI, records lint, in-process hub |
 | fast | `fast` | the final sha of a wave, and any pull request | smoke plus the stub-pi flow modules and the process-boundary CLI tests -- everything outside the nightly lanes |
-| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and the two host-like dev-layout modes |
+| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and the two host-like dev-layout modes -- each dev-layout mode's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered; see the dev-layout rows below |
 
 ## Recipes
 
@@ -83,8 +83,27 @@ tightened as the counts come down -- they are a ratchet, not a target.
 | fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5329 | 322 | 81.04 s | 7000 | 430 | 150 s | < 120 s | met -- 81.04 s inside the 120 s target |
 | fast, serial | `fast` | `-m fast` | 5329 | 322 | 540.44 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
 | records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 201 | 6 | 20.60 s | 300 | 15 | 30 s | < 15 s | MISSED -- 20.60 s measured against the 15 s target (still inside the 30 s ceiling's own headroom); 201 tests inside the 300-test target |
-| dev-layout, `PYTHONUSERBASE` unset | n/a (no marker; the whole suite, unfiltered) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
-| dev-layout, `PYTHONUSERBASE` exported | n/a (no marker; the whole suite, unfiltered) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
+| dev-layout, `PYTHONUSERBASE` unset (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
+| dev-layout, `PYTHONUSERBASE` exported (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
+
+**The two dev-layout rows above are retired measurements (task 076, steer
+008).** `scripts/host_like_dev_layout.sh` no longer runs the whole suite
+unfiltered by default: its own `pytest` invocation now adds `-m fast` unless
+a caller names a different tier through `HOST_LIKE_DEV_LAYOUT_TIER` (see the
+script's own header), including the literal value `unfiltered`, which
+reproduces exactly the recipe the two rows above measured. Both rows are kept
+verbatim -- same recipe text, same counts, same wall clock, same budget
+columns -- because they are still the only measurement this repo has of that
+unfiltered invocation; they are labelled as retired rather than deleted or
+rewritten to a recipe they were never run against. The lane itself (task 077's
+container matrix) now runs each cell under the `fast` selection: the docker
+and browser tiers that selection drops are already covered at the
+gate-blocking level by `.github/workflows/heavy.yml` and do not vary with the
+interpreter a dev-layout cell varies, so the six cells lose no coverage that
+varies with the axis under test. No fresh dev-layout wall-clock measurement
+exists yet for the `-m fast` selection; task 077's own container matrix cells
+are the mechanism that will produce one, as a check-run verdict, never as a
+locally recorded lane sweep (standing rule 1).
 
 Every number in the first five rows above is a fresh run at `9b1a0e2`, taken
 sequentially and never two at once, with the wall clock read off each run's own

@@ -59,10 +59,39 @@
 #
 # Usage: scripts/host_like_dev_layout.sh [pytest args...]
 #
+# Task 076 (steer 008): this is the mechanism the nightly `dev-layout`
+# container matrix (task 077) runs per cell, six times over per push -- so
+# the ONE mechanism this script uses to decide what pytest selects, unless
+# a caller says otherwise, defaults to the `fast` tier rather than the
+# whole suite. The unfiltered whole-suite invocation this script ran through
+# task 075 measured 2047.32 s / 2146.54 s per mode (docs/testing.md); six
+# cells of that would be ~5 h of runner time across two slots. The content a
+# `-m fast` selection drops relative to unfiltered -- the `docker` and
+# `browser` tiers -- is already run at the gate-blocking level by
+# `.github/workflows/heavy.yml` and does not vary with the interpreter or
+# libc a dev-layout cell is exercising, so the matrix loses no coverage that
+# varies with the axis under test by dropping it here. A caller that wants a
+# different selection -- including the retired unfiltered form -- overrides
+# it through ONE env var, HOST_LIKE_DEV_LAYOUT_TIER (see below); nothing else
+# decides tier selection.
+#
+# The sweep-sha carve-out (task 053, not yet landed as of this task): the
+# gate (`.github/workflows/gate.yml`) still runs the `fast` tier with
+# `--deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'`,
+# because that node's own HEAD-relative drift check is meaningless run
+# against an arbitrary, possibly-stale checkout the way this script's own
+# nightly cells are. A caller of this script may pass that exact
+# `--deselect '...'` argument the same way the gate does -- it rides through
+# to the underlying `pytest` invocation via "$@" like any other pytest
+# argument, no separate wiring needed. Once task 053 retires that guard
+# module, this carve-out is gone and there is nothing left to deselect for
+# this reason.
+#
 # Exit code is pytest's own, UNLESS the install/import-path setup itself
-# fails, in which case it is 2 (venv interpreter refused, or an invalid
-# HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE) or 3 (import did not actually
-# move with $HOME -- the setup did not take).
+# fails, in which case it is 2 (venv interpreter refused, an invalid
+# HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE, or an invalid
+# HOST_LIKE_DEV_LAYOUT_TIER) or 3 (import did not actually move with $HOME
+# -- the setup did not take).
 #
 # Env overrides:
 #   PYTHON              interpreter to use instead of the bare `python3` on
@@ -118,6 +147,25 @@
 #                        for the mutation evidence (fails without task 018's
 #                        fixture fix, passes with it) that only the `unset`
 #                        mode can produce.
+#
+#   HOST_LIKE_DEV_LAYOUT_TIER
+#                        Task 076 (steer 008): which pytest marker selection
+#                        this script's own `pytest` invocation carries, ADDED
+#                        to (never instead of) whatever selection the
+#                        caller's own pytest args already request. Defaults
+#                        to `fast` (see the rationale above the Usage line).
+#                        Any other marker expression pytest's own `-m`
+#                        accepts is honoured verbatim (e.g. `smoke`,
+#                        `docker`). The one explicit "no filter" form is the
+#                        literal value `unfiltered`: no `-m` flag is added at
+#                        all, reproducing the whole-suite invocation every
+#                        version of this script ran before task 076 (the two
+#                        measurements in docs/testing.md's dev-layout rows).
+#                        Before running pytest, this script echoes exactly
+#                        which selection it applied, on its own stdout line
+#                        starting `host_like_dev_layout.sh: pytest tier
+#                        selection:` -- the same greppable-report convention
+#                        as the PYTHONUSERBASE_MODE line above.
 
 set -euo pipefail
 
@@ -151,6 +199,20 @@ if ! "$PY" -c "import site,sys; sys.exit(0 if site.ENABLE_USER_SITE else 1)"; th
        "install, so pass PYTHON=<a non-venv interpreter> or leave PYTHON" \
        "unset to use the bare python3 on PATH" >&2
   exit 2
+fi
+
+# --- tier selection (task 076, steer 008): one documented mechanism --------
+# Defaults to `fast`; the literal value `unfiltered` is the explicit
+# "no filter" form. See the header's Usage section and
+# HOST_LIKE_DEV_LAYOUT_TIER entry for the rationale.
+DEV_LAYOUT_TIER="${HOST_LIKE_DEV_LAYOUT_TIER:-fast}"
+PYTEST_TIER_ARGS=()
+if [ "$DEV_LAYOUT_TIER" = "unfiltered" ]; then
+  echo "host_like_dev_layout.sh: pytest tier selection: no marker filter" \
+       "(unfiltered) -- HOST_LIKE_DEV_LAYOUT_TIER=unfiltered"
+else
+  PYTEST_TIER_ARGS=(-m "$DEV_LAYOUT_TIER")
+  echo "host_like_dev_layout.sh: pytest tier selection: -m $DEV_LAYOUT_TIER"
 fi
 
 # --- (b) populate the hostile $HOME BEFORE the install ----------------------
@@ -281,10 +343,10 @@ if [ "$PYTHONUSERBASE_MODE" = "unset" ]; then
   # putting it on PATH here does not re-introduce PYTHONUSERBASE into the
   # subprocess's environment and does not weaken this mode's own claim.
   HOME="$DEV_HOME" PIP_CACHE_DIR="$PIP_CACHE_DIR" PATH="$DEV_USERBASE_BIN_PATH" \
-    env -u PYTHONUSERBASE "$PY" -m pytest -q "$@"
+    env -u PYTHONUSERBASE "$PY" -m pytest -q "${PYTEST_TIER_ARGS[@]}" "$@"
 else
   HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
-    PATH="$DEV_USERBASE_BIN_PATH" "$PY" -m pytest -q "$@"
+    PATH="$DEV_USERBASE_BIN_PATH" "$PY" -m pytest -q "${PYTEST_TIER_ARGS[@]}" "$@"
 fi
 STATUS=$?
 set -e

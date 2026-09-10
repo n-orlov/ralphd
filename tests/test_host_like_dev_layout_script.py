@@ -126,9 +126,17 @@ def test_script_installs_ralphd_so_it_imports_from_this_checkout_via_userbase(tm
     probe_dir.mkdir()
     probe = probe_dir / "test_import_path_probe.py"
     probe.write_text(
+        "import pytest\n"
         "import ralphd\n"
         "\n"
         "\n"
+        # Task 076: the script's own default pytest selection is now `-m
+        # fast` (see scripts/host_like_dev_layout.sh's header) -- this probe
+        # lives outside the repo's own tests/ tree, so tests/conftest.py's
+        # derivation never marks it; it must mark itself `fast` to stay
+        # selected under that default, the same way a real host-repo test
+        # would arrive already marked by that derivation.
+        "@pytest.mark.fast\n"
         "def test_ralphd_imports_from_this_checkout():\n"
         f"    assert ralphd.__file__.startswith({str(REPO)!r}), ralphd.__file__\n"
     )
@@ -156,7 +164,16 @@ def test_script_exits_with_pytests_own_status_on_a_failing_subset(tmp_path):
     probe_dir = tmp_path / "probe"
     probe_dir.mkdir()
     probe = probe_dir / "test_deliberate_failure_probe.py"
-    probe.write_text("def test_fails():\n    assert False\n")
+    # Marked `fast` for the same reason as the import-path probe above --
+    # this probe must survive the script's default `-m fast` selection.
+    probe.write_text(
+        "import pytest\n"
+        "\n"
+        "\n"
+        "@pytest.mark.fast\n"
+        "def test_fails():\n"
+        "    assert False\n"
+    )
     result = _run([str(probe)])
     assert result.returncode == 1, result.stdout + result.stderr
     assert "SURVIVED the run" in result.stdout, result.stdout
@@ -229,11 +246,17 @@ def test_ralphctl_console_script_resolves_into_the_userbase_bin_directory(
     probe_dir = tmp_path / "probe"
     probe_dir.mkdir()
     probe = probe_dir / "test_ralphctl_on_path_probe.py"
+    # Marked `fast` for the same reason as the other probes in this module --
+    # this probe must survive the script's default `-m fast` selection
+    # (task 076).
     probe.write_text(
         "import os\n"
         "import shutil\n"
         "\n"
+        "import pytest\n"
         "\n"
+        "\n"
+        "@pytest.mark.fast\n"
         "def test_ralphctl_resolves_under_the_dev_userbase_not_the_system_copy():\n"
         "    home = os.environ.get('HOME')\n"
         "    assert home, 'HOME was not exported to the pytest subprocess'\n"
@@ -251,3 +274,52 @@ def test_ralphctl_console_script_resolves_into_the_userbase_bin_directory(
     result = _run([str(probe)], extra_env=mode_env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout, result.stdout
+
+
+# --- (e) tier selection (task 076, steer 008) -------------------------------
+# Observed from the script's own reported/echoed invocation, never by running
+# a lane: each case below uses `--collect-only`, which never executes a test,
+# so these stay seconds even though the install step they share with every
+# other test in this module is not.
+
+
+def test_with_no_tier_named_the_invocation_carries_the_fast_selection():
+    """Default: no HOST_LIKE_DEV_LAYOUT_TIER override at all."""
+    result = _run(["--collect-only", "-q"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "host_like_dev_layout.sh: pytest tier selection: -m fast" in result.stdout
+    ), result.stdout
+    assert "unfiltered" not in result.stdout
+
+
+def test_an_explicit_tier_is_carried_instead_of_the_default():
+    """A caller-named tier (here `smoke`) replaces the `fast` default."""
+    result = _run(
+        ["--collect-only", "-q"],
+        extra_env={"HOST_LIKE_DEV_LAYOUT_TIER": "smoke"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "host_like_dev_layout.sh: pytest tier selection: -m smoke" in result.stdout
+    ), result.stdout
+    assert (
+        "host_like_dev_layout.sh: pytest tier selection: -m fast" not in result.stdout
+    ), result.stdout
+
+
+def test_the_explicit_no_filter_form_adds_no_marker_flag():
+    """`unfiltered` is the one documented "no filter" form -- the retired
+    whole-suite invocation every version of this script ran before task 076,
+    still reachable on request."""
+    result = _run(
+        ["--collect-only", "-q"],
+        extra_env={"HOST_LIKE_DEV_LAYOUT_TIER": "unfiltered"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "host_like_dev_layout.sh: pytest tier selection: no marker filter"
+        " (unfiltered)" in result.stdout
+    ), result.stdout
+    assert "-m fast" not in result.stdout
+    assert "-m unfiltered" not in result.stdout
