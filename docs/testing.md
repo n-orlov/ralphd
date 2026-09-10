@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5656 tests across 348 modules** at task 047's re-take commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4075
+collects **5658 tests across 349 modules** at task 048's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4077
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -574,7 +574,25 @@ a provenance-less file keeping the old name masked -- all 5 also `smoke`;
 the sixth is a `@pytest.mark.browser` node driving real Chromium over the
 hub's rendered summary card (the `header: <name>` rows under the `model:`
 row, the ref-derived one as `***`), which is neither fast nor smoke and so
-moves neither count.
+moves neither count, and **5658 (smoke 4077, modules 348->349)** by task
+048's new module `tests/test_llm_header_e2e.py` (#177, requirement J.5's
+last clause -- "at the e2e tier the stub-`pi` ... observes the header on
+a request"): 2 new nodes proving a `--llm-header` merge reaches the
+process that would actually build the outgoing request, not merely the
+config file `start` staged -- a real `ralphd-engine`, spawned through the
+same `STUB_DOCKER_LIVE_ENGINE` knob `tests/test_cli_start_nodetach.py`/
+`tests/test_cli_resume_llm_wiring.py` already use, with
+`live_engine_supervisor.py` now additionally mirroring `container/
+entrypoint.sh`'s own `/config/pi/*` -> `$HOME/.pi/agent/` copy step before
+launch, and `tests/stub-pi/pi` dumping the provider `headers` maps it
+observes in that same ambient `~/.pi/agent/models.json` to a new
+`<run>/.stub-llm-headers.json` marker on every invocation. Both nodes land
+in `smoke` too by the SAME derivation gap `test_cli_start_nodetach.py`/
+`test_cli_resume_llm_wiring.py` already carry -- this module's own source
+names none of `_PROCESS_BOUNDARY_RE`'s literal tokens even though it
+spawns a real engine through that stub chain, so `_module_is_in_process`
+reads it as in-process; disclosed here rather than silently read as proof
+the module is smoke-cheap, and not this task's derivation to fix.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

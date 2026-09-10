@@ -10,12 +10,19 @@ reproducing "the API dies right at job completion" so tests of
 
 Runs detached (its own session) so the `docker run` stub that spawns it can
 return immediately, the way `docker run -d` does.
+
+Task 048 (#177, requirement J.5) added one more piece of the simulation:
+before launching, it copies `<config-dir>/pi/*` into `$HOME/.pi/agent/`,
+the same step `container/entrypoint.sh` performs for a real container, so
+the spawned engine's `pi` invocation sees the same ambient models.json a
+real run would (see main() below).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -40,6 +47,26 @@ def main() -> None:
     run_dir = Path(args.run_dir)
     workspace_dir = args.workspace_dir or str(run_dir / ".workspace")
     Path(workspace_dir).mkdir(parents=True, exist_ok=True)
+
+    # Task 048 (#177, requirement J.5): mirror `container/entrypoint.sh`'s
+    # own "pi provider/model config injected by the CLI" step here, before
+    # the engine (and the `pi` it spawns) ever runs -- otherwise a test
+    # driving `ralphctl start --llm-header`/`--llm <profile>` through this
+    # knob would see the config dir's own `pi/models.json` (already
+    # asserted by tests/test_cli_llm_profiles.py and friends) but never the
+    # ambient-home copy the real container places for `pi` itself to read,
+    # so an e2e assertion that the spawned process actually observes a
+    # header would be checking nothing this stub ever exercised. Same
+    # source, same `[ -d ... ]` guard, same destination as the shell step;
+    # `shutil.copy` in place of `cp *` since we already have the file list.
+    pi_src = Path(args.config_dir) / "pi"
+    if pi_src.is_dir():
+        home_agent_dir = (Path(os.environ.get("HOME", os.path.expanduser("~")))
+                          / ".pi" / "agent")
+        home_agent_dir.mkdir(parents=True, exist_ok=True)
+        for item in pi_src.iterdir():
+            if item.is_file():
+                shutil.copy(item, home_agent_dir / item.name)
 
     env = {
         **os.environ,

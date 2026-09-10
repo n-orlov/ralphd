@@ -510,6 +510,14 @@ Every invocation unconditionally records the exact prompt it received to
 `<run>/.stub-last-prompt` (overwritten) and appends it to
 `<run>/.stub-all-prompts` (delimited by `===PROMPT===`), for tests that need
 to inspect job-context content across phases/iterations.
+
+Every invocation also unconditionally dumps `~/.pi/agent/models.json`'s
+per-provider `headers` maps, if any, to `<run>/.stub-llm-headers.json`
+(task 048, #177, requirement J.5) -- black-box proof that a `--llm-header`
+merged into the config dir's own `pi/models.json` at `start` reaches the
+very process that would use it to build an outgoing request, not merely
+the config file `start` staged. `{}` when the ambient home carries no
+models.json, or no provider declares a `headers` map.
 """
 import json
 import os
@@ -731,6 +739,39 @@ try:
 except BaseException:
     try:
         os.unlink(_env_tmp)
+    except OSError:
+        pass
+    raise
+
+# Task 048 (#177, requirement J.5): likewise dump this invocation's own
+# ambient `~/.pi/agent/models.json` per-provider `headers` maps -- black-
+# box proof that a `--llm-header`-carrying run's merged header reaches the
+# very process that would build the outgoing request from it (this stub
+# stands in for that process), not merely the config dir file `start`
+# staged. Same atomic-write discipline as the env dump above, for the same
+# reason (a poller must never see a truncated/partial document).
+_headers_final = marker("llm-headers.json")
+_headers_tmp = f"{_headers_final}.tmp.{os.getpid()}"
+_models_json = os.path.join(
+    os.environ.get("HOME", os.path.expanduser("~")), ".pi", "agent", "models.json")
+_observed_headers: dict = {}
+if os.path.isfile(_models_json):
+    try:
+        with open(_models_json) as _f:
+            _models_doc = json.load(_f)
+    except (OSError, ValueError):
+        _models_doc = None
+    if isinstance(_models_doc, dict):
+        for _pname, _pcfg in (_models_doc.get("providers") or {}).items():
+            if isinstance(_pcfg, dict) and isinstance(_pcfg.get("headers"), dict):
+                _observed_headers[_pname] = dict(_pcfg["headers"])
+try:
+    with open(_headers_tmp, "w") as _f:
+        json.dump(_observed_headers, _f)
+    os.replace(_headers_tmp, _headers_final)
+except BaseException:
+    try:
+        os.unlink(_headers_tmp)
     except OSError:
         pass
     raise
