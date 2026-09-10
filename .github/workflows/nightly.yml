@@ -107,9 +107,12 @@ jobs:
           docker version --format 'docker server={{.Server.Version}}'
           df -h / | tail -1
 
-      # Mount the checkout read-only, copy it inside, run the script there.
+      # Mount the checkout read-only, copy it inside FIRST, and only then
+      # install or build anything -- the copy precedes every install so that
+      # no root-in-container process can ever touch $GITHUB_WORKSPACE.
       # The ubuntu:24.04 cell -- and ONLY that cell -- installs python3 and
-      # python3-pip first; the two python:*-slim images already ship both.
+      # python3-pip inside the container (after that copy, before the suite);
+      # the two python:*-slim images already ship both.
       # The one deselected node is the HEAD-relative sweep-sha drift check
       # that cannot hold on any commit but a wave's last one (same reason and
       # same exact node id as gate.yml's own deselect, #174, #113 step 4) --
@@ -121,18 +124,18 @@ jobs:
           CELL_IMAGE: ${{ matrix.image }}
           CELL_MODE: ${{ matrix.mode }}
         run: |
-          install_step=""
-          if [ "$CELL_IMAGE" = "ubuntu:24.04" ]; then
-            install_step='apt-get update -qq && apt-get install -y -qq python3 python3-pip >/dev/null'
-          fi
           docker run --rm \
             -e HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE="$CELL_MODE" \
+            -e CELL_IMAGE="$CELL_IMAGE" \
             -v "$GITHUB_WORKSPACE:/src-ro:ro" \
-            "$CELL_IMAGE" bash -c "
+            "$CELL_IMAGE" bash -c '
               set -euo pipefail
-              $install_step
               cp -a /src-ro /src
+              if [ "$CELL_IMAGE" = "ubuntu:24.04" ]; then
+                apt-get update -qq
+                apt-get install -y -qq python3 python3-pip >/dev/null
+              fi
               cd /src
-              scripts/host_like_dev_layout.sh \\
-                --deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'
-            "
+              scripts/host_like_dev_layout.sh \
+                --deselect "tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged"
+            '

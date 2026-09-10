@@ -20,6 +20,7 @@ guard is shown non-vacuous. The fixture is never written under `.github/`.
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 
 import yaml
@@ -41,6 +42,48 @@ DESELECT_NODE = (
     "tests/test_sweep_sha_guard.py::"
     "test_every_declared_sweep_sha_is_current_or_discharged"
 )
+
+# `-v "$GITHUB_WORKSPACE:<container path>:ro"` -- the mount must name the
+# runner's own checkout, not just any read-only path (a `-v /tmp/x:/src-ro:ro`
+# mount satisfies ":ro appears somewhere" while mounting nothing under test).
+WORKSPACE_RO_MOUNT_RE = re.compile(
+    r"-v\s+\"?\$(?:\{)?GITHUB_WORKSPACE(?:\})?:(?P<target>[^\s\":]+):ro\"?"
+)
+# Anything that writes into the tree or the image; each must follow the copy.
+INSTALL_RE = re.compile(r"(apt-get\s+install|apt\s+install|pip3?\s+install)")
+
+
+def _docker_payload_spans(run: str) -> list[tuple[int, int]]:
+    """Return `(start, end)` character spans of `run` that lie inside a
+    `docker run ... bash -c <quoted payload>` command.
+
+    A `host_like_dev_layout.sh` occurrence OUTSIDE every such span runs on the
+    runner itself -- including one appended to the very same `run:` script that
+    also contains the containerized invocation, which a "first `docker run`
+    precedes the first script mention" test would miss.
+    """
+    spans: list[tuple[int, int]] = []
+    idx = 0
+    while True:
+        start = run.find("docker run", idx)
+        if start == -1:
+            return spans
+        marker = run.find("bash -c", start)
+        if marker == -1:
+            spans.append((start, len(run)))
+            return spans
+        cursor = marker + len("bash -c")
+        while cursor < len(run) and run[cursor] in " \t\n\\":
+            cursor += 1
+        if cursor < len(run) and run[cursor] in "\"'":
+            quote = run[cursor]
+            end = run.find(quote, cursor + 1)
+            end = len(run) if end == -1 else end
+            spans.append((start, end))
+            idx = end + 1
+        else:
+            spans.append((start, len(run)))
+            return spans
 
 
 def _load(path: Path) -> dict:
@@ -98,10 +141,18 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
 
     matrix = strategy.get("matrix") or {}
     include = matrix.get("include") or []
-    cells = {(cell.get("image"), cell.get("mode")) for cell in include}
+    listed = [(cell.get("image"), cell.get("mode")) for cell in include]
+    cells = set(listed)
     if cells != EXPECTED_CELLS:
         problems.append(
             f"matrix cells are {sorted(cells)}, expected {sorted(EXPECTED_CELLS)}"
+        )
+    # Set equality alone would accept a seventh, duplicate cell (which really
+    # does schedule a seventh check run): the list length is checked too.
+    if len(listed) != len(EXPECTED_CELLS):
+        problems.append(
+            f"matrix declares {len(listed)} cells, expected exactly "
+            f"{len(EXPECTED_CELLS)}: {listed}"
         )
 
     job_name_field = str(dev_layout.get("name") or "")
@@ -121,24 +172,64 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
 
     run_scripts = [step.get("run", "") for step in steps if step.get("run")]
     joined = "\n".join(run_scripts)
-    if ":ro" not in joined or "docker run" not in joined:
-        problems.append(
-            "no step runs a read-only ($GITHUB_WORKSPACE ... :ro) docker run"
-        )
     if DESELECT_NODE not in joined:
         problems.append(f"the sweep-sha carve-out deselect for {DESELECT_NODE} is missing")
 
-    for run in run_scripts:
-        if "host_like_dev_layout.sh" not in run:
-            continue
-        docker_idx = run.find("docker run")
-        script_idx = run.find("host_like_dev_layout.sh")
-        if docker_idx == -1 or docker_idx > script_idx:
-            problems.append(
-                "scripts/host_like_dev_layout.sh is invoked outside a "
-                "docker run command -- a host-level invocation"
-            )
+    problems.extend(_check_readonly_workspace_mount(run_scripts))
 
+    for run in run_scripts:
+        spans = _docker_payload_spans(run)
+        for match in re.finditer(r"host_like_dev_layout\.sh", run):
+            if not any(start <= match.start() < end for start, end in spans):
+                problems.append(
+                    "scripts/host_like_dev_layout.sh is invoked outside a "
+                    "docker run command -- a host-level invocation"
+                )
+
+    return problems
+
+
+def _check_readonly_workspace_mount(run_scripts: list[str]) -> list[str]:
+    """$GITHUB_WORKSPACE must be mounted `:ro` into a `docker run`, and the
+    mount target must be `cp -a`'d to a DIFFERENT container-local path before
+    anything installs -- the whole point being that no root-in-container
+    process writes into the runner's checkout."""
+    problems: list[str] = []
+    mounted = False
+    for run in run_scripts:
+        if "docker run" not in run:
+            continue
+        match = WORKSPACE_RO_MOUNT_RE.search(run)
+        if match is None:
+            continue
+        mounted = True
+        target = match.group("target").rstrip("/")
+        payload = "".join(run[start:end] for start, end in _docker_payload_spans(run))
+        copy = re.search(
+            rf"cp\s+-a\s+{re.escape(target)}/?\s+(?P<dest>\S+)", payload
+        )
+        if copy is None:
+            problems.append(
+                f"the read-only mount target {target} is never `cp -a`'d to a "
+                "container-local path inside the container"
+            )
+            continue
+        if copy.group("dest").rstrip("/") == target:
+            problems.append(
+                f"`cp -a` copies {target} onto itself -- the build would run "
+                "in the read-only mount"
+            )
+        install = INSTALL_RE.search(payload)
+        if install is not None and install.start() < copy.start():
+            problems.append(
+                f"{install.group(0)!r} runs before the read-only checkout is "
+                f"copied out of {target}"
+            )
+    if not mounted:
+        problems.append(
+            'no step mounts the runner checkout read-only into a docker run '
+            '(-v "$GITHUB_WORKSPACE:<container path>:ro")'
+        )
     return problems
 
 
@@ -231,6 +322,74 @@ def test_nightly_matrix_guard_fires_on_a_host_level_script_invocation(tmp_path):
     fixture = _dump_fixture(tmp_path, "broken-host-invocation.yml", broken)
     problems = check_nightly_matrix(_load(fixture))
     assert any("host-level invocation" in p for p in problems), problems
+
+
+def test_nightly_matrix_guard_fires_on_a_host_invocation_in_the_docker_step(tmp_path):
+    """The host-level invocation need not get its own step: appending one to
+    the SAME `run:` script that carries the containerized invocation must fire
+    too."""
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    steps = broken["jobs"]["dev-layout"]["steps"]
+    for step in steps:
+        if "run" in step and "docker run" in step["run"]:
+            step["run"] = step["run"] + "\nscripts/host_like_dev_layout.sh\n"
+    fixture = _dump_fixture(tmp_path, "broken-host-invocation-same-step.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("host-level invocation" in p for p in problems), problems
+
+
+def test_nightly_matrix_guard_fires_when_a_seventh_duplicate_cell_is_added(tmp_path):
+    """A duplicate cell collapses under set equality but really does schedule
+    a seventh check run, so the count is checked as well."""
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    include = broken["jobs"]["dev-layout"]["strategy"]["matrix"]["include"]
+    include.append(copy.deepcopy(include[0]))
+    fixture = _dump_fixture(tmp_path, "broken-seventh-cell.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("expected exactly" in p for p in problems), problems
+
+
+def test_nightly_matrix_guard_fires_when_the_mount_is_not_the_workspace(tmp_path):
+    """`:ro` appearing somewhere is not enough -- the mount must name
+    $GITHUB_WORKSPACE itself."""
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    for step in broken["jobs"]["dev-layout"]["steps"]:
+        if "run" in step and "docker run" in step["run"]:
+            step["run"] = step["run"].replace(
+                '"$GITHUB_WORKSPACE:/src-ro:ro"', '"/tmp/unrelated:/src-ro:ro"'
+            )
+    fixture = _dump_fixture(tmp_path, "broken-unrelated-mount.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("read-only into a docker run" in p for p in problems), problems
+
+
+def test_nightly_matrix_guard_fires_when_the_copy_is_dropped(tmp_path):
+    """Mounting the workspace read-only without copying it out means the
+    build would run in the read-only mount."""
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    for step in broken["jobs"]["dev-layout"]["steps"]:
+        if "run" in step and "cp -a" in step["run"]:
+            step["run"] = "\n".join(
+                line for line in step["run"].splitlines() if "cp -a" not in line
+            ) + "\n"
+    fixture = _dump_fixture(tmp_path, "broken-no-copy.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("never `cp -a`" in p for p in problems), problems
+
+
+def test_nightly_matrix_guard_fires_when_an_install_precedes_the_copy(tmp_path):
+    """An `apt-get install` ahead of the copy would build against the
+    read-only mount instead of the container-local tree."""
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    for step in broken["jobs"]["dev-layout"]["steps"]:
+        if "run" in step and "cp -a /src-ro /src" in step["run"]:
+            step["run"] = step["run"].replace(
+                "cp -a /src-ro /src",
+                "apt-get install -y -qq python3\n              cp -a /src-ro /src",
+            )
+    fixture = _dump_fixture(tmp_path, "broken-install-before-copy.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("before the read-only checkout is copied" in p for p in problems), problems
 
 
 def test_nightly_matrix_guard_fires_when_the_deselect_is_dropped(tmp_path):
