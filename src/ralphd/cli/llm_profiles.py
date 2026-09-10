@@ -380,6 +380,20 @@ def read_llm_wiring_headers(cdir: Path) -> dict[str, str]:
     file, an unparseable file, or a file recorded before this field
     existed) -- the same "absent, not a crash" discipline every other
     optional wiring field in this module follows.
+
+    PROVENANCE-UNKNOWN FILES ARE MASKED WHOLESALE (task 047 re-take). A
+    `headerRefNames` key is written whenever `headers` is non-empty, even
+    when every value is a literal (then it is an empty list) -- so its
+    ABSENCE beside a non-empty `headers` map means the file was written
+    before task 047 (a task-045-era run), when a `${env:}`/`${file:}`/
+    `${cmd:}` header was RESOLVED into `headers` with nothing recording
+    that it had been a reference. Displaying those raw would publish the
+    resolved secret itself on `status`/the hub/`job.yaml`; "literal" is a
+    guess this reader is not entitled to make, so every value of such a
+    file renders as `MASK`. The name is still shown -- the point of the
+    surface is that the header EXISTS -- and a `resume --llm-header` for
+    that name records real provenance again (`cli.main._read_llm_wiring`
+    reports every name of such a file ref-derived for exactly that reason).
     """
     path = cdir / "llm-wiring.json"
     try:
@@ -391,7 +405,10 @@ def read_llm_wiring_headers(cdir: Path) -> dict[str, str]:
     headers = doc.get("headers")
     if not isinstance(headers, dict):
         return {}
-    ref_names = set(doc.get("headerRefNames") or [])
+    recorded = doc.get("headerRefNames")
+    if recorded is None:
+        return {name: MASK for name in headers}
+    ref_names = set(recorded)
     return {name: (MASK if name in ref_names else value)
             for name, value in headers.items()}
 

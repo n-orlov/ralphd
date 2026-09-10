@@ -104,7 +104,14 @@ Resolution rules:
   ticket id, say) stays visible. The one reader all four non-`llm-show`
   surfaces share is `llm_profiles.read_llm_wiring_headers`, over
   `llm-wiring.json`'s `headers` alongside the new `headerRefNames` list
-  that names which of them came from a reference.
+  that names which of them came from a reference. That list is written
+  whenever `headers` is non-empty — an EMPTY list when every value is a
+  literal — so its absence can only mean the file predates task 047, and
+  for such a file the reader masks every value (the header NAMES still
+  show, and a later `resume --llm-header` records real provenance again):
+  a task-045-era run resolved `${env:}` headers into `headers` with
+  nothing marking them, and "literal" is not a guess a display surface
+  may make about a resolved secret.
 - `ralphctl llm test <profile>` verifies a profile end-to-end with a one-token
   completion in a throwaway container.
 

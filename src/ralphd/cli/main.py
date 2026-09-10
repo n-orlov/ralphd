@@ -451,12 +451,12 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
 
     `header_ref_names` (task 047, #177) is the subset of `headers`' own
     keys whose value came from a `${env:}`/`${file:}`/`${cmd:}` reference
-    rather than a literal -- persisted alongside `headers` as
-    `headerRefNames` so a later reader (`llm_profiles.
-    read_llm_wiring_headers`, the ONE function `ralphctl status`/the hub
-    run header/the redacted `job.yaml` all call) can mask exactly those
-    values without re-resolving anything (which would shell out `${cmd:}`
-    commands again just to render a display string).
+    rather than a literal. Once `headers` is non-empty the `headerRefNames`
+    key is ALWAYS written (an empty list when every value is a literal), so
+    a reader can tell "no refs" from "provenance never recorded": a file
+    written before task 047 has no such key and `llm_profiles.
+    read_llm_wiring_headers` masks EVERY value in it rather than betting a
+    resolved `${env:}` secret sitting in `headers` was a literal.
 
     These values are genuinely secret (the same class of value already
     written unencrypted-but-mode-0600 to `<cdir>/pi/models.json` for
@@ -477,8 +477,8 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
     doc = {"mode": mode, "env": env, "mounts": mounts}
     if headers:
         doc["headers"] = headers
-        if header_ref_names:
-            doc["headerRefNames"] = sorted(n for n in header_ref_names if n in headers)
+        # always recorded now (see the docstring): absence == a pre-047 file
+        doc["headerRefNames"] = sorted(n for n in (header_ref_names or ()) if n in headers)
     path.write_text(json.dumps(doc, indent=2))
     os.chmod(path, 0o600)
 
@@ -488,16 +488,16 @@ def _read_llm_wiring(cdir: Path) -> dict:
     wiring persisted by `_write_llm_wiring` at `start` time, or empty
     defaults for a run started before task 058 (no file at all) or with
     nothing to reproduce. `headers` (task 045, #177) is the resolved
-    `--llm-header` name -> value map, empty for a run started before that
-    field existed or with none set. `headerRefNames` (task 047, #177) is
-    the subset of `headers`' keys that came from a reference, as a `set`
-    ready for `name in ...` membership tests -- empty for a run started
-    before this field existed (every header then renders as literal,
-    which is what a pre-047 run always showed anyway)."""
+    `--llm-header` name -> value map. `headerRefNames` (task 047) is the
+    subset of its keys that came from a reference, as a `set` ready for
+    `name in ...` tests -- and for a file predating that key (no
+    provenance recorded at all) it is EVERY header name, never none."""
     doc = _read_json(_llm_wiring_path(cdir), {}) or {}
+    headers = doc.get("headers") or {}
+    recorded = doc.get("headerRefNames")
     return {"mode": doc.get("mode") or "host", "env": doc.get("env") or {},
-            "mounts": doc.get("mounts") or [], "headers": doc.get("headers") or {},
-            "headerRefNames": set(doc.get("headerRefNames") or [])}
+            "mounts": doc.get("mounts") or [], "headers": headers,
+            "headerRefNames": set(headers if recorded is None else recorded)}
 
 
 def _extra_env_wiring_path(cdir: Path) -> Path:

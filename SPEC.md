@@ -1523,7 +1523,11 @@ read_llm_wiring_headers`) so a header's redaction cannot read differently on
 one surface than another. Every value that came from a
 `${env:}`/`${file:}`/`${cmd:}` reference is already replaced with
 `llm_profiles.MASK`; a literal header value (a plain ticket id) stays
-visible. Empty for a run with no `--llm-header` wiring at all.
+visible. A wiring file written before task 047 carries no `headerRefNames`
+key at all (its `${env:}` headers were already resolved into `headers` with
+nothing recording that they had been references), so every value of such a
+file is masked wholesale rather than guessed literal — the names still
+show. Empty for a run with no `--llm-header` wiring at all.
 
 `runSecretsMount` (v0.19 requirement E.4, #150/#152, task 020) is host-merged
 the same way: `ralphctl start`/`resume` bind a mode-0700 host directory,

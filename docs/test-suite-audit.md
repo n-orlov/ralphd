@@ -1411,3 +1411,19 @@ children" actually requires, so the row below names that replacement.
 | deleted node | surviving cover | landed in |
 |---|---|---|
 | `tests/test_forced_split_budget_task016.py::test_fold_inherited_dependsOn_applies_only_when_absent` | `tests/test_forced_split_budget_task016.py::test_fold_inherited_dependsOn_unions_onto_a_childs_own_deps` (same `@staticmethod`, same inherited value, a widened three-child batch -- but pinning the UNION: a child that declared no `dependsOn` gets the parent's, a child that chained itself behind a sibling gets `["own-dep", "p-dep"]` rather than keeping the sibling alone, and an inherited id the child already names is never duplicated; `tests/test_forced_split_budget_task016.py::test_parent_dependsOn_is_inherited_by_every_child_end_to_end` asserts the same union through the real forced-split pipeline) | task 016, requirement B.1 |
+
+Derivation for task 047's re-take (PRD requirement J.4, #177): the same `-def test_`
+diff, run over this task's own follow-up commit, gives exactly one removed name that
+never reappears as an added one --
+`tests/test_llm_header_visibility.py::test_read_llm_wiring_headers_empty_for_a_pre_047_wiring_file`,
+which pinned the
+behaviour the re-take had to REVERSE: a `llm-wiring.json` written before this task
+records no header provenance, and rendering its values as literals published a
+task-045-era run's already-resolved `${env:}` secret on `ralphctl status`, the hub
+run header and the redacted `job.yaml`. Its replacement in the SAME module pins the
+fail-safe reading (every value of such a file masked, the names still shown), so the
+row below names that replacement.
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `tests/test_llm_header_visibility.py::test_read_llm_wiring_headers_empty_for_a_pre_047_wiring_file` | `tests/test_llm_header_visibility.py::test_read_llm_wiring_headers_masks_every_value_of_a_pre_047_wiring_file` (same fixture shape -- a `headers` map with no `headerRefNames` key at all -- with the opposite, fail-safe verdict: both values render as `***` and the resolved secret appears nowhere in the returned map, while `tests/test_llm_header_visibility.py::test_read_llm_wiring_headers_keeps_literals_visible_for_an_all_literal_file` keeps the "a literal stays visible" half honest via the empty-list provenance a post-047 write always records) | task 047, requirement J.4 |

@@ -16,17 +16,34 @@ profile-level `headers:` shorthand by task 046's own tests
 (`test_cli_llm_profiles.py`); this module adds the header-specific
 assertion (name + masked/literal value both visible in the printed `pi:`
 dump) so all four are pinned in one place.
+
+Two things this module's first take got wrong and now pins explicitly:
+
+* A wiring file written BEFORE this task (task-045-era: `${env:}` headers
+  already resolved into `headers`, no `headerRefNames` key at all) carries
+  no provenance, and reading its values as literals published the resolved
+  secret on `status`/the hub/`job.yaml`. Provenance is now recorded
+  whenever `headers` is non-empty -- an EMPTY list when every value is a
+  literal -- so a missing key means "pre-047, unknown" and every value of
+  such a file renders as `***` on every surface (the NAME still shows).
+* The hub row is asserted in the real rendered page too, not only in the
+  `run_detail` payload: a `@pytest.mark.browser` node here drives Chromium
+  through the same `playwright-cli` harness `tests/test_browser_hub.py`
+  uses and reads the summary card's own rows, so "under the model line"
+  is checked where the operator actually reads it.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
+from test_browser_hub import SCREENSHOTS_DIR, _wait_for, pw  # noqa: F401 (browser fixture)
 from test_cli_llm_profiles import Ctl  # noqa: F401 (fixture factory reused)
-from test_cli_ui import _write_dead_run
+from test_cli_ui import UiServer, _write_dead_run
 
 from ralphd.cli import llm_profiles
 from ralphd.cli.llm_profiles import MASK
@@ -80,15 +97,49 @@ def test_read_llm_wiring_headers_empty_for_no_wiring_file(tmp_path):
     assert llm_profiles.read_llm_wiring_headers(cdir) == {}
 
 
-def test_read_llm_wiring_headers_empty_for_a_pre_047_wiring_file(tmp_path):
-    """A run started before this task (headers present, no
-    `headerRefNames` key at all) renders every header as literal -- the
-    same behaviour it always showed, never a crash on the missing key."""
+def test_read_llm_wiring_headers_masks_every_value_of_a_pre_047_wiring_file(tmp_path):
+    """A run started before this task (headers present, no `headerRefNames`
+    key at all) records NO provenance: its `${env:}` headers were resolved
+    into `headers` and nothing says which ones were references. Rendering
+    those as literals is exactly how the first take of this task leaked a
+    resolved secret onto `status`/the hub, so every value of such a file is
+    masked and only the NAMES stay visible -- never a crash on the missing
+    key, and never a guess that a resolved secret was a literal."""
     cdir = tmp_path / "cdir"
     cdir.mkdir()
     (cdir / "llm-wiring.json").write_text(json.dumps({
-        "mode": "host", "env": {}, "mounts": [], "headers": {"X-Old": "v"}}))
-    assert llm_profiles.read_llm_wiring_headers(cdir) == {"X-Old": "v"}
+        "mode": "host", "env": {}, "mounts": [],
+        "headers": {"X-Old": "v", "X-Token": "resolved-secret-from-env"}}))
+    headers = llm_profiles.read_llm_wiring_headers(cdir)
+    assert headers == {"X-Old": MASK, "X-Token": MASK}
+    assert "resolved-secret-from-env" not in json.dumps(headers)
+
+
+def test_read_llm_wiring_headers_keeps_literals_visible_for_an_all_literal_file(tmp_path):
+    """The empty `headerRefNames` list is what distinguishes "recorded, no
+    refs" from "never recorded" -- an all-literal post-047 file therefore
+    still shows its values, which is why the wholesale masking above is
+    safe rather than a blanket redaction of every header everywhere."""
+    cdir = tmp_path / "cdir"
+    cdir.mkdir()
+    (cdir / "llm-wiring.json").write_text(json.dumps({
+        "mode": "host", "env": {}, "mounts": [],
+        "headers": {"X-Jira-ID": "EST-7"}, "headerRefNames": []}))
+    assert llm_profiles.read_llm_wiring_headers(cdir) == {"X-Jira-ID": "EST-7"}
+
+
+def test_start_records_an_empty_ref_name_list_for_literal_only_headers(ctl):
+    """`start` writes the provenance key whenever it writes `headers`, so a
+    file that omits it can only be a pre-047 one."""
+    ctl.write_profile("acme-lit", {"model": "acme/big", "env": {}})
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme-lit",
+                  "--llm-header", "X-Jira-ID=EST-7", "--run-id", "tst-lit-hdr")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads(
+        ctl.config_dir("tst-lit-hdr").joinpath("llm-wiring.json").read_text())
+    assert doc["headerRefNames"] == []
+    assert llm_profiles.read_llm_wiring_headers(
+        ctl.config_dir("tst-lit-hdr")) == {"X-Jira-ID": "EST-7"}
 
 
 # ------------------------------------------------------- surface 1: llm show
@@ -153,6 +204,25 @@ def test_status_omits_headers_block_for_a_run_with_none(ctl):
     assert "llm headers:" not in res.stdout
     json_res = ctl.run("--json", "status", "tst-status-nohdr")
     assert json.loads(json_res.stdout)["llmHeaders"] == {}
+
+
+def test_status_masks_a_pre_047_runs_headers_wholesale(ctl):
+    """The same provenance-unknown rule, end to end on the surface that
+    consumes the reader: a task-045-era run's resolved `${env:}` value is
+    never printed, while its header NAME still is."""
+    _write_dead_run(ctl.registry, "tst-status-old", model="acme/big-model")
+    cdir = ctl.registry / "configs" / "tst-status-old"
+    cdir.mkdir(parents=True)
+    (cdir / "llm-wiring.json").write_text(json.dumps({
+        "mode": "acme", "env": {}, "mounts": [],
+        "headers": {"X-Token": "resolved-secret-from-env"}}))
+    res = ctl.run("status", "tst-status-old")
+    assert res.returncode == 0, res.stderr
+    assert "resolved-secret-from-env" not in res.stdout
+    assert "X-Token: " + MASK in res.stdout
+    json_res = ctl.run("--json", "status", "tst-status-old")
+    assert json.loads(json_res.stdout)["llmHeaders"] == {"X-Token": MASK}
+    assert "resolved-secret-from-env" not in json_res.stdout
 
 
 # ----------------------------------------------------- surface 3: docs job.yaml
@@ -227,6 +297,21 @@ def test_hub_run_detail_empty_llm_headers_for_a_run_with_no_wiring(tmp_path):
     assert detail["status"]["llmHeaders"] == {}
 
 
+def test_hub_run_detail_masks_a_pre_047_runs_headers_wholesale(tmp_path):
+    registry = tmp_path / "registry"
+    run_id = "tst-hub-old"
+    _write_dead_run(registry, run_id, model="acme/big-model")
+    cdir = registry / "configs" / run_id
+    cdir.mkdir(parents=True)
+    cdir.joinpath("llm-wiring.json").write_text(json.dumps({
+        "mode": "acme", "env": {}, "mounts": [],
+        "headers": {"X-Token": "resolved-secret-from-env"}}))
+    detail = run_detail(registry, run_id)
+    assert detail is not None
+    assert detail["status"]["llmHeaders"] == {"X-Token": MASK}
+    assert "resolved-secret-from-env" not in json.dumps(detail)
+
+
 # --------------------------------------------------------- resume ref tracking
 def test_resume_llm_header_updates_ref_names_last_one_wins(ctl):
     """A literal `--llm-header` at resume for a name the ORIGINAL start
@@ -256,3 +341,82 @@ def test_resume_llm_header_updates_ref_names_last_one_wins(ctl):
 
     display = llm_profiles.read_llm_wiring_headers(ctl.config_dir("tst-resume-hdr"))
     assert display == {"X-Was-Ref": "now-literal", "X-New-Ref": MASK}
+
+
+def test_resume_keeps_a_pre_047_headers_provenance_unknown(ctl):
+    """A `resume --llm-header` over a task-045-era wiring file records
+    provenance for the name it sets and keeps the pre-existing names
+    masked: `_read_llm_wiring` reports every header of a file with no
+    `headerRefNames` key as ref-derived, so re-persisting the merged map
+    cannot silently promote an old resolved secret to "literal"."""
+    ctl.write_profile("acme-old", {"model": "acme/big", "env": {}})
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme-old",
+                  "--run-id", "tst-resume-old")
+    assert res.returncode == 0, res.stderr
+    cdir = ctl.config_dir("tst-resume-old")
+    # rewrite the persisted wiring into the pre-047 shape (headers, no
+    # provenance key at all) -- exactly what a task-045-era run left behind
+    cdir.joinpath("llm-wiring.json").write_text(json.dumps({
+        "mode": "acme-old", "env": {}, "mounts": [],
+        "headers": {"X-Token": "resolved-secret-from-env"}}))
+
+    res2 = ctl.run("resume", "tst-resume-old", "--llm-header", "X-Jira-ID=EST-3")
+    assert res2.returncode == 0, res2.stderr
+    wiring_after = json.loads(cdir.joinpath("llm-wiring.json").read_text())
+    assert wiring_after["headers"] == {"X-Token": "resolved-secret-from-env",
+                                       "X-Jira-ID": "EST-3"}
+    assert set(wiring_after["headerRefNames"]) == {"X-Token"}
+    assert llm_profiles.read_llm_wiring_headers(cdir) == {
+        "X-Token": MASK, "X-Jira-ID": "EST-3"}
+
+
+# ------------------------------------------- surface 4, in the real browser
+def _summary_rows(session) -> list[str]:
+    """The run-detail summary card's own rows, top to bottom, as text."""
+    raw = session.eval_js(
+        "[...document.querySelectorAll('div.card p > div')]"
+        ".map(d => d.textContent).join('\\n')")
+    return [line for line in raw.strip('"').split("\\n") if line]
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(shutil.which("playwright-cli") is None,
+                    reason="playwright-cli not on PATH")
+def test_browser_hub_run_header_shows_headers_under_the_model_line(tmp_path, pw):
+    """The hub half of this task, asserted in the RENDERED page rather than
+    in `run_detail`'s payload: a real Chromium loads the run view and the
+    summary card shows one `header: <name>` row per header, positioned
+    after the `model:` row, with the ref-derived value as `***` and the
+    literal one intact -- and the resolved secret nowhere in the page."""
+    registry = tmp_path / "registry"
+    run_id = "run-llm-headers"
+    _write_dead_run(registry, run_id, state="succeeded", model="acme/big-model")
+    cdir = registry / "configs" / run_id
+    cdir.mkdir(parents=True)
+    cdir.joinpath("llm-wiring.json").write_text(json.dumps({
+        "mode": "acme", "env": {}, "mounts": [],
+        "headers": {"X-Jira-ID": "EST-6588", "X-Token": "resolved-secret-from-env"},
+        "headerRefNames": ["X-Token"]}))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/{run_id}")
+        body_text = _wait_for(pw, "document.body.innerText", "header: X-Token")
+        assert "resolved-secret-from-env" not in body_text, body_text
+        page_html = pw.eval_js("document.documentElement.outerHTML")
+        assert "resolved-secret-from-env" not in page_html
+
+        rows = _summary_rows(pw)
+        model_row = next(i for i, r in enumerate(rows) if r.startswith("model: "))
+        token_row = next(i for i, r in enumerate(rows)
+                         if r.startswith("header: X-Token: "))
+        jira_row = next(i for i, r in enumerate(rows)
+                        if r.startswith("header: X-Jira-ID: "))
+        assert model_row < token_row and model_row < jira_row, rows
+        assert rows[token_row] == "header: X-Token: " + MASK, rows[token_row]
+        assert rows[jira_row] == "header: X-Jira-ID: EST-6588", rows[jira_row]
+        assert rows[model_row].startswith("model: acme/big-model"), rows[model_row]
+        pw.screenshot(SCREENSHOTS_DIR / "20-llm-headers-under-model-line.png")
+    finally:
+        server.stop()

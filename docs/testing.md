@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5651 tests across 348 modules** at task 047's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4070
+collects **5656 tests across 348 modules** at task 047's re-take commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4075
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -561,7 +561,20 @@ edge cases), `ralphctl llm show <profile>` (text and `--json`),
 job.yaml` (text and `--json`, the real ref-resolved value never even
 reaching disk), `ui_server.run_detail` (present and empty cases), and
 `resume --llm-header`'s ref-name merge -- none spawn a real engine/
-`ralphctl` process, so all 13 are also `smoke`.
+`ralphctl` process, so all 13 are also `smoke`, and **5656 (smoke 4075,
+modules unchanged at 348)** by task 047's RE-TAKE in that SAME module (#177):
+5 further in-process nodes and one browser-tier node, for the
+provenance-unknown fix -- a pre-047 `llm-wiring.json` (a `headers` map with
+no `headerRefNames` key) masking EVERY value instead of publishing a
+task-045-era run's resolved `${env:}` secret, the all-literal post-047 file
+still showing its values, `start` recording the empty provenance list that
+distinguishes the two, and the same wholesale masking asserted end to end on
+`ralphctl status` and `ui_server.run_detail`, plus `resume --llm-header` over
+a provenance-less file keeping the old name masked -- all 5 also `smoke`;
+the sixth is a `@pytest.mark.browser` node driving real Chromium over the
+hub's rendered summary card (the `header: <name>` rows under the `model:`
+row, the ref-derived one as `***`), which is neither fast nor smoke and so
+moves neither count.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
