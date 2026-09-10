@@ -1031,7 +1031,22 @@ if "Role: Planner" in prompt:
     # any `status` key an override supplies is stripped before the
     # proposal is drafted; the harness always initialises every ingested
     # task to `pending` itself regardless.
-    override = os.environ.get("STUB_TASKS_JSON")
+    # STUB_PLANNING_RETRY_TASKS_JSON (task 029, #157): a SECOND tasks list,
+    # used only once this same planning attempt's own prompt already
+    # carries `enforce_plan_ingestion`'s own re-prompt marker text ("Your
+    # previous plan-proposal.json was rejected") -- i.e. only on a retry
+    # AFTER the ingestion lint refused the first attempt's proposal, never
+    # on the very first attempt. Lets a flow test drive the real
+    # oversized-then-staged resubmission cycle through a genuine subprocess:
+    # STUB_TASKS_JSON supplies the FIRST (oversized, unstaged) proposal,
+    # this supplies the SECOND (staged) one the retry submits, with no
+    # marker file needed -- the retry re-prompt text the engine itself
+    # writes is the signal.
+    retry_override = os.environ.get("STUB_PLANNING_RETRY_TASKS_JSON")
+    if retry_override and "plan-proposal.json was rejected" in prompt:
+        override = retry_override
+    else:
+        override = os.environ.get("STUB_TASKS_JSON")
     if override:
         tasks = [{k: v for k, v in t.items() if k != "status"}
                  for t in json.loads(override)]

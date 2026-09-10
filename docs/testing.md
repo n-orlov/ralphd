@@ -200,7 +200,7 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5552 tests across 339 modules** at task 028's commit, over
+collects **5553 tests across 339 modules** at task 029's commit, over
 the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3987
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
@@ -406,7 +406,16 @@ field and a non-numeric/non-dict task both defaulting to 3),
 `LoopSupervisor._progress_budget_for()` agreeing with that same shared
 reader exactly, and `ralphctl tasks`'s new ` (est N)` column on an
 on-disk snapshot (an explicit estimate, the default, and every row
-carrying it regardless of status) -- all also `smoke`.
+carrying it regardless of status) -- all also `smoke`, and **5553 (smoke
+unchanged at 3987, modules unchanged at 339)** by task 029's one new node
+in the SAME `tests/flows/test_flow_peer_gates.py` module (no new module):
+a sixth flow -- an oversized, unstaged `estimatedIterations: 4` task
+refused at ingestion (naming the offending task in a `contract.violation`
+event, before `plan_review` is ever invoked), the same planning approach
+re-prompted, and a genuinely staged resubmission accepted and approved by
+`plan_review`'s own single invocation -- fast-only like every other node
+in this module (it spawns a real engine subprocess), so smoke does not
+move.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

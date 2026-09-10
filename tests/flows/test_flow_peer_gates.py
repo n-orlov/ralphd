@@ -56,13 +56,37 @@ worker/verify portion of the sequence to a single iteration -- the two gates
 are what this module is about, not the plan's own size. The vigilant
 composition keeps two tasks on purpose: "both mechanisms fire on every task
 the plan carries" is exactly what it asserts, and one task cannot show it.
+
+A sixth scenario (task 029, #157, requirement D.2/D.4) drives an OVERSIZED
+plan through the same `peer_plan_review` pipeline: the planner's first
+proposal carries a single task with `estimatedIterations: 4` and no staged
+decomposition, which `plan_ingestion.enforce_plan_ingestion` refuses --
+naming the offending task in a `contract.violation` event -- strictly
+BEFORE `plan_review` is ever invoked (`_step_planning` runs the whole
+ingestion retry loop first; the peer gate is the next state after ingestion
+succeeds, never a participant in it). That refusal folds the offending
+task's own errors into the very next planning re-prompt, so the SECOND
+`iteration:planning` call is the re-ask this requirement's own D.2 wording
+asks for; it resubmits a genuinely staged proposal (the oversized parent
+plus two dependency-chained `Stage N` tasks with measurable criteria),
+which ingestion accepts, and `plan_review`'s own single invocation then
+approves it for real, reaching the run's ordinary success edge
+(`test_an_oversized_unstaged_task_is_refused_at_ingestion_then_a_staged_
+resubmission_reaches_plan_review_and_the_run_succeeds`). This is a true
+account of the real pipeline, not a simplification: `plan_review.md`'s own
+checklist item 8 asks the peer to catch the SAME shape as a second,
+near-miss-only line of defence, but the ingestion lint is the one that
+actually fires first on an exact-shape violation like this one, which is
+exactly why task 026 built it as an ingestion-time refusal in the first
+place rather than leaving the peer hat as the only backstop.
 """
 
 from __future__ import annotations
 
 import json
 
-from tests.flows.flowlib import assert_step_sequence, flow_steps, status, tasks
+from tests.flows.flowlib import (
+    assert_step_sequence, events_of, flow_steps, status, tasks)
 
 
 def test_a_plan_review_objection_spends_a_revision_then_approves(engine_factory):
@@ -373,3 +397,94 @@ def test_a_malformed_verdict_gate_reply_defaults_to_rejected_and_fails_open(
         f"flow peer gates (verdict gate malformed): an incurable last-"
         f"approach rejection must never pause, got "
         f"{st.get('pauseReason')!r}")
+
+
+def test_an_oversized_unstaged_task_is_refused_at_ingestion_then_a_staged_resubmission_reaches_plan_review_and_the_run_succeeds(
+        engine_factory):
+    """Task 029 (requirement D.2/D.4, #157): the planner's FIRST proposal
+    is one flat task carrying `estimatedIterations: 4` and no staged
+    decomposition -- `plan_ingestion.enforce_plan_ingestion` refuses it
+    (naming task `001` in a `contract.violation` event, before
+    `plan_review` is ever invoked) and re-prompts the SAME planning
+    approach; the stub's second `Role: Planner` invocation (recognising the
+    engine's own "your previous plan-proposal.json was rejected" re-prompt
+    text -- `STUB_PLANNING_RETRY_TASKS_JSON`) resubmits a genuinely staged
+    proposal: the same oversized parent beside two dependency-chained
+    `Stage N` tasks with their own measurable criteria. Ingestion accepts
+    that one, `plan_review`'s single invocation approves it (no objection
+    knob set), and the three tasks run to completion."""
+    oversized_only = json.dumps([
+        {"id": "001", "title": "the big oversized thing",
+         "successCriteria": "the big oversized thing is verifiably finished",
+         "estimatedIterations": 4},
+    ])
+    staged = json.dumps([
+        {"id": "001", "title": "the big oversized thing",
+         "successCriteria": "the big oversized thing is verifiably finished",
+         "estimatedIterations": 4},
+        {"id": "002", "title": "Stage 1: first half",
+         "successCriteria": "`tests/test_flow_stage_a.py` passes with at "
+                             "least 3 tests",
+         "dependsOn": ["001"]},
+        {"id": "003", "title": "Stage 2: second half",
+         "successCriteria": "`tests/test_flow_stage_b.py` passes with at "
+                             "least 3 tests",
+         "dependsOn": ["002"]},
+    ])
+    run = engine_factory(
+        job={"run_id": "flow-plan-oversized-task-staged", "on_complete": "exit",
+             "peer_plan_review": True, "max_approaches": 1},
+        stub_env={"STUB_TASKS_JSON": oversized_only,
+                  "STUB_PLANNING_RETRY_TASKS_JSON": staged})
+    assert run.proc.wait(timeout=60) == 0, (
+        "flow peer gates (oversized task staged): the engine did not exit "
+        "0 after the staged resubmission's own plan_review invocation "
+        "approved")
+
+    assert_step_sequence(flow_steps(run), [
+        "state:running",
+        "phase:planning@1",
+        "iteration:planning",              # oversized, unstaged -- refused
+        "iteration:planning",               # staged resubmission -- accepted
+        "phase:plan_review@1",
+        "iteration:plan_review",           # approves
+        "iteration:worker",                # 001 (no deps)
+        "iteration:worker",                # 002 (Stage 1, depends on 001)
+        "iteration:worker",                # 003 (Stage 2, depends on 002)
+        "signal:COMPLETE",
+        "phase:review@1",
+        "iteration:review",
+        "verdict:review:verified@1",
+        "signal:VERIFIED",
+        "state:succeeded",
+    ], flow="flow peer gates (oversized task staged)")
+
+    st = status(run)
+    assert (st.get("state"), st.get("verdict")) == ("succeeded", "verified"), (
+        f"flow peer gates (oversized task staged): expected succeeded/"
+        f"verified, got state={st.get('state')!r} verdict="
+        f"{st.get('verdict')!r}")
+    # plan_review never had to spend a revision of its own -- the refusal
+    # that actually blocked the first proposal was ingestion's, not the
+    # peer's, and the peer's own single invocation approved outright.
+    assert st.get("planReviewRevisions") in (None, {}), (
+        f"flow peer gates (oversized task staged): plan_review approved on "
+        f"its first invocation, so no revision should be recorded against "
+        f"it, got {st.get('planReviewRevisions')!r}")
+
+    ts = tasks(run)
+    assert ts and all(t["status"] == "completed" for t in ts), ts
+    assert {t["id"] for t in ts} == {"001", "002", "003"}, (
+        f"flow peer gates (oversized task staged): the staged resubmission "
+        f"is the plan that actually ran, got {[t['id'] for t in ts]!r}")
+
+    # the ingestion refusal itself: a `contract.violation` naming task 001
+    # and the estimatedIterations bound, on the very first attempt.
+    violations = events_of(run, "contract.violation")
+    assert violations and violations[0].get("hat") == "planning", (
+        f"flow peer gates (oversized task staged): expected at least one "
+        f"planning contract.violation event, got {violations!r}")
+    first_errors = " ".join(violations[0].get("errors") or [])
+    assert "'001'" in first_errors and "estimatedIterations" in first_errors, (
+        f"flow peer gates (oversized task staged): the ingestion refusal "
+        f"must name the offending task, got errors={first_errors!r}")
