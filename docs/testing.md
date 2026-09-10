@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5580 tests across 341 modules** at task 032's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4013
+collects **5585 tests across 342 modules** at task 033's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4018
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -446,7 +446,17 @@ verification and record tasks, `dependsOn` chained cure -> verification
 -> record), and the emitted `approach.cure_pass` event's own `taskIds`
 naming every id a real `_step_review()` pass inserted or reopened -- all
 also `smoke` (in-process `insert_cure_tasks` calls and one
-`LoopSupervisor._step_review()` pass, no real engine subprocess).
+`LoopSupervisor._step_review()` pass, no real engine subprocess), and
+**5585 (smoke 4018, modules 341->342)** by task 033's own new
+`tests/test_cure_freeze_ordering.py` (5 nodes, PRD requirement E.4,
+#167): `last_code_touching_task_id`'s standing-rules-override and
+task-self-declaring-fallback lookups, a cure task landing immediately
+before the named freeze task (`_insert_before_id`), a re-take task
+landing immediately after it (`_insert_after_id`), several cure/re-take
+tasks from two findings staying in finding order rather than reversed,
+and the append-at-the-end fallback when the plan names no such task
+anywhere -- all also `smoke` (in-process `insert_cure_tasks` calls, no
+real engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

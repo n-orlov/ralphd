@@ -1997,6 +1997,28 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   a no-op, unchanged from before. Tests: `tests/test_cure_invalidates.py`
   (task 032's own module: the per-path insertion, the lane re-open chain,
   and the emitted event's own `taskIds`).
+- **Cure tasks land before the frozen tail, re-take tasks after it (v0.20
+  requirement E.4, #167, task 033).** `insert_cure_tasks` no longer only
+  ever `tasks.append`s: `state.last_code_touching_task_id(run, tasks)`
+  finds the plan's own named last-code-touching task -- an explicit
+  override in the harness's pinned standing rules (`RunDir.read_standing_
+  rules()`, searched for the phrase "last code-touching task" with a task
+  id nearby), checked first, then a task's own text self-declaring the
+  role (the same phrase, in its `title`/`successCriteria`/`description`)
+  -- and `None` when neither source names one. Every freshly-appended cure
+  task is spliced immediately BEFORE that task (`_insert_before_id`);
+  every freshly-appended re-take task immediately AFTER it
+  (`_insert_after_id`); several of either kind from one cure pass land in
+  finding order, never reversed, because each call re-finds its anchor's
+  CURRENT position rather than a cached one. A REOPENED record/
+  verification task's own list position is untouched -- only `status`/
+  `dependsOn` change for those, since they already sit at the plan's own
+  final-lane-evidence tail. When the plan names no such task at all, both
+  kinds fall back to `tasks.append`, exactly as every approach before this
+  task. Tests: `tests/test_cure_freeze_ordering.py` (task 033's own
+  module: the standing-rules override, the task-self-declaring fallback,
+  several cure/re-take tasks staying in finding order, and the
+  append-at-the-end ordering used when the plan names no such task).
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
   from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
   final approach's all-curable rejection takes `rejected_last_approach` into

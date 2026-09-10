@@ -3539,6 +3539,137 @@ def _retake_task_from_path(approach: int, index: int, path_index: int,
     }
 
 
+# Task 033 (PRD requirement E.4, #167): the phrase a plan uses to name its
+# own last code-touching task -- either an explicit override in the
+# standing rules (planning.md practice 9: "the standing rules name the
+# last code-touching task") or a task's own text self-declaring the role
+# (the PRD's own K-series convention, "This is the last code-touching
+# task"). Matched case-insensitively with an optional space/hyphen between
+# each word, so "last code touching task" and "last-code-touching task"
+# are the same phrase.
+_LAST_CODE_TOUCHING_PHRASE_RE = re.compile(
+    r"last[\s-]code[\s-]touching\s+task", re.IGNORECASE)
+
+# The window (characters) either side of a phrase match `_nearest_known_
+# task_id` searches for a task id token in -- generous enough for "The
+# last code-touching task is still **053** (retiring ...)" or "**053**
+# ... is the last code-touching task", never so wide it picks up an
+# unrelated id from a different sentence.
+_LAST_CODE_TOUCHING_ID_WINDOW = 80
+
+_TASK_ID_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+def _nearest_known_task_id(text: str, match_start: int, match_end: int,
+                           known_ids: set) -> str | None:
+    """The first token within `_LAST_CODE_TOUCHING_ID_WINDOW` characters of
+    a `_LAST_CODE_TOUCHING_PHRASE_RE` match at `[match_start, match_end)`
+    that is a member of `known_ids` -- checked AFTER the phrase first (the
+    ordinary "the last code-touching task is still 053" phrasing), then
+    BEFORE it ("053 ... is the last code-touching task"), so either
+    direction is found. Never a bare numeric substring: `_TASK_ID_TOKEN_RE`
+    matches whole tokens only, and membership is checked against actual
+    task ids, so an unrelated nearby number (a PR/issue number, a percent)
+    never matches unless a task genuinely carries that id.
+    """
+    window_after = text[match_end:match_end + _LAST_CODE_TOUCHING_ID_WINDOW]
+    for token in _TASK_ID_TOKEN_RE.findall(window_after):
+        if token in known_ids:
+            return token
+    window_before = text[max(0, match_start - _LAST_CODE_TOUCHING_ID_WINDOW):match_start]
+    for token in reversed(_TASK_ID_TOKEN_RE.findall(window_before)):
+        if token in known_ids:
+            return token
+    return None
+
+
+def last_code_touching_task_id(run: "RunDir", tasks: list) -> str | None:
+    """Task 033 (PRD requirement E.4, #167): the id of the plan's own
+    named last-code-touching task, or `None` when the plan names no such
+    task at all -- the fallback case `insert_cure_tasks` below preserves
+    today's append-at-the-end ordering for.
+
+    Two sources, an explicit standing-rules override checked before a
+    task's own self-declared default (mirrors planning.md's own practice:
+    a task says of itself "this is the last code-touching task ... unless
+    the plan names a later one explicitly in the standing rules"):
+
+    1. `run.read_standing_rules()` -- the harness's own pinned copy of the
+       notes' `## Standing rules` block (`RunDir.read_standing_rules`) --
+       searched for `_LAST_CODE_TOUCHING_PHRASE_RE` with a task id found
+       nearby (`_nearest_known_task_id`).
+    2. Failing that, each task's own `title`/`successCriteria`/
+       `description`, in plan order and in that field order, for the
+       first task whose own text carries the phrase -- the match itself
+       identifies the task, no id lookup needed.
+
+    Never invented from a hardcoded id: absence of the phrase anywhere in
+    either source returns `None`, exactly as absence of the lane-evidence
+    shape `_lane_evidence_record_chain` looks for returns `(None, [])`.
+    """
+    known_ids = {t.get("id") for t in tasks
+                 if isinstance(t, dict) and t.get("id")}
+    standing_rules = run.read_standing_rules()
+    if standing_rules:
+        for match in _LAST_CODE_TOUCHING_PHRASE_RE.finditer(standing_rules):
+            found = _nearest_known_task_id(
+                standing_rules, match.start(), match.end(), known_ids)
+            if found is not None:
+                return found
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if not tid:
+            continue
+        for field in ("title", "successCriteria", "description"):
+            value = t.get(field)
+            if isinstance(value, str) and _LAST_CODE_TOUCHING_PHRASE_RE.search(value):
+                return tid
+    return None
+
+
+def _insert_before_id(tasks: list, new_task: dict, anchor_id: str | None) -> bool:
+    """Task 033 (PRD requirement E.4, #167): splice `new_task` into `tasks`
+    immediately before the task whose id is `anchor_id`, re-finding
+    `anchor_id`'s CURRENT index on every call (never a cached index) --
+    `True` on success. A sequence of calls sharing the same `anchor_id`
+    (one per cure task in a finding-order loop) lands every entry in
+    finding order immediately to the left of the anchor: each insert
+    lands at the anchor's current position, pushing the anchor (and
+    nothing already inserted, which sits to its left) one slot right.
+    `False`, a no-op on `tasks`, when `anchor_id` is `None` or not found
+    -- the caller's job to fall back to `tasks.append(new_task)` in that
+    case, exactly as before this task.
+    """
+    if anchor_id is None:
+        return False
+    for i, t in enumerate(tasks):
+        if isinstance(t, dict) and t.get("id") == anchor_id:
+            tasks.insert(i, new_task)
+            return True
+    return False
+
+
+def _insert_after_id(tasks: list, new_task: dict, anchor_id: str | None) -> bool:
+    """Task 033 (PRD requirement E.4, #167): the mirror of `_insert_before_
+    id` -- splice `new_task` immediately AFTER the task whose id is
+    `anchor_id`. A caller inserting several re-take tasks in finding order
+    passes each one's OWN newly-inserted id as the NEXT call's `anchor_id`
+    (rather than always the frozen tail's own id) so each new entry lands
+    right after the previous one, not all repeatedly right after the tail
+    (which would land them in REVERSE finding order). `False`, a no-op, on
+    the same absent/not-found cases `_insert_before_id` refuses.
+    """
+    if anchor_id is None:
+        return False
+    for i, t in enumerate(tasks):
+        if isinstance(t, dict) and t.get("id") == anchor_id:
+            tasks.insert(i + 1, new_task)
+            return True
+    return False
+
+
 def _failed_task_ids_named_in(text: str, tasks: list) -> list:
     """Task 041 (PRD requirement C.4, #149): every `failed` task in
     `tasks` whose id appears in `text` (a finding's own `evidence`
@@ -3645,16 +3776,34 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     A finding with no `invalidates` (absent, or an empty list -- every
     fixture predating this task) leaves this loop a no-op, so the return
     value is unchanged from before this task in that case.
+
+    Task 033 (PRD requirement E.4, #167): every cure task this call
+    appends -- always the product of a BLOCKING review finding, so
+    always a code cure in the sense this requirement means -- is spliced
+    in immediately before the plan's own named last-code-touching task
+    (`last_code_touching_task_id`), in finding order, rather than
+    appended at the very end; every freshly-appended re-take task
+    (`_retake_task_from_path`'s branch just below) is spliced in
+    immediately after it instead, also in finding order. Neither move
+    touches a REOPENED record/verification task's own position -- only
+    `status`/`dependsOn` change for those, exactly as before this task --
+    since those already sit at the plan's own final-lane-evidence tail.
+    When the plan names no such task (`last_code_touching_task_id`
+    returns `None`), both kinds fall back to `tasks.append`, unchanged
+    from every approach before this task.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
     existing_ids = {t.get("id") for t in tasks if isinstance(t, dict)}
+    freeze_id = last_code_touching_task_id(run, tasks)
+    retake_anchor_id = freeze_id
     inserted: list = []
     for index, finding in enumerate(blocking, start=1):
         new_task = cure_task_from_finding(approach, index, finding)
         new_task["id"] = _unique_task_id(new_task["id"], existing_ids)
         cure_task_id = new_task["id"]
-        tasks.append(new_task)
+        if not _insert_before_id(tasks, new_task, freeze_id):
+            tasks.append(new_task)
         existing_ids.add(cure_task_id)
         inserted.append(cure_task_id)
         for failed_id in _failed_task_ids_named_in(
@@ -3688,7 +3837,9 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
                     approach, index, path_index, path, cure_task_id)
                 retake_task["id"] = _unique_task_id(
                     retake_task["id"], existing_ids)
-                tasks.append(retake_task)
+                if not _insert_after_id(tasks, retake_task, retake_anchor_id):
+                    tasks.append(retake_task)
+                retake_anchor_id = retake_task["id"]
                 existing_ids.add(retake_task["id"])
                 inserted.append(retake_task["id"])
     if inserted:
