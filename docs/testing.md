@@ -200,7 +200,7 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5585 tests across 342 modules** at task 033's commit, over
+collects **5586 tests across 342 modules** at task 034's commit, over
 the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4018
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
@@ -456,7 +456,14 @@ landing immediately after it (`_insert_after_id`), several cure/re-take
 tasks from two findings staying in finding order rather than reversed,
 and the append-at-the-end fallback when the plan names no such task
 anywhere -- all also `smoke` (in-process `insert_cure_tasks` calls, no
-real engine subprocess).
+real engine subprocess), and **5586 (smoke 4018, modules unchanged at
+342)** by task 034's own one new node appended to
+`tests/flows/test_flow_cure_pass.py` (PRD requirement E.3/E.4 replay,
+#167, #171): a real `ralphd-engine` subprocess replays the v0.19.1
+approach-2 incident (a curable rejection whose cure `invalidates` a
+recorded sweep) end to end, over the stub `pi` binary's new
+`STUB_REVIEW_CURABLE_INVALIDATES` knob -- not `smoke` (a real engine
+subprocess, like every other node in that module).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

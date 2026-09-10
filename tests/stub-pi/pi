@@ -166,6 +166,21 @@ from env vars set by the test:
                       may never contradict a still-present blocking
                       finding" check (`_review_verdict`) never refuses it
                       for a channel that is no longer true.
+  STUB_REVIEW_CURABLE_INVALIDATES  task 034 (#167, #171): a JSON array of
+                      in-checkout paths, folded into the curable finding's
+                      own `invalidates` field ONLY while a rejection from
+                      STUB_REVIEW_CURABLE_REJECT_COUNT is being written --
+                      no marker of its own, no effect once that knob is
+                      unset or spent. Lets a flow replay the v0.19.1
+                      approach-2 incident where a cure pass's own test-fix
+                      commit landed after a recorded sweep: `insert_cure_
+                      tasks` reads this exactly like a real review hat's
+                      `invalidates` list would, re-opening the plan's own
+                      final lane-evidence record chain instead of
+                      appending a brand-new re-take task for it. Unset
+                      (the default) writes no `invalidates` key at all,
+                      byte-for-byte the finding every test predating this
+                      task already relies on.
   STUB_REVIEW_MALFORMED_COUNT  task 033 (G.5, #130): like
                       STUB_REVIEW_FAILS's own "N times, then verify" shape
                       but with NO parseable `review` contract payload at
@@ -1522,13 +1537,21 @@ elif "Role: Reviewer" in prompt:
         # hat over.
         with open(os.path.join(run, "review-findings.md"), "w") as f:
             f.write(f"- curable finding from review #{curable_seen + 1}\n")
+        _curable_finding = {
+            "severity": "blocking",
+            "curable": True,
+            "clause": "stub curable review clause",
+            "evidence": f"stub: curable review rejection #{curable_seen + 1}",
+        }
+        # Task 034 (#167, #171): STUB_REVIEW_CURABLE_INVALIDATES folds a
+        # test-supplied JSON array of paths onto THIS finding's own
+        # `invalidates` field, unset (no key at all) by default -- see the
+        # knob's own doc comment above.
+        _invalidates_raw = os.environ.get("STUB_REVIEW_CURABLE_INVALIDATES")
+        if _invalidates_raw:
+            _curable_finding["invalidates"] = json.loads(_invalidates_raw)
         with open(os.path.join(run, "review-findings.json"), "w") as f:
-            json.dump([{
-                "severity": "blocking",
-                "curable": True,
-                "clause": "stub curable review clause",
-                "evidence": f"stub: curable review rejection #{curable_seen + 1}",
-            }], f)
+            json.dump([_curable_finding], f)
         emit_final(
             "requirements unmet, but curable\n"
             + json.dumps({

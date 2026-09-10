@@ -19,9 +19,29 @@ both here, and they differ only in how many curable rejections arrive:
 The second variant is the one that proves the cure pass is bounded to one per
 approach rather than an unbounded loop -- the whole reason the counter is
 persisted per approach instead of being a boolean.
+
+A third node (task 034, #167, #171) replays a real incident from this
+project's own history rather than a synthetic shape: `selfdev-v0191-a-
+gate-is-not-a-wall`'s approach 1, cure pass 1 discharged two of three
+blocking findings but botched the third by landing test-fix commits
+*after* the sweep its own first blocking finding had already recorded --
+so the second review found `tests/test_sweep_sha_guard.py` red against a
+now-stale sweep, a defect the cure pass's own insertion order manufactured
+rather than fixed. Task 032's `invalidates` field is the general fix (a
+finding names the paths its cure makes stale; the plan's own lane-evidence
+record chain is re-opened rather than left stale); this node proves it
+closes the ORIGINAL incident end to end through the real engine: a curable
+rejection whose cure invalidates a recorded sweep re-opens that sweep's own
+launch (verification) and record tasks in the SAME cure pass, the worker
+re-does all three (the cure fix, then the re-launched sweep, then its
+re-record) in one pass, and the run reaches `verified` without a second
+cure pass or a replan -- the exact incident, cured by construction instead
+of by accident.
 """
 
 from __future__ import annotations
+
+import json
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
                                  status, tasks)
@@ -170,3 +190,113 @@ def test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans(
         f"flow cure pass (spent): the replanned approach must start from a fresh "
         f"plan, but its task record still carries "
         f"{[t['id'] for t in _cure_tasks(run)]}")
+
+
+# ---------------------------------------------------------------------------
+# Task 034 (#167, #171): the v0.19.1 approach-2 incident replayed end to end
+# -- a curable rejection whose cure `invalidates` the plan's own recorded
+# sweep re-opens that sweep's launch and record tasks in the SAME cure pass,
+# and the run reaches `verified` without a second cure pass or a replan.
+# ---------------------------------------------------------------------------
+
+SWEEP_RECORD_PATH = "artifacts/reports/v0.19.1-lane-sweep.md"
+
+
+def _sweep_fixture_tasks() -> list[dict]:
+    return [
+        {"id": "launch-sweep", "title": "Launch the seven-lane sweep",
+         "successCriteria": "the seven-lane sweep is launched and exits 0 "
+                            "at the final code sha"},
+        {"id": "record-sweep", "title": "Record the seven-lane sweep",
+         "successCriteria": (f"One commit adds {SWEEP_RECORD_PATH} naming "
+                             "the shipped sha."),
+         "dependsOn": ["launch-sweep"]},
+    ]
+
+
+def test_a_curable_rejection_that_invalidates_a_recorded_sweep_reopens_it_and_verifies_in_one_cure_pass(
+        engine_factory):
+    run = engine_factory(
+        job={"run_id": "flow-cure-replay-v0191-incident", "on_complete": "exit",
+             "max_approaches": 3, "iterations": 30},
+        stub_env={"STUB_REVIEW_CURABLE_REJECT_COUNT": "1",
+                  "STUB_REVIEW_CURABLE_INVALIDATES": json.dumps([SWEEP_RECORD_PATH]),
+                  "STUB_TASKS_JSON": json.dumps(_sweep_fixture_tasks())})
+    assert run.proc.wait(timeout=60) == 0, (
+        "flow cure pass (replay v0.19.1 incident): the engine did not exit 0 "
+        "after the cured approach verified")
+
+    assert_step_sequence(flow_steps(run), [
+        "state:running",
+        "phase:planning@1",
+        "iteration:planning",
+        # the seed plan's own launch/record pair, worked in dependency order
+        "iteration:worker",
+        "iteration:worker",
+        "signal:COMPLETE",
+        "phase:review@1",
+        "iteration:review",
+        "verdict:review:rejected@1",
+        "cure_pass:1@1",
+        # the cure task, then the re-opened launch/record pair, re-worked
+        "iteration:worker",
+        "iteration:worker",
+        "iteration:worker",
+        "signal:COMPLETE",
+        "phase:review@1",
+        "iteration:review",
+        "verdict:review:verified@1",
+        "signal:VERIFIED",
+        "state:succeeded",
+    ], flow="flow cure pass (replay v0.19.1 incident)")
+
+    st = status(run)
+    assert st.get("state") == "succeeded", (
+        f"flow cure pass (replay v0.19.1 incident): the cured approach must "
+        f"verify, got state={st.get('state')!r} verdict={st.get('verdict')!r}")
+    assert st.get("curePasses") == {"1": 1}, (
+        f"flow cure pass (replay v0.19.1 incident): exactly ONE cure pass -- "
+        f"the whole point of the incident -- must be spent, got "
+        f"{st.get('curePasses')!r}")
+
+    all_tasks = {t["id"]: t for t in tasks(run)}
+    cures = _cure_tasks(run)
+    assert len(cures) == 1, (
+        f"flow cure pass (replay v0.19.1 incident): exactly one cure task "
+        f"expected, got {[t['id'] for t in cures]}")
+    cure_id = cures[0]["id"]
+    assert cures[0]["status"] in ("completed", "validated")
+
+    # The sweep's own launch and record tasks were re-opened by the cure
+    # pass (chained cure -> launch -> record) and re-worked to completion --
+    # never left stale, the exact defect the v0.19.1 incident's own second
+    # rejection found.
+    launch = all_tasks["launch-sweep"]
+    record = all_tasks["record-sweep"]
+    assert cure_id in launch["dependsOn"], (
+        f"flow cure pass (replay v0.19.1 incident): the re-opened sweep "
+        f"launch must depend on the cure task, got {launch['dependsOn']!r}")
+    assert record["dependsOn"] == ["launch-sweep"]
+    assert launch["status"] in ("completed", "validated")
+    assert record["status"] in ("completed", "validated")
+
+    # No brand-new re-take task was appended for the invalidated path -- the
+    # existing launch/record chain was re-opened instead.
+    assert set(all_tasks) == {"launch-sweep", "record-sweep", cure_id}, (
+        f"flow cure pass (replay v0.19.1 incident): no extra task expected, "
+        f"got {sorted(all_tasks)}")
+
+    ev = events_of(run, "approach.cure_pass")
+    assert len(ev) == 1, (
+        "flow cure pass (replay v0.19.1 incident): exactly one cure pass "
+        "event -- the run must never take a second one to converge")
+    assert set(ev[0]["taskIds"]) == {cure_id, "launch-sweep", "record-sweep"}, (
+        f"flow cure pass (replay v0.19.1 incident): the cure pass event must "
+        f"name the cure task plus the reopened launch/record pair, got "
+        f"{ev[0]['taskIds']!r}")
+
+    # No approach was archived: this is a cure, not a replan.
+    archive = run.run_dir / "approaches"
+    assert not (archive.exists() and any(archive.rglob("*"))), (
+        "flow cure pass (replay v0.19.1 incident): the incident's own cure "
+        "must never archive the approach it cures")
