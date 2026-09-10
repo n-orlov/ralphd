@@ -40,13 +40,16 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 from test_cli_features import _recovered_run
 from test_tier_cost_breakdown import _two_tier_run
 from tests.conftest import call_ralphctl_in_process
 
-from ralphd.cli.main import CONTAINER_ABSENT, _container_liveness
+from ralphd.cli.main import (CONTAINER_ABSENT, _container_liveness,
+                             container_record_exists, sh)
 
 # A name guaranteed absent from every PATH entry -- never a real binary.
 NO_SUCH_DOCKER = "ralphd-task080-no-such-docker-binary-anywhere-on-path"
@@ -128,3 +131,41 @@ def test_doctor_reports_docker_unreachable_instead_of_raising(
     doc = json.loads(res.stdout)
     assert doc["checks"]["docker"] is False
     assert doc["ok"] is False
+
+
+def test_sh_reports_127_and_names_the_command_instead_of_raising():
+    """Task 085's fix at the level it actually lives (steer 013 section 2,
+    #183): `sh()` itself, driven directly rather than through any one of its
+    callers, so the property every caller in `cli/main.py` inherits is pinned
+    in ONE place. `127` is deliberate and is the shell's own "command not
+    found" -- distinct from a 1-125 in-command failure and from a signal
+    death -- and the stderr must NAME the missing binary, since a caller that
+    surfaces that text is the only way an operator learns which binary was
+    absent. The absence is caused here (a name no `PATH` entry provides,
+    asserted), never inherited from the ambient host: this dev container
+    carries a real docker client."""
+    assert shutil.which(NO_SUCH_DOCKER) is None, (
+        "this node must cause the absence itself, not assume it")
+    cmd = [NO_SUCH_DOCKER, "inspect", "ralphd-whatever"]
+    res = sh(cmd)
+    assert isinstance(res, subprocess.CompletedProcess)
+    assert res.returncode == 127
+    assert res.args == cmd
+    assert res.stdout == ""
+    assert NO_SUCH_DOCKER in res.stderr
+
+
+def test_container_record_exists_is_false_when_docker_is_unreachable(
+        monkeypatch):
+    """`container_record_exists()` -- the shared "does docker still know a
+    container by this run's job container name?" helper (task 030, #19),
+    which `ralphctl rm` and the hub's delete endpoint both ask through, and
+    which steer 013 section 2 refers to by its call shape as
+    `run_container_exists()` (`src/ralphd/cli/main.py:5254`) -- is one of the
+    bare `sh([DOCKER, ...])` call sites that never went through
+    `_container_liveness` and so was untouched by task 080's narrower catch.
+    With the binary unreachable it must answer False ("docker does not know
+    this container"), exactly as it answers for a present docker that returns
+    non-zero, rather than raising `FileNotFoundError` at its caller."""
+    monkeypatch.setattr("ralphd.cli.main.DOCKER", NO_SUCH_DOCKER)
+    assert container_record_exists("task085-no-such-run") is False

@@ -707,6 +707,19 @@ went through `_container_liveness` and so was untouched by task 080's
 narrower fix. Driven in-process the same way as its three siblings, so it is
 also `smoke`; no new module.
 
+**5669 (smoke 4068, modules unchanged at 352)** by task 085's second commit
+(the two named regression nodes its criteria require and its first commit at
+`571fa54` omitted): net +2 nodes in the same
+`tests/test_status_docker_absent_task080.py` --
+`test_sh_reports_127_and_names_the_command_instead_of_raising` (drives `sh()`
+itself with a name no `PATH` entry provides and pins `returncode == 127`, the
+unchanged `args`, empty stdout and a stderr naming the missing binary) and
+`test_container_record_exists_is_false_when_docker_is_unreachable` (the
+`sh([DOCKER, "inspect", ...])` call site at
+`src/ralphd/cli/main.py:5254`, which `ralphctl rm` and the hub's delete
+endpoint share and which never went through `_container_liveness`). Both are
+in-process, so both are also `smoke`; no new module.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather
