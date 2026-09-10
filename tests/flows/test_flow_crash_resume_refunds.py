@@ -287,18 +287,36 @@ def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory, tmp_
 
     _wait_for(task_in_progress, timeout=30)
 
-    def second_iteration_dir_exists():
+    def second_iteration_meta_readable():
         d = e1.run_dir / "iterations"
         if not d.exists():
             return None
         dirs = sorted(d.iterdir())
-        return dirs if len(dirs) >= 2 else None
+        if len(dirs) < 2:
+            return None
+        # The directory can exist a poll cycle before its own meta.json is
+        # written (mkdir and the first meta.json write are not the same
+        # syscall) -- so this waits for the FILE to be present and
+        # parseable, not just the directory listing, the same shape
+        # `review_started_not_finished` above already uses. Without this,
+        # the kill below can land between the second iteration's mkdir and
+        # its meta.json write, and the FileNotFoundError/JSONDecodeError
+        # surfaces later at the unconditional read after `_kill(e1)` instead
+        # of here, where it is still just a wait condition.
+        p = dirs[-1] / "meta.json"
+        if not p.exists():
+            return None
+        try:
+            json.loads(p.read_text())
+        except json.JSONDecodeError:
+            return None
+        return dirs
 
     # See test_sigkill_mid_worker_iteration's original note (task 006): the
     # in-progress flip and this test's own worker iteration dir can land a
     # poll cycle apart under a loaded machine, so wait for the second
-    # iteration dir too, not just the tasks.json flip.
-    _wait_for(second_iteration_dir_exists, timeout=15)
+    # iteration dir's meta.json too, not just the tasks.json flip.
+    _wait_for(second_iteration_meta_readable, timeout=15)
 
     _kill(e1)
 
