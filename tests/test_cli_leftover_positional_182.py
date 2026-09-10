@@ -39,7 +39,8 @@ from ralphd.cli.main import (
 
 def _amend_ns(**over):
     base = dict(json=False, command="amend", run_id="s1", task_id=None,
-                text=None, file=None, waive=False, status=None, list=False)
+                text=None, file=None, waive=False, status=None, list=False,
+                approach=None, force=False)
     base.update(over)
     return argparse.Namespace(**base)
 

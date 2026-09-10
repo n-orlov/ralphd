@@ -88,7 +88,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # further below the first three entries but above the last five
         # (+9 more, so +10 total for those five): 1903->1904, 1916->1917
         # (+1 each), 4311->4321, 4513->4523, 4517->4527, 6269->6279,
-        # 6273->6283 (+10 each). Same reads, same reasons.
+        # 6273->6283 (+10 each). Same reads, same reasons. Task 036 (#168,
+        # requirement F.2) added `_amend_echo_target_or_die`/`_amend_
+        # resolve_approach` plus the `--approach`/`--force` argparse flags
+        # well above the last two entries below, shifting only those two by
+        # +70: 6279->6349, 6283->6353. Same reads, same reasons; the other
+        # six entries above them are untouched.
         "line": "1904",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
@@ -129,7 +134,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6279",
+        "line": "6349",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -137,7 +142,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6283",
+        "line": "6353",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

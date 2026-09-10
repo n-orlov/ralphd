@@ -200,7 +200,7 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5590 tests across 343 modules** at task 035's commit, over
+collects **5600 tests across 343 modules** at task 036's commit, over
 the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4022
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
@@ -472,7 +472,15 @@ budget, read from `status.json`) pinned once against `build_prompt("worker")`
 and once against `build_prompt("review")`, a never-cured approach defaulting
 its cure-pass count to `0`, and the silent no-op before any approach is
 committed to `status.json` -- all also `smoke` (in-process `LoopSupervisor`
-construction and `build_prompt` calls, no real engine subprocess).
+construction and `build_prompt` calls, no real engine subprocess), and **5600
+(smoke 4022, modules unchanged at 343)** by task 036's 10 new nodes in the
+SAME `tests/test_operator_ruling.py` (no new module, #168): `write_amendment`
+stamping/omitting the header's new `approach:` line and `amendment_entries`
+parsing it back, and 7 `ralphctl amend` subprocess nodes covering the new
+target-title/status echo, the not-in-plan refusal and its `--force` override,
+the no-`tasks.json`-at-all non-refusal, and `--approach N` both explicit and
+defaulted from `status.json` -- none of these are `smoke` (the whole module
+is a `ralphctl` subprocess family, fast-only, like every other node in it).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

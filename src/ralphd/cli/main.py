@@ -4698,6 +4698,59 @@ _AMEND_SNAPSHOT_NOTICE = (
     "--list always reads the run dir directly, live container or not")
 
 
+def _amend_echo_target_or_die(args) -> None:
+    """Task 036 (#168, proposed fix item 4): print the target task's
+    current title and status to stderr BEFORE any amendment file is
+    written, and refuse when `args.task_id` names no task in the run's
+    CURRENT plan -- unless `--force` overrides it. Reads
+    `run_root(args.run_id)/tasks.json` through the same read-only
+    `read_tasks_doc(persist=False)` reader `ralphctl tasks` itself uses;
+    never the API, never docker (this command is host-only, pinned by
+    `test_amend_never_calls_docker_or_the_http_api`).
+
+    A run with NO `tasks.json` at all yet (`TasksRead.present` False --
+    the file has literally never been written) is deliberately NOT a
+    refusal case: there is no plan for the id to be absent FROM, so this
+    prints nothing and returns without complaint, exactly the behaviour
+    every `ralphctl amend` call before this task had. Once a plan exists,
+    though, an id missing from it IS refused (`--force` is the documented
+    override) -- the whole point being to catch a mis-addressed ruling at
+    write time (#168's incident) rather than at review time.
+    """
+    res = read_tasks_doc(run_root(args.run_id), persist=False)
+    if not res.present:
+        return
+    for t in res.tasks:
+        if str(t.get("id")) == str(args.task_id):
+            print(f"ralphctl: task {args.task_id} is currently "
+                  f"{t.get('status', '?')!r}: {t.get('title', '(no title)')}",
+                  file=sys.stderr)
+            return
+    if args.force:
+        print(f"ralphctl: task {args.task_id!r} is not in this run's "
+              "current plan; recording the ruling anyway (--force)",
+              file=sys.stderr)
+        return
+    die(2, f"task {args.task_id!r} is not in this run's current plan "
+           f"(tasks.json); pass --force to record the ruling anyway")
+
+
+def _amend_resolve_approach(args) -> int | None:
+    """Task 036 (#168, proposed fix item 1): the approach number
+    `write_amendment` stamps in the header -- `--approach N` when given
+    explicitly, else the run's OWN current approach read straight from
+    `status.json` (never a value this command invents), else `None` when
+    neither is available (a run with no `status.json` yet, or one whose
+    engine has not committed an approach yet -- see `LoopSupervisor.
+    _approach_progress_context`'s identical silence rule).
+    """
+    if args.approach is not None:
+        return args.approach
+    status = _read_json(run_root(args.run_id) / "status.json", {}) or {}
+    value = status.get("approach")
+    return value if isinstance(value, int) else None
+
+
 def cmd_amend_list(args) -> None:
     """`ralphctl amend <run> --list` (task 028, #26): what operator rulings
     have been recorded for this run.
@@ -4746,19 +4799,31 @@ def cmd_amend(args):
     impossible, or a scope call only the operator can make.
 
     Deliberately HOST-ONLY: this never opens a socket, never calls the
-    engine's HTTP API, and never touches the run dir
-    (`registry()/runs/<id>`) at all -- it writes directly into
-    `config_root(run_id)` (`registry()/configs/<id>`), the SAME directory
-    `ralphctl start`/`resume` bind-mount `:ro` as `/config` into the job
-    container. That is what makes the ruling unforgeable from inside: no
-    process the container ever runs -- worker shell, the API's config-CRUD
-    routes, the writable config overlay -- can write there. See
+    engine's HTTP API, and only ever WRITES into `config_root(run_id)`
+    (`registry()/configs/<id>`), the SAME directory `ralphctl start`/
+    `resume` bind-mount `:ro` as `/config` into the job container. That is
+    what makes the ruling unforgeable from inside: no process the
+    container ever runs -- worker shell, the API's config-CRUD routes, the
+    writable config overlay -- can write there. See
     artifacts/reports/task-027-operator-ruling-design.md for the full
     reasoning and docs/cli.md's `ralphctl amend` section for the surface.
 
+    Task 036 (#168): before any file is written, this reads (never
+    writes) two small documents under `registry()/runs/<id>` -- `tasks.json`
+    (to echo the target task's current title/status, and to refuse an id
+    absent from the current plan unless `--force` is given -- see
+    `_amend_echo_target_or_die`) and `status.json` (to default `--approach`
+    to the run's own current approach when the flag is omitted -- see
+    `_amend_resolve_approach`). Reading those two files is not a boundary
+    violation: the unforgeability property this command exists for is
+    entirely about where a RULING gets WRITTEN (`config_root`, never
+    `run_root`), not about what this host-side process is allowed to look
+    at while composing one.
+
     `--list` shows what has been recorded instead of writing a new one (see
     `cmd_amend_list`); combining it with a task id / text / `--file` /
-    `--waive` is a usage error, mirroring `steer --list`.
+    `--waive` / `--status` / `--approach` / `--force` is a usage error,
+    mirroring `steer --list`.
 
     `--status <status>` (task 006/029, #26 requirement E) records a THIRD
     ruling kind instead of a criteria waiver/replacement: a typed status
@@ -4779,9 +4844,11 @@ def cmd_amend(args):
     is a usage error.
     """
     if args.list:
-        if args.task_id or args.text or args.file or args.waive or args.status:
+        if (args.task_id or args.text or args.file or args.waive
+                or args.status or args.approach is not None or args.force):
             die(2, "--list only shows this run's recorded operator rulings; "
-                   "drop the task id/text/--file/--waive/--status")
+                   "drop the task id/text/--file/--waive/--status/"
+                   "--approach/--force")
         cmd_amend_list(args)
         return
     _require_run(args.run_id)
@@ -4789,6 +4856,8 @@ def cmd_amend(args):
         die(2, "a task id is required (or --list to show recorded rulings)")
     cdir = config_root(args.run_id)
     cdir.mkdir(parents=True, exist_ok=True)
+    _amend_echo_target_or_die(args)
+    approach = _amend_resolve_approach(args)
     if args.status:
         if args.waive:
             die(2, "--status and --waive are two different ruling kinds; "
@@ -4805,7 +4874,7 @@ def cmd_amend(args):
                    f"{', '.join(OPERATOR_RULEABLE_TASK_STATUSES)}{extra}")
         reason = args.text or (Path(args.file).read_text() if args.file else "")
         fname = write_amendment(cdir, args.task_id, reason,
-                                status=args.status)
+                                status=args.status, approach=approach)
         out(args, {"file": fname, "taskId": args.task_id,
                    "status": args.status},
             f"operator status ruling recorded: {fname} (task {args.task_id} "
@@ -4815,7 +4884,8 @@ def cmd_amend(args):
                          else sys.stdin.read())
     if not text.strip():
         die(2, "empty ruling text")
-    fname = write_amendment(cdir, args.task_id, text, waive=args.waive)
+    fname = write_amendment(cdir, args.task_id, text, waive=args.waive,
+                            approach=approach)
     kind = "waiver" if args.waive else "replacement"
     out(args, {"file": fname, "taskId": args.task_id, "waive": args.waive},
         f"operator ruling recorded ({kind}): {fname} "
@@ -7018,6 +7088,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="list this run's recorded operator rulings instead "
                         "of recording one; always reads the run's /config "
                         "directory directly, container or no container")
+    s.add_argument("--approach", type=int, metavar="N",
+                   help="record this ruling against approach N explicitly "
+                        "(task 036, #168) instead of the run's own current "
+                        "approach (read from status.json); stamped as "
+                        "`approach:` in the amendment file's fixed header")
+    s.add_argument("--force", action="store_true",
+                   help="record the ruling even though the task id is not "
+                        "in this run's current plan (task 036, #168); "
+                        "without it, an id absent from tasks.json refuses "
+                        "before any file is written")
     s.set_defaults(func=cmd_amend)
 
     s = sub.add_parser("retry", help="wake a degraded run's infra backoff "

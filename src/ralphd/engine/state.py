@@ -1541,7 +1541,8 @@ def amendments_dir(config_root: Path) -> Path:
 
 
 def write_amendment(config_root: Path, task_id: str, text: str, *,
-                    waive: bool = False, status: str | None = None) -> str:
+                    waive: bool = False, status: str | None = None,
+                    approach: int | None = None) -> str:
     """Record one operator ruling as the next numbered file under
     `<config_root>/amendments/`. HOST-SIDE ONLY -- `config_root` here is
     `cli.main.config_root(run_id)`, the directory bind-mounted `:ro` into
@@ -1556,6 +1557,17 @@ def write_amendment(config_root: Path, task_id: str, text: str, *,
     -- `text` is then the operator's optional reason, never the criteria
     text a waive/replace ruling carries. `waive` is ignored when `status`
     is given (a ruling is exactly one kind, never two at once).
+
+    Task 036 (#168): `approach`, when given, stamps the fixed header with
+    the approach this ruling was recorded against (`ralphctl amend`'s
+    caller resolves it from the run's own `status.json`, or from an
+    explicit `--approach N` override -- this function never reads
+    `status.json` itself, since it only ever sees `config_root`, not the
+    run root the approach lives under). `None` (the default, and every
+    call site before task 036) omits the header line entirely --
+    'header-only, backward compatible' per #168's proposed fix item 5: an
+    entry with no `approach:` line reads as "the approach it was recorded
+    in is unknown", never as approach 0 or any other invented value.
     """
     adir = amendments_dir(config_root)
     adir.mkdir(parents=True, exist_ok=True)
@@ -1569,6 +1581,8 @@ def write_amendment(config_root: Path, task_id: str, text: str, *,
     header = f"task: {task_id}\nmode: {mode}\n"
     if status:
         header += f"status: {status}\n"
+    if approach is not None:
+        header += f"approach: {approach}\n"
     header += f"ts: {utcnow()}\n\n"
     atomic_write(adir / fname, header + text.rstrip() + "\n")
     return fname
@@ -1606,6 +1620,18 @@ def amendment_entries(config_root: Path) -> list[dict]:
         task_id = fields.get("task") or (m.group(2) if m else stem)
         mode = fields.get("mode") or AMENDMENT_MODE_REPLACE
         ts = fields.get("ts") or utc_from_epoch(st.st_mtime)
+        # Task 036 (#168): the approach the ruling was recorded against,
+        # when the header carries one -- `None` for every entry written
+        # before this task, and for one written with no resolvable
+        # `status.json` approach either (write_amendment's own
+        # header-only-when-given contract, see its docstring).
+        raw_approach = fields.get("approach")
+        approach = None
+        if raw_approach is not None:
+            try:
+                approach = int(raw_approach)
+            except ValueError:
+                approach = None
         out.append({
             "file": p.name,
             "seq": seq,
@@ -1616,6 +1642,7 @@ def amendment_entries(config_root: Path) -> list[dict]:
             # ever non-None) for a `mode: status` entry -- a waive/replace
             # entry never carries a `status:` header line at all.
             "status": fields.get("status") if mode == AMENDMENT_MODE_STATUS else None,
+            "approach": approach,
             "ts": ts,
             "text": body.strip(),
         })

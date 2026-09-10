@@ -1564,12 +1564,35 @@ re-failing the same finding.
 |--------|---------|
 | `--waive` | a full waiver: that task's criteria are satisfied by operator decision, not a text replacement |
 | `--status <status>` | record a status ruling instead (task 006/029, #26 requirement E; every declared status except the engine-forced `superseded`) — see below |
+| `--approach N` | stamp this ruling as recorded against approach N (task 036, #168) instead of the run's own current approach — see below |
+| `--force` | write even though `task-id` is not in this run's current plan (task 036, #168) — see below |
 | `--file <f>` | read the ruling text from a file instead of the trailing argument |
 | `--list` | **show** this run's recorded rulings instead of recording one |
 
 Text comes from the trailing positional argument, `--file <f>`, or stdin — the
 same three-way choice as `steer`. For a criteria ruling (the default, or
 `--waive`), that text is required and non-empty.
+
+**Before writing anything** (task 036, #168, closing the mis-addressed-ruling
+gap #168 diagnosed), the command reads (never writes) `tasks.json` under the
+run's OWN run dir and echoes `task-id`'s current title and status to stderr —
+so a typo in the id, or a ruling meant for a different task, is visible at
+write time instead of only at review time. When `task-id` is not in the
+current plan at all, the command refuses (exit `2`) unless `--force` is
+given; a run with no `tasks.json` at all yet is not treated as a refusal —
+there is no plan for the id to be absent FROM. The echo/refusal is read-only
+and does not touch the design's unforgeability guarantee below, which is
+entirely about where a ruling gets WRITTEN.
+
+`--approach N` (task 036, #168) stamps `approach: N` in the amendment file's
+fixed header; omitted, the command defaults to the run's own current approach
+read straight from `status.json` (never a value it invents), and if neither
+is available the header simply carries no `approach:` line at all — an old
+entry, or one written before any approach had committed, reads as "the
+approach is unknown" rather than as approach 0. This is the raw materials a
+later review pass uses to scope a ruling to the approach it was actually
+recorded in, rather than reapplying it verbatim to a same-numbered task in a
+fresh replan (#168's incident).
 
 #### `ralphctl amend <run-id> <task-id> --status <status> [reason]`
 
@@ -1599,7 +1622,9 @@ Combining `--status` with `--waive` is a usage error (exit `2`): a ruling is
 exactly one kind, never two at once.
 
 Applying the ruling to `tasks.json` is NOT this command's job —
-`ralphctl amend` never touches the run dir at all, only `config_root`. The
+`ralphctl amend` never WRITES to the run dir at all, only to `config_root`
+(it does read `tasks.json`/`status.json` there, read-only, for the echo and
+`--approach` default described above — task 036, #168). The
 engine applies it (`LoopSupervisor._apply_operator_status_rulings` →
 `engine.state.apply_amendment_status_rulings`) the next time the run loads,
 checked against the same declared task-status transition table every other

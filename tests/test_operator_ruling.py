@@ -345,6 +345,122 @@ def test_amend_status_shows_up_in_list(tmp_path):
     assert "007" in res_text.stdout
 
 
+# -- Task 036 (#168): approach stamping and ralphctl amend --approach -------
+
+def test_write_amendment_stamps_approach_in_the_header_when_given(tmp_path):
+    cdir = tmp_path / "config"
+    fname = write_amendment(cdir, "010", "text", approach=2)
+    raw = (cdir / "amendments" / fname).read_text()
+    assert "approach: 2" in raw
+
+
+def test_write_amendment_omits_approach_line_when_not_given(tmp_path):
+    """Backward compatible (#168 proposed fix item 5): no `approach:` kwarg
+    means no `approach:` header line at all, not `approach: None`."""
+    cdir = tmp_path / "config"
+    fname = write_amendment(cdir, "010", "text")
+    raw = (cdir / "amendments" / fname).read_text()
+    assert "approach" not in raw
+
+
+def test_amendment_entries_parses_the_approach_field(tmp_path):
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "010", "with approach", approach=3)
+    write_amendment(cdir, "011", "without approach")
+    entries = amendment_entries(cdir)
+    assert entries[0]["approach"] == 3
+    assert entries[1]["approach"] is None
+
+
+def _write_tasks_json(rdir: Path, tasks: list[dict]) -> None:
+    (rdir / "tasks.json").write_text(json.dumps({"version": 1, "tasks": tasks}))
+
+
+def test_amend_echoes_the_target_tasks_current_title_and_status(tmp_path):
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "e1")
+    _write_tasks_json(rdir, [
+        {"id": "007", "title": "Do the thing", "status": "in-progress"},
+    ])
+    res = ralphctl(registry, "amend", "e1", "007", "a ruling")
+    assert res.returncode == 0, res.stderr
+    assert "007" in res.stderr
+    assert "Do the thing" in res.stderr
+    assert "in-progress" in res.stderr
+
+
+def test_amend_refuses_a_task_id_absent_from_the_current_plan(tmp_path):
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "e2")
+    _write_tasks_json(rdir, [
+        {"id": "001", "title": "Something else", "status": "pending"},
+    ])
+    res = ralphctl(registry, "amend", "e2", "999", "a misaddressed ruling")
+    assert res.returncode == 2
+    assert "999" in res.stderr
+    assert "--force" in res.stderr
+    assert not (cdir / "amendments").exists() or \
+        not any((cdir / "amendments").glob("*.md"))
+
+
+def test_amend_force_overrides_the_not_in_plan_refusal(tmp_path):
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "e3")
+    _write_tasks_json(rdir, [
+        {"id": "001", "title": "Something else", "status": "pending"},
+    ])
+    res = ralphctl(registry, "amend", "e3", "999", "forced anyway", "--force")
+    assert res.returncode == 0, res.stderr
+    assert "--force" in res.stderr
+    assert (cdir / "amendments" / "001-999.md").exists()
+
+
+def test_amend_no_tasks_json_at_all_is_not_a_refusal(tmp_path):
+    """A run with no plan on disk yet (the run dir has never gotten a
+    tasks.json) is not the same as a plan that doesn't contain the id --
+    there is no plan for it to be absent FROM, so this is not refused, and
+    matches every `ralphctl amend` call from before task 036 existed (the
+    pre-existing tests in this module never seed a tasks.json at all)."""
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "e4")
+    assert not (rdir / "tasks.json").exists()
+    res = ralphctl(registry, "amend", "e4", "999", "no plan yet")
+    assert res.returncode == 0, res.stderr
+    assert (cdir / "amendments" / "001-999.md").exists()
+
+
+def test_amend_approach_flag_stamps_the_given_approach(tmp_path):
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "e5")
+    _write_tasks_json(rdir, [{"id": "007", "title": "t", "status": "pending"}])
+    res = ralphctl(registry, "amend", "e5", "007", "a ruling", "--approach", "5")
+    assert res.returncode == 0, res.stderr
+    raw = (cdir / "amendments" / "001-007.md").read_text()
+    assert "approach: 5" in raw
+
+
+def test_amend_defaults_approach_from_status_json_when_flag_omitted(tmp_path):
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "e6")
+    _write_tasks_json(rdir, [{"id": "007", "title": "t", "status": "pending"}])
+    (rdir / "status.json").write_text(json.dumps({"approach": 4,
+                                                   "maxApproaches": 5}))
+    res = ralphctl(registry, "amend", "e6", "007", "a ruling")
+    assert res.returncode == 0, res.stderr
+    raw = (cdir / "amendments" / "001-007.md").read_text()
+    assert "approach: 4" in raw
+
+
+def test_amend_omits_approach_line_when_status_json_has_none_either(tmp_path):
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "e7")
+    _write_tasks_json(rdir, [{"id": "007", "title": "t", "status": "pending"}])
+    res = ralphctl(registry, "amend", "e7", "007", "a ruling")
+    assert res.returncode == 0, res.stderr
+    raw = (cdir / "amendments" / "001-007.md").read_text()
+    assert "approach" not in raw
+
+
 def test_amend_never_calls_docker_or_the_http_api(monkeypatch):
     """`amend` is host-only by design -- source-level check that `cmd_amend`
     never references `docker`/`DOCKER`/`sh(`/the `api()` helper anywhere in
