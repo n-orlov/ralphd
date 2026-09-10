@@ -378,7 +378,17 @@ flat criterion refused; binding by either `dependsOn` direction, by naming
 the parent's id, and through a stage chain; a stage-marked task bound to
 some other parent not counting), with every measurability and
 sequence node of the second attempt kept at the stage-task level, plus two
-nodes on the refusal message's own wording -- all also `smoke`.
+nodes on the refusal message's own wording -- all also `smoke`, and 5539
+(smoke 3974, modules 337->338) by task 027's new
+`tests/test_baseline_target_smell.py` (PRD requirement D.3, #157): 7 new
+in-process nodes covering `_quoted_baseline_target_gap` -- a baseline more
+than 2x the target with no measurement task refused naming the offending
+task, a linked measurement task that re-measures the baseline at the
+launch sha and stages the descent accepted, a measurement task missing the
+"launch sha" phrase not enough, an unbound measurement task not counting,
+a baseline within 2x the target passing untouched, a target with no quoted
+baseline at all passing untouched, and the exact-2x boundary passing
+untouched -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

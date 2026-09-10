@@ -107,6 +107,21 @@ judge? Look specifically for:
    never slipped past. Object by naming the offending task and its
    estimate, and instruct either lowering the estimate to 3 or fewer, or
    splitting it into a genuine sequence of stage tasks.
+9. **A numeric target far from its baseline (#157).** `plan_ingestion.
+   lint_proposal()` already refuses a `successCriteria` clause of the shape
+   `<metric> under <target>` whose OWN text also quotes a baseline more
+   than 2x the target, unless a measurement task bound to the offending
+   task (by `dependsOn` in either direction or by naming its id) says, in
+   its own title or criteria, that it re-measures the baseline at the
+   "launch sha" and carries a `Stage N` marker of its own, and rejects the
+   plan before it ever reaches you if one slips through. Catch it here too
+   if the lint's own cue-phrase regex misses a near-miss: a criterion
+   quoting a wildly stale baseline next to an ambitious target, with no
+   linked task that will actually re-measure it, is a plan built on a
+   number nobody has checked recently. Object by naming the offending task,
+   its quoted baseline and target, and instruct either dropping the
+   baseline quote, lowering the ambition, or adding a bound measurement/
+   staging task.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

@@ -114,6 +114,24 @@ is accepted. Prefer sizing the task at 3 or fewer in the first place --
 staging is the escape hatch for genuinely large, sequential work, not a way
 to keep a monolithic task's high estimate.
 
+**A numeric target far from its baseline is a smell** (PRD requirement D.3,
+#157). A `successCriteria` clause of the shape `<metric> under <target>`
+(a number right after the word "under") whose OWN text also quotes a
+baseline (a number behind a cue like "currently ~8000", "baseline of
+8000", "measured at 8000") is refused at ingestion when that baseline is
+more than 2x the target -- unless the proposal names a measurement task
+bound to the offending task (by `dependsOn` in either direction, or by
+naming its id) whose own `title`/`successCriteria` (a) says it
+RE-MEASURES the baseline, (b) anchors that to the "launch sha" (that exact
+phrase), and (c) carries a `Stage N` marker of its own, staging the
+descent. A target with no quoted baseline in the same clause states no
+smell at all and is never flagged; a baseline within 2x the target passes
+untouched. Example of the refused shape: "the fast tier's test count stays
+under 3000 (currently ~8000)" with no linked measurement task. Example of
+the accepted shape: the same criterion, plus a task titled "Stage 1:
+re-measure the fast tier count at the launch sha" whose own criteria
+describes re-measuring it and staging the descent toward 3000.
+
 **Never make a task's `successCriteria` depend on this run's own terminal
 state** (e.g. "once this run has finished" or "after status.json leaves
 `state: running`") — no iteration executing *inside* this run can ever
@@ -128,7 +146,8 @@ offending task.
    lints it (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate
    `successCriteria`, a smuggled `status`, an invalid `estimatedIterations`,
    an estimate past 3 iterations the proposal does not decompose into stage
-   tasks,
+   tasks, a `<metric> under <target>` clause whose quoted baseline is more
+   than 2x the target with no linked measurement task,
    a task gated on this run's own
    terminal state) and only then applies it as the plan — if it rejects your
    proposal, you will be re-prompted with the SPECIFIC error and asked to

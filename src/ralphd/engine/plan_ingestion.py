@@ -1498,6 +1498,95 @@ def _staged_decomposition_gap(task: dict, tasks: list) -> str | None:
     return None
 
 
+# Task 027 (PRD requirement D.3, #157): "A numeric target far from its
+# baseline is a smell." A criterion of the shape `<metric> under <target>`
+# whose plan-quoted baseline is more than 2x the target is refused unless
+# the plan names the measurement task that re-measures the baseline at the
+# launch sha and stages the descent. This is D.2's own neighbour in the
+# PRD's requirement D list and reuses D.2's cross-task linkage primitive
+# (`_is_stage_task_of`) rather than inventing a second one: the measurement
+# task is bound to the offending task exactly the way a D.2 stage task is
+# bound to its oversized parent (`dependsOn` in either direction, or by
+# naming the offending task's id).
+#
+# The target: a number immediately following the word "under" ("... stays
+# under 3000", "get the count under 3000"). The baseline: a number quoted
+# in the SAME criteria text behind one of the cue phrases below
+# ("currently ~8000", "baseline of 8000", "measured at 8000") -- a number
+# with no such cue is not a "plan-quoted baseline", it is just a digit, and
+# a criterion with no quoted baseline at all states no smell to catch (a
+# bare "<metric> under <target>" with nothing to compare it to passes
+# untouched, same as one already within 2x).
+_UNDER_TARGET_RE = re.compile(r"\bunder\s+(\d[\d,]*)\b", re.IGNORECASE)
+
+_BASELINE_CUE_RE = re.compile(
+    r"(?:baseline(?:\s+of|\s+is)?|currently|presently|today|now at|sits at"
+    r"|stands at|measured at|quoted at|starting at|existing count of)\s*"
+    r"[:\-]?\s*(?:~|about|approx(?:imately)?\.?\s*)?(\d[\d,]*)\b",
+    re.IGNORECASE,
+)
+
+# A measurement task's own wording: it must say it RE-MEASURES the
+# baseline, anchor that re-measurement to the "launch sha" (the term the
+# PRD itself uses), and stage the descent -- a `Stage N` marker
+# (`_STAGE_MARKER_RE`, the same convention D.2's own stage tasks use) is
+# what "stages" means here, rather than a second, parallel vocabulary for
+# the same idea.
+_REMEASURE_VERB_RE = re.compile(r"\bre-?measur\w*\b", re.IGNORECASE)
+_LAUNCH_SHA_RE = re.compile(r"\blaunch sha\b", re.IGNORECASE)
+
+
+def _quoted_baseline_target_gap(task: dict, tasks: list) -> str | None:
+    """`None` if this `task`'s `successCriteria` states no `<metric> under
+    <target>` clause with a plan-quoted baseline at all, or if that
+    baseline is within 2x the target, or if the plan names a linked
+    measurement task that re-measures the baseline at the launch sha and
+    stages the descent (a `Stage N` marker) -- otherwise a short,
+    human-readable description of the missing measurement task, for the
+    caller to fold into its own error message naming the offending task.
+    """
+    criteria = task.get("successCriteria")
+    criteria = criteria if isinstance(criteria, str) else ""
+    target_match = _UNDER_TARGET_RE.search(criteria)
+    if target_match is None:
+        return None
+    baseline_match = _BASELINE_CUE_RE.search(criteria)
+    if baseline_match is None:
+        return None
+    target = int(target_match.group(1).replace(",", ""))
+    baseline = int(baseline_match.group(1).replace(",", ""))
+    if target <= 0 or baseline <= 2 * target:
+        return None
+
+    task_id = task.get("id")
+    for other in tasks:
+        if not isinstance(other, dict) or other is task:
+            continue
+        if not _is_stage_task_of(other, task):
+            continue
+        other_criteria = other.get("successCriteria")
+        other_criteria = other_criteria if isinstance(other_criteria, str) else ""
+        other_title = other.get("title")
+        other_title = other_title if isinstance(other_title, str) else ""
+        combined = f"{other_title}\n{other_criteria}"
+        if (
+            _REMEASURE_VERB_RE.search(combined)
+            and _LAUNCH_SHA_RE.search(combined)
+            and _STAGE_MARKER_RE.search(combined)
+        ):
+            return None
+
+    return (
+        f"the baseline ({baseline}) is more than 2x the target ({target}) "
+        "and the plan names no measurement task bound to task "
+        f"{task_id!r} (by dependsOn in either direction or by naming its "
+        "id) whose own title or successCriteria re-measures the baseline "
+        "at the launch sha (containing both a 're-measure'/'remeasure' verb "
+        "and the phrase 'launch sha') and stages the descent (a 'Stage N' "
+        "marker)"
+    )
+
+
 def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
@@ -1518,8 +1607,11 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
     same process's captured status -- and the NINTH (task 026, requirement
     D.2, #157): a task whose `estimatedIterations` is past
     `_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES` and no staged decomposition
-    into stage TASKS anywhere in the same proposal -- see the
-    block comments immediately above.
+    into stage TASKS anywhere in the same proposal -- and the TENTH (task
+    027, requirement D.3, #157): a `<metric> under <target>` clause whose
+    plan-quoted baseline is more than 2x the target with no linked
+    measurement task that re-measures the baseline at the launch sha and
+    stages the descent -- see the block comments immediately above.
 
     `extra_known_ids` (task 017, PRD requirement B.2, #162): the ordinary
     planner call site never passes this -- a planner's file-borne proposal
@@ -1701,6 +1793,19 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
                     "bare word 'module' is not a group), with no two stage "
                     "tasks repeating the same criteria"
                 )
+
+        baseline_gap = _quoted_baseline_target_gap(t, tasks)
+        if baseline_gap is not None:
+            errors.append(
+                f"task {tid!r}: successCriteria states a numeric target "
+                f"with a plan-quoted baseline that is a smell ({baseline_gap}) "
+                "-- either lower the plan-quoted baseline claim, drop the "
+                "baseline quote so the criterion states only the target, or "
+                "add a measurement task bound to this task (by dependsOn or "
+                "by naming its id) whose own title or successCriteria "
+                "re-measures the baseline at the launch sha and stages the "
+                "descent with a 'Stage N' marker"
+            )
 
     known_ids = set(seen) | (extra_known_ids or set())
     for t in tasks:
