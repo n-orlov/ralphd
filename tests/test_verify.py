@@ -115,9 +115,10 @@ def _supervisor_attempts(tmp_path, task, **cfg):
 
 def _extra_block(prompt: str) -> str:
     """Only the injected `extra` block, not the whole rendered prompt --
-    task-verify.md's own step-4 prose also mentions FINAL ATTEMPT/
-    validationAttempts, so asserting against the whole prompt would pass
-    for the wrong reason."""
+    task-verify.md's own step-4 prose also mentions `validationAttempts`
+    (by name, describing the last-available-attempt marker by role rather
+    than quoting its literal text -- task 074), so asserting against the
+    whole prompt would pass for the wrong reason."""
     idx = prompt.index("## Task under verification")
     return prompt[idx:]
 

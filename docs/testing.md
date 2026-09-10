@@ -212,9 +212,10 @@ below, which `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_
 reads; a lane row moves only when that lane is measured again.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5658 tests across 349 modules** at task 048's re-take commit
-(unchanged by that re-take, which reworked two existing nodes), over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4077
+collects **5660 tests across 350 modules** at task 074's own commit
+(task 048's re-take left it unchanged; task 074's new
+`tests/test_prompt_sentinel_audit.py` added 2), over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4079
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -615,7 +616,14 @@ Both nodes land in `smoke` too by the SAME derivation gap `test_cli_start_nodeta
 names none of `_PROCESS_BOUNDARY_RE`'s literal tokens even though it
 spawns a real engine through that stub chain, so `_module_is_in_process`
 reads it as in-process; disclosed here rather than silently read as proof
-the module is smoke-cheap, and not this task's derivation to fix.
+the module is smoke-cheap, and not this task's derivation to fix, and
+**5660 (smoke 4079, modules 349->350)** by task 074's new module
+`tests/test_prompt_sentinel_audit.py` (the prompt-sentinel audit, steer
+007): 2 new in-process nodes -- the guard itself, scanning every shipped
+`src/ralphd/prompts/*.md` file for a single declared list of literals other
+tests assert the absence of elsewhere, and the fixture proving the scan is
+non-vacuous (a `tmp_path`-only decoy template that trips it) -- neither
+spawns a real engine/`ralphctl` process, so both are also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

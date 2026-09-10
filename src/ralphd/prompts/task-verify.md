@@ -29,8 +29,9 @@ from scratch, trusting nothing the worker wrote about its own work.
    refused as a contract violation, not silently redirected onto it.
 4. If this rejecting verdict is the task's LAST available attempt -- the
    injected task details carry a `validationAttempts` line naming the count
-   against the limit, plus a **FINAL ATTEMPT** marker present precisely
-   when `validationAttempts` is one below the limit (so a third miss
+   against the limit, plus a last-available-attempt marker (`_verify_task`,
+   `src/ralphd/engine/loop.py:11028`) present precisely when
+   `validationAttempts` is one below the limit (so a third miss
    marks it `failed`) -- write `reason` as a handoff: name the residual gap in
    one sentence, list which criteria DID verify and with what evidence, and
    propose a concrete follow-up task (title plus successCriteria) closing
