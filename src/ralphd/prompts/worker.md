@@ -94,6 +94,18 @@ immediately starts the next iteration.
    marked worker-origin on the record itself, and is NOT counted as
    progress against the three-iteration no-progress guard below — do not
    try to survive on proposals alone; still work the assigned task.
+
+   **The two refused split shapes are different.** A **forced** split —
+   dispatched with a `## Progress budget exhausted` notice once this
+   task's own progress budget is spent — is not optional: a report that
+   iteration without a valid, non-empty `proposed_tasks` is a contract
+   violation, and the SAME worker is asked again through the contract
+   ladder until one arrives. A **voluntary** split — the ordinary case
+   above, offered on a task you judge too big on your own initiative — is
+   optional: a proposal that fails the same lint (a bad `dependsOn`, a
+   colliding id, an exhausted per-approach budget) is refused and logged
+   silently, never fed back to you for a retry, and the verdict you sent
+   for the assigned task still stands on its own.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. The notes'
    `## Standing rules` block is harness-pinned (task 107): the harness
@@ -139,6 +151,15 @@ immediately starts the next iteration.
   artifacts directory.
 - Put anything the operator should see (reports, screenshots, logs) in the
   artifacts directory.
+- **Evidence you invalidate is yours to re-take, and a lane is re-measured
+  in the same environment.** If your own change makes some already-recorded
+  evidence (a report, a lane result, a benchmark) stale, re-taking it is
+  your job inside this same task — not a gap left for a later task or the
+  engine's own cure machinery to notice. Re-run it where it first ran: same
+  checkout, same venv, same layout, never a fresh `git worktree` or a fresh
+  clone. Read the result from its own exit-status file, never from log
+  prose; a red attempt stays in the record as history, never erased by a
+  later green one.
 
 ## Operator steering
 
@@ -318,6 +339,13 @@ reported while a task WAS in fact assigned this iteration, or while any task
 is not `completed`/`validated`/`skipped`, is refused rather than silently
 accepted, and does not end the run. Report it only when the check genuinely
 holds; a false claim wastes the budget on a refusal instead of ending the run.
+
+**A refused `plan_complete` is work, not formatting.** If the refusal names
+a task that is not `completed`/`validated`/`skipped`, resolving THAT task
+(through `task_status`, or by finishing it as an ordinary assigned task) is
+what turns the refusal into a genuine claim — do that this iteration and
+claim `plan_complete` again next iteration, rather than re-sending the same
+refused claim unchanged.
 
 **A task left `failed` blocks that signal forever, and "blocked forever" is not
 a safe resting state.** The loop's only escape from a worker that stops making

@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5616 tests across 345 modules** at task 040's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4035
+collects **5621 tests across 346 modules** at task 041's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4040
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -505,7 +505,15 @@ PRD fact 5's prohibitions, step 3a self-lints against the three refusal
 shapes with markers (i)/(ii)/(iii), the four new/edited steps land in
 2b/2c/3/3a/4 order, and planning.md still carries exactly one code fence
 (the plan-proposal.json file schema) -- all also `smoke` (pure text-file
-assertions, no engine subprocess).
+assertions, no engine subprocess), and **5621 (smoke 4040, modules
+345->346)** by task 041's new `tests/test_worker_reflection_additions.py`
+(5 nodes, #170, #175): worker.md now states evidence you invalidate is
+yours to re-take, that a lane is re-measured in the same environment
+(same checkout/venv/layout, never a fresh `git worktree` or clone), the
+two refused split shapes (a forced split is a contract-ladder re-ask, a
+voluntary split is a silent refusal-and-log), and that a refused
+`plan_complete` is work -- plus a same-file fence-balance sanity check --
+all also `smoke` (pure text-file assertions, no engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
