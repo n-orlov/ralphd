@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5621 tests across 346 modules** at task 041's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4040
+collects **5625 tests across 347 modules** at task 042's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4044
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -513,7 +513,16 @@ yours to re-take, that a lane is re-measured in the same environment
 two refused split shapes (a forced split is a contract-ladder re-ask, a
 voluntary split is a silent refusal-and-log), and that a refused
 `plan_complete` is work -- plus a same-file fence-balance sanity check --
-all also `smoke` (pure text-file assertions, no engine subprocess).
+all also `smoke` (pure text-file assertions, no engine subprocess), and
+**5625 (smoke 4044, modules 346->347)** by task 042's new
+`tests/test_review_verdict_steer_additions.py` (4 nodes, #170, #175):
+review.md now states a curable finding is a specification naming
+`cured_when` and `invalidates`, verdict_gate.md now states the engine
+owns the terminal record so the gate never reads `events.jsonl`, and
+steer.md now states every premise a steering message rests on is
+checked against the live plan before it is applied -- plus a same-file
+fence-balance sanity check across all three files -- all also `smoke`
+(pure text-file assertions, no engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

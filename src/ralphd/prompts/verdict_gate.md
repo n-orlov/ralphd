@@ -48,6 +48,17 @@ workspace itself, unrestricted. You have every tool it had. What is withheld is
 narrowly and only its own *conclusion* about the very question you are about to
 answer for yourself.
 
+## The engine owns the terminal record (#175)
+
+Petition/adjudication accounting, steer and ruling history, approach history,
+terminal tallies and notification accounting are the engine's own record,
+written into `run-record.md`/`run-record.json` at `finishing` — never
+reconstructed by any judging hat, and never something you go and read
+yourself. Concretely: the gate never reads `events.jsonl` to check what
+happened, and never faults the work under review for what that record does
+or does not yet contain. Judge the PRD against the workspace and `tasks.json`
+only, exactly as the rest of this prompt already directs.
+
 ## THE ONE QUESTION: does the finished work actually meet the PRD, independently of what anyone already said about it?
 
 Read the PRD. Read `tasks.json`. Run the tests. Run the code. Check the files.

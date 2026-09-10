@@ -94,7 +94,16 @@ rather than transferring it). A dependent naming neither id is untouched.
 1. Read the pending steering message(s), in arrival order — handle every
    pending one this iteration, not just the first.
 2. Read the current task table and the handoff notes file (`context-read`) to
-   understand the plan this steering message lands against.
+   understand the plan this steering message lands against. **Check every
+   premise the message rests on against that live plan before you apply
+   anything (#175)** — a task id it names, a status it assumes, a commit or
+   sha it cites, an ordering it presumes still holds: read the current state
+   yourself rather than trusting the message's own account of it, the same
+   distrust this whole loop applies to any other unverified claim. A premise
+   that no longer holds (the named task already done, already `skipped`, the
+   cited sha not the one on `main` any more) changes how you reshape the plan,
+   or whether reshaping it at all still makes sense — note the mismatch in
+   your settlement notes either way.
 3. Reshape the plan with the tools above: insert new tasks, change an existing
    task's title, `successCriteria`, `dependsOn`, `priority` or status-adjacent
    bookkeeping, or delete/supersede a task the message makes obsolete —

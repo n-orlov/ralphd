@@ -204,6 +204,16 @@ machine-checked before your verdict is trusted:
   discipline steps 1-7 above already demand, just attached to the finding
   itself.
 
+**A curable finding is a specification, not a description (#175).** Whenever
+you mark `curable: true`, the finding also carries `cured_when` (required in
+that case) — the exact text `insert_cure_tasks` copies verbatim into the cure
+task's own `successCriteria`, so it must already read like a criterion, not
+like a complaint — and, optionally, `invalidates`: the list of paths whose
+prior evidence that cure supersedes, so the engine can re-take exactly those
+paths rather than the whole approach. A curable blocking finding you file
+without `cured_when` is a review contract violation on the ladder, not a
+finding the engine can act on.
+
 Write BOTH channels for every finding, whether the run is `verified` or
 `rejected`: the free-markdown `review-findings.md` you already produce
 (human judgement in prose, kept exactly as it is), and beside it a JSON
