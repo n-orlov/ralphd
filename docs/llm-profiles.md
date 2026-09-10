@@ -61,6 +61,23 @@ Resolution rules:
   `docs/api.md` (`priceStrategy`). An unknown value here is an error at `start`
   time, not a silent fallback.
 - `--llm-env KEY=VAL` on `start` layers on top of the profile.
+- **`--llm-header NAME:VALUE`** (`NAME=VALUE` also accepted, repeatable, #177)
+  sets that HTTP header on EVERY provider of the resolved pi config -- both
+  this profile's own `pi.providers` and the `--llm host` copied
+  `models.json`. A same-named header the provider already carries under its
+  own `headers:` map (see `pi:` above) is overridden; any other header stays.
+  Values accept `${env:}`/`${file:}`/`${cmd:}` exactly like `env:`/`pi:`
+  above, resolved on the host. A `--template`'s own `job.yaml` may set
+  `llm_header:` (a list of the same spec strings) as a default; the full
+  order, weakest to strongest, is: this profile's own `pi.providers.<p>.
+  headers:` < the template's `llm_header:` list < an explicit `--llm-header`
+  flag on the command line (a later spec for the same name always wins over
+  an earlier one at the SAME level too). There is no registry-wide level.
+  The resolved pairs are persisted beside `--llm-env`'s own env/mounts in
+  `<config-dir>/llm-wiring.json`'s `headers` field (task 045) so `resume`
+  reproduces them without the flag, or `resume --llm-header` overrides them
+  (same override rule, applied to whatever was persisted) -- see
+  `docs/cli.md`'s `ralphctl resume` section.
 - `ralphctl llm test <profile>` verifies a profile end-to-end with a one-token
   completion in a throwaway container.
 

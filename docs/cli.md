@@ -88,6 +88,7 @@ ralphctl start --prd <file|-> [options]
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
+| `--llm-header NAME:VALUE` | none | set this HTTP header on every provider of the resolved pi config (`NAME=VALUE` also accepted; repeatable; a same-named header the profile already carries is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host); falls back to a `--template`'s own `llm_header:` list (task 045, #177) — see [llm-profiles.md](llm-profiles.md) for the full flag > template > profile precedence, and the `ralphctl resume` section below for `resume --llm-header`'s override |
 | `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
 | `--skills <dir>` | — | mount a skills directory (repeatable) |
 | `--creds <dir>` | — | mount a credentials directory (see below) |
@@ -303,7 +304,12 @@ back next to any matching `ralphctl config` registry default
 (`image`/`on_complete`/`network`/`default_llm_profile`), and only then to
 the hardcoded default (for `image`, to building `ralphd:<hash>` from source
 — see "The job image" above); every other field falls straight back to its
-hardcoded default. An unknown `--template`
+hardcoded default. `job.yaml` may also set `llm_header` (task 045, #177): a
+list of `--llm-header`-shaped `Name: value`/`Name=value` strings. This one
+is NOT override-wholesale like the fields above — an explicit `--llm-header`
+flag is appended AFTER the template's own list, so a later spec for the same
+name wins: flag > template > the profile's own `pi.providers.<p>.headers:`,
+with no registry-wide level. An unknown `--template`
 name exits `3` naming the expected path; a malformed `job.yaml` (not a
 mapping) exits `2`.
 
@@ -2387,6 +2393,17 @@ continues the job instead of re-planning; `resume` just has to reproduce
   resume time. A run started before this existed (no `llm-wiring.json` on
   disk) resumes exactly as it did before — no error, just nothing extra to
   reproduce.
+- The resolved `--llm-header` pairs (task 045, #177): since `resume` never
+  recreates `<config-dir>/pi/models.json`, a header merged in at `start`
+  reproduces for free just by the config dir surviving — nothing extra to
+  do with no flag. `resume --llm-header NAME:VALUE` (repeatable, same
+  spec shape as `start`'s own flag, `${env:}`/`${file:}`/`${cmd:}` resolved
+  on THIS resuming host) OVERRIDES: it merges over whichever headers were
+  persisted (a same-named header wins, any other persisted header is
+  kept), re-merges the result into `pi/models.json`, and re-persists the
+  new effective map to `llm-wiring.json`'s `headers` field — so a LATER
+  resume with no flag replays the overridden value, not the original
+  `start`'s.
 - The resolved `--forward-env`/`--llm-env`/`--env` pairs from `start` time
   (task 001): these three generic, non-`--llm`-derived flags are resolved
   once at `start` and persisted, in the exact order applied, to

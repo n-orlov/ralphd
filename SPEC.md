@@ -2102,8 +2102,10 @@ from everything it has *done*, and is mounted read-only at `/config`.
 **This directory is what `resume` re-reads.** A resume replaces the container,
 never the config dir, so the run continues under exactly the configuration it
 started with. That only works because the *resolved* wiring was recorded rather
-than re-derived: `llm-wiring.json` holds the LLM `mode`, the resolved `env` map
-and the `mounts` list, and `env-wiring.json` holds the `extra_env` list of
+than re-derived: `llm-wiring.json` holds the LLM `mode`, the resolved `env` map,
+the `mounts` list and the resolved `--llm-header` `headers` map (task 045,
+#177, empty/absent when none was ever resolved), and `env-wiring.json` holds
+the `extra_env` list of
 resolved `name=value` pairs in the exact order the flags were applied at start
 (forward-env, then llm-env, then env), so a later duplicate name wins on replay
 exactly as it did the first time. Both are mode `0600`, live outside the run dir
@@ -2461,13 +2463,19 @@ byte-for-byte whatever the resuming shell happens to hold:
 
 | file (in the config dir) | contents | mode |
 |---|---|---|
-| `llm-wiring.json` | `{mode, env, mounts}` from the `--llm` resolution — `host`'s forwarded vars and `~/.aws` mount, or a named profile's fully-resolved `env:`/`mounts:` including `${env:}`/`${file:}`/`${cmd:}` results | `0600` |
+| `llm-wiring.json` | `{mode, env, mounts, headers}` from the `--llm` resolution — `host`'s forwarded vars and `~/.aws` mount, or a named profile's fully-resolved `env:`/`mounts:` including `${env:}`/`${file:}`/`${cmd:}` results; `headers` (task 045, #177) is the resolved `--llm-header` name -> value map applied to every provider's `headers:` (absent/empty when no `--llm-header` was ever resolved for this run) | `0600` |
 | `env-wiring.json` | `{extra_env: [...]}` — the resolved `name=value` pairs from the three flags above, in the exact order applied | `0600` |
 | `auto-resume.json` | `{auto_resume: bool}` — a host-side setting, never passed into the container | plain |
 
 `resume` replays `llm-wiring.json`'s env and mounts first, then
-`env-wiring.json`'s pairs, matching `start`'s own precedence. A run whose config
-dir has no such file resumes with nothing extra and no error. Neither secret file
+`env-wiring.json`'s pairs, matching `start`'s own precedence. `resume
+--llm-header` (task 045) is the one flag among these three files that DOES
+take a live override on resume: it merges its resolved specs over the
+persisted `headers` map (a same-named header wins, others are kept),
+re-merges the result into `<config-dir>/pi/models.json` and re-writes
+`llm-wiring.json`'s `headers` field, so a LATER resume with no flag replays
+the overridden value, not the original `start`'s. A run whose config dir
+has no such file resumes with nothing extra and no error. Neither secret file
 is under the run dir (host-visible history) and neither is returned by any HTTP
 route — the same at-rest pattern as `<config-dir>/pi/models.json` and
 `<run-dir>/.api-token`.
@@ -2517,8 +2525,18 @@ template's own `job.yaml` may still literally carry either (they translate at
 engine load time like any other job.yaml, §4.1), but `start` no longer copies
 them down field-by-field.
 
+`job.yaml` may also set `llm_header` (task 045, #177): a list of
+`--llm-header`-shaped strings (`Name: value`/`Name=value`) supplying default
+headers for the run's resolved pi config. Unlike every scalar key above, an
+explicit `--llm-header` flag does not wholesale-replace the template's list —
+it is appended AFTER the template's own specs, so a later spec for the same
+name wins (`resolve_header_specs`'s existing rule): flag > template > the
+profile's own `pi.providers.<p>.headers:`. There is no registry-wide
+`llm_header` level.
+
 Every one of those has a corresponding `start` flag, and the flag always wins
-(§6.2's chain). `--skills` and `--creds` override **wholesale**, not by merge — a
+(§6.2's chain, with `llm_header`'s own precedence rule above). `--skills` and
+`--creds` override **wholesale**, not by merge — a
 template's set and an explicit one never mix. An unknown `--template` exits `3`
 naming the path it looked for; a `job.yaml` that is not a mapping exits `2`; a
 template with no `job.yaml` contributes only its `prd.md`/`creds/`/skill

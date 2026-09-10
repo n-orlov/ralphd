@@ -438,14 +438,15 @@ def _llm_wiring_path(cdir: Path) -> Path:
 
 
 def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
-                      mounts: list[str]) -> None:
+                      mounts: list[str], headers: dict[str, str] | None = None) -> None:
     """Persist the *resolved* env vars + extra mounts contributed by
-    `--llm` wiring at `start` time (task 058, operator steering 018) so
-    `ralphctl resume` can reproduce the exact same wiring on a fresh
-    container later, regardless of the operator's current shell env at
-    resume time (which may lack the credentials entirely, or have
-    different ones). `mode` is `"host"`, a named profile, or `"none"`
-    -- informational only, not read back by resume.
+    `--llm` wiring at `start` time (task 058, operator steering 018), and
+    the resolved `--llm-header` pairs (task 045, #177), so `ralphctl
+    resume` can reproduce the exact same wiring on a fresh container
+    later, regardless of the operator's current shell env at resume time
+    (which may lack the credentials entirely, or have different ones).
+    `mode` is `"host"`, a named profile, or `"none"` -- informational
+    only, not read back by resume.
 
     These values are genuinely secret (the same class of value already
     written unencrypted-but-mode-0600 to `<cdir>/pi/models.json` for
@@ -457,22 +458,29 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
     mechanism.
     """
     path = _llm_wiring_path(cdir)
-    if not env and not mounts:
+    if not env and not mounts and not headers:
         # nothing --llm-wiring-specific to remember (e.g. `--llm none`, or
         # a profile/host env that set nothing) -- leave no file rather
         # than writing an empty one.
         path.unlink(missing_ok=True)
         return
-    path.write_text(json.dumps({"mode": mode, "env": env, "mounts": mounts}, indent=2))
+    doc = {"mode": mode, "env": env, "mounts": mounts}
+    if headers:
+        doc["headers"] = headers
+    path.write_text(json.dumps(doc, indent=2))
     os.chmod(path, 0o600)
 
 
 def _read_llm_wiring(cdir: Path) -> dict:
-    """The `{"env", "mounts"}` `--llm` wiring persisted by `_write_llm_wiring`
-    at `start` time, or empty defaults for a run started before task 058 (no
-    file at all) or with nothing to reproduce."""
+    """The `{"mode", "env", "mounts", "headers"}` `--llm` wiring persisted
+    by `_write_llm_wiring` at `start` time, or empty defaults for a run
+    started before task 058 (no file at all) or with nothing to
+    reproduce. `headers` (task 045, #177) is the resolved `--llm-header`
+    name -> value map, empty for a run started before that field existed
+    or with none set."""
     doc = _read_json(_llm_wiring_path(cdir), {}) or {}
-    return {"env": doc.get("env") or {}, "mounts": doc.get("mounts") or []}
+    return {"mode": doc.get("mode") or "host", "env": doc.get("env") or {},
+            "mounts": doc.get("mounts") or [], "headers": doc.get("headers") or {}}
 
 
 def _extra_env_wiring_path(cdir: Path) -> Path:
@@ -1644,6 +1652,21 @@ def _apply_template(args) -> Path | None:
     # the one non-string scalar that can arrive from a template/registry
     # YAML as either a bool or its string spelling
     args.auto_resume = _as_bool(args.auto_resume)
+    # Task 045 (#177): a template may set default `--llm-header` specs too
+    # (`llm_header:` list of `Name: value`/`Name=value` strings, same shape
+    # a flag argument takes). No registry-wide level here (unlike the
+    # scalar fields above) -- a header is a routing/auth fact bound to one
+    # job's LLM wiring, not a fleet-wide policy. Explicit `--llm-header`
+    # flags are appended AFTER the template's own specs so
+    # `resolve_header_specs`'s existing "a later spec for the same name
+    # wins" rule gives the precedence for free: flag > template > whatever
+    # the profile's own `pi.providers.<p>.headers:` already carries
+    # (`merge_headers_into_pi_config`'s "flag wins, others kept" rule).
+    template_headers = cfg.get("llm_header") or []
+    if template_headers and not isinstance(template_headers, list):
+        die(2, f"template {args.template}: llm_header must be a list of strings")
+    if template_headers:
+        args.llm_header = [str(h) for h in template_headers] + list(args.llm_header or [])
     if not args.skills:
         skill_names = cfg.get("skills") or []
         args.skills = [str(tdir / s) for s in skill_names] or None
@@ -1938,7 +1961,7 @@ def cmd_start(args):
         if aws.is_dir():
             mounts += ["-v", f"{aws}:/home/agent/.aws:ro"]
             host_mounts.append(f"{aws}:/home/agent/.aws:ro")
-        _write_llm_wiring(cdir, "host", host_env, host_mounts)
+        _write_llm_wiring(cdir, "host", host_env, host_mounts, header_overrides)
     elif args.llm != "none":
         assert llm_profile is not None  # resolved (or died) above
         for k, v in llm_profile["env"].items():
@@ -1952,7 +1975,8 @@ def cmd_start(args):
                 llm_profile["pi"], header_overrides)
             (dest / "models.json").write_text(json.dumps(pi_doc, indent=1))
             os.chmod(dest / "models.json", 0o600)
-        _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"])
+        _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"],
+                          header_overrides)
     else:
         _write_llm_wiring(cdir, "none", {}, [])
     # Resolved `name=value` pairs from --forward-env/--llm-env/--env, in
@@ -2514,6 +2538,34 @@ def cmd_resume(args):
         env_args += ["-e", f"{k}={v}"]
     for m in wiring["mounts"]:
         mounts += ["-v", m]
+
+    # `--llm-header` on resume (task 045, #177): with no flag, the headers
+    # persisted at `start` time are already baked into
+    # `<cdir>/pi/models.json` (which `resume` never recreates -- the config
+    # dir survives every resume untouched) so they reproduce for free, the
+    # same way `<cdir>`'s other host-only files do. A flag here OVERRIDES:
+    # resolve it on this resuming host, merge it over the persisted
+    # `headers` map (flag wins a same-named header, any other persisted
+    # header is kept -- the same rule `merge_headers_into_pi_config` already
+    # applies at `start`), re-merge into the persisted `pi/models.json` (if
+    # any -- a run started `--llm none` has none to merge into), and
+    # re-persist the new effective map so a LATER resume with no flag
+    # reproduces THIS resume's headers, not the original start's.
+    if args.llm_header:
+        try:
+            new_headers = llm_profiles.resolve_header_specs(args.llm_header)
+        except llm_profiles.HeaderError as e:
+            die(2, f"ralphctl resume: {e}")
+        models_json_path = cdir / "pi" / "models.json"
+        if models_json_path.is_file():
+            doc = _read_json(models_json_path)
+            if doc:
+                llm_profiles.merge_headers_into_pi_config(doc, new_headers)
+                models_json_path.write_text(json.dumps(doc, indent=1))
+                os.chmod(models_json_path, 0o600)
+        effective_headers = {**wiring["headers"], **new_headers}
+        _write_llm_wiring(cdir, wiring["mode"], wiring["env"], wiring["mounts"],
+                          effective_headers)
 
     # Reproduce the resolved --forward-env/--llm-env/--env pairs from
     # `start` time (task 001) in the same order/precedence, never re-read
@@ -6208,7 +6260,7 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
             run_id=run_id, iterations=None, approaches=None, timeout=None,
             iteration_timeout=None, image=args.image, port=None,
             api_bind="127.0.0.1", network=None, allow_docker=False,
-            detach=True, json=False)
+            llm_header=None, detach=True, json=False)
         buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(buf):
@@ -6844,7 +6896,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "already on a provider is overridden, others are "
                         "kept); accepts ${env:}/${file:}/${cmd:} like a "
                         "profile's own values, resolved on the host "
-                        "(docs/llm-profiles.md, #177)")
+                        "[default: none, or the template's own `llm_header:` "
+                        "list -- flag wins a same-named header over the "
+                        "template, which wins over the profile's own "
+                        "pi.providers.<p>.headers] (docs/llm-profiles.md, "
+                        "task 044/045, #177)")
     s.add_argument("--forward-env", action="append", metavar="NAME|PREFIX_*",
                    help="forward host env var(s) into the container (repeatable)")
     s.add_argument("--env", action="append", metavar="KEY=VAL")
@@ -6968,6 +7024,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "the image recipe the run started with (its "
                         "base_image/dockerfile), or "
                         f"{DEFAULT_IMAGE} for a run that recorded none")
+    s.add_argument("--llm-header", action="append", metavar="NAME:VALUE|NAME=VALUE",
+                   help="override the header(s) persisted at `start` time "
+                        "(task 045, #177; repeatable, `Name=value` also "
+                        "accepted, ${env:}/${file:}/${cmd:} resolved on this "
+                        "resuming host); a same-named header wins over the "
+                        "one persisted at start, any other persisted header "
+                        "is kept. With no flag, resume reproduces the exact "
+                        "headers persisted at start, unchanged")
     s.add_argument("--port", type=int)
     s.add_argument("--api-bind", default="127.0.0.1")
     s.add_argument("--network", default=None, metavar="NET",

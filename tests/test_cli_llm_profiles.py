@@ -349,6 +349,75 @@ def test_start_llm_header_unresolvable_ref_refused_before_docker_run(ctl):
     assert docker_run_never_happened(ctl)
 
 
+# --------------------------------------------- llm-header persistence (045)
+def test_start_llm_header_persisted_in_llm_wiring_json(ctl):
+    """The resolved header pairs land beside `env`/`mounts` in
+    `llm-wiring.json` (task 045, #177), not just in `pi/models.json` --
+    the run's own resolved-wiring record names them so `resume` (and any
+    later reader) can see what was applied without re-parsing the pi
+    config."""
+    ctl.write_profile("acme", {
+        "model": "acme/big", "env": {},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com"}}},
+    })
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme",
+                  "--llm-header", "X-Jira-ID=EST-1",
+                  "--run-id", "tst-header-wiring")
+    assert res.returncode == 0, res.stderr
+    wiring_path = ctl.config_dir("tst-header-wiring") / "llm-wiring.json"
+    assert wiring_path.is_file()
+    assert oct(wiring_path.stat().st_mode)[-3:] == "600"
+    doc = json.loads(wiring_path.read_text())
+    assert doc["headers"] == {"X-Jira-ID": "EST-1"}
+
+
+# --------------------------------------------------- llm-header precedence
+def test_llm_header_template_default_applies_with_no_flag(ctl):
+    """A template's own `llm_header:` list supplies a default header,
+    below an explicit flag but above the profile's own `headers:` --
+    task 045, #177."""
+    ctl.write_profile("acme", {
+        "model": "acme/big", "env": {},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com",
+                                        "headers": {"X-Source": "profile"}}}},
+    })
+    tdir = ctl.registry / "templates" / "hdrtpl"
+    tdir.mkdir(parents=True)
+    (tdir / "job.yaml").write_text('llm_header:\n  - "X-Source: template"\n')
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme",
+                  "--template", "hdrtpl", "--run-id", "tst-header-tpl")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads((ctl.config_dir("tst-header-tpl") / "pi" / "models.json")
+                      .read_text())
+    assert doc["providers"]["acme"]["headers"]["X-Source"] == "template"
+    wiring = json.loads((ctl.config_dir("tst-header-tpl") / "llm-wiring.json")
+                        .read_text())
+    assert wiring["headers"] == {"X-Source": "template"}
+
+
+def test_llm_header_flag_wins_over_template_wins_over_profile(ctl):
+    """Same fixture as above, but with an explicit `--llm-header` flag
+    too: flag > template > profile (task 045, #177)."""
+    ctl.write_profile("acme", {
+        "model": "acme/big", "env": {},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com",
+                                        "headers": {"X-Source": "profile"}}}},
+    })
+    tdir = ctl.registry / "templates" / "hdrtpl2"
+    tdir.mkdir(parents=True)
+    (tdir / "job.yaml").write_text('llm_header:\n  - "X-Source: template"\n')
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme",
+                  "--template", "hdrtpl2", "--llm-header", "X-Source=flag",
+                  "--run-id", "tst-header-flag")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads((ctl.config_dir("tst-header-flag") / "pi" / "models.json")
+                      .read_text())
+    assert doc["providers"]["acme"]["headers"]["X-Source"] == "flag"
+    wiring = json.loads((ctl.config_dir("tst-header-flag") / "llm-wiring.json")
+                        .read_text())
+    assert wiring["headers"] == {"X-Source": "flag"}
+
+
 def test_start_llm_none_unaffected(ctl):
     res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
                   "--run-id", "tst-none")

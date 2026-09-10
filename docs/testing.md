@@ -200,7 +200,7 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5630 tests across 347 modules** at task 044's commit, over
+collects **5636 tests across 347 modules** at task 045's commit, over
 the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4049
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
@@ -530,7 +530,17 @@ profile `pi.providers` path and the `--llm host` copied `models.json` path
 (the flag winning a same-named header, other headers kept), a `${env:...}`
 value resolving on the host, and a malformed spec / an unresolvable
 reference each refused before `docker run` -- all also `smoke` (no real
-engine/`ralphctl` process spawned).
+engine/`ralphctl` process spawned), and **5636 (smoke 4055, modules
+unchanged at 347)** by task 045's new nodes across two EXISTING modules
+(no new module, #177): three in `tests/test_cli_llm_profiles.py` pinning
+the resolved header pairs landing in `llm-wiring.json`, a template's own
+`llm_header:` list applying with no flag, and the flag winning over the
+template which wins over the profile's own `pi.providers.<p>.headers:`;
+three in `tests/test_cli_resume_llm_wiring.py` pinning a plain `resume`
+reproducing the persisted headers unchanged, `resume --llm-header`
+overriding one header while keeping another from `start`, and a
+malformed `resume --llm-header` value refused -- all also `smoke` (no
+real engine spawned).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

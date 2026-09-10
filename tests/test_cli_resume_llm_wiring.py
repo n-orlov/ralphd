@@ -162,6 +162,95 @@ def test_llm_none_leaves_no_wiring_file(ctl):
     assert not (ctl.registry / "configs" / "tst-nonewiring" / "llm-wiring.json").exists()
 
 
+# --------------------------------------------------- --llm-header (task 045)
+def test_resume_reproduces_llm_header_without_flag(ctl, tmp_path):
+    """A header resolved at `start` time is baked into `<cdir>/pi/
+    models.json`, which `resume` never recreates -- so it reproduces for
+    free. This test pins that the persisted `llm-wiring.json` also carries
+    it, and that a plain `resume` (no `--llm-header`) leaves both files
+    exactly as `start` wrote them."""
+    d = ctl.registry / "llm-profiles"
+    d.mkdir(parents=True)
+    (d / "acme.yaml").write_text(
+        "pi:\n  providers:\n    acme:\n      baseUrl: https://gw.example.com\n")
+    run_id = "tst-hdrresume"
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme",
+                  "--llm-header", "X-Jira-ID=EST-1", "--run-id", run_id)
+    assert res.returncode == 0, res.stderr
+    cdir = ctl.registry / "configs" / run_id
+    wiring_doc = json.loads((cdir / "llm-wiring.json").read_text())
+    assert wiring_doc["headers"] == {"X-Jira-ID": "EST-1"}
+
+    _stop_container(ctl)
+    res = ctl.run("resume", run_id, env={
+        "STUB_DOCKER_CONTAINERS": f"ralphd-{run_id}",
+        "STUB_DOCKER_RUNNING": "",
+    })
+    assert res.returncode == 0, res.stderr
+    models_doc = json.loads((cdir / "pi" / "models.json").read_text())
+    assert models_doc["providers"]["acme"]["headers"] == {"X-Jira-ID": "EST-1"}
+    wiring_doc = json.loads((cdir / "llm-wiring.json").read_text())
+    assert wiring_doc["headers"] == {"X-Jira-ID": "EST-1"}
+
+
+def test_resume_llm_header_overrides_persisted(ctl, tmp_path):
+    """`resume --llm-header X-Jira-ID=EST-2` overrides the header
+    persisted at `start` (EST-1 -> EST-2) in both `pi/models.json` and the
+    re-persisted `llm-wiring.json`, while an untouched header from start
+    (X-Other) survives unchanged -- task 045, #177."""
+    d = ctl.registry / "llm-profiles"
+    d.mkdir(parents=True)
+    (d / "acme.yaml").write_text(
+        "pi:\n  providers:\n    acme:\n      baseUrl: https://gw.example.com\n")
+    run_id = "tst-hdroverride"
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme",
+                  "--llm-header", "X-Jira-ID=EST-1",
+                  "--llm-header", "X-Other=keep-me",
+                  "--run-id", run_id)
+    assert res.returncode == 0, res.stderr
+    cdir = ctl.registry / "configs" / run_id
+
+    _stop_container(ctl)
+    res = ctl.run("resume", run_id, "--llm-header", "X-Jira-ID=EST-2", env={
+        "STUB_DOCKER_CONTAINERS": f"ralphd-{run_id}",
+        "STUB_DOCKER_RUNNING": "",
+    })
+    assert res.returncode == 0, res.stderr
+    models_doc = json.loads((cdir / "pi" / "models.json").read_text())
+    headers = models_doc["providers"]["acme"]["headers"]
+    assert headers["X-Jira-ID"] == "EST-2"
+    assert headers["X-Other"] == "keep-me"
+    wiring_doc = json.loads((cdir / "llm-wiring.json").read_text())
+    assert wiring_doc["headers"] == {"X-Jira-ID": "EST-2", "X-Other": "keep-me"}
+
+    # a LATER resume with no flag reproduces the OVERRIDDEN value, not the
+    # original start-time one -- the re-persisted record is what replays.
+    _stop_container(ctl)
+    res = ctl.run("resume", run_id, env={
+        "STUB_DOCKER_CONTAINERS": f"ralphd-{run_id}",
+        "STUB_DOCKER_RUNNING": "",
+    })
+    assert res.returncode == 0, res.stderr
+    models_doc = json.loads((cdir / "pi" / "models.json").read_text())
+    assert models_doc["providers"]["acme"]["headers"]["X-Jira-ID"] == "EST-2"
+
+
+def test_resume_llm_header_malformed_value_refused(ctl):
+    d = ctl.registry / "llm-profiles"
+    d.mkdir(parents=True)
+    (d / "acme.yaml").write_text(
+        "pi:\n  providers:\n    acme:\n      baseUrl: https://gw.example.com\n")
+    run_id = "tst-hdrbadresume"
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme", "--run-id", run_id)
+    assert res.returncode == 0, res.stderr
+    _stop_container(ctl)
+    res = ctl.run("resume", run_id, "--llm-header", "totally-malformed-no-separator",
+                  env={"STUB_DOCKER_CONTAINERS": f"ralphd-{run_id}",
+                       "STUB_DOCKER_RUNNING": ""})
+    assert res.returncode != 0
+    assert "totally-malformed-no-separator" in res.stderr
+
+
 def test_resume_llm_wiring_secret_never_lands_in_run_dir(ctl, tmp_path):
     """Gap #1 from the validation-failed review of this task: a codified,
     repeatable negative proof (mirroring tests/test_secret_redaction.py and
