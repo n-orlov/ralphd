@@ -250,8 +250,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 030 (PRD requirement E.1, #167) added the `CURE_PASS_CEILING`
         # module-level constant above `_creds_note` in this same module,
         # shifting this read once more -- now at 1142, same method, same
-        # read, same reason.
-        "line": "1142",
+        # read, same reason. Task 035 (PRD requirement F.1/F.4, #172) added
+        # `_approach_progress_context` (48 new lines) above `_creds_note` in
+        # this same module, shifting this read once more -- now at 1190,
+        # same method, same read, same reason.
+        "line": "1190",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
