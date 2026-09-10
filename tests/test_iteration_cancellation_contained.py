@@ -172,6 +172,25 @@ async def test_a_cancellation_requested_from_outside_is_honoured(tmp_path):
     assert task.cancelled()
 
 
+@pytest.mark.asyncio
+async def test_classify_result_of_none_never_raises(tmp_path):
+    """Task 091 (steer 018 sect 1, #91): the operator read
+    ``AttributeError: 'NoneType' object has no attribute 'error_message'``
+    out of two GitHub-hosted nightly cells at 7b0860b, where a fault
+    classification (or a propagated CancelledError) belonged instead --
+    LoopSupervisor._classify_result had no guard for the shape its own
+    signature never ruled out. Neither of this method's two real callers
+    (`_run_iteration_with_infra_retry`, `_check_instant_failure`) can
+    actually hand it a `None` today -- see the docstring at the call site
+    -- so this pins the guard directly rather than reconstructing an
+    engine-internal race to reach it: classifying `None` must yield a
+    fault classification, never raise.
+    """
+    sup = _supervisor(tmp_path, [_ok])
+
+    assert sup._classify_result(None) is not None
+
+
 # -- the engine around it --------------------------------------------------
 
 

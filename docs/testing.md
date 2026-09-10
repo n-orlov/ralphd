@@ -720,6 +720,15 @@ unchanged `args`, empty stdout and a stderr naming the missing binary) and
 endpoint share and which never went through `_container_liveness`). Both are
 in-process, so both are also `smoke`; no new module.
 
+**5670 (smoke 4069, modules unchanged at 352)** by task 091 (steer 018
+section 1, #91, guarding `LoopSupervisor._classify_result` against a `None`
+result instead of leaving a signature no caller could enforce): net +1 node
+in the same `tests/test_iteration_cancellation_contained.py`
+(`test_classify_result_of_none_never_raises`), directly pinning that
+`_classify_result(None)` returns a fault classification rather than raising
+`AttributeError`. In-process, no real engine/`ralphctl` process spawned, so
+also `smoke`; no new module.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather

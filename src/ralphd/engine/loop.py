@@ -1760,7 +1760,7 @@ class LoopSupervisor:
             self.run.emit("infra_recovered", health="ok",
                           infraWaitTotalS=round(self._infra_wait_total_s, 3))
 
-    def _classify_result(self, result: IterationResult) -> str | None:
+    def _classify_result(self, result: IterationResult | None) -> str | None:
         """The engine's single fault verdict for one finished iteration:
         ``None`` (not a failure at all), ``"infra"`` or ``"work"``.
 
@@ -1770,7 +1770,29 @@ class LoopSupervisor:
         the same verdict the infra-retry wrapper acts on -- an operator
         reading `faultClass: "infra"` can be sure that is why the attempt was
         retried and refunded.
+
+        Task 091 (steer 018 sect 1, #91): ``result`` is typed ``| None`` and
+        guarded immediately below on purpose, even though today's two real
+        callers (`_run_iteration_with_infra_retry`, `_check_instant_failure`)
+        always hand this a populated `IterationResult` -- `_run_iteration_once`
+        either re-raises a genuinely requested outside cancellation before its
+        own call to this method, or converts every other `BaseException` into
+        a populated `IterationResult` first, so `result` cannot be `None` at
+        either of today's two call sites. The operator read the shape this
+        guard closes off out of two GitHub-hosted `python:3.11-slim` nightly
+        cells at 7b0860b -- `AttributeError: 'NoneType' object has no
+        attribute 'error_message'` where a fault classification, or a
+        propagated `CancelledError`, belonged instead -- so the type is
+        widened and the `None` case is classified explicitly rather than left
+        to a signature that promised something no caller could enforce.
         """
+        if result is None:
+            # Untested by construction from either real call site (see
+            # above); scored the same as classify_fault's own no-traffic
+            # catch-all, since "no result at all" is a strict subset of
+            # "no observable traffic" -- never raised, never a genuine work
+            # failure attributed to an attempt that produced nothing to score.
+            return "infra"
         return classify_fault(
             error_text=result.error_message or "",
             exit_code=result.exit_code,
