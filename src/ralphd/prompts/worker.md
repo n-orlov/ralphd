@@ -49,9 +49,11 @@ immediately starts the next iteration.
    CONFIRM it (the task moves to `skipped` and its dependents are
    re-pointed). Held, not doomed — do not carve around it as if it were a
    dead dependency.
-3. Do the work in the workspace for the assigned task. **If your prompt carries a
-   `## Why the previous attempt was rejected` block** (only present when this is a
-   retry, `validationAttempts > 0`), that block's `validationNotes` is the verifier's
+3. Do the work in the workspace for the assigned task. **If your prompt carries the
+   rejection block titled "Why the previous attempt was rejected"** — rendered as a
+   second-level heading by `_worker_assignment_extra`,
+   `src/ralphd/engine/loop.py:4886`, and only present when this is a
+   retry, `validationAttempts > 0` — that block's `validationNotes` is the verifier's
    own account of why the last attempt missed — read it before you touch anything and
    make sure this attempt actually addresses what it says, criterion by criterion; if
    you believe a criterion it faults you on cannot be met as written, petition or
