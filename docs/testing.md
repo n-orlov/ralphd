@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5473 tests across 335 modules** at task 024's own commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3908
+collects **5490 tests across 336 modules** at task 025's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3925
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -335,7 +335,18 @@ cut-record task starting `in-progress` and reporting `deferred` on a
 06:00Z gate, the run continuing with the plan's other runnable task, the
 sleep-and-wake mechanism clearing the deferral once `until` passes, and
 both tasks landing `completed` with the run reaching `succeeded` --
-unlike the real incident's `failed` -- also `smoke`.
+unlike the real incident's `failed` -- also `smoke`, and 5490 (smoke 3925,
+modules 335->336) by task 025's new `tests/test_estimated_iterations.py`
+(PRD requirement D.1, #157): 17 new in-process nodes covering
+`plan_ingestion` accepting an `estimatedIterations` integer >= 1 per task,
+refusing a non-integer/float/bool/zero/negative value at shape time naming
+the offending task, defaulting a missing one to 1 with a recorded warning
+(`normalize_task_estimated_iterations`, the same channel `normalize_task_
+tiers` already uses for `tier`), the field surviving `ingest_proposal` as a
+passthrough field, the full `enforce_plan_ingestion` loop (default,
+refusal-and-reprompt, acceptance), and `planning.md`'s own documentation of
+the field outside its one pre-existing schema-example code fence -- all
+also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

@@ -65,6 +65,16 @@ them:
 A clear, linear plan (most plans) should omit both fields entirely — plain
 list order is the default and requires no annotation.
 
+`estimatedIterations` is an OPTIONAL per-task integer >= 1: your best guess
+at how many worker iterations the task needs to land. Omit it and the
+harness defaults it to `1` itself, recording that it defaulted — you never
+have to write `1` explicitly for an ordinary one-iteration task. Supplying
+anything other than an integer >= 1 (a string, a float, zero, a negative
+number) is rejected at ingestion, naming the offending task, exactly like an
+unresolvable `dependsOn`. Size it honestly rather than guessing low to look
+efficient or high to buy slack — later stages of this same plan derive the
+task's own progress budget from it.
+
 **Never make a task's `successCriteria` depend on this run's own terminal
 state** (e.g. "once this run has finished" or "after status.json leaves
 `state: running`") — no iteration executing *inside* this run can ever
@@ -77,7 +87,8 @@ offending task.
    `proposal_path` is the path to the file you wrote in step 3, relative to
    the run state directory. The harness reads that file, validates its shape,
    lints it (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate
-   `successCriteria`, a smuggled `status`, a task gated on this run's own
+   `successCriteria`, a smuggled `status`, an invalid `estimatedIterations`,
+   a task gated on this run's own
    terminal state) and only then applies it as the plan — if it rejects your
    proposal, you will be re-prompted with the SPECIFIC error and asked to
    fix and resubmit `plan-proposal.json`. You do not write or edit

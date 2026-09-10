@@ -92,6 +92,7 @@ _TASK_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "dependsOn",
     "priority",
     "tier",
+    "estimatedIterations",
 )
 
 
@@ -126,6 +127,20 @@ def validate_proposal_shape(payload: Any) -> list[str]:
                 )
         if "dependsOn" in t and not isinstance(t["dependsOn"], list):
             errors.append(f"$.tasks[{i}] (id={tid!r}): 'dependsOn' must be an array")
+        # Requirement D.1 (#157): `estimatedIterations`, when the planner
+        # supplies one at all, must be an integer >= 1 -- a missing field
+        # is fine here (that is `normalize_task_estimated_iterations`'s job,
+        # step 3, to default), but a present-and-wrong one is refused at
+        # shape time, exactly like `dependsOn`'s type check just above.
+        # `bool` is deliberately excluded even though it is an `int`
+        # subclass in Python -- `True`/`False` are not iteration counts.
+        if "estimatedIterations" in t:
+            value = t["estimatedIterations"]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                errors.append(
+                    f"$.tasks[{i}] (id={tid!r}): 'estimatedIterations' must "
+                    f"be an integer >= 1, got {value!r}"
+                )
     return errors
 
 
@@ -1652,14 +1667,49 @@ def normalize_task_tiers(payload: dict) -> list[str]:
     return warnings
 
 
+# Requirement D.1 (#157): the estimate `LoopSupervisor._task_progress_
+# budget` (`engine/loop.py`) already reads as `task.get("estimatedIterations",
+# 1)` -- a runtime fallback that covers a `tasks.json` task with no such key
+# at all. This constant is the SAME default, named once, applied at
+# ingestion time instead of left to that runtime fallback, so a task that
+# went through ingestion always carries an explicit, already-validated
+# value rather than relying on the loop's own absent-key default to agree
+# with it by coincidence.
+DEFAULT_ESTIMATED_ITERATIONS = 1
+
+
+def normalize_task_estimated_iterations(payload: dict) -> list[str]:
+    """Requirement D.1, task 025 (#157): default every task's missing
+    `estimatedIterations` to `DEFAULT_ESTIMATED_ITERATIONS` IN PLACE and
+    return a list of WARNING strings recording that it defaulted -- the
+    exact same channel and shape `normalize_task_tiers` above uses for
+    `tier`, and run alongside it. A task that already carries a valid
+    integer >= 1 (`validate_proposal_shape` has already refused anything
+    else by the time this runs -- see `_parse_proposal`) passes through
+    verbatim with no warning. Nothing here ever rejects a proposal; a
+    refusal is `validate_proposal_shape`'s job, at shape time, before this
+    function ever runs."""
+    warnings: list[str] = []
+    for t in payload.get("tasks", []):
+        if not isinstance(t, dict):
+            continue
+        if "estimatedIterations" not in t:
+            warnings.append(
+                f"task {t.get('id')!r}: no estimatedIterations annotated; "
+                f"defaulted to {DEFAULT_ESTIMATED_ITERATIONS!r}"
+            )
+            t["estimatedIterations"] = DEFAULT_ESTIMATED_ITERATIONS
+    return warnings
+
+
 def _parse_proposal(text: str | None) -> tuple[dict | None, list[str], list[str]]:
     """Turn the raw text of `plan-proposal.json` into
     `(payload, errors, warnings)`, running steps 2 and 3 in order, then
-    tier normalisation (task 013). Mirrors
-    `contract_enforcement.parse_response`'s three-shapes shape, for the
-    file channel instead of the inline one. `warnings` is always `[]`
-    whenever `errors` is non-empty -- warnings are only ever produced for
-    an already-accepted proposal."""
+    tier normalisation (task 013) and estimatedIterations normalisation
+    (task 025). Mirrors `contract_enforcement.parse_response`'s
+    three-shapes shape, for the file channel instead of the inline one.
+    `warnings` is always `[]` whenever `errors` is non-empty -- warnings are
+    only ever produced for an already-accepted proposal."""
     if text is None or not text.strip():
         return None, ["proposal: no plan-proposal.json produced (absent)"], []
     try:
@@ -1673,6 +1723,7 @@ def _parse_proposal(text: str | None) -> tuple[dict | None, list[str], list[str]
     if lint_errors:
         return None, lint_errors, []
     warnings = normalize_task_tiers(payload)
+    warnings += normalize_task_estimated_iterations(payload)
     return payload, [], warnings
 
 
