@@ -121,7 +121,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # rest, shifting every entry below by +40: 1939->1979, 1959->1999,
         # 4394->4466, 4596->4668, 4600->4672, 6422->6494, 6426->6498. Same
         # reads, same reasons.
-        "line": "1979",
+        #
+        # Task 085 (steer 013 section 2, #183) moved `_container_liveness`'s
+        # `FileNotFoundError` catch (task 080) into `sh()` itself and
+        # expanded both docstrings, shifting every entry from this one on:
+        # 1979->2005, 1999->2025.
+        "line": "2005",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -129,7 +134,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "1999",
+        "line": "2025",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
@@ -141,7 +146,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # above every entry from this one on, shifting each of them by
         # +15: 4466->4481, 4668->4683, 4672->4687, 6494->6509, 6498->6513.
         # Same reads, same reasons.
-        "line": "4481",
+        #
+        # Task 085 (steer 013 section 2, #183) removed that same `try`/
+        # `except FileNotFoundError` wrap (now dead code -- the catch moved
+        # into `sh()`, which every one of these call sites already goes
+        # through) and expanded `sh()`'s own docstring, a net +29 above
+        # every entry from this one on: 4481->4510, 4683->4712, 4687->4716,
+        # 6509->6538, 6513->6542. Same reads, same reasons.
+        "line": "4510",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -151,7 +163,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4683",
+        "line": "4712",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -160,13 +172,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4687",
+        "line": "4716",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "6509",
+        "line": "6538",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -174,7 +186,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6513",
+        "line": "6542",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

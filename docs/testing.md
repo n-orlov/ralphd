@@ -697,6 +697,16 @@ nodes' own fixtures re-driven with `RALPHD_DOCKER` pointed at a name no
 is driven in-process through `call_ralphctl_in_process`), so all three are
 also `smoke`; one new module.
 
+**5667 (smoke 4066, modules unchanged at 352)** by task 085 (steer 013
+section 2, #183, broadening the docker-absent degradation from
+`_container_liveness()` to `sh()` itself): net +1 node in the same
+`tests/test_status_docker_absent_task080.py`
+(`test_doctor_reports_docker_unreachable_instead_of_raising`), covering
+`cmd_doctor`'s own direct `sh([DOCKER, "version", ...])` call, which never
+went through `_container_liveness` and so was untouched by task 080's
+narrower fix. Driven in-process the same way as its three siblings, so it is
+also `smoke`; no new module.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather

@@ -370,7 +370,33 @@ def out(args, obj, human: str | None = None):
 
 
 def sh(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    """THE one call site for a docker-or-any-other-external-binary invocation
+    in this file (steer 013 section 2, #183): a bare `subprocess.run` used to
+    let `FileNotFoundError` escape straight past this wrapper whenever `cmd[0]`
+    was not on `PATH` at all (every plain-upstream nightly dev-layout image;
+    this dev container happens to carry a `docker` client, which is why the
+    gap went unnoticed for so long). Task 080 caught that one case at
+    `_container_liveness`'s own `sh()` call, but every *other* `sh([DOCKER,
+    ...])` call site in this file -- `cmd_doctor`'s own liveness ping
+    (`checks["docker"]`), `run_container_exists`, the dangling-run sweep,
+    sibling-container cleanup and the image/container inspect helpers -- still
+    tracebacked, because each is a distinct call to `subprocess.run`, not a
+    second reading of task 080's catch.
+
+    Fixed here, once, instead of at every call site, because every caller in
+    this file already treats a non-zero `returncode` as "absent / not
+    running" -- exactly the shell's own convention for "command not found"
+    (`127`, distinct from a 1-125 in-command failure and from a signal death).
+    A caller that could not run the command at all is handed the same shape
+    of failure it already knows how to read, and `_container_liveness`'s own
+    `except FileNotFoundError` (task 080) is now unreachable dead code --
+    removed there, not left as a second copy of this same catch."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            cmd, 127, stdout="",
+            stderr=f"{cmd[0]}: command not found")
 
 
 def docker_sock() -> str:
@@ -2435,21 +2461,24 @@ def _container_liveness(name: str) -> str:
     has a name, so a caller that means "a live engine holds this run dir"
     cannot accidentally spell it "a container record exists".
 
-    Task 080 (steer 011 defect 3): `sh()` is a bare `subprocess.run` -- when
-    no `docker` binary is on `PATH` at all (every plain-upstream nightly
+    Task 080 (steer 011 defect 3) first caught this at this one call site:
+    when no `docker` binary is on `PATH` at all (every plain-upstream nightly
     dev-layout image; this dev container happens to carry one, which is why
-    the gap went unnoticed here), `subprocess.run` raises `FileNotFoundError`
-    and that used to propagate straight out of `ralphctl status`, `doctor`,
-    `repair` and the `doctor --fix` auto-resume sweep -- a viewer command
-    crashing instead of reporting. There is no third liveness value for
-    "docker itself is unreachable": it is undecidable in exactly the same
-    way a failed docker call already is (a nonexistent container also makes
-    `returncode != 0`), so it degrades to the same `CONTAINER_ABSENT` a
-    failed invocation already produces, never a new state."""
-    try:
-        res = sh([DOCKER, "inspect", "--format", "{{.State.Running}}", name])
-    except FileNotFoundError:
-        return CONTAINER_ABSENT
+    the gap went unnoticed here), a bare `subprocess.run` used to raise
+    `FileNotFoundError` here and that propagated straight out of `ralphctl
+    status`, `doctor`, `repair` and the `doctor --fix` auto-resume sweep -- a
+    viewer command crashing instead of reporting. Task 085 (steer 013
+    section 2, #183) moved the catch into `sh()` itself, since `doctor`'s own
+    liveness ping and three other call sites in this file raised the exact
+    same way and were not covered by a catch here. There is no third
+    liveness value for "docker itself is unreachable": it is undecidable in
+    exactly the same way a failed docker call already is (a nonexistent
+    container also makes `returncode != 0`), so it degrades to the same
+    `CONTAINER_ABSENT` a failed invocation already produces, never a new
+    state -- `sh()` returning `returncode == 127` for a missing binary makes
+    that fall out of the ordinary `returncode != 0` check below with no
+    separate catch needed here any more."""
+    res = sh([DOCKER, "inspect", "--format", "{{.State.Running}}", name])
     if res.returncode != 0:
         return CONTAINER_ABSENT
     return (CONTAINER_RUNNING if res.stdout.strip() == "true"

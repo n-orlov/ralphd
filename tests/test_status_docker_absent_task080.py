@@ -1,5 +1,9 @@
 """Task 080 (steer 011 defect 3): does `ralphctl status` raise when no
-`docker` binary is on `PATH`, or does it already degrade?
+`docker` binary is on `PATH`, or does it already degrade? Task 085 (steer
+013 section 2, #183) broadened the same question to every OTHER `ralphctl`
+command that calls `sh([DOCKER, ...])` -- `cmd_doctor`'s own docker check
+chief among them, since it is a second, independent call to `sh()` that
+task 080's narrower `_container_liveness()` catch never covered.
 
 The two nodes steer 011 named --
 `tests/test_tier_cost_breakdown.py::test_ralphctl_status_json_exposes_the_tier_bucket`
@@ -9,16 +13,18 @@ and
 (`_two_tier_run`'s freshly-stepped run and `_recovered_run`'s "running" run
 respectively) with no live engine behind it, so `cmd_status` falls onto the
 on-disk path and calls `_dangling_run_entry()`, which calls
-`_container_liveness()`, which is `sh([DOCKER, "inspect", ...])` --
-`src/ralphd/cli/main.py`'s `sh()` (line 372-373) is a bare
-`subprocess.run(...)`, and `DOCKER` (line 122) is
-`os.environ.get("RALPHD_DOCKER", "docker")`. When that binary is not on
-`PATH`, `subprocess.run` raises `FileNotFoundError`, and before this task's
-fix that propagated straight out of `_container_liveness`
-(`src/ralphd/cli/main.py:2437`), out of `_dangling_run_entry`
-(`src/ralphd/cli/main.py:6746`), out of `cmd_status`
-(`src/ralphd/cli/main.py:3303`) and out of `ralphctl status` itself --
-answer: (i), the CLI raised.
+`_container_liveness()`, which is `sh([DOCKER, "inspect", ...])`. Before
+task 080's fix, `sh()` was a bare `subprocess.run(...)` and a missing
+`docker` binary raised `FileNotFoundError` straight out of
+`_container_liveness`, out of `_dangling_run_entry`, out of `cmd_status` and
+out of `ralphctl status` itself -- answer: (i), the CLI raised. Task 080
+caught that one call site; task 085 moved the catch into `sh()` itself
+(returning a `subprocess.CompletedProcess` with `returncode == 127`, the
+shell's own "command not found", instead of raising) so `cmd_doctor`'s own
+direct `sh([DOCKER, "version", ...])` -- and `run_container_exists()`, the
+dangling-run sweep, sibling-container cleanup and the image/container
+inspect helpers below it -- degrade the same way without a second catch
+at each site.
 
 This module drives that absence DIRECTLY (`RALPHD_DOCKER` pointed at a name
 no `PATH` entry provides), never by relying on the ambient host lacking a
@@ -95,3 +101,30 @@ def test_status_json_survives_the_tier_breakdown_run_with_no_docker_binary(
     assert set(by_tier) == {"trivial", "hard"}
     assert by_tier["trivial"]["totalTokens"] == 15
     assert by_tier["hard"]["totalTokens"] == 600
+
+
+def test_doctor_reports_docker_unreachable_instead_of_raising(
+        tmp_path, capsys):
+    """Task 085 (steer 013 section 2, #183): task 080's catch lived at the
+    ONE `_container_liveness()` call site; `cmd_doctor`'s own docker check
+    (`checks["docker"] = sh([DOCKER, "version", ...])`) is a SEPARATE,
+    unguarded call to `sh()` that `_container_liveness`'s catch never
+    covered and that still raised `FileNotFoundError` before this task moved
+    the catch into `sh()` itself. Assert on the REPORT, not the exit code:
+    `doctor` legitimately exits non-zero whenever a check is not OK
+    (`ok = all(checks.values())`), and the docker check being False is
+    exactly that -- correct, not a defect -- so pinning the code would pin
+    the wrong thing. What must hold is that it reports rather than
+    tracebacks."""
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home), "RALPHD_REGISTRY": str(registry),
+           "RALPHD_DOCKER": NO_SUCH_DOCKER}
+    res = call_ralphctl_in_process(["--json", "doctor"], env=env, capsys=capsys)
+    assert "Traceback" not in res.stderr
+    assert "FileNotFoundError" not in res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["checks"]["docker"] is False
+    assert doc["ok"] is False
