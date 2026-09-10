@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5524 tests across 337 modules** at task 026's second commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3959
+collects **5552 tests across 339 modules** at task 028's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3987
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -397,7 +397,16 @@ missing (the measurement task must identify THIS baseline and must name
 THIS descent's endpoint, each refused on its own), the baseline-number
 route to identifying the metric, and the two new helpers (`_metric_words`
 folding possessives and dropping stopwords, `_number_token` matching
-grouped and bare forms only whole) -- all also `smoke`.
+grouped and bare forms only whole) -- all also `smoke`, and **5552 (smoke
+3987, modules 338->339)** by task 028's new
+`tests/test_progress_budget_estimate_surface_task028.py` (PRD requirement
+D.4, #157): 7 new in-process nodes covering `state.task_progress_budget_
+estimate()` (an explicit `estimatedIterations` deriving `+2`, a missing
+field and a non-numeric/non-dict task both defaulting to 3),
+`LoopSupervisor._progress_budget_for()` agreeing with that same shared
+reader exactly, and `ralphctl tasks`'s new ` (est N)` column on an
+on-disk snapshot (an explicit estimate, the default, and every row
+carrying it regardless of status) -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

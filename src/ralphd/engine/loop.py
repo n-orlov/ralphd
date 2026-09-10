@@ -5228,14 +5228,14 @@ class LoopSupervisor:
         and recording that it defaulted is requirement D.1, not yet
         built. A non-dict task (nothing assigned this pass) or a
         non-numeric estimate both degrade to the same default of 1,
-        never raise."""
-        if not isinstance(task, dict):
-            return 1 + 2
-        try:
-            estimated = int(task.get("estimatedIterations", 1))
-        except (TypeError, ValueError):
-            estimated = 1
-        return estimated + 2
+        never raise.
+
+        Task 028 (#157): delegates to `state.task_progress_budget_estimate`
+        -- the same arithmetic, named once, so `ralphctl tasks`'s `est`
+        column (a plain CLI read with no `LoopSupervisor` to call this
+        method on) can never drift from what this exemption check spends
+        against."""
+        return state.task_progress_budget_estimate(task)
 
     def _record_progress_budget_usage(self, assigned_id: str | None,
                                       task: dict | None) -> tuple[int, int]:

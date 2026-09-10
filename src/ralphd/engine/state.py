@@ -3882,6 +3882,36 @@ def format_task_status(task: dict, blocked_by: list | None = None,
     return text
 
 
+# Task 028 (PRD requirement D.4, #157): the SAME `estimatedIterations + 2`
+# rule `LoopSupervisor._progress_budget_for` (`engine/loop.py`) already
+# spends a task's progress budget by, named once here so `ralphctl tasks`
+# (a plain CLI read with no `LoopSupervisor` instance to call a method on)
+# can derive and DISPLAY the same number for every task in the plan, not
+# just whichever one is currently in-progress (that live usage count is
+# `format_task_status`'s separate ` (progress budget N/M)` suffix above,
+# sourced from status.json's `progressBudget` record -- this is the static
+# per-task figure the estimate alone determines, unconditional on status).
+DEFAULT_TASK_PROGRESS_BUDGET_ESTIMATE = 3
+
+
+def task_progress_budget_estimate(task: dict | None) -> int:
+    """`estimatedIterations + 2` (PRD requirement A.3/D.4, #156/#157) for
+    ONE task -- a non-dict task or a missing/non-numeric
+    `estimatedIterations` both degrade to
+    `DEFAULT_TASK_PROGRESS_BUDGET_ESTIMATE` (3), never raise, matching
+    `plan_ingestion.DEFAULT_ESTIMATED_ITERATIONS` (1) + 2. This mirrors
+    `LoopSupervisor._progress_budget_for` exactly (same arithmetic, same
+    default) so the runtime exemption check and this display-only reader
+    can never disagree about what a task's own budget is."""
+    if not isinstance(task, dict):
+        return DEFAULT_TASK_PROGRESS_BUDGET_ESTIMATE
+    try:
+        estimated = int(task.get("estimatedIterations", 1))
+    except (TypeError, ValueError):
+        estimated = 1
+    return estimated + 2
+
+
 # Task 013 (#21): how a `task_counts()` key is SPELLED for a human, in ONE
 # place. `ralphctl status` (`cli/main.py:_summarize_tasks`), `ralphctl runs`
 # and the hub's TASKS column all render the same counts dict, so the wording

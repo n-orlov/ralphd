@@ -387,11 +387,15 @@ def test_tasks_of_a_dead_run_says_which_kind_of_failed(ctl: Ctl):
 
 
 def test_tasks_of_a_plan_without_failures_prints_the_historical_format(ctl: Ctl):
+    """Task 028 (#157, requirement D.4) added the trailing ` (est N)`
+    column -- `estimatedIterations + 2`, default 3 -- to every row; this
+    plan's two tasks both go through the default (`CLEAN_PLAN` annotates
+    neither with `estimatedIterations`), so both rows now end `(est 3)`."""
     rdir, _ = _seed_run(ctl, "tst-tasks-clean")
     (rdir / "tasks.json").write_text(_plan_json(CLEAN_PLAN))
     res = ctl.run("tasks", "tst-tasks-clean")
-    assert res.stdout == ("[completed        ] 001 a\n"
-                          "[in-progress      ] 002 b\n")
+    assert res.stdout == ("[completed        ] 001 a (est 3)\n"
+                          "[in-progress      ] 002 b (est 3)\n")
 
 
 def test_tasks_json_carries_the_derived_kinds(ctl: Ctl):

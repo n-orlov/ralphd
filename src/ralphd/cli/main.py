@@ -78,6 +78,7 @@ from ..engine.state import (
     format_artifact_listing,
     format_cost,
     format_duration,
+    task_progress_budget_estimate,
     format_image,
     format_image_id,
     format_last_tool_call,
@@ -3505,13 +3506,22 @@ def _print_task_lines(tasks: list, blocked_by: dict | None = None,
     this run's `progressBudget` status.json record (`{taskId, used,
     budget}`, task 013) -- optional the same way, so a caller with no
     budget handy (an archived approach's own task table, which has none)
-    prints exactly as before."""
+    prints exactly as before.
+
+    Task 028 (#157, requirement D.4): every line ALSO carries an
+    ` (est N)` suffix -- `state.task_progress_budget_estimate(t)`,
+    `estimatedIterations + 2` defaulting to 3 -- for every task
+    regardless of status, unconditional on `progress_budget` being
+    supplied at all. This is the plan's static per-task figure, distinct
+    from `format_task_status`'s ` (progress budget N/M)` LIVE usage
+    suffix (which only ever names whichever one task is in-progress)."""
     width = _task_status_width(tasks, blocked_by, progress_budget)
     for t in tasks:
         tid = str(t.get("id")) if t.get("id") is not None else None
         by = (blocked_by or {}).get(tid) if tid else None
+        est = task_progress_budget_estimate(t if isinstance(t, dict) else None)
         print(f"[{_task_status_cell(t, width, by, progress_budget)}] "
-              f"{t.get('id')} {t.get('title')}")
+              f"{t.get('id')} {t.get('title')} (est {est})")
 
 
 def _cmd_tasks_approach(args, approach: int) -> None:
