@@ -2162,6 +2162,32 @@ were needed; the post-mortem is #167–#176 and the next wave,
 `docs/prds/v0.20-a-commit-is-progress.md`. This paragraph and `docs/prds/README.md`'s row are
 settled host-side by the operator from the run's own terminal `status.json`/`tasks.json`.
 
+## v0.20 — a commit is progress
+
+Full PRD: [`docs/prds/v0.20-a-commit-is-progress.md`](prds/v0.20-a-commit-is-progress.md).
+v0.19.1 finished `succeeded / verified-with-residuals` at `a77df38`, version `0.19.1`, but the
+loop's own machinery cost most of its 50 hours: the same seven-lane sweep ran nine times, cure
+passes made an approach worse by the flat count, and the run mislabelled its own approach in
+shipped docs. This wave (#156, #157, #162–#177) is the fix, in requirements A–L: **A** —
+progress is corroborated by a workspace-tree fingerprint, not diffed, and a corroborated
+`no_verdict` counts against the task's own budget instead of the approach's stagnation counter
+(#156); **B** — exhaustion forces a split, then a pause, never a replan (#156, #162); **C** — a
+`deferred` verdict that reorders instead of stagnating (#156); **D** — the planner sizes tasks
+with an `estimatedIterations` ceiling and a 2× baseline-smell rule (#157); **E** — a
+progress-based cure budget with `cured_when` specifications and `invalidates` re-takes (#167,
+#171); **F** — every hat's Job context names its approach ordinal, and amendments and review
+context are approach-scoped (#172, #168); **G** — the seven small defects this run lived with
+(#164, #165, #166, #163, #173, #169, #155); **H** — the record checkers tell the truth on a
+clone: the self-anchoring walk and the reachable-commit check (#174, #176); **I** — the prompt
+set learns what the v0.19.1 reflection wrote (#170, #175); **J** — a run names its ticket, a
+native `--llm-header` (#177); **K** — the version, the roadmap (this block), and the row; **L**
+— the evidence, the closures, the sweep and the closing report.
+
+The run is `selfdev-v020-a-commit-is-progress`, launched at `3bd7199d887f6046a5e55e96ff0362cb90bc466c`.
+This paragraph is written mid-run, ahead of the launch it describes settling — v0.19.1's row and
+block above are unchanged by this commit; this wave's own terminal account is a later task's to
+write once the run actually ends.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
