@@ -267,6 +267,16 @@ mkdir -p "$PIP_CACHE_DIR"
 # interpreter with user-site enabled) rather than assuming either way, and
 # pass --break-system-packages ONLY when it is present; an interpreter with
 # no marker is invoked exactly as before, with no extra flag.
+#
+# Task 076 pins this branch with named nodes in
+# tests/test_host_like_dev_layout_script.py:
+# test_break_system_packages_is_passed_exactly_when_the_marker_is_present
+# (both directions), test_the_pep668_install_targets_only_the_throwaway_user_base
+# and test_the_marker_probe_reads_the_selected_interpreters_own_stdlib. They
+# drive this script under a stub interpreter with a synthetic marker, since
+# whether the ambient python3 carries one is not something a test can choose;
+# a genuinely externally-managed interpreter is the `ubuntu:24.04` cell of
+# task 077's matrix.
 EXTERNALLY_MANAGED_MARKER="$("$PY" -c \
   'import os, sysconfig; print(os.path.join(sysconfig.get_path("stdlib"), "EXTERNALLY-MANAGED"))')"
 PIP_EXTRA_ARGS=()

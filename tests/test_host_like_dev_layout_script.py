@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import venv
 from pathlib import Path
 
@@ -274,6 +275,188 @@ def test_ralphctl_console_script_resolves_into_the_userbase_bin_directory(
     result = _run([str(probe)], extra_env=mode_env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout, result.stdout
+
+
+# --- (a) the PEP 668 / EXTERNALLY-MANAGED branch (task 066) ------------------
+# Task 076 (steer 008) re-pins task 066's behaviour with NAMED nodes: the
+# container matrix's `ubuntu:24.04` cell is externally managed, so this branch
+# is the difference between that cell installing and that cell failing 20
+# seconds in -- it must not be possible to break it silently.
+#
+# The behavioural nodes below drive the branch through a STUB interpreter
+# rather than a real one, because this container's own `python3` decides the
+# question by itself (its stdlib either carries the marker or does not) and
+# task 066 could not reach the marker-present branch here at all. The stub
+# answers each probe the script makes of its interpreter (the user-site
+# check, the marker path, `site.getuserbase()`, the post-install import path)
+# and records every argv and environment it is handed, so "exactly when the
+# marker is present" is observed in BOTH directions from the script's own
+# recorded `pip install` invocation -- no real install, no lane, no
+# interpreter this container does not have. What that does NOT prove is that
+# pip itself accepts the flag on a genuinely externally-managed interpreter:
+# that is the real host's to confirm (the operator's nightly did, in steer
+# 005's report) and it is exactly what the `ubuntu:24.04` cell of task 077's
+# matrix exercises on every run.
+
+_STUB_INTERPRETER = r"""#!/usr/bin/env bash
+# Test-only stub interpreter, written by
+# tests/test_host_like_dev_layout_script.py. Records what it was asked and
+# answers each of the script's own interpreter probes.
+printf 'HOME=%s\tPYTHONUSERBASE=%s\tARGS=%s\n' \
+  "${HOME:-}" "${PYTHONUSERBASE:-<unset>}" "$*" >> '__LOG__'
+case "$*" in
+  *ENABLE_USER_SITE*)   exit 0 ;;
+  *EXTERNALLY-MANAGED*) printf '%s\n' '__MARKER__'; exit 0 ;;
+  *getuserbase*)        printf '%s\n' "${HOME:-}/.local"; exit 0 ;;
+  *"import ralphd"*)    printf '%s\n' '__REPO__/src/ralphd/__init__.py'; exit 0 ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def _stub_interpreter(tmp_path, marker_path):
+    """Write the stub interpreter; return (its path, its log path)."""
+    log = tmp_path / "stub-interpreter.log"
+    stub = tmp_path / "stub-python3"
+    stub.write_text(
+        _STUB_INTERPRETER.replace("__LOG__", str(log))
+        .replace("__MARKER__", str(marker_path))
+        .replace("__REPO__", str(REPO))
+    )
+    stub.chmod(0o755)
+    return stub, log
+
+
+def _recorded_pip_invocation(log):
+    """The one recorded invocation that is the `pip install` step."""
+    text = log.read_text()
+    for line in text.splitlines():
+        fields = dict(field.split("=", 1) for field in line.split("\t"))
+        if "-m pip install" in fields.get("ARGS", ""):
+            return fields
+    raise AssertionError(f"no `-m pip install` invocation recorded in {log}:\n{text}")
+
+
+def _synthetic_stdlib_marker(tmp_path, present):
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    marker = stdlib / "EXTERNALLY-MANAGED"
+    if present:
+        marker.write_text("[externally-managed]\nError=synthetic PEP 668 marker\n")
+    else:
+        assert not marker.exists()
+    return marker
+
+
+@pytest.mark.parametrize(
+    "marker_present", [True, False], ids=["marker-present", "marker-absent"]
+)
+def test_break_system_packages_is_passed_exactly_when_the_marker_is_present(
+    tmp_path, marker_present
+):
+    """Task 066, re-pinned by task 076 (a): the script probes the SELECTED
+    interpreter for PEP 668's `EXTERNALLY-MANAGED` marker and adds
+    `--break-system-packages` to its `pip install --user` if and only if that
+    marker exists -- an interpreter with no marker is invoked with no extra
+    flag at all, exactly as before task 066."""
+    marker = _synthetic_stdlib_marker(tmp_path, marker_present)
+    stub, log = _stub_interpreter(tmp_path, marker)
+
+    result = _run(
+        ["--collect-only", "-q"], extra_env={"PYTHON": str(stub)}, timeout=60
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    pip = _recorded_pip_invocation(log)
+    assert "pip install --user" in pip["ARGS"], pip["ARGS"]
+    if marker_present:
+        assert "--break-system-packages" in pip["ARGS"], pip["ARGS"]
+        assert "is externally managed" in result.stdout, result.stdout
+        assert (
+            "--break-system-packages into the throwaway user base"
+            in " ".join(result.stdout.split())
+        ), result.stdout
+    else:
+        assert "--break-system-packages" not in pip["ARGS"], pip["ARGS"]
+        assert "externally managed" not in result.stdout, result.stdout
+        assert "--break-system-packages" not in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize(
+    "marker_present", [True, False], ids=["marker-present", "marker-absent"]
+)
+def test_the_pep668_install_targets_only_the_throwaway_user_base(
+    tmp_path, marker_present
+):
+    """The other half of (a), in BOTH marker states: whatever the flag
+    decision, the install is pointed at the user base derived from the
+    script's own `mktemp -d` scratch $HOME -- never the system site-packages,
+    and never the invoking user's real $HOME. That is what makes
+    `--break-system-packages` a lifted blanket refusal here rather than a
+    licence to write into /usr (see the script's own comment on the flag)."""
+    marker = _synthetic_stdlib_marker(tmp_path, marker_present)
+    stub, log = _stub_interpreter(tmp_path, marker)
+    real_home = os.environ["HOME"]
+
+    result = _run(
+        ["--collect-only", "-q"], extra_env={"PYTHON": str(stub)}, timeout=60
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    pip = _recorded_pip_invocation(log)
+    userbase = pip["PYTHONUSERBASE"]
+    assert userbase not in ("", "<unset>"), pip
+    # The stub derives its answer from whatever $HOME the SCRIPT handed it,
+    # the way `site.getuserbase()` does -- so this asserts on the home the
+    # script actually built, not on a value this test chose.
+    assert userbase.endswith("/home/.local"), userbase
+    assert userbase.startswith(tempfile.gettempdir() + os.sep), userbase
+    assert not userbase.startswith("/usr"), userbase
+    assert not userbase.startswith(real_home + os.sep), (
+        f"the install targeted the invoking user's real $HOME: {userbase}"
+    )
+    dev_home = userbase[: -len("/.local")]
+    assert pip["HOME"] == dev_home, pip
+    # ...and that scratch tree is gone once the script's own EXIT trap fired.
+    assert not Path(dev_home).exists(), (
+        f"{dev_home} outlived the script -- the install target must be a"
+        " throwaway the script removes"
+    )
+
+
+def test_the_marker_probe_reads_the_selected_interpreters_own_stdlib():
+    """Structural companion to the two nodes above: the marker path is
+    computed from `$PY`'s own `sysconfig.get_path("stdlib")` (so it follows a
+    PYTHON= override and every matrix image's own layout) rather than
+    hardcoded to one distro's path, and `--break-system-packages` appears
+    nowhere in the script's body outside the branch guarded by that marker's
+    existence."""
+    text = SCRIPT.read_text()
+    body = text[text.index("set -euo pipefail"):]
+    probe_idx = body.index("EXTERNALLY_MANAGED_MARKER=")
+    probe = body[probe_idx: body.index("PIP_EXTRA_ARGS=()", probe_idx)]
+    assert '"$PY" -c' in probe, probe
+    assert 'sysconfig.get_path("stdlib")' in probe, probe
+
+    guard = 'if [ -f "$EXTERNALLY_MANAGED_MARKER" ]; then'
+    guard_idx = body.index(guard)
+    branch_end = body.index("\nfi\n", guard_idx)
+    branch = body[guard_idx:branch_end]
+    assert "PIP_EXTRA_ARGS+=(--break-system-packages)" in branch, branch
+    assert branch.count("--break-system-packages") >= 2, (
+        "the marker branch must both append the flag and report that it did"
+    )
+    # Only executable lines: the surrounding prose explains the flag at
+    # length (and must be free to), so this is about what the script DOES.
+    outside = [
+        line
+        for line in (body[:guard_idx] + body[branch_end:]).splitlines()
+        if "--break-system-packages" in line and not line.lstrip().startswith("#")
+    ]
+    assert outside == [], (
+        "--break-system-packages must be added only inside the branch guarded"
+        f" by the EXTERNALLY-MANAGED marker's existence, found: {outside}"
+    )
 
 
 # --- (e) tier selection (task 076, steer 008) -------------------------------
