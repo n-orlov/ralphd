@@ -147,7 +147,9 @@ observe that, and a proposal doing this is rejected at ingestion, naming the
 offending task.
 
 4. Report your outcome as the LAST non-blank line of your final reply, a
-   single JSON object:
+   single JSON object, written bare, never inside a code fence — a fenced
+   code block's closing line can become the reply's own last non-blank line,
+   which breaks the contract:
    `{"proposal_path": "plan-proposal.json", "summary": "<one line>", "standing_rules": "<the block, see step 5>"}`
    `proposal_path` is the path to the file you wrote in step 3, relative to
    the run state directory. The harness reads that file, validates its shape,

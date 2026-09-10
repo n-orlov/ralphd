@@ -42,11 +42,11 @@ optional diff) are what an operator or a future run actually reads. The
 harness also reads a validated claim alongside those files, never in place
 of them: **report your outcome through the contract — this is the only way
 your claim reaches the harness.** End your reply's last non-blank line with
-exactly one JSON object:
+exactly one JSON object. A fenced code block's closing line can become the
+reply's own last non-blank line, which breaks the contract, so the object
+below is written bare, never inside a code fence:
 
-```json
 {"report_written": true, "suggestions_written": true}
-```
 
 - `report_written`: `true` only if you actually wrote
   `artifacts/reflection/report.md` this iteration.

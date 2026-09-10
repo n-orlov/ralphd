@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5603 tests across 343 modules** at task 037's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4022
+collects **5610 tests across 344 modules** at task 039's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4029
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -488,7 +488,15 @@ current iff its id is in the plan, and an entry naming an id absent from
 the plan never rendered as binding while `amendment_target_not_in_plan`
 fires exactly once per render call -- none of these are `smoke` (the whole
 module is a `ralphctl` subprocess family, fast-only, like every other node
-in it).
+in it), and **5610 (smoke 4029, modules 343->344)** by task 039's new
+`tests/test_prompt_fence_conformance.py` (7 nodes, #170): the
+prompts-directory scan is a real directory listing (not a fixed filename
+tuple), no contract object appears inside a code fence, planning.md's one
+surviving fence stays the plan-proposal.json file schema and carries none
+of the contract keys, each of steer.md/reflect.md/planning.md/worker.md
+states the fence-closing-line sentence, and steer.md/reflect.md/worker.md's
+own examples are now shown bare -- all also `smoke` (pure text-file
+assertions, no engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

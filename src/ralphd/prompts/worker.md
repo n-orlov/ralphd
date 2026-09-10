@@ -191,12 +191,12 @@ it for a later iteration or for review to weigh as a residual -- there is no
 penalty for resolving nothing.
 
 When you do resolve one (or several), report the id(s) alongside your
-ordinary verdict in the same JSON reply:
+ordinary verdict in the same JSON reply. A fenced code block's closing line
+can become the reply's own last non-blank line, which breaks the contract,
+so the object below is written bare, never inside a code fence:
 
-```json
 {"verdict": "complete", "task_id": "<the assigned id>",
  "debt_resolved": ["<id>", "<id>"]}
-```
 
 The engine flips each named item to `resolved` and stamps it with this
 iteration's own commit sha -- you never edit `debt.json`/`debt.md` yourself,
@@ -423,15 +423,16 @@ single Definition-of-done item, or a single clause of your own task's
 `successCriteria` — while the rest of the task is still worth finishing. For
 that narrower case, alongside ANY `verdict` value (including `no_verdict`,
 still working the rest of the task), your reply's JSON object may carry an
-additional, optional `petition` field naming exactly three things:
+additional, optional `petition` field naming exactly three things. A fenced
+code block's closing line can become the reply's own last non-blank line,
+which breaks the contract, so the object below is written bare, never
+inside a code fence:
 
-```json
 {"verdict": "no_verdict",
  "petition": {"obligation": "<the requirement letter, DoD item, or your
                own task's criterion clause this obligation names>",
               "type": "<one of the five petition types below>",
               "evidence": "<concrete, checkable support for the claim>"}}
-```
 
 The five petition types (`docs/petition-format.md`), and exactly what each
 claims:

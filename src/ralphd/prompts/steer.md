@@ -126,11 +126,12 @@ resulting tasks will pass.
 
 ## Reporting your outcome
 
-End your reply's last non-blank line with exactly one JSON object:
+End your reply's last non-blank line with exactly one JSON object. A fenced
+code block's closing line can become the reply's own last non-blank line,
+which breaks the contract, so the object below is written bare, never
+inside a code fence:
 
-```json
 {"settled": true}
-```
 
 - `settled: true` only if you processed every pending steering message this
   iteration and applied its changes to the plan.
