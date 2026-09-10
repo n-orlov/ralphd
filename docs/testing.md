@@ -688,6 +688,15 @@ is added. None spawns a real engine/`ralphctl` process, so none is marked
 `smoke` and the smoke count is unchanged; no new module, so the module count
 is unchanged too.
 
+**5666 (smoke 4065, modules 351->352)** by task 080 (steer 011 defect 3,
+`ralphctl status` degrading instead of raising when no `docker` binary is on
+`PATH`): net +3 nodes in the new `tests/test_status_docker_absent_task080.py`
+-- a unit-level `_container_liveness` check plus the two named steer-011
+nodes' own fixtures re-driven with `RALPHD_DOCKER` pointed at a name no
+`PATH` entry provides. None spawns a real engine/`ralphctl` process (the CLI
+is driven in-process through `call_ralphctl_in_process`), so all three are
+also `smoke`; one new module.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather

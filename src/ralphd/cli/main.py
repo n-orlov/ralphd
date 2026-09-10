@@ -2433,8 +2433,23 @@ def _container_liveness(name: str) -> str:
 
     One docker call, same as before -- what changed is that the third state
     has a name, so a caller that means "a live engine holds this run dir"
-    cannot accidentally spell it "a container record exists"."""
-    res = sh([DOCKER, "inspect", "--format", "{{.State.Running}}", name])
+    cannot accidentally spell it "a container record exists".
+
+    Task 080 (steer 011 defect 3): `sh()` is a bare `subprocess.run` -- when
+    no `docker` binary is on `PATH` at all (every plain-upstream nightly
+    dev-layout image; this dev container happens to carry one, which is why
+    the gap went unnoticed here), `subprocess.run` raises `FileNotFoundError`
+    and that used to propagate straight out of `ralphctl status`, `doctor`,
+    `repair` and the `doctor --fix` auto-resume sweep -- a viewer command
+    crashing instead of reporting. There is no third liveness value for
+    "docker itself is unreachable": it is undecidable in exactly the same
+    way a failed docker call already is (a nonexistent container also makes
+    `returncode != 0`), so it degrades to the same `CONTAINER_ABSENT` a
+    failed invocation already produces, never a new state."""
+    try:
+        res = sh([DOCKER, "inspect", "--format", "{{.State.Running}}", name])
+    except FileNotFoundError:
+        return CONTAINER_ABSENT
     if res.returncode != 0:
         return CONTAINER_ABSENT
     return (CONTAINER_RUNNING if res.stdout.strip() == "true"
