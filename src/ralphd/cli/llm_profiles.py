@@ -179,6 +179,13 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
     `${env:}`/`${file:}`/`${cmd:}` reference -- literal `pi:` fields such as
     `baseUrl` or a model id stay visible so the resolved shape is still
     useful for diagnosis. `mounts` (host paths) are never masked.
+
+    A top-level `headers:` map (#177) is merged into the `headers:` map of
+    EVERY provider under the resolved `pi:` fragment's `providers` --
+    weaker than that provider's own `headers:` map (a same-named header
+    there wins; any other top-level header is still added). Resolves the
+    same three reference forms as `env:`, and a header value that came from
+    a reference is masked under `redact=True` exactly like a `pi:` field is.
     """
     doc = load_profile_doc(reg, name)
     price_strategy = doc.get("price_strategy")
@@ -202,6 +209,23 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         resolved = _resolve_value(m, combined, name=name, where=f"mounts[{i}]")
         mounts.append(expand_mount_host_path(str(resolved)))
 
+    # Top-level `headers:` shorthand (#177): a profile-wide map applied to
+    # EVERY provider under this profile's own `pi.providers`, weaker than
+    # each provider's own `headers:` map (see the merge below -- the
+    # provider's own map wins a same name, any other top-level header is
+    # still added). Resolved the same way `env:` is, with its own ref-path
+    # tracking so `redact=True` masks exactly the header values that came
+    # from a reference.
+    headers_section = doc.get("headers") or {}
+    if not isinstance(headers_section, dict):
+        raise ProfileError(f"llm profile '{name}': `headers:` must be a mapping")
+    header_ref_paths: set[str] = set()
+    top_level_headers = {
+        k: str(_resolve_value(v, combined, name=name, where=f"headers.{k}",
+                              ref_paths=header_ref_paths))
+        for k, v in headers_section.items()
+    }
+
     pi_fragment = doc.get("pi")
     if pi_fragment is not None:
         if not isinstance(pi_fragment, dict):
@@ -209,6 +233,17 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         ref_paths: set[str] = set()
         pi_fragment = _resolve_value(pi_fragment, combined, name=name, where="pi",
                                      ref_paths=ref_paths)
+        if top_level_headers:
+            providers = pi_fragment.get("providers")
+            if isinstance(providers, dict):
+                for pname, pcfg in providers.items():
+                    if not isinstance(pcfg, dict):
+                        continue
+                    existing = pcfg.get("headers") or {}
+                    pcfg["headers"] = {**top_level_headers, **existing}
+                    for hname in top_level_headers:
+                        if hname not in existing and f"headers.{hname}" in header_ref_paths:
+                            ref_paths.add(f"pi.providers.{pname}.headers.{hname}")
         if redact:
             pi_fragment = _mask_ref_paths(pi_fragment, ref_paths, "pi")
 

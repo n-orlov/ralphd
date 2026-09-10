@@ -88,7 +88,7 @@ ralphctl start --prd <file|-> [options]
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
-| `--llm-header NAME:VALUE` | none | set this HTTP header on every provider of the resolved pi config (`NAME=VALUE` also accepted; repeatable; a same-named header the profile already carries is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host); falls back to a `--template`'s own `llm_header:` list (task 045, #177) — see [llm-profiles.md](llm-profiles.md) for the full flag > template > profile precedence, and the `ralphctl resume` section below for `resume --llm-header`'s override |
+| `--llm-header NAME:VALUE` | none | set this HTTP header on every provider of the resolved pi config (`NAME=VALUE` also accepted; repeatable; a same-named header the profile already carries -- whether set per-provider or via the profile's own top-level `headers:` shorthand (#177) -- is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host); falls back to a `--template`'s own `llm_header:` list (task 045, #177) — see [llm-profiles.md](llm-profiles.md) for the full flag > template > per-provider profile headers > top-level profile `headers:` precedence, and the `ralphctl resume` section below for `resume --llm-header`'s override |
 | `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
 | `--skills <dir>` | — | mount a skills directory (repeatable) |
 | `--creds <dir>` | — | mount a credentials directory (see below) |
@@ -308,8 +308,9 @@ hardcoded default. `job.yaml` may also set `llm_header` (task 045, #177): a
 list of `--llm-header`-shaped `Name: value`/`Name=value` strings. This one
 is NOT override-wholesale like the fields above — an explicit `--llm-header`
 flag is appended AFTER the template's own list, so a later spec for the same
-name wins: flag > template > the profile's own `pi.providers.<p>.headers:`,
-with no registry-wide level. An unknown `--template`
+name wins: flag > template > the profile's own `pi.providers.<p>.headers:` >
+the profile's own top-level `headers:` shorthand (#177), with no
+registry-wide level. An unknown `--template`
 name exits `3` naming the expected path; a malformed `job.yaml` (not a
 mapping) exits `2`.
 

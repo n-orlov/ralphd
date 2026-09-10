@@ -174,6 +174,49 @@ def test_resolve_missing_profile_file_raises_clear_error(tmp_path):
     assert "not found" in str(ei.value)
 
 
+# ----------------------------------------- top-level `headers:` shorthand (#177)
+def test_resolve_top_level_headers_shorthand_reaches_every_provider(tmp_path):
+    reg = tmp_path / "reg"
+    (reg / "llm-profiles").mkdir(parents=True)
+    (reg / "llm-profiles" / "acme.yaml").write_text(yaml.safe_dump({
+        "headers": {"X-Jira-ID": "EST-1", "X-Common": "shared"},
+        "pi": {
+            "providers": {
+                "acme-a": {"baseUrl": "https://a.example.com"},
+                "acme-b": {"baseUrl": "https://b.example.com"},
+            }
+        },
+    }))
+    resolved = llm_profiles.resolve_profile("acme", reg)
+    assert resolved["pi"]["providers"]["acme-a"]["headers"] == {
+        "X-Jira-ID": "EST-1", "X-Common": "shared"}
+    assert resolved["pi"]["providers"]["acme-b"]["headers"] == {
+        "X-Jira-ID": "EST-1", "X-Common": "shared"}
+
+
+def test_resolve_per_provider_headers_win_over_top_level_shorthand(tmp_path):
+    reg = tmp_path / "reg"
+    (reg / "llm-profiles").mkdir(parents=True)
+    (reg / "llm-profiles" / "acme.yaml").write_text(yaml.safe_dump({
+        "headers": {"X-Jira-ID": "EST-1", "X-Common": "shared"},
+        "pi": {
+            "providers": {
+                "acme-a": {"baseUrl": "https://a.example.com",
+                           "headers": {"X-Jira-ID": "override"}},
+                "acme-b": {"baseUrl": "https://b.example.com"},
+            }
+        },
+    }))
+    resolved = llm_profiles.resolve_profile("acme", reg)
+    # per-provider `headers:` wins the same name; the other top-level
+    # header (`X-Common`) still reaches this provider.
+    assert resolved["pi"]["providers"]["acme-a"]["headers"] == {
+        "X-Jira-ID": "override", "X-Common": "shared"}
+    # unaffected sibling provider still gets the plain top-level values.
+    assert resolved["pi"]["providers"]["acme-b"]["headers"] == {
+        "X-Jira-ID": "EST-1", "X-Common": "shared"}
+
+
 # --------------------------------------------------------------- CLI start
 def test_start_llm_named_profile_wires_env_mounts_pi(ctl):
     ctl.write_profile("acme", {

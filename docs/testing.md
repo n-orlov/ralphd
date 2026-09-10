@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5636 tests across 347 modules** at task 045's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4049
+collects **5638 tests across 347 modules** at task 046's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4057
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -540,7 +540,15 @@ three in `tests/test_cli_resume_llm_wiring.py` pinning a plain `resume`
 reproducing the persisted headers unchanged, `resume --llm-header`
 overriding one header while keeping another from `start`, and a
 malformed `resume --llm-header` value refused -- all also `smoke` (no
-real engine spawned).
+real engine spawned; this entry also corrects the smoke count stated at
+task 045's own commit, which had been left at the task-044 figure of 4049
+rather than the re-measured 4055), and **5638 (smoke 4057, modules
+unchanged at 347)** by task 046's new nodes in the EXISTING
+`tests/test_cli_llm_profiles.py` (no new module, #177): a two-provider
+profile's top-level `headers:` shorthand reaching both providers, and a
+provider's own `headers:` map winning a same-named header while the
+other top-level header still reaches that provider -- both `resolve_
+profile`-direct, no real engine/`ralphctl` process spawned, also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

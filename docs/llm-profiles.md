@@ -29,6 +29,12 @@ env:                                # env vars set in the container
 mounts:                             # host paths mounted read-only into the container
   - ~/.aws:/home/agent/.aws:ro
 
+headers:                             # top-level headers shorthand (#177): applied
+                                    # to EVERY provider under pi.providers below
+  X-Org-Id: acme-corp                # weaker than a provider's own headers: map
+                                    # (see the provider entries) -- a same-named
+                                    # header there wins, any other one still lands
+
 pi:                                 # merged into the container's pi provider config
   providers:
     my-gateway:
@@ -45,6 +51,17 @@ Resolution rules:
 - `${env:…}`, `${file:…}`, `${cmd:…}` are resolved **on the host by ralphctl at
   container start** — secrets travel as container env / tmpfs files, never through
   the run dir or image.
+- **Top-level `headers:` shorthand (#177)**: a profile-wide map, applied to the
+  `headers:` map of EVERY provider under this profile's own `pi.providers`. A
+  provider's own `headers:` map (see `pi:` above) still works and WINS on a
+  same-named header — the top-level map only fills in headers that provider
+  did not already set; any other top-level header still reaches that
+  provider. Values accept the same `${env:}`/`${file:}`/`${cmd:}` resolution
+  syntax as `env:`/`pi:` above, resolved on the host. Use the top-level form
+  to set one header (an org id, a routing tag) once for every provider a
+  multi-provider profile declares (see "Worked cross-family example" below);
+  use the per-provider form when providers need different values for the
+  same header name.
 - `model` becomes the started job's plain `model` default unless overridden by
   `--model`/a template/the registry. `fast_model` is a profile-only value now
   (task 006 retired job.yaml's own `fast_model` key) — `ralphctl llm show`
@@ -69,7 +86,8 @@ Resolution rules:
   Values accept `${env:}`/`${file:}`/`${cmd:}` exactly like `env:`/`pi:`
   above, resolved on the host. A `--template`'s own `job.yaml` may set
   `llm_header:` (a list of the same spec strings) as a default; the full
-  order, weakest to strongest, is: this profile's own `pi.providers.<p>.
+  order, weakest to strongest, is: this profile's own top-level `headers:`
+  shorthand (above) < this profile's own `pi.providers.<p>.
   headers:` < the template's `llm_header:` list < an explicit `--llm-header`
   flag on the command line (a later spec for the same name always wins over
   an earlier one at the SAME level too). There is no registry-wide level.
