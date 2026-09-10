@@ -2008,6 +2008,40 @@ class LoopSupervisor:
             result = IterationResult(exit_code=None)
             result.error_message = f"engine iteration failure: {exc!r}"
 
+        # Task 091 (steer 018 sect 1, #91): NORMALISE a missing result HERE,
+        # before the first attribute read below, so the boundary cannot
+        # dereference `None` at all.
+        #
+        # Why this and not a guard per read: the operator's traceback out of
+        # two GitHub-hosted `python:3.11-slim` nightly cells at 7b0860b named
+        # `_classify_result(result)` and its `error_text=result.error_message
+        # or ""`, but that is only the FIRST of a dozen `result.` reads on
+        # this path (`self._last_fault_error`, meta.update's exitCode/
+        # interrupted/timedOut/..., the `iteration.end` emit, the completion
+        # -marker loop, the usage accounting). Guarding them one at a time
+        # leaves the same `AttributeError: 'NoneType' object has no attribute
+        # ...` one line further down, and that AttributeError REPLACES
+        # whatever the iteration was really doing -- including an
+        # `asyncio.CancelledError` requested from outside, which the block
+        # above deliberately re-raises and which
+        # tests/test_iteration_cancellation_contained.py::
+        # test_a_cancellation_requested_from_outside_is_honoured exists to
+        # require. One normalisation at the top of the recording path makes
+        # every read below unconditionally safe.
+        #
+        # When can it be None? Not from the `except` branch (which always
+        # builds a populated result) -- from the `await self.runner.run(...)`
+        # itself returning None instead of an IterationResult: a runner
+        # (or a double, or a future runner backend) whose failure path falls
+        # off the end of a function returns None without raising, so no
+        # `except` can see it. That is a broken runner contract, so it is
+        # recorded as an engine-side iteration failure -- one failed,
+        # legible, refundable iteration -- exactly as a raised exception is.
+        if result is None:
+            result = IterationResult(exit_code=None)
+            result.error_message = ("engine iteration failure: the runner "
+                                    "returned no IterationResult")
+
         # Task 004 (#11): record the engine's own fault verdict next to the
         # raw signals it was derived from -- null for a clean iteration,
         # "infra"/"work" otherwise -- so an operator (or a later triage pass

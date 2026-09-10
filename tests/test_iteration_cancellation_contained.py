@@ -191,6 +191,80 @@ async def test_classify_result_of_none_never_raises(tmp_path):
     assert sup._classify_result(None) is not None
 
 
+
+@pytest.mark.asyncio
+async def test_a_runner_that_returns_no_result_is_a_recorded_failure_not_an_attributeerror(
+        tmp_path):
+    """Task 091, second half: the `None` result must be survivable at the
+    BOUNDARY, not merely inside `_classify_result`.
+
+    `_classify_result` was only the FIRST of a dozen `result.` reads on the
+    recording path (`self._last_fault_error = result.error_message or ""`,
+    meta.update's exit-code/interrupt/timeout fields, the `iteration.end`
+    emit, the usage accounting), so guarding that one method alone left the
+    same `AttributeError: 'NoneType' object has no attribute 'error_message'`
+    one line further down -- and an AttributeError raised there REPLACES
+    whatever the iteration was really doing, which is exactly the containment
+    failure this module exists to forbid.
+
+    A runner that returns `None` instead of an IterationResult is the
+    reachable producer of that shape: it raises nothing, so no `except` above
+    the recording path can see it. It must land as one ordinary recorded
+    failed iteration, and the run must stay alive.
+    """
+    async def returns_nothing(_prompt, _transcript, **_kw):
+        return None
+
+    sup = _supervisor(tmp_path, [_ok])
+    sup.runner.run = returns_nothing            # type: ignore[method-assign]
+
+    result = await sup._run_iteration_once("worker")
+
+    assert isinstance(result, IterationResult), \
+        "the boundary normalised the missing result instead of dereferencing it"
+    assert "no IterationResult" in (result.error_message or "")
+    meta = _metas(tmp_path)[-1]
+    assert meta["endedAt"], "reached the normal iteration-recording path"
+    assert meta["faultClass"] is not None, "classified, not scored a success"
+    assert "AttributeError" not in (meta["error"] or "")
+    assert sup.run.read_status().get("state") in (None, "running")
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_mid_iteration_is_not_turned_into_a_fault(tmp_path):
+    """Task 091: the same contract stated as the boundary's obligation --
+    a cancel() delivered while the runner is in flight leaves
+    `_run_iteration_once` as `CancelledError` and is NOT recorded as a
+    faulted iteration.
+
+    The pin above covers the None-result path; this one pins that closing
+    that hole did not quietly convert an outside cancellation into a fault
+    classification, which is what the AttributeError was doing in the
+    operator's nightly cells: a fault (or a crash) where a propagated
+    cancellation belonged.
+    """
+    started = asyncio.Event()
+
+    async def hang(_prompt, _transcript, **_kw):
+        started.set()
+        await asyncio.sleep(3600)
+
+    sup = _supervisor(tmp_path, [_ok])
+    sup.runner.run = hang                       # type: ignore[method-assign]
+
+    task = asyncio.ensure_future(sup._run_iteration_once("worker"))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+    events_file = tmp_path / "events.jsonl"
+    events = ([json.loads(x) for x in events_file.read_text().splitlines() if x]
+              if events_file.exists() else [])
+    assert not [ev for ev in events if ev.get("type") == "iteration.end"], \
+        "a cancelled iteration must not also be recorded as a finished one"
+
 # -- the engine around it --------------------------------------------------
 
 

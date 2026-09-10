@@ -729,6 +729,21 @@ in the same `tests/test_iteration_cancellation_contained.py`
 `AttributeError`. In-process, no real engine/`ralphctl` process spawned, so
 also `smoke`; no new module.
 
+**5672 (smoke 4071, modules unchanged at 352)** by task 091's second commit,
+which closes the half its first commit missed: guarding `_classify_result`
+alone still left `self._last_fault_error = result.error_message or ""` (and a
+dozen other `result.` reads on the recording path) dereferencing a `None`
+result, so the boundary now NORMALISES a missing result into a populated
+`IterationResult` before the first of those reads. Net +2 nodes in the same
+`tests/test_iteration_cancellation_contained.py` --
+`test_a_runner_that_returns_no_result_is_a_recorded_failure_not_an_attributeerror`
+(drives `_run_iteration_once` with a runner returning `None`: fails with the
+operator's exact `AttributeError` without the normalisation, passes with it)
+and `test_a_cancellation_mid_iteration_is_not_turned_into_a_fault` (a cancel
+delivered while the runner is in flight leaves the boundary as
+`CancelledError` and records no `iteration.end`). Both in-process, so both
+also `smoke`; no new module.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather
