@@ -646,7 +646,18 @@ the module is smoke-cheap, and not this task's derivation to fix, and
 `src/ralphd/prompts/*.md` file for a single declared list of literals other
 tests assert the absence of elsewhere, and the fixture proving the scan is
 non-vacuous (a `tmp_path`-only decoy template that trips it) -- neither
-spawns a real engine/`ralphctl` process, so both are also `smoke`.
+spawns a real engine/`ralphctl` process, so both are also `smoke`, and
+**5672 (smoke unchanged at 4079, modules 350->351)** by task 077's new module
+`tests/test_ci_dev_layout_matrix_guard.py` (the dockerized dev-layout matrix
+plus the `browser-runner` pin, steer 008 task A + steer 009): 12 new
+in-process nodes parsing `.github/workflows/nightly.yml` and `heavy.yml`
+with PyYAML -- three pinning the real files' shape (the six-cell matrix,
+no `browser-runner` label anywhere in `nightly.yml`, `heavy.yml`'s
+browser tier carrying it while its docker tier does not) and nine proving
+each check is non-vacuous against a broken `tmp_path`-only fixture built
+from a deep copy of the real workflow. None spawns a real engine or
+`ralphctl` process and none is marked `smoke`, so the smoke count is
+unchanged.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

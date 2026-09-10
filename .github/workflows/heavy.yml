@@ -11,10 +11,18 @@
 #
 # Where: `ralphd-vps` is the operator's VPS (4 x86_64 cores, 7 GB + 4 GB swap,
 # docker 29.4.0, Chrome installed under /opt/google/chrome with the playwright
-# browser cache shared at /opt/ms-playwright). It runs one job at a time, so
-# the two lanes below serialise rather than contend for those four cores --
-# which is what we want, and why they are separate jobs with separate check
-# runs rather than one job with two steps.
+# browser cache shared at /opt/ms-playwright). The VPS now carries TWO
+# registered runner slots (vmi3245594 and vmi3245594-2, same labels; see
+# docs/ci.md) -- so the docker tier and the browser tier below CAN run
+# concurrently on this box; nothing here serialises them against each other,
+# and they are separate jobs with separate check runs because a red one must
+# not cancel the other's evidence, not because the runner forces it. What
+# DOES still serialise the browser tier -- globally, across every workflow,
+# not just this one -- is the `browser-runner` label on that job below: the
+# operator placed it on exactly one of the two runners (task 077, steer 009).
+# A `concurrency:` group cannot do this itself; it only serialises within one
+# workflow and has no visibility into what else is scheduled on the runner.
+# The docker tier stays label-agnostic and can use either slot.
 #
 # When: on every pull request (these are required checks -- a merge waits for
 # them, and auto-merge fires when they go green), and on pushes to main so the
@@ -89,7 +97,17 @@ jobs:
 
   browser-tier:
     name: browser tier
-    runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
+    # `browser-runner` (task 077, steer 009): the operator placed this label
+    # on exactly ONE of the VPS's two runner slots (vmi3245594; not
+    # vmi3245594-2). It is not guessable from this workflow alone, so: the
+    # browser tier drives real `playwright-cli` sessions against real Chrome
+    # on a 4-core host, two concurrent browser-bearing jobs collapse each
+    # other's sessions, and this label is the ONLY mechanism that serialises
+    # browser work across *workflows* -- a `concurrency:` group serialises
+    # only within one workflow and cannot see what else is running on the
+    # runner. Nothing else takes this label: the docker tier above and every
+    # `nightly.yml` matrix cell stay label-agnostic and keep both slots.
+    runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host, browser-runner]
     timeout-minutes: 60
     concurrency:
       group: heavy-browser-${{ github.event_name == 'push' && 'main' || github.ref }}
