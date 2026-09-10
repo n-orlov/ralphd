@@ -1761,6 +1761,18 @@ def cmd_start(args):
         except llm_profiles.ProfileError as e:
             die(2, str(e))
 
+    # `--llm-header` (#177): parsed + resolved once, here, alongside the
+    # profile above and for the same reason -- a `${cmd:...}` header value
+    # shells out on the host exactly once, before the container starts, and
+    # a malformed spec or unresolvable reference dies here rather than
+    # after `docker run`.
+    header_overrides: dict[str, str] = {}
+    if args.llm_header:
+        try:
+            header_overrides = llm_profiles.resolve_header_specs(args.llm_header)
+        except llm_profiles.HeaderError as e:
+            die(2, str(e))
+
     job = {
         "run_id": run_id,
         "iterations": args.iterations,
@@ -1909,6 +1921,13 @@ def cmd_start(args):
             if f.exists():
                 shutil.copy2(f, dest / name)
         _resolve_pi_apikeys(dest / "models.json")
+        if header_overrides:
+            models_json_path = dest / "models.json"
+            doc = _read_json(models_json_path)
+            if doc:
+                llm_profiles.merge_headers_into_pi_config(doc, header_overrides)
+                models_json_path.write_text(json.dumps(doc, indent=1))
+                os.chmod(models_json_path, 0o600)
         host_env = {}
         for var in HOST_LLM_ENV:
             if os.environ.get(var):
@@ -1929,7 +1948,9 @@ def cmd_start(args):
         if llm_profile["pi"]:
             dest = cdir / "pi"
             dest.mkdir(exist_ok=True)
-            (dest / "models.json").write_text(json.dumps(llm_profile["pi"], indent=1))
+            pi_doc = llm_profiles.merge_headers_into_pi_config(
+                llm_profile["pi"], header_overrides)
+            (dest / "models.json").write_text(json.dumps(pi_doc, indent=1))
             os.chmod(dest / "models.json", 0o600)
         _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"])
     else:
@@ -6817,6 +6838,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "<registry>/llm-profiles/<name>.yaml (docs/llm-profiles.md) "
                         "[default: host, or the template's value]")
     s.add_argument("--llm-env", action="append", metavar="KEY=VAL")
+    s.add_argument("--llm-header", action="append", metavar="NAME:VALUE|NAME=VALUE",
+                   help="set this HTTP header on every provider of the "
+                        "resolved pi config (repeatable; a same-named header "
+                        "already on a provider is overridden, others are "
+                        "kept); accepts ${env:}/${file:}/${cmd:} like a "
+                        "profile's own values, resolved on the host "
+                        "(docs/llm-profiles.md, #177)")
     s.add_argument("--forward-env", action="append", metavar="NAME|PREFIX_*",
                    help="forward host env var(s) into the container (repeatable)")
     s.add_argument("--env", action="append", metavar="KEY=VAL")

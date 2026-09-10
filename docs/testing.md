@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5625 tests across 347 modules** at task 042's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4044
+collects **5630 tests across 347 modules** at task 044's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4049
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -522,7 +522,15 @@ owns the terminal record so the gate never reads `events.jsonl`, and
 steer.md now states every premise a steering message rests on is
 checked against the live plan before it is applied -- plus a same-file
 fence-balance sanity check across all three files -- all also `smoke`
-(pure text-file assertions, no engine subprocess).
+(pure text-file assertions, no engine subprocess), and **5630 (smoke 4049,
+modules unchanged at 347)** by task 044's new nodes in the EXISTING
+`tests/test_cli_llm_profiles.py` (no new module, #177): 5 new in-process
+nodes pinning `--llm-header`'s provider-`headers:` merge on both the named-
+profile `pi.providers` path and the `--llm host` copied `models.json` path
+(the flag winning a same-named header, other headers kept), a `${env:...}`
+value resolving on the host, and a malformed spec / an unresolvable
+reference each refused before `docker run` -- all also `smoke` (no real
+engine/`ralphctl` process spawned).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

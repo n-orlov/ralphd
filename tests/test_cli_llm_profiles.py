@@ -263,6 +263,92 @@ def test_start_llm_host_unaffected(ctl):
     assert "--label" in argv
 
 
+# ------------------------------------------------------- --llm-header (#177)
+def test_start_llm_header_merges_over_profile_headers_wins_conflict(ctl):
+    """`--llm-header X-Jira-ID=EST-1` merges into EVERY provider's
+    `headers:` map on the profile path: a same-named header the profile
+    already carries is overridden (the flag wins), any other header the
+    profile carries is kept."""
+    ctl.write_profile("acme", {
+        "model": "acme/big",
+        "env": {},
+        "pi": {
+            "providers": {
+                "acme-a": {"baseUrl": "https://a.example.com",
+                          "headers": {"X-Jira-ID": "EST-0", "X-Other": "y"}},
+                "acme-b": {"baseUrl": "https://b.example.com"},
+            }
+        },
+    })
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme",
+                  "--llm-header", "X-Jira-ID=EST-1",
+                  "--run-id", "tst-header-profile")
+    assert res.returncode == 0, res.stderr
+    doc = json.loads((ctl.config_dir("tst-header-profile") / "pi" / "models.json")
+                      .read_text())
+    assert doc["providers"]["acme-a"]["headers"] == {"X-Jira-ID": "EST-1", "X-Other": "y"}
+    assert doc["providers"]["acme-b"]["headers"] == {"X-Jira-ID": "EST-1"}
+
+
+def test_start_llm_header_merges_over_host_copied_models_json(ctl, tmp_path):
+    """The same merge, on the `--llm host` path: the host's own
+    `~/.pi/agent/models.json` is copied into the config dir, then the
+    flag's headers are merged into every provider there too."""
+    fake_home = tmp_path / "fakehome"
+    pi_dir = fake_home / ".pi" / "agent"
+    pi_dir.mkdir(parents=True)
+    (pi_dir / "models.json").write_text(json.dumps({
+        "providers": {
+            "aigw": {"baseUrl": "https://gw.example.com",
+                    "headers": {"X-Jira-ID": "EST-0", "X-Other": "y"}},
+        }
+    }))
+    res = ctl.run("start", "--prd", str(ctl.prd),
+                  "--llm-header", "X-Jira-ID: EST-1",
+                  "--run-id", "tst-header-host", env={"HOME": str(fake_home)})
+    assert res.returncode == 0, res.stderr
+    doc = json.loads((ctl.config_dir("tst-header-host") / "pi" / "models.json")
+                      .read_text())
+    assert doc["providers"]["aigw"]["headers"] == {"X-Jira-ID": "EST-1", "X-Other": "y"}
+
+
+def test_start_llm_header_resolves_env_ref_on_host(ctl, monkeypatch):
+    """A `${env:...}` header value resolves on the host, same as a
+    profile's own values."""
+    ctl.write_profile("acme", {
+        "model": "acme/big", "env": {},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com"}}},
+    })
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme",
+                  "--llm-header", "X-Jira-ID: ${env:PROBE_HEADER_VAR}",
+                  "--run-id", "tst-header-env",
+                  env={"PROBE_HEADER_VAR": "EST-2"})
+    assert res.returncode == 0, res.stderr
+    doc = json.loads((ctl.config_dir("tst-header-env") / "pi" / "models.json")
+                      .read_text())
+    assert doc["providers"]["acme"]["headers"] == {"X-Jira-ID": "EST-2"}
+
+
+def test_start_llm_header_malformed_value_refused_before_docker_run(ctl):
+    """No `:`/`=` in the spec is refused with a clear diagnostic, before
+    the container ever starts."""
+    res = ctl.run("start", "--prd", str(ctl.prd),
+                  "--llm-header", "totally-malformed-no-separator",
+                  "--run-id", "tst-header-bad")
+    assert res.returncode != 0
+    assert "totally-malformed-no-separator" in res.stderr
+    assert docker_run_never_happened(ctl)
+
+
+def test_start_llm_header_unresolvable_ref_refused_before_docker_run(ctl):
+    res = ctl.run("start", "--prd", str(ctl.prd),
+                  "--llm-header", "X-Jira-ID=${env:NEVER_SET_HEADER_VAR_9}",
+                  "--run-id", "tst-header-unresolvable")
+    assert res.returncode != 0
+    assert "NEVER_SET_HEADER_VAR_9" in res.stderr
+    assert docker_run_never_happened(ctl)
+
+
 def test_start_llm_none_unaffected(ctl):
     res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
                   "--run-id", "tst-none")

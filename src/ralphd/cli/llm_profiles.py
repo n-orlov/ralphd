@@ -38,6 +38,13 @@ class ProfileError(Exception):
     human-readable diagnostic naming the profile and the offending key."""
 
 
+class HeaderError(Exception):
+    """A malformed ``--llm-header`` spec (no ``Name: value``/``Name=value``
+    separator found, or an empty name) or an unresolvable
+    ``${env:}``/``${file:}``/``${cmd:}`` reference inside a header's value
+    (#177). Always carries a human-readable diagnostic naming the header."""
+
+
 def profiles_dir(reg: Path) -> Path:
     return reg / "llm-profiles"
 
@@ -218,3 +225,111 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         "mounts": mounts,
         "pi": pi_fragment,
     }
+
+
+# ---------------------------------------------------------- --llm-header (#177)
+#
+# `ralphctl start --llm-header 'Name: value'` (repeatable; `Name=value` also
+# accepted) sets that header on every provider of the run's resolved pi
+# config -- both a named profile's `pi.providers` and the `--llm host`
+# copied `models.json` -- merged over any header the provider already
+# carries so the flag wins on a same-named header and other headers are
+# kept. Values accept the same `${env:}`/`${file:}`/`${cmd:}` resolution
+# syntax as a profile's own `env:`/`pi:` values, resolved on the host.
+
+def parse_header_spec(spec: str) -> tuple[str, str]:
+    """Parse one `--llm-header` argument into `(name, raw_value)`.
+
+    Accepts `Name: value` (a single leading space after the colon is
+    stripped, matching ordinary HTTP header notation) and `Name=value`.
+    The separator is whichever of `:`/`=` occurs FIRST in the string, so a
+    `Name=http://example.com` value (which itself contains a `:`) still
+    splits on the intended `=`. Raises `HeaderError` when neither
+    separator is present or the name is empty -- the caller's malformed-
+    value refusal.
+    """
+    idx_colon = spec.find(":")
+    idx_eq = spec.find("=")
+    candidates = [i for i in (idx_colon, idx_eq) if i != -1]
+    if not candidates:
+        raise HeaderError(
+            f"--llm-header {spec!r} is not 'Name: value' or 'Name=value' "
+            f"(no ':' or '=' found)")
+    idx = min(candidates)
+    name, value = spec[:idx], spec[idx + 1:]
+    if idx == idx_colon:
+        value = value[1:] if value.startswith(" ") else value
+    name = name.strip()
+    if not name:
+        raise HeaderError(f"--llm-header {spec!r}: empty header name")
+    return name, value
+
+
+def _resolve_header_ref(ref: str, combined_env: dict, *, header_name: str) -> str:
+    """Resolve one whole-string ``${env:...}``/``${file:...}``/``${cmd:...}``
+    reference for a `--llm-header` value -- the same three kinds
+    `resolve_profile` supports, with a diagnostic naming the header rather
+    than a profile (a header is not scoped to one)."""
+    body = ref[2:-1]
+    kind, _, arg = body.partition(":")
+    if kind == "env":
+        if arg not in combined_env:
+            raise HeaderError(
+                f"--llm-header '{header_name}': references ${{env:{arg}}} but "
+                f"env var '{arg}' is not set")
+        return combined_env[arg]
+    if kind == "file":
+        p = Path(arg).expanduser()
+        try:
+            return p.read_text().strip()
+        except OSError as e:
+            raise HeaderError(
+                f"--llm-header '{header_name}': references ${{file:{arg}}} but "
+                f"the file could not be read: {e}") from e
+    if kind == "cmd":
+        res = subprocess.run(["bash", "-lc", arg], capture_output=True, text=True)
+        if res.returncode != 0:
+            raise HeaderError(
+                f"--llm-header '{header_name}': references ${{cmd:{arg}}} which "
+                f"exited {res.returncode}: {res.stderr.strip()[:300]}")
+        return res.stdout.strip()
+    raise HeaderError(
+        f"--llm-header '{header_name}': has an unsupported reference form "
+        f"'${{{kind}:...}}' (supported: env, file, cmd)")
+
+
+def resolve_header_specs(specs: list[str], host_env: dict | None = None) -> dict[str, str]:
+    """Parse + resolve a list of `--llm-header` specs into a `name ->
+    value` dict, in argument order (a later spec for the same name wins,
+    the same last-one-wins rule the flag's own repeatability implies).
+    Raises `HeaderError` on a malformed spec or an unresolvable reference.
+    """
+    combined = dict(host_env if host_env is not None else os.environ)
+    out: dict[str, str] = {}
+    for spec in specs:
+        name, raw_value = parse_header_spec(spec)
+        m = _REF_RE.match(raw_value)
+        out[name] = (_resolve_header_ref(raw_value, combined, header_name=name)
+                     if m else raw_value)
+    return out
+
+
+def merge_headers_into_pi_config(pi_doc: dict | None, headers: dict[str, str]) -> dict | None:
+    """Merge `headers` into the `headers:` map of EVERY provider under
+    `pi_doc["providers"]`, in place, and return `pi_doc` -- the flag wins on
+    a same-named header, any other header the provider already carries is
+    kept. A no-op (returns `pi_doc` unchanged) when `headers` is empty or
+    `pi_doc` carries no `providers` map (nothing to merge into: `--llm
+    none`, or a profile/host models.json with no providers).
+    """
+    if not headers or not isinstance(pi_doc, dict):
+        return pi_doc
+    providers = pi_doc.get("providers")
+    if not isinstance(providers, dict):
+        return pi_doc
+    for _pname, pcfg in providers.items():
+        if not isinstance(pcfg, dict):
+            continue
+        existing = pcfg.get("headers") or {}
+        pcfg["headers"] = {**existing, **headers}
+    return pi_doc

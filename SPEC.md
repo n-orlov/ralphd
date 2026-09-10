@@ -3816,6 +3816,7 @@ returns immediately.
 | `--price-strategy S` | `none` | derive a cost for routes the provider does not price (or prices with an implausible zero): `aws` uses the built-in Bedrock rate table (§8.6) |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |
 | `--llm-env KEY=VAL` | none | extra env for the LLM wiring; repeatable |
+| `--llm-header 'Name: value'` | none | set this HTTP header on every provider of the resolved pi config (`Name=value` also accepted; repeatable; a same-named header the profile already carries is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host, task 044, #177) |
 | `--forward-env NAME\|PREFIX_*` | none | forward host env var(s) by name or prefix; repeatable |
 | `--env KEY=VAL` | none | plain container env; repeatable |
 | `--skills DIR` | none | skill dir (or a dir of them); repeatable |
