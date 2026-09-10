@@ -70,7 +70,22 @@
 # `browser` tiers -- is already run at the gate-blocking level by
 # `.github/workflows/heavy.yml` and does not vary with the interpreter or
 # libc a dev-layout cell is exercising, so the matrix loses no coverage that
-# varies with the axis under test by dropping it here. A caller that wants a
+# varies with the axis under test by dropping it here. That is REASON ONE the
+# default is `fast`.
+#
+# REASON TWO (steer 009): `-m fast` EXCLUDES `-m browser` (tests/conftest.py
+# never stamps a `browser`-marked node with `fast`), so no matrix cell ever
+# drives a browser -- `.github/workflows/heavy.yml`'s `browser tier` job stays
+# the ONLY browser-bearing job on the self-hosted box. That is what makes the
+# single `browser-runner` label the operator placed on exactly one of the
+# VPS's two runner slots sufficient to serialise browser work across
+# *workflows*: two concurrent browser jobs collapse each other's
+# `playwright-cli` sessions against real Chrome on a 4-core host, and a
+# `concurrency:` group cannot prevent that (it does not know what else is on
+# the runner). A dev-layout cell that ran the suite unfiltered would drive
+# browsers from `nightly` too, on any slot, and defeat that label.
+#
+# A caller that wants a
 # different selection -- including the retired unfiltered form -- overrides
 # it through ONE env var, HOST_LIKE_DEV_LAYOUT_TIER (see below); nothing else
 # decides tier selection.

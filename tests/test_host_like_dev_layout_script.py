@@ -466,6 +466,42 @@ def test_the_marker_probe_reads_the_selected_interpreters_own_stdlib():
 # other test in this module is not.
 
 
+def test_the_header_states_both_reasons_the_fast_tier_is_the_default():
+    """Task 076: the default is not self-evident, so the script's own header
+    must carry BOTH reasons for it -- (i) what `-m fast` drops relative to
+    unfiltered (the `docker` and `browser` tiers) is already gate-blocking in
+    heavy.yml and does not vary with the interpreter axis a cell varies, and
+    (ii) `-m fast` excludes `-m browser`, so no matrix cell ever drives a
+    browser and heavy.yml's browser tier stays the only browser-bearing job
+    on the self-hosted box -- which is what makes the single `browser-runner`
+    label (steer 009) enough to serialise browser work across workflows."""
+    header = SCRIPT.read_text()
+    header = header[: header.index("set -euo pipefail")]
+    # Read it as prose: drop each comment line's own `#` and collapse the
+    # line wrapping, so these assertions are about what the header SAYS and
+    # not about where its lines happen to break.
+    prose = " ".join(
+        line.lstrip().lstrip("#").strip() for line in header.splitlines()
+    )
+    prose = " ".join(prose.split())
+
+    # (i)
+    assert "heavy.yml" in prose
+    assert "does not vary with the interpreter" in prose, prose[-2000:]
+    # (ii)
+    assert "-m fast` EXCLUDES `-m browser" in prose, prose[-2000:]
+    assert "browser-runner" in prose, prose[-2000:]
+    assert "across *workflows*" in prose, prose[-2000:]
+
+    # And the exclusion the second reason rests on is real, not just claimed:
+    # tests/conftest.py never stamps a `browser`-marked node with `fast`.
+    conftest = (REPO / "tests" / "conftest.py").read_text()
+    stamp = conftest[conftest.index("def pytest_collection_modifyitems"):]
+    stamp = stamp[: stamp.index("item.add_marker(pytest.mark.fast)")]
+    assert '"browser" in keywords' in stamp, stamp
+    assert "continue" in stamp, stamp
+
+
 def test_with_no_tier_named_the_invocation_carries_the_fast_selection():
     """Default: no HOST_LIKE_DEV_LAYOUT_TIER override at all."""
     result = _run(["--collect-only", "-q"])
