@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5586 tests across 342 modules** at task 034's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4018
+collects **5590 tests across 343 modules** at task 035's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4022
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -463,7 +463,16 @@ real engine subprocess), and **5586 (smoke 4018, modules unchanged at
 approach-2 incident (a curable rejection whose cure `invalidates` a
 recorded sweep) end to end, over the stub `pi` binary's new
 `STUB_REVIEW_CURABLE_INVALIDATES` knob -- not `smoke` (a real engine
-subprocess, like every other node in that module).
+subprocess, like every other node in that module), and **5590 (smoke 4022,
+modules 342->343)** by task 035's own new
+`tests/test_approach_progress_context.py` (4 nodes, PRD requirement F.1/F.4,
+#172): `LoopSupervisor._approach_progress_context` (the shared `## Job
+context` renderer for `approach N of M`/cure passes/remaining iteration
+budget, read from `status.json`) pinned once against `build_prompt("worker")`
+and once against `build_prompt("review")`, a never-cured approach defaulting
+its cure-pass count to `0`, and the silent no-op before any approach is
+committed to `status.json` -- all also `smoke` (in-process `LoopSupervisor`
+construction and `build_prompt` calls, no real engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

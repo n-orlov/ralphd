@@ -881,6 +881,7 @@ class LoopSupervisor:
                      f"- Task state file: {self.run.tasks_file}\n"
                      f"- Handoff notes file: {self.run.notes_file}\n"
                      f"- Artifacts directory: {self.run.artifacts_dir}\n")
+        parts.append(self._approach_progress_context())
         docker_note = self._docker_siblings_note()
         if docker_note:
             parts.append(docker_note)
@@ -910,6 +911,53 @@ class LoopSupervisor:
         if extra:
             parts.append("\n" + extra)
         return "".join(parts)
+
+    def _approach_progress_context(self) -> str:
+        """Task 035 (PRD requirement F.1/F.4, #172): "an approach has a
+        name" -- `approach N of M`, the cure-pass count for approach N and
+        the remaining iteration budget, all THREE rendered straight from
+        `status.json` (never from an in-memory counter that could disagree
+        with what a resumed process would see), and rendered by this ONE
+        method inside the shared `## Job context` builder above so every
+        hat that reaches `build_prompt` -- worker and review named by this
+        task's own criteria, but also planning/verify/reflect/steer, since
+        the PRD says "every hat's `## Job context`" -- gets the same three
+        lines from the same code path, instead of each hat growing its own
+        copy.
+
+        Silent (returns `""`) until an approach has actually been
+        committed to disk: `status.json`'s `approach` key is written by
+        `_step_worker` only once planning is accepted (see
+        `update_status(approach=approach)` below), so the very first
+        planning attempt of a fresh run -- before any approach exists yet
+        -- has nothing to render. `maxApproaches`/`iterationsBudget` are
+        both seeded before the very first phase of an episode runs
+        (`_run_job_core`'s own start-of-episode `update_status` call), so
+        once `approach` itself is set the other two figures are always
+        present too.
+
+        `curePasses` reuses `_cure_passes_for_approach` (task 009,
+        requirement C.1, #141) rather than re-deriving the same disk read
+        and `str(approach)` lookup a second time. `iterationsUsed`
+        defaults to `0` for the same reason `_cure_passes_for_approach`
+        defaults an absent entry to `0`: a fresh episode has used none of
+        its budget yet and has not necessarily written the key.
+        """
+        status = self.run.read_status()
+        approach = status.get("approach")
+        max_approaches = status.get("maxApproaches")
+        if approach is None or max_approaches is None:
+            return ""
+        cure_passes = self._cure_passes_for_approach(approach)
+        used = status.get("iterationsUsed") or 0
+        budget = status.get("iterationsBudget")
+        if isinstance(budget, (int, float)):
+            remaining: object = max(0, budget - used)
+        else:
+            remaining = "unknown"
+        return (f"- Approach {approach} of {max_approaches}\n"
+                f"- Cure passes used for this approach: {cure_passes}\n"
+                f"- Remaining iteration budget: {remaining}\n")
 
     def _recent_steering_echo(self) -> str:
         """The read-only context echo of RECENT operator messages (task 014,
