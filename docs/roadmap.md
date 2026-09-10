@@ -2154,6 +2154,7 @@ with 3 residuals at 08:09:50Z and the blind verdict gate `verified` with 6 resid
 `a77df38`, installed host-side by the operator, who also corrected one shipped record that cited
 an amended-away commit — an object only the run's own workspace held, so `a77df38` was red in
 the records family on every fresh clone, and neither judging hat could see it (#176).
+Shipped sha `a77df38`, version 0.19.1, installed host-side by the operator.
 The reflection (`artifacts/reflection/report.md` and `suggestions.diff` in the run dir) named
 the freeze rule, the same-environment re-measure protocol, the fenced-contract defect and the
 cure-specification gap; those are #175, #170 and #171. Ten operator steers and seven rulings
