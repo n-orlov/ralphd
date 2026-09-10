@@ -200,7 +200,7 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5553 tests across 339 modules** at task 029's commit, over
+collects **5554 tests across 339 modules** at task 029's second commit, over
 the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3987
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
@@ -415,7 +415,14 @@ event, before `plan_review` is ever invoked), the same planning approach
 re-prompted, and a genuinely staged resubmission accepted and approved by
 `plan_review`'s own single invocation -- fast-only like every other node
 in this module (it spawns a real engine subprocess), so smoke does not
-move.
+move -- and **5554 (smoke unchanged at 3987, modules unchanged at 339)** by
+task 029's re-take, one further node in that same module: a seventh flow
+whose near-miss proposal (an `estimatedIterations: 4` task beside two
+regex-satisfying but unrelated `Stage N` tasks) CLEARS ingestion and is
+refused by `plan_review` itself, spending a real revision, with the
+objection observable in the re-prompted planner's own `prompt.md` and the
+genuinely staged resubmission approved by the second `plan_review`
+invocation -- likewise fast-only.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

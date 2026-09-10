@@ -79,6 +79,24 @@ near-miss-only line of defence, but the ingestion lint is the one that
 actually fires first on an exact-shape violation like this one, which is
 exactly why task 026 built it as an ingestion-time refusal in the first
 place rather than leaving the peer hat as the only backstop.
+
+A seventh scenario (task 029, #157, requirement D.4) drives the OTHER half
+of that pair -- the refusal `plan_review` itself makes. Its first proposal
+is item 8's near-miss rather than an exact-shape violation: task `001` still
+carries `estimatedIterations: 4` with one flat, unstaged demand, but the
+proposal also carries two tasks that satisfy `plan_ingestion._staged_
+decomposition_gap`'s cross-task regex mechanically (labelled `Stage 1`/
+`Stage 2` in proposal order, bound to `001` by `dependsOn`, each with its
+own measurable criteria, no repeats) while being about unrelated work. So
+ingestion accepts it -- this run emits NO `contract.violation` at all -- and
+the peer gate is the first thing that refuses it: `plan_review` objects
+naming the offending task and its estimate, spends one real revision
+(`planReviewRevisions == {"1": 1}`), the engine re-prompts planning with
+that objection (observable in the second planning iteration's own recorded
+`prompt.md`), and the resubmission whose stages genuinely decompose task
+`001` is approved by the second `plan_review` invocation
+(`test_a_near_miss_oversized_task_that_clears_ingestion_is_refused_by_plan_
+review_then_the_staged_resubmission_is_approved`).
 """
 
 from __future__ import annotations
@@ -488,3 +506,156 @@ def test_an_oversized_unstaged_task_is_refused_at_ingestion_then_a_staged_resubm
     assert "'001'" in first_errors and "estimatedIterations" in first_errors, (
         f"flow peer gates (oversized task staged): the ingestion refusal "
         f"must name the offending task, got errors={first_errors!r}")
+
+
+def _planning_prompts(run) -> list[str]:
+    """Every `planning` iteration's own recorded `prompt.md`, in iteration
+    order -- the run's own on-disk record of what the planner was actually
+    handed (`iterations/NNNN/prompt.md` beside that iteration's
+    `meta.json`), read the same black-box way this module reads
+    `events.jsonl`. The engine keeps a `plan_review` objection out of
+    `events.jsonl` on purpose (`_step_plan_review` hands it to the very next
+    planning attempt through `_pending_plan_review_objection`), so the
+    prompt the re-prompted planner received IS where the objection is
+    observable."""
+    out: list[tuple[int, str]] = []
+    for itdir in sorted((run.run_dir / "iterations").iterdir()):
+        meta_path, prompt_path = itdir / "meta.json", itdir / "prompt.md"
+        if not meta_path.exists() or not prompt_path.exists():
+            continue
+        meta = json.loads(meta_path.read_text())
+        if meta.get("phase") == "planning":
+            out.append((int(meta.get("number") or 0), prompt_path.read_text()))
+    return [text for _, text in sorted(out)]
+
+
+def test_a_near_miss_oversized_task_that_clears_ingestion_is_refused_by_plan_review_then_the_staged_resubmission_is_approved(
+        engine_factory):
+    """Task 029 (requirement D.4, #157): the refusal that this scenario
+    exercises is **`plan_review`'s own**, not `enforce_plan_ingestion`'s.
+
+    The first proposal is item 8's near-miss: task `001` carries
+    `estimatedIterations: 4` with one flat, unstaged demand, beside two
+    tasks that satisfy `plan_ingestion._staged_decomposition_gap`'s regex
+    mechanically (both labelled `Stage 1`/`Stage 2` in proposal order, both
+    bound to `001` by `dependsOn`, each with its own measurable criteria,
+    no repeats) while being about entirely unrelated work. That plan
+    therefore CLEARS ingestion -- no `contract.violation` is emitted at all
+    in this run, which is what separates this scenario from the ingestion
+    one above -- and reaches the peer gate with the oversized task still
+    undecomposed. `plan_review` objects, naming the offending task and its
+    estimate (`STUB_PLAN_REVIEW_OVERSIZED_OBJECTION`), which spends one real
+    revision (`planReviewRevisions == {"1": 1}`) and routes back to a
+    genuine second `planning` iteration whose own prompt carries the
+    objection; that attempt resubmits a plan whose two `Stage N` tasks
+    decompose task `001`'s own work, and the SECOND `plan_review`
+    invocation approves it for real.
+    """
+    near_miss = json.dumps([
+        {"id": "001", "title": "the whole search index rewrite",
+         "successCriteria": "the search index rewrite is verifiably finished",
+         "estimatedIterations": 4},
+        {"id": "002", "title": "Stage 1: unrelated changelog tidy-up",
+         "successCriteria": "`tests/test_flow_tidy_a.py` passes with at "
+                            "least 3 tests",
+         "dependsOn": ["001"]},
+        {"id": "003", "title": "Stage 2: unrelated changelog follow-up",
+         "successCriteria": "`tests/test_flow_tidy_b.py` passes with at "
+                            "least 4 tests",
+         "dependsOn": ["001"]},
+    ])
+    genuinely_staged = json.dumps([
+        {"id": "001", "title": "the whole search index rewrite",
+         "successCriteria": "the search index rewrite is verifiably finished",
+         "estimatedIterations": 4},
+        {"id": "002", "title": "Stage 1: the search index ingest half",
+         "successCriteria": "`tests/test_search_index_ingest.py` passes with "
+                            "at least 3 tests",
+         "dependsOn": ["001"]},
+        {"id": "003", "title": "Stage 2: the search index query half",
+         "successCriteria": "`tests/test_search_index_query.py` passes with "
+                            "at least 4 tests",
+         "dependsOn": ["001"]},
+    ])
+    run = engine_factory(
+        job={"run_id": "flow-plan-review-refuses-oversized",
+             "on_complete": "exit", "peer_plan_review": True,
+             "max_approaches": 1},
+        stub_env={"STUB_TASKS_JSON": near_miss,
+                  "STUB_PLANNING_AFTER_OBJECTION_TASKS_JSON": genuinely_staged,
+                  "STUB_PLAN_REVIEW_OVERSIZED_OBJECTION": "1"})
+    assert run.proc.wait(timeout=60) == 0, (
+        "flow peer gates (plan review refuses oversized): the engine did not "
+        "exit 0 after the staged resubmission was approved")
+
+    assert_step_sequence(flow_steps(run), [
+        "state:running",
+        "phase:planning@1",
+        "iteration:planning",              # near-miss plan -- clears ingestion
+        "phase:plan_review@1",
+        "iteration:plan_review",           # objects: task 001 is oversized
+        "phase:planning@1",                # the revision the peer asked for
+        "iteration:planning",              # genuinely staged resubmission
+        "phase:plan_review@1",
+        "iteration:plan_review",           # approves
+        "iteration:worker",                # 001 (no deps)
+        "iteration:worker",                # 002 (Stage 1)
+        "iteration:worker",                # 003 (Stage 2)
+        "signal:COMPLETE",
+        "phase:review@1",
+        "iteration:review",
+        "verdict:review:verified@1",
+        "signal:VERIFIED",
+        "state:succeeded",
+    ], flow="flow peer gates (plan review refuses oversized)")
+
+    # the peer's refusal cost a real revision, recorded on disk...
+    st = status(run)
+    assert st.get("planReviewRevisions") == {"1": 1}, (
+        f"flow peer gates (plan review refuses oversized): the plan_review "
+        f"objection must have spent exactly one revision against approach 1, "
+        f"got {st.get('planReviewRevisions')!r}")
+    assert (st.get("state"), st.get("verdict")) == ("succeeded", "verified"), (
+        f"flow peer gates (plan review refuses oversized): expected "
+        f"succeeded/verified, got state={st.get('state')!r} verdict="
+        f"{st.get('verdict')!r}")
+
+    # ...and ingestion never refused anything in this run, so the refusal
+    # under test is unambiguously the peer gate's own.
+    violations = events_of(run, "contract.violation")
+    assert violations == [], (
+        f"flow peer gates (plan review refuses oversized): the near-miss "
+        f"plan must CLEAR plan_ingestion so plan_review is the refusing "
+        f"gate, but ingestion refused something: {violations!r}")
+
+    # the objection named the offending task and its estimate, and reached
+    # the re-prompted planner: the second planning prompt carries it.
+    planning_prompts = _planning_prompts(run)
+    assert len(planning_prompts) == 2, (
+        f"flow peer gates (plan review refuses oversized): expected exactly "
+        f"two planning iterations (the near-miss and the revision), got "
+        f"{len(planning_prompts)}")
+    reprompt = planning_prompts[1]
+    assert "Peer plan review objected to your previous plan" in reprompt, (
+        "flow peer gates (plan review refuses oversized): the second "
+        "planning prompt must carry the engine's own objection block")
+    for needle in ("'001'", "estimatedIterations 4"):
+        assert needle in reprompt, (
+            f"flow peer gates (plan review refuses oversized): the objection "
+            f"handed to the re-prompted planner must name {needle!r}; the "
+            f"objection block it carried was:\n{reprompt[-1500:]}")
+
+    # the plan that actually ran is the genuinely staged resubmission
+    ts = tasks(run)
+    assert ts and all(t["status"] == "completed" for t in ts), ts
+    by_id = {t["id"]: t for t in ts}
+    assert set(by_id) == {"001", "002", "003"}, [t["id"] for t in ts]
+    assert by_id["001"].get("estimatedIterations") == 4, (
+        f"flow peer gates (plan review refuses oversized): the approved plan "
+        f"keeps the oversized parent, now genuinely staged, got "
+        f"{by_id['001']!r}")
+    assert all("search index" in by_id[tid]["title"]
+               for tid in ("002", "003")), (
+        f"flow peer gates (plan review refuses oversized): the accepted plan "
+        f"must be the resubmission whose stages cover task 001's own work, "
+        f"got {[by_id[tid]['title'] for tid in ('002', '003')]!r}")

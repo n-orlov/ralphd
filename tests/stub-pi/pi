@@ -178,6 +178,43 @@ from env vars set by the test:
                       to this stub's `else` branch (no `Role: Reviewer`
                       marker in the re-ask prompt) and are also
                       unparseable, so it exhausts naturally.
+  STUB_PLAN_REVIEW_OVERSIZED_OBJECTION  task 029 (#157, requirement D.4): if
+                      set, every `plan_review` invocation applies
+                      `prompts/plan_review.md`'s own checklist ITEM 8 to the
+                      plan already on disk (`tasks.json`, written by
+                      `enforce_plan_ingestion` strictly before this gate
+                      runs) and objects -- naming the offending task id and
+                      its estimate in the `reason` -- when a task carries
+                      `estimatedIterations` above 3 while the proposal's own
+                      bound `Stage N` tasks do not actually decompose THAT
+                      work. Deliberately STRICTER than
+                      `plan_ingestion._staged_decomposition_gap`, which is
+                      the point of item 8: the ingestion regex counts two
+                      bound, labelled, measurable stage tasks and stops, so a
+                      plan whose "stages" are unrelated work slips past it
+                      and reaches the peer with the oversized task still one
+                      flat, unstaged demand. The stub's near-miss read is a
+                      subject-word overlap: a stage task counts as covering
+                      the oversized task only if its own title/criteria share
+                      a substantive word (>= 5 letters, generic scaffolding
+                      words excluded) with the oversized task's title, and
+                      fewer than two covering stages is the objection. Limit
+                      of this double, stated rather than implied: it reads
+                      only DIRECT bindings (the stage's `dependsOn` naming
+                      the oversized task, the oversized task's `dependsOn`
+                      naming the stage, or the stage naming its id in text),
+                      never the chained form the ingestion lint also accepts.
+                      Checked BEFORE STUB_PLAN_REVIEW_OBJECTIONS' counter, so
+                      the two knobs never have to be combined.
+  STUB_PLANNING_AFTER_OBJECTION_TASKS_JSON  task 029 (#157): a tasks list the
+                      planner submits only once its own prompt already
+                      carries the engine's `plan_review` objection block
+                      ("## Peer plan review objected to your previous
+                      plan"), i.e. only on the revision the peer gate asked
+                      for. The STUB_PLANNING_RETRY_TASKS_JSON knob below is
+                      the same idea for INGESTION's re-prompt; this one is
+                      the peer gate's, and it takes precedence when both
+                      markers somehow appear.
   STUB_PLAN_REVIEW_OBJECTIONS  how many `plan_review` invocations object
                       (verdict "objected", a stub reason) before the next one
                       approves (default 0) -- task 029 (#130): 0 is the
@@ -461,6 +498,7 @@ to inspect job-context content across phases/iterations.
 """
 import json
 import os
+import re
 import sys
 import time
 
@@ -1004,6 +1042,93 @@ def _apply_hold(phase=None):
         sys.exit(HOLD_TIMEOUT_EXIT_CODE)
 
 
+# Task 029 (#157, requirement D.4): `prompts/plan_review.md` checklist item
+# 8's own near-miss read, for STUB_PLAN_REVIEW_OVERSIZED_OBJECTION. The peer
+# gate runs strictly AFTER `enforce_plan_ingestion` succeeded and
+# `run.write_tasks()` landed, so the plan under review is readable from
+# `tasks.json` -- no engine import (the stub is a black-box double).
+_STUB_STAGE_MARKER_RE = re.compile(r"\bstage\s+\d+\b", re.IGNORECASE)
+# Scaffolding words a stage task and its parent share whatever the subject is;
+# crediting them as "this stage is about the parent's work" would make the
+# check vacuous.
+_STUB_GENERIC_WORDS = frozenset({
+    "tests", "test", "passes", "least", "stage", "stages", "criteria",
+    "module", "modules", "verifiably", "finished", "whole", "their",
+    "which", "these", "those", "first", "second", "third", "other",
+})
+
+
+def _stub_subject_words(text):
+    return {w for w in re.findall(r"[a-z]+", (text or "").lower())
+            if len(w) >= 5 and w not in _STUB_GENERIC_WORDS}
+
+
+def _stub_binds_to(stage, parent):
+    """Whether `stage` is DIRECTLY bound to `parent` -- `dependsOn` in either
+    direction, or the parent's id named in the stage's own text. The chained
+    form `plan_ingestion._is_stage_task_of` also accepts (stage 2 bound only
+    to stage 1) is deliberately NOT read here; the fixtures this knob serves
+    bind every stage to the parent directly, and a double that claimed more
+    reach than it has would be worse than one that states its limit."""
+    parent_id = parent.get("id")
+    if parent_id in (stage.get("dependsOn") or []):
+        return True
+    if stage.get("id") in (parent.get("dependsOn") or []):
+        return True
+    text = f"{stage.get('title') or ''} {stage.get('successCriteria') or ''}"
+    return bool(parent_id) and re.search(
+        rf"(?<![\w-]){re.escape(str(parent_id))}(?![\w-])", text) is not None
+
+
+def _oversized_near_miss_objection():
+    """The objection text for the first task in the ingested plan that carries
+    `estimatedIterations` above 3 while fewer than two of its bound `Stage N`
+    tasks are about that task's OWN subject -- or `None` when the plan has no
+    such task. Names the offending task and its estimate, exactly as item 8
+    instructs ("Object by naming the offending task and its estimate, and
+    instruct either lowering the estimate to 3 or fewer, or splitting it into
+    a genuine sequence of stage tasks")."""
+    try:
+        with open(tasks_file) as f:
+            plan_tasks = (json.load(f) or {}).get("tasks") or []
+    except (OSError, ValueError):
+        return None
+    for t in plan_tasks:
+        if not isinstance(t, dict):
+            continue
+        est = t.get("estimatedIterations")
+        if isinstance(est, bool) or not isinstance(est, int) or est <= 3:
+            continue
+        parent_words = _stub_subject_words(t.get("title"))
+        bound, covering = [], []
+        for other in plan_tasks:
+            if not isinstance(other, dict) or other.get("id") == t.get("id"):
+                continue
+            text = (f"{other.get('title') or ''} "
+                    f"{other.get('successCriteria') or ''}")
+            if not _STUB_STAGE_MARKER_RE.search(text):
+                continue
+            if not _stub_binds_to(other, t):
+                continue
+            bound.append(other.get("id"))
+            if _stub_subject_words(text) & parent_words:
+                covering.append(other.get("id"))
+        if len(covering) < 2:
+            return (
+                f"stub peer plan review, plan_review.md checklist item 8: "
+                f"task {t.get('id')!r} ({t.get('title')!r}) carries "
+                f"estimatedIterations {est}, past the 3-iteration bound, and "
+                f"its criteria is still one flat, unstaged demand. The "
+                f"proposal's bound Stage tasks {bound!r} are not stages of "
+                f"THAT work -- {covering!r} of them name any of its own "
+                f"subject words -- so the ingestion lint's regex counted a "
+                f"decomposition that is not one. Either lower task "
+                f"{t.get('id')!r}'s estimate to 3 or fewer, or split it into "
+                f"a genuine sequence of stage tasks whose own measurable "
+                f"criteria cover its work.")
+    return None
+
+
 # Worker applies the hold at its own STUB_SLEEP position below (task
 # 008/B.2) instead of here, so a partial STUB_RICH_EVENTS transcript can
 # still land before the window opens; every other phase applies it here,
@@ -1042,8 +1167,18 @@ if "Role: Planner" in prompt:
     # this supplies the SECOND (staged) one the retry submits, with no
     # marker file needed -- the retry re-prompt text the engine itself
     # writes is the signal.
+    # STUB_PLANNING_AFTER_OBJECTION_TASKS_JSON (task 029, #157): the same
+    # idea one gate later -- the list the planner submits on the revision
+    # `plan_review` itself asked for, recognised by the engine's own
+    # objection block in this prompt (`_step_planning`'s `pending_objection`
+    # text). Checked first so a prompt carrying both markers takes the peer
+    # gate's list.
+    objection_override = os.environ.get(
+        "STUB_PLANNING_AFTER_OBJECTION_TASKS_JSON")
     retry_override = os.environ.get("STUB_PLANNING_RETRY_TASKS_JSON")
-    if retry_override and "plan-proposal.json was rejected" in prompt:
+    if objection_override and "Peer plan review objected" in prompt:
+        override = objection_override
+    elif retry_override and "plan-proposal.json was rejected" in prompt:
         override = retry_override
     else:
         override = os.environ.get("STUB_TASKS_JSON")
@@ -1083,7 +1218,14 @@ elif "Role: Peer plan review" in prompt:
     if os.path.exists(marker("plan-review-count")):
         _pr_done = int(open(marker("plan-review-count")).read())
     open(marker("plan-review-count"), "w").write(str(_pr_done + 1))
-    if _pr_done < objections_wanted:
+    _oversized = (_oversized_near_miss_objection()
+                  if os.environ.get("STUB_PLAN_REVIEW_OVERSIZED_OBJECTION")
+                  else None)
+    if _oversized is not None:
+        emit_final(
+            "the plan still hides an oversized task\n"
+            + json.dumps({"verdict": "objected", "reason": _oversized}))
+    elif _pr_done < objections_wanted:
         emit_final(
             "the plan needs another pass\n"
             + json.dumps({
