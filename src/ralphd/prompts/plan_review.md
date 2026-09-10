@@ -84,6 +84,18 @@ judge? Look specifically for:
    criterion whose launch form and captured-status demand sit in two
    different sentences (exactly how task 205 splits them) is still that
    defect.
+8. **An oversized estimate with no staging (#157).** `plan_ingestion.
+   lint_proposal()` already refuses a task whose `estimatedIterations` is
+   above 3 unless that task's own `successCriteria` writes at least two
+   `Stage N: ...` clauses, each naming an intermediate numeric target or a
+   named module group, and rejects the plan before it ever reaches you if
+   one slips through. Catch it here too if the lint's own regex misses a
+   near-miss: a task whose `estimatedIterations` reads 4 or higher but
+   whose criteria is one flat, unstaged demand is exactly the shape the
+   plan-time lint exists to catch, and a plan you approve is not proof it
+   never slipped past. Object by naming the offending task and its
+   estimate, and instruct either lowering the estimate to 3 or fewer, or
+   rewriting the criteria as a genuine staged sequence.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

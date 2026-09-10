@@ -1232,6 +1232,72 @@ TASK_205_SUCCESS_CRITERIA = (
 )
 
 
+# Task 026 (PRD requirement D.2, #157): a task the planner estimates above
+# this many iterations is refused at ingestion unless its own
+# `successCriteria` already decomposes the work into a staged sequence with
+# its own measurable sub-goals -- exactly the shape `plan_review.md`'s
+# peer-review checklist (item 8, below) asks a human-shaped peer to look
+# for when the peer gate is ON; this lint is what enforces the SAME rule
+# when that gate is OFF (`plan_review` never runs at all), and it is never
+# skipped either way -- ingestion's three steps run for every proposal
+# regardless of `peer_plan_review`.
+_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES = 3
+
+# A stage marker: "Stage 1", "Stage 2" -- deliberately only the digit form,
+# since that is what a worker/verifier can count mechanically without
+# guessing at spelled-out numbers.
+_STAGE_MARKER_RE = re.compile(r"\bstage\s+(\d+)\b", re.IGNORECASE)
+
+# A named module group: a backtick-quoted path ending `.py` (this module's
+# own convention for citing a test module elsewhere, e.g.
+# `tests/test_x.py`), or the bare word "module(s)" naming one.
+_MODULE_GROUP_TOKEN_RE = re.compile(
+    r"`[\w./-]+\.py`|\bmodules?\b", re.IGNORECASE,
+)
+
+# An intermediate numeric target: any bare integer -- deliberately loose
+# (this is a lint, not a proof), but scoped to ONE stage's own clause below,
+# never the whole criteria string, so a digit elsewhere in the criteria
+# (an unrelated sha fragment, a task id) never credits an unrelated stage.
+_NUMERIC_TARGET_TOKEN_RE = re.compile(r"\b\d+\b")
+
+
+def _staged_decomposition_gap(criteria: str) -> str | None:
+    """`None` if `criteria` decomposes its own work into at least two
+    `Stage N` markers, each of whose own clause (the text between that
+    marker and the next one, or the end of the string) names either an
+    intermediate numeric target or a named module group -- otherwise a
+    short, human-readable description of what is missing, for the caller
+    to fold into its own error message naming the task.
+
+    Deliberately scoped to ONE task's own criteria text, not to sibling
+    tasks elsewhere in the proposal: `dependsOn` already expresses genuine
+    cross-task ordering (module docstring, step 3), and inventing a SECOND,
+    unstated convention for "this task is a stage of that one" would be a
+    lint nothing else in this module, `planning.md`, or the PRD names.
+    Writing the staged sub-goals directly into the oversized task's own
+    `successCriteria` reuses the exact mechanism every other lint in this
+    module already reads (`_CLAUSE_SPLIT_RE`'s sibling checks, all scoped
+    to the same field) instead of adding a new cross-task shape to trust.
+    """
+    markers = list(_STAGE_MARKER_RE.finditer(criteria))
+    if len(markers) < 2:
+        return "fewer than two 'Stage N' markers"
+    for idx, marker in enumerate(markers):
+        start = marker.end()
+        end = markers[idx + 1].start() if idx + 1 < len(markers) else len(criteria)
+        clause = criteria[start:end]
+        if not (
+            _MODULE_GROUP_TOKEN_RE.search(clause)
+            or _NUMERIC_TARGET_TOKEN_RE.search(clause)
+        ):
+            return (
+                f"stage {marker.group(1)} names no intermediate numeric "
+                "target or named module group"
+            )
+    return None
+
+
 def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
@@ -1249,7 +1315,10 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
     EIGHTH (task 009, requirement A.5, #154): a command-form clause (the
     literal text of a shell command, a wrapper, a polling cadence, a
     "nothing else" clause) or a launch form paired with a demand for the
-    same process's captured status -- see the
+    same process's captured status -- and the NINTH (task 026, requirement
+    D.2, #157): a task whose `estimatedIterations` is past
+    `_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES` with no staged decomposition
+    in its own `successCriteria` -- see the
     block comments immediately above.
 
     `extra_known_ids` (task 017, PRD requirement B.2, #162): the ordinary
@@ -1404,6 +1473,27 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
                 "the captured result and let the worker choose the launch "
                 "form"
             )
+
+        estimated_iterations = t.get("estimatedIterations")
+        if (
+            isinstance(estimated_iterations, int)
+            and not isinstance(estimated_iterations, bool)
+            and estimated_iterations > _MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES
+        ):
+            gap = _staged_decomposition_gap(criteria)
+            if gap is not None:
+                errors.append(
+                    f"task {tid!r}: estimatedIterations is "
+                    f"{estimated_iterations}, past the "
+                    f"{_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES}-iteration "
+                    f"bound, and its successCriteria does not decompose "
+                    f"the work into a staged sequence ({gap}) -- either "
+                    f"lower the estimate to "
+                    f"{_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES} or fewer, "
+                    "or write the criteria as at least two 'Stage N: ...' "
+                    "clauses, each naming an intermediate numeric target "
+                    "or a named module group"
+                )
 
     known_ids = set(seen) | (extra_known_ids or set())
     for t in tasks:

@@ -75,6 +75,17 @@ unresolvable `dependsOn`. Size it honestly rather than guessing low to look
 efficient or high to buy slack — later stages of this same plan derive the
 task's own progress budget from it.
 
+**A task estimated above 3 iterations is refused at ingestion unless its own
+`successCriteria` already stages the descent** (PRD requirement D.2, #157):
+write the criteria as at least two `Stage N: ...` clauses (digits, not
+spelled-out numbers), each naming either an intermediate numeric target or a
+named module group (a backtick-quoted `some_module.py` path, or the word
+"module"/"modules"). A 4-plus estimate with no such staging is rejected at
+ingestion, naming the offending task; the same estimate WITH staging is
+accepted. Prefer sizing the task at 3 or fewer in the first place — staging
+is the escape hatch for genuinely large, sequential work, not a way to keep
+a monolithic task's high estimate.
+
 **Never make a task's `successCriteria` depend on this run's own terminal
 state** (e.g. "once this run has finished" or "after status.json leaves
 `state: running`") — no iteration executing *inside* this run can ever
@@ -88,6 +99,7 @@ offending task.
    the run state directory. The harness reads that file, validates its shape,
    lints it (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate
    `successCriteria`, a smuggled `status`, an invalid `estimatedIterations`,
+   an estimate past 3 iterations with no staged decomposition,
    a task gated on this run's own
    terminal state) and only then applies it as the plan — if it rejects your
    proposal, you will be re-prompted with the SPECIFIC error and asked to

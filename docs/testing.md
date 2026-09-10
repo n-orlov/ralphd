@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5490 tests across 336 modules** at task 025's own commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3925
+collects **5505 tests across 337 modules** at task 026's own commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3940
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -346,7 +346,18 @@ tiers` already uses for `tier`), the field surviving `ingest_proposal` as a
 passthrough field, the full `enforce_plan_ingestion` loop (default,
 refusal-and-reprompt, acceptance), and `planning.md`'s own documentation of
 the field outside its one pre-existing schema-example code fence -- all
-also `smoke`.
+also `smoke`, and 5505 (smoke 3940, modules 336->337) by task 026's new
+`tests/test_estimated_iterations_staging.py` (PRD requirement D.2, #157):
+15 new in-process nodes covering `_staged_decomposition_gap` (fewer than
+two `Stage N` markers, no markers at all, a stage naming neither a numeric
+target nor a module group, two stages each with a numeric target, two
+stages each with a module group, the full staged fixture, spelled-out
+stage numbers not counting as markers) and `lint_proposal`'s own
+refusal/acceptance behaviour (refusal at 4 with no staging, acceptance at
+3 regardless of staging, acceptance at 4-with-a-valid-staged-decomposition,
+refusal at 5, refusal at 4-with-only-one-stage-marker, a missing estimate
+never tripping this lint) through both the bare function and the full
+`enforce_plan_ingestion` loop -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
