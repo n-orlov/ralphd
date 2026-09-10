@@ -68,29 +68,22 @@ jobs:
           echo "cores: $(nproc)"
           python -m pytest --version
 
-      # THE ONE CARVE-OUT, and the reason this whole workflow exists.
+      # THE FORMER ONE CARVE-OUT IS GONE (task 053, #113 step 4).
       #
-      # `test_every_declared_sweep_sha_is_current_or_discharged` asserts that
-      # every `sweep-sha` declared in artifacts/reports/ is either literally
-      # HEAD or discharged to HEAD by a hand-maintained chain. That claim is
-      # HEAD-relative by construction, so it can only hold on the one commit a
-      # wave ends at: at 3bd7199 it already fails for 17 records, because three
-      # report-only commits (edce034, 9c3de22, 3bd7199) moved HEAD past the
-      # v0.19.1 sweep shas. On a pull request it can never hold -- a PR head is
-      # never the sha the records were swept at -- so leaving it in would make
-      # every gate red for a reason that has nothing to do with the change
-      # under review.
-      #
-      # It is deselected by exact node id, and nothing else in that module is:
-      # `test_every_sweep_record_declares_a_sha` and the other 24 tests still
-      # run. #174 is the guard's own bug (self-anchoring reopens on every
-      # report-only commit); #113 step 4 retires this machinery outright, and a
-      # GitHub-signed check run keyed to the sha is what replaces it. Until
-      # then, main itself is red on this node whenever a wave is mid-flight.
+      # `test_every_declared_sweep_sha_is_current_or_discharged` used to
+      # assert that every `sweep-sha` declared in artifacts/reports/ was
+      # either literally HEAD or discharged to HEAD by a hand-maintained
+      # chain -- a claim that is HEAD-relative by construction, so it could
+      # only ever hold on the one commit a wave ends at, and could never
+      # hold on a pull request head at all. That test, the currency check it
+      # exercised, the discharge chain and the self-anchoring acceptance walk
+      # (#174) are all deleted outright: a GitHub-signed check run keyed to
+      # the sha is the attestation review reads now, and `sha_missing_problems`
+      # (`test_every_sweep_record_declares_a_sha`) is the one lint that
+      # remains -- every record names *some* sha, full stop.
       - name: Records lint and sha guards
         run: |
-          python -m pytest -q tests/records/ tests/test_sweep_sha_guard.py \
-            --deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'
+          python -m pytest -q tests/records/ tests/test_sweep_sha_guard.py
 
       # `-n auto --dist loadfile`: loadfile keeps a module's tests on one
       # worker, which is what this suite's module-scoped fixtures assume
@@ -98,5 +91,4 @@ jobs:
       # hosted runner is not the 28-core box the budgets were measured on.
       - name: Fast tier
         run: |
-          python -m pytest -q -m fast -n auto --dist loadfile --durations=15 \
-            --deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'
+          python -m pytest -q -m fast -n auto --dist loadfile --durations=15

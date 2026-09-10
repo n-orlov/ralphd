@@ -81,37 +81,30 @@ secrets, and a compromised job has nothing to steal.
 - `nightly.yml` runs its six matrix cells at `max-parallel: 2` and `fail-fast:
   false` — two runner slots, and one red cell must not cancel another's claim.
 
-## The one carve-out
+## No carve-out any more (task 053, #113 step 4)
 
-Every lane deselects exactly one node id:
-
-    tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged
-
-That test asserts every `sweep-sha` declared under `artifacts/reports/` is
-literally `HEAD` or discharged to `HEAD` by a hand-maintained chain. The claim is
-HEAD-relative by construction, so it can hold on exactly one commit per wave —
-the sha the wave ends at. It already fails for 17 records at `3bd7199`, where
-three report-only commits moved `HEAD` past the v0.19.1 sweep shas, and it can
-never pass on a pull-request head. Leaving it in would paint every gate red for
-a reason unrelated to the change under review.
-
-Nothing else in that module is deselected: `test_every_sweep_record_declares_a_sha`
-and the other 24 tests still run, so a record that declares no sha at all is
-still caught.
-
-This is a symptom, not a policy. #174 is the guard's own defect
-(self-anchoring reopens its gap on every report-only commit); #113 step 4
-retires the discharge-chain machinery altogether once check runs are the
-attestation review reads.
+Every lane used to deselect one node id,
+`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`,
+because that test asserted every `sweep-sha` declared under
+`artifacts/reports/` was literally `HEAD` or discharged to `HEAD` by a
+hand-maintained chain -- a claim that is HEAD-relative by construction, so it
+could hold on exactly one commit per wave and could never pass on a
+pull-request head at all. Task 053 deleted that test, the currency check it
+exercised (`check_reports`), the discharge chain, and the self-anchoring
+acceptance walk that had grown up around the same unsatisfiable shape (#174)
+-- see `docs/sweep-records.md`. `tests/sweep_sha_guard.py` now runs exactly
+one lint, `sha_missing_problems`
+(`test_every_sweep_record_declares_a_sha`): every report that shows a
+pytest result line declares SOME 40-hex sha, in either the `sweep-sha` or
+`archived-sha` form. No lane deselects anything from that module any more:
+a recursive grep of `.github/workflows` and this file for the two-dash
+pytest deselect flag followed by that now-deleted node id finds nothing.
 
 ## Not done yet
 
 - **#113 step 3** — teach the review contract that "all lanes green at the
   shipped sha" is verified with `GET /repos/.../commits/{sha}/check-runs`, not by
   parsing a self-authored ledger.
-- **#113 step 4** — shrink `tests/sweep_sha_guard.py` to a thin "every report
-  names its sha" lint, and drop the discharge chains, the fixed-point ritual and
-  the `LAUNCH_SHA` constant.
 - **Branch protection and the run's token** — the intended shape is required
   status checks with no required reviews (a single owner cannot approve their own
   pull request), and a fine-grained token for the autonomous run carrying

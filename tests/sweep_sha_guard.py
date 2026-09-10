@@ -1,78 +1,52 @@
-"""Shared parsing/checking for sweep records' machine-readable sha claim.
+"""Shared parsing/checking for a sweep record's declared sha -- provenance
+only, never currency.
 
 Task 002 (#103, requirement A): a sweep record in `artifacts/reports/` used
 to state the sha it ran at only in prose, so nobody re-checked the sentence
 once the wave's own tail commits (roadmap block, PRD index row, closing
-report) moved `HEAD` past it -- the defect that cost the first approach of
-every wave since v0.11. `docs/sweep-records.md` documents the two fenced
-block forms this module reads (`sweep-sha`, `discharge-sha`) and the
-discharge rule; this module implements the parser and the two problem-list
-functions `tests/test_sweep_sha_guard.py` applies to every report the
-directory holds, the same way `tests/report_claims.py` shares its checks.
+report) moved `HEAD` past it. `docs/sweep-records.md` documents the fenced
+block form this module reads (`sweep-sha`, or `archived-sha` for a
+pre-existing record); this module implements the parser and the two
+problem-list functions `tests/test_sweep_sha_guard.py` applies to every
+report the directory holds, the same way `tests/report_claims.py` shares its
+checks.
 
-Task 005 (v0.14.1): the terminating fixed point for the final-sha rule.
-Every sweep record names its *parent* sha (a commit cannot truthfully name
-its own resulting sha -- see the `sweep-sha` docs below), so the commit that
-ADDS a record always leaves that record's own declared sha exactly one
-commit behind `HEAD` the instant it lands, with no possible `discharge-sha`
-entry any commit could add yet, because the sha the discharge would need to
-name (its own resulting HEAD) does not exist until after it is computed.
-Demanding an explicit discharge for that gap would make the guard subset
-permanently red the moment any record's own commit landed, for every record,
-forever -- not a corner case, the *typical* case.
+Task 053 (v0.20, #113 step 4) retires everything this module used to do
+*beyond* that: a HEAD-relative currency check (`check_reports`), a
+hand-maintained discharge chain (`discharge_entries` and friends), the
+self-anchoring/fixed-point acceptance walk
+(`_self_anchoring_reaches_head`/`_is_self_anchoring_add_commit`) and the
+per-run `LAUNCH_SHA` constant it and `archived-sha` both leaned on. None of
+that machinery can outlive the defect it was built to chase: a GitHub check
+run is bound to its own commit sha by GitHub itself and cannot go stale as
+`HEAD` moves, so `GET /repos/.../commits/<sha>/check-runs` is now the
+attestation review reads, and re-deriving "was this record's sha still good
+as of the wave's own last commit" in this repo's own test suite is exactly
+the self-authored ledger #113 exists to stop trusting. Every test node that
+existed only to exercise that retired machinery is deleted in the same
+commit (`tests/test_sweep_sha_guard.py`), and every historical report that
+cited one of the now-gone functions or tests by node id is updated in the
+same commit to mark that citation `!retired` (`tests/report_claims.py`'s
+strong direction for a citation that must no longer resolve) -- the sha each
+of those records names is untouched; only the drift-chasing citation is
+retired.
 
-The mechanism originally chosen to close that gap (task 005) was narrow by
-construction: `HEAD` had to be *exactly* the commit that ADDED the
-declaring record (git status `A`, not `M`), that commit's diff had to touch
-the record's own path and nothing else, and the declared sha had to be
-precisely that commit's single parent. It was checked once, against
-literal `HEAD`, never walked -- so it was refused the instant a second
-report/docs commit landed on top, even though that second commit changed
-nothing the guard subset would re-check.
-
-Task 008 (v0.20, #174) generalizes this into **the self-anchoring
-acceptance walk**: a declared sha is accepted with no `discharge-sha` block
-at all when it is a genuine git ancestor of `HEAD` (`git merge-base
---is-ancestor`, the same plumbing call `archived-sha` ancestry already
-uses) and every commit in `declared..HEAD` touches only
-`artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`
-(`_self_anchoring_reaches_head`, used from `check_reports` alongside the
-discharge chain). One `git log --name-only` call over the whole range
-gathers every changed path in a single invocation, rather than walking
-commit-by-commit with a subprocess per hop. Unlike the original mechanism,
-this is no longer refused by a second report-only commit stacked on top --
-the record's own add-commit is just the first hop of a range that can now
-carry any number of further report/roadmap/index-only commits, which is
-exactly the shape a wave's tail (roadmap block, PRD index row, closing
-report) actually produces. It is still refused outright the moment any
-commit in the range touches a path outside that allow-list -- `src/`,
-`tests/`, or any other doc.
-
-`_is_self_anchoring_add_commit` (the original, narrower check) is kept as a
-real function, unused by `check_reports`, purely because several pre-v0.20
-reports under `artifacts/reports/` cite it by node id
-(`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`) and
-`tests/report_claims.py::node_problems` requires that exact `def` to still
-exist for those citations to keep resolving -- the same reason
-`is_wave_sweep_record` survives below.
-
-**The invariant this preserves:** the guard subset
-(`scripts/final_sha_guards.sh`) ran green over every line of content that
-ships, and a chain of commits that touches nothing but
-`artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md` can never
-change what that subset would report if run again right now. Accepting
-such a chain's declaration without a discharge block does not widen what
-counts as "the suite was green at the sha the wave shipped"
-(`docs/sweep-records.md`'s own framing): none of those commits contribute a
-`src/`/`tests/`/behaviour-affecting change, so the guard subset's own
-verdict is unchanged by their landing, and the record's claim about its
-declared sha remains exactly as true after the whole walk as before it.
+What survives is the one lint that still earns its keep: **every report
+under `artifacts/reports/` that shows a genuine pytest result line names the
+sha it was taken at**, via a `sweep-sha` or `archived-sha` fenced block
+(`sha_missing_problems`, and `wave_sha_missing_problems` as an established
+alias -- see below). Neither block is checked against `HEAD`, a discharge
+chain or `LAUNCH_SHA` any more; declaring *some* 40-hex sha is the whole
+requirement. The two tag names are kept distinct only because hundreds of
+existing records already use one or the other and their fenced blocks are
+provenance, never rewritten (see docs/sweep-records.md) -- not because the
+guard treats them differently; `sweep_shas()` and `archived_shas()` are
+equally sufficient to satisfy the missing-declaration check.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -86,197 +60,15 @@ REPORTS_DIR = REPO_ROOT / "artifacts" / "reports"
 # survives only as a label some historical records/messages still refer to.
 WAVE_PREFIX = "v0.14-"
 
-# This run's launch sha -- the sha `docs/prds/README.md` records this run
-# shipped from. The `archived-sha` form (below) is accepted for a record
-# only when its declared sha is an ANCESTOR of this one: that is what makes
-# "archived" mean something older than the current run, rather than a second
-# unchecked way for a current-wave record to dodge the sweep-sha/
-# discharge-sha chain.
-#
-# Task 003 (v0.14.1, #105/#106 backfill): this constant was still v0.14's
-# OWN launch sha (`8fc9ee33d...`) after v0.14.1 had already launched from a
-# later one -- a stale value inherited across the run boundary, not a fresh
-# choice. It is updated here to v0.14.1's real launch sha
-# (`7c962c6ea64933f664ab71b8eddcab18ae236cd1`, one commit past `f73e94f`,
-# the tree `docs/prds/README.md`'s own v0.14.1 row and `notes.md` both name
-# as this run's launch). The old value (`8fc9ee33d...`) is a genuine
-# ancestor of the new one -- v0.14.1 shipped strictly after v0.14 -- so this
-# widens which pre-launch shas the ancestor check accepts; it never narrows
-# it, and no record that passed the check before stops passing now. This is
-# the fix `v0.14-a2-closing-report.md` (a v0.14 record whose real sha is
-# newer than v0.14's own LAUNCH_SHA but older than v0.14.1's) needed to take
-# `archived-sha` at all without relaxing the ancestor check itself.
-#
-# Task 001 (v0.14.2): same shape of staleness, one run later. This constant
-# still held v0.14.1's own launch sha after v0.14.2 had already launched
-# from a later one (`b91840433786fd932117852e421b128c344dc469`, one commit
-# past `8adf2bc`, the sha `docs/prds/README.md`'s v0.14.2 row and
-# `/run/ralphd/notes.md` both name as this run's launch). Updated here to
-# that real launch sha. The old value (`7c962c6ea64933f...`) is a genuine
-# ancestor of the new one -- v0.14.2 shipped strictly after v0.14.1 -- so
-# this only widens which pre-launch shas the ancestor check accepts; no
-# record that passed before stops passing now. Sixteen v0.14/v0.14.1
-# records (all now-terminal, pre-v0.14.2 sweeps) took `archived-sha` in the
-# same commit as this constant update, for the identical reason
-# `v0.14-a2-closing-report.md` needed it at the v0.14->v0.14.1 boundary: a
-# `sweep-sha` declaration whose discharge chain to current `HEAD` no longer
-# holds once a later wave's own tail commits (here, `docs/prds/README.md`'s
-# v0.14.2 index-row edit and the new PRD file, neither under
-# `artifacts/reports/`) break the report-only-tail bridge -- not because
-# the sweep itself stopped being true, but because it now predates the run
-# that is checking it.
-#
-# Task 018 (v0.15-impossible-is-an-answer): same shape of staleness, one run
-# later, and this time nobody's task had done the update by the time this
-# guard was checked -- the constant still held v0.14.2's own launch sha
-# after v0.15 had already launched from a later one
-# (`db523208a9db0bf0a2166cc063d260b028fcb2c9`, the commit "docs: add the
-# v0.15 PRD and its placeholder index row", the sha `docs/prds/README.md`'s
-# v0.15 row and `/run/ralphd/notes.md` both name as this run's launch).
-# Updated here to that real launch sha. The old value
-# (`b91840433786fd932117852e421b128c344dc469`) is a genuine ancestor of the
-# new one -- v0.15 shipped strictly after v0.14.2 -- so this only widens
-# which pre-launch shas the ancestor check accepts; no record that passed
-# before stops passing now. Twelve v0.14.2 records (all now-terminal,
-# pre-v0.15 sweeps, across `v0.14.2-a2-browser-evidence.md`,
-# `v0.14.2-a2-fast-tier-sweep.md`, `v0.14.2-a2-final-guard-subset.md`,
-# `v0.14.2-a3-fast-tier-sweep.md`, `v0.14.2-a3-final-guard-subset.md`,
-# `v0.14.2-browser-hub-evidence.md` (four declarations),
-# `v0.14.2-fast-tier-sweep.md`, `v0.14.2-final-guard-subset.md` and
-# `v0.14.2-guard-subset-interim.md`) took `archived-sha` in the same commit
-# as this constant update, for the identical reason the v0.14->v0.14.1 and
-# v0.14.1->v0.14.2 boundaries needed it: each one's `sweep-sha` declaration
-# had a discharge chain to current `HEAD` that no longer held once this
-# wave's own 40+ tail commits (`src/`, `tests/`, `docs/` -- not just
-# `artifacts/reports/`) broke the report-only-tail bridge -- not because
-# any of those sweeps stopped being true, but because they now predate the
-# run that is checking them.
-#
-# Task 002 (v0.16, #103, requirement A): same shape of staleness, one run
-# later. The constant still held v0.15's own launch sha
-# (`db523208a9db0bf0a2166cc063d260b028fcb2c9`) after v0.16 had already
-# launched from a later one (`28f3a766d26dac798d012cde125c23821733a528`,
-# the commit "docs: add the v0.16 PRD and its index row", the sha
-# `docs/prds/README.md`'s v0.16 row and `/run/ralphd/notes.md` both name as
-# this run's launch). Updated here to that real launch sha. The old value
-# (`db523208a9db0bf0a2166cc063d260b028fcb2c9`) is a genuine ancestor of the
-# new one (`git merge-base --is-ancestor db523208a9db0bf0a2166cc063d260b028fcb2c9
-# 28f3a766d26dac798d012cde125c23821733a528` exits 0) -- v0.16 shipped
-# strictly after v0.15 -- so this only widens which pre-launch shas the
-# ancestor check accepts; no record that passed before stops passing now.
-#
-# Unlike the two prior boundaries above, this one is NOT bridged with
-# `archived-sha`: the 19 stale (record, sha) declarations this bump exposed
-# (all v0.15's own, none rewritten or deleted) are retired with an explicit
-# `discharge-sha` record instead --
-# `artifacts/reports/v0.16-sweep-sha-discharge.md`, added in the commit
-# immediately after this one so its own diff stays report-only and the
-# report-only-tail rule can bridge the gap this LAUNCH_SHA-bump commit
-# itself opens (this commit touches `tests/sweep_sha_guard.py`, so it is
-# not report-only on its own).
-#
-# Task 038 (v0.17-a-slip-is-not-a-verdict, requirement H): same shape of
-# staleness, one run later. The constant still held v0.16's own launch sha
-# (`28f3a766d26dac798d012cde125c23821733a528`) after v0.17 had already
-# launched from a later one (`39a46852f371b9c4fa680c87888c902d3dea108d`,
-# the commit "docs: commit the v0.17 PRD (a slip is not a verdict) ahead
-# of its launch, with its not-started index row", the sha
-# `docs/prds/README.md`'s v0.17 row and `/run/ralphd/notes.md` both name as
-# this run's launch). Updated here to that real launch sha. The old value
-# (`28f3a766d26dac798d012cde125c23821733a528`) is a genuine ancestor of the
-# new one -- confirmed with `git merge-base --is-ancestor
-# 28f3a766d26dac798d012cde125c23821733a528
-# 39a46852f371b9c4fa680c87888c902d3dea108d`, which exits 0 -- v0.17 shipped
-# strictly after v0.16, so this only widens which pre-launch shas the
-# ancestor check accepts; no record that passed before stops passing now.
-#
-# Task 001 (v0.18-the-run-can-finish, #103, requirement G): same shape of
-# staleness, one run later. The constant still held v0.17's own launch sha
-# (`39a46852f371b9c4fa680c87888c902d3dea108d`) after v0.18 had already
-# launched from a later one (`1c61b32c854aa6ab7f46f9ff820695126a38ee27`,
-# the commit "docs: commit the v0.18 PRD (the run can finish) ahead of its
-# launch, with its not-started index row", the sha `docs/prds/README.md`'s
-# v0.18 row and `/run/ralphd/notes.md` both name as this run's launch).
-# Updated here to that real launch sha. The old value
-# (`39a46852f371b9c4fa680c87888c902d3dea108d`) is a genuine ancestor of the
-# new one -- confirmed with `git merge-base --is-ancestor
-# 39a46852f371b9c4fa680c87888c902d3dea108d
-# 1c61b32c854aa6ab7f46f9ff820695126a38ee27`, which exits 0 -- v0.18 shipped
-# strictly after v0.17, so this only widens which pre-launch shas the
-# ancestor check accepts; no record that passed before stops passing now.
-# Every v0.15/v0.16/v0.17 record whose `sweep-sha` declaration's discharge
-# chain to `HEAD` no longer held once this wave's own tail commits
-# (`docs/`, not just `artifacts/reports/`) broke the report-only-tail
-# bridge took `archived-sha` in the same commit as this constant update,
-# for the identical reason every prior wave boundary above needed it -- not
-# because any of those sweeps stopped being true, but because they now
-# predate the run that is checking them.
-#
-# Task 001 (v0.19-a-note-is-not-a-rejection): same shape of staleness, one
-# run later. The constant still held v0.18's own launch sha
-# (`1c61b32c854aa6ab7f46f9ff820695126a38ee27`) after v0.19 had already
-# launched from a later one (`4c003a5191950ef1c02d136abd933dfa43564586`,
-# the commit "docs: commit the v0.19 PRD (a note is not a rejection) ahead
-# of its launch, with its not-started index row, the test-suite audit
-# baseline and an empty v0.19 petitions file", the sha
-# `docs/prds/README.md`'s v0.19 row and `/run/ralphd/notes.md` both name as
-# this run's launch). Updated here to that real launch sha. The old value
-# (`1c61b32c854aa6ab7f46f9ff820695126a38ee27`) is a genuine ancestor of the
-# new one -- confirmed with `git merge-base --is-ancestor
-# 1c61b32c854aa6ab7f46f9ff820695126a38ee27
-# 4c003a5191950ef1c02d136abd933dfa43564586`, which exits 0 -- v0.19 shipped
-# strictly after v0.18, so this only widens which pre-launch shas the
-# ancestor check accepts; no record that passed before stops passing now.
-# Thirteen v0.18 records whose `sweep-sha` declaration's discharge chain to
-# `HEAD` no longer held once this wave's own tail commits (`docs/`, not
-# just `artifacts/reports/`) broke the report-only-tail bridge took
-# `archived-sha` in the same commit as this constant update, for the
-# identical reason every prior wave boundary above needed it -- not because
-# any of those sweeps stopped being true, but because they now predate the
-# run that is checking them:
-# `v0.18-a2-browser-lane.md`, `v0.18-a2-dev-layout-exported.md`,
-# `v0.18-a2-dev-layout-unset.md`, `v0.18-a2-docker-tier.md`,
-# `v0.18-a2-fast-tier.md`, `v0.18-a2-final-guard-subset.md`,
-# `v0.18-browser-lane.md`, `v0.18-browser-tier.md`,
-# `v0.18-dev-layout-exported.md`, `v0.18-dev-layout-unset.md`,
-# `v0.18-docker-tier.md`, `v0.18-fast-tier.md` and
-# `v0.18-final-guard-subset.md`.
-#
-# Task 001 (v0.19.1-a-gate-is-not-a-wall): same shape of staleness, one run
-# later. The constant still held v0.19's own launch sha
-# (`4c003a5191950ef1c02d136abd933dfa43564586`) after v0.19.1 had already
-# launched from a later one (`1a3b9bb89ab352c54d3f479f7224af40787e6cf2`,
-# the commit "docs: commit the v0.19.1 PRD (a gate is not a wall) ahead of
-# its launch, with its not-started index row and an empty v0.19.1
-# petitions file", the sha `docs/prds/README.md`'s v0.19.1 row and
-# `/run/ralphd/notes.md` both name as this run's launch). Updated here to
-# that real launch sha. The old value
-# (`4c003a5191950ef1c02d136abd933dfa43564586`) is a genuine ancestor of the
-# new one -- confirmed with `git merge-base --is-ancestor
-# 4c003a5191950ef1c02d136abd933dfa43564586
-# 1a3b9bb89ab352c54d3f479f7224af40787e6cf2`, which exits 0 -- v0.19.1
-# shipped strictly after v0.19, so this only widens which pre-launch shas
-# the ancestor check accepts; no record that passed before stops passing
-# now. All seven v0.19 lane records whose `sweep-sha` declaration's
-# discharge chain to `HEAD` no longer held once this wave's own tail
-# commits (the v0.19.1 PRD and index row, not under `artifacts/reports/`)
-# broke the report-only-tail bridge took `archived-sha` in the same commit
-# as this constant update, for the identical reason every prior wave
-# boundary above needed it -- not because any of those sweeps stopped
-# being true, but because they now predate the run that is checking them:
-# `v0.19-smoke.md`, `v0.19-fast.md`, `v0.19-docker.md`, `v0.19-browser.md`,
-# `v0.19-guard-subset.md`, `v0.19-dev-layout-unset.md` and
-# `v0.19-dev-layout-exported.md`. See
-# `artifacts/reports/v0.19.1-launch-sha-bump.md` for the tracked record of
-# this bump.
-LAUNCH_SHA = "1a3b9bb89ab352c54d3f479f7224af40787e6cf2"
-
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
-# A fenced block tagged `sweep-sha`, `discharge-sha` or `archived-sha`, whose
-# body is exactly one (sweep-sha/archived-sha) or two (discharge-sha)
-# 40-hex-char shas per line (leading/trailing blank lines tolerated).
-_FENCE_RE = re.compile(r"```(sweep-sha|discharge-sha|archived-sha)\s*\n(.*?)```", re.S)
+# A fenced block tagged `sweep-sha` or `archived-sha`, whose body is exactly
+# one 40-hex-char sha per line (leading/trailing blank lines tolerated).
+# `discharge-sha` blocks are no longer read at all (task 053, #113 step 4):
+# the discharge chain they fed is retired outright, and existing records'
+# `discharge-sha` blocks stand as untouched historical provenance rather
+# than input to any check.
+_FENCE_RE = re.compile(r"```(sweep-sha|archived-sha)\s*\n(.*?)```", re.S)
 
 # A genuine pytest result summary line: a line whose WHOLE content is one or
 # more comma-separated "N <outcome>" clauses followed by pytest's own
@@ -372,63 +164,12 @@ def sweep_shas(text: str) -> list[str]:
 
 def archived_shas(text: str) -> list[str]:
     """Every sha this record declares via the `archived-sha` form -- the
-    documented alternative to `sweep-sha`/`discharge-sha` for a record whose
-    declared sha predates this run's launch sha (`LAUNCH_SHA`) and therefore
-    has no chain to walk to current `HEAD` at all. See `check_reports` for
-    the ancestor check that makes this form refuse a current-wave record.
+    documented alternative to `sweep-sha` for a record produced before this
+    guard existed or before the sha-declaration requirement reached it.
+    Provenance only: neither form is checked against `HEAD`, a discharge
+    chain, or a run's own launch sha any more (task 053, #113 step 4).
     """
     return _fenced_shas(text, "archived-sha")
-
-
-def discharge_entries(text: str) -> list[tuple[str, str]]:
-    """Every well-formed discharge this record states.
-
-    A `discharge-sha` block's every line is a PAIR of 40-hex shas: the stale
-    sha being retired, then the sha the discharge check was actually run at
-    (`git rev-parse HEAD` at the moment of examination). The pair is what
-    makes the documented chain checkable -- see `check_reports`.
-    """
-    entries: list[tuple[str, str]] = []
-    for retired, verified_at in _discharge_lines(text):
-        entries.append((retired, verified_at))
-    return entries
-
-
-def _discharge_lines(text: str) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    for line in _raw_discharge_lines(text):
-        fields = line.split()
-        if len(fields) == 2 and all(SHA40_RE.match(f) for f in fields):
-            pairs.append((fields[0], fields[1]))
-    return pairs
-
-
-def _raw_discharge_lines(text: str) -> list[str]:
-    lines: list[str] = []
-    for match in _FENCE_RE.finditer(text):
-        if match.group(1) != "discharge-sha":
-            continue
-        for line in match.group(2).splitlines():
-            line = line.strip()
-            if line:
-                lines.append(line)
-    return lines
-
-
-def malformed_discharge_lines(text: str) -> list[str]:
-    """Discharge lines that are NOT a `<retired-sha> <verified-at-sha>` pair.
-
-    A one-sha line -- the form a reader might guess -- is rejected rather than
-    honoured: without the sha the discharge was verified at there is nothing
-    to anchor the documented chain to `HEAD`, so accepting it would be a
-    silent bypass of the whole rule.
-    """
-    well_formed = {" ".join(pair) for pair in _discharge_lines(text)}
-    return [
-        line
-        for line in _raw_discharge_lines(text)
-        if " ".join(line.split()) not in well_formed
-    ]
 
 
 def is_sweep_record(path: Path, text: str | None = None) -> bool:
@@ -457,330 +198,16 @@ def is_wave_sweep_record(path: Path, text: str | None = None) -> bool:
     return is_sweep_record(path, text)
 
 
-def current_head(cwd: Path = REPO_ROOT) -> str:
-    out = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
-
-
-def _rel(path: Path) -> Path:
-    try:
-        return path.relative_to(REPO_ROOT)
-    except ValueError:
-        return path
-
-
-def _malformed_message(path: Path, line: str) -> str:
-    return (
-        f"{_rel(path)} has a malformed discharge-sha line {line!r}: every "
-        f"line in a `discharge-sha` block must be exactly two 40-hex shas -- "
-        f"the stale sha being retired, then the sha the discharge check was "
-        f"run at (see docs/sweep-records.md). A one-sha line is rejected: "
-        f"with no verified-at sha the discharge chain cannot be shown to "
-        f"reach HEAD, which is the only thing that makes a discharge more "
-        f"than an assertion."
-    )
-
-
-def _discharge_message(path: Path, sha: str, head: str) -> str:
-    rel = _rel(path)
-    return (
-        f"{rel} declares sweep-sha {sha}, but HEAD is {head} and {sha} is "
-        f"neither HEAD nor discharged -- re-take this sweep at {head} and "
-        f"update the record, or, if the commits since {sha} are the "
-        f"report/roadmap/index-only tail requirement B exists for, run "
-        f"that subset (scripts/final_sha_guards.sh, which discovers its own "
-        f"modules by grepping tests/) at "
-        f"{head} and add a `discharge-sha` block whose line is `{sha} "
-        f"{head}` (the stale sha, then the sha you verified at). A discharge "
-        f"chain that never reaches HEAD does not clear this."
-    )
-
-
-def _report_only_tail(sha: str, head: str, repo_root: Path) -> bool:
-    """True when every path `git diff --name-only sha..head` names lives
-    under `artifacts/reports/` -- the report/roadmap/index-only tail
-    requirement B's discovered guard subset exists for. A commit that adds
-    a `discharge-sha` block is itself exactly this shape: it can only name
-    shas that already exist, so it always leaves HEAD one commit past the
-    chain's own end, and a rule that demanded literal equality with HEAD
-    could never be satisfied by any reachable repository state. False on
-    any git failure (unknown/invalid sha, not a git repo, etc.) -- this
-    allowance never masks a real problem, it only bridges a gap already
-    known to be report-only.
-    """
-    if sha == head:
-        return True
-    try:
-        out = subprocess.run(
-            ["git", "diff", "--name-only", f"{sha}..{head}"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except OSError:
-        return False
-    if out.returncode != 0:
-        return False
-    changed = [p for p in out.stdout.splitlines() if p.strip()]
-    if not changed:
-        return True
-    return all(p.startswith("artifacts/reports/") for p in changed)
-
-
-def _reaches_head(
-    sha: str,
-    head: str,
-    chain: dict[str, set[str]],
-    repo_root: Path | None = None,
-) -> bool:
-    """Walk the discharge chain from `sha`, accepting when it ends at HEAD
-    -- OR, for any sha reached by actually following at least one
-    `discharge-sha` hop, when the remaining gap to HEAD is report-only.
-
-    The bare declared `sha` never gets the report-only allowance on its own
-    (that would let an undischarged stale sha pass just because nothing but
-    reports happened to change since -- still a hard failure, per
-    docs/sweep-records.md): the allowance only bridges the LAST leg of a
-    chain that a real `discharge-sha` entry actually walked to. Cycles
-    terminate as rejection, not recursion.
-    """
-    seen: set[str] = set()
-    frontier: list[tuple[str, bool]] = [(sha, False)]
-    while frontier:
-        node, discharged = frontier.pop()
-        if node == head:
-            return True
-        if discharged and repo_root is not None and _report_only_tail(node, head, repo_root):
-            return True
-        if node in seen:
-            continue
-        seen.add(node)
-        frontier.extend((nxt, True) for nxt in chain.get(node, ()))
-    return False
-
-
-def _rel_to(path: Path, root: Path) -> str:
-    try:
-        return str(path.relative_to(root))
-    except ValueError:
-        return str(path)
-
-
-# Historical alias, kept for the same reason as `is_wave_sweep_record`
-# above: task 008 (#174) replaced this narrow, single-hop check with the
-# self-anchoring acceptance WALK (`_self_anchoring_reaches_head`, below
-# `_is_ancestor`) -- but several pre-v0.20 reports under
-# `artifacts/reports/` still cite this exact node id
-# (`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`), and
-# `tests/report_claims.py::node_problems` requires the `def` to keep
-# existing for those citations to keep resolving. `check_reports` no
-# longer calls this function; it is dead code retained only so those
-# citations are never a stale one.
-def _is_self_anchoring_add_commit(
-    path: Path, sha: str, head: str, repo_root: Path
-) -> bool:
-    """True when `head` is the git commit that ADDED `path` to the repo,
-    `sha` is exactly that commit's single parent, and the commit's diff
-    touches `path` and nothing else -- the terminating fixed point for a
-    record's own sweep-sha (see the module docstring: "parent-of-HEAD
-    acceptance"). Narrow by construction:
-
-    * it names `path` itself and only `path` -- a diff that touches any
-      other file (another record, a roadmap block, anything) is refused;
-    * it fires only for the commit that ADDS the file (git diff status
-      `A`), never one that edits an already-existing record -- a second
-      record-only commit stacked on top of the first is an *edit*, so it
-      shows status `M` and this refuses it; the ordinary discharge-sha
-      chain is required for that case, exactly as for any other commit
-      shape.
-
-    False (never an exemption) on any git failure -- no parent (a root
-    commit), more than one parent (a merge commit), or any other git error.
-    """
-    rel = _rel_to(path, repo_root)
-    try:
-        parents = subprocess.run(
-            ["git", "rev-list", "--parents", "-n", "1", head],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except OSError:
-        return False
-    if parents.returncode != 0:
-        return False
-    fields = parents.stdout.split()
-    if len(fields) != 2:
-        # fields[0] is `head` itself; anything but exactly one parent (a
-        # root commit with zero, or a merge commit with two or more) is not
-        # the single-parent shape this mechanism is anchored to.
-        return False
-    parent_sha = fields[1]
-    if parent_sha != sha:
-        return False
-    try:
-        diff = subprocess.run(
-            ["git", "diff", "--name-status", parent_sha, head],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except OSError:
-        return False
-    if diff.returncode != 0:
-        return False
-    changes = [line for line in diff.stdout.splitlines() if line.strip()]
-    if len(changes) != 1:
-        return False
-    status, _, changed_path = changes[0].partition("\t")
-    return status == "A" and changed_path == rel
-
-
-def _is_ancestor(sha: str, descendant: str, repo_root: Path) -> bool:
-    """True when `sha` is `descendant` itself or a genuine git ancestor of
-    it (`git merge-base --is-ancestor`). False on any git failure (unknown
-    sha, not a git repo, etc.) -- an archived-sha declaration this cannot
-    positively confirm is treated as unproven, never as accepted by default.
-    """
-    if sha == descendant:
-        return True
-    try:
-        out = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", sha, descendant],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except OSError:
-        return False
-    return out.returncode == 0
-
-
-def _self_anchoring_reaches_head(sha: str, head: str, repo_root: Path) -> bool:
-    """The self-anchoring acceptance walk (task 008, #174): True when `sha`
-    is `head` itself or a genuine git ancestor of it, AND every commit in
-    `sha..head` touches only `artifacts/reports/**`, `docs/roadmap.md` or
-    `docs/prds/README.md` -- the terminating fixed point for a record's own
-    sweep-sha (see the module docstring and
-    docs/sweep-records.md's "Parent-of-HEAD acceptance").
-
-    Ancestry is confirmed by the same `git merge-base --is-ancestor`
-    plumbing call `_is_ancestor` already makes for `archived-sha`. The
-    changed-path check is ONE `git log --name-only` call over the whole
-    range -- it gathers every path touched by every commit in the range in
-    a single invocation rather than walking commit-by-commit with a
-    subprocess per hop, and a declared sha with an empty range (equal to
-    `head`) trivially passes with no git-log call needed at all.
-
-    False (never an exemption) on any git failure, and False whenever `sha`
-    is not actually an ancestor of `head` -- a declared sha on a divergent
-    history is refused even if the paths it would otherwise touch look
-    report-only, because ancestry, not a coincidental diff, is what the
-    rule requires.
-    """
-    if sha == head:
-        return True
-    if not _is_ancestor(sha, head, repo_root):
-        return False
-    try:
-        out = subprocess.run(
-            ["git", "log", "--name-only", "--pretty=format:", f"{sha}..{head}"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except OSError:
-        return False
-    if out.returncode != 0:
-        return False
-    changed = {line.strip() for line in out.stdout.splitlines() if line.strip()}
-    return all(
-        path.startswith("artifacts/reports/")
-        or path in ("docs/roadmap.md", "docs/prds/README.md")
-        for path in changed
-    )
-
-
-def _archived_message(path: Path, sha: str) -> str:
-    rel = _rel(path)
-    return (
-        f"{rel} declares archived-sha {sha}, but {sha} is not an ancestor "
-        f"of this run's launch sha {LAUNCH_SHA} -- the archived-sha form is "
-        f"reserved for a sha that predates this run entirely (see "
-        f"docs/sweep-records.md). A record produced during this run cannot "
-        f"label itself archived to dodge the sweep-sha/discharge-sha chain: "
-        f"declare it as sweep-sha instead and either match HEAD or carry a "
-        f"discharge chain that reaches it."
-    )
-
-
-def check_reports(
-    paths: list[Path], head: str, repo_root: Path = REPO_ROOT
-) -> list[str]:
-    """Every declared sweep-sha must be current HEAD, discharged AT HEAD, or
-    discharged at a sha whose remaining gap to HEAD is report-only. Every
-    declared archived-sha must be an ancestor of `LAUNCH_SHA` (this run's
-    own launch sha) -- the archived form's whole point is that it names a
-    sha that predates the run, so it never needs a chain to HEAD at all;
-    a sha that is NOT such an ancestor is refused outright, because that is
-    precisely a current-wave record trying to label itself archived instead
-    of carrying a real sweep-sha/discharge-sha chain.
-
-    Discharge (for sweep-sha) is resolved transitively and is *anchored*:
-    each `discharge-sha` line names both the stale sha it retires and the
-    sha the discharge check was run at. That chain has to terminate at
-    current `HEAD` -- OR at a sha for which `git diff --name-only sha..HEAD`
-    (run in `repo_root`) touches only `artifacts/reports/**` -- to be
-    accepted; a chain that reaches neither (and a discharge block that names
-    no verified-at sha at all) leaves the stale declaration flagged. The
-    report-only allowance is why this is satisfiable at all: the commit
-    that ADDS a `discharge-sha` block can only name shas that already
-    exist, so it always leaves `HEAD` one commit past the chain's own end,
-    and that one commit is itself report-only.
-    """
-    texts = {p: p.read_text() for p in paths}
-    chain: dict[str, set[str]] = {}
-    problems: list[str] = []
-    for path, text in texts.items():
-        for line in malformed_discharge_lines(text):
-            problems.append(_malformed_message(path, line))
-        for retired, verified_at in discharge_entries(text):
-            chain.setdefault(retired, set()).add(verified_at)
-
-    for path, text in texts.items():
-        for sha in sweep_shas(text):
-            if _reaches_head(sha, head, chain, repo_root=repo_root):
-                continue
-            if _self_anchoring_reaches_head(sha, head, repo_root):
-                continue
-            problems.append(_discharge_message(path, sha, head))
-        for sha in archived_shas(text):
-            if _is_ancestor(sha, LAUNCH_SHA, repo_root):
-                continue
-            problems.append(_archived_message(path, sha))
-    return problems
-
-
 def sha_missing_problems(paths: list[Path]) -> list[str]:
     """Every report that names a pytest result line owes a sha declaration
-    -- `sweep-sha` (checked against HEAD/discharge by `check_reports`) or
-    `archived-sha` (checked against `LAUNCH_SHA` ancestry, same place).
-    Task 008 (#103, requirement A) removed the earlier `WAVE_PREFIX`
-    filename gate that used to exempt every report not named `v0.14-*`; a
-    record with a pytest result line and no declaration at all is now a
-    hard failure regardless of its filename.
+    -- `sweep-sha` or `archived-sha`, either one, with no further check of
+    what it names. Task 008 (#103, requirement A) removed the earlier
+    `WAVE_PREFIX` filename gate that used to exempt every report not named
+    `v0.14-*`; a record with a pytest result line and no declaration at all
+    is a hard failure regardless of its filename. Task 053 (#113 step 4)
+    removed the currency/discharge/self-anchoring machinery that used to
+    check what a declared sha is worth once it exists -- this is now the
+    ONLY check this module makes.
     """
     problems: list[str] = []
     for path in paths:
@@ -793,9 +220,8 @@ def sha_missing_problems(paths: list[Path]) -> list[str]:
         problems.append(
             f"{rel} names a pytest result line but declares no sweep-sha "
             f"or archived-sha block -- add a `sweep-sha` block naming the "
-            f"sha the sweep ran at, or, if that sha predates this run's "
-            f"launch sha {LAUNCH_SHA}, an `archived-sha` block naming it "
-            f"(see docs/sweep-records.md)."
+            f"sha the sweep ran at, or an `archived-sha` block if this "
+            f"record predates the guard (see docs/sweep-records.md)."
         )
     return problems
 

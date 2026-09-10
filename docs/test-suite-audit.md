@@ -1387,17 +1387,25 @@ its own row below, none merged, none dropped.
 | `tests/test_cli_logs_rendered_tail.py::test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming` | `tests/test_cli_logs_follow_liveness.py::test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming` (moved verbatim -- same body, docstring and assertions, only the module changed: it is the sole node of the rendered-tail family that spawns a real `ralphctl` subprocess of its own, and requirement F confines the CLI process boundary to the modules named in the CLI line of § "(a)" above, of which the follow-liveness module is one; the move takes `tests/test_cli_logs_rendered_tail.py` off the `RALPHCTL`-naming list entirely, 7 modules -> 6, and the non-canonical remainder from four modules to three, the PRD's "at most three more") | task cure-01-03, requirement F |
 
 Task 008 (v0.20, #174): replacing the single-hop `_is_self_anchoring_add_commit` check
-with the self-anchoring acceptance WALK (`_self_anchoring_reaches_head`) deleted the two
-`tests/test_sweep_sha_guard.py` nodes that pinned the old mechanism's two refusals. Both
-scenarios are still exercised, but the walk's own rule reverses one of the two verdicts on
-purpose (a report-only commit stacked on top is now accepted, not refused -- that reversal
-is the whole point of requirement #174), so neither row below claims the surviving node
-proves the same verdict as the deleted one; each names the walk test whose fixture is the
-same git shape.
+with the self-anchoring acceptance WALK (`_self_anchoring_reaches_head`) had deleted the two
+`tests/test_sweep_sha_guard.py` nodes that pinned the old mechanism's two refusals, with two
+rows here naming `test_a_self_anchoring_record_followed_by_a_src_commit_fails` and
+`test_a_self_anchoring_record_followed_by_a_report_only_commit_passes` as the walk tests
+covering the same two git shapes, plus a third row for
+`tests/test_sweep_sha_guard.py::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`,
+subsumed by
+`test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`.
 
-| `tests/test_sweep_sha_guard.py::test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path` | `tests/test_sweep_sha_guard.py::test_a_self_anchoring_record_followed_by_a_src_commit_fails` (same shape -- a self-anchoring record's tip commit touching a path outside the record -- generalized from "any other path" to the walk's own allow-list of `artifacts/reports/**`, `docs/roadmap.md`, `docs/prds/README.md`: a `src/` commit after the record still fails the walk exactly as the single-hop check refused it) | task 008, #174 |
-| `tests/test_sweep_sha_guard.py::test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top` | `tests/test_sweep_sha_guard.py::test_a_self_anchoring_record_followed_by_a_report_only_commit_passes` (same git shape -- a second report-only commit stacked on the self-anchoring record's own add-commit -- but the walk's verdict is now the opposite of the deleted node's: task 008 (#174) exists precisely to let a wave's tail of report/roadmap/index-only commits stack on a self-anchoring record without going stale, so this shape now PASSES rather than fails; the reversal is the requirement, not a regression) | task 008, #174 |
-| `tests/test_sweep_sha_guard.py::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail` | `tests/test_sweep_sha_guard.py::test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring` (same git shape -- a bare, never-discharged `sweep-sha` naming a `src/`-touching commit, one report-only commit later -- but the walk's independent acceptance path does not care whether a discharge ever happened, so this shape now PASSES rather than fails; the reversal is the same #174 generalization, not a regression) | task 008, #174 |
+Task 053 (v0.20, #113 step 4) deleted the self-anchoring acceptance walk itself, and every one
+of those three surviving nodes with it -- the whole mechanism these three rows record is
+retired outright, not migrated to a further successor, so none of the three ever regains a
+row here: their deletion is named in `tests/sweep_sha_guard.py`'s and
+`tests/test_sweep_sha_guard.py`'s own module docstrings and in `docs/sweep-records.md`
+("What this guard no longer does") instead, per this table's own contract that a deleted node
+owes either a row here or a named surviving cover, and no pytest node survives this one to
+cite. The three rows above are removed in the same commit, since a Subsumed row whose
+surviving cell no longer collects is worse than no row: `tests/test_subsumed_table.py`'s
+mechanical check would otherwise fail on exactly this table.
 
 Derivation for task 016 (PRD requirement B.1, #156): the same `-def test_` diff,
 run over this task's own follow-up commit, gives exactly one removed name that

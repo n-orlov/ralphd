@@ -665,6 +665,17 @@ from a deep copy of the real workflow. None spawns a real engine or
 `ralphctl` process and none is marked `smoke`, so the smoke count is
 unchanged.
 
+**5659 (smoke 4062, modules unchanged at 351)** by task 053 (v0.20, #113
+step 4): net -17 nodes in `tests/test_sweep_sha_guard.py` (27 -> 10) --
+the entire currency/discharge-chain/self-anchoring machinery and every test
+node that existed only to exercise it, deleted with no in-process
+replacement, since the retirement has no successor test to fold into --
+and net -1 in `tests/test_ci_dev_layout_matrix_guard.py` (17 -> 16), the
+mutation test for the now-retired required-deselect check. All 18 were
+in-process (no `ralphctl`/engine process spawned), and 17 of them (the
+sweep-sha guard's) were also counted in `smoke`; the matrix-guard deletion
+was not, hence the one-node gap between the fast and smoke deltas.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather

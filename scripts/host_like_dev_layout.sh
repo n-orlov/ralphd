@@ -90,17 +90,12 @@
 # it through ONE env var, HOST_LIKE_DEV_LAYOUT_TIER (see below); nothing else
 # decides tier selection.
 #
-# The sweep-sha carve-out (task 053, not yet landed as of this task): the
-# gate (`.github/workflows/gate.yml`) still runs the `fast` tier with
-# `--deselect 'tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged'`,
-# because that node's own HEAD-relative drift check is meaningless run
-# against an arbitrary, possibly-stale checkout the way this script's own
-# nightly cells are. A caller of this script may pass that exact
-# `--deselect '...'` argument the same way the gate does -- it rides through
-# to the underlying `pytest` invocation via "$@" like any other pytest
-# argument, no separate wiring needed. Once task 053 retires that guard
-# module, this carve-out is gone and there is nothing left to deselect for
-# this reason.
+# The sweep-sha carve-out is retired (task 053, #113 step 4): the guard
+# module now runs exactly one lint ("every record names some sha"), which
+# holds on any checkout regardless of how stale or arbitrary it is, so
+# there is nothing left for a caller of this script to deselect for that
+# reason. A caller that still wants to deselect something else passes it
+# through `"$@"` like any other pytest argument, exactly as before.
 #
 # Exit code is pytest's own, UNLESS the install/import-path setup itself
 # fails, in which case it is 2 (venv interpreter refused, an invalid

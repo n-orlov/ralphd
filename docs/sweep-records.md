@@ -1,4 +1,4 @@
-# Sweep records: a machine-readable sha, and how it is discharged
+# Sweep records: a machine-readable sha
 
 ## The defect this closes (#103)
 
@@ -6,24 +6,38 @@
 v0.11 was rejected for the same sentence: the suite was not green at the sha
 the wave actually shipped. Each rejection traces back to the same shape of
 report: a sweep record in `artifacts/reports/` states, in prose, "ran at
-sha X" -- and nobody re-checks that sentence once the wave's own tail commits
-(the roadmap block, the PRD index row, the closing report) move `HEAD` past
-X. This document defines a **machine-readable** form for that sentence and
-the guard that checks it (`tests/test_sweep_sha_guard.py`,
-`tests/sweep_sha_guard.py`), so the discrepancy is a test failure, not a
-thing a reader has to notice.
+sha X" -- and nobody re-checks that sentence. This document defines a
+**machine-readable** form for that sentence and the guard that checks it
+(`tests/test_sweep_sha_guard.py`, `tests/sweep_sha_guard.py`), so a record
+with no declared sha at all is a test failure, not a thing a reader has to
+notice.
+
+**What this guard checks now, since task 053 (v0.20, #113 step 4): only
+that a declaration exists.** A GitHub check run is bound to its own commit
+sha by GitHub itself and cannot go stale as `HEAD` moves, so
+`GET /repos/.../commits/<sha>/check-runs` is the attestation review reads
+for whether the suite was actually green at a given sha. Re-deriving that
+same claim inside this repo's own test suite -- a HEAD-relative currency
+check, a hand-maintained discharge chain, a self-anchoring acceptance walk,
+a per-run `LAUNCH_SHA` constant to keep bumping at every wave boundary --
+was exactly the self-authored ledger #113 exists to stop trusting, and it
+cost real iterations every time a wave's own tail commits (the roadmap
+block, the PRD index row, the closing report) moved `HEAD` past a record's
+declared sha. That machinery is deleted outright, not replaced by anything
+in this repo: **the sha a record names is provenance, checked once by the
+person or run that read it, never re-verified by this guard against
+`HEAD`.**
 
 ## The `sweep-sha` block
 
 A sweep record (any file under `artifacts/reports/` that reports the result
-of running a test sweep) that wants the guard's coverage declares, anywhere
-in its body, a fenced code block tagged `sweep-sha` whose content is exactly
-one line: the 40-character hex git commit sha the sweep ran at -- i.e.
-`git rev-parse HEAD` *before* the record's own commit. (A commit cannot
-truthfully name its own resulting sha: the hash is computed from the tree
-the commit produces, which would have to already contain the hash it is
-computing. Every sweep record therefore names its *parent* sha, the true
-final code/docs sha of the work it verifies.)
+of running a test sweep) declares, anywhere in its body, a fenced code block
+tagged `sweep-sha` whose content is exactly one line: the 40-character hex
+git commit sha the sweep ran at -- i.e. `git rev-parse HEAD` *before* the
+record's own commit. (A commit cannot truthfully name its own resulting sha:
+the hash is computed from the tree the commit produces, which would have to
+already contain the hash it is computing. Every sweep record therefore names
+its *parent* sha, the true final code/docs sha of the work it verifies.)
 
     ```sweep-sha
     1a205cd637caba2874d7db293557fef8ac3558a9
@@ -31,236 +45,51 @@ final code/docs sha of the work it verifies.)
 
 A record with no `sweep-sha` block is not thereby out of scope. Every report
 under `artifacts/reports/` that contains a genuine pytest result summary line
-must declare something: a `sweep-sha` if its sweep is current enough to need
-discharge-chain tracking to `HEAD`, or an `archived-sha` (below) if the
-record's own sha predates this run's launch sha -- checked by the ancestor
-rule (`git merge-base --is-ancestor <sha> <LAUNCH_SHA>`), never by exempting
-a whole vintage of report by filename or by date.
+must declare something: a `sweep-sha`, or an `archived-sha` (below) for a
+record that predates this guard, or that predates the sha-declaration
+requirement reaching it. There is no filename or date exemption: an earlier
+revision of this rule exempted every report predating the `v0.14-` filename
+prefix by construction, unedited, and that blanket carve-out is the hole
+that let #105 hide -- the guard's own summary-line pattern was blind to
+every sweep whose pytest run took longer than a minute (i.e. every sweep
+there is), and that defect went unnoticed for waves precisely because most
+of the reports it would have flagged were never run through the guard at
+all: they were exempt, so nobody ever asked what the guard made of them.
+Requiring a declaration from every report that shows a result line -- with
+no exemption left to hide a blind spot behind -- is what makes the guard's
+coverage provable instead of assumed.
 
-An earlier revision of this rule said the opposite: an undeclared record
-declared nothing and was simply out of scope, and every report predating the
-`v0.14-` filename prefix (v0.5 through v0.13, as a class) was exempt by
-construction, unedited. That blanket carve-out is the hole that let #105
-hide -- the guard's own summary-line pattern was blind to every sweep whose
-pytest run took longer than a minute (i.e. every sweep there is), and that
-defect went unnoticed for waves precisely because most of the reports it
-would have flagged were never run through the guard at all: they were
-exempt, so nobody ever asked what the guard made of them. Requiring a
-declaration from every report that shows a result line -- with no exemption
-left to hide a blind spot behind -- is what makes the guard's coverage
-provable instead of assumed.
+## The `archived-sha` block
 
-## The discharge rule
+Identical shape to `sweep-sha` -- exactly one 40-hex-char sha, in its own
+fenced block:
 
-A wave's tail always commits *after* its sweeps (the roadmap block, the PRD
-index row, the closing report) -- by the time those commits land, every
-sweep record's `sweep-sha` is provably one or more commits behind `HEAD`. A
-guard that failed on that alone would be permanently red by construction, so
-a declared sha that is not the current `HEAD` gets exactly one other way to
-pass: an explicit **discharge**.
-
-A `discharge-sha` block, in any report under `artifacts/reports/` (including
-the same file, as a trailing addendum, or a different, later report),
-retires a specific stale sha. Every line in the block is a **pair** of
-40-hex shas: the stale sha being retired, then the sha the discharge check
-was actually run at (`git rev-parse HEAD` at the moment of examination):
-
-    ```discharge-sha
-    1a205cd637caba2874d7db293557fef8ac3558a9 c4f24ad7ab060115cace6779a495dde77f76f8c7
+    ```archived-sha
+    035160131dfc52fec00c6b4415f543232fd428c3
     ```
 
-The second sha is what makes a discharge checkable rather than an assertion:
-the guard walks it. A line naming only one sha is **rejected as malformed**
-(a hard failure naming the file and the line), because without a verified-at
-sha there is no chain for the guard to terminate at `HEAD`.
+Before task 053 (v0.20, #113 step 4), this form existed to bypass an
+ancestor check against a per-run `LAUNCH_SHA` constant, which is why the tag
+carries the name "archived" at all: a record's sha that predated the current
+run's launch had no discharge chain to `HEAD` it could ever build, so it
+took this second form instead. **That ancestor check, and `LAUNCH_SHA`
+itself, are gone.** `sweep-sha` and `archived-sha` are now equally
+sufficient to satisfy the one lint this guard runs (`sha_missing_problems`
+in `tests/sweep_sha_guard.py`): declaring *some* 40-hex sha, in either
+fenced form, is the whole requirement. The two names are kept distinct only
+because hundreds of existing records already use one or the other and their
+fenced blocks are provenance, exactly as written, never rewritten -- not
+because the guard treats them differently going forward. A new record can
+use either tag; `sweep-sha` (naming the record's own true parent sha, per
+the rule above) is the more informative choice for a record produced during
+an active run.
 
-Adding a `discharge-sha` block is a claim that the sha it names has been
-*examined*, not merely aged -- the commits between that sha and `HEAD` are
-known not to invalidate the sweep it belonged to. In practice that means one
-of:
-
-* the commits between the stale sha and `HEAD` are report/roadmap/index-only
-  (no `src/`, `tests/`, or behaviour-affecting `docs/` change), and
-  requirement B's discovered guard subset
-  (`scripts/final_sha_guards.sh`, which greps `tests/` for its own membership
-  at run time -- there is deliberately no fallback list of module names to
-  copy, here or anywhere else) has been run
-  green at the current `HEAD`; or
-* a later sweep record in the same wave already re-ran the full check at (or
-  past) `HEAD` and is itself either current or discharged the same way.
-
-The guard resolves discharge transitively and *anchored*: a chain of stale
-shas, each line pointing from the sha it retires at the sha the check was run
-at, has to terminate somewhere the guard accepts.
-
-**Literal equality with `HEAD` alone would make this rule unsatisfiable by
-construction, so it is not the only way to terminate.** A commit can only
-name shas that already exist -- it cannot truthfully name its own resulting
-sha (see above) -- so the commit that *adds* a `discharge-sha` block always
-leaves `HEAD` exactly one commit past the chain's own end: the discharge
-commit itself. A guard that demanded the chain reach literal `HEAD` would
-therefore reject every discharge the moment it was written, and the very
-next report/roadmap/index tail commit would repeat the same off-by-one --
-no reachable repository state could ever satisfy it. (This was a real,
-measured defect in an earlier revision of this rule, not a hypothetical:
-task 003, #103.)
-
-The chain terminates successfully when it reaches a sha that either
-
-* equals current `HEAD` exactly, or
-* has a report-only gap to `HEAD` -- `git diff --name-only <sha>..HEAD`
-  names nothing outside `artifacts/reports/**`.
-
-The second form is what makes the *discharge chain* satisfiable at all: it is
-precisely wide enough to cover the discharge commit itself (and any further
-commits after it that touch nothing outside `artifacts/reports/` -- this
-path's allow-list is narrower than the walk's below, which also permits
-`docs/roadmap.md` and `docs/prds/README.md`), and no wider -- a single
-intervening `src/` or `tests/` change still fails the chain. Inside the
-discharge machinery the allowance stays exactly as narrow as it always was:
-`_report_only_tail` only ever bridges the last leg of a chain that a real
-`discharge-sha` hop actually walked to, and the bare `sweep-sha` a record
-declares never rides *that* path on its own.
-
-**What a bare, never-discharged sha does get instead is the separate
-self-anchoring acceptance walk** (`_self_anchoring_reaches_head` -- next
-section, task 008/#174). That walk is an independent acceptance path and does
-not care whether a discharge was ever stated: it accepts any declared sha
-that is a genuine git ancestor of `HEAD` whose whole `declared..HEAD` range
-touches only `artifacts/reports/**`, `docs/roadmap.md` or
-`docs/prds/README.md`. So since #174 a stale, entirely undischarged sha whose
-history since is genuinely report-only IS accepted -- through the walk, not
-through discharge, and with no `discharge-sha` block written anywhere.
-Discharge remains the only way to clear a stale sha whose range contains even
-one `src/`, `tests/` or other-doc commit: for those the re-verification has
-to be *stated*, not merely true by accident of what else did not change.
-
-So when the wave's tail moves `HEAD` again, the previous discharge does not
-silently keep covering the record forever: either the new tail is itself
-report-only (already covered), or re-verify at the new `HEAD` and add
-`<old-verified-at-sha> <new-HEAD>`, extending the chain, or re-take the
-sweep.
-
-**A stale sha that neither discharge nor the self-anchoring walk clears is a
-hard failure, never a warning.**
-`tests/test_sweep_sha_guard.py::test_stale_undischarged_sha_fails` proves
-this with a fixture record built in a temporary directory (never inside the
-real `artifacts/reports/`, so the fixture cannot itself trip the guard it is
-testing) -- a `sweep-sha` naming a sha that is neither `HEAD`, nor discharged,
-nor an ancestor of `HEAD` across a report-only range must be rejected.
-`tests/test_sweep_sha_guard.py::test_discharged_stale_sha_passes` and
-`::test_a_transitive_discharge_chain_ending_at_head_passes` prove the
-discharge path actually clears the same failure, one hop and two hops;
-`::test_a_discharge_chain_that_never_reaches_head_fails`,
-`::test_a_discharge_cycle_never_clears_a_stale_sha` and
-`::test_a_one_sha_discharge_block_is_rejected_as_malformed` prove the three
-ways a discharge can fail to be one. `::test_a_discharge_ending_short_of_head_passes_when_the_tail_is_report_only`,
-`::test_a_discharge_ending_short_of_head_fails_when_one_tail_commit_touches_src`
-and
-`::test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`
-build real throwaway git repos (never inside the real `artifacts/reports/`)
-to prove where the two paths part: the discharge chain's own tail allowance
-bridges a genuinely report-only last leg, it does not bridge a leg with even
-one `src/`-touching commit in it, and -- since #174 -- a bare,
-never-discharged sha whose tail is fully report-only is accepted anyway, by
-the self-anchoring walk rather than by discharge. That third node is the
-renamed, assertion-flipped successor of the pre-#174
-`::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`, whose
-scenario the walk now accepts on purpose (`docs/test-suite-audit.md` §
-"Subsumed" records the reversal).
-
-The failure message names the record's path, its declared sha, the current
-`HEAD`, and what to do: re-take the sweep at `HEAD` and update the record, or
--- if the intervening commits are the report/roadmap/index tail requirement B
-exists for -- run that subset at `HEAD` and add a `discharge-sha` block.
-
-## Parent-of-HEAD acceptance: the terminating fixed point (#106, generalized by #174)
-
-**#106** named the defect this section closes: the rule "the last commit is
-followed by the guard subset, green, recorded" has no fixed point, because
-recording that result is itself a commit -- which makes the record it just
-wrote stale by requirement A's own correct rule the instant it lands, no
-matter how the recording is phrased. There is no reachable repository state
-that satisfies a rule shaped that way: the very act of writing down "the
-subset was green at `HEAD`" moves `HEAD`, so the sentence is false again
-before anyone can read it. This is not a hypothetical -- it cost **five
-consecutive waves** a task or an approach: v0.13 task 012, v0.14 approach 2
-task 018, and v0.14 approach 3 task 018, the last of these while the thing
-it guards was independently confirmed green.
-
-A record's own add-commit is a special case of the discharge gap above, not
-a different problem: the record names its true parent sha (a commit cannot
-name its own resulting sha -- see above), so the instant that add-commit
-lands, the declaration is exactly one commit behind `HEAD`, and there is no
-`discharge-sha` any commit could yet add naming that not-yet-computed `HEAD`
-as its verified-at sha. Requiring an explicit discharge for that gap would
-make the guard permanently red the moment *any* record's own commit landed
--- not a corner case, the typical one.
-
-**The mechanism originally chosen** (task 005, v0.14.1) was narrow by
-construction and checked once, never walked: it accepted a declared sha with
-no `discharge-sha` block at all only when `HEAD` was *exactly* the commit
-that ADDED the declaring record (`git diff --name-status` reports it as `A`,
-not `M`), that commit's diff touched the record's own path and nothing
-else, and the declared sha was precisely that commit's single parent
-(`tests/sweep_sha_guard.py::_is_self_anchoring_add_commit`, kept in the
-module only because pre-v0.20 reports still cite that node id). That shape
-refused the moment a *second* report/docs commit landed on top of the
-record's own add-commit -- even though that second commit changed nothing
-the guard subset would re-check -- which is exactly the shape a wave's own
-tail (a roadmap block, a PRD index row, a closing report) actually
-produces, one hop at a time.
-
-**Task 008 (v0.20, #174) generalizes parent-of-HEAD acceptance into the
-self-anchoring acceptance WALK.** `check_reports` now also accepts a
-declared sha with no `discharge-sha` block at all whenever:
-
-1. the declared sha is `HEAD` itself, or a genuine git ancestor of it
- (`git merge-base --is-ancestor`, the same plumbing call `archived-sha`
- ancestry already uses); AND
-2. every commit in the range `declared..HEAD` touches only
- `artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`.
-
-`tests/sweep_sha_guard.py::_self_anchoring_reaches_head` implements this: the
-ancestry check is the single `_is_ancestor` call, and the changed-path check
-is **one** `git log --name-only --pretty=format: declared..HEAD` call over
-the *whole* range -- gathering every path touched by every commit in the
-range in a single invocation, rather than a subprocess per hop. Unlike the
-original single-hop mechanism, the walk is no longer refused by a second
-report-only commit stacked on top: the record's own add-commit is just the
-first hop of a range that can now carry any number of further
-report/roadmap/index-only commits. It is still refused outright -- exactly
-like an ordinary undischarged stale sha -- the moment any commit in the
-range touches a path outside that allow-list (`src/`, `tests/`, or any other
-doc), and refused outright whenever the declared sha is not actually an
-ancestor of `HEAD`, even on a divergent history whose own commits would
-otherwise look report-only.
-
-The invariant preserved is unchanged by the generalization: the guard
-subset (`scripts/final_sha_guards.sh`) ran green over every line of content
-that ships, and a *chain* of commits that touches nothing but
-`artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md` can never
-change what that subset would report if run again right now -- so accepting
-such a chain's declaration without a discharge block never widens what
-counts as "the suite was green at the sha the wave shipped."
-
-`tests/test_sweep_sha_guard.py::test_a_record_only_add_commit_naming_its_parent_passes_with_no_discharge`
-pins the original single-hop shape still passing under the walk;
-`::test_a_self_anchoring_record_followed_by_a_report_only_commit_passes` pins
-the walk's own generalization -- a self-anchoring record followed by a
-second report commit, then a roadmap-only commit, then a PRD-index-only
-commit, all still accepted with no discharge block;
-`::test_a_self_anchoring_record_followed_by_a_src_commit_fails` pins the
-allow-list's refusal the moment one commit in the range touches `src/`; and
-`::test_a_self_anchoring_declared_sha_not_an_ancestor_of_head_fails` pins the
-ancestry requirement against a divergent-history sha whose reachable commits
-look report-only but which was never merged into `HEAD` at all. These four
-supersede the two single-hop refusal tests the walk retired
-(`::test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path`
-and
-`::test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top`
--- see `docs/test-suite-audit.md` § "Subsumed"), all built in real
-throwaway git repos under `tmp_path`.
+Backfilling a declaration for a pre-existing record with none: derive the
+real sha the sweep ran at from git history -- `git log --follow
+--diff-filter=A -- <path>` finds the commit that added the file, and (per
+the "names its parent sha" rule above) that add commit's **parent** is the
+sha the sweep itself actually ran at, because the record commit necessarily
+comes after the sweep it reports. Never hand-guess a sha for this.
 
 ## The companion rule: every sweep record declares one
 
@@ -269,10 +98,9 @@ Task 002/#103 introduced this rule scoped to the wave that was current then
 (#103, requirement A) removed that filename gate: **every** report under
 `artifacts/reports/`, whatever it is named, that contains a genuine pytest
 result *summary line* is a sweep record and must declare a `sweep-sha` or
-`archived-sha` block (the latter documented in the next section). A report
-naming no pytest result line at all -- a plain notification log, for
-instance -- is not a sweep record and is not required to declare anything,
-regardless of its filename.
+`archived-sha` block. A report naming no pytest result line at all -- a
+plain notification log, for instance -- is not a sweep record and is not
+required to declare anything, regardless of its filename.
 
 A "genuine pytest result summary line" is defined by shape, and the shape is
 anchored to a **whole line**: the line's entire content (ignoring
@@ -311,75 +139,82 @@ pin both directions of the line rule. A file that names no test result at
 all (a plain notification log, for instance) is not a sweep record and is
 not required to declare anything.
 
-## The `archived-sha` block, and the ancestor rule
+## What this guard no longer does
 
-Before task 008 (#103, requirement A), every report predating the `v0.14-`
-prefix was exempt from the companion rule above by construction -- its
-filename simply did not match. Once the filename gate is gone, those
-records (and every earlier wave's) need a way to satisfy the rule without a
-discharge chain to current `HEAD`, because that chain was never going to
-exist: the sweep they report ran, and the code and the record both stopped
-changing, long before this run's own work started.
+Retired outright in task 053 (v0.20, #113 step 4), together with every test
+node that existed only to exercise it:
 
-The `archived-sha` block is that second, narrower form. Its shape is
-identical to `sweep-sha` -- exactly one 40-hex-char sha, in its own fenced
-block:
+* the HEAD-relative currency check (a declared `sweep-sha` had to equal
+  current `HEAD` or be discharged to it);
+* the hand-maintained `discharge-sha` chain and its report-only-tail
+  allowance;
+* the self-anchoring/fixed-point acceptance walk (a bare, undischarged
+  `sweep-sha` accepted anyway when its whole range to `HEAD` was
+  report/roadmap/index-only);
+* the per-run `LAUNCH_SHA` constant, and the ancestor check that used it to
+  decide whether a record could call itself `archived-sha`.
 
-    ```archived-sha
-    035160131dfc52fec00c6b4415f543232fd428c3
-    ```
+None of that is replaced by anything else in this repo. The GitHub check
+run bound to each commit's own sha is the attestation for "was the suite
+green here"; this guard's only remaining job is "did the record say which
+sha it means at all." A `discharge-sha` block in an existing record is
+untouched, historical provenance -- nothing reads it any more, and nothing
+requires a new one.
 
-but the check is different: `check_reports` accepts a declared
-`archived-sha` only when it is `LAUNCH_SHA` (the sha this run itself
-launched from, `docs/prds/README.md`'s "the sha the wave actually shipped"
-for whichever run is current) or a genuine git **ancestor** of it
-(`git merge-base --is-ancestor <sha> <LAUNCH_SHA>`) -- never a check against
-current `HEAD`, and never a discharge chain. A sha that is *not* such an
-ancestor -- in particular any sha produced during this run's own work, which
-is by definition a descendant of `LAUNCH_SHA`, not an ancestor of it -- is a
-hard failure naming the file, the declared sha and `LAUNCH_SHA`. This is the
-rule's whole point: **a current-wave record cannot label itself archived**
-to dodge the sweep-sha/discharge-sha chain the way an actually-current
-record has to carry it. "Archived" means the record's own sha predates the
-run that is checking it, not merely that nobody has re-verified it lately.
-
-Backfilling an `archived-sha` for a pre-existing record: derive the real sha
-the sweep ran at from git history -- `git log --follow --diff-filter=A --
-<path>` finds the commit that added the file, and (per the "names its
-parent sha" rule above) that add commit's **parent** is the sha the sweep
-itself actually ran at, because the record commit necessarily comes after
-the sweep it reports. Never hand-guess a sha for this.
-
-`tests/test_sweep_sha_guard.py::test_a_post_launch_sha_declared_as_archived_is_refused`
-and `::test_archived_sha_accepts_the_launch_sha_itself` pin the ancestor
-check both ways;
-`::test_a_pre_launch_filename_no_longer_exempts_a_sweep_record` pins that
-the old filename exemption is gone.
+Every existing record's own `sweep-sha`/`archived-sha`/`discharge-sha` lines
+are unchanged by this retirement -- only the drift-chasing *check* is gone,
+never the provenance a record already states. Some historical reports cited
+one of the now-deleted functions or test nodes
+(`tests/sweep_sha_guard.py::check_reports`, `::_reaches_head`,
+`::_report_only_tail`, `::_is_self_anchoring_add_commit`,
+`::_self_anchoring_reaches_head`, or
+`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`
+and the other now-deleted currency/discharge/self-anchoring test nodes) by
+exact node id; those citations were marked `!retired` in the same commit
+(`tests/report_claims.py`'s strong direction for a citation that must no
+longer resolve), which is a note about the *citation*, not about the sha the
+record declares.
 
 ## Where the checks live
 
-* `tests/sweep_sha_guard.py` -- the parser (`sweep_shas`, `archived_shas`,
-  `discharge_entries`, `malformed_discharge_lines`), the result-line rule
-  (`is_pytest_result_line`, `contains_pytest_result_line`) and the two
-  problem-list functions (`check_reports`, `sha_missing_problems`),
-  shared the same way `tests/report_claims.py` shares its checks with every
-  report.
-* `tests/test_sweep_sha_guard.py` -- applies them to every report the
-  directory currently holds, plus the tmp-dir fixtures that prove the guard
-  actually fires and actually clears.
+* `tests/sweep_sha_guard.py` -- the parser (`sweep_shas`, `archived_shas`),
+  the result-line rule (`is_pytest_result_line`,
+  `contains_pytest_result_line`) and the one problem-list function that
+  still runs (`sha_missing_problems`), shared the same way
+  `tests/report_claims.py` shares its checks with every report.
+* `tests/test_sweep_sha_guard.py` -- applies it to every report the
+  directory currently holds, plus two tmp-dir fixtures that prove the one
+  surviving lint fires and clears.
 
-## Never backtick a check-run, job or run id (task 067, steer 004)
+## What a claim is: citation conventions (task 067, steer 004; task 053, #113 step 4)
 
-`tests/report_claims.py`'s `SHA_RE` reads *any* backticked 7-40 character
-lowercase-hex token in a report as a claimed commit sha -- and a GitHub
-check-run, job or run id is a decimal number, which is entirely hex
-characters, so it matches `SHA_RE` too. Backticking one (`` `102507184201` ``)
-gets it read as a sha claim, and since no commit in this repo is ever going
-to hash to that value, `commit_problems()` fails it as
-`is not a commit in this repo (missing)`. This is not a false positive to
-work around: it is the guard doing exactly what it is for, applied to a
-citation it was never meant to receive. Write such an id as bare prose
-("check run 102507184201") followed by its html_url field, which is
-unambiguous and independently resolvable; reserve backticked hex for actual
-commit shas. The failure message itself now names this convention, so a
-report author who trips it does not have to already know where to look.
+`tests/report_claims.py` reads every backticked token in a report under two
+rules that trip readers who have not seen them written down:
+
+1. **Never backtick a check-run, job or run id.** `SHA_RE` reads *any*
+   backticked 7-40 character lowercase-hex token as a claimed commit sha --
+   and a GitHub check-run, job or run id is a decimal number, which is
+   entirely hex characters, so it matches `SHA_RE` too. Backticking one
+   (`` `102507184201` ``) gets it read as a sha claim, and since no commit in
+   this repo is ever going to hash to that value, `commit_problems()` fails
+   it as `is not a commit in this repo (missing)`. This is not a false
+   positive to work around: it is the guard doing exactly what it is for,
+   applied to a citation it was never meant to receive. Write such an id as
+   bare prose ("check run 102507184201") followed by its html_url field,
+   which is unambiguous and independently resolvable; reserve backticked hex
+   for actual commit shas.
+2. **Cite only a sha already reachable from `origin/main` -- never one you
+   are about to create, and never one you have amended away.**
+   `commit_problems()` requires every cited sha to resolve to a real commit
+   object AND be reachable from `HEAD` (`git rev-list HEAD`); a sha that
+   exists only as a dangling object (git keeps an amended, reset or
+   rebased-away commit's pre-image on disk until `git gc` reclaims it) is
+   not evidence a report can point at, because a fresh clone of the repo can
+   never see it. A report that names the sha its own commit is about to
+   produce is naming something that, by definition, does not exist yet at
+   the moment the report is written -- write the report as a follow-up
+   commit after the sha it cites has actually landed, never as part of the
+   same commit.
+
+The failure message itself now names the first convention, so a report
+author who trips it does not have to already know where to look.

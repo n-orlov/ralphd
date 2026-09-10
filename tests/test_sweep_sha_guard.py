@@ -1,60 +1,52 @@
 """Task 002 (#103, requirement A): a sweep record's sha stops being a
 sentence and becomes a checkable fact.
 
-`docs/sweep-records.md` documents the `sweep-sha` / `discharge-sha` fenced
-block forms and the discharge rule; `tests/sweep_sha_guard.py` implements
-the parser and the two problem-list functions this module applies to every
-report `artifacts/reports/` currently holds, plus two tmp-dir fixtures that
-prove the guard actually fires on a stale sha and actually clears once that
-sha is discharged -- the fixtures build their own throwaway record so the
-"proves the failure fires" fixture can never itself trip the real guard.
+`docs/sweep-records.md` documents the `sweep-sha` / `archived-sha` fenced
+block forms; `tests/sweep_sha_guard.py` implements the parser and the two
+problem-list functions this module applies to every report
+`artifacts/reports/` currently holds.
+
+Task 053 (v0.20, #113 step 4) deleted every test node below that existed
+only to exercise the now-retired currency check (`check_reports`), the
+hand-maintained discharge chain, and the self-anchoring/fixed-point
+acceptance walk -- `test_every_declared_sweep_sha_is_current_or_discharged`,
+`test_stale_undischarged_sha_fails`, `test_current_head_sha_passes`,
+`test_discharged_stale_sha_passes`,
+`test_a_transitive_discharge_chain_ending_at_head_passes`,
+`test_a_discharge_chain_that_never_reaches_head_fails`,
+`test_a_discharge_cycle_never_clears_a_stale_sha`,
+`test_a_one_sha_discharge_block_is_rejected_as_malformed`,
+`test_a_post_launch_sha_declared_as_archived_is_refused`,
+`test_archived_sha_accepts_the_launch_sha_itself`,
+`test_a_discharge_ending_short_of_head_passes_when_the_tail_is_report_only`,
+`test_a_discharge_ending_short_of_head_fails_when_one_tail_commit_touches_src`,
+`test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`,
+`test_a_record_only_add_commit_naming_its_parent_passes_with_no_discharge`,
+`test_a_self_anchoring_record_followed_by_a_report_only_commit_passes`,
+`test_a_self_anchoring_record_followed_by_a_src_commit_fails` and
+`test_a_self_anchoring_declared_sha_not_an_ancestor_of_head_fails`. None of
+them is subsumed by a surviving test node -- the behaviour they pinned is
+retired outright, not moved -- so there is no `docs/test-suite-audit.md` §
+"Subsumed" row for any of them; the surviving cover for what they tested is
+the GitHub check run itself (#113 step 4), not a pytest node. Every
+historical report that cited one of these node ids (or the now-deleted
+`tests/sweep_sha_guard.py` functions `check_reports`, `_reaches_head`,
+`_report_only_tail`, `_is_self_anchoring_add_commit` and
+`_self_anchoring_reaches_head`) by exact node id was updated in the same
+commit to mark that citation `!retired` -- the declared sha each of those
+records names is untouched; only the drift-chasing citation is retired.
+
+What remains: the two fixtures below that prove the ONE surviving lint
+fires and clears, plus the result-line detector's own tests (unaffected by
+this retirement, since `is_pytest_result_line`/`contains_pytest_result_line`
+never had anything to do with currency, discharge or self-anchoring).
 """
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 import sweep_sha_guard as guard
 
 REPORTS = guard.report_files()
-
-
-def _run_git(repo: Path, *args: str) -> str:
-    out = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert out.returncode == 0, f"git {args} failed: {out.stderr}"
-    return out.stdout.strip()
-
-
-def _init_throwaway_repo(root: Path) -> Path:
-    """A throwaway git repo under tmp_path -- never inside the real
-    artifacts/reports/, so these fixtures can never trip the real guard.
-    """
-    repo = root / "repo"
-    repo.mkdir()
-    _run_git(repo, "init", "-q")
-    _run_git(repo, "config", "user.email", "fixture@example.invalid")
-    _run_git(repo, "config", "user.name", "Fixture")
-    return repo
-
-
-def _commit(repo: Path, relpath: str, content: str, message: str) -> str:
-    path = repo / relpath
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    _run_git(repo, "add", relpath)
-    _run_git(repo, "commit", "-q", "-m", message)
-    return _run_git(repo, "rev-parse", "HEAD")
-
-
-def _ids(reports: list[Path]) -> list[str]:
-    return [r.name for r in reports]
 
 
 def test_the_reports_directory_is_discovered_not_enumerated() -> None:
@@ -71,143 +63,16 @@ def test_the_reports_directory_is_discovered_not_enumerated() -> None:
     )
 
 
-def test_every_declared_sweep_sha_is_current_or_discharged() -> None:
-    head = guard.current_head()
-    problems = guard.check_reports(REPORTS, head)
-    assert not problems, "\n".join(problems)
-
-
 def test_every_sweep_record_declares_a_sha() -> None:
     problems = guard.sha_missing_problems(REPORTS)
     assert not problems, "\n".join(problems)
 
 
 # --------------------------------------------------------------------------
-# Fixtures: prove the guard fires, and prove discharge clears it. Built in a
+# Fixtures: prove the one surviving lint fires and clears. Built in a
 # tmp_path, never under the real artifacts/reports/, so these can never trip
 # the guard they exist to test.
 # --------------------------------------------------------------------------
-
-
-def test_stale_undischarged_sha_fails(tmp_path) -> None:
-    stale = "a" * 40
-    head = "b" * 40
-    record = tmp_path / "v0.14-fixture-stale-sweep.md"
-    record.write_text(
-        "# fixture sweep record\n\n"
-        f"```sweep-sha\n{stale}\n```\n\n"
-        "```\n1 passed in 0.01s\n```\n"
-    )
-
-    problems = guard.check_reports([record], head)
-
-    assert problems, "expected the guard to reject a stale, undischarged sha"
-    assert len(problems) == 1
-    assert record.name in problems[0]
-    assert stale in problems[0]
-    assert head in problems[0]
-    # The message tells the reader what to do about it.
-    assert "re-take" in problems[0]
-    assert "discharge-sha" in problems[0]
-
-
-def test_current_head_sha_passes(tmp_path) -> None:
-    head = "c" * 40
-    record = tmp_path / "v0.14-fixture-current-sweep.md"
-    record.write_text(f"```sweep-sha\n{head}\n```\n\n1 passed in 0.01s\n")
-
-    assert guard.check_reports([record], head) == []
-
-
-def test_discharged_stale_sha_passes(tmp_path) -> None:
-    stale = "a" * 40
-    head = "b" * 40
-    record = tmp_path / "v0.14-fixture-stale-sweep.md"
-    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
-    discharge = tmp_path / "v0.14-fixture-discharge.md"
-    # The discharge names BOTH shas: what it retires, and the sha the
-    # discharge check was run at -- here, HEAD itself, so the chain is one hop.
-    discharge.write_text(
-        "# fixture discharge\n\n"
-        f"```discharge-sha\n{stale} {head}\n```\n"
-    )
-
-    problems = guard.check_reports([record, discharge], head)
-
-    assert problems == [], problems
-
-
-def test_a_transitive_discharge_chain_ending_at_head_passes(tmp_path) -> None:
-    stale = "a" * 40
-    middle = "d" * 40
-    head = "b" * 40
-    record = tmp_path / "v0.14-fixture-stale-sweep.md"
-    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
-    discharge = tmp_path / "v0.14-fixture-discharge-chain.md"
-    discharge.write_text(
-        f"```discharge-sha\n{stale} {middle}\n{middle} {head}\n```\n"
-    )
-
-    assert guard.check_reports([record, discharge], head) == []
-
-
-def test_a_discharge_chain_that_never_reaches_head_fails(tmp_path) -> None:
-    """The documented rule, enforced: "a chain that never reaches HEAD is
-    not [accepted]". An earlier revision of this guard treated ANY matching
-    discharge-sha block as sufficient, so a discharge verified at some other
-    stale sha (or at nothing checkable at all) silently cleared the
-    declaration -- exactly the undetected "ran at sha X" claim requirement A
-    exists to kill."""
-    stale = "a" * 40
-    also_stale = "d" * 40
-    head = "b" * 40
-    record = tmp_path / "v0.14-fixture-stale-sweep.md"
-    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
-    discharge = tmp_path / "v0.14-fixture-dangling-discharge.md"
-    discharge.write_text(f"```discharge-sha\n{stale} {also_stale}\n```\n")
-
-    problems = guard.check_reports([record, discharge], head)
-
-    assert len(problems) == 1, problems
-    assert stale in problems[0] and head in problems[0]
-    assert "never reaches HEAD" in problems[0]
-
-
-def test_a_discharge_cycle_never_clears_a_stale_sha(tmp_path) -> None:
-    stale = "a" * 40
-    other = "d" * 40
-    head = "b" * 40
-    record = tmp_path / "v0.14-fixture-stale-sweep.md"
-    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
-    discharge = tmp_path / "v0.14-fixture-cyclic-discharge.md"
-    discharge.write_text(
-        f"```discharge-sha\n{stale} {other}\n{other} {stale}\n```\n"
-    )
-
-    problems = guard.check_reports([record, discharge], head)
-
-    assert len(problems) == 1, problems
-    assert stale in problems[0]
-
-
-def test_a_one_sha_discharge_block_is_rejected_as_malformed(tmp_path) -> None:
-    """A discharge block naming only the retired sha is a hard failure, not a
-    tolerated shorthand: with no verified-at sha there is no chain to check."""
-    stale = "a" * 40
-    head = "b" * 40
-    record = tmp_path / "v0.14-fixture-stale-sweep.md"
-    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
-    discharge = tmp_path / "v0.14-fixture-short-discharge.md"
-    discharge.write_text(f"```discharge-sha\n{stale}\n```\n")
-
-    problems = guard.check_reports([record, discharge], head)
-
-    # Both the malformed block and the still-stale declaration are reported.
-    assert len(problems) == 2, problems
-    malformed = [p for p in problems if "malformed discharge-sha line" in p]
-    assert len(malformed) == 1, problems
-    assert discharge.name in malformed[0]
-    assert stale in malformed[0]
 
 
 def test_a_sweep_record_with_no_sha_is_caught_by_the_missing_check(
@@ -251,11 +116,11 @@ def test_a_pre_launch_filename_no_longer_exempts_a_sweep_record(
 def test_an_archived_sha_predating_launch_satisfies_the_missing_check(
     tmp_path,
 ) -> None:
-    """The documented alternative to sweep-sha: a record whose real sha
-    predates this run's launch entirely declares `archived-sha` instead and
-    is not flagged as missing a declaration. (Ancestry itself is checked by
-    `check_reports`, exercised separately below -- this test only pins that
-    `sha_missing_problems` recognises the form at all.)
+    """The documented alternative to sweep-sha: a record that declares
+    `archived-sha` instead is not flagged as missing a declaration. Neither
+    form is checked against anything else any more (task 053, #113 step 4,
+    which is why this test's own name no longer mentions the launch sha it
+    used to be checked against) -- declaring one is the whole requirement.
     """
     record = tmp_path / "v0.13-old-sweep.md"
     record.write_text(
@@ -263,45 +128,6 @@ def test_an_archived_sha_predating_launch_satisfies_the_missing_check(
     )
 
     assert guard.sha_missing_problems([record]) == []
-
-
-def test_a_post_launch_sha_declared_as_archived_is_refused(tmp_path) -> None:
-    """The rule this backfill exists to protect: a current-wave record
-    cannot label itself archived. `archived-sha` is only accepted for a sha
-    that is an ancestor of `LAUNCH_SHA`; a descendant (or an unrelated sha)
-    is a hard failure, not a silent pass, even though the missing-check
-    above never flags the file at all (it declared *something*).
-    """
-    head = guard.current_head()
-    # HEAD is (by definition of an in-progress run) never an ancestor of a
-    # sha that was fixed before any of this run's work landed -- so head
-    # itself is a safe, always-true "post-launch" sha for this fixture,
-    # with no dependency on which commit happens to be HEAD right now.
-    record = tmp_path / "v0.14-fixture-fake-archived.md"
-    record.write_text(f"```archived-sha\n{head}\n```\n\n1 passed in 0.01s\n")
-
-    problems = guard.check_reports([record], head)
-
-    assert len(problems) == 1, problems
-    assert record.name in problems[0]
-    assert head in problems[0]
-    assert guard.LAUNCH_SHA in problems[0]
-    assert "archived" in problems[0]
-    # And the missing-declaration check does NOT also flag it -- it declared
-    # something, just not something check_reports accepts.
-    assert guard.sha_missing_problems([record]) == []
-
-
-def test_archived_sha_accepts_the_launch_sha_itself(tmp_path) -> None:
-    """LAUNCH_SHA is its own ancestor for this purpose -- a record that ran
-    exactly at the launch sha is the boundary case, not an edge case to
-    special-case away."""
-    record = tmp_path / "v0.5-fixture-at-launch.md"
-    record.write_text(
-        f"```archived-sha\n{guard.LAUNCH_SHA}\n```\n\n1 passed in 0.01s\n"
-    )
-
-    assert guard.check_reports([record], guard.current_head()) == []
 
 
 # --------------------------------------------------------------------------
@@ -433,257 +259,3 @@ def test_the_real_notification_log_is_not_misclassified_as_a_sweep_record() -> N
     assert not guard.contains_pytest_result_line(log.read_text())
     assert not guard.PYTEST_SUMMARY_RE.search(log.read_text())
     assert guard.wave_sha_missing_problems([log]) == []
-
-
-# --------------------------------------------------------------------------
-# Task 003 (#103, requirement A hardening): the discharge chain's own end
-# can never be literal HEAD -- the commit that ADDS a `discharge-sha` block
-# can only name shas that already exist, so it always leaves HEAD one
-# commit past the chain's end. These three tests build real throwaway git
-# repos under tmp_path (never inside the real artifacts/reports/, so they
-# can never trip the real guard) and pin the report-only-tail allowance
-# that makes the rule satisfiable at all. Each of the first two fails
-# against the pre-change `_reaches_head`, which only ever compared for
-# literal string equality with HEAD and had no `repo_root` to run `git
-# diff` against. The third pinned, at task 003, that this same allowance
-# never bridges a bare, never-discharged sweep-sha -- true of the discharge
-# chain's OWN report-only-tail allowance to this day, but task 008 (v0.20,
-# #174) added a SECOND, independent acceptance path (the self-anchoring
-# walk) that does not care whether a discharge ever happened at all, so
-# that exact fixture is now this module's proof of the opposite: see
-# `test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`
-# below, which supersedes it (docs/test-suite-audit.md § "Subsumed").
-# --------------------------------------------------------------------------
-
-
-def test_a_discharge_ending_short_of_head_passes_when_the_tail_is_report_only(
-    tmp_path,
-) -> None:
-    repo = _init_throwaway_repo(tmp_path)
-    stale = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
-    verified_at = _commit(
-        repo, "artifacts/reports/note-1.md", "note one\n", "report note one"
-    )
-    # Further report-only tail commits after the sha the discharge was
-    # actually verified at -- exactly the shape a wave's own tail (roadmap
-    # block, PRD index row, closing report, and the discharge commit
-    # itself) produces.
-    _commit(repo, "artifacts/reports/note-2.md", "note two\n", "report note two")
-    head = _commit(
-        repo, "artifacts/reports/note-3.md", "note three\n", "report note three"
-    )
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-sweep.md"
-    record.write_text(
-        f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n\n"
-        f"```discharge-sha\n{stale} {verified_at}\n```\n"
-    )
-
-    problems = guard.check_reports([record], head, repo_root=repo)
-
-    assert problems == [], problems
-
-
-def test_a_discharge_ending_short_of_head_fails_when_one_tail_commit_touches_src(
-    tmp_path,
-) -> None:
-    repo = _init_throwaway_repo(tmp_path)
-    stale = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
-    verified_at = _commit(
-        repo, "artifacts/reports/note-1.md", "note one\n", "report note one"
-    )
-    # One intervening commit touches src/, not just artifacts/reports/ -- the
-    # gap is no longer report-only and the allowance must not bridge it.
-    _commit(repo, "src/thing.py", "print('v2')\n", "change thing")
-    head = _commit(
-        repo, "artifacts/reports/note-2.md", "note two\n", "report note two"
-    )
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-sweep.md"
-    record.write_text(
-        f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n\n"
-        f"```discharge-sha\n{stale} {verified_at}\n```\n"
-    )
-
-    problems = guard.check_reports([record], head, repo_root=repo)
-
-    assert len(problems) == 1, problems
-    assert stale in problems[0] and head in problems[0]
-
-
-def test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring(
-    tmp_path,
-) -> None:
-    """Task 008 (v0.20, #174) generalizes acceptance far enough to reverse
-    this exact scenario on purpose. The discharge chain's OWN
-    report-only-tail allowance (`_report_only_tail`) still only ever
-    bridges the LAST leg of a chain a real `discharge-sha` entry actually
-    walked -- a bare, never-discharged sweep-sha still cannot ride *that*
-    allowance, and nothing about it changed here. But the self-anchoring
-    acceptance WALK is a second, independent path
-    (`_self_anchoring_reaches_head`), and it does not care whether a
-    discharge ever happened at all: any declared sha that is a genuine
-    ancestor of `HEAD`, with every commit in `declared..HEAD` touching only
-    `artifacts/reports/**`/`docs/roadmap.md`/`docs/prds/README.md`, is
-    accepted through that path -- discharged or not. This exact fixture (a
-    bare `sweep-sha` naming a `src/`-touching commit, one report-only
-    commit later) used to be this module's proof that a report-only tail
-    alone was never enough without an explicit discharge; it is now this
-    module's proof that requirement #174 deliberately widens acceptance
-    past that boundary -- the guard subset's own verdict is unchanged by a
-    report-only commit landing, whether or not anyone ever wrote a
-    `discharge-sha` block saying so. Supersedes the pre-#174
-    `test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`
-    (docs/test-suite-audit.md § "Subsumed"), whose scenario this walk now
-    accepts on purpose."""
-    repo = _init_throwaway_repo(tmp_path)
-    stale = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
-    head = _commit(
-        repo, "artifacts/reports/note-1.md", "note one\n", "report note one"
-    )
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-sweep.md"
-    record.write_text(f"```sweep-sha\n{stale}\n```\n\n1 passed in 0.01s\n")
-
-    problems = guard.check_reports([record], head, repo_root=repo)
-
-    assert problems == [], problems
-
-
-# --------------------------------------------------------------------------
-# Task 005 (v0.14.1): the terminating fixed point. A record's own add-commit
-# always leaves its declared sha one commit behind HEAD, with no possible
-# discharge-sha entry any commit could add yet (it would have to name its
-# own not-yet-computed resulting sha). Task 008 (v0.20, #174) generalized
-# the acceptance from a single literal add-commit into a WALK
-# (`_self_anchoring_reaches_head`): a declared sha is accepted whenever it
-# is a git ancestor of HEAD and every commit in `declared..HEAD` touches
-# only `artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`,
-# however many hops that range spans. Built in real throwaway git repos
-# under tmp_path (never inside the real artifacts/reports/), same pattern
-# as the report-only-tail fixtures above.
-# --------------------------------------------------------------------------
-
-
-def test_a_record_only_add_commit_naming_its_parent_passes_with_no_discharge(
-    tmp_path,
-) -> None:
-    """Task 006 (#106, requirement B), fixture (1) -- the record-only tip
-    commit: this commit adds nothing but its own sweep record, naming its
-    own true parent sha as HEAD, and leaves that record current with no
-    discharge-sha needed. Requirement B's invariant, stated out loud: 'the
-    guard subset ran green over every line of content that ships' -- a
-    record-only commit cannot change what the subset would find, so it
-    must not be able to make an already-current record stale. Fails
-    against the pre-change `_reaches_head` alone, which only accepts
-    literal equality with HEAD or a walked discharge chain -- neither of
-    which a brand-new record's own commit can ever have.
-    """
-    repo = _init_throwaway_repo(tmp_path)
-    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
-    record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n")
-    _run_git(repo, "add", "artifacts/reports/v0.14-fixture-self-anchor.md")
-    head = _commit(
-        repo,
-        "artifacts/reports/v0.14-fixture-self-anchor.md",
-        record.read_text(),
-        "add the sweep record",
-    )
-
-    assert guard.check_reports([record], head, repo_root=repo) == []
-
-
-def test_a_self_anchoring_record_followed_by_a_report_only_commit_passes(
-    tmp_path,
-) -> None:
-    """Task 008 (v0.20, #174): the self-anchoring acceptance now WALKS
-    report-only history instead of accepting only the literal single
-    add-commit -- a self-anchoring record followed by any number of
-    further report/roadmap/index-only commits stays accepted, because none
-    of them can change what the guard subset would find. This is the walk
-    doing what the old, single-hop mechanism (`_is_self_anchoring_add_commit`,
-    kept only for historical report citations) refused by construction:
-    a wave's own tail always lands MORE than one commit after a record's
-    add-commit (a roadmap block, a PRD index row, a closing report), and
-    every one of those has to stay accepted with no discharge block.
-    Supersedes
-    `test_the_self_anchor_is_refused_when_the_tip_commit_touches_another_path`
-    and
-    `test_the_self_anchor_is_refused_for_a_second_record_commit_stacked_on_top`
-    (docs/test-suite-audit.md § "Subsumed"), whose scenarios this walk now
-    accepts on purpose.
-    """
-    repo = _init_throwaway_repo(tmp_path)
-    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
-    record.parent.mkdir(parents=True, exist_ok=True)
-    _commit(
-        repo,
-        "artifacts/reports/v0.14-fixture-self-anchor.md",
-        f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n",
-        "add the sweep record",
-    )
-    # A second report -- the shape the old mechanism refused outright.
-    _commit(repo, "artifacts/reports/note.md", "unrelated note\n", "add a note")
-    # The wave's own tail: a roadmap block and a PRD index row, neither
-    # under artifacts/reports/ at all.
-    _commit(repo, "docs/roadmap.md", "roadmap update\n", "update the roadmap")
-    head = _commit(
-        repo, "docs/prds/README.md", "index row\n", "update the PRD index"
-    )
-
-    assert guard.check_reports([record], head, repo_root=repo) == []
-
-
-def test_a_self_anchoring_record_followed_by_a_src_commit_fails(tmp_path) -> None:
-    """Task 008 (v0.20, #174): the walk's allow-list is still an allow-list
-    -- the moment any commit in `declared..HEAD` touches a path outside
-    `artifacts/reports/**`, `docs/roadmap.md` or `docs/prds/README.md`, the
-    whole walk is refused, exactly like an ordinary undischarged stale sha.
-    Supersedes the same two tests named in the sibling green fixture above
-    (docs/test-suite-audit.md § "Subsumed").
-    """
-    repo = _init_throwaway_repo(tmp_path)
-    parent = _commit(repo, "src/thing.py", "print('v1')\n", "add thing")
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-self-anchor.md"
-    record.parent.mkdir(parents=True, exist_ok=True)
-    _commit(
-        repo,
-        "artifacts/reports/v0.14-fixture-self-anchor.md",
-        f"```sweep-sha\n{parent}\n```\n\n1 passed in 0.01s\n",
-        "add the sweep record",
-    )
-    head = _commit(repo, "src/thing.py", "print('v2')\n", "change thing")
-
-    problems = guard.check_reports([record], head, repo_root=repo)
-
-    assert len(problems) == 1, problems
-    assert parent in problems[0] and head in problems[0]
-
-
-def test_a_self_anchoring_declared_sha_not_an_ancestor_of_head_fails(
-    tmp_path,
-) -> None:
-    """Task 008 (v0.20, #174): the walk requires genuine ANCESTRY, not
-    merely a report-only-looking diff -- a declared sha on a divergent
-    history (never merged into HEAD) is refused even though every commit
-    actually reachable from HEAD since the branch point is report-only.
-    """
-    repo = _init_throwaway_repo(tmp_path)
-    base = _commit(repo, "artifacts/reports/base.md", "base\n", "base report")
-    side = _commit(repo, "artifacts/reports/side.md", "side\n", "side report")
-    _run_git(repo, "checkout", "-q", base)
-    head = _commit(repo, "artifacts/reports/head.md", "head\n", "head report")
-
-    record = repo / "artifacts" / "reports" / "v0.14-fixture-non-ancestor.md"
-    record.write_text(f"```sweep-sha\n{side}\n```\n\n1 passed in 0.01s\n")
-
-    problems = guard.check_reports([record], head, repo_root=repo)
-
-    assert len(problems) == 1, problems
-    assert side in problems[0] and head in problems[0]

@@ -15,6 +15,16 @@ Each check function below is exercised twice: once against the real
 broken fixture built from a deep copy of that same real file and dumped to
 its OWN file under `tmp_path` (must return at least one problem) -- so every
 guard is shown non-vacuous. The fixture is never written under `.github/`.
+
+Task 053 (v0.20, #113 step 4) removed `DESELECT_NODE` and its
+required-deselect check (`check_nightly_matrix` no longer asserts that any
+deselect line is present) along with its own mutation test,
+`test_nightly_matrix_guard_fires_when_the_deselect_is_dropped`: the deselect
+it enforced
+(`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`)
+is itself retired in the same commit, so a guard requiring its presence
+would fail against the now-correct workflow file. No surviving node covers
+this one -- the requirement it pinned no longer exists to be covered.
 """
 
 from __future__ import annotations
@@ -37,11 +47,6 @@ EXPECTED_CELLS = {
     ("python:3.14-slim", "exported"),
     ("python:3.14-slim", "unset"),
 }
-
-DESELECT_NODE = (
-    "tests/test_sweep_sha_guard.py::"
-    "test_every_declared_sweep_sha_is_current_or_discharged"
-)
 
 # `-v "$GITHUB_WORKSPACE:<container path>:ro"` -- the mount must name the
 # runner's own checkout, not just any read-only path (a `-v /tmp/x:/src-ro:ro`
@@ -171,9 +176,6 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
         problems.append("no checkout step declares fetch-depth: 0")
 
     run_scripts = [step.get("run", "") for step in steps if step.get("run")]
-    joined = "\n".join(run_scripts)
-    if DESELECT_NODE not in joined:
-        problems.append(f"the sweep-sha carve-out deselect for {DESELECT_NODE} is missing")
 
     problems.extend(_check_readonly_workspace_mount(run_scripts))
 
@@ -390,19 +392,6 @@ def test_nightly_matrix_guard_fires_when_an_install_precedes_the_copy(tmp_path):
     fixture = _dump_fixture(tmp_path, "broken-install-before-copy.yml", broken)
     problems = check_nightly_matrix(_load(fixture))
     assert any("before the read-only checkout is copied" in p for p in problems), problems
-
-
-def test_nightly_matrix_guard_fires_when_the_deselect_is_dropped(tmp_path):
-    broken = copy.deepcopy(_load(NIGHTLY_PATH))
-    steps = broken["jobs"]["dev-layout"]["steps"]
-    for step in steps:
-        if "run" in step and DESELECT_NODE in step["run"]:
-            lines = step["run"].splitlines()
-            lines = [line for line in lines if "--deselect" not in line]
-            step["run"] = "\n".join(lines) + "\n"
-    fixture = _dump_fixture(tmp_path, "broken-no-deselect.yml", broken)
-    problems = check_nightly_matrix(_load(fixture))
-    assert any("carve-out" in p for p in problems), problems
 
 
 def test_nightly_browser_runner_guard_fires_when_a_cell_carries_the_label(tmp_path):

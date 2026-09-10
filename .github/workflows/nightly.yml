@@ -113,12 +113,11 @@ jobs:
       # The ubuntu:24.04 cell -- and ONLY that cell -- installs python3 and
       # python3-pip inside the container (after that copy, before the suite);
       # the two python:*-slim images already ship both.
-      # The one deselected node is the HEAD-relative sweep-sha drift check
-      # that cannot hold on any commit but a wave's last one (same reason and
-      # same exact node id as gate.yml's own deselect, #174, #113 step 4) --
-      # everything else in that module, and the whole `fast` tier besides,
-      # runs. Once task 053 retires that guard module this deselect has
-      # nothing left to name and is removed in that same task.
+      # The sweep-sha carve-out that used to be deselected here is retired
+      # (task 053, #113 step 4): the guard module now runs exactly one lint
+      # ("every record names some sha"), which holds on any checkout, so
+      # there is nothing left to deselect for that reason -- see
+      # scripts/host_like_dev_layout.sh's own header.
       - name: Dev-layout mode (containerized)
         env:
           CELL_IMAGE: ${{ matrix.image }}
@@ -136,6 +135,5 @@ jobs:
                 apt-get install -y -qq python3 python3-pip >/dev/null
               fi
               cd /src
-              scripts/host_like_dev_layout.sh \
-                --deselect "tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged"
+              scripts/host_like_dev_layout.sh
             '
