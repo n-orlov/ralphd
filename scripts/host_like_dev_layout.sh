@@ -104,9 +104,11 @@
 #
 # Exit code is pytest's own, UNLESS the install/import-path setup itself
 # fails, in which case it is 2 (venv interpreter refused, an invalid
-# HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE, or an invalid
-# HOST_LIKE_DEV_LAYOUT_TIER) or 3 (import did not actually move with $HOME
-# -- the setup did not take).
+# HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE, or a HOST_LIKE_DEV_LAYOUT_TIER
+# that is not even marker-expression SHAPED -- blank, unbalanced
+# parentheses, or a character no marker expression uses; see that entry
+# below for what this script does and does not judge) or 3 (import did not
+# actually move with $HOME -- the setup did not take).
 #
 # Env overrides:
 #   PYTHON              interpreter to use instead of the bare `python3` on
@@ -171,7 +173,25 @@
 #                        to `fast` (see the rationale above the Usage line).
 #                        Any other marker expression pytest's own `-m`
 #                        accepts is honoured verbatim (e.g. `smoke`,
-#                        `docker`). The one explicit "no filter" form is the
+#                        `docker`, `fast and not docker`).
+#
+#                        This script judges only the value's SHAPE, and it
+#                        does so before the (slow) install step so a typo
+#                        costs milliseconds instead of surfacing minutes
+#                        later: a blank value, unbalanced parentheses, or a
+#                        character outside a marker expression's alphabet
+#                        (letters, digits, `_`, whitespace, parentheses, `-`)
+#                        is refused with exit 2 and a message naming the
+#                        value. It deliberately does NOT judge the
+#                        expression's meaning -- it cannot, since pytest's
+#                        `-m` grammar and the set of registered markers live
+#                        in the interpreter being set up, not in this shell
+#                        -- so a value that is shaped like a marker
+#                        expression but that pytest rejects anyway (an
+#                        unknown operator, a dangling `and`) reaches pytest
+#                        and surfaces as pytest's OWN usage error, exit 4.
+#
+#                        The one explicit "no filter" form is the
 #                        literal value `unfiltered`: no `-m` flag is added at
 #                        all, reproducing the whole-suite invocation every
 #                        version of this script ran before task 076 (the two
@@ -221,6 +241,45 @@ fi
 # "no filter" form. See the header's Usage section and
 # HOST_LIKE_DEV_LAYOUT_TIER entry for the rationale.
 DEV_LAYOUT_TIER="${HOST_LIKE_DEV_LAYOUT_TIER:-fast}"
+
+# Shape check only, and only what this shell can honestly judge (the header's
+# HOST_LIKE_DEV_LAYOUT_TIER entry says so in as many words): a blank value, a
+# character no marker expression uses, or unbalanced parentheses is refused
+# here -- before the install step below, so a typo fails in milliseconds --
+# while an expression that merely MEANS nothing to pytest is left for pytest
+# itself to reject with its own usage error.
+TIER_INVALID=""
+case "$DEV_LAYOUT_TIER" in
+  *[![:alnum:][:space:]_\(\)-]*)
+    TIER_INVALID="it contains a character no pytest marker expression uses"
+    ;;
+esac
+if [ -z "${DEV_LAYOUT_TIER//[[:space:]]/}" ]; then
+  TIER_INVALID="it is blank"
+fi
+if [ -z "$TIER_INVALID" ]; then
+  PAREN_DEPTH=0
+  for (( TIER_I = 0; TIER_I < ${#DEV_LAYOUT_TIER}; TIER_I++ )); do
+    case "${DEV_LAYOUT_TIER:$TIER_I:1}" in
+      "(") PAREN_DEPTH=$((PAREN_DEPTH + 1)) ;;
+      ")") PAREN_DEPTH=$((PAREN_DEPTH - 1)) ;;
+    esac
+    if [ "$PAREN_DEPTH" -lt 0 ]; then break; fi
+  done
+  if [ "$PAREN_DEPTH" -ne 0 ]; then
+    TIER_INVALID="its parentheses are unbalanced"
+  fi
+fi
+if [ -n "$TIER_INVALID" ]; then
+  echo "host_like_dev_layout.sh: HOST_LIKE_DEV_LAYOUT_TIER" \
+       "'$DEV_LAYOUT_TIER' is not shaped like a pytest marker expression:" \
+       "$TIER_INVALID. Pass an expression built from marker names, 'not'," \
+       "'and', 'or' and parentheses (e.g. 'fast', 'smoke'," \
+       "'fast and not docker'), or the literal 'unfiltered' to add no -m" \
+       "flag at all." >&2
+  exit 2
+fi
+
 PYTEST_TIER_ARGS=()
 if [ "$DEV_LAYOUT_TIER" = "unfiltered" ]; then
   echo "host_like_dev_layout.sh: pytest tier selection: no marker filter" \

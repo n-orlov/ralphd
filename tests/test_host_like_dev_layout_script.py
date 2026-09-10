@@ -527,6 +527,95 @@ def test_an_explicit_tier_is_carried_instead_of_the_default():
     ), result.stdout
 
 
+def test_a_compound_tier_expression_is_carried_verbatim():
+    """The header promises any marker expression pytest's own `-m` accepts is
+    honoured verbatim, not just a single marker name."""
+    result = _run(
+        ["--collect-only", "-q"],
+        extra_env={"HOST_LIKE_DEV_LAYOUT_TIER": "fast and not docker"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "host_like_dev_layout.sh: pytest tier selection: -m fast and not docker"
+        in result.stdout
+    ), result.stdout
+
+
+@pytest.mark.parametrize(
+    "tier, reason",
+    [
+        ("(", "its parentheses are unbalanced"),
+        ("fast and (", "its parentheses are unbalanced"),
+        ("   ", "it is blank"),
+        ("fast;rm", "it contains a character no pytest marker expression uses"),
+    ],
+    ids=["open-paren", "trailing-open-paren", "blank", "stray-character"],
+)
+def test_a_tier_that_is_not_marker_expression_shaped_exits_2_before_the_install(
+    tier, reason
+):
+    """The header's exit-code paragraph claims exit 2 for a
+    HOST_LIKE_DEV_LAYOUT_TIER that is not even marker-expression shaped, so
+    the script must actually check that -- and check it BEFORE the slow
+    install step, which is the whole reason the check is worth having (a typo
+    in a matrix cell's env otherwise surfaces as a pytest usage error minutes
+    later). Observed from the script's own reported invocation and status; no
+    lane is launched."""
+    result = _run(["--collect-only", "-q"], extra_env={"HOST_LIKE_DEV_LAYOUT_TIER": tier})
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    # Raw stderr, not whitespace-collapsed: the blank case's own value is
+    # whitespace, and the message must quote it as given.
+    assert f"HOST_LIKE_DEV_LAYOUT_TIER '{tier}'" in result.stderr.replace("\n", " "), (
+        result.stderr
+    )
+    assert reason in " ".join(result.stderr.split()), result.stderr
+    # Refused before the install: neither the tier echo nor any post-install
+    # report of this script's was reached.
+    assert "pytest tier selection" not in result.stdout, result.stdout
+    assert "SURVIVED the run" not in result.stdout, result.stdout
+
+
+def test_a_shape_valid_tier_pytest_rejects_is_pytests_own_usage_error():
+    """The other half of the same claim, and the boundary the header states
+    explicitly: this shell judges SHAPE only -- it cannot judge pytest's `-m`
+    grammar, which lives in the interpreter being set up -- so an expression
+    that is shaped like a marker expression but that pytest itself rejects
+    reaches pytest and surfaces as pytest's own usage error (exit 4), with
+    the script's tier echo already printed."""
+    result = _run(
+        ["--collect-only", "-q"],
+        extra_env={"HOST_LIKE_DEV_LAYOUT_TIER": "fast and"},
+    )
+    assert result.returncode == 4, (result.returncode, result.stdout, result.stderr)
+    assert (
+        "host_like_dev_layout.sh: pytest tier selection: -m fast and"
+        in result.stdout
+    ), result.stdout
+
+
+def test_the_header_documents_the_tier_shape_check_it_actually_performs():
+    """Rejection of attempt 2 was a FALSE header claim (exit 2 promised for an
+    invalid tier, no validation in the script). This node pins the pair: the
+    exit-code paragraph names the shapes that exit 2, and the
+    HOST_LIKE_DEV_LAYOUT_TIER entry discloses that meaning is pytest's to
+    judge, with exit 4 named."""
+    text = SCRIPT.read_text()
+    header = text[: text.index("set -euo pipefail")]
+    prose = " ".join(
+        line.lstrip().lstrip("#").strip() for line in header.splitlines()
+    )
+    prose = " ".join(prose.split())
+    assert "not even marker-expression SHAPED" in prose, prose[-2000:]
+    assert "unbalanced parentheses" in prose, prose[-2000:]
+    assert "exit 2 and a message naming the value" in prose, prose[-2000:]
+    assert "does NOT judge the expression's meaning" in prose, prose[-2000:]
+    assert "pytest's OWN usage error, exit 4" in prose, prose[-2000:]
+
+    body = text[text.index("set -euo pipefail"):]
+    assert 'TIER_INVALID="it is blank"' in body, body
+    assert 'TIER_INVALID="its parentheses are unbalanced"' in body, body
+
+
 def test_the_explicit_no_filter_form_adds_no_marker_flag():
     """`unfiltered` is the one documented "no filter" form -- the retired
     whole-suite invocation every version of this script ran before task 076,

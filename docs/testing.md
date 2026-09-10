@@ -91,7 +91,11 @@ tightened as the counts come down -- they are a ratchet, not a target.
 unfiltered by default: its own `pytest` invocation now adds `-m fast` unless
 a caller names a different tier through `HOST_LIKE_DEV_LAYOUT_TIER` (see the
 script's own header), including the literal value `unfiltered`, which
-reproduces exactly the recipe the two rows above measured. Both rows are kept
+reproduces exactly the recipe the two rows above measured. A value that is
+not even shaped like a marker expression (blank, unbalanced parentheses, a
+character no marker expression uses) is refused by the script with exit 2
+before its install step; whether a shape-valid expression *means* anything is
+pytest's own judgement and surfaces as pytest's usage error. Both rows are kept
 verbatim -- same recipe text, same counts, same wall clock, same budget
 columns -- because they are still the only measurement this repo has of that
 unfiltered invocation; they are labelled as retired rather than deleted or
