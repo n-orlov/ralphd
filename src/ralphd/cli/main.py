@@ -438,7 +438,8 @@ def _llm_wiring_path(cdir: Path) -> Path:
 
 
 def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
-                      mounts: list[str], headers: dict[str, str] | None = None) -> None:
+                      mounts: list[str], headers: dict[str, str] | None = None,
+                      header_ref_names: set[str] | None = None) -> None:
     """Persist the *resolved* env vars + extra mounts contributed by
     `--llm` wiring at `start` time (task 058, operator steering 018), and
     the resolved `--llm-header` pairs (task 045, #177), so `ralphctl
@@ -447,6 +448,15 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
     (which may lack the credentials entirely, or have different ones).
     `mode` is `"host"`, a named profile, or `"none"` -- informational
     only, not read back by resume.
+
+    `header_ref_names` (task 047, #177) is the subset of `headers`' own
+    keys whose value came from a `${env:}`/`${file:}`/`${cmd:}` reference
+    rather than a literal -- persisted alongside `headers` as
+    `headerRefNames` so a later reader (`llm_profiles.
+    read_llm_wiring_headers`, the ONE function `ralphctl status`/the hub
+    run header/the redacted `job.yaml` all call) can mask exactly those
+    values without re-resolving anything (which would shell out `${cmd:}`
+    commands again just to render a display string).
 
     These values are genuinely secret (the same class of value already
     written unencrypted-but-mode-0600 to `<cdir>/pi/models.json` for
@@ -467,20 +477,27 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
     doc = {"mode": mode, "env": env, "mounts": mounts}
     if headers:
         doc["headers"] = headers
+        if header_ref_names:
+            doc["headerRefNames"] = sorted(n for n in header_ref_names if n in headers)
     path.write_text(json.dumps(doc, indent=2))
     os.chmod(path, 0o600)
 
 
 def _read_llm_wiring(cdir: Path) -> dict:
-    """The `{"mode", "env", "mounts", "headers"}` `--llm` wiring persisted
-    by `_write_llm_wiring` at `start` time, or empty defaults for a run
-    started before task 058 (no file at all) or with nothing to
-    reproduce. `headers` (task 045, #177) is the resolved `--llm-header`
-    name -> value map, empty for a run started before that field existed
-    or with none set."""
+    """The `{"mode", "env", "mounts", "headers", "headerRefNames"}` `--llm`
+    wiring persisted by `_write_llm_wiring` at `start` time, or empty
+    defaults for a run started before task 058 (no file at all) or with
+    nothing to reproduce. `headers` (task 045, #177) is the resolved
+    `--llm-header` name -> value map, empty for a run started before that
+    field existed or with none set. `headerRefNames` (task 047, #177) is
+    the subset of `headers`' keys that came from a reference, as a `set`
+    ready for `name in ...` membership tests -- empty for a run started
+    before this field existed (every header then renders as literal,
+    which is what a pre-047 run always showed anyway)."""
     doc = _read_json(_llm_wiring_path(cdir), {}) or {}
     return {"mode": doc.get("mode") or "host", "env": doc.get("env") or {},
-            "mounts": doc.get("mounts") or [], "headers": doc.get("headers") or {}}
+            "mounts": doc.get("mounts") or [], "headers": doc.get("headers") or {},
+            "headerRefNames": set(doc.get("headerRefNames") or [])}
 
 
 def _extra_env_wiring_path(cdir: Path) -> Path:
@@ -1790,11 +1807,24 @@ def cmd_start(args):
     # a malformed spec or unresolvable reference dies here rather than
     # after `docker run`.
     header_overrides: dict[str, str] = {}
+    header_ref_names: set[str] = set()
     if args.llm_header:
         try:
-            header_overrides = llm_profiles.resolve_header_specs(args.llm_header)
+            header_overrides = llm_profiles.resolve_header_specs(
+                args.llm_header, ref_names=header_ref_names)
         except llm_profiles.HeaderError as e:
             die(2, str(e))
+    # Task 047 (#177): the DISPLAY copy of the flag's own resolved headers
+    # -- every ref-derived value already replaced by `llm_profiles.MASK`,
+    # every literal value left visible -- written into job.yaml itself so
+    # `ralphctl docs <run> job.yaml` (redacted mechanically on top of this)
+    # shows header names+values without a second, functional-secret file
+    # ever needing to be read for display. The REAL values (used to build
+    # the container's own `pi/models.json`) live only in `<cdir>/
+    # llm-wiring.json`, 0600, never here.
+    llm_headers_display = ({name: (llm_profiles.MASK if name in header_ref_names else value)
+                            for name, value in header_overrides.items()}
+                           if header_overrides else None)
 
     job = {
         "run_id": run_id,
@@ -1812,6 +1842,16 @@ def cmd_start(args):
         "peer_plan_review": args.peer_plan_review,
         "peer_verdict_gate": args.peer_verdict_gate,
         "model": args.model or (llm_profile.get("model") if llm_profile else None),
+        # Task 047 (#177): the display-redacted `--llm-header` map, right
+        # beside `model` -- so `ralphctl docs`'s redacted `job.yaml` view
+        # (and any operator hand-reading the file) sees this run's own
+        # request headers under the model it names, without touching the
+        # separate 0600 `llm-wiring.json` that holds the functional
+        # (unmasked) values `resume` replays. Omitted entirely (never
+        # `llm_headers: {}`/`null`) when no `--llm-header`/template
+        # `llm_header:` default applied, exactly like `models`/`model_tiers`
+        # above.
+        "llm_headers": llm_headers_display,
         # Task 006 (#60 pillar 4 cleanup): `fast_model`/`model_strategy` are
         # retired job.yaml keys -- a named LLM profile may still declare its
         # own `fast_model` (docs/llm-profiles.md's schema, unchanged), but
@@ -1961,7 +2001,8 @@ def cmd_start(args):
         if aws.is_dir():
             mounts += ["-v", f"{aws}:/home/agent/.aws:ro"]
             host_mounts.append(f"{aws}:/home/agent/.aws:ro")
-        _write_llm_wiring(cdir, "host", host_env, host_mounts, header_overrides)
+        _write_llm_wiring(cdir, "host", host_env, host_mounts, header_overrides,
+                          header_ref_names)
     elif args.llm != "none":
         assert llm_profile is not None  # resolved (or died) above
         for k, v in llm_profile["env"].items():
@@ -1976,7 +2017,7 @@ def cmd_start(args):
             (dest / "models.json").write_text(json.dumps(pi_doc, indent=1))
             os.chmod(dest / "models.json", 0o600)
         _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"],
-                          header_overrides)
+                          header_overrides, header_ref_names)
     else:
         _write_llm_wiring(cdir, "none", {}, [])
     # Resolved `name=value` pairs from --forward-env/--llm-env/--env, in
@@ -2552,8 +2593,10 @@ def cmd_resume(args):
     # re-persist the new effective map so a LATER resume with no flag
     # reproduces THIS resume's headers, not the original start's.
     if args.llm_header:
+        new_ref_names: set[str] = set()
         try:
-            new_headers = llm_profiles.resolve_header_specs(args.llm_header)
+            new_headers = llm_profiles.resolve_header_specs(
+                args.llm_header, ref_names=new_ref_names)
         except llm_profiles.HeaderError as e:
             die(2, f"ralphctl resume: {e}")
         models_json_path = cdir / "pi" / "models.json"
@@ -2564,8 +2607,14 @@ def cmd_resume(args):
                 models_json_path.write_text(json.dumps(doc, indent=1))
                 os.chmod(models_json_path, 0o600)
         effective_headers = {**wiring["headers"], **new_headers}
+        # Task 047 (#177): the ref-name set follows the SAME last-one-wins
+        # rule the headers themselves do -- a name this resume's flag set
+        # literally is no longer ref-derived even if the persisted `start`
+        # wiring had it flagged as one, and a name this resume's flag left
+        # untouched keeps whatever the persisted wiring already said.
+        effective_ref_names = (wiring["headerRefNames"] - set(new_headers)) | new_ref_names
         _write_llm_wiring(cdir, wiring["mode"], wiring["env"], wiring["mounts"],
-                          effective_headers)
+                          effective_headers, effective_ref_names)
 
     # Reproduce the resolved --forward-env/--llm-env/--env pairs from
     # `start` time (task 001) in the same order/precedence, never re-read
@@ -3183,6 +3232,17 @@ def cmd_status(args):
     status["provisioning"] = _provisioning
     status["provisioningLines"] = format_provisioning_lines(_provisioning)
 
+    # Task 047 (#177): this run's own `--llm-header` map, live from
+    # `<cdir>/llm-wiring.json` (never job.yaml's own static `llm_headers`
+    # snapshot -- the wiring file is the one a header-changing `resume`
+    # actually rewrites, so this stays fresh across resumes the way
+    # `provisioning` above already is) -- the ONE reader `ralphctl status`,
+    # the hub run header and the redacted `job.yaml` view all share
+    # (`llm_profiles.read_llm_wiring_headers`), ref-derived values already
+    # masked. Empty dict (never omitted) for a run with no header wiring at
+    # all, the same discipline `provisioning` above follows.
+    status["llmHeaders"] = llm_profiles.read_llm_wiring_headers(config_root(args.run_id))
+
     # Task 020 (E.4): whether this run's per-run MAC-key host directory is
     # bound (created by `start`/`resume`, see `run_secrets_dir`) -- known
     # from the host alone, live or not, unlike `model`/`provisioning`
@@ -3341,6 +3401,18 @@ def cmd_status(args):
         if status.get("modelRaw"):
             model_line += f"  (gateway id: {status.get('modelRaw')})"
         lines.append(model_line)
+    # Task 047 (#177): this run's own LLM request headers, right under the
+    # model line -- header names always visible, a value that came from a
+    # `${env:}`/`${file:}`/`${cmd:}` reference already replaced by
+    # `llm_profiles.MASK` (contains "***") by `read_llm_wiring_headers`
+    # above. Printed unconditionally when non-empty, unlike the `model:`
+    # line above -- these are known from `<cdir>/llm-wiring.json` alone,
+    # the same "known before iteration 1" property `provisioning:` below
+    # has, not from anything an iteration observed.
+    if status.get("llmHeaders"):
+        lines.append("llm headers:")
+        for _hname, _hvalue in status["llmHeaders"].items():
+            lines.append(f"  {_hname}: {_hvalue}")
     # Task 010 (#79, PRD requirement O): the resolved hat -> model mapping
     # (`provisioningLines`, computed above from job.yaml through the ONE
     # shared `state.format_provisioning_lines` formatter) -- printed

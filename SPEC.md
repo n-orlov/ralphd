@@ -1515,6 +1515,16 @@ summary are synthesized from `tasks.json` and `steering/` on read — the counts
 through the hardened reader of §5.3, which also attaches its
 `tasksStale`/`tasksSource` contract beside them.
 
+`llmHeaders` (v0.20 requirement J, #177, task 047) is host-merged the same
+way: a plain `name -> value` map read from `<config-dir>/llm-wiring.json`
+(never from `status.json`), attached by `ralphctl status`/the hub/`ui_server.
+_with_llm_headers` through the ONE shared reader (`llm_profiles.
+read_llm_wiring_headers`) so a header's redaction cannot read differently on
+one surface than another. Every value that came from a
+`${env:}`/`${file:}`/`${cmd:}` reference is already replaced with
+`llm_profiles.MASK`; a literal header value (a plain ticket id) stays
+visible. Empty for a run with no `--llm-header` wiring at all.
+
 `runSecretsMount` (v0.19 requirement E.4, #150/#152, task 020) is host-merged
 the same way: `ralphctl start`/`resume` bind a mode-0700 host directory,
 `run_secrets_dir(run_id)` (`<config>/<run>/run-secrets/`), at the fixed

@@ -114,7 +114,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # +52 total from the entry BEFORE task 044's own baseline): 4342->
         # 4394, 4544->4596, 4548->4600, 6370->6422, 6374->6426. Same reads,
         # same reasons.
-        "line": "1939",
+        #
+        # Task 047 (#177, showing/redacting `--llm-header` on the four
+        # surfaces) added a `headerRefNames` set-building block above the
+        # first two entries (+40) and threaded/persisted it through the
+        # rest, shifting every entry below by +40: 1939->1979, 1959->1999,
+        # 4394->4466, 4596->4668, 4600->4672, 6422->6494, 6426->6498. Same
+        # reads, same reasons.
+        "line": "1979",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -122,14 +129,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "1959",
+        "line": "1999",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "4394",
+        "line": "4466",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -139,7 +146,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4596",
+        "line": "4668",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -148,13 +155,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4600",
+        "line": "4672",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "6422",
+        "line": "6494",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -162,7 +169,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6426",
+        "line": "6498",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
@@ -175,8 +182,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Was line 1463 when this entry was written; this wave's hub work
         # above it (task 007, #155: forwarding the run's control token from
         # the steering form and the retry button) shifted the class-level
-        # default -- now at 1477, same read, same reason.
-        "line": "1477",
+        # default -- now at 1477, same read, same reason. Task 047 (#177,
+        # the `_with_llm_headers` helper) shifted it again, +32: 1477->1509.
+        "line": "1509",
         "reason": ("`Handler.registry`'s class-level default. Every real server "
                    "binds a concrete registry via `make_handler_class(reg)` "
                    "(see its own docstring, \"Bound to a registry path via "

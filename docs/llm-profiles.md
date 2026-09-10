@@ -95,7 +95,16 @@ Resolution rules:
   `<config-dir>/llm-wiring.json`'s `headers` field (task 045) so `resume`
   reproduces them without the flag, or `resume --llm-header` overrides them
   (same override rule, applied to whatever was persisted) -- see
-  `docs/cli.md`'s `ralphctl resume` section.
+  `docs/cli.md`'s `ralphctl resume` section. Task 047 (#177) makes every
+  resolved header NAME visible on four surfaces (`ralphctl llm show`,
+  `ralphctl status`, `ralphctl docs <run> job.yaml`, and the hub's run
+  header, under the model line) -- but a VALUE that came from `${env:}`/
+  `${file:}`/`${cmd:}` renders as `***` on every one of them (the same
+  masking `pi:`/`env:` values already got); a literal value (a plain
+  ticket id, say) stays visible. The one reader all four non-`llm-show`
+  surfaces share is `llm_profiles.read_llm_wiring_headers`, over
+  `llm-wiring.json`'s `headers` alongside the new `headerRefNames` list
+  that names which of them came from a reference.
 - `ralphctl llm test <profile>` verifies a profile end-to-end with a one-token
   completion in a throwaway container.
 

@@ -12,6 +12,7 @@ CLI).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -333,11 +334,23 @@ def _resolve_header_ref(ref: str, combined_env: dict, *, header_name: str) -> st
         f"'${{{kind}:...}}' (supported: env, file, cmd)")
 
 
-def resolve_header_specs(specs: list[str], host_env: dict | None = None) -> dict[str, str]:
+def resolve_header_specs(specs: list[str], host_env: dict | None = None, *,
+                         ref_names: set[str] | None = None) -> dict[str, str]:
     """Parse + resolve a list of `--llm-header` specs into a `name ->
     value` dict, in argument order (a later spec for the same name wins,
     the same last-one-wins rule the flag's own repeatability implies).
     Raises `HeaderError` on a malformed spec or an unresolvable reference.
+
+    `ref_names`, when given, is a set this call populates/corrects in place
+    with exactly the header NAMES whose CURRENT (last-one-wins) value came
+    from a `${env:}`/`${file:}`/`${cmd:}` reference rather than a literal --
+    the same `_mask_ref_paths`-style bookkeeping `_resolve_value` does for a
+    profile's own fields (#177). A later literal spec for a name already in
+    the set removes it (a later spec overwrites, never merges), matching
+    `out`'s own last-one-wins rule -- used by `ralphctl llm show`/`status`/
+    the redacted `job.yaml`/the hub run header to mask exactly the
+    ref-derived values (`MASK`) while leaving literal header values (a
+    plain ticket id) visible.
     """
     combined = dict(host_env if host_env is not None else os.environ)
     out: dict[str, str] = {}
@@ -346,7 +359,41 @@ def resolve_header_specs(specs: list[str], host_env: dict | None = None) -> dict
         m = _REF_RE.match(raw_value)
         out[name] = (_resolve_header_ref(raw_value, combined, header_name=name)
                      if m else raw_value)
+        if ref_names is not None:
+            if m:
+                ref_names.add(name)
+            else:
+                ref_names.discard(name)
     return out
+
+
+def read_llm_wiring_headers(cdir: Path) -> dict[str, str]:
+    """The display-ready `--llm-header` map for a run's config dir (#177):
+    the `headers`/`headerRefNames` pair `cli.main._write_llm_wiring`
+    persists in `<cdir>/llm-wiring.json`, with every ref-derived value
+    already replaced by `MASK` and every literal value left visible -- the
+    ONE reader `ralphctl status`, the hub's run header (`ui_server.
+    run_detail`) and the redacted `job.yaml` view all use, so a header's
+    redaction cannot read differently on one surface than another.
+
+    Empty for a run with no `--llm-header`/`headers:` wiring at all (no
+    file, an unparseable file, or a file recorded before this field
+    existed) -- the same "absent, not a crash" discipline every other
+    optional wiring field in this module follows.
+    """
+    path = cdir / "llm-wiring.json"
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    headers = doc.get("headers")
+    if not isinstance(headers, dict):
+        return {}
+    ref_names = set(doc.get("headerRefNames") or [])
+    return {name: (MASK if name in ref_names else value)
+            for name, value in headers.items()}
 
 
 def merge_headers_into_pi_config(pi_doc: dict | None, headers: dict[str, str]) -> dict | None:

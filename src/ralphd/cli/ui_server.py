@@ -57,6 +57,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..engine.config import MUTATING_METHODS, JobConfig
+from . import llm_profiles
 from ..engine.state import (
     NO_ARTIFACTS,
     NONTERMINAL_STATES,
@@ -1020,6 +1021,35 @@ def _with_provisioning(doc: dict, cfg_path: Path) -> dict:
             "provisioningLines": format_provisioning_lines(table)}
 
 
+def _with_llm_headers(doc: dict, cfg_path: Path) -> dict:
+    """Task 047 (#177): attach this run's own `--llm-header` map to a status
+    doc server-side, the exact same discipline `_with_provisioning` right
+    above uses -- the raw material (`<cdir>/llm-wiring.json`) is not on the
+    status doc itself either, live or on-disk, so it is read HERE, from
+    `cfg_path.parent` (the same config dir `_with_provisioning` was already
+    given `cfg_path` under), through the ONE shared reader
+    (`llm_profiles.read_llm_wiring_headers`) `ralphctl status` and the
+    redacted `job.yaml` view also call, so a header's redaction cannot read
+    differently on the hub than it does on the CLI.
+
+    `llmHeaders` is a plain `name -> value` dict with every ref-derived
+    value already replaced by `llm_profiles.MASK` -- `app.js`'s
+    `renderSummary` renders it verbatim under the model line, never
+    re-deriving which values were secret.
+
+    A run with no config dir/llm-wiring.json at all (or an unreadable one)
+    gets an empty dict rather than raising -- the same "absent, not a
+    crash" discipline `_with_provisioning` gives a job.yaml-less run.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    try:
+        headers = llm_profiles.read_llm_wiring_headers(cfg_path.parent)
+    except Exception:
+        headers = {}
+    return {**doc, "llmHeaders": headers}
+
+
 def _with_approach_display(doc: dict) -> dict:
     """Task 008 (#16): attach the rendered approach counter (`2/3`) to a status
     doc server-side, by the same one shared formatter `ralphctl status`/`runs`
@@ -1218,9 +1248,10 @@ def _cached_disk_status_block(reg: Path, run_dir: Path, run_id: str,
     cached = _STATUS_BLOCK_CACHE.get(run_id)
     if cached is not None and cached[0] == mtime:
         return cached[1]
-    shaped = _with_provisioning(
+    _cfg_path = _config_dir(reg, run_id) / "job.yaml"
+    shaped = _with_llm_headers(_with_provisioning(
         _with_approach_display(_with_cost_display(_with_local_times(recorded_status))),
-        _config_dir(reg, run_id) / "job.yaml")
+        _cfg_path), _cfg_path)
     _STATUS_BLOCK_CACHE[run_id] = (mtime, shaped)
     return shaped
 
@@ -1284,9 +1315,10 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # Task 004 (A.2): a live answer is somebody else's process replying
         # right now -- shaped fresh every time, never cached, since there is
         # no on-disk mtime to key a cache entry on.
-        shaped_status = _with_provisioning(
+        _cfg_path = _config_dir(reg, run_id) / "job.yaml"
+        shaped_status = _with_llm_headers(_with_provisioning(
             _with_approach_display(_with_cost_display(_with_local_times(live_status))),
-            _config_dir(reg, run_id) / "job.yaml")
+            _cfg_path), _cfg_path)
     else:
         shaped_status = _cached_disk_status_block(reg, run_dir, run_id, recorded_status)
 

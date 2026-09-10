@@ -1652,6 +1652,30 @@ function renderSummary(el, detail) {
     ["iterations", `${s.iterationsUsed ?? 0}/${s.iterationsBudget ?? "?"}`],
     ["live", detail.live ? "yes (proxied from container)" : "no (on-disk snapshot)"],
   ];
+  // Task 047 (#177): the per-iteration `model:` line CLI's `ralphctl
+  // status` prints, worded identically here (rendered server-side too --
+  // `s.model`/`s.modelRaw` travel unchanged from the SAME `GET /status`
+  // payload `ralphctl status` reads), with this run's own `--llm-header`
+  // map (`s.llmHeaders`, attached server-side by `ui_server._with_llm_
+  // headers`, ref-derived values already masked) right under it -- one
+  // row per header, never a second vocabulary from re-deriving anything
+  // in JS. Gated on `s.model` exactly like the CLI's own line is (omitted
+  // entirely, never "model: (unset)", before any iteration has observed
+  // one); the header rows are NOT gated on it (known from
+  // `llm-wiring.json` alone, same "known before iteration 1" property
+  // `provisioning` below already has) -- each row's own `header: <name>`
+  // label already says what it is, so an unmodelled run's headers (rare
+  // -- `--llm-header` with `--llm none`, still a legal combination) still
+  // render even with no `model` row above them.
+  if (s.model) {
+    let modelLine = String(s.model);
+    if (s.modelRaw) modelLine += `  (gateway id: ${s.modelRaw})`;
+    rows.push(["model", modelLine]);
+  }
+  const llmHeaders = s.llmHeaders || {};
+  for (const [hname, hvalue] of Object.entries(llmHeaders)) {
+    rows.push([`header: ${hname}`, String(hvalue)]);
+  }
   const started = s.startedAt;
   const ended = iterationInProgress ? null : s.endedAt;
   let durText = "";

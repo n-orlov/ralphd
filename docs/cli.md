@@ -314,6 +314,17 @@ registry-wide level. An unknown `--template`
 name exits `3` naming the expected path; a malformed `job.yaml` (not a
 mapping) exits `2`.
 
+A started run's OWN `job.yaml` (as opposed to a template's) may also carry
+`llm_headers` (task 047, #177, plural -- distinct from the template input
+key above): the DISPLAY copy of that run's resolved `--llm-header` map,
+written once by `start` right beside `model`, with every value that came
+from a `${env:}`/`${file:}`/`${cmd:}` reference already replaced by `***`.
+It is informational only -- the functional (unmasked) values `resume`
+replays live in the run's own `<cdir>/llm-wiring.json`, never in `job.yaml`
+itself -- which is why `ralphctl docs <run> job.yaml` (redacted the same
+mechanical way as everything else in that file) is where an operator reads
+it, not `JobConfig`.
+
 Docker siblings (`--allow-docker`) — default **off**. Mounts the host docker
 socket (default `/var/run/docker.sock`; override with `RALPHD_DOCKER_SOCK`)
 and adds the socket's group to the container so the agent can run
