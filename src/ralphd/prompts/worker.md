@@ -96,8 +96,10 @@ immediately starts the next iteration.
    try to survive on proposals alone; still work the assigned task.
 
    **The two refused split shapes are different.** A **forced** split —
-   dispatched with a `## Progress budget exhausted` notice once this
-   task's own progress budget is spent — is not optional: a report that
+   dispatched with the forced-split notice the Job context injects once
+   this task's own progress budget is spent (rendered by
+   `_worker_assignment_extra`, `src/ralphd/engine/loop.py:4891`) —
+   is not optional: a report that
    iteration without a valid, non-empty `proposed_tasks` is a contract
    violation, and the SAME worker is asked again through the contract
    ladder until one arrives. A **voluntary** split — the ordinary case
