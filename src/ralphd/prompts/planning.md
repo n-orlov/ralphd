@@ -78,11 +78,24 @@ task's own progress budget from it.
 **A task estimated above 3 iterations is refused at ingestion unless its own
 `successCriteria` already stages the descent** (PRD requirement D.2, #157):
 write the criteria as at least two `Stage N: ...` clauses (digits, not
-spelled-out numbers), each naming either an intermediate numeric target or a
-named module group (a backtick-quoted `some_module.py` path, or the word
-"module"/"modules"). A 4-plus estimate with no such staging is rejected at
+spelled-out numbers), labelled 1..N with no repeats and no gaps, each naming
+either an intermediate numeric target or a named module group, and no two
+stages repeating the same clause text. What counts, precisely, because the
+lint checks it mechanically:
+
+- an **intermediate numeric target** is a number bound to a unit ("12 nodes
+  pass", "3 rows land") or to a comparator ("at least 12", ">= 3", "12 of
+  15"). A bare identifier that happens to be a number is NOT a target: an
+  issue number (`#182`, "issue 42"), a task id ("task 026") and a version
+  ("v0.20") are all stripped before the check.
+- a **named module group** is a path or a backticked identifier a worker can
+  open: `tests/test_x.py`, `tests/records/`, docs/architecture.md,
+  `plan_ingestion.lint_proposal`. The bare word "module"/"modules" names
+  nothing and does NOT count.
+
+A 4-plus estimate with no such staging is rejected at
 ingestion, naming the offending task; the same estimate WITH staging is
-accepted. Prefer sizing the task at 3 or fewer in the first place — staging
+accepted. Prefer sizing the task at 3 or fewer in the first place -- staging
 is the escape hatch for genuinely large, sequential work, not a way to keep
 a monolithic task's high estimate.
 

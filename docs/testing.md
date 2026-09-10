@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5505 tests across 337 modules** at task 026's own commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3940
+collects **5524 tests across 337 modules** at task 026's second commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3959
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -357,7 +357,17 @@ refusal/acceptance behaviour (refusal at 4 with no staging, acceptance at
 3 regardless of staging, acceptance at 4-with-a-valid-staged-decomposition,
 refusal at 5, refusal at 4-with-only-one-stage-marker, a missing estimate
 never tripping this lint) through both the bare function and the full
-`enforce_plan_ingestion` loop -- all also `smoke`.
+`enforce_plan_ingestion` loop -- all also `smoke`, and 5524 (smoke 3959,
+modules unchanged at 337) by task 026's SECOND commit, which tightened the
+same detector after validation rejected the first: 19 further nodes in that
+same module pinning the three false acceptances attempt 1 shipped (a stage
+whose only number is an issue number, `#N`/`GH-N`/task-id/version
+references, the bare word "module" as a module group, duplicate `Stage 1`
+labels) plus the sequence rules (labels must start at 1, run consecutively,
+not descend), the no-repeated-clause rule, the accepted shapes
+(number+unit, comparator+number, a bare directory group) and a
+slashed conjunction (`and/or`) NOT counting as a path -- five of them
+through `lint_proposal` itself, all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

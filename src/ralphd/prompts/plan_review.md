@@ -87,8 +87,12 @@ judge? Look specifically for:
 8. **An oversized estimate with no staging (#157).** `plan_ingestion.
    lint_proposal()` already refuses a task whose `estimatedIterations` is
    above 3 unless that task's own `successCriteria` writes at least two
-   `Stage N: ...` clauses, each naming an intermediate numeric target or a
-   named module group, and rejects the plan before it ever reaches you if
+   `Stage N: ...` clauses, labelled 1..N with no repeats, each naming an
+   intermediate numeric target (a number bound to a unit or a comparator --
+   an issue number, task id or version does not count) or a named module
+   group (a path or backticked identifier -- the bare word "module" does not
+   count), with no two stages repeating one clause, and rejects the plan
+   before it ever reaches you if
    one slips through. Catch it here too if the lint's own regex misses a
    near-miss: a task whose `estimatedIterations` reads 4 or higher but
    whose criteria is one flat, unstaged demand is exactly the shape the

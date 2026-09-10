@@ -1248,27 +1248,87 @@ _MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES = 3
 # guessing at spelled-out numbers.
 _STAGE_MARKER_RE = re.compile(r"\bstage\s+(\d+)\b", re.IGNORECASE)
 
-# A named module group: a backtick-quoted path ending `.py` (this module's
-# own convention for citing a test module elsewhere, e.g.
-# `tests/test_x.py`), or the bare word "module(s)" naming one.
+# A named module group: a NAME, never a bare noun. The bare word "module"
+# names nothing a worker could open, so "the module works" is NOT a module
+# group (attempt 1 of this task accepted it, and the verifier rejected the
+# attempt for exactly that): a group has to be identified by a path or a
+# backticked identifier -- `tests/test_x.py`, `tests/records/`,
+# docs/architecture.md, `plan_ingestion.lint_proposal`.
 _MODULE_GROUP_TOKEN_RE = re.compile(
-    r"`[\w./-]+\.py`|\bmodules?\b", re.IGNORECASE,
+    # a backticked file/identifier: `tests/test_x.py`, `some_module.py`,
+    # `plan_ingestion.lint_proposal`
+    r"`[^`\s]*[\w-]+\.[A-Za-z][\w-]{0,15}`"
+    # a backticked path or directory group: `tests/records/`, `src/ralphd`
+    r"|`[^`\s]*/[^`]*`"
+    # a bare path down to a file: docs/architecture.md, tests/test_x.py
+    r"|\b[\w-]+(?:/[\w.-]+)*/[\w-]+\.[A-Za-z]{1,4}\b"
+    # a bare directory group written with its trailing slash: tests/records/
+    r"|\b[\w-]+(?:/[\w-]+)*/(?=[\s,.;:)]|$)"
 )
 
-# An intermediate numeric target: any bare integer -- deliberately loose
-# (this is a lint, not a proof), but scoped to ONE stage's own clause below,
-# never the whole criteria string, so a digit elsewhere in the criteria
-# (an unrelated sha fragment, a task id) never credits an unrelated stage.
-_NUMERIC_TARGET_TOKEN_RE = re.compile(r"\b\d+\b")
+# Reference noise stripped from a stage's clause BEFORE it is scanned: an
+# issue number, a task id, a GitHub reference, a version string. These are
+# identifiers, not measurements -- "Stage 1: investigate issue 42" states no
+# intermediate target at all, and attempt 1 of this task credited its bare
+# `42` as one (the verifier's first counterexample).
+_REFERENCE_NOISE_RE = re.compile(
+    r"#\d+"
+    r"|\bGH-\d+"
+    r"|\b(?:issues?|tasks?|PRs?|pull requests?|requirements?)\s+#?\d+"
+    r"|\bv?\d+\.\d+(?:\.\d+)*",
+    re.IGNORECASE,
+)
+
+# A unit a number can be a target OF. A number with no unit and no
+# comparator is not an intermediate numeric target, it is just a digit.
+_MEASURED_UNIT_RE = (
+    r"(?:tests?|nodes?|modules?|cases?|assertions?|clauses?|checks?|guards?"
+    r"|rows?|lines?|files?|entries?|records?|events?|fields?|keys?|routes?"
+    r"|examples?|scenarios?|steps?|iterations?|passes|failures?|errors?"
+    r"|warnings?|seconds?|minutes?|ms|s|%|percent|items?|paths?|columns?"
+    r"|jobs?|lanes?|commits?|callers?|call sites?|occurrences?)"
+)
+
+# An intermediate numeric target: a number bound to a unit ("12 nodes"), a
+# number bound to a comparator ("at least 12", ">= 12"), or a fraction of a
+# whole ("12 of 15", "12/15"). Scoped to ONE stage's own clause below,
+# never the whole criteria string, so a number elsewhere in the criteria
+# never credits an unrelated stage.
+_NUMERIC_TARGET_TOKEN_RE = re.compile(
+    r"(?:\b(?:at least|at most|no fewer than|no more than|not fewer than"
+    r"|not more than|minimum of|maximum of|up to|down to|from)\s+|[<>]=?\s*)"
+    r"\d+\b"
+    rf"|\b\d+\s*(?:\+\s*)?{_MEASURED_UNIT_RE}\b"
+    r"|\b\d+\s*(?:of|/|->|to)\s*\d+\b",
+    re.IGNORECASE,
+)
 
 
 def _staged_decomposition_gap(criteria: str) -> str | None:
-    """`None` if `criteria` decomposes its own work into at least two
-    `Stage N` markers, each of whose own clause (the text between that
-    marker and the next one, or the end of the string) names either an
-    intermediate numeric target or a named module group -- otherwise a
-    short, human-readable description of what is missing, for the caller
-    to fold into its own error message naming the task.
+    """`None` if `criteria` decomposes its own work into a genuine staged
+    sequence -- otherwise a short, human-readable description of what is
+    missing, for the caller to fold into its own error message naming the
+    task. "Genuine" means all four of:
+
+    1. at least two `Stage N` markers (digits only);
+    2. their labels are the sequence 1..N -- two `Stage 1`s, a skipped
+       number or a descending pair is a list of restatements, not a descent;
+    3. each stage's own clause (the text between that marker and the next,
+       or the end of the string) names an intermediate numeric target (a
+       number bound to a unit or a comparator -- `_NUMERIC_TARGET_TOKEN_RE`)
+       or a named module group (a path or backticked identifier --
+       `_MODULE_GROUP_TOKEN_RE`), scanned AFTER identifier noise (issue
+       numbers, task ids, versions) is stripped, since an identifier is not
+       a measurement;
+    4. no two stages carry the same clause text.
+
+    Rules 2-4 and the two tightened token patterns are this task's second
+    attempt: attempt 1 accepted `Stage 1: investigate issue 42. Stage 2:
+    investigate issue 43.` (bare integers read as targets), two generic
+    `module works` clauses (the bare noun read as a module group) and
+    duplicate `Stage 1` labels. Each of those three is now refused, with
+    its own message, and each has its own node in
+    `tests/test_estimated_iterations_staging.py`.
 
     Deliberately scoped to ONE task's own criteria text, not to sibling
     tasks elsewhere in the proposal: `dependsOn` already expresses genuine
@@ -1283,18 +1343,41 @@ def _staged_decomposition_gap(criteria: str) -> str | None:
     markers = list(_STAGE_MARKER_RE.finditer(criteria))
     if len(markers) < 2:
         return "fewer than two 'Stage N' markers"
+
+    numbers = [int(m.group(1)) for m in markers]
+    if numbers != list(range(1, len(numbers) + 1)):
+        return (
+            f"the 'Stage N' labels {numbers} are not the sequence "
+            f"{list(range(1, len(numbers) + 1))} -- duplicated, skipped or "
+            "out-of-order stage numbers are a list of restatements, not a "
+            "staged descent"
+        )
+
+    seen_clauses: dict[str, int] = {}
     for idx, marker in enumerate(markers):
         start = marker.end()
         end = markers[idx + 1].start() if idx + 1 < len(markers) else len(criteria)
         clause = criteria[start:end]
+        scannable = _REFERENCE_NOISE_RE.sub(" ", clause)
         if not (
-            _MODULE_GROUP_TOKEN_RE.search(clause)
-            or _NUMERIC_TARGET_TOKEN_RE.search(clause)
+            _MODULE_GROUP_TOKEN_RE.search(scannable)
+            or _NUMERIC_TARGET_TOKEN_RE.search(scannable)
         ):
             return (
                 f"stage {marker.group(1)} names no intermediate numeric "
-                "target or named module group"
+                "target (a number bound to a unit or a comparator, not an "
+                "issue number or a task id) and no named module group (a "
+                "module path or a backticked module name, not the bare "
+                "word 'module')"
             )
+        normalised = " ".join(scannable.lower().split()).strip(" .,;:-")
+        if normalised in seen_clauses:
+            return (
+                f"stages {seen_clauses[normalised]} and {marker.group(1)} "
+                "carry the same clause text -- a stage repeated verbatim "
+                "decomposes nothing"
+            )
+        seen_clauses[normalised] = int(marker.group(1))
     return None
 
 
@@ -1490,9 +1573,14 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
                     f"the work into a staged sequence ({gap}) -- either "
                     f"lower the estimate to "
                     f"{_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES} or fewer, "
-                    "or write the criteria as at least two 'Stage N: ...' "
-                    "clauses, each naming an intermediate numeric target "
-                    "or a named module group"
+                    "or write the criteria as 'Stage 1: ... Stage 2: ...' "
+                    "(labels numbered 1..N, no repeats), each stage naming "
+                    "an intermediate numeric target (a number bound to a "
+                    "unit or a comparator -- an issue number or task id is "
+                    "not a target) or a named module group (a module path "
+                    "or backticked module name -- the bare word 'module' is "
+                    "not a group), and no two stages repeating the same "
+                    "clause"
                 )
 
     known_ids = set(seen) | (extra_known_ids or set())
