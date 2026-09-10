@@ -21,6 +21,15 @@ iteration is to read the PRD and produce a task plan. You do NOT implement anyth
    exist and what each costs, and the fastest targeted invocation per area the
    plan touches. Compare that runtime against the iteration wall-clock cap and
    record what fraction of one iteration a full run costs.
+2c. **Read the approach ordinal from the Job context section below**
+   (`Approach N of M`) before you draft anything: if this is not approach 1,
+   this is a re-plan after an earlier approach was rejected, and the reason
+   it was rejected is exactly what this plan must not repeat. Use the ordinal
+   in prose when you refer to it; never invent your own task-id prefix to
+   encode which approach a task belongs to (task ids are the engine's own
+   numbering, not yours to overload) and never count prior plans in the git
+   history to derive it — the Job context figure is the authoritative one. A
+   review cure pass is not a new approach and does not move this number.
 3. Draft your plan as a file named `plan-proposal.json` in the run state
    directory (the "Run state directory" path in "Job context" below — the
    run's own scratch area, NOT the code workspace), with this exact schema:
@@ -146,6 +155,16 @@ state** (e.g. "once this run has finished" or "after status.json leaves
 observe that, and a proposal doing this is rejected at ingestion, naming the
 offending task.
 
+3a. **Self-lint your own draft against the three refusal shapes above before
+   you write it to disk**: for every task, (i) an `estimatedIterations` above
+   3 carries the staged decomposition the "4-plus estimate" rule above
+   requires; (ii) any `<metric> under <target>` clause whose own text quotes
+   a baseline more than 2x the target names a linked measurement task
+   carrying all five elements (a)–(e) the baseline-smell rule above lists;
+   (iii) no task's `successCriteria` is gated on this run's own terminal
+   state. Fixing your own draft against these three shapes now is cheaper
+   than a reject-and-resubmit round trip once the harness's own lint finds
+   the same thing.
 4. Report your outcome as the LAST non-blank line of your final reply, a
    single JSON object, written bare, never inside a code fence — a fenced
    code block's closing line can become the reply's own last non-blank line,
@@ -182,7 +201,7 @@ offending task.
 ## Plan-building practices
 
 Recent PRDs have each had to spell out, by hand, the same set of practices this
-role now needs by default. Follow all eight below when drafting tasks; each is
+role now needs by default. Follow all nine below when drafting tasks; each is
 named together with the incident that taught it, so the reason survives, not
 just the rule — a rule whose reason is stated is followed; one merely asserted
 is lawyered:
@@ -225,6 +244,17 @@ is lawyered:
    command, its `timeout`, and whether/how it backgrounds and polls — using
    the numbers step 2b already measured, rather than leaving each worker to
    rediscover the runtime and guess at a bound.
+9. **The tail is a FREEZE, and the plan names the last code-touching task.**
+   Code is anything outside `artifacts/reports/`, `docs/roadmap.md`,
+   `docs/prds/README.md`; from that named task's own launch onward every
+   commit is record-only, checked with `git show --stat` before it is
+   pushed. Name it explicitly in the plan or the Standing Rules block, not
+   left implicit as "whichever task happens to be last" — a later inserted
+   cure or re-take task has to know where the freeze line sits to land on
+   the correct side of it. A sweep is true of one tree: if a lane is found
+   red and the fix is code, the fix is new work and the sweep is re-run from
+   scratch after it lands, never re-run under the same task that found the
+   red lane.
 
 ## Rules
 

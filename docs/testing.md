@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5610 tests across 344 modules** at task 039's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4029
+collects **5616 tests across 345 modules** at task 040's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4035
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -496,6 +496,15 @@ surviving fence stays the plan-proposal.json file schema and carries none
 of the contract keys, each of steer.md/reflect.md/planning.md/worker.md
 states the fence-closing-line sentence, and steer.md/reflect.md/worker.md's
 own examples are now shown bare -- all also `smoke` (pure text-file
+assertions, no engine subprocess), and **5616 (smoke 4035, modules
+344->345)** by task 040's new `tests/test_planning_reflection_additions.py`
+(6 nodes, #170, #175): the practice-count sentence agrees with the numbered
+list (nine items, 1..9 with no gaps), practice 9 names the freeze and the
+last code-touching task, step 2c names the approach ordinal and both of
+PRD fact 5's prohibitions, step 3a self-lints against the three refusal
+shapes with markers (i)/(ii)/(iii), the four new/edited steps land in
+2b/2c/3/3a/4 order, and planning.md still carries exactly one code fence
+(the plan-proposal.json file schema) -- all also `smoke` (pure text-file
 assertions, no engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
