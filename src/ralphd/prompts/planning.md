@@ -75,13 +75,28 @@ unresolvable `dependsOn`. Size it honestly rather than guessing low to look
 efficient or high to buy slack — later stages of this same plan derive the
 task's own progress budget from it.
 
-**A task estimated above 3 iterations is refused at ingestion unless its own
-`successCriteria` already stages the descent** (PRD requirement D.2, #157):
-write the criteria as at least two `Stage N: ...` clauses (digits, not
-spelled-out numbers), labelled 1..N with no repeats and no gaps, each naming
-either an intermediate numeric target or a named module group, and no two
-stages repeating the same clause text. What counts, precisely, because the
-lint checks it mechanically:
+**A task estimated above 3 iterations is refused at ingestion unless THE
+PROPOSAL decomposes it into staged tasks with their own measurable
+criteria** (PRD requirement D.2, #157). The staging is across TASKS, not
+inside one task's prose: writing `Stage 1: ... Stage 2: ...` into the
+oversized task's own criteria decomposes nothing, because the work stays in
+one task of the same size, and it is refused. What the lint looks for:
+
+- at least **two stage tasks** for the oversized one. A stage task is a
+  separate task in the proposal whose `title` (or `successCriteria`) carries
+  a `Stage N` marker in digits -- "Stage one" is not a marker -- and which is
+  bound to the oversized task by `dependsOn` in either direction, by naming
+  its id, or by that same link to another of its stage tasks (so a chain,
+  `Stage 2` dependsOn `Stage 1` dependsOn the parent, counts as one
+  descent).
+- their `Stage N` labels, in proposal order, are the sequence 1..N -- no
+  repeats, no gaps, no descending pair.
+- each stage task's own `successCriteria` names either an intermediate
+  numeric target or a named module group, and no two of them repeat the same
+  criteria text.
+
+What counts as measurable, precisely, because the lint checks it
+mechanically:
 
 - an **intermediate numeric target** is a number bound to a unit ("12 nodes
   pass", "3 rows land") or to a comparator ("at least 12", ">= 3", "12 of
@@ -94,10 +109,10 @@ lint checks it mechanically:
   nothing and does NOT count.
 
 A 4-plus estimate with no such staging is rejected at
-ingestion, naming the offending task; the same estimate WITH staging is
-accepted. Prefer sizing the task at 3 or fewer in the first place -- staging
-is the escape hatch for genuinely large, sequential work, not a way to keep
-a monolithic task's high estimate.
+ingestion, naming the offending task; the same estimate WITH the stage tasks
+is accepted. Prefer sizing the task at 3 or fewer in the first place --
+staging is the escape hatch for genuinely large, sequential work, not a way
+to keep a monolithic task's high estimate.
 
 **Never make a task's `successCriteria` depend on this run's own terminal
 state** (e.g. "once this run has finished" or "after status.json leaves
@@ -112,7 +127,8 @@ offending task.
    the run state directory. The harness reads that file, validates its shape,
    lints it (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate
    `successCriteria`, a smuggled `status`, an invalid `estimatedIterations`,
-   an estimate past 3 iterations with no staged decomposition,
+   an estimate past 3 iterations the proposal does not decompose into stage
+   tasks,
    a task gated on this run's own
    terminal state) and only then applies it as the plan — if it rejects your
    proposal, you will be re-prompted with the SPECIFIC error and asked to

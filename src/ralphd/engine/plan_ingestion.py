@@ -1233,14 +1233,24 @@ TASK_205_SUCCESS_CRITERIA = (
 
 
 # Task 026 (PRD requirement D.2, #157): a task the planner estimates above
-# this many iterations is refused at ingestion unless its own
-# `successCriteria` already decomposes the work into a staged sequence with
-# its own measurable sub-goals -- exactly the shape `plan_review.md`'s
-# peer-review checklist (item 8, below) asks a human-shaped peer to look
-# for when the peer gate is ON; this lint is what enforces the SAME rule
-# when that gate is OFF (`plan_review` never runs at all), and it is never
-# skipped either way -- ingestion's three steps run for every proposal
-# regardless of `peer_plan_review`.
+# this many iterations is refused at ingestion unless THE PROPOSAL
+# decomposes it into staged TASKS carrying their own measurable criteria --
+# exactly the shape `plan_review.md`'s peer-review checklist (item 8,
+# below) asks a human-shaped peer to look for when the peer gate is ON;
+# this lint is what enforces the SAME rule when that gate is OFF
+# (`plan_review` never runs at all), and it is never skipped either way --
+# ingestion's three steps run for every proposal regardless of
+# `peer_plan_review`.
+#
+# The decomposition the PRD asks for is across TASKS, not inside one task's
+# prose: "unless the proposal decomposes it into staged tasks with their own
+# measurable criteria". Attempt 2 of this task read `Stage N` headings
+# inside the oversized task's own `successCriteria` as the staging, which
+# both refused a genuinely decomposed proposal (an oversized parent beside
+# two measurable stage tasks) and accepted a monolith that had merely
+# written headings into one flat criterion -- the exact inversion the
+# verifier rejected. `_staged_decomposition_gap()` below now reads the
+# proposal's task list.
 _MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES = 3
 
 # A stage marker: "Stage 1", "Stage 2" -- deliberately only the digit form,
@@ -1304,80 +1314,187 @@ _NUMERIC_TARGET_TOKEN_RE = re.compile(
 )
 
 
-def _staged_decomposition_gap(criteria: str) -> str | None:
-    """`None` if `criteria` decomposes its own work into a genuine staged
-    sequence -- otherwise a short, human-readable description of what is
-    missing, for the caller to fold into its own error message naming the
-    task. "Genuine" means all four of:
-
-    1. at least two `Stage N` markers (digits only);
-    2. their labels are the sequence 1..N -- two `Stage 1`s, a skipped
-       number or a descending pair is a list of restatements, not a descent;
-    3. each stage's own clause (the text between that marker and the next,
-       or the end of the string) names an intermediate numeric target (a
-       number bound to a unit or a comparator -- `_NUMERIC_TARGET_TOKEN_RE`)
-       or a named module group (a path or backticked identifier --
-       `_MODULE_GROUP_TOKEN_RE`), scanned AFTER identifier noise (issue
-       numbers, task ids, versions) is stripped, since an identifier is not
-       a measurement;
-    4. no two stages carry the same clause text.
-
-    Rules 2-4 and the two tightened token patterns are this task's second
-    attempt: attempt 1 accepted `Stage 1: investigate issue 42. Stage 2:
-    investigate issue 43.` (bare integers read as targets), two generic
-    `module works` clauses (the bare noun read as a module group) and
-    duplicate `Stage 1` labels. Each of those three is now refused, with
-    its own message, and each has its own node in
-    `tests/test_estimated_iterations_staging.py`.
-
-    Deliberately scoped to ONE task's own criteria text, not to sibling
-    tasks elsewhere in the proposal: `dependsOn` already expresses genuine
-    cross-task ordering (module docstring, step 3), and inventing a SECOND,
-    unstated convention for "this task is a stage of that one" would be a
-    lint nothing else in this module, `planning.md`, or the PRD names.
-    Writing the staged sub-goals directly into the oversized task's own
-    `successCriteria` reuses the exact mechanism every other lint in this
-    module already reads (`_CLAUSE_SPLIT_RE`'s sibling checks, all scoped
-    to the same field) instead of adding a new cross-task shape to trust.
+def _measurable_criteria_gap(criteria: str) -> str | None:
+    """`None` if `criteria` states something measurable -- an intermediate
+    numeric target (a number bound to a unit or a comparator,
+    `_NUMERIC_TARGET_TOKEN_RE`) or a named module group (a path or a
+    backticked identifier, `_MODULE_GROUP_TOKEN_RE`) -- otherwise a short
+    description of what is missing. Identifier noise (issue numbers, task
+    ids, versions) is stripped BEFORE the scan, since an identifier is not
+    a measurement: `investigate issue 42` measures nothing.
     """
-    markers = list(_STAGE_MARKER_RE.finditer(criteria))
-    if len(markers) < 2:
-        return "fewer than two 'Stage N' markers"
+    scannable = _REFERENCE_NOISE_RE.sub(" ", criteria)
+    if _MODULE_GROUP_TOKEN_RE.search(scannable) or _NUMERIC_TARGET_TOKEN_RE.search(
+        scannable
+    ):
+        return None
+    return (
+        "no intermediate numeric target (a number bound to a unit or a "
+        "comparator, not an issue number or a task id) and no named module "
+        "group (a module path or a backticked module name, not the bare "
+        "word 'module')"
+    )
 
-    numbers = [int(m.group(1)) for m in markers]
+
+def _normalised_clause(text: str) -> str:
+    """`text` with identifier noise stripped, case folded and whitespace
+    collapsed -- the form two stage tasks' criteria are compared in, so a
+    stage restated verbatim is caught however it was spaced."""
+    scannable = _REFERENCE_NOISE_RE.sub(" ", text)
+    return " ".join(scannable.lower().split()).strip(" .,;:-")
+
+
+def _stage_number(task: dict) -> int | None:
+    """The `Stage N` label this task declares (digits only -- "Stage one" is
+    not a marker), read from its `title` first and its `successCriteria`
+    second, or `None` if it declares none."""
+    for field in ("title", "successCriteria"):
+        value = task.get(field)
+        if isinstance(value, str):
+            match = _STAGE_MARKER_RE.search(value)
+            if match is not None:
+                return int(match.group(1))
+    return None
+
+
+def _is_stage_task_of(stage: dict, parent: dict) -> bool:
+    """`True` if `stage` is bound to `parent` -- by `dependsOn` in EITHER
+    direction (the stages may depend on the oversized task or the oversized
+    task may depend on its stages; the PRD names neither direction, so both
+    are accepted) or by naming the parent's id in its own title/criteria.
+    """
+    parent_id = parent.get("id")
+    stage_id = stage.get("id")
+    stage_deps = stage.get("dependsOn") or []
+    parent_deps = parent.get("dependsOn") or []
+    if isinstance(stage_deps, list) and parent_id in stage_deps:
+        return True
+    if isinstance(parent_deps, list) and stage_id in parent_deps:
+        return True
+    if isinstance(parent_id, str) and parent_id:
+        token = re.compile(rf"(?<![\w-]){re.escape(parent_id)}(?![\w-])")
+        for field in ("title", "successCriteria"):
+            value = stage.get(field)
+            if isinstance(value, str) and token.search(value):
+                return True
+    return False
+
+
+def _staged_decomposition_gap(task: dict, tasks: list) -> str | None:
+    """`None` if the PROPOSAL decomposes the oversized `task` into staged
+    tasks with their own measurable criteria -- otherwise a short,
+    human-readable description of what is missing, for the caller to fold
+    into its own error message naming the task.
+
+    A **stage task** is a SEPARATE task in the same proposal that (a)
+    carries a `Stage N` marker (digits) in its `title` or its
+    `successCriteria` and (b) is bound to the oversized task, either by
+    `dependsOn` in either direction or by naming its id
+    (`_is_stage_task_of`) -- or is bound the same way to another stage task
+    of it, so a descent written as a chain (`Stage 2` depends only on
+    `Stage 1`, which depends on the parent) counts as one group.
+    A genuine decomposition means all four of:
+
+    1. at least two stage tasks bound to the oversized task -- headings
+       written inside the oversized task's own criteria are NOT a
+       decomposition, because they leave the work in one task of the same
+       size;
+    2. their `Stage N` labels, in proposal order, are the sequence 1..N --
+       two `Stage 1`s, a skipped number or a descending pair is a list of
+       restatements, not a descent, and proposal order is what the
+       scheduler breaks priority ties by, so the descent is written in it;
+    3. each stage task's own `successCriteria` is measurable
+       (`_measurable_criteria_gap`): an intermediate numeric target or a
+       named module group;
+    4. no two stage tasks carry the same criteria text.
+
+    This is a cross-task read, unlike every other lint in this function:
+    that is what requirement D.2 asks for in so many words ("decomposes it
+    into staged tasks with their own measurable criteria"), and it is the
+    fault attempt 2 was rejected for -- it read the headings inside one
+    task instead, refusing a decomposed proposal and accepting a monolith.
+    Rule 3's tightened token patterns are attempt 2's own surviving work:
+    `investigate issue 42` (a bare identifier), `the module works` (a bare
+    noun) and duplicate labels are each still refused, each with its own
+    message and its own node in
+    `tests/test_estimated_iterations_staging.py`.
+    """
+    parent_id = task.get("id")
+    candidates: list[tuple[int, dict]] = []
+    for other in tasks:
+        if not isinstance(other, dict) or other is task:
+            continue
+        if other.get("id") == parent_id:
+            continue
+        number = _stage_number(other)
+        if number is not None:
+            candidates.append((number, other))
+
+    # Bound directly to the oversized task, then transitively through any
+    # stage already in the group: a chain (`Stage 2` dependsOn `Stage 1`
+    # dependsOn the parent) is one descent, not two strangers.
+    stage_ids: set = set()
+    grew = True
+    while grew:
+        grew = False
+        for _, candidate in candidates:
+            if candidate.get("id") in stage_ids:
+                continue
+            anchors = [
+                other for _, other in candidates if other.get("id") in stage_ids
+            ]
+            if _is_stage_task_of(candidate, task) or any(
+                _is_stage_task_of(candidate, anchor)
+                or _is_stage_task_of(anchor, candidate)
+                for anchor in anchors
+            ):
+                stage_ids.add(candidate.get("id"))
+                grew = True
+    stages = [
+        (number, other)
+        for number, other in candidates
+        if other.get("id") in stage_ids
+    ]
+
+    if len(stages) < 2:
+        return (
+            "the proposal holds fewer than two stage tasks for it -- a stage "
+            "task is a SEPARATE task in the same proposal carrying a "
+            "'Stage N' marker (digits) in its title or successCriteria and "
+            f"bound to task {parent_id!r} by dependsOn (either direction), by "
+            "naming its id, or by the same link to another of its stage "
+            "tasks; 'Stage N' headings written inside this task's "
+            "own criteria decompose nothing, since the work stays in one "
+            "task of the same size"
+        )
+
+    numbers = [number for number, _ in stages]
     if numbers != list(range(1, len(numbers) + 1)):
         return (
-            f"the 'Stage N' labels {numbers} are not the sequence "
-            f"{list(range(1, len(numbers) + 1))} -- duplicated, skipped or "
-            "out-of-order stage numbers are a list of restatements, not a "
-            "staged descent"
+            f"the stage tasks' 'Stage N' labels {numbers}, in proposal "
+            f"order, are not the sequence {list(range(1, len(numbers) + 1))} "
+            "-- duplicated, skipped or out-of-order stage numbers are a list "
+            "of restatements, not a staged descent"
         )
 
     seen_clauses: dict[str, int] = {}
-    for idx, marker in enumerate(markers):
-        start = marker.end()
-        end = markers[idx + 1].start() if idx + 1 < len(markers) else len(criteria)
-        clause = criteria[start:end]
-        scannable = _REFERENCE_NOISE_RE.sub(" ", clause)
-        if not (
-            _MODULE_GROUP_TOKEN_RE.search(scannable)
-            or _NUMERIC_TARGET_TOKEN_RE.search(scannable)
-        ):
+    for number, stage in stages:
+        criteria = stage.get("successCriteria")
+        criteria = criteria if isinstance(criteria, str) else ""
+        measurable_gap = _measurable_criteria_gap(criteria)
+        if measurable_gap is not None:
             return (
-                f"stage {marker.group(1)} names no intermediate numeric "
-                "target (a number bound to a unit or a comparator, not an "
-                "issue number or a task id) and no named module group (a "
-                "module path or a backticked module name, not the bare "
-                "word 'module')"
+                f"stage task {stage.get('id')!r} (stage {number}) names "
+                f"{measurable_gap}"
             )
-        normalised = " ".join(scannable.lower().split()).strip(" .,;:-")
+        normalised = _normalised_clause(criteria)
         if normalised in seen_clauses:
             return (
-                f"stages {seen_clauses[normalised]} and {marker.group(1)} "
-                "carry the same clause text -- a stage repeated verbatim "
+                f"stage tasks {seen_clauses[normalised]} and {number} carry "
+                "the same successCriteria text -- a stage repeated verbatim "
                 "decomposes nothing"
             )
-        seen_clauses[normalised] = int(marker.group(1))
+        seen_clauses[normalised] = number
     return None
 
 
@@ -1400,8 +1517,8 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
     "nothing else" clause) or a launch form paired with a demand for the
     same process's captured status -- and the NINTH (task 026, requirement
     D.2, #157): a task whose `estimatedIterations` is past
-    `_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES` with no staged decomposition
-    in its own `successCriteria` -- see the
+    `_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES` and no staged decomposition
+    into stage TASKS anywhere in the same proposal -- see the
     block comments immediately above.
 
     `extra_known_ids` (task 017, PRD requirement B.2, #162): the ordinary
@@ -1563,24 +1680,26 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
             and not isinstance(estimated_iterations, bool)
             and estimated_iterations > _MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES
         ):
-            gap = _staged_decomposition_gap(criteria)
+            gap = _staged_decomposition_gap(t, tasks)
             if gap is not None:
                 errors.append(
                     f"task {tid!r}: estimatedIterations is "
                     f"{estimated_iterations}, past the "
                     f"{_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES}-iteration "
-                    f"bound, and its successCriteria does not decompose "
-                    f"the work into a staged sequence ({gap}) -- either "
-                    f"lower the estimate to "
+                    f"bound, and the proposal does not decompose it into "
+                    f"staged tasks with their own measurable criteria "
+                    f"({gap}) -- either lower the estimate to "
                     f"{_MAX_ESTIMATED_ITERATIONS_WITHOUT_STAGES} or fewer, "
-                    "or write the criteria as 'Stage 1: ... Stage 2: ...' "
-                    "(labels numbered 1..N, no repeats), each stage naming "
-                    "an intermediate numeric target (a number bound to a "
-                    "unit or a comparator -- an issue number or task id is "
-                    "not a target) or a named module group (a module path "
-                    "or backticked module name -- the bare word 'module' is "
-                    "not a group), and no two stages repeating the same "
-                    "clause"
+                    "or split it into separate tasks titled 'Stage 1: ...', "
+                    "'Stage 2: ...' (labels numbered 1..N in proposal order, "
+                    "no repeats), each bound to this task by dependsOn or by "
+                    "naming its id, and each carrying its own measurable "
+                    "successCriteria: an intermediate numeric target (a "
+                    "number bound to a unit or a comparator -- an issue "
+                    "number or task id is not a target) or a named module "
+                    "group (a module path or backticked module name -- the "
+                    "bare word 'module' is not a group), with no two stage "
+                    "tasks repeating the same criteria"
                 )
 
     known_ids = set(seen) | (extra_known_ids or set())

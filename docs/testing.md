@@ -367,7 +367,18 @@ labels) plus the sequence rules (labels must start at 1, run consecutively,
 not descend), the no-repeated-clause rule, the accepted shapes
 (number+unit, comparator+number, a bare directory group) and a
 slashed conjunction (`and/or`) NOT counting as a path -- five of them
-through `lint_proposal` itself, all also `smoke`.
+through `lint_proposal` itself, all also `smoke`, and 5532 (smoke 3967,
+modules unchanged at 337) by task 026's THIRD commit, which moved the same
+detector from the oversized task's own criteria to the PROPOSAL's task list
+after validation rejected the second attempt for reading the requirement
+inverted: the module's 42 nodes now drive `_staged_decomposition_gap(task,
+tasks)` over stage TASKS (a parent beside two dependency-ordered stage
+tasks accepted; the same parent with `Stage N` headings inside its own
+flat criterion refused; binding by either `dependsOn` direction, by naming
+the parent's id, and through a stage chain; a stage-marked task bound to
+some other parent not counting), with every measurability and
+sequence node of the second attempt kept at the stage-task level, plus two
+nodes on the refusal message's own wording -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

@@ -86,20 +86,27 @@ judge? Look specifically for:
    defect.
 8. **An oversized estimate with no staging (#157).** `plan_ingestion.
    lint_proposal()` already refuses a task whose `estimatedIterations` is
-   above 3 unless that task's own `successCriteria` writes at least two
-   `Stage N: ...` clauses, labelled 1..N with no repeats, each naming an
-   intermediate numeric target (a number bound to a unit or a comparator --
-   an issue number, task id or version does not count) or a named module
-   group (a path or backticked identifier -- the bare word "module" does not
-   count), with no two stages repeating one clause, and rejects the plan
+   above 3 unless THE PROPOSAL decomposes it into at least two stage TASKS:
+   separate tasks carrying a `Stage N` marker (digits) in their title or
+   criteria, bound to the oversized task by `dependsOn` in either direction,
+   by naming its id, or by that same link to another of its stage tasks,
+   labelled 1..N in proposal order with no repeats, each carrying its OWN
+   measurable `successCriteria` -- an intermediate numeric target (a number
+   bound to a unit or a comparator -- an issue number, task id or version
+   does not count) or a named module group (a path or backticked identifier
+   -- the bare word "module" does not count) -- with no two stage tasks
+   repeating one criterion, and rejects the plan
    before it ever reaches you if
-   one slips through. Catch it here too if the lint's own regex misses a
+   one slips through. `Stage N` headings written INSIDE the oversized task's
+   own criteria are not a decomposition: the work stays in one task of the
+   same size, and the lint refuses it. Catch it here too if the lint's own
+   regex misses a
    near-miss: a task whose `estimatedIterations` reads 4 or higher but
    whose criteria is one flat, unstaged demand is exactly the shape the
    plan-time lint exists to catch, and a plan you approve is not proof it
    never slipped past. Object by naming the offending task and its
    estimate, and instruct either lowering the estimate to 3 or fewer, or
-   rewriting the criteria as a genuine staged sequence.
+   splitting it into a genuine sequence of stage tasks.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is
