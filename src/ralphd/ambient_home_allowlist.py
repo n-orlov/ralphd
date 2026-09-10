@@ -247,7 +247,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # C.1, #156) added a single `from datetime import datetime,
         # timezone` import line above this read, shifting it once more --
         # now at 1133, same method, same read, same reason.
-        "line": "1133",
+        # Task 030 (PRD requirement E.1, #167) added the `CURE_PASS_CEILING`
+        # module-level constant above `_creds_note` in this same module,
+        # shifting this read once more -- now at 1142, same method, same
+        # read, same reason.
+        "line": "1142",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

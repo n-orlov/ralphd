@@ -361,6 +361,26 @@ def all_blocking_findings_curable(findings: list[dict]) -> bool:
     return all(f.get("curable") is True for f in blocking)
 
 
+def blocking_finding_clauses(findings: list[dict]) -> set[str]:
+    """Task 030 (PRD requirement E.1, #167): the set of `clause` values
+    carried by this findings list's BLOCKING entries only -- residual
+    findings never enter the set, the same blocking-only scan every other
+    function in this module already restricts itself to. This is the
+    comparison unit `LoopSupervisor._review_cure_pass_available` uses to
+    decide whether a SECOND (or third) rejection in the same approach is
+    a superset of the immediately preceding cure pass's own blocking set
+    -- "the same wall, unmoved" -- or a genuinely smaller/different set
+    that deserves another cure pass. A missing/non-string `clause` on an
+    otherwise-blocking entry (should never happen past `validate_
+    findings`) is dropped from the set rather than raising, so a malformed
+    entry fails towards "looks like progress" (a smaller set, i.e. the
+    cure pass is granted) rather than towards silently refusing a budget
+    the PRD says is owed.
+    """
+    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    return {f["clause"] for f in blocking if isinstance(f.get("clause"), str)}
+
+
 def read_findings_json(path: Path) -> list[dict]:
     """Read the machine-readable sidecar back from `path`, re-validating
     every finding through the same schema engine on the way out — a file

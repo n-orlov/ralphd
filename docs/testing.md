@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5554 tests across 339 modules** at task 029's second commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3987
+collects **5557 tests across 339 modules** at task 030's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3990
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -422,7 +422,13 @@ regex-satisfying but unrelated `Stage N` tasks) CLEARS ingestion and is
 refused by `plan_review` itself, spending a real revision, with the
 objection observable in the re-prompted planner's own `prompt.md` and the
 genuinely staged resubmission approved by the second `plan_review`
-invocation -- likewise fast-only.
+invocation -- likewise fast-only, and **5557 (smoke 3990, modules unchanged
+at 339)** by task 030's 3 new nodes in the SAME `tests/test_cure_pass.py`
+module (no new module, PRD requirement E.1, #167): the grant of a second
+cure pass on a non-superset rejection, the refusal (ordinary replan) of a
+superset second rejection, and the `CURE_PASS_CEILING` (3) refusing a
+fourth pass even against a disjoint blocking set -- all also `smoke`
+(in-process `LoopSupervisor._step_review()`, no real engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

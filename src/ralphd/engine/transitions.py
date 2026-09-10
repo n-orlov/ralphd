@@ -313,16 +313,21 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # findings are ALL curable (`findings.compute_verdict` says
         # "rejected" AND `findings.all_blocking_findings_curable` says
         # `True`) takes THIS edge -- back to `worker`, never `replan` --
-        # exactly once per approach (`curePasses[approach] == 0`,
-        # checked by `LoopSupervisor._step_review` AFTER the incurable
+        # on the first rejection per approach (`curePasses[approach] ==
+        # 0`, checked by `LoopSupervisor._step_review` AFTER the incurable
         # check above so `rejected_incurable` keeps its precedence when
         # every blocking finding is incurable, requirement C.2). The
         # engine appends one cure task per blocking finding to THIS
         # approach's `tasks.json` (`state.insert_cure_tasks`), increments
         # `curePasses` on status.json and emits `approach.cure_pass`
-        # before taking this edge; task 010 is what bounds a SECOND
-        # rejection in the same approach back onto the ordinary
-        # `rejected_approach_left` edge below.
+        # before taking this edge; task 010 bounds a SECOND rejection in
+        # the same approach back onto the ordinary `rejected_approach_
+        # left` edge below UNLESS task 030 (PRD requirement E.1, #167)
+        # grants another pass -- up to a ceiling of `CURE_PASS_CEILING`
+        # (3) per approach, and only when the new rejection's own blocking
+        # clause set is not a SUPERSET of the immediately preceding
+        # granted pass's own set (`LoopSupervisor._review_cure_pass_
+        # available`).
         #
         # Task 004 (PRD requirement C.1, finding 4): the target is now the
         # dedicated `cure` step state, not `worker` directly -- `cure`'s

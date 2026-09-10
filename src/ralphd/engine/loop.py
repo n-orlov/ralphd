@@ -184,6 +184,15 @@ _FENCED_JSON_BLOCK_RE = re.compile(
     r"```(?:json)?[ \t]*\r?\n(.*?)```", re.DOTALL | re.IGNORECASE)
 CONTRACT_REASK_FINAL_TEXT_MAX_CHARS = 4000
 
+# Task 030 (PRD requirement E.1, #167): the hard ceiling on how many cure
+# passes a single approach may ever take, whatever its blocking clause sets
+# look like -- "a cure is not a replan" bounds progress-based curing the
+# same way the pre-task-030 rule bounded curing at all, just at a higher
+# number. Once `curePasses[approach]` reaches this, `_review_cure_pass_
+# available` refuses unconditionally and the run falls through to the
+# ordinary replan/pause edges, exactly as a superset repeat already does.
+CURE_PASS_CEILING = 3
+
 
 class LoopSupervisor:
     def __init__(self, cfg: JobConfig, run: RunDir, workspace: Path):
@@ -8724,8 +8733,9 @@ class LoopSupervisor:
         the findings actually compute to `"rejected"` (`findings.compute_
         verdict`), EVERY blocking finding is curable (`findings.all_
         blocking_findings_curable` -- requires `curable is True` across
-        the whole blocking set), AND this approach has not already spent
-        its one cure pass (`curePasses[approach] == 0`).
+        the whole blocking set), AND this approach still has budget left
+        under task 030's progress-based rule (PRD requirement E.1, #167)
+        below.
 
         Task 039 (operator steer 002): a rejection that carries a
         criteria-tamper finding at all (`findings.any_criteria_tamper_
@@ -8742,6 +8752,24 @@ class LoopSupervisor:
         also what `tests/test_e2e.py::test_criteria_edited_after_validation_
         failure_is_refused` pins end to end: the archived approach holds its
         planned tasks and no engine-appended cure task.
+
+        Task 030 (PRD requirement E.1, #167): "a cure is not a replan" --
+        v0.19.1's own approach-1 incident spent its ENTIRE one-cure-pass
+        budget on a second rejection that repeated the exact same three
+        clauses the first cure pass had already targeted (a stale sweep,
+        never re-taken), and no ordering rule in the plan could reach that
+        because the budget was already gone. This bounded relaxation: a
+        FIRST rejection (`curePasses[approach] == 0`) is always granted, as
+        before. A SECOND or later rejection is granted iff (a) the ceiling
+        of `CURE_PASS_CEILING` passes for this approach has not already
+        been reached, AND (b) this rejection's own blocking clause set
+        (`findings.blocking_finding_clauses`) is NOT a superset of the
+        clause set the immediately preceding granted cure pass recorded
+        (`_cure_pass_blocking_clauses`) -- i.e. review is pointing at
+        something genuinely narrower or different, not the identical wall
+        restated. An unchanged or GROWN blocking set is a superset of
+        itself and is refused, falling through to the ordinary replan/
+        pause edges exactly as the one-pass bound did before this task.
         """
         findings_list = self._review_findings()
         if findings_list is None:
@@ -8752,7 +8780,32 @@ class LoopSupervisor:
             return False
         if not findings.all_blocking_findings_curable(findings_list):
             return False
-        return self._cure_passes_for_approach(approach) == 0
+        passes_taken = self._cure_passes_for_approach(approach)
+        if passes_taken >= CURE_PASS_CEILING:
+            return False
+        if passes_taken == 0:
+            return True
+        current_blocking = findings.blocking_finding_clauses(findings_list)
+        previous_blocking = self._cure_pass_blocking_clauses(approach)
+        return not current_blocking.issuperset(previous_blocking)
+
+    def _cure_pass_blocking_clauses(self, approach: int) -> set[str]:
+        """Task 030 (PRD requirement E.1, #167): the blocking clause set
+        the immediately preceding GRANTED cure pass for `approach`
+        recorded (`cureBlocking[approach]` on status.json), read back
+        disk-first exactly like `_cure_passes_for_approach` -- a fresh
+        process resuming mid-cure sees the same set a still-running one
+        already persisted. Absence (no cure pass yet, or a run predating
+        this task) reads as the empty set, which `_review_cure_pass_
+        available`'s `passes_taken == 0` branch never even reaches this
+        for -- it is only ever consulted once at least one pass has
+        already been taken.
+        """
+        cure_blocking = self.run.read_status().get("cureBlocking") or {}
+        value = cure_blocking.get(str(approach))
+        if not isinstance(value, list):
+            return set()
+        return {v for v in value if isinstance(v, str)}
 
     def _take_cure_pass(self, approach: int) -> None:
         """Task 009 (requirement C.1, #141): the consequence of taking the
@@ -8767,6 +8820,18 @@ class LoopSupervisor:
         side effects, mirroring how `_pause_and_escalate_incurable_
         rejection` only performs ITS side effects and leaves the edge
         itself to `_step_review`.
+
+        Task 030 (PRD requirement E.1, #167): also persists `cureBlocking
+        [approach]` -- THIS pass's own blocking clause set
+        (`findings.blocking_finding_clauses`) -- so the NEXT rejection's
+        `_review_cure_pass_available` call has something disk-backed to
+        compare against, and adds `blockingBefore` (the set the PREVIOUS
+        granted pass recorded, `[]` on this approach's first pass),
+        `blockingAfter` (this pass's own set) and `passNumber` (the new
+        count) to the `approach.cure_pass` event, so the progress a cure
+        budget is meant to track is legible off `events.jsonl` alone,
+        without cross-referencing `status.json` history that a resume may
+        have already overwritten.
         """
         findings_list = self._review_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
@@ -8775,10 +8840,15 @@ class LoopSupervisor:
         cure_passes = dict(status.get("curePasses") or {})
         new_count = self._cure_passes_for_approach(approach) + 1
         cure_passes[str(approach)] = new_count
-        self.run.update_status(curePasses=cure_passes)
+        blocking_before = sorted(self._cure_pass_blocking_clauses(approach))
+        blocking_after = sorted(findings.blocking_finding_clauses(findings_list))
+        cure_blocking = dict(status.get("cureBlocking") or {})
+        cure_blocking[str(approach)] = blocking_after
+        self.run.update_status(curePasses=cure_passes, cureBlocking=cure_blocking)
         self.run.emit("approach.cure_pass", approach=approach,
                       curePasses=new_count, taskIds=inserted,
-                      findings=blocking)
+                      findings=blocking, blockingBefore=blocking_before,
+                      blockingAfter=blocking_after, passNumber=new_count)
 
     def _review_last_approach_curable_rejection(self, approach: int) -> bool:
         """Task 011 (PRD requirement D.1, #142): does this rejection,

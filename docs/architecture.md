@@ -1909,6 +1909,38 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   Tests: `tests/test_cure_pass.py` (task 039's own section) in process and
   `tests/test_e2e.py::test_criteria_edited_after_validation_failure_is_refused`
   end to end.
+- **A cure is not a replan: a progress-based cure budget past the original
+  one-per-approach cap (v0.20 requirement E.1, #167, task 030).** The
+  one-per-approach bound task 010 pinned above is no longer absolute:
+  `_review_cure_pass_available` grants a SECOND (or third) cure pass in the
+  same approach when `curePasses[approach]` has not yet reached
+  `CURE_PASS_CEILING` (3) AND this rejection's own blocking clause set
+  (`findings.blocking_finding_clauses` -- the `clause` values of its
+  blocking findings, residuals excluded) is NOT a superset of the clause
+  set the immediately preceding GRANTED pass recorded. Every granted pass
+  persists its own blocking clause set to `status.json`'s `cureBlocking
+  [approach]` (`_take_cure_pass`, alongside the existing `curePasses`
+  increment) so the comparison survives a resume with no shared Python
+  state, the same disk-not-memory discipline `curePasses` itself already
+  uses; `_cure_pass_blocking_clauses` reads it back. An unchanged or GROWN
+  blocking set -- review pointing at the identical wall, or a bigger one --
+  is a superset of itself and is refused, falling through to the ordinary
+  replan/pause edges exactly as task 010's original one-pass bound did; a
+  genuinely narrower or different set (real progress, even if incomplete)
+  earns another pass. `approach.cure_pass` gains `blockingBefore`
+  (the previous granted pass's set, `[]` on the first pass), `blockingAfter`
+  (this pass's own set) and `passNumber` (the new count) alongside its
+  existing fields, so the whole progression is legible off `events.jsonl`
+  alone. This closes the v0.19.1 approach-1 incident this task's PRD
+  section names directly: a second rejection that repeated the SAME three
+  clauses a first cure pass had already targeted (a stale sweep, never
+  re-taken) spent that approach's entire one-cure-pass budget with no
+  ordering rule in the plan able to reach it -- under this rule the repeat
+  is still refused (same clauses, a superset), but a rejection that instead
+  narrows or shifts its own blocking set is no longer treated identically
+  to one that doesn't. Tests: `tests/test_cure_pass.py` (task 030's own
+  section: the grant on a non-superset second rejection, the refusal on a
+  superset one, and the ceiling at a third).
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
   from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
   final approach's all-curable rejection takes `rejected_last_approach` into

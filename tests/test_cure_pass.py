@@ -37,6 +37,13 @@ cure pass and the steer hat's `task-update` make to append cure tasks:
   remainder" claim distinguishes -- and `src/ralphd/prompts/steer.md`
   documents the identical move for the steer hat's own `task-update`.
 
+Task 030 (v0.20 requirement E.1, #167) adds its own section in place (not
+absorbed from elsewhere -- newly written): the one-per-approach bound
+above is widened to a progress-based budget, up to `CURE_PASS_CEILING`
+(3) passes per approach, granted only when a rejection's own blocking
+clause set is not a superset of the immediately preceding granted pass's
+own set.
+
 No two absorbed modules collided on a node name; every node below keeps its
 original function name. Everything below drives either a real
 `LoopSupervisor` (`_step_review()`) or the real `state.insert_cure_tasks`
@@ -529,6 +536,116 @@ def test_resume_mid_cure_also_keeps_the_incurable_precedence(tmp_path):
     assert outcome == ("advance", "review", "rejected_incurable")
     assert sup2.run.read_status().get("curePasses") == {"1": 1}
     assert len(_cure_tasks(sup2.run)) == 1
+
+
+# ---------------------------------------------------------------------------
+# task 030 (PRD requirement E.1, #167): "a cure is not a replan" -- past the
+# original one-per-approach bound, a SECOND or later rejection in the same
+# approach takes another cure pass iff (a) `curePasses[approach]` has not
+# yet reached `CURE_PASS_CEILING` (3), and (b) the new rejection's own
+# blocking clause set is NOT a superset (by `clause`) of the immediately
+# preceding GRANTED pass's own set (`cureBlocking[approach]`).
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_superset_second_rejection_grants_a_second_cure_pass(tmp_path):
+    """The first pass targets clause A; the second rejection's blocking
+    set is {B} -- not a superset of {A} -- so it earns pass 2, not the
+    ordinary replan edge. `approach.cure_pass`'s second event records
+    `blockingBefore` (pass 1's own set, {A}), `blockingAfter` ({B}) and
+    `passNumber` (2)."""
+    root = tmp_path / "run"
+    sup = _cure_once(root, approach=1, max_approaches=3)
+    first_cure_tasks = _cure_tasks(sup.run)
+    assert len(first_cure_tasks) == 1
+
+    narrower = [_finding("blocking", True, "requirement D (#167)",
+                         "a different defect, not requirement C.1")]
+    reviewer = _rejects_with(narrower)
+    reviewer.sup = sup  # type: ignore[attr-defined]
+    sup.runner.run = reviewer  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_review())
+
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+    status = sup.run.read_status()
+    assert status.get("curePasses") == {"1": 2}
+    assert status.get("cureBlocking") == {"1": ["requirement D (#167)"]}
+
+    cure_tasks = _cure_tasks(sup.run)
+    assert len(cure_tasks) == 2  # a second cure task appended, first kept
+
+    events = _events(root, "approach.cure_pass")
+    assert len(events) == 2
+    second = events[1]
+    assert second["passNumber"] == 2
+    assert second["curePasses"] == 2
+    assert second["blockingBefore"] == ["requirement C.1 (#141)"]
+    assert second["blockingAfter"] == ["requirement D (#167)"]
+
+
+def test_a_superset_second_rejection_is_refused_and_replans(tmp_path):
+    """The second rejection's blocking set is {A, B} -- a strict superset
+    of pass 1's {A} -- so it is refused: the ordinary replan edge, no
+    second cure pass, even though a NEW clause (B) is also present."""
+    root = tmp_path / "run"
+    sup = _cure_once(root, approach=1, max_approaches=3)
+
+    superset = [
+        _finding("blocking", True, "requirement C.1 (#141)", "still broken"),
+        _finding("blocking", True, "requirement D (#167)", "also broken"),
+    ]
+    reviewer = _rejects_with(superset)
+    reviewer.sup = sup  # type: ignore[attr-defined]
+    sup.runner.run = reviewer  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_review())
+
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    status = sup.run.read_status()
+    assert status.get("curePasses") == {"1": 1}  # unchanged: no 2nd pass
+    assert status.get("cureBlocking") == {"1": ["requirement C.1 (#141)"]}
+    assert len(_cure_tasks(sup.run)) == 1  # no second batch appended
+    assert len(_events(root, "approach.cure_pass")) == 1
+    assert sup.run.composite_prd_file.exists()  # the replan side effect ran
+
+
+def test_the_ceiling_refuses_a_fourth_pass_even_when_not_a_superset(tmp_path):
+    """Three non-superset rejections in a row exhaust `CURE_PASS_CEILING`
+    (3); a fourth rejection whose blocking set is disjoint from the third
+    pass's own is STILL refused -- the ceiling, not the superset test,
+    is what stops it."""
+    root = tmp_path / "run"
+    sup = _cure_once(root, approach=1, max_approaches=3)  # pass 1: {A}
+
+    def _take(clause: str, expect_pass: int) -> None:
+        reviewer = _rejects_with(
+            [_finding("blocking", True, clause, "narrower each time")])
+        reviewer.sup = sup  # type: ignore[attr-defined]
+        sup.runner.run = reviewer  # type: ignore[method-assign]
+        outcome = asyncio.run(sup._step_review())
+        assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+        assert sup.run.read_status().get("curePasses") == {"1": expect_pass}
+
+    _take("requirement D (#167)", 2)   # pass 2: {D}, not a superset of {A}
+    _take("requirement E (#167)", 3)   # pass 3: {E}, not a superset of {D}
+    assert sup.run.read_status().get("curePasses") == {"1": 3}
+
+    # a fourth rejection, disjoint from pass 3's own {E} -- would pass the
+    # superset test on its own, but the ceiling refuses it regardless.
+    fourth = [_finding("blocking", True, "requirement F (#167)",
+                       "yet another distinct defect")]
+    reviewer = _rejects_with(fourth)
+    reviewer.sup = sup  # type: ignore[attr-defined]
+    sup.runner.run = reviewer  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_review())
+
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert sup.run.read_status().get("curePasses") == {"1": 3}  # unchanged
+    assert sup.run.read_status().get("cureBlocking") == {"1": ["requirement E (#167)"]}
+    assert len(_cure_tasks(sup.run)) == 3  # passes 1-3's tasks, no 4th batch
+    assert len(_events(root, "approach.cure_pass")) == 3
 
 
 # ---------------------------------------------------------------------------
