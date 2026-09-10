@@ -10383,6 +10383,30 @@ class LoopSupervisor:
         Returns '' when no ruling has been recorded (the common case), so
         review prompts are unaffected until an operator actually amends
         something.
+
+        Task 037 (#168): a ruling now BINDS review only when it belongs to
+        the CURRENT approach (`self._approach`) -- an approach-1 ruling must
+        not read as authoritative once approach 2 has replanned around it.
+        An entry is scoped like this:
+
+          * `approach:` set and equal to the current approach, AND its
+            `taskId` is in the CURRENT plan (`tasks.json`) -> BINDING.
+          * `approach:` set to an earlier value -> non-binding, rendered
+            under the "Historical rulings" heading below.
+          * no `approach:` header at all (every ruling written before task
+            036, or one written with no resolvable approach) -> treated as
+            current IFF its `taskId` is in the current plan (backward
+            compatible); otherwise historical.
+          * `taskId` absent from the current plan -> NEVER binding, no
+            matter what `approach:` says, and this method emits
+            `amendment_target_not_in_plan` (once per call to this method,
+            even when several entries are orphaned) so the drift is
+            visible without silently downgrading the ruling's own text.
+
+        A run with no `tasks.json` at all yet (`TasksRead.present` False)
+        has no plan for an id to be absent FROM -- exactly
+        `_amend_echo_target_or_die`'s own carve-out -- so every entry is
+        treated as belonging to the plan in that case, never orphaned.
         """
         # Task 005 (requirement E, #99): a `mode: status` ruling is NOT a
         # criteria ruling and must never be rendered as one -- it carries
@@ -10396,6 +10420,34 @@ class LoopSupervisor:
                    if e.get("mode") != state.AMENDMENT_MODE_STATUS]
         if not entries:
             return ""
+        tasks_read = self.run.read_tasks_result()
+        plan_exists = tasks_read.present
+        plan_ids = {str(t.get("id")) for t in tasks_read.tasks}
+        current_approach = self._approach
+        orphan_ids: list[str] = []
+        binding: list[dict] = []
+        historical: list[dict] = []
+        for e in entries:
+            task_id = str(e.get("taskId"))
+            in_plan = (not plan_exists) or (task_id in plan_ids)
+            if plan_exists and task_id not in plan_ids:
+                orphan_ids.append(task_id)
+            approach = e.get("approach")
+            if not in_plan:
+                is_binding = False
+            elif approach is None:
+                is_binding = True
+            else:
+                is_binding = approach == current_approach
+            (binding if is_binding else historical).append(e)
+        if orphan_ids:
+            self.run.emit("amendment_target_not_in_plan", taskIds=orphan_ids)
+
+        def render(e: dict) -> str:
+            kind = "WAIVE" if e.get("waive") else "REPLACE"
+            return (f"\n- **task {e.get('taskId')}** ({kind}, recorded "
+                    f"{e.get('ts')}): {e.get('text')}\n")
+
         lines = [
             "\n## Operator rulings (task 028, #26)\n",
             ("The following ruling(s) were written by the operator directly "
@@ -10413,11 +10465,17 @@ class LoopSupervisor:
              "substitute for one of these -- only a ruling actually found "
              "here counts.\n"),
         ]
-        for e in entries:
-            kind = "WAIVE" if e.get("waive") else "REPLACE"
+        for e in binding:
+            lines.append(render(e))
+        if historical:
             lines.append(
-                f"\n- **task {e.get('taskId')}** ({kind}, recorded "
-                f"{e.get('ts')}): {e.get('text')}\n")
+                "\n### Historical rulings (not binding this review, "
+                "task 037, #168)\n"
+                "Recorded against an earlier approach, or naming a task id "
+                "no longer in this run's current plan -- NOT authoritative "
+                "for this review; shown for context only.\n")
+            for e in historical:
+                lines.append(render(e))
         return "".join(lines)
 
     async def _maybe_run_midrun_adjudication_episode(self) -> None:

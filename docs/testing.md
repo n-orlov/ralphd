@@ -200,7 +200,7 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5600 tests across 343 modules** at task 036's commit, over
+collects **5603 tests across 343 modules** at task 037's commit, over
 the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4022
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
@@ -479,8 +479,16 @@ stamping/omitting the header's new `approach:` line and `amendment_entries`
 parsing it back, and 7 `ralphctl amend` subprocess nodes covering the new
 target-title/status echo, the not-in-plan refusal and its `--force` override,
 the no-`tasks.json`-at-all non-refusal, and `--approach N` both explicit and
-defaulted from `status.json` -- none of these are `smoke` (the whole module
-is a `ralphctl` subprocess family, fast-only, like every other node in it).
+defaulted from `status.json`, and **5603 (smoke unchanged at 4022, modules
+unchanged at 343)** by task 037's 3 new nodes in the SAME module (#168):
+`_operator_amendment_review_context` scoping a ruling to the current
+approach, an earlier-approach ruling rendered under the labelled
+"Historical rulings" heading, a no-`approach:`-header entry treated as
+current iff its id is in the plan, and an entry naming an id absent from
+the plan never rendered as binding while `amendment_target_not_in_plan`
+fires exactly once per render call -- none of these are `smoke` (the whole
+module is a `ralphctl` subprocess family, fast-only, like every other node
+in it).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

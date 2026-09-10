@@ -166,6 +166,75 @@ def test_amendment_shaped_file_anywhere_else_under_config_dir_is_ignored(tmp_pat
     assert sup._operator_amendment_review_context() == ""
 
 
+def _events(root: Path) -> list[dict]:
+    path = root / "events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+
+
+# -- Task 037 (#168): scoped to the current approach, historical labelling ---
+
+
+def test_earlier_approach_ruling_is_historical_not_binding_in_a_later_one(tmp_path, monkeypatch):
+    """An approach-1 ruling on a task is not binding once approach 2 is
+    the run's current approach -- it is rendered under the labelled
+    'Historical rulings' heading instead, while the approach-2 ruling on
+    another task stays binding in the authoritative block above it."""
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "010", "Approach 1 said skip requirement F.",
+                    approach=1)
+    write_amendment(cdir, "011", "Approach 2 waiver.", waive=True, approach=2)
+    sup = _supervisor(tmp_path, approach=2, tasks=[
+        {"id": "010", "title": "t", "status": "pending", "successCriteria": "x"},
+        {"id": "011", "title": "t", "status": "pending", "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    ctx = sup._operator_amendment_review_context()
+    assert "Historical rulings" in ctx
+    hist_idx = ctx.index("Historical rulings")
+    assert ctx.index("task 010") > hist_idx
+    assert ctx.index("task 011") < hist_idx
+
+
+def test_no_approach_header_entry_is_current_iff_its_id_is_in_the_plan(tmp_path, monkeypatch):
+    """Backward compatibility: an entry written before task 036 carries no
+    `approach:` header at all -- it binds iff its task id is in the
+    CURRENT plan, regardless of `self._approach`."""
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "020", "Legacy ruling, no approach header.")
+    sup = _supervisor(tmp_path, approach=5, tasks=[
+        {"id": "020", "title": "t", "status": "pending", "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    ctx = sup._operator_amendment_review_context()
+    assert "Historical rulings" not in ctx
+    assert "task 020" in ctx
+
+
+def test_entry_naming_an_id_absent_from_the_plan_never_binds_and_emits_once(tmp_path, monkeypatch):
+    """An entry whose taskId is not in the current plan is never rendered
+    as binding, no matter what `approach:` it carries -- and this method
+    emits `amendment_target_not_in_plan` exactly ONCE per render call, even
+    with two orphaned entries in the same call."""
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "998", "Ruling for a retired task.", approach=1)
+    write_amendment(cdir, "999", "Another ruling for a retired task.")
+    sup = _supervisor(tmp_path, approach=1, tasks=[
+        {"id": "001", "title": "t", "status": "pending", "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    ctx = sup._operator_amendment_review_context()
+    assert "Historical rulings" in ctx
+    hist_idx = ctx.index("Historical rulings")
+    assert ctx.index("task 998") > hist_idx
+    assert ctx.index("task 999") > hist_idx
+    events = _events(sup.run.root)
+    orphan_events = [e for e in events if e["type"] == "amendment_target_not_in_plan"]
+    assert len(orphan_events) == 1
+    assert set(orphan_events[0]["taskIds"]) == {"998", "999"}
+
+
 def test_real_ruling_under_config_dir_is_the_only_thing_that_counts(tmp_path, monkeypatch):
     """Positive control for the two negative tests above: the SAME shaped
     content, written to the real location, IS picked up -- proving the
