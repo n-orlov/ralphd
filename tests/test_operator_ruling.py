@@ -173,14 +173,21 @@ def _events(root: Path) -> list[dict]:
     return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
 
 
-# -- Task 037 (#168): scoped to the current approach, historical labelling ---
+# -- Task 037 (#168), pinned through a real review context by task 038
+# (#172, #168): scoped to the current approach, historical labelling ------
 
 
 def test_earlier_approach_ruling_is_historical_not_binding_in_a_later_one(tmp_path, monkeypatch):
     """An approach-1 ruling on a task is not binding once approach 2 is
     the run's current approach -- it is rendered under the labelled
     'Historical rulings' heading instead, while the approach-2 ruling on
-    another task stays binding in the authoritative block above it."""
+    another task stays binding in the authoritative block above it.
+
+    Task 038 (#172, #168): driven through `_review_extra_context()` --
+    the ONE join point every real review call site actually uses
+    (`_run_review_iteration`'s `extra=self._review_extra_context()`, both
+    call sites) -- rather than through the amendment method alone, so this
+    pin exercises a real review-context render instead of a unit stub."""
     cdir = tmp_path / "config"
     write_amendment(cdir, "010", "Approach 1 said skip requirement F.",
                     approach=1)
@@ -190,7 +197,7 @@ def test_earlier_approach_ruling_is_historical_not_binding_in_a_later_one(tmp_pa
         {"id": "011", "title": "t", "status": "pending", "successCriteria": "x"},
     ])
     monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
-    ctx = sup._operator_amendment_review_context()
+    ctx = sup._review_extra_context()
     assert "Historical rulings" in ctx
     hist_idx = ctx.index("Historical rulings")
     assert ctx.index("task 010") > hist_idx
