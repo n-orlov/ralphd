@@ -15,8 +15,13 @@
 # after the whole tier.
 #
 # What this lane deliberately does NOT cover: the docker tier, the browser
-# tier and the two dev-layout modes. Those are heavy.yml and nightly.yml, on
-# the self-hosted VPS runner.
+# tier and the dev-layout matrix. Those are heavy.yml and nightly.yml, on the
+# self-hosted VPS's two live runner slots (vmi3245594 and vmi3245594-2,
+# docs/ci.md) -- with two slots registered, heavy.yml's docker and browser
+# tiers can overlap each other (only the operator's own `browser-runner`
+# label, carried by exactly one slot, keeps the browser tier serial across
+# workflows), and nightly.yml's six dev-layout cells run at `max-parallel: 2`
+# across both.
 name: gate
 
 on:

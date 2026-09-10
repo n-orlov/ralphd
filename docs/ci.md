@@ -17,7 +17,7 @@ The tiers themselves — what they cover and what they cost — are
 |---|---|---|---|---|
 | `gate.yml` | records lint, sha guards, `-m fast` (which is a superset of `-m smoke`) | GitHub-hosted `ubuntu-latest` | every pull request, every push to `main` | 30 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
-| `nightly.yml` | both `scripts/host_like_dev_layout.sh` modes, whole suite unfiltered | self-hosted `ralphd-vps` | 02:00 UTC, plus manual dispatch | 180 min per mode |
+| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted, two runner slots (below) | 02:00 UTC, plus manual dispatch | 60 min per cell (`nightly.yml`'s own `timeout-minutes: 60`) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
 
 `gate.yml` is on GitHub's own runners deliberately: it is the lane that runs
 most often, it needs neither a docker socket nor a browser, and a check run
@@ -26,13 +26,22 @@ which is the property #113 is buying.
 
 ## The self-hosted runner
 
-One runner, labelled `ralphd-vps` and `docker-host`, registered against this
-repository (not an org). It runs **one job at a time**, which is a feature: the
-docker and browser lanes serialise instead of contending for the same four
-cores, and each still reports its own check run.
+TWO runner slots registered against this repository (not an org), both
+labelled `ralphd-vps` and `docker-host`: `vmi3245594` and `vmi3245594-2`
+(operator-provisioned, steer 008). Exactly one of the two, `vmi3245594`, also
+carries the `browser-runner` label the operator placed on it (steer 009), which
+is what keeps browser work globally serial across every workflow -- see
+`heavy.yml`'s browser tier for why a `concurrency:` group cannot substitute.
+With two slots live, the docker tier and the browser tier below CAN run
+concurrently (`heavy.yml` no longer serialises them against each other; they
+are separate jobs with separate check runs so a red one never cancels the
+other's evidence), and `nightly.yml`'s six matrix cells run at `max-parallel:
+2`, label-agnostic, across both slots. The operator measured load 1.92 on the
+host's 4 cores with two jobs in flight and called that comfortable, not three;
+nothing here proposes a third slot.
 
 Host: 4 x86_64 cores, 7 GB RAM plus a 4 GB swapfile, docker 29.4.0, Ubuntu
-24.04. Provisioned with Node 22 (from the official tarball, so no third-party
+24.04, per slot. Provisioned with Node 22 (from the official tarball, so no third-party
 apt repository is added to a host that also serves live traffic),
 `@playwright/cli@0.1.19` — the exact binary `tests/test_browser_hub.py` shells
 out to — Google Chrome, which is the channel that CLI opens by default, and a
@@ -69,8 +78,8 @@ secrets, and a compromised job has nothing to steal.
   group** with `cancel-in-progress`. When several merges land in a row the newest
   `main` is the one that gets attested; intermediate shas keep the check runs
   they earned on their own pull requests.
-- `nightly.yml` runs its two modes with `max-parallel: 1` and `fail-fast:
-  false` — one runner, and one red mode must not cancel the other's claim.
+- `nightly.yml` runs its six matrix cells at `max-parallel: 2` and `fail-fast:
+  false` — two runner slots, and one red cell must not cancel another's claim.
 
 ## The one carve-out
 

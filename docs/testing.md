@@ -9,7 +9,7 @@ budgets are checked by `tests/test_tier_budgets.py`, which reads this file.
 |---|---|---|---|
 | smoke | `smoke` | the per-task verify pass, and `scripts/final_sha_guards.sh` over the records-guard modules it discovers | in-process engine flows (a supervisor plus scripted attempts, backoffs stubbed), in-process CLI, records lint, in-process hub |
 | fast | `fast` | the final sha of a wave, and any pull request | smoke plus the stub-pi flow modules and the process-boundary CLI tests -- everything outside the nightly lanes |
-| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and the two host-like dev-layout modes -- each dev-layout mode's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered; see the dev-layout rows below |
+| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and `nightly.yml`'s six-cell dev-layout container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset, `max-parallel: 2` across the VPS's two registered runner slots) -- each cell's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered; see the dev-layout rows below |
 
 ## Recipes
 
@@ -107,7 +107,13 @@ interpreter a dev-layout cell varies, so the six cells lose no coverage that
 varies with the axis under test. No fresh dev-layout wall-clock measurement
 exists yet for the `-m fast` selection; task 077's own container matrix cells
 are the mechanism that will produce one, as a check-run verdict, never as a
-locally recorded lane sweep (standing rule 1).
+locally recorded lane sweep (standing rule 1). The workflow's own per-cell
+budget (`nightly.yml`'s `timeout-minutes: 60`, and `docs/ci.md`'s matching
+"60 min per cell" table entry) is sized to that `-m fast` selection's ~80 s
+parallel wall clock plus a cell's own image pull and, for the `ubuntu:24.04`
+cell only, its `apt-get install python3 python3-pip` step -- not to the
+3600 s ceiling the two retired rows above were measured against, which was
+sized to the unfiltered whole suite this lane no longer runs.
 
 Every number in the first five rows above is a fresh run at `9b1a0e2`, taken
 sequentially and never two at once, with the wall clock read off each run's own
