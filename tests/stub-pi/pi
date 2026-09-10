@@ -518,6 +518,23 @@ merged into the config dir's own `pi/models.json` at `start` reaches the
 very process that would use it to build an outgoing request, not merely
 the config file `start` staged. `{}` when the ambient home carries no
 models.json, or no provider declares a `headers` map.
+
+STUB_LLM_REQUEST (task 048's re-take, #177, requirement J.5's last clause)
+goes the one step further that marker cannot: with it set, this invocation
+actually ISSUES an outgoing HTTP request per provider, to that provider's
+own configured `baseUrl`, with the provider's configured `headers` map
+applied to the request -- exactly what a real LLM client does with that
+config -- so a CAPTURE ENDPOINT (the test's own loopback server, named as
+the profile's `baseUrl`) is what observes the header on a request, rather
+than the stub echoing a config file back at the test. Each attempt's
+provider, URL, response status/error and the header NAMES it sent (never
+the values: a header value can be a resolved secret, and this marker lives
+in the run dir) are recorded to `<run>/.stub-llm-request.json`.
+STUB_LLM_REQUEST_TIMEOUT_S bounds each attempt (default 5s); a failed
+attempt is recorded and never fatal, so this knob can never hang or fail an
+invocation whose baseUrl is unreachable. Unset (every other test in this
+suite) means no request is issued at all -- the profiles most modules
+configure point at `example.com`, which must never be contacted.
 """
 import json
 import os
@@ -755,6 +772,7 @@ _headers_tmp = f"{_headers_final}.tmp.{os.getpid()}"
 _models_json = os.path.join(
     os.environ.get("HOME", os.path.expanduser("~")), ".pi", "agent", "models.json")
 _observed_headers: dict = {}
+_models_doc = None
 if os.path.isfile(_models_json):
     try:
         with open(_models_json) as _f:
@@ -775,6 +793,71 @@ except BaseException:
     except OSError:
         pass
     raise
+
+# STUB_LLM_REQUEST (task 048's re-take, #177, requirement J.5's last
+# clause): issue the OUTGOING REQUEST itself, per provider, to that
+# provider's own configured `baseUrl`, with its configured `headers` map
+# applied -- the one thing the marker above cannot show, since a dumped
+# config file proves only that configuration reached this process, never
+# that a request carried the header. The test that sets this knob points
+# the profile's `baseUrl` at its own loopback capture endpoint and asserts
+# on what THAT endpoint received.
+#
+# Deliberately not sent: the provider's `apiKey`. A real client would put
+# it in an Authorization header, but it is frequently a resolved secret and
+# this request's headers are observable by whatever the baseUrl names; the
+# header maps `--llm-header` builds are the subject here.
+if os.environ.get("STUB_LLM_REQUEST"):
+    import urllib.error as _urllib_error
+    import urllib.request as _urllib_request
+
+    _req_timeout_s = float(os.environ.get("STUB_LLM_REQUEST_TIMEOUT_S", "5"))
+    _attempts_out = []
+    _providers = (_models_doc or {}).get("providers") or {} \
+        if isinstance(_models_doc, dict) else {}
+    for _pname, _pcfg in _providers.items():
+        if not isinstance(_pcfg, dict):
+            continue
+        _base = _pcfg.get("baseUrl")
+        if not isinstance(_base, str) or not _base.startswith("http"):
+            continue
+        _url = _base.rstrip("/") + "/chat/completions"
+        _sent = {k: v for k, v in (_pcfg.get("headers") or {}).items()
+                 if isinstance(k, str) and isinstance(v, str)}
+        _body = json.dumps({
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "stub pi probe"}],
+            "stream": False,
+        }).encode()
+        _req = _urllib_request.Request(
+            _url, data=_body, method="POST",
+            headers={"content-type": "application/json", **_sent})
+        _attempt = {"provider": _pname, "url": _url,
+                    "headerNamesSent": sorted(_sent),
+                    "status": None, "error": None}
+        try:
+            with _urllib_request.urlopen(_req, timeout=_req_timeout_s) as _resp:
+                _attempt["status"] = _resp.status
+                _resp.read()
+        except _urllib_error.HTTPError as _exc:
+            _attempt["status"] = _exc.code
+        except (OSError, ValueError) as _exc:
+            # Never fatal: an unreachable baseUrl is recorded, not raised,
+            # so this knob can neither hang nor fail the invocation.
+            _attempt["error"] = f"{type(_exc).__name__}: {_exc}"
+        _attempts_out.append(_attempt)
+    _req_final = marker("llm-request.json")
+    _req_tmp = f"{_req_final}.tmp.{os.getpid()}"
+    try:
+        with open(_req_tmp, "w") as _f:
+            json.dump(_attempts_out, _f)
+        os.replace(_req_tmp, _req_final)
+    except BaseException:
+        try:
+            os.unlink(_req_tmp)
+        except OSError:
+            pass
+        raise
 
 
 # STUB_SIGNAL_ENGINE (task 020, #48): the hazard requirement I closes, driven

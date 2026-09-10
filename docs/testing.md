@@ -199,8 +199,21 @@ ceiling in this table was raised to record this row; the budget columns
 (6500 / 400 / 3600 s) are the same headroom already carried by the unset
 mode's row.
 
+**Which surface a per-commit count change lands on.** The `tests`/`modules`
+columns of the lane table above are part of a *measurement* -- the counts as
+they stood at the sha each row's wall clock was taken at (`9b1a0e2` for the
+first five rows, the recorded dev-layout runs for the last two) -- and are
+not rewritten by a commit that adds or reworks nodes: re-recording them
+would mean launching a lane locally to record its result, which standing
+rule 1 of this wave forbids, and the guard those columns feed is the
+ceiling comparison, not an equality with today's collection. The per-commit
+surface for a count change is the live disclosure paragraph immediately
+below, which `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
+reads; a lane row moves only when that lane is measured again.
+
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5658 tests across 349 modules** at task 048's own commit, over
+collects **5658 tests across 349 modules** at task 048's re-take commit
+(unchanged by that re-take, which reworked two existing nodes), over
 the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4077
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
@@ -586,8 +599,18 @@ same `STUB_DOCKER_LIVE_ENGINE` knob `tests/test_cli_start_nodetach.py`/
 entrypoint.sh`'s own `/config/pi/*` -> `$HOME/.pi/agent/` copy step before
 launch, and `tests/stub-pi/pi` dumping the provider `headers` maps it
 observes in that same ambient `~/.pi/agent/models.json` to a new
-`<run>/.stub-llm-headers.json` marker on every invocation. Both nodes land
-in `smoke` too by the SAME derivation gap `test_cli_start_nodetach.py`/
+`<run>/.stub-llm-headers.json` marker on every invocation. Task 048's
+RE-TAKE reworks those same 2 nodes -- **no count moves** (fast 5658, smoke
+4077, modules 349, re-measured with `--collect-only -q` after the change):
+a dumped config file shows only that configuration reached the `pi`
+process, never that a REQUEST carried the header, so each node now starts a
+loopback CAPTURE ENDPOINT in the test process, names it as the profile's
+own `baseUrl`, and asserts on the request that endpoint received
+(`x-jira-id`, resolved literal, at `/v1/chat/completions`); the stub gained
+the `STUB_LLM_REQUEST` knob under which it issues that POST per provider
+with the provider's configured `headers` applied, recording each attempt's
+url/status/header NAMES (never values) to `<run>/.stub-llm-request.json`.
+Both nodes land in `smoke` too by the SAME derivation gap `test_cli_start_nodetach.py`/
 `test_cli_resume_llm_wiring.py` already carry -- this module's own source
 names none of `_PROCESS_BOUNDARY_RE`'s literal tokens even though it
 spawns a real engine through that stub chain, so `_module_is_in_process`
