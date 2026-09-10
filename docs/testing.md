@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5573 tests across 340 modules** at task 031's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4006
+collects **5580 tests across 341 modules** at task 032's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4013
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -436,7 +436,17 @@ business rules, the ladder re-ask over a curable blocking finding with no
 `cured_when` and its recovery, and the criteria substitution itself
 (`cured_when` becomes a cure task's `successCriteria`, `clause`+`evidence`
 becomes its `description`) -- all also `smoke` (pure functions and
-in-process `LoopSupervisor` calls, no real engine subprocess).
+in-process `LoopSupervisor` calls, no real engine subprocess), and **5580
+(smoke 4013, modules 340->341)** by task 032's own new
+`tests/test_cure_invalidates.py` (7 nodes, PRD requirement E.3, #167): the
+per-path re-take insertion for an invalidated path with no existing
+record task, the re-open chain for a path that IS the plan's own final
+lane-evidence record (`status` back to `pending` on both the
+verification and record tasks, `dependsOn` chained cure -> verification
+-> record), and the emitted `approach.cure_pass` event's own `taskIds`
+naming every id a real `_step_review()` pass inserted or reopened -- all
+also `smoke` (in-process `insert_cure_tasks` calls and one
+`LoopSupervisor._step_review()` pass, no real engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

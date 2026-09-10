@@ -1968,6 +1968,35 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `tests/test_cured_when.py` (task 031's own module: the schema/business-
   rule layer, the ladder re-ask and its recovery, and the criteria
   substitution itself).
+- **A cure invalidates evidence: re-take the paths it stales, re-open the
+  record it stales (v0.20 requirement E.3, #167, task 032; steer 001
+  retired the local-sweep "launch"/"record" shape this requirement's PRD
+  text originally named, in favour of the check-run-record regime tasks
+  057/058 build).** A finding's own optional `invalidates` (`engine/
+  findings.py`'s `FINDING_SCHEMA`, task 031) is read by `insert_cure_
+  tasks`, one path at a time, in `invalidates` order, right after that
+  finding's own cure task is appended: for an ordinary path -- one no
+  existing task's `successCriteria` already names -- a brand-new re-take
+  task is appended (`_retake_task_from_path`, `origin: "review-cure"`,
+  `dependsOn` the cure task, `id` deterministic from `(approach, index,
+  path_index)`), whose `successCriteria` states the path is re-taken at
+  the tree the cure leaves. But a path that IS the plan's own final
+  lane-evidence record -- engine-generically recognised
+  (`_lane_evidence_record_chain`) as a task whose `successCriteria` names
+  the path AND that itself `dependsOn`s the check-run verification
+  step(s) it records, never a hardcoded task id -- instead RE-OPENS that
+  record task and every one of its verification tasks (`status` back to
+  `"pending"`) and adds the cure task to each verification task's own
+  `dependsOn`, completing the chain cure -> verification -> record (the
+  record task already depends on its verification task). No new task is
+  appended for that path; `insert_cure_tasks`'s return value -- which
+  `_take_cure_pass` still emits verbatim as `approach.cure_pass`'s
+  `taskIds` -- names every id this call appended OR reopened, so the
+  whole move is legible off `events.jsonl` alone. A finding with no
+  `invalidates` (every fixture predating this task) leaves this new step
+  a no-op, unchanged from before. Tests: `tests/test_cure_invalidates.py`
+  (task 032's own module: the per-path insertion, the lane re-open chain,
+  and the emitted event's own `taskIds`).
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
   from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
   final approach's all-curable rejection takes `rejected_last_approach` into

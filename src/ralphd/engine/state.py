@@ -3451,6 +3451,94 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
     }
 
 
+def _unique_task_id(base_id: str, existing_ids: set) -> str:
+    """Task 032 (PRD requirement E.3, #167): a fresh id derived from
+    `base_id` -- itself if unused, otherwise `f"{base_id}-{suffix}"`
+    counting up from 2 until unused. Factored out of `insert_cure_tasks`'s
+    own inline collision-avoidance loop (task 006, C.1 finding 4) so the
+    identical never-drop-the-entry guarantee also covers this task's own
+    re-take tasks, not just the cure task itself.
+    """
+    if base_id not in existing_ids:
+        return base_id
+    suffix = 2
+    while f"{base_id}-{suffix}" in existing_ids:
+        suffix += 1
+    return f"{base_id}-{suffix}"
+
+
+def _lane_evidence_record_chain(tasks: list, path: str) -> tuple[dict | None, list]:
+    """Task 032 (PRD requirement E.3, #167, steer 001): is `path` the
+    plan's OWN final lane-evidence record, rather than an ordinary
+    invalidated path with no task already tracking it? Steer 001 retired
+    the local-sweep launch/record shape this requirement's PRD text
+    ("the final-sha sweep") originally named; what a plan built under
+    the check-run-record regime carries instead is a task whose own
+    `successCriteria` names the record's path verbatim and that itself
+    `dependsOn` the check-run verification step(s) it records -- e.g. a
+    "record every lane's check-run result" task depending on a "verify
+    every lane from its GitHub check runs" task. That shape -- criteria
+    naming the path, AND a non-empty `dependsOn` -- is what this looks
+    for, engine-generically, never by a hardcoded task id: the first task
+    in `tasks` whose `successCriteria` contains `path` and whose
+    `dependsOn` is a non-empty list.
+
+    Returns `(record_task, verification_tasks)` -- `verification_tasks`
+    is every task named in `record_task["dependsOn"]` that is actually
+    present in `tasks`, in `dependsOn` order. `(None, [])` when no task
+    matches, which is the ordinary case for a path with no such existing
+    task -- `insert_cure_tasks` below falls back to appending a brand
+    new re-take task for it instead.
+    """
+    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        criteria = t.get("successCriteria")
+        if not isinstance(criteria, str) or path not in criteria:
+            continue
+        depends = t.get("dependsOn")
+        if not isinstance(depends, list) or not depends:
+            continue
+        verification = [by_id[d] for d in depends if d in by_id]
+        if not verification:
+            continue
+        return t, verification
+    return None, []
+
+
+def _retake_task_from_path(approach: int, index: int, path_index: int,
+                           path: str, cure_task_id: str) -> dict:
+    """Task 032 (PRD requirement E.3, #167): the one re-take task
+    `insert_cure_tasks` appends for a single path in a finding's own
+    `invalidates` list that is NOT the plan's own final lane-evidence
+    record (`_lane_evidence_record_chain` above returned no match for
+    it) -- `id` deterministic from `(approach, index, path_index)`
+    (`index` is the finding's own 1-based position, `path_index` the
+    path's own 1-based position within THAT finding's `invalidates`),
+    `dependsOn: [cure_task_id]` so it only becomes actionable once the
+    cure task it follows actually lands, `origin: "review-cure"` --
+    the same sibling marker a cure task itself carries, since a re-take
+    task is exactly as much the engine's own review-cure output as the
+    cure task beside it. `successCriteria` states the end state plainly:
+    `path` re-taken (re-recorded) at the tree the cure task leaves --
+    never a bare repeat of the finding's own prose, the same
+    end-state-not-defect-description discipline task 031's `cured_when`
+    already holds cure criteria to.
+    """
+    return {
+        "id": f"retake-{approach:02d}-{index:02d}-{path_index:02d}",
+        "title": f"Re-take {path}",
+        "successCriteria": (
+            f"{path} is re-taken (re-recorded) at the tree cure task "
+            f"{cure_task_id} leaves."),
+        "status": "pending",
+        "origin": TASK_ORIGIN_REVIEW_CURE,
+        "dependsOn": [cure_task_id],
+        "tier": "normal",
+    }
+
+
 def _failed_task_ids_named_in(text: str, tasks: list) -> list:
     """Task 041 (PRD requirement C.4, #149): every `failed` task in
     `tasks` whose id appears in `text` (a finding's own `evidence`
@@ -3530,6 +3618,33 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     finding whose evidence names no `failed` task (the ordinary case)
     leaves every other task's `dependsOn` untouched, exactly as before
     this task.
+
+    Task 032 (PRD requirement E.3, #167, steer 001): a finding's own
+    `invalidates` -- zero or more in-checkout paths the finding's cure
+    invalidates (`engine/findings.py`'s `FINDING_SCHEMA`) -- is now read
+    here too, one path at a time, in `invalidates` order, AFTER this
+    finding's own cure task and dependent-repointing above. For each
+    path:
+
+    - if `_lane_evidence_record_chain` recognises it as the plan's OWN
+      final lane-evidence record (a task whose `successCriteria` names
+      the path and that itself `dependsOn`s the check-run verification
+      step(s) it records), this call RE-OPENS that record task and every
+      one of its verification tasks (`status` set back to `"pending"`)
+      and adds the cure task to each verification task's own `dependsOn`
+      -- chaining cure -> verification -> record, since the record
+      task's `dependsOn` already names its verification task(s). No new
+      task is appended for this path; the reopened ids are still
+      returned, in `verification-then-record` order, so a caller
+      (`LoopSupervisor._take_cure_pass`'s `taskIds=inserted`) can see
+      exactly what this call put back into motion.
+    - otherwise, a brand-new re-take task is appended
+      (`_retake_task_from_path`), `dependsOn` the cure task, its id
+      returned same as any other appended task's.
+
+    A finding with no `invalidates` (absent, or an empty list -- every
+    fixture predating this task) leaves this loop a no-op, so the return
+    value is unchanged from before this task in that case.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
@@ -3537,19 +3652,45 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     inserted: list = []
     for index, finding in enumerate(blocking, start=1):
         new_task = cure_task_from_finding(approach, index, finding)
-        base_id = new_task["id"]
-        if base_id in existing_ids:
-            suffix = 2
-            while f"{base_id}-{suffix}" in existing_ids:
-                suffix += 1
-            new_task["id"] = f"{base_id}-{suffix}"
+        new_task["id"] = _unique_task_id(new_task["id"], existing_ids)
+        cure_task_id = new_task["id"]
         tasks.append(new_task)
-        existing_ids.add(new_task["id"])
-        inserted.append(new_task["id"])
+        existing_ids.add(cure_task_id)
+        inserted.append(cure_task_id)
         for failed_id in _failed_task_ids_named_in(
                 finding.get("evidence"), tasks):
             _repoint_dependents_onto_cure_task(
-                tasks, failed_id, new_task["id"])
+                tasks, failed_id, cure_task_id)
+
+        invalidates = finding.get("invalidates")
+        if not isinstance(invalidates, list):
+            continue
+        for path_index, path in enumerate(invalidates, start=1):
+            if not isinstance(path, str) or not path:
+                continue
+            record_task, verification_tasks = _lane_evidence_record_chain(
+                tasks, path)
+            if record_task is not None:
+                for verification_task in verification_tasks:
+                    verification_task["status"] = "pending"
+                    deps = verification_task.setdefault("dependsOn", [])
+                    if cure_task_id not in deps:
+                        deps.append(cure_task_id)
+                    vid = verification_task.get("id")
+                    if vid not in inserted:
+                        inserted.append(vid)
+                record_task["status"] = "pending"
+                rid = record_task.get("id")
+                if rid not in inserted:
+                    inserted.append(rid)
+            else:
+                retake_task = _retake_task_from_path(
+                    approach, index, path_index, path, cure_task_id)
+                retake_task["id"] = _unique_task_id(
+                    retake_task["id"], existing_ids)
+                tasks.append(retake_task)
+                existing_ids.add(retake_task["id"])
+                inserted.append(retake_task["id"])
     if inserted:
         run.write_tasks(data)
     return inserted
