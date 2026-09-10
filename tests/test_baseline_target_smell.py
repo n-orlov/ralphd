@@ -19,6 +19,17 @@ Three nodes are the pinned regression the commit message quotes:
 (the accepted staged form), and
 `test_a_baseline_within_2x_the_target_passes_untouched` (a within-2x
 criterion, no measurement task needed).
+
+Attempt 1 of this task was refused by validation because the three cues
+above (re-measure verb, "launch sha", `Stage N`) were the WHOLE test: a
+linked task titled `Stage 1: re-measure a different metric at the launch
+sha` with successCriteria `Record the slow tier latency; no descent plan is
+defined.` was accepted. Validation's own counter-example is now a node here
+(`test_a_linked_stage_task_remeasuring_a_different_metric_with_no_descent_is_refused`),
+beside nodes for each of the two legs it was missing: the measurement task
+must identify THIS baseline (its number, or two of the offending
+criterion's own metric words) and must name THIS descent's endpoint (the
+target number).
 """
 
 from __future__ import annotations
@@ -142,3 +153,106 @@ def test_a_baseline_exactly_at_2x_the_target_passes_untouched():
         ),
     )
     assert pi._quoted_baseline_target_gap(task, [task]) is None
+
+
+def _offending_task() -> dict:
+    return _basic_task(
+        "001",
+        successCriteria=(
+            "the fast tier's collected test count stays under 3000 tests "
+            "(currently ~8000)."
+        ),
+    )
+
+
+def test_a_linked_stage_task_remeasuring_a_different_metric_with_no_descent_is_refused():
+    """Validation's own counter-example against attempt 1, verbatim: the
+    three generic cues (re-measure verb, "launch sha", `Stage N`) are all
+    present, yet the task re-measures a DIFFERENT metric and defines no
+    descent, so it is neither the measurement nor the staging requirement
+    D.3 asks for."""
+    task = _offending_task()
+    decoy = _basic_task(
+        "002",
+        title="Stage 1: re-measure a different metric at the launch sha",
+        successCriteria="Record the slow tier latency; no descent plan is defined.",
+        dependsOn=["001"],
+    )
+    gap = pi._quoted_baseline_target_gap(task, [task, decoy])
+    assert gap is not None
+    assert "8000" in gap and "3000" in gap
+
+    errors = pi.lint_proposal({"tasks": [task, decoy]})
+    assert any("001" in e and "baseline" in e for e in errors)
+
+
+def test_a_measurement_task_naming_this_metric_but_no_endpoint_is_refused():
+    """"Stages the descent" has an endpoint -- the offending target. A
+    stage that re-measures the right metric at the launch sha and stops
+    describes no descent."""
+    task = _offending_task()
+    measurement = _basic_task(
+        "002",
+        title="Stage 1: re-measure the fast tier baseline at the launch sha",
+        successCriteria=(
+            "the fast tier count is re-measured at the launch sha and "
+            "recorded in docs/testing.md."
+        ),
+        dependsOn=["001"],
+    )
+    gap = pi._quoted_baseline_target_gap(task, [task, measurement])
+    assert gap is not None
+    assert "3000" in gap
+
+
+def test_a_measurement_task_naming_the_endpoint_but_another_metric_is_refused():
+    """The mirror of the node above: the descent's endpoint is named, but
+    the thing being re-measured is some other metric, so the offending
+    baseline is still unmeasured."""
+    task = _offending_task()
+    measurement = _basic_task(
+        "002",
+        title="Stage 1: re-measure the docker lane wall clock at the launch sha",
+        successCriteria=(
+            "the docker lane wall clock is re-measured at the launch sha and "
+            "its own descent toward 3000 seconds is staged."
+        ),
+        dependsOn=["001"],
+    )
+    gap = pi._quoted_baseline_target_gap(task, [task, measurement])
+    assert gap is not None
+
+
+def test_a_measurement_task_quoting_the_baseline_number_identifies_the_metric():
+    """Naming the offending baseline number is the other accepted way to
+    say WHICH baseline is being re-measured -- metric-word overlap is not
+    the only route."""
+    task = _offending_task()
+    measurement = _basic_task(
+        "002",
+        title="Stage 1: re-measure the 8000-item baseline at the launch sha",
+        successCriteria=(
+            "the 8000 figure is re-measured at the launch sha and the staged "
+            "descent to 3000 is written down."
+        ),
+        dependsOn=["001"],
+    )
+    assert pi._quoted_baseline_target_gap(task, [task, measurement]) is None
+
+
+def test_metric_words_fold_possessives_and_drop_stopwords():
+    """The overlap test compares metric WORDS, so "the fast tier's collected
+    test count" and "the fast tier count" share three of them while "the
+    slow tier latency" shares one."""
+    offending = pi._metric_words("the fast tier's collected test count stays")
+    assert "tier" in offending and "the" not in offending and "stays" not in offending
+    assert len(offending & pi._metric_words("the fast tier count")) >= 2
+    assert len(offending & pi._metric_words("the slow tier latency")) < 2
+
+
+def test_a_number_token_matches_grouped_and_bare_forms_only_whole():
+    token = pi._number_token(8000)
+    assert token.search("currently 8000 tests")
+    assert token.search("currently 8,000 tests")
+    assert not token.search("18000 tests")
+    assert not token.search("80001 tests")

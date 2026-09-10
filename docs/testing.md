@@ -388,7 +388,16 @@ launch sha and stages the descent accepted, a measurement task missing the
 "launch sha" phrase not enough, an unbound measurement task not counting,
 a baseline within 2x the target passing untouched, a target with no quoted
 baseline at all passing untouched, and the exact-2x boundary passing
-untouched -- all also `smoke`.
+untouched -- all also `smoke`, and **5545 (smoke 3980, modules unchanged at
+338)** by task 027's SECOND commit, which tightened the same detector after
+validation rejected the first for accepting a linked `Stage 1` task that
+re-measured a DIFFERENT metric and defined no descent: 6 further nodes in
+that same module pin validation's own counter-example, the two legs it was
+missing (the measurement task must identify THIS baseline and must name
+THIS descent's endpoint, each refused on its own), the baseline-number
+route to identifying the metric, and the two new helpers (`_metric_words`
+folding possessives and dropping stopwords, `_number_token` matching
+grouped and bare forms only whole) -- all also `smoke`.
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

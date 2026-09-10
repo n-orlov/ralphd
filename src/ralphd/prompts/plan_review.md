@@ -112,13 +112,18 @@ judge? Look specifically for:
    `<metric> under <target>` whose OWN text also quotes a baseline more
    than 2x the target, unless a measurement task bound to the offending
    task (by `dependsOn` in either direction or by naming its id) says, in
-   its own title or criteria, that it re-measures the baseline at the
-   "launch sha" and carries a `Stage N` marker of its own, and rejects the
+   its own title or criteria, that it re-measures THAT metric's baseline at
+   the "launch sha" (identifying it by the baseline number or by at least
+   two of the offending criterion's own metric words), carries a `Stage N`
+   marker of its own, and names the descent's endpoint by quoting the target
+   number -- and rejects the
    plan before it ever reaches you if one slips through. Catch it here too
    if the lint's own cue-phrase regex misses a near-miss: a criterion
    quoting a wildly stale baseline next to an ambitious target, with no
    linked task that will actually re-measure it, is a plan built on a
-   number nobody has checked recently. Object by naming the offending task,
+   number nobody has checked recently -- and so is a linked task that
+   re-measures something ELSE, or that measures the right thing and stages
+   no descent toward the target. Object by naming the offending task,
    its quoted baseline and target, and instruct either dropping the
    baseline quote, lowering the ambition, or adding a bound measurement/
    staging task.

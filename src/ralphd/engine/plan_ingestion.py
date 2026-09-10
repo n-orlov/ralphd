@@ -1535,15 +1535,107 @@ _BASELINE_CUE_RE = re.compile(
 _REMEASURE_VERB_RE = re.compile(r"\bre-?measur\w*\b", re.IGNORECASE)
 _LAUNCH_SHA_RE = re.compile(r"\blaunch sha\b", re.IGNORECASE)
 
+# Those three cues alone say only that SOME baseline is re-measured at the
+# launch sha in SOME stage -- attempt 1 of task 027 shipped exactly that
+# and validation refused it, because a linked task titled "Stage 1:
+# re-measure a DIFFERENT metric at the launch sha" whose criteria read
+# "Record the slow tier latency; no descent plan is defined." satisfied all
+# three. The requirement names two more things, and both are read off the
+# OFFENDING criterion rather than off generic vocabulary:
+#
+#   * "re-measures THE BASELINE" -- the measurement task must identify the
+#     offending metric, either by quoting the offending baseline number
+#     itself or by naming at least `_MIN_SHARED_METRIC_WORDS` of the
+#     offending clause's own distinctive metric words (the words before
+#     "under", minus the stopwords below). Re-measuring the slow tier's
+#     latency is not re-measuring the fast tier's collected test count.
+#   * "and stages THE DESCENT" -- the descent has an endpoint, and the
+#     endpoint is the offending target, so the measurement task must quote
+#     that target number. A stage that measures and stops describes no
+#     descent at all.
+_METRIC_WORD_RE = re.compile(r"[a-z][a-z'-]{2,}", re.IGNORECASE)
+_METRIC_STOPWORDS = frozenset(
+    {
+        "and",
+        "are",
+        "but",
+        "every",
+        "for",
+        "from",
+        "has",
+        "have",
+        "its",
+        "must",
+        "not",
+        "remain",
+        "remains",
+        "stay",
+        "stays",
+        "than",
+        "that",
+        "the",
+        "their",
+        "then",
+        "this",
+        "under",
+        "was",
+        "were",
+        "which",
+        "with",
+    }
+)
+_MIN_SHARED_METRIC_WORDS = 2
+
+
+def _number_token(value: int) -> re.Pattern:
+    """A pattern matching `value` written either bare (`8000`) or with
+    thousands separators (`8,000`), and never as part of a longer number."""
+    digits = str(value)
+    grouped = f"{value:,}"
+    alternatives = "|".join(
+        sorted({re.escape(digits), re.escape(grouped)}, key=len, reverse=True)
+    )
+    return re.compile(rf"(?<![\d,])(?:{alternatives})(?![\d,])")
+
+
+def _metric_words(text: str) -> set:
+    """The distinctive words of a metric phrase: lowercased alphabetic words
+    of three characters or more, minus `_METRIC_STOPWORDS`. Possessives are
+    folded (`tier's` -> `tier`) so "the fast tier's collected test count"
+    and "the fast tier count" share their metric words."""
+    words = set()
+    for match in _METRIC_WORD_RE.finditer(text):
+        word = match.group(0).lower()
+        word = re.sub(r"'s$|s'$", "", word)
+        if len(word) >= 3 and word not in _METRIC_STOPWORDS:
+            words.add(word)
+    return words
+
 
 def _quoted_baseline_target_gap(task: dict, tasks: list) -> str | None:
     """`None` if this `task`'s `successCriteria` states no `<metric> under
     <target>` clause with a plan-quoted baseline at all, or if that
     baseline is within 2x the target, or if the plan names a linked
-    measurement task that re-measures the baseline at the launch sha and
-    stages the descent (a `Stage N` marker) -- otherwise a short,
+    measurement task that re-measures THAT baseline at the launch sha and
+    stages the descent toward THAT target -- otherwise a short,
     human-readable description of the missing measurement task, for the
     caller to fold into its own error message naming the offending task.
+
+    A measurement task qualifies only when its own title/successCriteria
+    carries all five of:
+
+    1. a re-measure verb (`_REMEASURE_VERB_RE`);
+    2. the phrase "launch sha" (`_LAUNCH_SHA_RE`);
+    3. a `Stage N` marker (`_STAGE_MARKER_RE`), D.2's own staging
+       convention;
+    4. the offending metric's identity -- the offending baseline number
+       quoted, or at least `_MIN_SHARED_METRIC_WORDS` of the offending
+       clause's distinctive metric words (`_metric_words`);
+    5. the descent's endpoint -- the offending target number quoted.
+
+    4 and 5 are what attempt 1 lacked: with only 1-3, a stage task that
+    re-measures some OTHER metric and defines no descent was accepted
+    (validation's own counter-example, quoted in the block comment above).
     """
     criteria = task.get("successCriteria")
     criteria = criteria if isinstance(criteria, str) else ""
@@ -1558,6 +1650,17 @@ def _quoted_baseline_target_gap(task: dict, tasks: list) -> str | None:
     if target <= 0 or baseline <= 2 * target:
         return None
 
+    # The metric phrase is what stands before "under" in the offending
+    # clause (clause boundaries: `;` and the sentence enders, so a second
+    # sentence about something else contributes no metric words).
+    clause_start = max(
+        criteria.rfind(sep, 0, target_match.start()) + 1
+        for sep in (";", ".", "!", "?", "\n")
+    )
+    metric_words = _metric_words(criteria[clause_start : target_match.start()])
+    baseline_token = _number_token(baseline)
+    target_token = _number_token(target)
+
     task_id = task.get("id")
     for other in tasks:
         if not isinstance(other, dict) or other is task:
@@ -1569,21 +1672,34 @@ def _quoted_baseline_target_gap(task: dict, tasks: list) -> str | None:
         other_title = other.get("title")
         other_title = other_title if isinstance(other_title, str) else ""
         combined = f"{other_title}\n{other_criteria}"
-        if (
+        if not (
             _REMEASURE_VERB_RE.search(combined)
             and _LAUNCH_SHA_RE.search(combined)
             and _STAGE_MARKER_RE.search(combined)
         ):
-            return None
+            continue
+        names_this_baseline = bool(
+            baseline_token.search(combined)
+        ) or len(metric_words & _metric_words(combined)) >= _MIN_SHARED_METRIC_WORDS
+        if not names_this_baseline:
+            continue
+        if not target_token.search(combined):
+            continue
+        return None
 
     return (
         f"the baseline ({baseline}) is more than 2x the target ({target}) "
         "and the plan names no measurement task bound to task "
         f"{task_id!r} (by dependsOn in either direction or by naming its "
-        "id) whose own title or successCriteria re-measures the baseline "
-        "at the launch sha (containing both a 're-measure'/'remeasure' verb "
-        "and the phrase 'launch sha') and stages the descent (a 'Stage N' "
-        "marker)"
+        "id) whose own title or successCriteria does all of: re-measures "
+        "at the launch sha (a 're-measure'/'remeasure' verb AND the phrase "
+        "'launch sha'), stages the work (a 'Stage N' marker), identifies "
+        f"THIS baseline (quotes {baseline}, or names at least "
+        f"{_MIN_SHARED_METRIC_WORDS} of this criterion's own metric words "
+        f"{sorted(metric_words)}) and names THIS descent's endpoint (quotes "
+        f"the target {target}) -- re-measuring some other metric, or "
+        "measuring this one with no descent toward the target, is neither "
+        "the measurement nor the staging the requirement asks for"
     )
 
 
@@ -1803,8 +1919,10 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
                 "baseline quote so the criterion states only the target, or "
                 "add a measurement task bound to this task (by dependsOn or "
                 "by naming its id) whose own title or successCriteria "
-                "re-measures the baseline at the launch sha and stages the "
-                "descent with a 'Stage N' marker"
+                "re-measures THIS metric's baseline at the launch sha (naming "
+                "the baseline number or this criterion's own metric words) "
+                "and stages the descent toward THIS target with a 'Stage N' "
+                "marker and the target number"
             )
 
     known_ids = set(seen) | (extra_known_ids or set())

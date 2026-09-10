@@ -123,14 +123,22 @@ more than 2x the target -- unless the proposal names a measurement task
 bound to the offending task (by `dependsOn` in either direction, or by
 naming its id) whose own `title`/`successCriteria` (a) says it
 RE-MEASURES the baseline, (b) anchors that to the "launch sha" (that exact
-phrase), and (c) carries a `Stage N` marker of its own, staging the
-descent. A target with no quoted baseline in the same clause states no
-smell at all and is never flagged; a baseline within 2x the target passes
-untouched. Example of the refused shape: "the fast tier's test count stays
-under 3000 (currently ~8000)" with no linked measurement task. Example of
+phrase), (c) carries a `Stage N` marker of its own, staging the
+descent, (d) identifies THAT baseline -- by quoting the baseline number
+itself, or by naming at least two of the offending criterion's own metric
+words ("fast", "tier", "count") -- and (e) names THAT descent's endpoint by
+quoting the target number. (d) and (e) are not decoration: a linked task
+that re-measures some OTHER metric, or that measures this one and defines
+no descent, satisfies neither half of "re-measures the baseline ... and
+stages the descent". A target with no quoted baseline in the same clause
+states no smell at all and is never flagged; a baseline within 2x the
+target passes untouched. Example of the refused shape: "the fast tier's
+test count stays under 3000 (currently ~8000)" with no linked measurement
+task -- and equally refused: the same criterion beside a task titled
+"Stage 1: re-measure a different metric at the launch sha". Example of
 the accepted shape: the same criterion, plus a task titled "Stage 1:
 re-measure the fast tier count at the launch sha" whose own criteria
-describes re-measuring it and staging the descent toward 3000.
+describes re-measuring that count and staging the descent toward 3000.
 
 **Never make a task's `successCriteria` depend on this run's own terminal
 state** (e.g. "once this run has finished" or "after status.json leaves
