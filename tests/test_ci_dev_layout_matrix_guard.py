@@ -57,6 +57,18 @@ WORKSPACE_RO_MOUNT_RE = re.compile(
 # Anything that writes into the tree or the image; each must follow the copy.
 INSTALL_RE = re.compile(r"(apt-get\s+install|apt\s+install|pip3?\s+install)")
 
+# Task 079 (steer 011 defects 1 and 2): every cell's docker payload must
+# install a git binary, must drop privileges to a non-root uid before the
+# suite runs, and must never gain a reachable docker daemon of its own.
+GIT_INSTALL_RE = re.compile(r"apt-get\s+install[^\n]*\bgit\b")
+UID_DROP_RE = re.compile(
+    r"setpriv\b[^\n]*--reuid|\brunuser\b[^\n]*-u\b|\bgosu\b|\bsu\s+-\w+"
+)
+DOCKER_IN_CELL_RE = re.compile(
+    r"docker\.sock|docker-ce|apt-get\s+install[^\n]*\bdocker(?:\.io)?\b|"
+    r"pip3?\s+install[^\n]*\bdocker\b"
+)
+
 
 def _docker_payload_spans(run: str) -> list[tuple[int, int]]:
     """Return `(start, end)` character spans of `run` that lie inside a
@@ -178,6 +190,7 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
     run_scripts = [step.get("run", "") for step in steps if step.get("run")]
 
     problems.extend(_check_readonly_workspace_mount(run_scripts))
+    problems.extend(_check_cell_hardening(run_scripts))
 
     for run in run_scripts:
         spans = _docker_payload_spans(run)
@@ -188,6 +201,34 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
                     "docker run command -- a host-level invocation"
                 )
 
+    return problems
+
+
+def _check_cell_hardening(run_scripts: list[str]) -> list[str]:
+    """Task 079 (steer 011 defects 1 and 2): every cell's docker payload must
+    install `git`, must drop privileges to a non-root uid before the suite
+    runs, and must never gain a reachable docker daemon of its own (`-m
+    docker` coverage stays in heavy.yml)."""
+    problems: list[str] = []
+    payloads = [
+        "".join(run[start:end] for start, end in _docker_payload_spans(run))
+        for run in run_scripts
+    ]
+    combined = "\n".join(p for p in payloads if p)
+    if not combined:
+        return problems
+    if not GIT_INSTALL_RE.search(combined):
+        problems.append("no docker payload installs a git binary")
+    if not UID_DROP_RE.search(combined):
+        problems.append(
+            "no docker payload drops privileges to a non-root uid before "
+            "running the suite -- the cell would run as root"
+        )
+    if DOCKER_IN_CELL_RE.search(combined):
+        problems.append(
+            "a docker payload installs a docker client or references a "
+            "docker socket -- a cell must never gain a reachable daemon"
+        )
     return problems
 
 
@@ -423,3 +464,60 @@ def test_heavy_browser_runner_guard_fires_when_missing_from_browser_tier(tmp_pat
     fixture = _dump_fixture(tmp_path, "broken-heavy-missing-label.yml", broken)
     problems = check_heavy_browser_runner(_load(fixture))
     assert any("browser-tier" in p for p in problems), problems
+
+
+def _replace_docker_step_run(broken: dict, transform) -> None:
+    for step in broken["jobs"]["dev-layout"]["steps"]:
+        if "run" in step and "docker run" in step["run"]:
+            step["run"] = transform(step["run"])
+
+
+def test_dev_layout_cell_prelude_matches_the_real_workflow():
+    problems = _check_cell_hardening(
+        [
+            step.get("run", "")
+            for step in _load(NIGHTLY_PATH)["jobs"]["dev-layout"]["steps"]
+            if step.get("run")
+        ]
+    )
+    assert problems == [], problems
+
+
+def test_dev_layout_guard_fires_when_git_install_is_dropped(tmp_path):
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    _replace_docker_step_run(
+        broken,
+        lambda run: re.sub(r"apt-get install -y -qq git[^\n]*\n", "", run),
+    )
+    fixture = _dump_fixture(tmp_path, "broken-no-git.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("installs a git binary" in p for p in problems), problems
+
+
+def test_dev_layout_guard_fires_when_the_cell_runs_as_root(tmp_path):
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    _replace_docker_step_run(
+        broken,
+        lambda run: re.sub(
+            r"setpriv[^\n]*\\\n[^\n]*scripts/host_like_dev_layout\.sh",
+            "scripts/host_like_dev_layout.sh",
+            run,
+        ),
+    )
+    fixture = _dump_fixture(tmp_path, "broken-runs-as-root.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("run as root" in p for p in problems), problems
+
+
+def test_dev_layout_guard_fires_when_a_docker_socket_is_added(tmp_path):
+    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    _replace_docker_step_run(
+        broken,
+        lambda run: run.replace(
+            "cp -a /src-ro /src",
+            "cp -a /src-ro /src\n              apt-get install -y -qq docker.io >/dev/null",
+        ),
+    )
+    fixture = _dump_fixture(tmp_path, "broken-docker-in-cell.yml", broken)
+    problems = check_nightly_matrix(_load(fixture))
+    assert any("reachable daemon" in p for p in problems), problems

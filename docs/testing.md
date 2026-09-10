@@ -676,6 +676,18 @@ in-process (no `ralphctl`/engine process spawned), and 17 of them (the
 sweep-sha guard's) were also counted in `smoke`; the matrix-guard deletion
 was not, hence the one-node gap between the fast and smoke deltas.
 
+**5663 (smoke unchanged at 4062, modules unchanged at 351)** by task 079
+(steer 011 defects 1 and 2, git binary + real uid 1000 in every nightly
+dev-layout cell): net +4 nodes in `tests/test_ci_dev_layout_matrix_guard.py`
+(16 -> 20) -- one non-vacuous prelude check
+(`test_dev_layout_cell_prelude_matches_the_real_workflow`, asserting the real
+file's docker payload installs `git`, drops privileges to a non-root uid and
+never gains a docker client/socket) plus three mutation tests proving that
+check fires when git is dropped, the uid drop is removed, or a docker client
+is added. None spawns a real engine/`ralphctl` process, so none is marked
+`smoke` and the smoke count is unchanged; no new module, so the module count
+is unchanged too.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather

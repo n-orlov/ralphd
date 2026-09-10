@@ -43,8 +43,7 @@
 # (steer 009) -- see the `browser-runner` label on heavy.yml's browser tier,
 # the only mechanism that keeps browser work serial across workflows.
 #
-# Checkout happens on the HOST (`fetch-depth: 0`, so the records lint sees
-# real git history and no image needs git installed), then the checkout is
+# Checkout happens on the HOST (`fetch-depth: 0`), then the checkout is
 # mounted READ-ONLY at /src-ro inside the container and `cp -a`'d (preserving
 # .git) to a container-local /src before anything installs or builds -- a
 # root-in-container process must never write into $GITHUB_WORKSPACE, or the
@@ -52,6 +51,17 @@
 # behind. This deliberately does NOT use GitHub's own `container:` job key,
 # which mounts the checkout writable and would reintroduce exactly that
 # hazard.
+#
+# CORRECTION (task 079, steer 011): an earlier comment here claimed
+# `fetch-depth: 0` meant "no image needs git installed" -- the operator
+# states in steer 011 that that premise was theirs, from steer 008, and was
+# wrong. `fetch-depth: 0` on the HOST checkout supplies the `.git` DIRECTORY
+# (so the records lint sees real commit history once it is copied in), but
+# the suite itself EXECS the `git` BINARY at run time, inside the container,
+# against that directory: `tests/records/*`, `test_report_claims_git_objects`,
+# `test_issue_traceability`, `test_commit_closing_keyword_scope` and
+# `test_petitions` all shell out to `git`. Every image below therefore gets
+# `git` installed (see the container command).
 #
 # NOTE: `schedule` only fires on the repository's default branch, so this
 # workflow does nothing until it is merged to main. Use `workflow_dispatch` to
@@ -109,10 +119,28 @@ jobs:
 
       # Mount the checkout read-only, copy it inside FIRST, and only then
       # install or build anything -- the copy precedes every install so that
-      # no root-in-container process can ever touch $GITHUB_WORKSPACE.
-      # The ubuntu:24.04 cell -- and ONLY that cell -- installs python3 and
-      # python3-pip inside the container (after that copy, before the suite);
-      # the two python:*-slim images already ship both.
+      # no root-in-container process can ever touch $GITHUB_WORKSPACE. Every
+      # apt-get invocation below, including the ubuntu-only python3/pip
+      # branch, runs AFTER that copy.
+      # git (task 079, steer 011 defect 1) is installed in ALL THREE images
+      # -- see the header correction above for why a git BINARY is needed
+      # despite the host checkout already supplying the .git directory.
+      # python3/python3-pip stay confined to the ubuntu:24.04 branch; the
+      # two python:*-slim images already ship both.
+      # The suite then runs as REAL UID 1000, never root (task 079, steer
+      # 011 defect 2): the account is created only when `getent passwd 1000`
+      # finds none, because ubuntu:24.04 already carries uid 1000 as
+      # "ubuntu" and an unconditional `useradd -u 1000` would collide and
+      # fail that cell. `setpriv --init-groups` then re-derives the
+      # process's supplementary-group list FROM that account, as
+      # initgroups(3) would, instead of leaving root's own group list in
+      # place -- load-bearing because
+      # test_the_drop_keeps_an_operator_granted_supplementary_group measures
+      # the DROPPED groups, and a plain uid/gid switch alone still carries
+      # root's supplementary groups over.
+      # No cell installs a docker client, mounts /var/run/docker.sock, or
+      # otherwise gains a reachable daemon -- `-m docker` coverage stays in
+      # heavy.yml's docker tier.
       # The sweep-sha carve-out that used to be deselected here is retired
       # (task 053, #113 step 4): the guard module now runs exactly one lint
       # ("every record names some sha"), which holds on any checkout, so
@@ -130,10 +158,21 @@ jobs:
             "$CELL_IMAGE" bash -c '
               set -euo pipefail
               cp -a /src-ro /src
+
+              apt-get update -qq
+              apt-get install -y -qq git >/dev/null
               if [ "$CELL_IMAGE" = "ubuntu:24.04" ]; then
-                apt-get update -qq
                 apt-get install -y -qq python3 python3-pip >/dev/null
               fi
+
+              getent passwd 1000 >/dev/null || useradd -u 1000 -m -s /bin/bash dev
+              CELL_USER="$(getent passwd 1000 | cut -d: -f1)"
+              CELL_HOME="$(getent passwd 1000 | cut -d: -f6)"
+              CELL_GID="$(getent passwd 1000 | cut -d: -f4)"
+              mkdir -p "$CELL_HOME"
+              chown -R 1000:"$CELL_GID" "$CELL_HOME" /src
+
               cd /src
-              scripts/host_like_dev_layout.sh
+              setpriv --reuid=1000 --regid="$CELL_GID" --init-groups \
+                env HOME="$CELL_HOME" scripts/host_like_dev_layout.sh
             '
