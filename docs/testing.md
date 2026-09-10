@@ -200,8 +200,8 @@ ceiling in this table was raised to record this row; the budget columns
 mode's row.
 
 **Live count disclosure, v0.20 (operator, 2026-09-09).** The fast tier now
-collects **5557 tests across 339 modules** at task 030's commit, over
-the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **3990
+collects **5573 tests across 340 modules** at task 031's commit, over
+the PRD's `< 3000` tests / `<= 180` modules targets, and the smoke tier **4006
 tests**, all re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`. Recorded here
 because `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
@@ -428,7 +428,15 @@ module (no new module, PRD requirement E.1, #167): the grant of a second
 cure pass on a non-superset rejection, the refusal (ordinary replan) of a
 superset second rejection, and the `CURE_PASS_CEILING` (3) refusing a
 fourth pass even against a disjoint blocking set -- all also `smoke`
-(in-process `LoopSupervisor._step_review()`, no real engine subprocess).
+(in-process `LoopSupervisor._step_review()`, no real engine subprocess),
+and **5573 (smoke 4006, modules 339->340)** by task 031's own new
+`tests/test_cured_when.py` (16 nodes, PRD requirement E.2, #171): the
+`cured_when`/`invalidates` schema fields, the missing-/overrun-`cured_when`
+business rules, the ladder re-ask over a curable blocking finding with no
+`cured_when` and its recovery, and the criteria substitution itself
+(`cured_when` becomes a cure task's `successCriteria`, `clause`+`evidence`
+becomes its `description`) -- all also `smoke` (pure functions and
+in-process `LoopSupervisor` calls, no real engine subprocess).
 
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and

@@ -3387,6 +3387,25 @@ def _cure_task_success_criteria(finding: dict) -> str:
     return "; ".join(parts[:5])
 
 
+def _cure_task_description(finding: dict) -> str:
+    """Task 031 (PRD requirement E.2, #171): a cure task's own
+    `description` field -- distinct from `successCriteria`, which this
+    same task now sources from the finding's own `cured_when` when it
+    carries one (`cure_task_from_finding` below) -- built from the SAME
+    `clause` + `evidence` pair `_cure_task_success_criteria` used to fold
+    into `successCriteria` alone before `cured_when` existed. Plain
+    concatenation, no clause-count bound: this field is not itself a
+    criterion a worker is scored against, only the human-readable context
+    a worker or reader sees beside the specification (`cured_when`, or on
+    a legacy finding missing it, the same fallback text `_cure_task_
+    success_criteria` still builds) that IS the criterion.
+    """
+    clause = str(finding.get("clause") or "").strip()
+    evidence = str(finding.get("evidence") or "").strip()
+    parts = [p for p in (clause, evidence) if p]
+    return " -- ".join(parts) if parts else "resolve the review finding"
+
+
 def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
     """Task 009 (PRD requirement C.1, #141): the one cure task built from
     a single BLOCKING, curable finding a `rejected` review just returned
@@ -3398,12 +3417,33 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
     unique, human-legible id without reading the rest of `tasks.json`
     first; `index` is 1-based within THIS append (one per blocking
     finding, in finding order).
+
+    Task 031 (PRD requirement E.2, #171): `successCriteria` now comes from
+    the finding's own `cured_when` VERBATIM whenever it carries one (a
+    non-empty string) -- `cured_when` is the specification a curable
+    blocking finding is now REQUIRED to carry (`transitions.review_cured_
+    when_errors`, enforced on review's own contract ladder before a cure
+    pass is ever granted), held to the identical bounded-checkable-clause
+    lint a planner's own `successCriteria` is (`plan_ingestion.clause_
+    count_overrun`). A finding with no `cured_when` -- a hand-built
+    fixture, or a finding from before this task existed -- falls back to
+    `_cure_task_success_criteria`'s own clause+evidence derivation,
+    unchanged. Either way, `description` (new) is always built from
+    `clause` + `evidence` alone (`_cure_task_description` above) -- the
+    human-readable context beside whichever text is actually the
+    criterion.
     """
     clause = str(finding.get("clause") or "finding").strip() or "finding"
+    cured_when = finding.get("cured_when")
+    if isinstance(cured_when, str) and cured_when.strip():
+        success_criteria = cured_when.strip()
+    else:
+        success_criteria = _cure_task_success_criteria(finding)
     return {
         "id": f"cure-{approach:02d}-{index:02d}",
         "title": clause,
-        "successCriteria": _cure_task_success_criteria(finding),
+        "successCriteria": success_criteria,
+        "description": _cure_task_description(finding),
         "status": "pending",
         "origin": TASK_ORIGIN_REVIEW_CURE,
         "dependsOn": [],

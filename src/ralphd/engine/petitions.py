@@ -899,6 +899,11 @@ def duplicate_petition_findings(workspace: Path) -> list[dict]:
     the extra filing (or never files a second one) changes this finding's
     truth value on the next pass -- unlike the incurable facts requirement
     B is about, this is a self-inflicted, fully fixable procedural error.
+
+    Task 031 (PRD requirement E.2, #171) adds `cured_when`: every curable
+    blocking finding needs one now, engine-authored findings included --
+    this one names the fix in the same terms `evidence` already does
+    (leave exactly one filing for the obligation on disk).
     """
     out = []
     for dup in duplicate_petition_obligations(workspace):
@@ -922,6 +927,9 @@ def duplicate_petition_findings(workspace: Path) -> list[dict]:
             "curable": True,
             "clause": dup["obligation"],
             "evidence": evidence,
+            "cured_when": (
+                "exactly one petition filing remains on disk for this "
+                "obligation, with no re-filed REFUTED duplicate beside it"),
         })
     return out
 

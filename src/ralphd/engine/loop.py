@@ -8151,7 +8151,8 @@ class LoopSupervisor:
                 or transitions.review_report_errors(payload)
                 or channel_errors
                 or transitions.review_verdict_findings_errors(
-                    payload, findings_list))
+                    payload, findings_list)
+                or transitions.review_cured_when_errors(findings_list))
         else:
             payload = None
             contract_errors = [
@@ -8276,7 +8277,8 @@ class LoopSupervisor:
             if transitions.review_report_errors(parsed):
                 return result
             if not (channel_errors or transitions.review_verdict_findings_errors(
-                    parsed, findings_list)):
+                    parsed, findings_list)
+                    or transitions.review_cured_when_errors(findings_list)):
                 return result
 
         def extra_validate(payload: dict) -> list[str]:
@@ -8288,7 +8290,8 @@ class LoopSupervisor:
             return (transitions.review_report_errors(payload)
                     or fresh_channel_errors
                     or transitions.review_verdict_findings_errors(
-                        payload, fresh))
+                        payload, fresh)
+                    or transitions.review_cured_when_errors(fresh))
 
         first_attempt_text = last_nonblank_line(result.final_text)
         event_loop = asyncio.get_running_loop()

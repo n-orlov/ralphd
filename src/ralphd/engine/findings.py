@@ -18,6 +18,13 @@ carrying at minimum:
   - `clause` — the PRD clause / DoD item the finding says is violated;
   - `evidence` — what was observed.
 
+Task 031 (PRD requirement E.2, #171) adds two more, both optional at the
+schema level: `cured_when` (a curable finding's own cure specification --
+required, as a BUSINESS rule checked by `curable_findings_missing_cured_
+when`/`transitions.review_cured_when_errors` rather than by the schema
+itself, whenever `curable` is `True`) and `invalidates` (zero or more
+in-checkout paths the finding's cure invalidates, always optional).
+
 Nothing here changes `review`'s own contract payload, wires verdict
 computation, or reads the file back into the loop — that is task 002
 (verdict-from-blocking-only) and task 003 (the rubric default)'s scope. This
@@ -79,6 +86,19 @@ FINDING_SCHEMA: dict = {
         # the hat, because which channel a file IS is an engine-side fact,
         # not a judgement call.
         "author": {"type": "string"},
+        # Task 031 (PRD requirement E.2, #171): the SPECIFICATION a curable
+        # finding is -- required (by `curable_findings_missing_cured_when`
+        # below, a business rule, not this schema, because "required only
+        # when curable is True" is a conditional this restricted schema
+        # subset cannot express) whenever `curable` is `True`; optional and
+        # ignored otherwise. `state.cure_task_from_finding` uses this text
+        # verbatim as the cure task's `successCriteria` once present.
+        "cured_when": {"type": "string"},
+        # Task 031 (PRD requirement E.2, #171): zero or more in-checkout
+        # paths this finding's cure invalidates -- a later task (#167's
+        # requirement E.3) reads this to insert a re-take task per path.
+        # Deliberately optional on every finding, curable or not.
+        "invalidates": {"type": "array"},
     },
     "additionalProperties": False,
 }
@@ -205,6 +225,14 @@ def flagged_criteria_findings(tasks: list[dict]) -> list[dict]:
     every later review pass too -- a disclosed, deliberately conservative
     consequence of that pre-existing "once set, never cleared" design,
     not something this function changes.
+
+    Task 031 (PRD requirement E.2, #171) adds `cured_when`: every curable
+    blocking finding now needs one, engine-authored findings included --
+    there is no carve-out in the rule for a finding review never wrote
+    itself. This one's specification names the authorized escape hatch
+    already documented above: the ONE legal amendment path, a
+    judge-authored replacement on a CONFIRMED petition, never a second
+    unauthorized rewrite.
     """
     out = []
     for t in tasks:
@@ -221,6 +249,11 @@ def flagged_criteria_findings(tasks: list[dict]) -> list[dict]:
                 "legal path is a judge-authored amendment on a CONFIRMED "
                 "petition (docs/petition-format.md); current text: "
                 f"{t.get('successCriteria', '')!r}"),
+            "cured_when": (
+                f"task {t.get('id')}'s successCriteria is replaced only "
+                "through a judge-authored amendment on a CONFIRMED "
+                "petition (docs/petition-format.md), never by a further "
+                "unauthorized worker or planner rewrite"),
         })
     return out
 
@@ -379,6 +412,69 @@ def blocking_finding_clauses(findings: list[dict]) -> set[str]:
     """
     blocking = [f for f in findings if f.get("severity") == "blocking"]
     return {f["clause"] for f in blocking if isinstance(f.get("clause"), str)}
+
+
+def curable_findings_missing_cured_when(findings: list[dict]) -> list[dict]:
+    """Task 031 (PRD requirement E.2, #171): every BLOCKING, curable
+    (`curable is True`) finding in `findings` whose `cured_when` is
+    missing, non-string or blank -- the set `transitions.review_cured_
+    when_errors` reports as a review contract violation. `cured_when` is
+    the specification `state.cure_task_from_finding` uses as a cure
+    task's own `successCriteria` once a cure pass is granted
+    (`_review_cure_pass_available` already requires `all_blocking_
+    findings_curable` before a pass is ever taken), so a curable blocking
+    finding reaching that point with no `cured_when` would otherwise leave
+    the cure task with nothing but the old clause+evidence fallback --
+    exactly the gap this business rule closes at review time instead, the
+    same review-time-not-cure-time posture `all_blocking_findings_curable`
+    already keeps for the sibling `curable` bit.
+
+    A residual finding, or a blocking finding whose `curable` is not
+    explicitly `True`, never enters the scan -- the same restriction
+    `all_blocking_findings_curable` places on itself, so this function
+    only ever asks the question of a finding a cure pass could actually
+    act on.
+    """
+    out = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        if f.get("severity") != "blocking" or f.get("curable") is not True:
+            continue
+        cured_when = f.get("cured_when")
+        if not isinstance(cured_when, str) or not cured_when.strip():
+            out.append(f)
+    return out
+
+
+def curable_findings_with_overrun_cured_when(
+        findings: list[dict]) -> list[tuple[dict, tuple[int, str]]]:
+    """Task 031 (PRD requirement E.2, #171): every BLOCKING, curable
+    finding in `findings` whose OWN `cured_when` text overruns the plan's
+    bounded-checkable-clause lint (`plan_ingestion.clause_count_overrun`,
+    the exact same ~5-clause bound `lint_proposal` holds a task's own
+    `successCriteria` to), paired with that overrun's own `(clause_count,
+    overflow_clause)` result -- `cured_when` BECOMES a cure task's
+    `successCriteria` (`state.cure_task_from_finding`), so it is held to
+    the identical bound, never a second, looser one. A finding missing
+    `cured_when` entirely is not reported here -- that is `curable_
+    findings_missing_cured_when`'s own question; this function only scans
+    findings that DO carry one.
+    """
+    from ralphd.engine import plan_ingestion
+    out = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        if f.get("severity") != "blocking" or f.get("curable") is not True:
+            continue
+        cured_when = f.get("cured_when")
+        if not isinstance(cured_when, str) or not cured_when.strip():
+            continue
+        overrun = plan_ingestion.clause_count_overrun(cured_when)
+        if overrun is not None:
+            out.append((f, overrun))
+    return out
 
 
 def read_findings_json(path: Path) -> list[dict]:

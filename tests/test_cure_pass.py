@@ -72,9 +72,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # ---------------------------------------------------------------------------
 
 
-def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
-    return {"severity": severity, "curable": curable, "clause": clause,
-            "evidence": evidence}
+def _finding(severity: str, curable: bool, clause: str, evidence: str,
+             cured_when: str | None = None) -> dict:
+    payload = {"severity": severity, "curable": curable, "clause": clause,
+               "evidence": evidence}
+    if cured_when is not None:
+        payload["cured_when"] = cured_when
+    return payload
 
 
 def _blocking_curable_finding(clause: str, evidence: str) -> dict:
@@ -275,7 +279,8 @@ def _worker_completes_whatever_is_assigned(sup, prompt=""):
 def _review_rejects_and_writes_a_curable_finding(sup, prompt=""):
     findings.write_findings_json(sup.run.findings_json_file, [
         _finding("blocking", True, "requirement C.1 (#141)",
-                "the worker never wrote the notify tool"),
+                "the worker never wrote the notify tool",
+                cured_when="the notify tool exists and is called"),
     ])
     return _ok(json.dumps({"verdict": "rejected", "reason": "curable defect"}))
 

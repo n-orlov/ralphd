@@ -44,6 +44,7 @@ def _finding(severity: str, **overrides) -> dict:
         "curable": True,
         "clause": "requirement A (#110)",
         "evidence": "fixture evidence",
+        "cured_when": "the fixture cure lands",
     }
     payload.update(overrides)
     return payload

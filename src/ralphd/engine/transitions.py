@@ -1893,6 +1893,53 @@ def review_verdict_findings_errors(
     return []
 
 
+def review_cured_when_errors(findings: "list[dict] | None") -> list[str]:
+    """Task 031 (PRD requirement E.2, #171): errors when `findings` (the
+    same already-schema-validated structured findings list `review_
+    verdict_findings_errors` above reads) carries a curable blocking
+    finding with no `cured_when`, or one whose `cured_when` text itself
+    overruns the plan's own bounded-checkable-clause lint. `cured_when`
+    BECOMES a cure task's `successCriteria` once a cure pass is granted
+    (`state.cure_task_from_finding`), so it is held to review's contract
+    ladder at the point it is asserted, exactly the way `review_verdict_
+    findings_errors` holds a contradicted `verified` claim to it -- never
+    left for the worker to discover only once the malformed cure task is
+    already in `tasks.json`.
+
+    Returns `[]` whenever `findings` is `None` (no structured findings
+    channel at all -- nothing to check) -- the same "nothing to check"
+    shape `review_verdict_findings_errors` uses for the identical case.
+    Deliberately does not restrict itself to a `rejected` payload the way
+    `review_verdict_findings_errors` restricts itself to a `verified`
+    one: a curable blocking finding with no `cured_when` is malformed on
+    its own terms regardless of what verdict the payload claims (a
+    `verified` claim over such a finding is ALREADY refused by `review_
+    verdict_findings_errors`'s own contradiction check; this closes the
+    remaining case, a `rejected` claim whose curable blocking findings
+    are individually incomplete).
+    """
+    if not findings:
+        return []
+    from ralphd.engine import findings as findings_mod
+    from ralphd.engine import plan_ingestion
+    errors: list[str] = []
+    for finding in findings_mod.curable_findings_missing_cured_when(findings):
+        errors.append(
+            f"finding {finding.get('clause')!r}: a curable blocking "
+            "finding requires a non-empty 'cured_when' -- the "
+            "specification a fresh cure task's successCriteria is built "
+            "from (PRD requirement E.2, #171)")
+    for finding, overrun in findings_mod.curable_findings_with_overrun_cured_when(
+            findings):
+        clause_count, overflow_clause = overrun
+        errors.append(
+            f"finding {finding.get('clause')!r}: cured_when carries "
+            f"{clause_count} checkable clauses, past the "
+            f"~{plan_ingestion.MAX_CHECKABLE_CLAUSES}-clause bound (first "
+            f"clause past the bound: {overflow_clause!r})")
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Task 018 (requirement K, #101): the peer plan-review hat's sibling to
 # `review_report_errors` just above -- a `verdict: "objected"` claim with

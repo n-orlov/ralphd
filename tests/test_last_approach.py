@@ -57,9 +57,13 @@ AMENDMENT_MARKER = "Operator rulings (task 028, #26)"
 TASK_ID = "001"
 
 
-def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
-    return {"severity": severity, "curable": curable, "clause": clause,
-            "evidence": evidence}
+def _finding(severity: str, curable: bool, clause: str, evidence: str,
+             cured_when: str | None = None) -> dict:
+    payload = {"severity": severity, "curable": curable, "clause": clause,
+               "evidence": evidence}
+    if cured_when is not None:
+        payload["cured_when"] = cured_when
+    return payload
 
 
 def _result(text: str) -> IterationResult:
@@ -685,7 +689,8 @@ def _drive_the_resume_pause_edge(sup: LoopSupervisor) -> None:
     sup.run.update_status(curePasses={"1": 1})
     findings.write_findings_json(sup.run.findings_json_file, [
         _finding("blocking", True, "requirement D.1/D.2 (#142)",
-                 "the cure did not land before the last cure pass ran out"),
+                 "the cure did not land before the last cure pass ran out",
+                 cured_when="the cure lands before the cure-pass ceiling is spent"),
     ])
 
     async def _review_rejects(prompt, transcript, **kw):

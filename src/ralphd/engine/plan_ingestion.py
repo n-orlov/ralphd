@@ -998,6 +998,26 @@ def _clause_count_overrun(criteria: str) -> tuple[int, str] | None:
     return len(clauses), clauses[_MAX_CHECKABLE_CLAUSES]
 
 
+# Task 031 (PRD requirement E.2, #171): a PUBLIC alias for the checkable-
+# clause bound above and the function that checks it -- a plan-authored
+# task's `successCriteria` is not the only text this bound now applies to.
+# `engine.transitions.review_cured_when_errors` holds a curable finding's
+# own `cured_when` (a review-authored specification that BECOMES a cure
+# task's `successCriteria`, `state.cure_task_from_finding`) to the exact
+# same bound, through this same function -- never a second, hand-copied
+# clause-counting rule that could drift from this one.
+MAX_CHECKABLE_CLAUSES = _MAX_CHECKABLE_CLAUSES
+
+
+def clause_count_overrun(criteria: str) -> tuple[int, str] | None:
+    """Public wrapper for `_clause_count_overrun` above -- same contract,
+    exposed for callers outside this module (task 031, `transitions.
+    review_cured_when_errors`) that hold some OTHER piece of text to the
+    identical ~`MAX_CHECKABLE_CLAUSES`-clause bound `lint_proposal` already
+    enforces on a task's own `successCriteria`."""
+    return _clause_count_overrun(criteria)
+
+
 # ---------------------------------------------------------------------------
 # Task 009 (requirement A.5, #154): the plan's EIGHTH lint -- issue #154's
 # own account of `deck-phase3k` (0.18.0) approach 2's task 205 ("Run the

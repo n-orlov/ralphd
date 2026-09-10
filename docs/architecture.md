@@ -1941,6 +1941,33 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   to one that doesn't. Tests: `tests/test_cure_pass.py` (task 030's own
   section: the grant on a non-superset second rejection, the refusal on a
   superset one, and the ceiling at a third).
+- **A cure is a specification, not a free-text repeat of the finding
+  (v0.20 requirement E.2, #171, task 031).** Structured findings gain two
+  fields (`engine/findings.py`'s `FINDING_SCHEMA`): `cured_when` (a
+  string; required, as a business rule rather than a schema constraint,
+  whenever `curable` is `true`) and `invalidates` (an optional list of
+  in-checkout paths, wired by a later task). A curable blocking finding
+  missing `cured_when` -- or carrying one whose own text overruns the
+  plan's bounded-checkable-clause lint, `plan_ingestion.clause_count_
+  overrun` (the same public function `lint_proposal` itself now calls,
+  exposed for exactly this cross-module reuse) -- is a review contract
+  violation on the SAME ladder a `verified` claim contradicting its own
+  findings already rides (`transitions.review_cured_when_errors`, wired
+  into `_review_verdict` and `_review_contract_ladder` beside `review_
+  verdict_findings_errors`); this reaches every engine-authored curable
+  finding too (`findings.flagged_criteria_findings`'s criteria-tamper
+  finding, `petitions.duplicate_petition_findings`'s duplicate-filing
+  finding), each of which now carries its own `cured_when`.
+  `state.cure_task_from_finding`/`insert_cure_tasks` use `cured_when`
+  VERBATIM as the cure task's `successCriteria` whenever a finding carries
+  one, and always set a new `description` field from `clause` + `evidence`
+  (the specification and its human-readable context, kept separate); a
+  finding with no `cured_when` (a fixture predating this task, or a direct
+  `insert_cure_tasks` caller that supplies none) falls back to the
+  pre-existing clause+evidence derivation unchanged. Tests:
+  `tests/test_cured_when.py` (task 031's own module: the schema/business-
+  rule layer, the ladder re-ask and its recovery, and the criteria
+  substitution itself).
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
   from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
   final approach's all-curable rejection takes `rejected_last_approach` into
