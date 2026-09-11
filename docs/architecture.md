@@ -817,6 +817,27 @@ as a pi NDJSON event at all (`PiRunner._scan_line()`'s return value — any
 event, not specifically a `message_end`) inside that window. If none arrives,
 the watchdog sets `IterationResult.no_traffic_timeout = True` and SIGINTs the
 process immediately, rather than waiting for the full `timeout_s` to elapse.
+**Since v0.20 the window measures agent silence, not the host's scheduling
+delay**: on expiry the watchdog reads the child's own CPU counter
+(`runner.process_cpu_seconds()`, `/proc/<pid>/stat`'s
+`utime+stime+cutime+cstime`) and, if it *advanced* during the window, re-arms
+the same window instead of returning a verdict — a child that keeps
+consuming CPU is being starved by a contended box, not hung, and the wall
+clock of OS process creation plus the child's own runtime cold start is
+something the agent has no control over. A child that has consumed CPU and
+then stops consuming it is blocked, which is the shape this watchdog exists
+for (a `getaddrinfo` wait), and it is still killed on the first such window;
+no deadline is widened anywhere, and the re-arm cannot run forever because
+the ordinary `timeout_s` wait still bounds the iteration (so a silent child
+that merely *spins* is ended by that timer instead). When the counter cannot
+be read at all (no `/proc`, process already reaped) the window expiring is
+the verdict, exactly as before. This is what made
+`tests/flows/test_flow_crash_resume_refunds.py` and
+`tests/flows/test_flow_infra_ladder.py` red on the nightly self-hosted box
+(one 4-core runner, `max-parallel 2` across `gate`, `heavy` and `nightly`):
+a healthy `planning` invocation that had not been given a CPU slice yet was
+killed and retried as an infra fault, inflating the flow's own step sequence
+by one `infra_retry:planning:1` round.
 `LoopSupervisor._run_iteration_once()` passes a real `startup_timeout_s`
 (`cfg.infra_startup_timeout_s`, default 150s, overridable via
 `RALPHD_INFRA_STARTUP_TIMEOUT` or the `infra_startup_timeout_s` job.yaml key)
@@ -2901,7 +2922,10 @@ false and those loops exit instead of re-charging the same outage.
 - **Fail fast on a hang, don't wait out the iteration timeout.**
   `PiRunner.run()`'s startup-window watchdog SIGINTs an attempt that has not
   produced a single parseable pi event within `infra_startup_timeout_s`
-  (150s) and sets `no_traffic_timeout` — always `"infra"`. Killing early is
+  (150s) **and is not consuming CPU** (the re-arm described under "Infra-fault
+  fail-fast + retry with backoff" above: a starved child on a contended host
+  still advances its own CPU counter, a blocked one does not),
+  and sets `no_traffic_timeout` — always `"infra"`. Killing early is
   only safe because something retries, which is why the watchdog is armed
   exactly for the wrapper's phases.
 - **Escalating backoff:** `infra_retry_backoff_s`, default

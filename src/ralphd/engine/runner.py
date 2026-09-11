@@ -58,6 +58,51 @@ STREAM_LIMIT = 16 * 1024 * 1024
 # module constant so tests can compress it instead of sleeping for real.
 SHUTDOWN_GRACE_S = 30
 
+# Clock ticks per second, the unit /proc/<pid>/stat reports CPU time in.
+_CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+
+
+def process_cpu_seconds(pid: int) -> float | None:
+    """CPU seconds this pid has consumed (self + reaped children), or None.
+
+    Task 006 of the v0.20 lane-green approach: the startup-window watchdog
+    below used to read "no parseable pi event within `startup_timeout_s` of
+    the spawn" as proof of a hang, but that window also contains something
+    the agent has no control over -- OS process creation plus the child's
+    own interpreter/runtime cold start, whose wall clock is set by how
+    contended the HOST is, not by whether the agent is stuck. On the
+    nightly self-hosted box (one 4-core runner, `max-parallel 2` across
+    `gate`, `heavy` and `nightly`) a perfectly healthy invocation that had
+    simply not been given a CPU slice yet was being killed and retried as
+    an "infra fault", which is what turned
+    `tests/flows/test_flow_crash_resume_refunds.py` and
+    `tests/flows/test_flow_infra_ladder.py` red there.
+
+    This is the discriminator that removes the host's scheduling delay from
+    the verdict without widening any deadline: a process that is *starved*
+    still accumulates CPU time whenever it is scheduled, while the hang the
+    watchdog exists for (task 001a's live `getaddrinfo ENOTFOUND` incident,
+    and every stub that models it with a sleep) is BLOCKED -- it consumes
+    no CPU at all once it is stuck. `None` when the counter cannot be read
+    (no `/proc`, process already reaped, unparseable line), which the
+    watchdog treats exactly as this engine always behaved: the window
+    expiring is the verdict.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    try:
+        # field 2 (`comm`) may itself contain spaces and parentheses, so the
+        # fields are counted from the LAST ')': utime/stime/cutime/cstime are
+        # fields 14-17, i.e. offsets 11-14 after `state` (field 3).
+        fields = raw[raw.rindex(b")") + 2:].split()
+        ticks = sum(int(fields[i]) for i in (11, 12, 13, 14))
+    except (ValueError, IndexError):
+        return None
+    return ticks / _CLK_TCK
+
 
 @dataclass
 class IterationResult:
@@ -249,21 +294,44 @@ class PiRunner:
                 # 45-minute iteration timeout before finally dying).
                 if not startup_timeout_s:
                     return
-                try:
-                    # Task 011 (#28) audit of this wait_for: safe. The
-                    # awaitable is a fresh `first_traffic.wait()` coroutine
-                    # created right here, so the task wait_for cancels on
-                    # timeout is private to this call and is never awaited
-                    # again -- the shape that made the old pump_task idiom
-                    # re-raise CancelledError cannot arise. TimeoutError, not
-                    # CancelledError, is what comes out. (A CancelledError
-                    # DOES come out when the caller's `finally` cancels
-                    # watchdog_task, which is exactly what that cancel means;
-                    # the caller suppresses it there.)
-                    await asyncio.wait_for(first_traffic.wait(), timeout=startup_timeout_s)
-                except TimeoutError:
-                    result.no_traffic_timeout = True
-                    self.interrupt()
+                # Task 006 (v0.20 lane-green): the window measures AGENT
+                # SILENCE, not the host's scheduling delay. A window that
+                # expires while the child provably advanced its own CPU
+                # counter is not evidence of a hang -- it is evidence of a
+                # contended box (see `process_cpu_seconds` above) -- so it
+                # is re-armed instead of being read as an infra fault. A
+                # child that has consumed CPU and then stops consuming it is
+                # blocked, which is exactly the shape task 001a's watchdog
+                # exists to kill, and it is still killed on the first such
+                # window. The re-arm cannot run forever: the ordinary
+                # `timeout_s`/`iteration_timeout_s` wait below still bounds
+                # the iteration, so a silent child that merely SPINS is
+                # ended by that timer rather than this one.
+                cpu = process_cpu_seconds(self._proc.pid) or 0.0
+                while True:
+                    try:
+                        # Task 011 (#28) audit of this wait_for: safe. The
+                        # awaitable is a fresh `first_traffic.wait()`
+                        # coroutine created right here, so the task wait_for
+                        # cancels on timeout is private to this call and is
+                        # never awaited again -- the shape that made the old
+                        # pump_task idiom re-raise CancelledError cannot
+                        # arise. TimeoutError, not CancelledError, is what
+                        # comes out. (A CancelledError DOES come out when the
+                        # caller's `finally` cancels watchdog_task, which is
+                        # exactly what that cancel means; the caller
+                        # suppresses it there.)
+                        await asyncio.wait_for(first_traffic.wait(),
+                                               timeout=startup_timeout_s)
+                        return
+                    except TimeoutError:
+                        now = process_cpu_seconds(self._proc.pid)
+                        if now is not None and now > cpu:
+                            cpu = now          # starved, not stuck: re-arm
+                            continue
+                        result.no_traffic_timeout = True
+                        self.interrupt()
+                        return
 
             pump_task = asyncio.ensure_future(pump())
             watchdog_task = asyncio.ensure_future(startup_watchdog())

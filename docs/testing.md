@@ -744,6 +744,21 @@ delivered while the runner is in flight leaves the boundary as
 `CancelledError` and records no `iteration.end`). Both in-process, so both
 also `smoke`; no new module.
 
+**5675 (smoke 4074, modules 352->353)** by task 006 of the v0.20 lane-green
+approach (the `python:3.14-slim` nightly cells' `infra_retry:planning:1`
+inflation of `tests/flows/test_flow_crash_resume_refunds.py`): the
+startup-window watchdog now re-arms its own unchanged window while the agent
+process is provably still consuming CPU, so a healthy invocation starved by a
+contended host is no longer killed and retried as a no-traffic infra fault.
+Net +3 nodes in one new module,
+`tests/test_startup_watchdog_cpu_progress.py` -- a child that burns its own
+`process_time()` past the window is not classified an infra hang, a child that
+produces nothing and consumes no further CPU still is (on the first such
+window, with the iteration timeout proven not to be what ended it), and
+`runner.process_cpu_seconds()` reads a live pid and declines an unreadable
+one. All three drive `PiRunner` in-process with a fake `pi` script, so all
+three are also `smoke`.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather
