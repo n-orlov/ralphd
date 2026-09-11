@@ -759,6 +759,23 @@ window, with the iteration timeout proven not to be what ended it), and
 one. All three drive `PiRunner` in-process with a fake `pi` script, so all
 three are also `smoke`.
 
+**5679 (smoke 4074->4078, modules 353->354)** by task 012 of the same v0.20
+lane-green approach, at `37f3b61` (gate's fast tier pinned to `-n 2` instead of
+`-n auto`): net +4 nodes in one new module,
+`tests/test_gate_pinned_worker_count_guard.py` -- the guard itself, reading
+`.github/workflows/gate.yml`'s own fast-tier step for a numeric `-n` value, plus
+three mutation nodes proving that guard fires when the pin is reverted to
+`-n auto`, when the `-n` flag is dropped entirely, and when the records-lint step
+is changed. All four parse the workflow file in-process with PyYAML (no real
+engine/`ralphctl` process spawned), so all four are also `smoke`.
+
+**No count moves at `35e3225`** (task 010 of that same approach: fast 5675,
+smoke 4074, modules 353, both at its parent and at it). It reworked the five
+existing nodes of `tests/test_cli_logs_follow_liveness.py` in place -- the
+mid-tool-call node gained a `tmp_path` fixture for the stub's new hold file --
+and added no node and no module; `src/ralphd/cli/log_render.py`'s
+`render_pending_tool_invocations` fix it carries is covered by those same five.
+
 **This count must be updated in the same commit that adds tests**, now that CI
 runs the fast tier on every push (`docs/ci.md`): a task that adds a module and
 leaves this number stale turns the blocking gate red for the next commit rather
