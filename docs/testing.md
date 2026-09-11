@@ -108,10 +108,14 @@ varies with the axis under test. No fresh dev-layout wall-clock measurement
 exists yet for the `-m fast` selection; task 077's own container matrix cells
 are the mechanism that will produce one, as a check-run verdict, never as a
 locally recorded lane sweep (standing rule 1). The workflow's own per-cell
-budget (`nightly.yml`'s `timeout-minutes: 60`, and `docs/ci.md`'s matching
-"60 min per cell" table entry) is sized to that `-m fast` selection's ~80 s
-parallel wall clock plus a cell's own image pull and, for the `ubuntu:24.04`
-cell only, its `apt-get install python3 python3-pip` step -- not to the
+budget (`nightly.yml`'s `timeout-minutes: 120` -- raised from 60 by task 035
+(steer 026 §4) because 60 was already marginal (58 min observed at
+`bd284e79` with no interference) and task 035's own cure adds real
+per-attempt wall time to any cell whose startup watchdog has to re-arm under
+contention; `docs/ci.md`'s matching table entry carries the same figure) is
+sized to that `-m fast` selection's ~80 s parallel wall clock plus a cell's own
+image pull and, for the `ubuntu:24.04` cell only, its `apt-get install
+python3 python3-pip` step -- not to the
 3600 s ceiling the two retired rows above were measured against, which was
 sized to the unfiltered whole suite this lane no longer runs.
 

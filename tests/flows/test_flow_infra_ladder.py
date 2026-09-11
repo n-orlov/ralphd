@@ -89,7 +89,7 @@ def test_two_infra_faults_are_retried_then_recovered(engine_factory):
             "STUB_TASKS": "1",
             "STUB_INFRA_HANG_SKIP": "1",     # planning stays healthy
             "STUB_INFRA_HANG_COUNT": "2",    # the next two worker attempts hang
-            "RALPHD_INFRA_STARTUP_TIMEOUT": "0.2",
+            "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_BACKOFF_S": "0.05,0.1",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
@@ -156,7 +156,7 @@ def test_outage_budget_exhaustion_aborts_naming_the_duration(engine_factory):
             "STUB_TASKS": "1",
             "STUB_INFRA_HANG_SKIP": "1",     # planning stays healthy
             "STUB_INFRA_HANG_COUNT": "10",   # every worker attempt hangs
-            "RALPHD_INFRA_STARTUP_TIMEOUT": "0.2",
+            "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.2",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "0.5",
         })

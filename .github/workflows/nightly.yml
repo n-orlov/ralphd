@@ -81,7 +81,13 @@ jobs:
   dev-layout:
     name: dev-layout (${{ matrix.image }}, PYTHONUSERBASE ${{ matrix.mode }})
     runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
-    timeout-minutes: 60
+    # Task 035 (steer 026 §4): a wall-clock guard on the CI job, not a test
+    # assertion or a node timeout -- 60 was already marginal (58 min observed
+    # at bd284e79 with no interference from a concurrent heavy/gate run on
+    # the same 4-core box), and task 035's cure adds real per-attempt wall
+    # time to any cell that has to re-arm its startup watchdog under
+    # contention. Raised, not widened out of caution alone.
+    timeout-minutes: 120
     strategy:
       # Six independent claims -- one red cell must never cancel another.
       fail-fast: false

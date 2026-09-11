@@ -150,7 +150,7 @@ def test_crash_mid_review_then_resume_preserves_the_infra_refund(engine_factory,
             "STUB_TASKS": "1", "STUB_SLEEP": "0",
             "STUB_INFRA_HANG_SKIP": "1",    # planning stays healthy
             "STUB_INFRA_HANG_COUNT": "1",   # the next (first worker) attempt hangs
-            "RALPHD_INFRA_STARTUP_TIMEOUT": "0.2",
+            "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_BACKOFF_S": "0.05",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
             "STUB_HOLD_FILE": str(hold_file), "STUB_HOLD_PHASE": "review",
