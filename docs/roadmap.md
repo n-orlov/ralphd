@@ -2087,6 +2087,12 @@ rather than a fresh `status.json` read.
 - **Not landed** (named above, and v0.19.1's own opening requirements): **F**, **G.2**,
   **G.4**, **G.5**, **G.6**, **G.7**, and the lanes green.
 
+Shipped sha `a77df38`, version 0.19.1, installed host-side by the operator. v0.19 itself never
+shipped on its own account (approach 1 reached `in-progress` task 022, approach 2 `in-progress`
+task 010, both `failed` by the stagnation guard above) -- this declaration records the
+superseding v0.19.1 wave's shipped sha against the same `0.19` series number, deliberately kept
+out of the v0.19.1 heading's own block below so that block stays byte-identical to its settled text.
+
 ## v0.19.1 — a gate is not a wall
 
 Full PRD: [`docs/prds/v0.19.1-a-gate-is-not-a-wall.md`](prds/v0.19.1-a-gate-is-not-a-wall.md).
@@ -2154,7 +2160,6 @@ with 3 residuals at 08:09:50Z and the blind verdict gate `verified` with 6 resid
 `a77df38`, installed host-side by the operator, who also corrected one shipped record that cited
 an amended-away commit — an object only the run's own workspace held, so `a77df38` was red in
 the records family on every fresh clone, and neither judging hat could see it (#176).
-Shipped sha `a77df38`, version 0.19.1, installed host-side by the operator.
 The reflection (`artifacts/reflection/report.md` and `suggestions.diff` in the run dir) named
 the freeze rule, the same-environment re-measure protocol, the fenced-contract defect and the
 cure-specification gap; those are #175, #170 and #171. Ten operator steers and seven rulings
