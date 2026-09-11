@@ -278,13 +278,27 @@ def test_a_sigkilled_iterations_three_files_survive_the_resume(engine_factory, t
     # startedAt-only meta.json -- i.e. all three files are worth preserving
     victim = _wait_for(crashed_worker, timeout=30)
     number = int(victim.name)
-    before = {name: (victim / name).read_bytes()
-              for name in ("prompt.md", "output.jsonl", "meta.json")}
-    assert b"endedAt" not in before["meta.json"]
 
     pid = e1.proc.pid  # this specific pid, never a pattern
     os.kill(pid, signal.SIGKILL)
     e1.proc.wait(timeout=10)
+
+    # Snapshot the pre-crash files only AFTER the process is confirmed dead
+    # (not at `victim`'s first non-empty read, above). `crashed_worker()`
+    # accepts the victim the moment `output.jsonl` first shows a non-empty
+    # size, but the engine's pump() is still appending that same event line
+    # at that instant -- a snapshot taken there can land between two writes
+    # of one in-flight line and read a torn, partially-flushed byte string
+    # that diverges from the fully-written line the archive captures a
+    # moment later, even though the archiving itself lost nothing (task 032,
+    # the B-001-family race steer 025 rule 23 diagnosed: the window scales
+    # with machine speed, not a host property). Once the process is
+    # SIGKILLed and reaped, the slot cannot change again, so this is both
+    # the true post-crash reference AND a stronger contract than the
+    # pre-kill read it replaces.
+    before = {name: (victim / name).read_bytes()
+              for name in ("prompt.md", "output.jsonl", "meta.json")}
+    assert b"endedAt" not in before["meta.json"]
 
     # Resume: a fresh engine over the SAME run dir (what `ralphctl resume` does)
     e2 = engine_factory(
