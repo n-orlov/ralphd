@@ -154,12 +154,30 @@ async def test_a_shutdown_exception_is_deliberately_not_contained(tmp_path, exc)
 async def test_a_cancellation_requested_from_outside_is_honoured(tmp_path):
     """The other half of "deliberate": when somebody cancels the iteration's
     own task, the boundary must not eat the cancellation and pretend the
-    iteration merely failed."""
+    iteration merely failed.
+
+    Task 029 (#182 family, steer 023/021): `hang()` used to suspend on
+    `asyncio.sleep(3600)`, but this suite's own autouse `asyncio.sleep`
+    patch (conftest.py, "backoff and sleep stubbed by default") makes
+    *every* delay resolve in a single extra event-loop tick -- including
+    this one. On 3.11, `asyncio.wait_for` wraps the awaited coroutine in a
+    separate `Task` (`ensure_future` + `add_done_callback`), one scheduler
+    hop slower than 3.12+'s direct `await fut`; that one extra hop was
+    enough for the instant-patched sleep to resolve and `hang()` to return
+    *before* `task.cancel()` ran, so no CancelledError was ever raised --
+    a fixture race, not an engine defect (task 028's diagnosis). `hang()`
+    now suspends on an `asyncio.Event` that nothing in this test, this
+    module or the patched-`asyncio.sleep` machinery ever sets -- it cannot
+    resolve on its own on *any* interpreter, so the worker task is
+    provably still suspended when `task.cancel()` fires, deterministically,
+    version-independently.
+    """
     started = asyncio.Event()
+    never_finishes = asyncio.Event()
 
     async def hang(_prompt, _transcript, **_kw):
         started.set()
-        await asyncio.sleep(3600)
+        await never_finishes.wait()
 
     sup = _supervisor(tmp_path, [_ok])
     sup.runner.run = hang                       # type: ignore[method-assign]
@@ -242,12 +260,19 @@ async def test_a_cancellation_mid_iteration_is_not_turned_into_a_fault(tmp_path)
     classification, which is what the AttributeError was doing in the
     operator's nightly cells: a fault (or a crash) where a propagated
     cancellation belonged.
+
+    Task 029: see the sibling test above for why `hang()` suspends on a
+    never-set `asyncio.Event` rather than `asyncio.sleep` -- the
+    autouse-patched `asyncio.sleep` resolving through an extra 3.11-only
+    `wait_for` scheduling hop was letting `hang()` finish before
+    `task.cancel()` ran, on 3.11 only (task 028's diagnosis).
     """
     started = asyncio.Event()
+    never_finishes = asyncio.Event()
 
     async def hang(_prompt, _transcript, **_kw):
         started.set()
-        await asyncio.sleep(3600)
+        await never_finishes.wait()
 
     sup = _supervisor(tmp_path, [_ok])
     sup.runner.run = hang                       # type: ignore[method-assign]
