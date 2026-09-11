@@ -171,6 +171,16 @@ async def test_a_cancellation_requested_from_outside_is_honoured(tmp_path):
     resolve on its own on *any* interpreter, so the worker task is
     provably still suspended when `task.cancel()` fires, deterministically,
     version-independently.
+
+    Task 029, second pass: this node states BOTH halves of the contract it
+    is here to pin -- the `CancelledError` propagates out of
+    `_run_iteration_once`, *and* no `iteration.end` event is recorded for
+    the cancelled iteration. The second assertion used to live only in the
+    sibling `test_a_cancellation_mid_iteration_is_not_turned_into_a_fault`,
+    so honouring an outside cancellation and not recording it as a finished
+    iteration were pinned by two different nodes; a boundary that honoured
+    the cancel *and* emitted an end event would have passed this one. It is
+    an added assertion, not a loosened one.
     """
     started = asyncio.Event()
     never_finishes = asyncio.Event()
@@ -188,6 +198,12 @@ async def test_a_cancellation_requested_from_outside_is_honoured(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert task.cancelled()
+
+    events_file = tmp_path / "events.jsonl"
+    events = ([json.loads(x) for x in events_file.read_text().splitlines() if x]
+              if events_file.exists() else [])
+    assert not [ev for ev in events if ev.get("type") == "iteration.end"], \
+        "a cancelled iteration must not also be recorded as a finished one"
 
 
 @pytest.mark.asyncio
