@@ -117,6 +117,7 @@ from .log_render import FULL_BACKLOG_TAIL as _FULL_BACKLOG_TAIL
 from .log_render import _ansi
 from .log_render import new_render_state as _new_render_state
 from .log_render import render_log_line as _render_log_line
+from .log_render import render_pending_tool_invocations as _render_pending_tool_invocations
 from .log_render import render_to_lines as _render_to_lines
 
 DOCKER = os.environ.get("RALPHD_DOCKER", "docker")
@@ -4349,6 +4350,14 @@ def _stream_logs_pretty_tailed(args, base_path: str, tty: bool, tail: int | None
         backlog = backlog[-tail:]
     for line in backlog:
         print(line)
+    # Approach-4 task 010: the backlog above is rendered BUFFERED
+    # (`live=False`), which prints nothing for a tool call that has
+    # started but not finished, and the live continuation below skips
+    # every raw line the backlog already consumed -- so a call in flight
+    # at attach time used to lose its invocation line in the gap between
+    # the two. Print those pending invocations here, once, before the
+    # live stream resumes.
+    _render_pending_tool_invocations(state, tty)
     sys.stdout.flush()
     _stream_logs(args, f"{base_path}?follow=true&tail={_FULL_BACKLOG_TAIL}", tty,
                  state=state, skip_lines=already_raw_lines)

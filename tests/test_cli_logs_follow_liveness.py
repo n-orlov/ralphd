@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import json
 import os
-import select
+import queue
 import subprocess
+import threading
 import time
 
 from tests.conftest import RALPHCTL
@@ -169,27 +170,88 @@ def _try_read_line(proc: subprocess.Popen, timeout: float) -> str | None:
     """Non-blocking (up to `timeout`) readline off `proc.stdout` -- `None`
     means nothing arrived within the window, as opposed to `readline()`
     itself which blocks indefinitely. Used by the task-004 test below to
-    prove a real timing gap rather than just an event ORDER."""
-    r, _, _ = select.select([proc.stdout], [], [], timeout)
-    if not r:
-        return None
-    return proc.stdout.readline()
+    prove a real timing gap rather than just an event ORDER.
+
+    approach-4 task 010: this used to `select.select([proc.stdout], ...)`,
+    which asks the KERNEL whether the pipe's fd has bytes -- while
+    `readline()` reads out of the `TextIOWrapper`'s own buffer above it. A
+    burst of lines (the follow stream replays its whole backlog snapshot
+    the moment it attaches) lands in that buffer in ONE read: the first
+    `readline()` returns line 1 and the remaining lines become invisible
+    to `select`, so every later poll reported "nothing arrived" until the
+    child happened to write again -- and then returned lines that had in
+    truth arrived seconds earlier. Both directions of that error were
+    live: a real line went unseen, and a line's apparent arrival time was
+    the time of the NEXT write. Draining the pipe in a thread and taking
+    lines off a queue measures arrival where it actually happens, with no
+    fd-versus-buffer split.
+    """
+    return _reader_for(proc).next_line(timeout)
 
 
-def test_logs_follow_shows_tool_invocation_before_tool_ends(live):
+class _LineReader:
+    """Background drain of one `Popen.stdout` into a queue (see
+    `_try_read_line`). `next_line(timeout)` returns the next line, `None`
+    if none arrived within `timeout`, or `""` once the stream is at EOF --
+    the same three outcomes the old select-based helper reported, minus
+    the buffered-line blind spot."""
+
+    def __init__(self, proc: subprocess.Popen) -> None:
+        self._q: queue.Queue[str] = queue.Queue()
+        self._thread = threading.Thread(target=self._pump, args=(proc,),
+                                        daemon=True)
+        self._thread.start()
+
+    def _pump(self, proc: subprocess.Popen) -> None:
+        try:
+            for line in proc.stdout:  # blocking readline, in this thread only
+                self._q.put(line)
+        except (ValueError, OSError):
+            pass  # pipe closed under us by the test's own cleanup
+        self._q.put("")
+
+    def next_line(self, timeout: float) -> str | None:
+        try:
+            return self._q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+
+_READERS: dict[int, _LineReader] = {}
+
+
+def _reader_for(proc: subprocess.Popen) -> _LineReader:
+    reader = _READERS.get(id(proc))
+    if reader is None:
+        reader = _READERS[id(proc)] = _LineReader(proc)
+    return reader
+
+
+def test_logs_follow_shows_tool_invocation_before_tool_ends(live, tmp_path):
     """task 004: the live invocation line for a tool call must be visible
     in the follow stream strictly BEFORE the matching `tool_execution_end`
     is even emitted by the stub job, i.e. while the tool call is still
     genuinely in flight -- not merely rendered-before-printed-completion
-    due to buffering. `STUB_TOOL_SLEEP` (tests/stub-pi/pi) opens a real,
-    multi-second wall-clock window between `tool_execution_start` and
-    `tool_execution_end` so this is a genuine timing proof: after seeing
-    the invocation line we assert no completion/outcome line arrives
-    within a window comfortably shorter than STUB_TOOL_SLEEP."""
-    # Task 048 (B.5 follow-on): shrunk from 4s to 2.0s -- still 0.5s clear
-    # of the 1.5s no-completion check window below, the margin the timing
-    # proof actually needs.
-    stub_env = {"STUB_RICH_EVENTS": "1", "STUB_TOOL_SLEEP": "2.0"}
+    due to buffering.
+
+    approach-4 task 010: the window that proves this is now opened
+    DETERMINISTICALLY by `STUB_TOOL_HOLD_FILE` (tests/stub-pi/pi), which
+    blocks the stub between `tool_execution_start` and `tool_execution_end`
+    until this test releases it, instead of by a fixed `STUB_TOOL_SLEEP`
+    wall-clock gap. The old shape measured its 2.0s gap from the stub's own
+    emission but started its 1.5s no-completion check only once the
+    invocation line had traversed pump -> output.jsonl -> the engine's
+    0.3s-poll follower -> the CLI's renderer, so any delivery/scheduling
+    lag above 0.5s put `tool_execution_end` inside the check window and the
+    node went red with `'  \u21b3 \u2713 ok (ok)'` -- observed on the
+    `ubuntu:24.04, PYTHONUSERBASE unset` nightly cell at 7b0860b (check run
+    103003362434, a 19-minute serial fast tier). With the hold there is no
+    margin to lose: the completion event cannot exist until this test says
+    so, and the assertions below are unchanged in strength."""
+    hold_file = tmp_path / "hold-toolopen"
+    stub_env = {"STUB_RICH_EVENTS": "1",
+                "STUB_TOOL_HOLD_FILE": str(hold_file),
+                "STUB_TOOL_HOLD_TIMEOUT_S": "30"}
     run = live(run_id="followtest-toolopen", job={"iterations": 3},
                stub_env=stub_env)
     run.wait_api()
@@ -214,14 +276,35 @@ def test_logs_follow_shows_tool_invocation_before_tool_ends(live):
         # emitted (this is the plain-non-TTY start line, task 004).
         assert "✓" not in invocation_line and "✗" not in invocation_line
 
-        # The real proof: give the stub comfortably less time than
-        # STUB_TOOL_SLEEP to produce a completion line -- if the renderer
-        # (or the stub) were instead buffering until the tool call ended,
-        # this window would consistently show the outcome too.
+        # The tool call is provably STILL OPEN at this instant: the stub is
+        # parked inside its hold, and the hold's duration marker (written
+        # only when the hold ends, i.e. strictly before `tool_execution_end`
+        # is printed) does not exist yet. This replaces the old shape's
+        # implicit "the 2.0s sleep probably hasn't elapsed" assumption with
+        # a fact read off disk.
+        assert not (tmp_path / "hold-toolopen.stub-tool-hold-duration").exists(), (
+            "the stub's tool hold had already ended when the invocation line "
+            "arrived -- tool_execution_end may already have been emitted, so "
+            "this line does not prove the call was in flight")
+
+        # The real proof: while the tool call is held open, no completion
+        # line may arrive -- if the renderer (or the stub) were instead
+        # buffering until the tool call ended, this window would show the
+        # outcome too.
         next_line = _try_read_line(proc, 1.5)
         assert next_line is None or (
             "✓" not in next_line and "✗" not in next_line and "↳" not in next_line
-        ), f"tool completion appeared before STUB_TOOL_SLEEP elapsed: {next_line!r}"
+        ), f"tool completion appeared while the tool call was still held open: {next_line!r}"
+
+        # And the invocation line really came from a call the stub had
+        # entered and not yet finished, not from a replayed backlog.
+        assert (tmp_path / "hold-toolopen.stub-tool-hold-entered").exists(), (
+            "the stub never entered the tool hold, so the invocation line "
+            "cannot have come from a tool call that was still in flight")
+
+        # Release the held tool call now that the proof above has run
+        # against a deterministically-still-in-flight invocation.
+        hold_file.touch()
 
         run.wait_terminal(timeout=60)
         rc = proc.wait(timeout=15)

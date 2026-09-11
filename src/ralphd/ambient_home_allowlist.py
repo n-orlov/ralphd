@@ -44,7 +44,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 028 (#157, requirement D.4) added the `est` column's
         # `task_progress_budget_estimate` import above this read, shifting
         # it by +1: 159->160->161. Same read, same reason.
-        "line": "161",
+        #
+        # Approach-4 task 010 added one `log_render` import beside the other
+        # renderer imports above this read, shifting it by +1 again:
+        # 161->162. Same read, same reason.
+        "line": "162",
         "reason": ("registry()'s ralphctl-managed-state root: overridable via "
                    "RALPHD_REGISTRY; the ambient fallback is the operator's own "
                    "machine home, which is exactly right for a bare `ralphctl` "
@@ -126,7 +130,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `FileNotFoundError` catch (task 080) into `sh()` itself and
         # expanded both docstrings, shifting every entry from this one on:
         # 1979->2005, 1999->2025.
-        "line": "2005",
+        #
+        # Approach-4 task 010's one added `log_render` import shifts these
+        # two by +1: 2005->2006, 2025->2026. Same reads, same reasons.
+        "line": "2006",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -134,7 +141,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "2025",
+        "line": "2026",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
@@ -153,7 +160,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # through) and expanded `sh()`'s own docstring, a net +29 above
         # every entry from this one on: 4481->4510, 4683->4712, 4687->4716,
         # 6509->6538, 6513->6542. Same reads, same reasons.
-        "line": "4510",
+        #
+        # Approach-4 task 010 added one `log_render` import (+1, above all
+        # of these) and eight lines inside `_stream_logs_pretty_tailed`
+        # (the pending-tool-invocation call and its comment, above all but
+        # the first of these), a net +9 for every entry from this one on:
+        # 4510->4519, 4712->4721, 4716->4725, 6538->6547, 6542->6551. Same
+        # reads, same reasons.
+        "line": "4519",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -163,7 +177,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4712",
+        "line": "4721",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -172,13 +186,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4716",
+        "line": "4725",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "6538",
+        "line": "6547",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -186,7 +200,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6542",
+        "line": "6551",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

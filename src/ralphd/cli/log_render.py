@@ -344,7 +344,35 @@ def _render_message_end(message: dict, state: dict, tty: bool) -> None:
 
 def new_render_state() -> dict:
     return {"text_open": False, "text_seen": False, "thinking_seen": False,
-            "toolcall_seen": False, "tool_args": {}, "open_tool_line": None}
+            "toolcall_seen": False, "tool_args": {}, "open_tool_line": None,
+            "tool_pending": {}}
+
+
+def render_pending_tool_invocations(state: dict, tty: bool) -> None:
+    """Print the invocation line for every tool call that is STILL IN
+    FLIGHT in `state` -- started, with no matching `tool_execution_end`
+    rendered yet -- exactly as live rendering would have printed it at
+    `tool_execution_start` time.
+
+    Approach-4 task 010: a follow that ATTACHES while a tool call is
+    already running used to lose that call's invocation line entirely. The
+    pretty follow path renders its backlog snapshot buffered
+    (`render_to_lines`, `live=False`), which deliberately prints nothing
+    for a `tool_execution_start` (a finished call must render as exactly
+    one line), and then resumes the live stream with `skip_lines` set past
+    every raw line that snapshot already consumed -- including that
+    `tool_execution_start`. Neither half printed it, so the operator saw
+    `[thinking\u2026]` and then, minutes later, a bare `\u21b3 \u2713 ok` for a
+    command they were never shown -- the precise blindness tasks 003/004
+    exist to prevent. Calling this once, after the backlog and before the
+    live continuation, restores the missing line; the matching end event
+    then renders through the ordinary live path (in-place rewrite on a
+    TTY, completion-only line when piped).
+    """
+    for tcid, (name, args) in list(state.get("tool_pending", {}).items()):
+        _finalize_open_tool_line(state, tty)
+        _render_tool_start(name, args, tty, state, tcid)
+        state["toolcall_seen"] = True
 
 
 def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -> None:
@@ -389,7 +417,7 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
     if etype == "ralphd.iteration":
         _render_boundary(ev, tty)
         state.update(text_open=False, text_seen=False, thinking_seen=False,
-                    toolcall_seen=False, tool_args={})
+                    toolcall_seen=False, tool_args={}, tool_pending={})
     elif etype == "message_update":
         _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)
     elif etype == "tool_execution_start":
@@ -405,12 +433,21 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
         args = ev.get("args") or ev.get("arguments") or {}
         if tcid is not None:
             state["tool_args"][tcid] = args
+            # Approach-4 task 010: remember the still-unfinished call (name
+            # AND args) so a follow that attached mid-call can print its
+            # invocation line after the buffered backlog -- see
+            # `render_pending_tool_invocations`. Dropped again by the
+            # matching end event below and by every iteration boundary.
+            state.setdefault("tool_pending", {})[tcid] = (
+                ev.get("toolName", "?"), args)
         if live:
             _render_tool_start(ev.get("toolName", "?"), args, tty, state, tcid)
             state["toolcall_seen"] = True
     elif etype == "tool_execution_end":
         tcid = ev.get("toolCallId")
         args = state["tool_args"].pop(tcid, None) if tcid is not None else None
+        if tcid is not None:
+            state.setdefault("tool_pending", {}).pop(tcid, None)
         if live:
             _render_tool_completion(ev, tty, args, state)
         else:

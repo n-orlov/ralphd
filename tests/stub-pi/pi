@@ -320,12 +320,49 @@ from env vars set by the test:
   STUB_TOOL_SLEEP     seconds to sleep AFTER emitting `tool_execution_start`
                       but BEFORE emitting the matching `tool_execution_end`
                       inside `emit_rich_preamble` (default 0; only takes
-                      effect when STUB_RICH_EVENTS is also set). Used by
-                      task 004's black-box liveness test to open a real,
-                      observable window in which a follow subprocess can
-                      read the live invocation line off `ralphctl logs -f`
-                      strictly before the tool call's completion event
-                      exists at all.
+                      effect when STUB_RICH_EVENTS is also set). Opens a
+                      real, observable window in which a follow subprocess
+                      can read the live invocation line off
+                      `ralphctl logs -f` strictly before the tool call's
+                      completion event exists at all -- but the window is a
+                      fixed wall-clock guess measured from the stub's OWN
+                      emission, so a reader whose delivery lag eats the
+                      margin sees the completion inside its own check
+                      window (this is what made task 004's liveness node
+                      red on a loaded hosted runner). Prefer
+                      STUB_TOOL_HOLD_FILE below for a proof that needs the
+                      tool call to still be in flight.
+  STUB_TOOL_HOLD_FILE  approach-4 task 010: the DETERMINISTIC replacement
+                      for the STUB_TOOL_SLEEP window above -- the same
+                      bounded hold primitive STUB_HOLD_FILE gives a whole
+                      phase, applied to the gap between
+                      `tool_execution_start` and `tool_execution_end`
+                      inside `emit_rich_preamble`. When set, the stub emits
+                      and flushes `tool_execution_start`, then BLOCKS until
+                      this path exists (the reader's own release signal,
+                      once it has observed everything it needs to observe
+                      about a still-in-flight tool call) or
+                      STUB_TOOL_HOLD_TIMEOUT_S elapses. The tool call is
+                      therefore provably still open for as long as the
+                      reader needs, with no margin to lose, and the reader
+                      needs no wall-clock guess at all. Two markers are
+                      written beside the path, exactly like the phase hold:
+                      `+ ".stub-tool-hold-entered"` (the stub is inside the
+                      hold) and `+ ".stub-tool-hold-duration"` (the hold has
+                      ENDED -- its absence is a positive proof that
+                      `tool_execution_end` has not been emitted yet).
+                      Only takes effect when STUB_RICH_EVENTS is also set.
+  STUB_TOOL_HOLD_TIMEOUT_S  the bounded fallback (seconds) for
+                      STUB_TOOL_HOLD_FILE (default 5.0). Reaching it is a
+                      FAILURE, not a continue: the invocation exits
+                      HOLD_TIMEOUT_EXIT_CODE (3) after a stderr line naming
+                      the file and the bound, so a reader that never
+                      observed its window goes red fast instead of passing
+                      on a race it never won. Nothing ever WAITS this long
+                      in the healthy path -- the hold ends the moment the
+                      reader releases it. Poll interval is STUB_HOLD_POLL_S
+                      (shared with the phase hold). Ignored when
+                      STUB_TOOL_HOLD_FILE is unset.
   STUB_HUGE_LINE      if set, the first worker iteration emits one NDJSON line of
                       ~1 MiB (pi emits full message snapshots per event; the
                       engine must not choke on long lines)
@@ -947,6 +984,48 @@ def _chunks(s, n=6):
     return [s[i:i + size] for i in range(0, len(s), size)]
 
 
+def _apply_tool_hold():
+    """Approach-4 task 010: hold the gap between `tool_execution_start` and
+    `tool_execution_end` open until the reader releases it, instead of
+    guessing a `STUB_TOOL_SLEEP` wall-clock window wide enough to "probably"
+    outlast the reader's own delivery lag.
+
+    Same shape and same bounded-failure contract as the phase-level
+    `_apply_hold` below (STUB_HOLD_FILE, task 007/B.1): blocks until
+    STUB_TOOL_HOLD_FILE exists or STUB_TOOL_HOLD_TIMEOUT_S elapses, writes
+    `<file>.stub-tool-hold-entered` before its first poll and
+    `<file>.stub-tool-hold-duration` when the hold ends (so the ABSENCE of
+    the duration marker is a positive, race-free proof that
+    `tool_execution_end` has not been emitted yet), and treats reaching the
+    bound as a failure (exit HOLD_TIMEOUT_EXIT_CODE) rather than a silent
+    continue.
+    """
+    hold_file = os.environ.get("STUB_TOOL_HOLD_FILE")
+    if not hold_file:
+        return
+    timeout_s = float(os.environ.get("STUB_TOOL_HOLD_TIMEOUT_S", "5"))
+    poll_s = float(os.environ.get("STUB_HOLD_POLL_S", "0.02"))
+    start = time.monotonic()
+    timed_out = False
+    with open(f"{hold_file}.stub-tool-hold-entered", "w") as _f:
+        _f.write("tool_execution_start")
+    while not os.path.exists(hold_file):
+        if time.monotonic() - start >= timeout_s:
+            timed_out = True
+            break
+        time.sleep(poll_s)
+    duration = time.monotonic() - start
+    with open(f"{hold_file}.stub-tool-hold-duration", "w") as _f:
+        _f.write(repr(duration))
+    if timed_out:
+        sys.stderr.write(
+            f"stub: tool hold {hold_file!r} never released; failing on the "
+            f"bounded fallback of {timeout_s}s (STUB_TOOL_HOLD_TIMEOUT_S) "
+            f"after {duration:.3f}s\n")
+        sys.stderr.flush()
+        sys.exit(HOLD_TIMEOUT_EXIT_CODE)
+
+
 def emit_rich_preamble(tool_name="bash", tool_args=None, thinking_text=None,
                         tool_result="ok"):
     """Emit a realistic pi `--mode json` event sequence: a streamed thinking
@@ -983,6 +1062,7 @@ def emit_rich_preamble(tool_name="bash", tool_args=None, thinking_text=None,
     print(json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
                        "toolName": tool_name, "args": tool_args}))
     sys.stdout.flush()
+    _apply_tool_hold()
     _tool_sleep = float(os.environ.get("STUB_TOOL_SLEEP", "0"))
     if _tool_sleep:
         time.sleep(_tool_sleep)
