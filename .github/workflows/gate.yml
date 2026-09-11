@@ -85,10 +85,18 @@ jobs:
         run: |
           python -m pytest -q tests/records/ tests/test_sweep_sha_guard.py
 
-      # `-n auto --dist loadfile`: loadfile keeps a module's tests on one
+      # `-n 2 --dist loadfile`: loadfile keeps a module's tests on one
       # worker, which is what this suite's module-scoped fixtures assume
-      # (docs/testing.md, "Recipes"). `auto` rather than a fixed 8 because a
-      # hosted runner is not the 28-core box the budgets were measured on.
+      # (docs/testing.md, "Recipes"). The worker count is a fixed `2`, not
+      # `-n auto`, because this lane's own "Report the environment" step
+      # above prints the runner's actual core count and it has measured `2`
+      # on every hosted `ubuntu-latest` run checked for task 012 (check run
+      # 103181370436 at sha 35e3225 printed "cores: 2") -- `auto` reads that
+      # same `nproc` at test-collection time, so pinning the literal it
+      # already resolves to removes no coverage and removes a second,
+      # independent source of run-to-run flake (a runner-count change, or
+      # transient oversubscription on the shared hosted fleet) on top of the
+      # test-order-dependent flake that pinning the count does not touch.
       - name: Fast tier
         run: |
-          python -m pytest -q -m fast -n auto --dist loadfile --durations=15
+          python -m pytest -q -m fast -n 2 --dist loadfile --durations=15
