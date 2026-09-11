@@ -35,7 +35,7 @@ import urllib.request
 from ralphd.cli.ui_server import make_server, run_list
 from ralphd.engine.state import format_task_fraction, task_counts
 
-from tests.conftest import free_port
+from tests.conftest import free_port, wait_hold_entered
 from tests.flows.flowlib import assert_steps_include, flow_steps
 
 # Subsequence, not exact: unlike the happy path's own reference sequence,
@@ -103,6 +103,21 @@ def test_hub_reads_and_steers_a_real_engine_in_process(tmp_path, live):
                        "STUB_HOLD_FILE": str(hold_file),
                        "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
+    # `wait_api()` only proves the HTTP server is up; it says nothing about
+    # how far the run itself has gotten. `_engine_task_counts()`/the hub's
+    # own run-detail read below need the planning iteration to have already
+    # ingested its plan into `tasks.json`, and the ordered-steps assertion
+    # at the bottom needs `iteration:worker` to have already landed in
+    # `events.jsonl` before this test's own steer POST can legally follow
+    # it. `iteration.start` (loop.py) is emitted before the stub `pi`
+    # child is even spawned, and that child writes
+    # `<hold_file>.stub-hold-entered` as the FIRST act inside its own hold
+    # (`_apply_hold`, tests/stub-pi/pi) -- strictly after both of the above
+    # -- so waiting for that marker (`wait_hold_entered`, tests/conftest.py,
+    # the same CAUSE-and-OBSERVE primitive `test_e2e.py`/`test_durations.py`
+    # already use to avoid this exact class of race) is the barrier this
+    # test was missing.
+    wait_hold_entered(hold_file)
 
     hub = _InProcessHub(run.registry)
     try:
