@@ -36,7 +36,6 @@ import asyncio
 import json
 import os
 import stat
-import sys
 
 import pytest
 
@@ -55,19 +54,34 @@ def _fake_pi(tmp_path, *, obey_sigint: bool):
     `obey_sigint=False` additionally ignores SIGINT, which is the worse half
     of the shape: the runner must still come back with a verdict rather than
     raise, and must not wait out its whole shutdown grace before doing so.
+
+    Task 001 (v0.20-a6, B-001): this used to be a `#!{sys.executable}`
+    script -- a full CPython cold start (import `json`/`signal`/`sys`/`time`,
+    parse and compile this literal) sitting entirely *inside* the 0.2 s
+    `timeout_s` window `test_runner_returns_a_timed_out_result_instead_of_raising`
+    races against, before the process has even read stdin or printed its one
+    event. Measured locally (`taskset -c 0`, six competing busy loops on the
+    same core -- see `b001-cure.md`): the python-shebang version's spawn to
+    first-byte latency ran ~80 ms under that contention, leaving only ~2.5x
+    headroom against the 200 ms window; a `/bin/sh` script with no
+    interpreter/import cost measured ~10-20 ms, an order of magnitude more
+    headroom for the same window. `/bin/sh` has no `signal.signal` call to
+    reach for, so the deaf variant instead `trap`s SIGINT to be ignored and
+    then `exec`s into the sleep -- a POSIX-ignored disposition survives
+    `exec` (unlike a caught one), so the replacement process (`sleep`, now
+    running as this same pid) stays exactly as deaf as the python version's
+    `SIG_IGN` did, and the runner's SIGKILL fallback is still what ends it.
     """
     script = tmp_path / ("fake-pi-deaf" if not obey_sigint else "fake-pi")
-    ignore = "signal.signal(signal.SIGINT, signal.SIG_IGN)\n" if not obey_sigint else ""
+    ignore = "trap '' INT\n" if not obey_sigint else ""
     script.write_text(
-        f"#!{sys.executable}\n"
-        "import json, signal, sys, time\n"
-        "sys.stdin.read()\n"
+        "#!/bin/sh\n"
         f"{ignore}"
-        "print(json.dumps({'type': 'message_end', 'message': {"
-        "'role': 'assistant', 'content': [{'type': 'text', 'text': 'hi'}],"
-        "'usage': {'input': 1, 'output': 1, 'totalTokens': 2}}}))\n"
-        "sys.stdout.flush()\n"
-        "time.sleep(9999)\n")
+        "cat >/dev/null\n"
+        "echo '{\"type\": \"message_end\", \"message\": {\"role\": \"assistant\","
+        " \"content\": [{\"type\": \"text\", \"text\": \"hi\"}],"
+        " \"usage\": {\"input\": 1, \"output\": 1, \"totalTokens\": 2}}}'\n"
+        "exec sleep 9999\n")
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     return script
 
