@@ -123,7 +123,15 @@ def _write_plan(sup: LoopSupervisor, tasks: list[dict]) -> None:
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
 
 
-_PROPOSAL_PASSTHROUGH = ("id", "title", "successCriteria", "dependsOn", "priority")
+# Task 004 (v0.20.1): mirrors `plan_ingestion._TASK_PASSTHROUGH_FIELDS`
+# exactly -- `tier` and `estimatedIterations` are proposal-legal fields the
+# real ingestion path carries through to tasks.json verbatim, so a helper
+# that silently dropped them made a test's scenario parameter a no-op (the
+# task landed on disk with the DEFAULT `estimatedIterations: 1` while the
+# test claimed to exercise 3). Any test relying on a passthrough value
+# should also assert it back off the ingested record.
+_PROPOSAL_PASSTHROUGH = ("id", "title", "successCriteria", "dependsOn",
+                         "priority", "tier", "estimatedIterations")
 
 
 def _write_proposal(sup: LoopSupervisor, tasks: list[dict],
@@ -1120,9 +1128,13 @@ def test_three_consecutive_commit_only_iterations_never_force_verify_dispatch(
     `awaiting-validation` and dispatch `verify` on the worker's own behalf
     the instant the third one landed (`LoopSupervisor._record_task_
     absorption_streak`, deleted in this same commit). Now nothing does:
-    the task is still `in-progress` once the budget of exactly three
-    worker iterations is spent, `verify` never ran at all, and the
-    `notes` field never grows the legacy hand-off sentence. Governing
+    the task is still `in-progress` after all three of them, `verify`
+    never ran at all, and the `notes` field never grows the legacy
+    hand-off sentence. `estimatedIterations: 3` also puts the task's own
+    progress budget (`estimatedIterations + 2` = 5) safely ABOVE the three
+    iterations driven here, so what this node observes is the absence of
+    the deleted streak and nothing else -- no forced split is in play.
+    Governing
     what SHOULD happen once a task genuinely exhausts its budget is the
     pre-existing progress-budget/forced-split path (task 016) -- pinned
     for THIS shape by tasks 005/006 (requirements B.3/B.4), never this
@@ -1139,6 +1151,11 @@ def test_three_consecutive_commit_only_iterations_never_force_verify_dispatch(
         "planning": _plan_with_estimate,
         "worker": _steps(_commit_only, _commit_only, _commit_only),
     }, iterations=4)
+    # the scenario parameter is real, not merely requested: the ingested
+    # record on disk carries the estimate this docstring claims (a helper
+    # that filtered it out left the default 1 here, silently testing a
+    # different scenario -- v0.20.1 task 004's own validation finding).
+    assert _task_record(root)["estimatedIterations"] == 3, _task_record(root)
     assert _worker_iteration_count(root) == 3
     assert not _verify_ran(root)
     task = _task_record(root)
