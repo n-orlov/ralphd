@@ -244,6 +244,70 @@ def test_profile_shorthand_header_reaches_status_hub_and_job_yaml_with_no_flag(c
     assert "PUBLIC-123" in doc_res.stdout
 
 
+# --------------------------------------------------------- task 012, D.3
+def test_profile_ref_derived_header_masks_on_status_hub_and_job_yaml_with_no_flag(ctl):
+    """Task 012 (#14, PRD requirement D.3): the reference-derived half of
+    task 011's own D.2 test -- a profile's own top-level `headers:`
+    shorthand whose value is a `${env:}` reference (not a literal), again
+    started with NO `--llm-header` flag on the command line at all, shows
+    `***` (never the resolved secret) for that header's value on all
+    THREE surfaces this task's own gate names -- `ralphctl --json status`,
+    the hub's `run_detail` payload, and the redacted `ralphctl docs
+    job.yaml` view. The resolved value must be absent from every one of
+    those three surfaces, not merely masked in the ONE that happens to
+    print it.
+
+    Uses the same STUB_DOCKER_LIVE_ENGINE mechanism as task 011's D.2
+    test so `status.json` is written by a real `ralphd-engine` process
+    reaching a real terminal state.
+    """
+    resolved_secret = "top-secret-jira-value-d3"
+    ctl.write_profile("acme-d3", {
+        "model": "acme/big",
+        "headers": {"X-Jira-ID": "${env:JIRA_ID_D3}"},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com"}}},
+    })
+    run_id = "tst-profile-hdr-ref-e2e"
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme-d3",
+                  "--run-id", run_id, "--on-complete", "idle",
+                  "--iterations", "10", "--max-approaches", "1",
+                  env={**_live_env(), "STUB_TASKS": "1", "STUB_SLEEP": "0",
+                       "JIRA_ID_D3": resolved_secret})
+    assert res.returncode == 0, res.stderr
+    run_dir = ctl.registry / "runs" / run_id
+    sup = _wait_for_supervisor(run_dir)
+    assert sup["killed"] is True  # the run really did reach a terminal state
+
+    # surface: `ralphctl --json status`
+    json_res = ctl.run("--json", "status", run_id)
+    assert json_res.returncode == 0, json_res.stderr
+    assert resolved_secret not in json_res.stdout
+    status_doc = json.loads(json_res.stdout)
+    assert status_doc["llmHeaders"] == {"X-Jira-ID": MASK}
+
+    # surface: the hub's `run_detail` payload
+    detail = run_detail(ctl.registry, run_id)
+    assert detail is not None
+    assert resolved_secret not in json.dumps(detail)
+    assert detail["status"]["llmHeaders"] == {"X-Jira-ID": MASK}
+
+    # surface: the redacted `ralphctl docs job.yaml` view
+    doc_res = ctl.run("docs", run_id, "job.yaml")
+    assert doc_res.returncode == 0, doc_res.stderr
+    assert resolved_secret not in doc_res.stdout
+    assert "X-Jira-ID" in doc_res.stdout
+    assert MASK in doc_res.stdout
+
+    # the resolved value never even reaches the raw job.yaml on disk (the
+    # display copy job.yaml carries is already masked at write time; the
+    # SEPARATE llm-wiring.json record intentionally keeps the resolved
+    # value plus its own `headerRefNames` provenance marker -- masking
+    # happens only at the display readers, exactly as the module docstring
+    # above and task 010's own tests already establish)
+    job_yaml_text = ctl.config_dir(run_id).joinpath("job.yaml").read_text()
+    assert resolved_secret not in job_yaml_text
+
+
 # ------------------------------------------------------- surface 1: llm show
 def test_llm_show_profile_prints_header_name_and_masks_ref_derived_value(ctl):
     ctl.write_profile("acme-hdr", {
