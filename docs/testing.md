@@ -942,6 +942,16 @@ against the 900 s target (task 006). The `PYTHONUSERBASE`-exported mode's
 same target is now measured in the same table too: **MISSED**, 2146.54 s
 against the 900 s target (task 007).
 
+**5682 (smoke 4081, modules 354->355)** by v0.20.1 task 001 (requirement
+A.1): +3 fast / +3 smoke nodes in one new module,
+`tests/test_approach_start_head_persistence.py`, all in-process -- the new
+`_approach_start_head` persistence helper's first-read write, the literal
+requirement A.1 probe (a second `LoopSupervisor` over the same run-state
+tree reading the baseline back rather than re-deriving it after the
+workspace gained a real commit in between), and the non-git-workspace
+null-persistence case. Re-measured directly with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest

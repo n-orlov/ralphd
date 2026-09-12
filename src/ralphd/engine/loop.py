@@ -6334,6 +6334,44 @@ class LoopSupervisor:
     # the counter every pass forever and defeat the guard's purpose.
     STAGNATION_TOOL_ACTIVITY_MIN_CALLS = 3
 
+    def _approach_start_head(self, approach: int) -> str | None:
+        """The workspace HEAD `approach` started at (requirement A.1, task
+        001, #-- the peer-gate finding that `_step_worker` took this
+        baseline from a fresh `_workspace_head_sha()` LOCAL at its own
+        entry, so a fresh-process re-entry into the SAME approach silently
+        re-derived it from the CURRENT head instead of reading back what
+        the approach actually started at).
+
+        Persisted on status.json's `approachStartHeads` map -- disk, not a
+        `_step_worker`-local variable -- keyed by approach number exactly
+        like `_record_stagnation_signature`'s `blockerSignatures` map a few
+        hundred lines below. The FIRST call for a given `approach` (this
+        approach's very first `_step_worker` entry) computes the head via
+        `_workspace_head_sha()` and persists it; every later call for that
+        SAME approach -- another iteration of the same process, an
+        in-process resume, or a genuinely fresh process/`LoopSupervisor`
+        built over the same run-state tree -- reads the persisted value
+        back instead of recomputing it, so a restart mid-approach can never
+        silently reset the stagnation-exhaustion "did this approach gain
+        commits" comparison's own origin to whatever HEAD happens to be at
+        the moment of the restart.
+
+        A non-git workspace persists `None` for the key (still recorded,
+        distinguishing "already read, workspace is not git" from "never
+        read yet") and every later call for that approach reads that same
+        `None` back -- never a witness by itself, exactly like
+        `_workspace_head_sha()`'s own callers treat it elsewhere.
+        """
+        status = self.run.read_status()
+        heads = dict(status.get("approachStartHeads") or {})
+        key = str(approach)
+        if key in heads:
+            return heads[key]
+        head = self._workspace_head_sha()
+        heads[key] = head
+        self.run.update_status(approachStartHeads=heads)
+        return head
+
     async def _step_worker(self) -> tuple:
         """The `worker` state, including the vigilant `verify` sub-cycle.
 
@@ -6375,7 +6413,18 @@ class LoopSupervisor:
         # approach, not just the final (stagnant) iteration. A non-git
         # workspace reads `None` on both sides and is never a witness by
         # itself, exactly like `commits_gained` a few hundred lines below.
-        approach_start_head = self._workspace_head_sha()
+        #
+        # Task 001 (PRD requirement A.1): `_approach_start_head` persists
+        # this value to status.json the FIRST time it is read for this
+        # approach and reuses that persisted value on every later entry --
+        # so a fresh-process re-entry into `_step_worker` (a crash/restart,
+        # a resume, an operator-steer round trip) over the SAME approach
+        # reads the baseline BACK rather than re-deriving it from whatever
+        # `_workspace_head_sha()` happens to return right now, which would
+        # silently reset this comparison's origin to the current head and
+        # make an approach that already gained commits before the restart
+        # look, wrongly, like it never gained any.
+        approach_start_head = self._approach_start_head(approach)
         while self.budget_left():
             await self._gate()
             # Task 012 (requirement I, #98): unsettled operator steering is
