@@ -195,6 +195,12 @@ def test_resolve_top_level_headers_shorthand_reaches_every_provider(tmp_path):
 
 
 def test_resolve_per_provider_headers_win_over_top_level_shorthand(tmp_path):
+    """Also the requirement D.4 (task 013, v0.20.1) evidence for "per-provider
+    `headers:` still wins over the profile-wide shorthand" -- this test
+    predates that wave (task 046, `1efab8e`) and its behaviour is
+    deliberately UNCHANGED by it; D.4 only asked that the rule still hold,
+    not that it be re-implemented.
+    """
     reg = tmp_path / "reg"
     (reg / "llm-profiles").mkdir(parents=True)
     (reg / "llm-profiles" / "acme.yaml").write_text(yaml.safe_dump({
@@ -440,7 +446,13 @@ def test_llm_header_template_default_applies_with_no_flag(ctl):
 
 def test_llm_header_flag_wins_over_template_wins_over_profile(ctl):
     """Same fixture as above, but with an explicit `--llm-header` flag
-    too: flag > template > profile (task 045, #177)."""
+    too: flag > template > profile (task 045, #177).
+
+    Also the requirement D.4 (task 013, v0.20.1) evidence for "flag wins
+    over template wins over profile for one header name" -- this test
+    predates that wave (task 045, `01998a3`) and its behaviour is
+    deliberately UNCHANGED by it.
+    """
     ctl.write_profile("acme", {
         "model": "acme/big", "env": {},
         "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com",
