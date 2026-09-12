@@ -209,6 +209,23 @@ without retyping it:
   fifth petition type above covers the case where a criterion is already
   written this way).
 
+## Why inspection is not evidence
+
+[`prds/v0.20.1-inspection-is-not-evidence.md`](prds/v0.20.1-inspection-is-not-evidence.md) is the
+wave that supplies this document's namesake case, and the reason the rubric above insists on a
+red test or an unmet requirement rather than an inspector's belief that one holds. Across v0.20,
+six reviews passed requirements A–L by source inspection alone — the review hat's own recorded
+words were *"Source inspection found …"* and *"covered by the green fast rerun"* — while four
+requirements were in fact unmet in the shipped code: the approach progress baseline did not
+survive a resume (v0.20 B.3, gate finding VG-001), the absorption-forced verify was not actually
+gone (v0.20 A.3, VG-002), no cure was scheduled before the freeze by the scheduler (v0.20 E.4,
+VG-003), and profile-provided headers were not visible on the run surfaces (v0.20 J.3–J.4,
+VG-004). The peer verdict gate, run against that same tip and that same shipped source in a
+disposable clone (the protocol named in that PRD's requirement G.2), wrote four probe tests
+directly from the requirement text and returned four blocking findings — VG-001, VG-002, VG-003
+and VG-004 — in 0.41 seconds. Six rounds of inspection found none of the four gaps that four
+tests found in under half a second; that is the economics this document exists to correct.
+
 ## Provenance
 
 This document's rubric, petition protocol and late-cure rule are the
