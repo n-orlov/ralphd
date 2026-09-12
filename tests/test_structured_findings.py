@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 import warnings as warnings_mod
 
 import pytest
@@ -97,12 +99,15 @@ def test_validating_a_finding_emits_one_warning_naming_the_extra_key(caplog):
     """Task 014 (requirement E.1, #190): the warning is emitted BY
     VALIDATION, not only available from `finding_warnings` on request --
     a caller that merely validates an otherwise-valid finding carrying one
-    unrecognised key gets exactly one `UnrecognisedFindingFieldWarning`
-    naming that key, on both channels validation uses (the stdlib
-    `warnings` machinery and this module's own logger), and no validation
-    error."""
+    unrecognised key gets EXACTLY ONE `UnrecognisedFindingFieldWarning`
+    naming that key, and no validation error. Exactly one means one
+    emission in total, not one per channel: an earlier revision of this
+    module ALSO logged the same text through a module logger, so a single
+    unrecognised key was named twice (two stderr lines). This asserts the
+    one stdlib-`warnings` emission and that nothing anywhere in the
+    logging tree logs a duplicate of it at WARNING or above."""
     payload = _finding(future_key="written by a newer engine")
-    with caplog.at_level(logging.WARNING, logger="ralphd.engine.findings"):
+    with caplog.at_level(logging.WARNING):
         with warnings_mod.catch_warnings(record=True) as caught:
             warnings_mod.simplefilter("always")
             errors = findings.validate_finding(payload)
@@ -112,9 +117,34 @@ def test_validating_a_finding_emits_one_warning_naming_the_extra_key(caplog):
                             findings.UnrecognisedFindingFieldWarning)]
     assert len(raised) == 1
     assert "future_key" in str(raised[0].message)
-    records = [r for r in caplog.records
-               if r.levelno == logging.WARNING and "future_key" in r.getMessage()]
-    assert len(records) == 1
+    assert len(caught) == 1
+    assert [r.getMessage() for r in caplog.records
+            if "future_key" in r.getMessage()] == []
+
+
+def test_one_extra_key_is_named_exactly_once_on_a_subprocess_stderr():
+    """Task 014 (requirement E.1, #190): "one warning" as an ordinary
+    process observes it -- under Python's DEFAULT warning and logging
+    configuration, not a test harness's capture. Validating one otherwise
+    valid finding carrying one unrecognised key writes that key's name to
+    stderr exactly once, on exactly one line. This is the shape that
+    caught the two-channel revision (`warnings.warn` plus a
+    `logger.warning` of the same text: two stderr lines, two occurrences
+    of `future_key` for one key), so it is pinned here."""
+    program = (
+        "from ralphd.engine import findings\n"
+        "payload = {'severity': 'blocking', 'curable': True,\n"
+        "           'clause': 'requirement E.1 (#190)',\n"
+        "           'evidence': 'e', 'future_key': 'newer engine'}\n"
+        "assert findings.validate_finding(payload) == []\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", program],
+                          capture_output=True, text=True, check=True)
+    stderr = proc.stderr
+    assert stderr.count("future_key") == 1, stderr
+    assert len([line for line in stderr.splitlines()
+                if "future_key" in line]) == 1, stderr
+    assert "UnrecognisedFindingFieldWarning" in stderr
 
 
 def test_a_findings_file_with_an_extra_key_reads_back_with_one_warning(
@@ -125,11 +155,12 @@ def test_a_findings_file_with_an_extra_key_reads_back_with_one_warning(
     entry carries one key this engine's schema does not declare is
     ACCEPTED (no `ValueError`), the key is ignored (it is still present in
     the parsed payload, never rewritten), and reading it emits exactly one
-    warning naming the key on each of validation's two channels."""
+    warning naming the key -- one in total, with no duplicate log record
+    carrying the same text."""
     path = tmp_path / state.FINDINGS_JSON_FILE
     path.write_text(json.dumps(
         [_finding(future_key="written by a newer engine")]))
-    with caplog.at_level(logging.WARNING, logger="ralphd.engine.findings"):
+    with caplog.at_level(logging.WARNING):
         with warnings_mod.catch_warnings(record=True) as caught:
             warnings_mod.simplefilter("always")
             items = findings.read_findings_json(path)
@@ -140,9 +171,9 @@ def test_a_findings_file_with_an_extra_key_reads_back_with_one_warning(
                             findings.UnrecognisedFindingFieldWarning)]
     assert len(raised) == 1
     assert "future_key" in str(raised[0].message)
-    assert len([r for r in caplog.records
-                if r.levelno == logging.WARNING
-                and "future_key" in r.getMessage()]) == 1
+    assert len(caught) == 1
+    assert [r.getMessage() for r in caplog.records
+            if "future_key" in r.getMessage()] == []
 
 
 def test_a_findings_file_missing_a_required_field_still_fails_to_read(

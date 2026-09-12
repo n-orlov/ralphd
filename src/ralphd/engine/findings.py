@@ -42,7 +42,6 @@ below are thin callers of `contracts.validate_against`, the same pattern
 
 from __future__ import annotations
 
-import logging
 import re
 import warnings
 from dataclasses import dataclass, field
@@ -51,8 +50,6 @@ from typing import Any
 
 from ralphd.engine import contracts
 from ralphd.engine.state import atomic_write_json, read_json
-
-logger = logging.getLogger(__name__)
 
 
 class UnrecognisedFindingFieldWarning(UserWarning):
@@ -152,17 +149,19 @@ def validate_finding(payload: Any) -> list[str]:
 
     Validation is also where the "ignored, but NAMED" half of E.1 is
     delivered: every unrecognised key `finding_warnings` reports is
-    surfaced here as it is tolerated -- one `UnrecognisedFindingFieldWarning`
-    through the stdlib `warnings` machinery, and one `logger.warning`
-    record carrying the same text, per key. Both channels carry the same
-    single warning per key (a process reading findings inside the engine
-    has the log; a caller/test in-process has the warning), so a key this
-    engine's schema does not know is never silently dropped. Callers that
-    only want the text without emitting anything call `finding_warnings`
-    directly -- that function stays side-effect free."""
+    surfaced here as it is tolerated -- as EXACTLY ONE
+    `UnrecognisedFindingFieldWarning` per key, through the stdlib
+    `warnings` machinery and nothing else. One key means one emitted
+    warning: this deliberately does NOT also log the same text through a
+    module logger (an earlier revision did, and "one warning that names
+    it" then arrived twice -- two stderr lines for one unrecognised key).
+    A process that wants these in its log routes them there once, with
+    `logging.captureWarnings(True)`, rather than having validation emit
+    the same fact on two channels. Callers that only want the text
+    without emitting anything call `finding_warnings` directly -- that
+    function stays side-effect free."""
     for message in finding_warnings(payload):
         warnings.warn(message, UnrecognisedFindingFieldWarning, stacklevel=2)
-        logger.warning("%s", message)
     return contracts.validate_against(FINDING_SCHEMA, payload)
 
 
@@ -186,10 +185,10 @@ def finding_warnings(payload: Any) -> list[str]:
     properties.
 
     Pure: this only builds the text. `validate_finding` above is the one
-    place that EMITS it (as an `UnrecognisedFindingFieldWarning` plus a
-    `logger.warning` record), so every validation path -- `validate_
+    place that EMITS it, as one `UnrecognisedFindingFieldWarning` per key
+    and on no second channel, so every validation path -- `validate_
     findings`, `write_findings_json`, `read_findings_json` -- warns
-    without any of them re-deriving the wording."""
+    exactly once per key without any of them re-deriving the wording."""
     return [
         f"finding carries unrecognised field {key!r}; ignoring it, not "
         "rejecting the finding"
