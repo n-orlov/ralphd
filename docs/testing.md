@@ -1022,6 +1022,22 @@ work_left_is_never_routed_to_review` already pins for the pre-existing
 guard. Re-measured directly with `.venv/bin/python -m pytest -m
 <fast|smoke> --collect-only -q`.
 
+**5687 (smoke 4086, modules 357->358)** by v0.20.1 task 007 (requirements
+C.1, C.2, gate finding VG-003): +3 fast / +3 smoke nodes in one new
+module, `tests/test_cure_freeze_scheduling_task007.py` --
+`test_E4_cure_precedes_high_priority_freeze_in_schedule` (the gate's own
+named test, reproduced: `scheduler.select_next_task` picks the inserted
+cure ahead of a pending named freeze carrying `priority: 10`, asserted on
+the scheduler's own choice rather than list order), plus two more nodes
+pinning the same mechanism -- the freeze becomes selectable once its cure
+reaches a satisfied status, and a second cure pass appends a second
+dependency rather than a duplicate. `insert_cure_tasks` now adds every
+cure task it inserts to the named freeze task's own `dependsOn`, an
+actual scheduling constraint the freeze's `priority` can no longer
+outrun, alongside the pre-existing list-position splice (task 033).
+Re-measured directly with `.venv/bin/python -m pytest -m <fast|smoke>
+--collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest

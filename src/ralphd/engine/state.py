@@ -3818,11 +3818,36 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     When the plan names no such task (`last_code_touching_task_id`
     returns `None`), both kinds fall back to `tasks.append`, unchanged
     from every approach before this task.
+
+    Task 007 (PRD requirement C.1, gate finding VG-003): list position
+    alone is not a scheduling constraint -- `scheduler.select_next_task`
+    picks a `pending` candidate by `priority` (highest wins), never by
+    where it happens to sit in `tasks.json`'s list, so a cure task
+    spliced immediately before a HIGHER-`priority` pending freeze task
+    (the move just above, unchanged) could still lose the freeze the
+    scheduler's own pick to the freeze if nothing but position separated
+    them. The mechanism this task adds: the plan's own named freeze task
+    (`last_code_touching_task_id`, looked up once, before any insert, so
+    it is the SAME object throughout this call even though `tasks`
+    itself grows) gets every cure task this call inserts added to its own
+    `dependsOn` list (`_unique_task_id`-deduplicated, order-preserving,
+    never a duplicate entry on a call that runs a second finding against
+    an already-cured freeze). `scheduler.select_next_task`'s `pending`
+    candidate pool already excludes any task whose `dependsOn` entries
+    are not ALL `TASK_DEPENDENCY_SATISFIED_STATUSES` -- so once the
+    freeze depends on the cure, the freeze is excluded from that pool
+    until the cure task itself reaches `completed`/`validated`,
+    regardless of the freeze's own `priority`. A plan with no named
+    freeze task (`freeze_id is None`) leaves this a no-op, same as the
+    list-position splice already does in that case.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
     existing_ids = {t.get("id") for t in tasks if isinstance(t, dict)}
     freeze_id = last_code_touching_task_id(run, tasks)
+    freeze_task = next(
+        (t for t in tasks if isinstance(t, dict) and t.get("id") == freeze_id),
+        None) if freeze_id is not None else None
     retake_anchor_id = freeze_id
     inserted: list = []
     for index, finding in enumerate(blocking, start=1):
@@ -3833,6 +3858,10 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
             tasks.append(new_task)
         existing_ids.add(cure_task_id)
         inserted.append(cure_task_id)
+        if freeze_task is not None:
+            freeze_deps = freeze_task.setdefault("dependsOn", [])
+            if cure_task_id not in freeze_deps:
+                freeze_deps.append(cure_task_id)
         for failed_id in _failed_task_ids_named_in(
                 finding.get("evidence"), tasks):
             _repoint_dependents_onto_cure_task(
