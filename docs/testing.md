@@ -146,8 +146,8 @@ on: `3 failed, 5405 passed, 1 skipped, 9 warnings in 2047.32s (0:34:07)`, exit
 status **1** (captured by the wrapper's own `$?`, not inferred). The three
 failing node ids are pre-existing at this sha, unrelated to this mode or this
 row (confirmed against a plain in-container run at the same sha):
-`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`,
-`tests/test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`, and
+`test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`,
+`test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`, and
 `tests/test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
 (the live fast-tier drift disclosed further below, in the "What moved the
 numbers" section). The placed skill
@@ -221,8 +221,8 @@ that row's third failure,
 `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`,
 is gone here because task 006's own commit already added the fast-tier drift
 disclosure that test checks for):
-`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`
-and `tests/test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`.
+`test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`
+and `test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`.
 The placed skill (`host-layout-smoke-skill`) SURVIVED the run. Collected
 counts (5409 tests / 334 modules) come from a plain `--collect-only` pass
 over the same tree in this container's own `.venv` -- identical to the unset
@@ -670,7 +670,7 @@ from a deep copy of the real workflow. None spawns a real engine or
 unchanged.
 
 **5659 (smoke 4062, modules unchanged at 351)** by task 053 (v0.20, #113
-step 4): net -17 nodes in `tests/test_sweep_sha_guard.py` (27 -> 10) --
+step 4): net -17 nodes in `test_sweep_sha_guard.py` (27 -> 10) --
 the entire currency/discharge-chain/self-anchoring machinery and every test
 node that existed only to exercise it, deleted with no in-process
 replacement, since the retirement has no successor test to fold into --
@@ -1102,6 +1102,16 @@ red on the gate run at `d74b6a3`; that red is cured by this entry. Measured
 in this same iteration at the workspace tip with `.venv/bin/python -m pytest
 -q -m <fast|smoke> --collect-only`, and the module figure from the same fast
 collection's distinct module paths.
+
+**5720 (smoke 4113, modules 362->361)** by v0.20.1 task 044 (T-a, #113 step
+4, operator ruling `001-039.md` point 3): the sweep-sha practice entire is
+retired outright, per ruling point 5 ("a drop in the collected test count
+caused by an authorised removal is expected and is not a coverage
+regression"). `tests/sweep_sha_guard.py` and `test_sweep_sha_guard.py`
+are deleted -- net -10 fast nodes, -10 smoke nodes (all ten were also smoke:
+in-process, no real engine/`ralphctl` spawn) and -1 module (362 -> 361).
+Re-measured directly at this task's own tip with `.venv/bin/python -m pytest
+-m <fast|smoke> --collect-only -q`.
 
 ## When a tier goes over budget
 

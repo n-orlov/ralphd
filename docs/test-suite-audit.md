@@ -48,7 +48,7 @@ e2e 7/46, per-task pins 65/451, report_claims 1/1095, conformance 1/153, host_li
 
 Result: **981 s (16:21)**, 6,221 passed, 4 failed, 5 skipped. The 4 failures are environmental
 (staged-but-uncommitted `v0.19` PRD/report from the live run trip the "directory is discovered not
-enumerated" guards in `tests/test_docs_prd_index.py`, `test_report_claims.py`, `tests/test_sweep_sha_guard.py`); not a
+enumerated" guards in `tests/test_docs_prd_index.py`, `test_report_claims.py`, `test_sweep_sha_guard.py`); not a
 suite defect, but a reminder that record guards depend on working-tree state.
 
 Where the time goes:
@@ -151,7 +151,7 @@ only asserts the resolved path exists and is executable and spawns nothing). Sav
 ### (b) Records lint: one fast module family, kept
 Move to `tests/records/` (so `final_sha_guards.sh` selects a directory, not a grep) and keep:
 `test_report_claims.py` (collapse to 5 tests that iterate all 217 reports and list every problem),
-`tests/test_sweep_sha_guard.py`, `test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
+`test_sweep_sha_guard.py`, `test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
 `pytest --collect-only` over all node ids: 16 s -> <1 s -- DONE at task 033, `tests/records/test_conformance_ledger.py`), `tests/test_docs_consistency.py`,
 `tests/test_docs_semantics.py`, `tests/test_spec_cli_surface.py`, `tests/test_spec_state_surface.py`, `tests/test_docs_prd_index.py`,
 `tests/test_roadmap_terminal_claims.py`, `tests/test_issue_traceability.py`, `tests/test_commit_closing_keyword_scope.py`,
@@ -1388,19 +1388,19 @@ its own row below, none merged, none dropped.
 
 Task 008 (v0.20, #174): replacing the single-hop `_is_self_anchoring_add_commit` check
 with the self-anchoring acceptance WALK (`_self_anchoring_reaches_head`) had deleted the two
-`tests/test_sweep_sha_guard.py` nodes that pinned the old mechanism's two refusals, with two
-rows here naming `test_a_self_anchoring_record_followed_by_a_src_commit_fails` and
-`test_a_self_anchoring_record_followed_by_a_report_only_commit_passes` as the walk tests
+`test_sweep_sha_guard.py` nodes that pinned the old mechanism's two refusals, with two
+rows here naming test_a_self_anchoring_record_followed_by_a_src_commit_fails and
+test_a_self_anchoring_record_followed_by_a_report_only_commit_passes as the walk tests
 covering the same two git shapes, plus a third row for
-`tests/test_sweep_sha_guard.py::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`,
+`test_sweep_sha_guard.py::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`,
 subsumed by
-`test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`.
+test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring.
 
 Task 053 (v0.20, #113 step 4) deleted the self-anchoring acceptance walk itself, and every one
 of those three surviving nodes with it -- the whole mechanism these three rows record is
 retired outright, not migrated to a further successor, so none of the three ever regains a
 row here: their deletion is named in `tests/sweep_sha_guard.py`'s and
-`tests/test_sweep_sha_guard.py`'s own module docstrings and in `docs/sweep-records.md`
+`test_sweep_sha_guard.py`'s own module docstrings and in `docs/sweep-records.md`
 ("What this guard no longer does") instead, per this table's own contract that a deleted node
 owes either a row here or a named surviving cover, and no pytest node survives this one to
 cite. The three rows above are removed in the same commit, since a Subsumed row whose
@@ -1462,3 +1462,33 @@ mere existence, never on the deleted effect.
 | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_hand_the_task_to_verify` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (same three-consecutive-commit-only shape, opposite verdict: the task stays `in-progress`, `verify` never runs, and the legacy `notes` sentence never appears -- `LoopSupervisor._record_task_absorption_streak` is deleted, not merely exempted) | task 004, requirement B.1/B.2/B.5 |
 | `tests/test_worker_hat.py::test_a_lower_configured_threshold_fires_sooner` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (the configured threshold this node pinned no longer has any effect to fire sooner or later -- nothing reads `cfg.task_absorption_max_iterations` any more, so the surviving node asserts the ONE behaviour left: the dispatch never fires at all) | task 004, requirement B.1/B.2/B.5 |
 | `tests/test_worker_hat.py::test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (the `taskAbsorptionStreak` bookkeeping this node pinned a partial count of is deleted along with the hand-off it fed -- the surviving node asserts the status key is never written at all, `{}`, a strictly stronger claim than a broken streak resetting to a lower count) | task 004, requirement B.1/B.2/B.5 |
+
+## Retired outright (not Subsumed) -- the sweep-sha practice entire
+
+Task 044 (v0.20.1, #113 step 4) deletes `tests/sweep_sha_guard.py`,
+`test_sweep_sha_guard.py` and `docs/sweep-records.md` outright, on the
+authority of operator ruling `001-039.md` point 3 (`/config/amendments/001-039.md`).
+The behaviour these files pinned -- a self-authored, HEAD-relative currency
+check for a `sweep-sha`/`archived-sha` declaration, and (already down to one
+lint since task 053, v0.20) the bare "every record names some sha" check --
+is retired, not moved: no surviving pytest node covers it, because a
+GitHub-signed check run keyed to the commit sha is the attestation review
+reads now (`docs/ci.md`), not a markdown ledger re-verified by the suite
+itself. Per ruling point 5, this is recorded here as **retired outright** and
+owes no "Subsumed" row -- the ten deleted nodes are:
+`test_the_reports_directory_is_discovered_not_enumerated`,
+test_every_sweep_record_declares_a_sha,
+test_a_sweep_record_with_no_sha_is_caught_by_the_missing_check,
+test_a_pre_launch_filename_no_longer_exempts_a_sweep_record,
+test_an_archived_sha_predating_launch_satisfies_the_missing_check,
+test_an_english_sentence_with_a_count_is_not_a_pytest_result_line,
+test_a_real_pytest_summary_line_is_a_pytest_result_line,
+test_a_real_elapsed_hms_summary_line_is_a_pytest_result_line,
+test_a_report_that_only_quotes_counts_inline_is_not_a_sweep_record,
+test_the_real_notification_log_is_not_misclassified_as_a_sweep_record
+(all `test_sweep_sha_guard.py`, all also `smoke`). Net effect on
+`docs/testing.md`'s tier-wide counts: fast 5730 -> 5720, smoke 4123 -> 4113,
+modules 362 -> 361 (see that file's own dated entry for the re-measurement).
+Existing `sweep-sha`/`archived-sha` fenced blocks under `artifacts/reports/`
+are untouched, inert history -- this retirement does not rewrite or check
+them, and no report is to carry a new one, ever again.

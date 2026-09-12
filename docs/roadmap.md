@@ -1227,7 +1227,7 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   because a `discharge-sha` line can only name a sha that already exists, so the commit that
   adds it always moves `HEAD` one past the chain it discharges — fixed by accepting a
   report-only tail past the chain's end (task 003, `d46199c`). Both fixes are pinned by tests
-  that fail against the pre-change code (`tests/test_sweep_sha_guard.py`,
+  that fail against the pre-change code (test_sweep_sha_guard.py (retired, task 044),
   `tests/test_final_sha_guards_discovery.py`). A third defect surfaced only once approach 3
   reviewed the mechanism's own reach: the mandatory `sweep-sha` declaration applied only to
   filenames beginning `v0.14-`, so dozens of real sweep records outside that prefix carried a
@@ -2014,7 +2014,7 @@ Shipped sha `21652d4`, version 0.18.0, installed host-side by the operator.
   four over-claimed closures corrected with approach-2 evidence at `add155a` (task 009); the six
   approach-2 lane records (`v0.18-a2-*.md`) written inside task 009's last iteration — docker
   23/23 and browser 42/42 green; fast, guard and both dev-layout modes red only on the
-  staleness of records landing during the sweeps (`test_sweep_sha_guard.py`/
+  staleness of records landing during the sweeps (test_sweep_sha_guard.py, retired, task 044/
   `test_report_claims.py`) and one same-image-tag docker collision between the two dev-layout
   modes run concurrently — with two real citation-drift regressions fixed under the standing
   rules' exception at `c0caaa1` and `17c947e`. The approach-2 closing report and terminal

@@ -12,10 +12,10 @@ so the bare import finds `tests/report_claims.py` right there.
 A module one level down, under `tests/records/`, gets `tests/records`
 inserted instead -- a directory that does not contain those helpers. Rather
 than change every records module's import style (and diverge from how
-`tests/test_issue_traceability.py` and `tests/sweep_sha_guard.py` still
-import the very same module), this conftest adds the parent `tests/`
-directory to `sys.path` once, at collection time, so the bare imports the
-records modules copy from their `tests/` originals keep working unchanged.
+`tests/test_issue_traceability.py` still imports the very same module), this
+conftest adds the parent `tests/` directory to `sys.path` once, at
+collection time, so the bare imports the records modules copy from their
+`tests/` originals keep working unchanged.
 """
 
 from __future__ import annotations

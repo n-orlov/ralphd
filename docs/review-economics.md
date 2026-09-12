@@ -41,8 +41,8 @@ lets one narrow the boundary explicitly (never widen it past all-blocking).
 the contract; a false claim in a tracked artifact that changes what a reader
 believes landed or its result (a wrong commit attributed for a change that
 shipped differently than described, a test result misstated, an issue state
-misreported, an invented notification); a missing required declaration (e.g.
-a sweep's `sweep-sha`); an issue closed without evidence; a secret exposed; a
+misreported, an invented notification); a missing required declaration named
+by the contract; an issue closed without evidence; a secret exposed; a
 stated Definition-of-done predicate evaluating false.
 
 **Residual** — everything else, including: imprecision or infelicity in
@@ -189,8 +189,7 @@ without retyping it:
   The final guard subset runs **at the final code sha** — the last commit
   that touches anything outside `artifacts/reports/`, `docs/roadmap.md` and
   `docs/prds/README.md` — never "the last commit"; a report-only commit may
-  follow it freely, and the guard's own report-only-gap allowance
-  (`docs/sweep-records.md`) covers exactly that gap.
+  follow it freely.
 - **No record about its own future.** No report, record or criterion states
   what a later event will be, or must record events after the sha it names
   ("none newly filed", "every petition and its adjudication", "the terminal
@@ -199,10 +198,12 @@ without retyping it:
   no criterion mentions a send, a ledger entry or an HTTP status.
 - **No sha-scoped-count rule.** A count names the sha it was computed at
   when that is cheap; a missing sha is residual, never blocking.
-- **No sweep-sha declaration rule beyond the existing guard.** A record
-  declares `sweep-sha` exactly as `docs/sweep-records.md` already requires;
-  its own rules (report-only gap allowed, discharge pairs) are the whole
-  obligation.
+- **No sweep-sha declaration rule.** No task, record or criterion may
+  require a `sweep-sha`/`archived-sha` declaration of any kind — the
+  practice is retired entire (v0.20.1 task 044, #113 step 4, operator
+  ruling 001-039.md point 3); a GitHub-signed check run keyed to the sha
+  is the attestation review reads, never a self-authored ledger committed
+  to the tree.
 - **No audit range, no "commit exactly once", no protected-path clause.**
 - **No self-referential criterion** — a task whose criterion names the sha
   of a later commit, or a row that must cite the commit writing it (the

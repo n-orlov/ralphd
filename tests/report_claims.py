@@ -447,9 +447,9 @@ def commit_problems(claims: ReportClaims) -> list[str]:
                 problems.append(
                     f"{claims.where(claim.line)}: {claim.value} is not a "
                     f"commit in this repo (missing) -- if this is a "
-                    f"check-run, job or run id, do not backtick it: see "
-                    f"docs/sweep-records.md; otherwise it is an orphaned or "
-                    f"never-pushed commit sha"
+                    f"check-run, job or run id, do not backtick it: cite it "
+                    f"as a GitHub run id/URL in prose instead; otherwise it "
+                    f"is an orphaned or never-pushed commit sha"
                 )
             else:
                 problems.append(

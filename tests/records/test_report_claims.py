@@ -76,8 +76,14 @@ def test_every_report_passes_its_claim_checks() -> None:
         problems.extend(retired_problems(claims))
         # "not all claimless": a report is evidence, it must point at
         # something checkable, and this also stops a report from passing
-        # the four checks above by naming nothing at all.
-        total = len(claims.shas) + len(claims.paths) + len(claims.nodes)
+        # the four checks above by naming nothing at all. A `!retired`
+        # citation counts too -- `retired_problems` above checks it in the
+        # strong direction (the path/node must NOT resolve), so it is just
+        # as checkable a claim as a live one, and a report whose sole
+        # citations are legitimately-retired paths (task 044, the
+        # sweep-sha practice's own retirement) must not read as claimless.
+        total = (len(claims.shas) + len(claims.paths) + len(claims.nodes)
+                 + len(claims.retired))
         if total < 5:
             problems.append(
                 f"{report.name}: makes almost no checkable claim ({total})"
@@ -182,7 +188,7 @@ def test_a_missing_decimal_id_names_the_check_run_convention(monkeypatch) -> Non
     assert "is not a commit in this repo" in problems[0]
     assert "check-run, job or run id" in problems[0]
     assert "do not backtick it" in problems[0]
-    assert "docs/sweep-records.md" in problems[0]
+    assert "GitHub run id/URL" in problems[0]
 
 
 def test_the_claim_checks_have_exactly_one_implementation() -> None:

@@ -502,9 +502,8 @@ def test_deck_3i_2_row_naming_its_own_writing_commit_is_rejected():
 
 
 def test_citing_the_report_state_sha_the_parent_of_head_is_accepted():
-    """Must-pass sibling: the satisfiable convention
-    `docs/sweep-records.md` already documents -- the commit that WROTE the
-    previous row, not this row's own commit."""
+    """Must-pass sibling: the satisfiable convention -- name the commit
+    that WROTE the previous row, not this row's own commit."""
     payload = {
         "tasks": [
             _sl013_basic_task(
@@ -834,7 +833,7 @@ def test_the_generic_must_pass_trio_together_is_accepted():
                 "025",
                 successCriteria=(
                     "At commit `8db9739`, the record cites the code sha "
-                    "this task lands, and `docs/sweep-records.md`, an "
+                    "this task lands, and `docs/testing.md`, an "
                     "existing tracked artifact, already documents the "
                     "guard's report-only tail allowance."
                 ),
