@@ -34,8 +34,6 @@ from report_claims import (
     ReportClaims,
     RetiredClaim,
     commit_problems,
-    defines_test,
-    node_problems,
     parse_claims,
     path_problems,
     report_files,
@@ -72,16 +70,19 @@ def test_every_report_passes_its_claim_checks() -> None:
         claims = parse_claims(report)
         problems.extend(commit_problems(claims))
         problems.extend(path_problems(claims))
-        problems.extend(node_problems(claims))
         problems.extend(retired_problems(claims))
         # "not all claimless": a report is evidence, it must point at
         # something checkable, and this also stops a report from passing
-        # the four checks above by naming nothing at all. A `!retired`
-        # citation counts too -- `retired_problems` above checks it in the
-        # strong direction (the path/node must NOT resolve), so it is just
+        # the three checks above by naming nothing at all. A `!retired`
+        # path citation counts too -- `retired_problems` above checks it in
+        # the strong direction (the path must NOT resolve), so it is just
         # as checkable a claim as a live one, and a report whose sole
         # citations are legitimately-retired paths (task 044, the
         # sweep-sha practice's own retirement) must not read as claimless.
+        # A node/retired-node citation is no longer resolved at all (task
+        # 046, ruling `001-039.md` point 3) but still counts here -- the
+        # density floor asks whether a report cites *something*, not
+        # whether that something is still verified.
         total = (len(claims.shas) + len(claims.paths) + len(claims.nodes)
                  + len(claims.retired))
         if total < 5:
@@ -92,11 +93,13 @@ def test_every_report_passes_its_claim_checks() -> None:
 
 
 def test_the_retired_marker_direction_is_enforced() -> None:
-    """The STRONG direction, both forms: a `!retired` path/node must not
-    resolve. Merges the two mutation cases the old module ran as separate
-    tests -- a still-existing path marked retired, and a still-collecting
-    node marked retired -- since both exercise the same function
-    (`retired_problems`) in the same direction."""
+    """The STRONG direction, path claims only: a `!retired` path must not
+    resolve. This used to also merge a node-mutation case (a still-
+    collecting node marked retired) -- that half is gone along with
+    `retired_problems()`'s node check (task 046, ruling `001-039.md` point
+    3, "a test node id cited by a historical report"); see
+    `test_a_retired_node_citation_is_no_longer_checked` below for what a
+    node citation does instead now."""
     live_path = "tests/report_claims.py"
     assert (REPO_ROOT / live_path).exists()
     path_claims = ReportClaims(
@@ -110,9 +113,16 @@ def test_the_retired_marker_direction_is_enforced() -> None:
     assert path_problems_found, "a still-existing path marked !retired must be flagged"
     assert live_path in path_problems_found[0]
 
+
+def test_a_retired_node_citation_is_no_longer_checked() -> None:
+    """Task 046 (ruling `001-039.md` point 3): a `!retired` node citation
+    still parses (it still counts toward a report's claim density, see
+    `test_every_report_passes_its_claim_checks`) but is never resolved in
+    either direction any more -- a node that plainly still collects,
+    despite being marked retired, must NOT be flagged, the opposite of what
+    this same fixture shape asserted before this task."""
     live_node_path = "tests/records/test_report_claims.py"
-    live_node = "test_a_node_family_wildcard_needs_a_real_match"
-    assert defines_test((REPO_ROOT / live_node_path).read_text(), live_node)
+    live_node = "test_the_reports_directory_is_discovered_not_enumerated"
     node_claims = ReportClaims(
         report=REPORTS_DIR / "conformance-ledger.md",
         shas=[],
@@ -120,9 +130,10 @@ def test_the_retired_marker_direction_is_enforced() -> None:
         nodes=[],
         retired=[RetiredClaim(live_node_path, live_node, line=1)],
     )
-    node_problems_found = retired_problems(node_claims)
-    assert node_problems_found, "a still-collecting node marked !retired must be flagged"
-    assert live_node in node_problems_found[0]
+    assert not retired_problems(node_claims), (
+        "a !retired node citation must no longer be resolved -- node "
+        "checks were retired by task 046"
+    )
 
 
 def test_a_dangling_commit_sha_fails_and_a_reachable_one_passes(monkeypatch) -> None:
@@ -192,10 +203,14 @@ def test_a_missing_decimal_id_names_the_check_run_convention(monkeypatch) -> Non
 
 
 def test_the_claim_checks_have_exactly_one_implementation() -> None:
-    """The point of this module: generalised, not copy-pasted. A sha regex or a
-    `def <node>` probe anywhere else under tests/ means someone started a
-    second implementation."""
-    fingerprints = (r"[0-9a-f]{7,", r"(async )?def ")
+    """The point of this module: generalised, not copy-pasted. A sha regex
+    anywhere else under tests/ means someone started a second
+    implementation. The matching `def <node>` fingerprint that used to
+    guard `defines_test()`'s own node-existence probe is gone along with
+    that function (task 046, ruling `001-039.md` point 3) -- there is no
+    longer a node-resolution implementation for a second copy to duplicate.
+    """
+    fingerprints = (r"[0-9a-f]{7,",)
     # The implementation, and this guard which has to quote it.
     home = {"report_claims.py", Path(__file__).name}
     offenders = []
@@ -209,15 +224,6 @@ def test_the_claim_checks_have_exactly_one_implementation() -> None:
     assert not offenders, (
         "claim extraction belongs in tests/report_claims.py: " + ", ".join(offenders)
     )
-
-
-def test_a_node_family_wildcard_needs_a_real_match() -> None:
-    """`::test_retry_proxy_*` (the v0.5 report's way of naming four tests at
-    once) is a prefix, not a licence: it still has to match something."""
-    source = "def test_retry_proxy_forwards_the_token():\n    pass\n"
-    assert defines_test(source, "test_retry_proxy_*")
-    assert not defines_test(source, "test_retry_nope_*")
-    assert not defines_test(source, "test_retry_proxy_forwards_the_token_and_more")
 
 
 def test_path_problems_takes_at_most_one_git_ls_files_snapshot(monkeypatch) -> None:

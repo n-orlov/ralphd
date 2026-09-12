@@ -1239,7 +1239,8 @@ runs all five checks inside ONE test's own loop over the same glob-discovered re
 node by node; a sixth deleted node pair (the two `!retired`-direction mutation tests) merged into
 one test the same way, since both exercise `retired_problems` in the same direction. The other four
 tests (`test_the_reports_directory_is_discovered_not_enumerated`,
-`test_the_claim_checks_have_exactly_one_implementation`, `test_a_node_family_wildcard_needs_a_real_match`,
+`test_the_claim_checks_have_exactly_one_implementation`, test_a_node_family_wildcard_needs_a_real_match
+(de-backticked by task 046, which deletes it -- ruling `001-039.md` point 3),
 `test_path_problems_takes_at_most_one_git_ls_files_snapshot`,
 `test_untracked_generated_path_fails_with_the_untracked_message`,
 `test_the_same_absolute_run_dir_path_still_passes`, `test_tracked_but_missing_path_fails_with_the_other_message`,
@@ -1547,3 +1548,73 @@ the deleted module inside the ledger's own body are marked `!retired` per the
 reports' own existing convention, so the surviving generic report-claim
 checks (`tests/report_claims.py`) do not read a deleted test file as a live
 citation.
+
+## Retired outright (not Subsumed) -- the report-claims node-id checks
+
+Task 046 (v0.20.1, T-c, #113 step 4) retires, in `tests/report_claims.py`,
+`node_problems()` (the check that a live `path::node` citation is still a
+collectible test), the node branch of `retired_problems()` (the check that a
+`!retired`-marked node has STOPPED collecting), and their shared helper
+`defines_test()`, on the authority of operator ruling `001-039.md` point 3
+(`/config/amendments/001-039.md`): their subject is "a test node id cited by
+a historical report", and "a record written in a past wave is history; it is
+not a test, and the live tree is not obliged to keep its citations
+resolvable." No pytest-result-line check ever lived in `tests/report_claims.py`
+or `tests/records/test_report_claims.py` -- that vocabulary
+(`test_a_real_pytest_summary_line_is_a_pytest_result_line` and its two
+siblings) belonged entirely to `tests/sweep_sha_guard.py`, already retired
+outright by task 044; this task's half of the ruling's "pytest result line"
+clause was therefore already fully discharged and had nothing left to remove
+here.
+
+Parsing is unaffected -- `path::node`, `::node` and `::node!retired` tokens
+still populate `NodeClaim`/`RetiredClaim.node` and still count toward a
+report's claim-density floor (`test_every_report_passes_its_claim_checks`) --
+only the resolution work is gone, per ruling point 6 ("removes obligations,
+not the greenness bar"): the 2,089 live and 346 `!retired` test-node-id
+citations under `artifacts/reports/` this task measured before deleting
+anything (`.venv/bin/python` walking every report through
+`report_claims.parse_claims()`) are no longer individually verified, and
+none of them needed `!retired` marking to stay honest -- the check that
+would have read them as live citations is the thing removed, not the
+citations themselves.
+
+Surviving nodes, narrowed rather than deleted: `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks`
+(drops its `node_problems()` call), `test_the_retired_marker_direction_is_enforced`
+(drops its node-mutation half, path half unchanged),
+`test_the_claim_checks_have_exactly_one_implementation` (drops the
+`(async )?def ` fingerprint -- there is no longer a node-resolution
+implementation for a second copy to duplicate), and
+`tests/test_issue_traceability.py::test_every_path_and_test_node_this_report_names_exists`,
+renamed to `test_every_path_this_report_names_exists` (drops its
+`node_problems()` call; `len(claims.nodes) >= 500` in
+`test_the_report_still_carries_the_evidence_it_promised`, a density
+assertion rather than a resolution one, is untouched).
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `tests/records/test_report_claims.py::test_a_node_family_wildcard_needs_a_real_match` (de-backticked below) | `tests/records/test_report_claims.py::test_a_retired_node_citation_is_no_longer_checked` (opposite verdict, same fixture shape: a node id that plainly still collects, cited with `!retired`, must now NOT be flagged -- defines_test's wildcard-prefix matching this node pinned is deleted along with it, not merely exempted) | task 046, ruling `001-039.md` point 3 |
+
+Note on the row above: `tests/records/test_report_claims.py` and `tests/records/test_report_claims.py::test_a_retired_node_citation_is_no_longer_checked`
+are live, real citations (kept backticked); the deleted node's own name and
+`defines_test` (the helper deleted alongside it) are de-backticked here per
+the same convention task 044 used, since
+`tests/test_docs_consistency.py::test_every_backticked_identifier_in_the_docs_exists_in_the_code`
+reads a backticked bare identifier literally and neither name exists
+anywhere in the tree any more.
+
+Net effect on collected counts: **zero** -- one node deleted, one node
+added, both `fast`+`smoke`+`records`-lane, so `docs/testing.md`'s tier-wide
+counts (fast 5632, smoke 4025, modules 360) and the records-family lane
+(116 tests, 5 modules) are unchanged, re-measured directly at this task's
+own tip with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`
+and `.venv/bin/python -m pytest tests/records --collect-only -q`; neither
+`docs/testing.md` nor `tests/test_tier_budgets.py`'s targets nor
+`tests/records/test_records_family_budget.py`'s `COLLECTED_BUDGET` need any
+edit, and both count nodes
+(`tests/test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`,
+`tests/test_ledger_loopsupervisor_modules.py::test_ledger_list_matches_the_tree_exactly`)
+were already green before this task and stay green. No historical report
+was hand-edited or newly marked `!retired` for this retirement -- the point
+of removing the check is precisely that a report's existing node-id
+citations do not need it.

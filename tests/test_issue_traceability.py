@@ -22,14 +22,15 @@ The v0.8 wave (#24, #26, #27, #50, #51, #54, #56, #57, #58; task 033 of
 also start out `pending`, written before task 035 closes anything, and its
 requirement letters run A-H (the PRD does not use I-L).
 
-A report that names a commit that never landed, or a test that no longer
-exists, is worse than no report, so its claims are re-read too. That
-extraction and those three checks live in `tests/report_claims.py` (task 041)
-and `tests/records/test_report_claims.py` applies them to *every* report in the
-directory; they are re-applied here to this file specifically, because this is
-the report the issue closures are argued from. What is otherwise only ours:
-the per-issue sections of all three waves, the density of the evidence, and the
-closure cross-check.
+A report that names a commit that never landed, or a file that has been
+renamed away, is worse than no report, so its claims are re-read too. That
+extraction and those two checks live in `tests/report_claims.py` (task 041,
+narrowed from three to two by task 046: a cited test node id is no longer
+resolved, ruling `001-039.md` point 3) and `tests/records/test_report_claims.py`
+applies them to *every* report in the directory; they are re-applied here to
+this file specifically, because this is the report the issue closures are
+argued from. What is otherwise only ours: the per-issue sections of all
+three waves, the density of the evidence, and the closure cross-check.
 """
 
 from __future__ import annotations
@@ -39,7 +40,6 @@ import re
 from report_claims import (
     REPORTS_DIR,
     commit_problems,
-    node_problems,
     parse_claims,
     path_problems,
     retired_problems,
@@ -205,11 +205,14 @@ def test_every_commit_this_report_names_is_a_real_commit() -> None:
     assert not problems, "\n".join(problems)
 
 
-def test_every_path_and_test_node_this_report_names_exists() -> None:
+def test_every_path_this_report_names_exists() -> None:
+    """Task 046 (ruling `001-039.md` point 3): the node-existence half of
+    this check is retired -- a cited `::node` is no longer resolved against
+    the file it names, here any more than in the directory-wide
+    parametrization. Only the path half (and the path-only `!retired`
+    strong direction) survives."""
     claims = parse_claims(REPORT)
-    problems = (
-        path_problems(claims) + node_problems(claims) + retired_problems(claims)
-    )
+    problems = path_problems(claims) + retired_problems(claims)
     assert not problems, "\n".join(problems)
 
 
