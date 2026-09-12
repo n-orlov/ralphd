@@ -242,9 +242,12 @@ def test_review_md_states_a_green_suite_is_not_evidence_for_a_removal_requiremen
         "## A green shipped suite is not evidence for a removal requirement"
         in REVIEW_MD
     )
-    assert "the shipped tests are exactly as likely to still **pin the old behaviour**" in REVIEW_MD_NORM
     assert (
-        "**find the test that asserts the old behaviour and confirm it was "
-        "retired or rewritten.**" in REVIEW_MD_NORM
+        "the shipped tests are exactly as likely to still **pin the behaviour "
+        "being removed**" in REVIEW_MD_NORM
+    )
+    assert (
+        "**find the test that asserts the behaviour being removed and confirm "
+        "it was retired or rewritten.**" in REVIEW_MD_NORM
     )
     assert "A row in the traceability table" in REVIEW_MD

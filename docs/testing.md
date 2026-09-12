@@ -1090,6 +1090,19 @@ attempt) 5725/4119. Only the last of those is this task's, and its two
 nodes are still collected here. Re-measured directly with
 `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`.
 
+**5730 (smoke 4123, modules 362)** by v0.20.1 task 042, disclosing the +4
+fast / +4 smoke nodes requirement G.4 (task 027) added to the existing
+`tests/test_review_findings_prompt_shape.py` -- the three new review-prompt
+rules plus the disposable-clone protocol check across both judging prompts.
+No module was added (362 unchanged), and the fast tier's ceiling is not
+raised anywhere: this entry only states the measured number the guard asks
+for. Task 027's own commit added the nodes without restating the count here,
+which is what turned `tests/test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
+red on the gate run at `d74b6a3`; that red is cured by this entry. Measured
+in this same iteration at the workspace tip with `.venv/bin/python -m pytest
+-q -m <fast|smoke> --collect-only`, and the module figure from the same fast
+collection's distinct module paths.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest
