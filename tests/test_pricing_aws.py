@@ -302,6 +302,35 @@ def test_the_refresh_tool_reproduces_the_shipped_table():
     )
 
 
+def test_the_check_guard_fails_against_a_deliberately_stale_table(tmp_path, monkeypatch):
+    """The documented `--check` path is a GUARD, not an inspection: it must
+    fail loudly on real drift, never skip.
+
+    Task 021 (F.2). `test_the_refresh_tool_reproduces_the_shipped_table`
+    above only proves `main(["--check"])` passes on the table this repo
+    actually ships (the happy path); this node proves the other direction --
+    that the same guard, run against a shipped file whose generated region
+    has been deliberately mutated to disagree with its own mirror, exits
+    non-zero rather than exiting 0 or being skipped for lack of an
+    environment probe. `tool.TARGET` is monkeypatched to a throwaway file
+    (never the real `pricing_aws.py`) so nothing in the live tree is
+    touched.
+    """
+    tool = _tool()
+    version_tag = aws.SOURCE_VERSION.rsplit("@", 1)[-1]
+    fixture = REPO / "tests" / "data" / f"amazon-bedrock-{version_tag}.json"
+    real = Path(inspect.getfile(aws)).read_text()
+    stale = real.replace('"input": 4.4', '"input": 999.0', 1)
+    assert stale != real, "the substring this test stales is no longer present"
+    staged = tmp_path / "pricing_aws.py"
+    staged.write_text(stale)
+    monkeypatch.setattr(tool, "TARGET", staged)
+
+    rc = tool.main(["--check", str(fixture)])
+
+    assert rc == 1, "the guard must fail (non-zero exit), not pass or skip, on a stale table"
+
+
 def test_the_refresh_tool_drops_zero_cache_rates_and_wraps_long_lines():
     tool = _tool()
     lines = tool.render_rates({
