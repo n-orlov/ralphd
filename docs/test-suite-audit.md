@@ -1259,20 +1259,35 @@ Derivation for task 033 (requirement E.2): `test_conformance_ledger.py` moved to
 `tests/records/test_conformance_ledger.py` and its node-id-collection check converted from 68
 `pytest --collect-only` SUBPROCESSES (one per ledger-cited node id, the 16.4 s baseline this row
 measures against) to ONE in-process `pytest.main()` collection pass over the deduplicated files
-those node ids live in. The old parametrised `test_cited_test_node_id_collects[*]` (66 node-id
+those node ids live in. The old parametrised test_cited_test_node_id_collects[*] (66 node-id
 params observed at this task's own HEAD) is the one genuine deletion -- replaced by a single test,
-`test_every_cited_test_node_id_collects`, that runs the in-process collection once and asserts
+test_every_cited_test_node_id_collects, that runs the in-process collection once and asserts
 every ledger-cited id (exact match or one of its own parametrisations) came back collected. Every
-other test in the module (`test_cited_line_contains_cited_symbol[*]`,
-`test_no_new_expression_todo_cells`, `test_mutation_a_todo_new_expression_cell_is_caught`,
-`test_every_row_has_at_least_one_citation`, `test_gap_cells_are_the_literal_marker_not_a_disguised_citation`,
-`test_mutation_a_wrong_line_number_is_caught`, `test_mutation_a_nonexistent_node_id_is_caught`) moved
+other test in the module (test_cited_line_contains_cited_symbol[*],
+test_no_new_expression_todo_cells, test_mutation_a_todo_new_expression_cell_is_caught,
+test_every_row_has_at_least_one_citation, test_gap_cells_are_the_literal_marker_not_a_disguised_citation,
+test_mutation_a_wrong_line_number_is_caught, test_mutation_a_nonexistent_node_id_is_caught) moved
 unchanged, same names (the last one's own body converted to the new in-process mechanism, but its
-name, its subject and what it proves are unchanged), no row needed.
+name, its subject and what it proves are unchanged), no row needed. (De-backticked in task 045,
+v0.20.1: the module these identifiers named is deleted outright per operator ruling
+`001-039.md` point 3 -- see "Retired outright" below -- so none of them lives in the code any
+more; this paragraph is now history, not a live citation.)
 
 | deleted node | surviving cover | landed in |
 |---|---|---|
-| `test_conformance_ledger.py::test_cited_test_node_id_collects[*]` | `tests/records/test_conformance_ledger.py::test_every_cited_test_node_id_collects` (the same node-id-collects claim, now checked in one in-process pytest collection pass instead of one subprocess per cited node id) | task 033, requirement E.2 |
+
+Task 045 (v0.20.1, T-b, #113 step 4, operator ruling `001-039.md` point 3)
+deleted `tests/records/test_conformance_ledger.py` itself, the surviving
+cover the row above once named, along with every other node in that module
+-- see "Retired outright (not Subsumed) -- the conformance-ledger checker"
+below, which names all eight surviving test functions this table's own row
+above was one of. None of them ever regains a row here: the whole module is
+retired outright, not migrated to a further successor, per this table's own
+contract that a deleted node owes either a row here or a named surviving
+cover, and no pytest node survives this one to cite. The row above is
+removed in the same commit, since a Subsumed row whose surviving cell no
+longer collects is worse than no row: `tests/test_subsumed_table.py`'s
+mechanical check would otherwise fail on exactly this table.
 
 Derivation for task 034 (requirement E.3): the eight `test_roadmap_v0N.py` modules (`v06`, `v07`,
 `v08`, `v09`, `v010`, `v012`, `v013`, `v014`) folded into `tests/records/test_roadmap.py`, the same
@@ -1492,3 +1507,35 @@ modules 362 -> 361 (see that file's own dated entry for the re-measurement).
 Existing `sweep-sha`/`archived-sha` fenced blocks under `artifacts/reports/`
 are untouched, inert history -- this retirement does not rewrite or check
 them, and no report is to carry a new one, ever again.
+
+## Retired outright (not Subsumed) -- the conformance-ledger checker
+
+Task 045 (v0.20.1, T-b, #113 step 4) deletes
+`tests/records/test_conformance_ledger.py` outright, on the authority of
+operator ruling `001-039.md` point 3 (`/config/amendments/001-039.md`). That
+module's mechanical re-verification of `artifacts/reports/conformance-ledger.md`'s
+`file:line` citations was the largest single share of the reds the ruling
+measured -- 48 of 103 failing-node occurrences, all one comment that moved by
+30 lines -- and its subject (a pre-cutover guard inventory for the
+`_run_job_core` rewrite, which shipped waves ago) is retired, not moved: no
+surviving pytest node covers it. The ledger itself is kept, not deleted, as
+frozen history with a new header saying so; per ruling point 5, this is
+recorded here as **retired outright** and owes no "Subsumed" row. The eight
+deleted test functions (88 collected nodes, several parametrised over every
+ledger citation) are: test_cited_line_contains_cited_symbol,
+test_no_new_expression_todo_cells,
+test_mutation_a_todo_new_expression_cell_is_caught,
+test_every_row_has_at_least_one_citation,
+test_every_cited_test_node_id_collects,
+test_gap_cells_are_the_literal_marker_not_a_disguised_citation,
+test_mutation_a_wrong_line_number_is_caught,
+test_mutation_a_nonexistent_node_id_is_caught (all also `fast` and `smoke`:
+in-process, no real engine/`ralphctl` spawn). Net effect on
+`docs/testing.md`'s tier-wide counts: fast 5720 -> 5632, smoke 4113 -> 4025,
+modules 361 -> 360; the records-family lane (`tests/records/`, selected by
+directory) drops 204 -> 116 tests, 6 -> 5 modules (see `docs/testing.md`'s own
+dated entry for the re-measurement). The nine self-referencing citations of
+the deleted module inside the ledger's own body are marked `!retired` per the
+reports' own existing convention, so the surviving generic report-claim
+checks (`tests/report_claims.py`) do not read a deleted test file as a live
+citation.

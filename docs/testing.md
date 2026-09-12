@@ -812,14 +812,17 @@ fast lane's own recorded measurements.
 ### The records-lint family (`tests/records/`, task 035, requirement E.4; subprocess count updated task 009, #176; fresh-clone node added task 010, #176)
 
 Measured serially (`.venv/bin/python -m pytest -q tests/records/`, repeated,
-~20.6 s): **201 tests collected** across 5 test modules (plus a `conftest.py`:
-`test_conformance_ledger.py`, `test_records_family_budget.py`,
-`test_records_family_fresh_clone.py`, `test_report_claims.py`,
-`test_roadmap.py`), against the PRD's **300-test** target (met) and **15 s**
-target (MISSED at 20.6 s -- see "Targets missed" below for why: task 010's
-new fresh-clone node spawns a real `git clone` plus a nested `pytest`
-subprocess on purpose, and that is where nearly all of the added ~11 s
-goes).
+~19 s, re-measured at v0.20.1 task 045's own tip after
+`tests/records/test_conformance_ledger.py`'s deletion -- see "Retired
+outright" in `docs/test-suite-audit.md` and this file's own dated entry
+above): **116 tests collected** across 5 test modules (plus a
+`conftest.py`: `test_ralphctl_process_boundary.py`,
+`test_records_family_budget.py`, `test_records_family_fresh_clone.py`,
+`test_report_claims.py`, `test_roadmap.py`), against the PRD's
+**300-test** target (met) and **15 s** target (MISSED at ~19 s -- see
+"Targets missed" below for why: task 010's new fresh-clone node spawns a
+real `git clone` plus a nested `pytest` subprocess on purpose, and that is
+where nearly all of the added time goes).
 
 **The subprocess rule: `git ls-files` and `git rev-list HEAD` for a whole
 run, and nothing else.**
@@ -1112,6 +1115,22 @@ are deleted -- net -10 fast nodes, -10 smoke nodes (all ten were also smoke:
 in-process, no real engine/`ralphctl` spawn) and -1 module (362 -> 361).
 Re-measured directly at this task's own tip with `.venv/bin/python -m pytest
 -m <fast|smoke> --collect-only -q`.
+
+**5632 (smoke 4025, modules 361->360)** by v0.20.1 task 045 (T-b, #113 step
+4, operator ruling `001-039.md` point 3): the conformance-ledger checker,
+`tests/records/test_conformance_ledger.py`, is deleted outright (its own
+file:line-citation re-verification was 48 of the 103 failing-node
+occurrences the ruling measured, the largest single share). All 88 of its
+nodes carried both the `fast` and `smoke` markers (in-process, no real
+engine/`ralphctl` spawn) and lived in one module -- net -88 fast nodes, -88
+smoke nodes, -1 module each (361 -> 360 fast, 246 -> 245 smoke). The same
+88-node, 1-module drop also applies to the records-family lane (`tests/
+records/`, selected by directory, not marker): 204 -> 116 tests, 6 -> 5
+modules. `artifacts/reports/conformance-ledger.md` is kept as frozen history
+with a new header saying so; it is not deleted and not mechanically checked
+any more. Re-measured directly at this task's own tip with `.venv/bin/python
+-m pytest -m <fast|smoke> --collect-only -q` and `.venv/bin/python -m pytest
+tests/records --collect-only -q`.
 
 ## When a tier goes over budget
 
