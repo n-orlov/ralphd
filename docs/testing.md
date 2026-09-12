@@ -1003,6 +1003,25 @@ forced-split path (never the deleted absorption streak) produced the
 exhaustion outcome. Re-measured directly with `.venv/bin/python -m
 pytest -m <fast|smoke> --collect-only -q`.
 
+**5684 (smoke 4083, modules 356->357)** by v0.20.1 task 006 (requirement
+B.4): +1 fast / +1 smoke node in one new module,
+`tests/test_uncorroborated_claim_three_strike_task006.py` --
+`test_three_uncorroborated_no_verdict_claims_still_trip_the_three_strike_guard`,
+in-process (reuses `tests/test_worker_hat.py`'s `_spw010_supervisor`/
+`_drive_until_paused`/`_fv_*` helpers, no real subprocess engine) -- drives
+a real `_run_job_core()` run over three consecutive worker iterations
+each claiming `commit` progress evidence with no real workspace delta
+behind it, uncorroborated every time, and asserts the ordinary
+three-strike stagnation witness still fires exactly as before task 004
+deleted the legacy absorption-streak dispatch: three `progress_claim`
+events all read `corroborated: False`, the `"3 iterations with no task
+progress"` log line lands, and the run parks at `state: paused`/
+`pauseReason: stagnation` on the (default, `max_approaches=1`) last
+approach, the same outcome `tests/test_worker_hat.py::test_a_plan_with_
+work_left_is_never_routed_to_review` already pins for the pre-existing
+guard. Re-measured directly with `.venv/bin/python -m pytest -m
+<fast|smoke> --collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest
