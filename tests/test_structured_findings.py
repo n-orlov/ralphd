@@ -18,6 +18,8 @@ validates correctly, and round-trips.
 from __future__ import annotations
 
 import json
+import logging
+import warnings as warnings_mod
 
 import pytest
 
@@ -89,6 +91,80 @@ def test_an_unexpected_field_on_a_finding_is_ignored_with_one_named_warning():
 
 def test_a_finding_with_no_unexpected_field_has_no_warnings():
     assert findings.finding_warnings(_finding()) == []
+
+
+def test_validating_a_finding_emits_one_warning_naming_the_extra_key(caplog):
+    """Task 014 (requirement E.1, #190): the warning is emitted BY
+    VALIDATION, not only available from `finding_warnings` on request --
+    a caller that merely validates an otherwise-valid finding carrying one
+    unrecognised key gets exactly one `UnrecognisedFindingFieldWarning`
+    naming that key, on both channels validation uses (the stdlib
+    `warnings` machinery and this module's own logger), and no validation
+    error."""
+    payload = _finding(future_key="written by a newer engine")
+    with caplog.at_level(logging.WARNING, logger="ralphd.engine.findings"):
+        with warnings_mod.catch_warnings(record=True) as caught:
+            warnings_mod.simplefilter("always")
+            errors = findings.validate_finding(payload)
+    assert errors == []
+    raised = [w for w in caught
+              if issubclass(w.category,
+                            findings.UnrecognisedFindingFieldWarning)]
+    assert len(raised) == 1
+    assert "future_key" in str(raised[0].message)
+    records = [r for r in caplog.records
+               if r.levelno == logging.WARNING and "future_key" in r.getMessage()]
+    assert len(records) == 1
+
+
+def test_a_findings_file_with_an_extra_key_reads_back_with_one_warning(
+        tmp_path, caplog):
+    """Task 014 (requirement E.1, #190): end to end through the API the
+    engine itself uses (`read_findings_json`, called by `engine/loop.py`'s
+    findings channel and `engine/run_record.py`) -- a findings file whose
+    entry carries one key this engine's schema does not declare is
+    ACCEPTED (no `ValueError`), the key is ignored (it is still present in
+    the parsed payload, never rewritten), and reading it emits exactly one
+    warning naming the key on each of validation's two channels."""
+    path = tmp_path / state.FINDINGS_JSON_FILE
+    path.write_text(json.dumps(
+        [_finding(future_key="written by a newer engine")]))
+    with caplog.at_level(logging.WARNING, logger="ralphd.engine.findings"):
+        with warnings_mod.catch_warnings(record=True) as caught:
+            warnings_mod.simplefilter("always")
+            items = findings.read_findings_json(path)
+    assert len(items) == 1 and items[0]["future_key"] == (
+        "written by a newer engine")
+    raised = [w for w in caught
+              if issubclass(w.category,
+                            findings.UnrecognisedFindingFieldWarning)]
+    assert len(raised) == 1
+    assert "future_key" in str(raised[0].message)
+    assert len([r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "future_key" in r.getMessage()]) == 1
+
+
+def test_a_findings_file_missing_a_required_field_still_fails_to_read(
+        tmp_path):
+    """Task 014 (requirement E.1, #190): the unchanged half, at the file
+    level -- tolerating an extra key made no field newly optional, so a
+    findings file whose entry is missing a field `FINDING_SCHEMA
+    ['required']` names still fails validation exactly the way it does
+    today: `read_findings_json` raises `ValueError` naming the file and
+    the missing field, and emits no unrecognised-key warning."""
+    path = tmp_path / state.FINDINGS_JSON_FILE
+    payload = _finding()
+    del payload["evidence"]
+    path.write_text(json.dumps([payload]))
+    with warnings_mod.catch_warnings(record=True) as caught:
+        warnings_mod.simplefilter("always")
+        with pytest.raises(ValueError) as excinfo:
+            findings.read_findings_json(path)
+    assert "evidence" in str(excinfo.value)
+    assert not [w for w in caught
+                if issubclass(w.category,
+                              findings.UnrecognisedFindingFieldWarning)]
 
 
 def test_a_finding_missing_a_required_field_still_fails_validation():

@@ -42,13 +42,28 @@ below are thin callers of `contracts.validate_against`, the same pattern
 
 from __future__ import annotations
 
+import logging
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ralphd.engine import contracts
 from ralphd.engine.state import atomic_write_json, read_json
+
+logger = logging.getLogger(__name__)
+
+
+class UnrecognisedFindingFieldWarning(UserWarning):
+    """Task 014 (requirement E.1, #190): the warning category validation
+    raises for a finding carrying a key `FINDING_SCHEMA` does not declare.
+    A distinct category (rather than a bare `UserWarning`) so a caller --
+    or a test -- can filter for exactly this one, and so the fact that an
+    unrecognised key was TOLERATED is never confused with a validation
+    error: the finding is still valid, the warning is the record that a
+    key was ignored."""
+
 
 # The one schema a structured finding must satisfy. Deliberately flat and
 # small, in the same restricted-JSON-Schema subset `contracts.py` documents
@@ -133,9 +148,21 @@ def validate_finding(payload: Any) -> list[str]:
     same as a finding with no extra keys at all) -- `additionalProperties`
     is `True` on the schema itself now. Every field the schema's `required`
     list actually names is still required and still fails validation when
-    missing; nothing about that half changed. Use `finding_warnings` below
-    to learn about an unrecognised key that was tolerated rather than
-    rejected."""
+    missing; nothing about that half changed.
+
+    Validation is also where the "ignored, but NAMED" half of E.1 is
+    delivered: every unrecognised key `finding_warnings` reports is
+    surfaced here as it is tolerated -- one `UnrecognisedFindingFieldWarning`
+    through the stdlib `warnings` machinery, and one `logger.warning`
+    record carrying the same text, per key. Both channels carry the same
+    single warning per key (a process reading findings inside the engine
+    has the log; a caller/test in-process has the warning), so a key this
+    engine's schema does not know is never silently dropped. Callers that
+    only want the text without emitting anything call `finding_warnings`
+    directly -- that function stays side-effect free."""
+    for message in finding_warnings(payload):
+        warnings.warn(message, UnrecognisedFindingFieldWarning, stacklevel=2)
+        logger.warning("%s", message)
     return contracts.validate_against(FINDING_SCHEMA, payload)
 
 
@@ -156,7 +183,13 @@ def finding_warnings(payload: Any) -> list[str]:
     unrecognised key `unexpected_finding_fields` finds on `payload`, each
     naming the key by name -- the "ignored, but named" half of E.1. Empty
     when the finding carries no key outside `FINDING_SCHEMA`'s own
-    properties."""
+    properties.
+
+    Pure: this only builds the text. `validate_finding` above is the one
+    place that EMITS it (as an `UnrecognisedFindingFieldWarning` plus a
+    `logger.warning` record), so every validation path -- `validate_
+    findings`, `write_findings_json`, `read_findings_json` -- warns
+    without any of them re-deriving the wording."""
     return [
         f"finding carries unrecognised field {key!r}; ignoring it, not "
         "rejecting the finding"
