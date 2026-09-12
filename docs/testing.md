@@ -1038,6 +1038,18 @@ outrun, alongside the pre-existing list-position splice (task 033).
 Re-measured directly with `.venv/bin/python -m pytest -m <fast|smoke>
 --collect-only -q`.
 
+**5688 (smoke 4087, modules 358->359)** by v0.20.1 task 008 (requirement
+C.3, gate `Cured when:` clause): +1 fast / +1 smoke node in one new
+module, `tests/test_cure_freeze_dependent_reselection_task008.py` --
+`test_C3_dependent_retake_waits_on_both_cure_and_freeze` walks the chain
+task 007 proved one link of: a dependent re-take task naming the freeze
+in its own `dependsOn` (with a `priority` that would win the pending
+bucket outright) is not picked by `scheduler.select_next_task` while the
+cure is pending, not picked while the cure is done but the freeze itself
+is still pending, and only picked once both prerequisites reach a
+satisfied status. Re-measured directly with `.venv/bin/python -m pytest
+-m <fast|smoke> --collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest
