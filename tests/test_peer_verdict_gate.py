@@ -107,6 +107,12 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # retargeted this at `paused`, and the cure-pass edge above at
         # `cure`, in the base table -- both carried over here unchanged.
         tr.T("paused", "rejected_last_approach"),
+        # Task 016 (PRD requirement E.5, #190): the repeated-rejection-
+        # signature pause edge, added to the base table beside `rejected_
+        # last_approach` -- present here too for the same reason: gate-off
+        # is byte-identical to TODAY's table (now including this edge),
+        # not to a pre-task-016 snapshot of it.
+        tr.T("paused", "rejected_repeated_signature"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),

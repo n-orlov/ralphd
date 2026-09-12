@@ -8662,7 +8662,13 @@ class LoopSupervisor:
         `("done", "succeeded")`, reached only once
         `_terminal_success_blockers()` is empty); `rejected_approach_left`
         (-> replan); `rejected_no_approach_left` (-> finishing, i.e.
-        `("tail",)`).
+        `("tail",)`); `rejected_repeated_signature` (task 016, PRD
+        requirement E.5, #190: -> paused, self-loop back to `review` over
+        the SAME unarchived approach, taken when this rejection's own
+        blocking-clause signature repeats the immediately preceding
+        approach's own recorded rejection signature -- pausing rather than
+        spending a fresh approach on a wall the run has already lost one
+        approach to).
         """
         approach = self._approach
         await self._gate()
@@ -8790,6 +8796,28 @@ class LoopSupervisor:
             self._pause_and_escalate_last_approach_rejection(approach)
             self._advance("review", "paused", "rejected_last_approach")
             return ("advance", "paused", "rejected_last_approach")
+        # Task 016 (PRD requirement E.5, #190): a findings-channel rejection
+        # whose own blocking-clause signature repeats the IMMEDIATELY
+        # PRECEDING approach's own rejection signature pauses the run
+        # (existing pause machinery, approach left unarchived) instead of
+        # spending -- and, on this wall, almost certainly losing -- a fresh
+        # approach on the identical wall. Checked AFTER every other
+        # rejection edge above (an incurable, curable-with-a-cure-pass, or
+        # last-approach-curable rejection keeps its own precedence exactly
+        # as it already does over the ordinary archive/replan below) and
+        # only while an approach is actually available to skip spending
+        # (`approach < max_approaches`; at the budget ceiling `rejected_no_
+        # approach_left` below already ends the run without any approach
+        # left to protect, so there is nothing for this edge to add there).
+        if approach < self.cfg.max_approaches:
+            findings_list = self._review_findings()
+            signature = self._review_rejection_signature(findings_list)
+            if self._repeated_rejection_signature(approach, signature):
+                self._pause_and_escalate_repeated_rejection_signature(
+                    approach, signature)
+                self._advance("review", "paused", "rejected_repeated_signature")
+                return ("advance", "paused", "rejected_repeated_signature")
+            self._record_rejection_signature(approach, signature)
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:
@@ -9072,6 +9100,135 @@ class LoopSupervisor:
         # `operator_escalation` event above and the persisted status agree
         # without a second vocabulary to map between.
         self.pause(reason="rejected_last_approach")
+        if self.notifier is not None:
+            self.notifier(text)
+
+    def _review_rejection_signature(
+        self, findings_list: list[dict] | None
+    ) -> str | None:
+        """Task 016 (PRD requirement E.5, #190): a stable signature for a
+        review REJECTION's own blocking-clause set, mirroring `_blocker_
+        signature`'s shape for a worker's stagnation and `_ingestion_
+        blocker_signature`'s for a plan-ingestion exhaustion (task 026/012,
+        #61/#124) -- the third first-class kind of "the same wall,
+        unmoved" this run can hit, this time on review's own findings
+        channel rather than a free-text blocker.
+
+        `findings_list` is the caller's own `_review_findings()` result --
+        the SAME post-downgrade list `_review_findings_channel` already
+        produced for this verdict, never re-read from disk here -- so a
+        CONFIRMED petition adjudication that already downgraded a finding
+        out of the blocking set is reflected in this signature exactly as
+        it is everywhere else that list feeds.
+
+        `None` when there is no channel at all (nothing to compare, same
+        missing-entry default every sibling signature uses) or the
+        blocking-clause set is empty (a residual-only or contract-error
+        rejection has no blocking WALL to repeat) -- an absent signature
+        never matches another absent one, so a content-free rejection
+        never falsely triggers the repeat guard.
+        """
+        if findings_list is None:
+            return None
+        clauses = findings.blocking_finding_clauses(findings_list)
+        if not clauses:
+            return None
+        text = "; ".join(sorted(clauses))
+        return self._normalize_blocker_signature_text(text)
+
+    def _record_rejection_signature(
+        self, approach: int, signature: str | None
+    ) -> None:
+        """Persist `signature` for `approach` on status.json's OWN
+        `rejectionSignatures` map -- disk, not memory, the same reasoning
+        `_record_stagnation_signature` already documents for
+        `blockerSignatures`, but deliberately a SEPARATE map: a repeated
+        rejection signature must PAUSE the run (existing pause machinery,
+        the approach left unarchived so `resume` re-reviews it), never end
+        the run outright the way `_step_replan`'s `repeated_blocker_
+        signature` guard does for a stagnation/ingestion repeat -- so this
+        cannot share that map's own equality check, only its on-disk shape.
+
+        A `None` signature is simply not recorded, same as `_record_
+        stagnation_signature`'s own no-op on `None`.
+        """
+        if signature is None:
+            return
+        status = self.run.read_status()
+        signatures = dict(status.get("rejectionSignatures") or {})
+        signatures[str(approach)] = signature
+        self.run.update_status(rejectionSignatures=signatures)
+
+    def _repeated_rejection_signature(
+        self, approach: int, signature: str | None
+    ) -> bool:
+        """Task 016 (PRD requirement E.5, #190): does THIS rejection's own
+        signature equal the IMMEDIATELY PRECEDING approach's recorded
+        rejection signature (`rejectionSignatures[str(approach - 1)]`)?
+        `None` never matches, including another `None` -- a content-free
+        rejection (no channel, or an empty blocking-clause set) never
+        falsely reads as "the same wall twice".
+        """
+        if signature is None:
+            return False
+        status = self.run.read_status()
+        signatures = status.get("rejectionSignatures") or {}
+        previous = signatures.get(str(approach - 1))
+        return previous is not None and previous == signature
+
+    def _repeated_rejection_signature_escalation_text(
+        self, approach: int, blocking: list[dict], signature: str | None
+    ) -> str:
+        """The operator-facing escalation body for a `rejected_repeated_
+        signature` pause -- the same shape as `_last_approach_rejection_
+        escalation_text`/`_incurable_rejection_escalation_text` (each
+        blocking finding plus the exact `ralphctl amend` invocation that
+        would resolve it), worded for the case this edge covers: the same
+        blocking-clause signature rejected the immediately preceding
+        approach too, so a fresh approach would almost certainly repeat
+        the identical wall rather than make progress on it.
+        """
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: review rejected "
+            "this with the SAME findings-channel rejection signature as "
+            f"approach {approach - 1} (PRD requirement E.5, #190) -- a "
+            "fresh approach would most likely repeat the identical wall "
+            "rather than make progress on it. The run has been paused "
+            "(existing pause machinery) instead of consuming a fresh "
+            "approach on it; it will not proceed until an operator ruling "
+            "is recorded and the run is resumed "
+            f"(`ralphctl resume {self.cfg.run_id}`).",
+            f"signature: {signature}",
+            "",
+        ]
+        for index, finding in enumerate(blocking, start=1):
+            lines.append(f"Finding {index} (blocking):")
+            lines.append(f"  clause: {finding.get('clause', '')}")
+            lines.append(f"  evidence: {finding.get('evidence', '')}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_repeated_rejection_signature(
+        self, approach: int, signature: str | None
+    ) -> None:
+        """Task 016 (PRD requirement E.5, #190): pause the run through the
+        EXISTING pause machinery -- the same seam `_pause_and_escalate_
+        last_approach_rejection`/`_pause_and_escalate_incurable_rejection`
+        already use (`self.pause()`, `self.notifier`, an `operator_
+        escalation` event always emitted to `events.jsonl` regardless of
+        whether a notifier is wired in -- requirement E.5's "notify" through
+        the engine's own alert path, never only through a notifier that
+        might not be configured).
+        """
+        findings_list = self._review_findings() or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        text = self._repeated_rejection_signature_escalation_text(
+            approach, blocking, signature)
+        self.run.emit("operator_escalation", approach=approach,
+                      reason="rejected_repeated_signature", findings=blocking,
+                      signature=signature, escalation=text)
+        self.pause(reason="rejected_repeated_signature")
         if self.notifier is not None:
             self.notifier(text)
 

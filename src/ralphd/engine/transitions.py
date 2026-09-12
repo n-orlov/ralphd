@@ -361,6 +361,21 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # exactly what the self-loop already did; this is a
         # formalisation, not a behaviour change.
         T("paused", "rejected_last_approach"),
+        # Task 016 (PRD requirement E.5, #190): a rejection whose own
+        # blocking-clause signature repeats the IMMEDIATELY PRECEDING
+        # approach's own rejection signature (`LoopSupervisor.
+        # _repeated_rejection_signature`) self-loops back to `review`,
+        # exactly like `rejected_incurable`/`rejected_last_approach` --
+        # `_pause_and_escalate_repeated_rejection_signature` pauses the run
+        # (existing pause machinery, `operator_escalation` with `reason:
+        # rejected_repeated_signature`) rather than spending a fresh
+        # approach on findings a fresh approach would almost certainly
+        # repeat identically. Checked AFTER every other rejection edge
+        # above keeps their own precedence exactly as documented at each
+        # of their own call sites in `LoopSupervisor._step_review`; the
+        # approach is left unarchived, so `resume` re-reviews the SAME
+        # approach, never a fresh one.
+        T("paused", "rejected_repeated_signature"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -632,6 +647,12 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # (finding 4) retargeted this at `paused` instead of `review`, in
         # `TABLE` above -- carried over identically here.
         T("paused", "rejected_last_approach"),
+        # Task 016 (PRD requirement E.5, #190): carried over byte-for-byte
+        # from `TABLE["review"]` above -- same reasoning as `rejected_
+        # incurable`/`rejected_last_approach` just above: the repeated-
+        # signature check runs on the REJECTED branch too, entirely
+        # before the (VERIFIED-only) peer verdict gate is ever consulted.
+        T("paused", "rejected_repeated_signature"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),

@@ -1050,6 +1050,21 @@ is still pending, and only picked once both prerequisites reach a
 satisfied status. Re-measured directly with `.venv/bin/python -m pytest
 -m <fast|smoke> --collect-only -q`.
 
+**5711 (smoke 4110, modules 359->361)** by v0.20.1 task 016 (requirement
+E.5, #190). Re-measured directly with `.venv/bin/python -m pytest -m
+<fast|smoke> --collect-only -q` immediately before this task's own
+change landed and it already read **5705 (smoke 4104, modules 360)** --
+17 fast / 17 smoke nodes and 1 module ahead of the 5688/4087/359 this
+section last recorded, none of it this task's own doing and none of it
+chased down here; disclosed rather than silently absorbed into this
+task's own delta the way the standing rule for this section already asks
+(see the `tests/test_debt_ledger.py`-style "pre-existing gap ... not
+widened" notes above). This task's own new module,
+`tests/test_repeated_rejection_signature.py`, adds the remaining +6 fast
+/ +6 smoke nodes (in-process, `supervisor_factory`-built, no real
+engine/`ralphctl` process spawned) and the remaining +1 module, landing
+at 5711/4110/361.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest

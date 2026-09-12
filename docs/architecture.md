@@ -179,6 +179,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `review` | `rejected_incurable` |
 | `review` | review | both | `cure` | `rejected_curable_pass_available` |
 | `review` | review | both | `paused` | `rejected_last_approach` |
+| `review` | review | both | `paused` | `rejected_repeated_signature` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
 | `review` | review | both | `review` | `review_interrupted` |
 | `review` | review | both | `finishing` | `review_unjudged_at_budget_end` |
@@ -251,6 +252,7 @@ stateDiagram-v2
     review --> review : rejected_incurable
     review --> cure : rejected_curable_pass_available
     review --> paused : rejected_last_approach
+    review --> paused : rejected_repeated_signature
     review --> finishing : rejected_no_approach_left
     review --> review : review_interrupted
     review --> finishing : review_unjudged_at_budget_end
