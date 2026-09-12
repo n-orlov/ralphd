@@ -43,6 +43,7 @@ import pytest
 
 from test_browser_hub import SCREENSHOTS_DIR, _wait_for, pw  # noqa: F401 (browser fixture)
 from test_cli_llm_profiles import Ctl  # noqa: F401 (fixture factory reused)
+from test_cli_start_nodetach import _live_env, _wait_for_supervisor
 from test_cli_ui import UiServer, _write_dead_run
 
 from ralphd.cli import llm_profiles
@@ -190,6 +191,57 @@ def test_read_llm_wiring_headers_still_masks_a_pre_047_file_after_task_010(tmp_p
     headers = llm_profiles.read_llm_wiring_headers(cdir)
     assert headers == {"X-Jira-ID": MASK, "X-Token": MASK}
     assert "resolved-secret-from-env" not in json.dumps(headers)
+
+
+# --------------------------------------------------------- task 011, D.2
+def test_profile_shorthand_header_reaches_status_hub_and_job_yaml_with_no_flag(ctl):
+    """End to end through the REAL CLI, a real run (task 011, PRD
+    requirement D.2): a profile's own top-level `headers:` shorthand,
+    started with NO `--llm-header` flag on the command line at all, shows
+    its name and value on all THREE surfaces this task's own gate names --
+    `ralphctl --json status`, the hub's `run_detail` payload, and the
+    redacted `ralphctl docs job.yaml` view -- not merely on the reader
+    function task 010's own tests called directly
+    (`read_llm_wiring_headers`).
+
+    Uses the STUB_DOCKER_LIVE_ENGINE knob (same mechanism as
+    `tests/test_cli_start_nodetach.py`/`tests/test_llm_header_e2e.py`) so
+    `status.json` is written by a REAL `ralphd-engine` process reaching a
+    real terminal state, not fabricated by a test helper -- `ralphctl
+    status` genuinely has something on disk (and, before the supervisor's
+    kill, a live API) to read.
+    """
+    ctl.write_profile("acme-d2", {
+        "model": "acme/big",
+        "headers": {"X-Jira-ID": "PUBLIC-123"},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com"}}},
+    })
+    run_id = "tst-profile-hdr-e2e"
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme-d2",
+                  "--run-id", run_id, "--on-complete", "idle",
+                  "--iterations", "10", "--max-approaches", "1",
+                  env={**_live_env(), "STUB_TASKS": "1", "STUB_SLEEP": "0"})
+    assert res.returncode == 0, res.stderr
+    run_dir = ctl.registry / "runs" / run_id
+    sup = _wait_for_supervisor(run_dir)
+    assert sup["killed"] is True  # the run really did reach a terminal state
+
+    # surface: `ralphctl --json status`
+    json_res = ctl.run("--json", "status", run_id)
+    assert json_res.returncode == 0, json_res.stderr
+    status_doc = json.loads(json_res.stdout)
+    assert status_doc["llmHeaders"] == {"X-Jira-ID": "PUBLIC-123"}
+
+    # surface: the hub's `run_detail` payload
+    detail = run_detail(ctl.registry, run_id)
+    assert detail is not None
+    assert detail["status"]["llmHeaders"] == {"X-Jira-ID": "PUBLIC-123"}
+
+    # surface: the redacted `ralphctl docs job.yaml` view
+    doc_res = ctl.run("docs", run_id, "job.yaml")
+    assert doc_res.returncode == 0, doc_res.stderr
+    assert "X-Jira-ID" in doc_res.stdout
+    assert "PUBLIC-123" in doc_res.stdout
 
 
 # ------------------------------------------------------- surface 1: llm show
