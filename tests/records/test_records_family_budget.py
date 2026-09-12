@@ -3,9 +3,16 @@ how many tests `tests/records/` collects, how long a real run of it takes,
 and what it actually spawns a subprocess for.
 
 `docs/testing.md`'s budget table carries the measured numbers this module
-pins live: the family collects tests against a **300** budget and runs in
+pins live: the family collects tests against a **150** budget and runs in
 a few seconds against a **15 s** budget -- both well inside target, so
 neither is disclosed as a miss.
+
+That collection budget was **300** until v0.20.1 task 045 retired
+`test_conformance_ledger.py` outright (operator ruling `001-039.md` point
+3), which took the family from 204 collected tests to 116. Ruling point 5
+asks for a count a removal moves to be reconciled DOWNWARD in the same
+commit, so the ceiling is ratcheted to 150: headroom over 116, but no
+longer the headroom a module that no longer exists was carrying.
 
 **The subprocess rule.** A real run of the whole family spawns exactly TWO
 real subprocesses -- one `git ls-files` and one `git rev-list HEAD` -- and
@@ -27,11 +34,14 @@ exists as a dangling object (present in `.git` but not an ancestor of
    #176), checked against one `git rev-list HEAD` snapshot
    (`_reachable_commits()`), memoised the same way `_tracked_paths()`
    memoises its own `git ls-files` snapshot.
-2. `tests/records/test_conformance_ledger.py`'s `_collect_node_ids()` sets
+2. `test_conformance_ledger.py`'s `_collect_node_ids()` set
    `RALPHD_SKIP_DOCKER_PROBE=1` around its nested in-process collection
    (new gate in `tests/test_docker_sibling_e2e.py::_docker_available()`),
    which removed a real `docker version` probe that collection pass spent
-   without ever looking at the answer.
+   without ever looking at the answer. That module is itself retired now
+   (v0.20.1 task 045, ruling `001-039.md` point 3), so this particular fix
+   is history -- the gate it added stays live for any other in-process
+   collection.
 3. `tests/records/test_report_claims.py`'s whitebox memoisation test fakes
    `subprocess.run`'s return instead of calling real git, so proving the
    caching logic no longer spends a second real `git ls-files`.
@@ -65,7 +75,10 @@ RECORDS_DIR = REPO_ROOT / "tests" / "records"
 
 # docs/testing.md's own ceiling for this lane (task 032's E.1, restated here
 # so this module's own assertion and the doc's row cite the same number).
-COLLECTED_BUDGET = 300
+# Ratcheted 300 -> 150 by v0.20.1 task 045, when retiring the conformance-
+# ledger checker took the family from 204 collected tests to 116 (operator
+# ruling 001-039.md point 5: reconcile a moved count downward, same commit).
+COLLECTED_BUDGET = 150
 
 
 class _CollectPlugin:
@@ -106,7 +119,7 @@ def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
     also excludes `test_records_family_fresh_clone.py` -- task 010's (#176)
     one deliberate exemption: that module's own node spawns a real `git
     clone` plus a nested `pytest` subprocess on purpose, which would
-    otherwise show up here as an uncounted extra call. The other 190+ nodes
+    otherwise show up here as an uncounted extra call. The other 110+ nodes
     in the directory are exactly "the rest of the family" this test
     measures.
     """

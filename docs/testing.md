@@ -82,7 +82,7 @@ tightened as the counts come down -- they are a ratchet, not a target.
 | smoke, serial | `smoke` | `-m smoke` | 3768 | 208 | 137.18 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 137.18 s measured against the 120 s target |
 | fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5329 | 322 | 81.04 s | 7000 | 430 | 150 s | < 120 s | met -- 81.04 s inside the 120 s target |
 | fast, serial | `fast` | `-m fast` | 5329 | 322 | 540.44 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
-| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 201 | 6 | 20.60 s | 300 | 15 | 30 s | < 15 s | MISSED -- 20.60 s measured against the 15 s target (still inside the 30 s ceiling's own headroom); 201 tests inside the 300-test target |
+| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 116 | 5 | 13.93 s | 150 | 8 | 30 s | < 15 s | met -- 13.93 s (the slowest of three repeats: 12.78 s, 12.99 s, 13.93 s) inside the 15 s target, re-measured at v0.20.1 task 045's own tip after the conformance-ledger checker's retirement; 116 tests inside the ratcheted 150-test budget |
 | dev-layout, `PYTHONUSERBASE` unset (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
 
@@ -811,18 +811,26 @@ fast lane's own recorded measurements.
 
 ### The records-lint family (`tests/records/`, task 035, requirement E.4; subprocess count updated task 009, #176; fresh-clone node added task 010, #176)
 
-Measured serially (`.venv/bin/python -m pytest -q tests/records/`, repeated,
-~19 s, re-measured at v0.20.1 task 045's own tip after
-`tests/records/test_conformance_ledger.py`'s deletion -- see "Retired
-outright" in `docs/test-suite-audit.md` and this file's own dated entry
-above): **116 tests collected** across 5 test modules (plus a
+Measured serially (`.venv/bin/python -m pytest -q tests/records/`, three
+repeats -- 12.78 s, 12.99 s, 13.93 s -- re-measured at v0.20.1 task 045's
+own tip after `tests/records/test_conformance_ledger.py`'s deletion -- see
+"Retired outright" in `docs/test-suite-audit.md` and this file's own dated
+entry below): **116 tests collected** across 5 test modules (plus a
 `conftest.py`: `test_ralphctl_process_boundary.py`,
 `test_records_family_budget.py`, `test_records_family_fresh_clone.py`,
 `test_report_claims.py`, `test_roadmap.py`), against the PRD's
-**300-test** target (met) and **15 s** target (MISSED at ~19 s -- see
-"Targets missed" below for why: task 010's new fresh-clone node spawns a
-real `git clone` plus a nested `pytest` subprocess on purpose, and that is
-where nearly all of the added time goes).
+**15 s** target (met at 13.93 s, the slowest of the three) and this lane's
+own collection ceiling, itself ratcheted **300 -> 150** in that same
+commit (ruling `001-039.md` point 5: a count a removal moves is reconciled
+downward, never left carrying a deleted module's headroom; the module
+ceiling comes down 15 -> 8 for the same reason, over 5 modules).
+
+The 15 s target was MISSED at 20.60 s before that retirement -- task 010's
+fresh-clone node spawns a real `git clone` plus a nested `pytest`
+subprocess on purpose, and the deleted checker's own nested in-process
+collection of the whole suite was most of the rest. The wall-clock ceiling
+stays at 30 s: it is a timing ceiling that has to hold on slower hardware
+than this container, and a deletion is no evidence about that.
 
 **The subprocess rule: `git ls-files` and `git rev-list HEAD` for a whole
 run, and nothing else.**
@@ -1130,7 +1138,15 @@ modules. `artifacts/reports/conformance-ledger.md` is kept as frozen history
 with a new header saying so; it is not deleted and not mechanically checked
 any more. Re-measured directly at this task's own tip with `.venv/bin/python
 -m pytest -m <fast|smoke> --collect-only -q` and `.venv/bin/python -m pytest
-tests/records --collect-only -q`.
+tests/records --collect-only -q`. The lane's own ceilings are ratcheted
+downward in the same wave per that same ruling point: collection budget
+**300 -> 150** (in both places that cite it, this file's budget row and
+`tests/records/test_records_family_budget.py`'s `COLLECTED_BUDGET`), module
+budget **15 -> 8**; the 30 s wall-clock ceiling is left alone (it guards
+slower hardware, and a deletion is no evidence about that), while the lane's
+recorded wall clock is re-measured to **13.93 s** -- the slowest of three
+repeats -- which puts it inside the unchanged 15 s PRD target for the first
+time since task 010's fresh-clone node landed.
 
 ## When a tier goes over budget
 

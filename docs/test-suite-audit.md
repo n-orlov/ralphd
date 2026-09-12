@@ -1534,7 +1534,15 @@ in-process, no real engine/`ralphctl` spawn). Net effect on
 `docs/testing.md`'s tier-wide counts: fast 5720 -> 5632, smoke 4113 -> 4025,
 modules 361 -> 360; the records-family lane (`tests/records/`, selected by
 directory) drops 204 -> 116 tests, 6 -> 5 modules (see `docs/testing.md`'s own
-dated entry for the re-measurement). The nine self-referencing citations of
+dated entry for the re-measurement), and that lane's own ceilings are
+ratcheted downward with it in the same wave, per the same ruling point: its
+collection budget 300 -> 150 (both in `docs/testing.md`'s budget row and in
+`tests/records/test_records_family_budget.py`'s `COLLECTED_BUDGET`, which
+restate one number in two places) and its module budget 15 -> 8. Its 30 s
+wall-clock ceiling is deliberately left where it was -- that ceiling exists
+for hardware slower than this container, and deleting a module is no evidence
+about that -- while the recorded wall clock itself is re-measured (13.93 s,
+the slowest of three repeats, now inside the unchanged 15 s PRD target). The nine self-referencing citations of
 the deleted module inside the ledger's own body are marked `!retired` per the
 reports' own existing convention, so the surviving generic report-claim
 checks (`tests/report_claims.py`) do not read a deleted test file as a live
