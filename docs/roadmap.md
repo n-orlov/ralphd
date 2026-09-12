@@ -2189,9 +2189,43 @@ native `--llm-header` (#177); **K** — the version, the roadmap (this block), a
 — the evidence, the closures, the sweep and the closing report.
 
 The run is `selfdev-v020-a-commit-is-progress`, launched at `3bd7199d887f6046a5e55e96ff0362cb90bc466c`.
-This paragraph is written mid-run, ahead of the launch it describes settling — v0.19.1's row and
-block above are unchanged by this commit; this wave's own terminal account is a later task's to
-write once the run actually ends.
+**This wave ended `failed` / unverified — settled history, not a mid-wave snapshot.** `main`
+shipped `ee8313e5`, version `0.20.0`, with every CI lane green, including a scheduled nightly at
+that tip that returned six of six dev-layout cells `success`. Review recorded **VERIFIED**,
+requirements A–L all PASS, 0 blocking and 3 residual, discharging four of them by source
+inspection alone. The peer verdict gate, same tip, same tests, cloned the workspace into a
+disposable copy, installed *that* clone, wrote four probe tests from the requirement text and
+returned **4 blocking findings** (VG-001 — B.3, the approach progress baseline surviving a
+resume; VG-002 — A.3, the absorption-forced verify actually gone; VG-003 — E.4, a cure
+scheduled before the freeze, by the scheduler; VG-004 — J.3–J.4, profile-provided headers
+visible on the run surfaces) against unchanged shipped code. It landed on **approach 8 of 8**,
+the maximum available, so there was no approach left to cure in: `state: failed`, `verdict:
+unverified`, **516 of 900 iterations**, **22 h 3 m** of wall clock. This run's own `status.json`
+and run directory are not reachable from this container, so this paragraph and the facts above
+are sourced from this wave's own successor PRD, `docs/prds/v0.20.1-inspection-is-not-evidence.md`
+(requirement I.2), rather than a fresh `status.json` read. v0.20.1 fixes the four gate findings
+and corrects v0.20's own shipped reports, which claimed requirements A, B, E and J delivered.
+
+## v0.20.1 — inspection is not evidence
+
+Full PRD: [`docs/prds/v0.20.1-inspection-is-not-evidence.md`](prds/v0.20.1-inspection-is-not-evidence.md).
+v0.20 shipped `ee8313e5`, version `0.20.0`, every CI lane green — but its own peer verdict gate,
+cloning that tip into a disposable workspace, found four requirements review's source-inspection
+had waved through: **A** — the approach progress baseline surviving a resume (v0.20 B.3;
+VG-001); **B** — the absorption-forced verify actually gone (v0.20 A.3; VG-002); **C** — a cure
+scheduled before the freeze, by the scheduler (v0.20 E.4; VG-003); **D** — profile-provided
+headers visible on the run surfaces (v0.20 J.3–J.4; VG-004). This wave (#186, #190, #191) is
+the fix, in requirements A–J: **A**–**D** — the four gate cures named above; **E** — the
+findings channel stops self-locking the next wave (#190); **F** — the rate table is current
+and its drift guard fails instead of skipping (#186); **G** — the judging hats verify by
+probe, not by inspection (#191); **H** — v0.20's shipped reports stop claiming A, B, E and J
+were delivered; **I** — the version, the roadmap (v0.20's block and row settled, this block
+and row added); **J** — every lane green at the final code sha, the records, the closures,
+the terminal summary.
+
+The run is `selfdev-v0201-inspection-is-not-evidence`. This paragraph is written mid-run, ahead
+of the run it describes settling — v0.20's block and row above are unchanged by this commit;
+this wave's own terminal account is a later task's to write once the run actually ends.
 
 ## Later / explicitly deferred
 
