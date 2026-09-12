@@ -1073,6 +1073,23 @@ spawned) and +1 module -- no pre-existing drift found at task start.
 Re-measured directly with `.venv/bin/python -m pytest -m <fast|smoke>
 --collect-only -q`.
 
+**5726 (smoke 4119, modules 362)** by v0.20.1 task 023 (requirement F.4,
+#191). This task adds +1 fast / +0 smoke node and no module: one node (the
+requirement F.4 observables cross-check, in that module's own F.4 section --
+named without backticks here on purpose, since
+`tests/test_docs_consistency.py`'s identifier corpus deliberately excludes
+`tests/test_docs_semantics.py`) in
+the existing, fast-only `tests/test_docs_semantics.py`. The remaining +8
+fast / +2 smoke over the 5718/4117 this section last recorded is
+pre-existing drift, disclosed rather than absorbed into this task's own
+delta, and measured per commit (`-m <fast|smoke> --collect-only -q` in a
+throwaway worktree at each sha): `a2f1b4f` (task 019) already read
+5721/4117/362, `0a6c34c` (020) 5721/4117, `57614a4` (021) 5722/4118,
+`314fcc6` (022) 5723/4119, `6d9b73a` (this task's own first, rejected
+attempt) 5725/4119. Only the last of those is this task's, and its two
+nodes are still collected here. Re-measured directly with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest

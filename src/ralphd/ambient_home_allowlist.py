@@ -323,8 +323,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # read, same reason. Task 035 (PRD requirement F.1/F.4, #172) added
         # `_approach_progress_context` (48 new lines) above `_creds_note` in
         # this same module, shifting this read once more -- now at 1190,
-        # same method, same read, same reason.
-        "line": "1190",
+        # same method, same read, same reason. Task 017 (v0.20.1 requirement
+        # E.3, #190/#191) added `_check_workspace_version_drift`/
+        # `_read_workspace_version` (65 new lines, commit `d432dec`) above
+        # `_creds_note` in this same module, shifting this read once more --
+        # now at 1255, same method, same read, same reason (re-derived from
+        # `git show <sha>:src/ralphd/engine/loop.py`: 1190 at `ee8d6f7`, 1255
+        # from `d432dec` on).
+        "line": "1255",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

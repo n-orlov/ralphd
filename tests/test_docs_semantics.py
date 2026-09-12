@@ -1360,6 +1360,16 @@ def _states_derived_figure_is_a_lower_bound(text: str) -> bool:
         and "derived" in low
         and "no rate entry" in low
         and "observable" in low
+        # the per-hat observable: a `byPhase` bucket with tokens and no
+        # `costDerivedUSD` of its own (plus the marker when it is set)
+        and "byphase" in low
+        and "costderivedusd" in low
+        and "coststatus" in low
+        # the per-model observable, and the correction that the published
+        # `priceTables` figure is a COUNT and cannot answer per model
+        and "rate_for" in low
+        and "pricetables.tables[*].models" in low
+        and "count" in low
     )
 
 
@@ -1382,7 +1392,61 @@ def test_derived_lower_bound_check_would_catch_a_missing_statement():
     assert not _states_derived_figure_is_a_lower_bound(
         "A derived figure is a lower bound when a hat's model has no rate "
         "entry in either pricing table.")
-    assert _states_derived_figure_is_a_lower_bound(
+    # naming only `priceTables[*].models` (an integer count) is NOT naming a
+    # usable observable -- that is the defect this task's second attempt fixed
+    assert not _states_derived_figure_is_a_lower_bound(
         "A derived figure is a lower bound when a hat's model has no rate "
         "entry in either table; the observable a reader uses to tell is "
-        "the model's absence from both tables' coverage.")
+        "the model's absence from `GET /config`'s `pricing.models` and "
+        "`priceTables[*].models`.")
+    assert _states_derived_figure_is_a_lower_bound(
+        "A derived figure is a lower bound when a hat's model has no rate "
+        "entry in either table. The observable: the hat's own byPhase "
+        "bucket carries tokens but no costDerivedUSD (and costStatus "
+        "partial/unknown when the gap was marked); per model, "
+        "pricing_map().rate_for(id) is None, because "
+        "priceTables.tables[*].models is only an integer count.")
+
+
+def test_the_observables_the_derived_lower_bound_passage_names_are_real():
+    """The doc's two observables have to WORK, not just be mentioned.
+
+    This is the half the first attempt at requirement F.4 missed: it named
+    `priceTables[*].models` as the per-model lookup, and that field is an
+    integer count, so a reader could not look a model id up against it. The
+    assertions below pin each documented observable against the code that
+    produces it, so a doc passage naming a non-answer fails here.
+    """
+    from ralphd.engine import pricing_aws, state
+
+    # 1. the published `priceTables` figure really is a COUNT, not a listing --
+    #    so the doc is right to send a reader elsewhere for per-model coverage
+    assert isinstance(pricing_aws.staleness()["models"], int)
+    assert pricing_aws.staleness()["models"] == len(pricing_aws.RATES)
+
+    # 2. `rate_for` DOES answer per model id: None for an uncovered id (the
+    #    doc's own example), a rate for a covered one, through the alias hop
+    priced = pricing_aws.pricing_map()
+    assert priced.rate_for("openai/gpt-6-astra") is None
+    assert priced.rate_for("aigw-openai/openai.gpt-6-astra") is None
+    assert priced.rate_for("aigw-openai/openai.gpt-5.6-sol") is not None
+
+    # 3. the bucket-level observable: an uncovered hat's own bucket ends up
+    #    with tokens and no `costDerivedUSD`, and the marked case reads
+    #    `unknown` alone / `partial` once mixed with derived money
+    no_rate = {"input": 2000, "output": 200, "totalTokens": 2200,
+               "costPriced": False, "costDerived": False}
+    hat_bucket = LoopSupervisor._merge_usage({}, dict(no_rate))
+    assert hat_bucket["totalTokens"] == 2200
+    assert "costDerivedUSD" not in hat_bucket
+    assert hat_bucket["costStatus"] == "unknown"
+    assert state.format_cost(hat_bucket) == state.COST_UNAVAILABLE
+
+    total = LoopSupervisor._merge_usage(
+        {}, {"input": 1000, "output": 100, "totalTokens": 1100,
+             "costPriced": False, "costDerived": True, "costDerivedUSD": 0.45})
+    assert total["costStatus"] == "derived"
+    assert state.format_cost(total) == "~$0.45 derived"
+    LoopSupervisor._merge_usage(total, dict(no_rate))
+    assert total["costStatus"] == "partial"
+    assert state.format_cost(total) == "~$0.45 derived, partial (rest unavailable)"

@@ -252,17 +252,42 @@ changes: an unpriced bucket stays `unknown`.
 entry in either table** — the operator map or the built-in AWS one
 (`priceTables` above). `PricingMap.rate_for`/`rate_for` in
 `engine/pricing_aws.py` return `None` for an id neither table prices at all, so
-that hat's tokens contribute nothing to `costDerivedUSD` — not a marked
-`unknown` remainder, just an amount that is quietly absent from the sum. The
-observable a reader uses to tell: look up the hat's resolved model id (from
-its iterations, or `model_for(hat)`) against `GET /config`'s `pricing.models`
-and the built-in table's coverage (`priceTables[*].models`); a model present
-in neither means every `~$… derived` total that includes that hat's traffic
-undercounts it, however clean the reported `costStatus` looks. Real example,
-logged live at `docs/prds/README.md`'s `selfdev-v020-a-commit-is-progress`
-row: `~$648.75 derived` understates the run because `aigw-openai/openai.gpt-
-6-astra`, the model behind the `plan_review`/`verdict_gate` hats, has no rate
-entry in either table.
+that hat's tokens contribute nothing to `costDerivedUSD`: the tokens are still
+counted, the money for them is simply absent from the sum.
+
+**The observable a reader uses to tell, in two steps.** First, per hat, in
+`GET /status`'s `usage.byPhase`: a phase key IS the hat's own name
+(`planning`, `worker`, `verify`, `review`, `plan_review`, `verdict_gate`,
+`steer`, `router`, `contract`), and an uncovered hat's bucket carries token
+counters with **no `costDerivedUSD` of its own** while other buckets have one —
+that is the tell that always answers, because it needs no marker to be set.
+When that hat's iterations also recorded their tokens as billed-but-unpriced
+(`costPriced: false`, `costDerived: false` — see `GET /iterations`),
+`_merge_cost_status` marks the same gap: that bucket reads `costStatus:
+"unknown"` (or `"partial"`, if it did collect some money), the run total reads
+`"partial"`, and `format_cost` renders `~$… derived, partial (rest
+unavailable)`. The absence of that marker is **not** evidence of coverage,
+which is why the bucket-level check comes first: a total can read a clean
+`costStatus: "derived"` and still understate the run.
+
+Second, per model id, to confirm *which* id is uncovered: read the hat's
+resolved id (`GET /iterations/<n>`'s `modelResolved`, the pinned `model`/`models:`
+entry, or `model_for(hat)`) and look it up in each table. `GET /config`'s
+`pricing.models` answers directly — it is the operator map's real id→rate
+object. `priceTables.tables[*].models` **cannot** answer it: that field is an
+integer *count* of priced ids (`len(RATES)`, `121` for the built-in table in
+this build), not a list, so the built-in table's per-model coverage is checked
+against the table itself — `pricing_aws.pricing_map().rate_for("<id>")`, `None`
+for an id no exact key, alias hop or wildcard covers (`openai/gpt-6-astra` →
+`None`; `aigw-openai/openai.gpt-5.6-sol` → a `ModelRate`). A model no table
+prices means every `~$… derived` total that includes that hat's traffic
+undercounts it. Real example, as read live and recorded at
+`docs/prds/README.md`'s `selfdev-v020-a-commit-is-progress` row: `~$648.75
+derived` understates that run because `aigw-openai/openai.gpt-6-astra`, the
+model behind its `plan_review`/`verdict_gate` hats, has no rate entry in
+either table — and that reading was taken with the run total's own
+`costStatus` reading `derived`, the clean-looking case the two steps above
+exist to catch.
 
 `deadlineAt` is `startedAt + jobTimeoutS` **plus every second this run has
 spent waiting out an infra outage** (`infraWaitTotalS`, the cumulative infra
