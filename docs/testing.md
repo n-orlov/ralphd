@@ -952,6 +952,16 @@ workspace gained a real commit in between), and the non-git-workspace
 null-persistence case. Re-measured directly with `.venv/bin/python -m
 pytest -m <fast|smoke> --collect-only -q`.
 
+**5683 (smoke 4082, modules unchanged at 355)** by v0.20.1 task 002
+(requirement A.2): +1 fast / +1 smoke node in the same module,
+`tests/test_approach_start_head_persistence.py` --
+`test_a_fresh_process_resume_after_a_commit_and_stagnation_pause_stays_on_approach_one_and_pauses_again`,
+the literal end-to-end proof of task 001's fix: a real `_step_worker()`
+commit-then-pause, a genuinely fresh-process `LoopSupervisor` resuming into
+`worker`, and a renewed stagnation pause, still on approach 1 with no
+`approaches/01` archive. Re-measured directly with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest
