@@ -77,18 +77,20 @@ def test_E4_cure_precedes_high_priority_freeze_in_schedule(tmp_path):
     live_tasks = run.read_tasks()["tasks"]
     by_id = {t["id"]: t for t in live_tasks}
 
-    # The mechanism, named: the freeze task's own `dependsOn` now names
-    # the inserted cure -- not merely list position.
-    assert by_id["020"]["dependsOn"] == ["cure-01-01"]
-
-    # The scheduler's own choice -- not list order -- prefers the cure
-    # over the freeze even though the freeze's `priority` (10) beats the
-    # cure task's own (default 0, unset).
+    # The claim under test FIRST, so that this node's own failure against
+    # pre-fix code is the SCHEDULER's wrong pick and nothing earlier: the
+    # scheduler's choice -- not list order -- prefers the cure over the
+    # freeze even though the freeze's `priority` (10) beats the cure
+    # task's own (default 0, unset).
     picked = scheduler.select_next_task(live_tasks)
     assert picked is not None
     assert picked["id"] == "cure-01-01", (
         "the scheduler must pick the inserted cure ahead of the pending "
         "named freeze, whatever the freeze's own priority is")
+
+    # ...and then the mechanism that makes it so: the freeze task's own
+    # `dependsOn` names the inserted cure -- not merely list position.
+    assert by_id["020"]["dependsOn"] == ["cure-01-01"]
 
 
 def test_the_freeze_becomes_selectable_once_its_cure_is_done(tmp_path):
