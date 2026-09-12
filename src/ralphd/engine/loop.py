@@ -7534,40 +7534,28 @@ class LoopSupervisor:
                 # field, asserted from disk state, with no sidecar and no
                 # before/after diff at all.
                 #
-                # Task 011 (PRD requirement B.2, #153): BEFORE that relabel,
-                # give the SAME `head_before`/`head_after` witness the
-                # stagnation formula further below uses (witness (b),
-                # commits) a second, per-task job -- judging a task that
-                # keeps absorbing iterations rather than starving it. This
-                # has to run ahead of `_relabel_vigilant_claims` so a task
-                # this call forces to `awaiting-validation` is already in
-                # that state by the time `pending_verify` is collected a
-                # few lines down, and it has to read `tasks_after` as it
-                # stands right now -- after every completion/unsatisfiable/
-                # petition/task_status branch above has already applied its
-                # own write -- so a task legitimately resolved this same
-                # pass (by any of those channels) never reads as "still
-                # absorbing" just because it once was.
-                commits_this_iteration = (
-                    (head_before is not None or head_after is not None)
-                    and head_before != head_after)
-                # Task 013 (PRD requirement A.3, #156): budget_exempt reads
-                # progress_claim_corroborated / progress_budget_used /
-                # progress_budget_total, set a few hundred lines up right
-                # after this SAME iteration's own progress_enforcement.ok
-                # site, iff a corroborated claim landed on assigned_id this
-                # pass. An over-budget task (used <= budget fails) falls
-                # back to the unexempted pre-013 behaviour -- forcing that
-                # task's exhaustion into a split (PRD requirement B) is
-                # task 016's job, never this one's.
-                budget_exempt = (
-                    progress_claim_corroborated
-                    and progress_budget_used is not None
-                    and progress_budget_total is not None
-                    and progress_budget_used <= progress_budget_total)
-                tasks_after = self._record_task_absorption_streak(
-                    tasks_after, assigned_id, commits_this_iteration,
-                    budget_exempt=budget_exempt)
+                # Task 004 (v0.20.1 PRD requirement B.1, gate finding
+                # VG-002): the legacy per-task absorption-streak hand-off
+                # (task 011, v0.19 PRD requirement B.2, #153) used to run
+                # HERE, before `_relabel_vigilant_claims`, forcing any task
+                # that landed three consecutive commit-bearing iterations
+                # with no completion signal straight to `awaiting-
+                # validation` and into `verify` -- REGARDLESS of whether
+                # any claim on it was ever corroborated (task 013's
+                # `budget_exempt` only ever exempted the corroborated
+                # case). That call (`_record_task_absorption_streak`) and
+                # the method itself are deleted outright: nothing computes
+                # `commits_this_iteration`/`budget_exempt` here any more,
+                # and nothing anywhere reads `cfg.task_absorption_max_
+                # iterations`. A task that keeps absorbing commit-bearing
+                # `no_verdict` iterations now stays `in-progress` through
+                # this whole block; the pre-existing progress-budget/
+                # forced-split path (task 016, `PROGRESS_BUDGET_STATUS_
+                # KEY`, `estimatedIterations + 2`, computed a few hundred
+                # lines up as `forced_split_required` BEFORE each
+                # dispatch) is what actually governs exhaustion, and it is
+                # what B.3/B.4 (tasks 005/006) pin next -- never this
+                # method's job again.
                 tasks_after = self._relabel_vigilant_claims(tasks_after)
                 pending_verify = [
                     t for t in tasks_after.get("tasks", [])
@@ -11413,126 +11401,6 @@ class LoopSupervisor:
                    f"({', '.join(newly)}); design is one task per iteration")
             log.warning(msg)
             self.run.emit("log", level="warning", message=msg)
-
-    # Task 011 (PRD requirement B.2, #153): disk-backed, survives a resume --
-    # the same shape `planReviewRevisions`/`steerRedeliveries`/
-    # `workerSplitProposals` already use in `status.json` for a bounded,
-    # per-something counter. Holds at most ONE entry, `{"taskId": ...,
-    # "count": ...}`, because under this run's own scheduler
-    # (`engine.scheduler.select_next_task`: validation-failed first, else
-    # the first in-progress task) an already-claimed `in-progress` task is
-    # reassigned to the worker every following pass until it is resolved --
-    # there is never more than one task genuinely "absorbing" iterations at
-    # once, so a per-task-id dict (like the other three counters above)
-    # would only ever hold one live key at a time; the flat shape says so
-    # directly instead of leaving that an unstated invariant of a dict
-    # nobody ever sees with two entries.
-    TASK_ABSORPTION_STATUS_KEY = "taskAbsorptionStreak"
-
-    def _record_task_absorption_streak(self, tasks_after: dict,
-                                       assigned_id: str | None,
-                                       commits_this_iteration: bool,
-                                       budget_exempt: bool = False) -> dict:
-        """Task 011 (PRD requirement B.2, #153): "a task that absorbs
-        iterations is judged, not starved." `stagnant`
-        (`STAGNATION_TOOL_ACTIVITY_MIN_CALLS` and friends, task 010,
-        requirement B.1) only measures the OPPOSITE failure -- an
-        iteration with none of the four progress witnesses -- so a task a
-        worker keeps landing real commits against, pass after pass, never
-        trips it: commits are progress by witness (b), every single time.
-        Nothing before this method ever asked the DIFFERENT question this
-        requirement raises -- has one task now absorbed N consecutive
-        passes with no verdict ever settling it?
-
-        Called every vigilant worker iteration, immediately before
-        `_relabel_vigilant_claims`, with `tasks_after` already reflecting
-        every completion/unsatisfiable/petition/task_status branch this
-        pass's own dispatch already applied. "Still absorbing" is exactly
-        three facts holding at once: (1) a task was assigned this iteration
-        at all (`assigned_id` is not `None`); (2) that task's status, read
-        from `tasks_after` right now, is still `in-progress` -- i.e. NO
-        completion signal landed for it this pass, by any channel, because
-        every channel that resolves a task moves it off `in-progress`
-        before this method ever runs; (3) `commits_this_iteration` --
-        witness (b) of the stagnation formula, computed by the caller from
-        the SAME `head_before`/`head_after` git-HEAD pair around this same
-        iteration's own `_run_worker_iteration` call. Any one of the three
-        failing breaks the streak back to zero -- a task reassigned after a
-        gap, one legitimately resolved, or one iteration that landed no
-        commit all reset the count, exactly like `stagnant` itself resets
-        on any witness; only truly CONSECUTIVE qualifying passes accumulate.
-
-        Reaching `self.cfg.task_absorption_max_iterations` (default 3, an
-        explicit NUMBER read from config, never a literal here) writes
-        `awaiting-validation` directly (the one move the vigilant task-
-        status table already declares legal from `in-progress`,
-        `transitions.TASK_STATUS_VIGILANT_DELTA`) -- not through the
-        worker-reported `task_status`/`verdict` contract channels (this is
-        the harness acting *for* the worker, `_apply_worker_completion_
-        report`'s own "harness picks the target, never the agent's word
-        alone" reasoning applied to a hand-off nobody reported at all) --
-        and appends a plain-language `notes` entry on the task record
-        saying so, the same field `failed -> skipped`'s justification
-        (task 009/#123) already writes for its own engine-applied move.
-        The mutated `tasks_after` is written to disk here and returned so
-        the caller's own `pending_verify` collection (a few lines below,
-        unconditionally re-run against whatever this method returns) picks
-        the freshly forced task up and routes it to `verify` this SAME
-        pass, exactly as an ordinary worker completion already would.
-        """
-        record = dict(
-            self.run.read_status().get(self.TASK_ABSORPTION_STATUS_KEY) or {})
-        count = (int(record.get("count", 0))
-                 if record.get("taskId") == assigned_id else 0)
-        task = None
-        if assigned_id is not None:
-            task = next((t for t in tasks_after.get("tasks", [])
-                        if t.get("id") == assigned_id), None)
-        # Task 013 (PRD requirement A.3, #156): "taskAbsorptionStreak's
-        # forced verify no longer fires for a task under budget with
-        # corroborated progress" -- `budget_exempt` (computed by the
-        # caller from THIS SAME iteration's own progress claim and its
-        # task's own progress budget) makes this pass read exactly like
-        # one with no commit at all: `still_absorbing` is False, so the
-        # streak resets to zero below rather than accumulating. An
-        # over-budget task (the caller's own `used <= budget` check
-        # failed) never sets `budget_exempt`, so it keeps today's
-        # pre-013 behaviour -- forcing that exhaustion into a split (PRD
-        # requirement B) is task 016's job, never this one's.
-        still_absorbing = (
-            assigned_id is not None and task is not None
-            and task.get("status") == "in-progress"
-            and commits_this_iteration
-            and not budget_exempt)
-        if not still_absorbing:
-            if record:
-                self.run.update_status(**{self.TASK_ABSORPTION_STATUS_KEY: {}})
-            return tasks_after
-        count += 1
-        if count < self.cfg.task_absorption_max_iterations:
-            self.run.update_status(**{
-                self.TASK_ABSORPTION_STATUS_KEY: {
-                    "taskId": assigned_id, "count": count}})
-            return tasks_after
-        note = (f"task 011 (PRD requirement B.2, #153): {count} consecutive "
-               "worker iterations landed commits with no completion signal "
-               "-- the engine moved this task to awaiting-validation on the "
-               "worker's own behalf and routed it to verify rather than "
-               "let it keep absorbing iterations.")
-        existing = task.get("notes")
-        task["notes"] = f"{existing}\n{note}" if existing else note
-        task["status"] = "awaiting-validation"
-        self.run.write_tasks(tasks_after)
-        self._emit_task_status(assigned_id, "in-progress", "awaiting-validation",
-                               reason="task_absorption_handoff")
-        self.run.emit(
-            "log", level="warning",
-            message=(f"task {assigned_id!r} absorbed {count} consecutive "
-                     "worker iterations with commits and no completion "
-                     "signal (task 011, #153); moved to awaiting-validation "
-                     "and routed to verify"))
-        self.run.update_status(**{self.TASK_ABSORPTION_STATUS_KEY: {}})
-        return tasks_after
 
     def _relabel_vigilant_claims(self, tasks_data: dict) -> dict:
         """Task 020 (requirement F bullet 4): the harness-owned half of the

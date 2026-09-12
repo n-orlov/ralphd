@@ -525,24 +525,30 @@ class JobConfig:
     # see `engine/contract_enforcement.py` for the mechanism itself (not
     # wired into `_run_job_core` yet -- that is task 014's cutover).
     contract_retry_max: int = 2
-    # Task 011 (PRD requirement B.2, #153): an explicit NUMBER -- how many
-    # CONSECUTIVE worker iterations may be spent on the SAME task, each
-    # landing real commits but no completion signal (`verdict: "complete"`
-    # successfully applied), before the engine takes the claim over on the
-    # worker's own behalf: it writes `awaiting-validation` itself, appends a
-    # `notes` entry saying so, and routes to `verify` exactly like an
-    # ordinary worker completion would (`LoopSupervisor._record_task_
-    # absorption_streak`). This is a DIFFERENT counter from `stagnant`
-    # (`LoopSupervisor._step_worker`'s no-progress guard, task 010,
-    # requirement B.1): a task that keeps absorbing iterations with real
-    # commits every pass never trips THAT guard at all (commits are
-    # progress), so without this separate counter it could hold a worker's
-    # attention forever with no verifier ever judging the tree. Effective
-    # only under `vigilant` -- `awaiting-validation`/`verify` do not exist
-    # in the non-vigilant task-status table
-    # (`transitions.TASK_STATUS_TABLE`), so a non-vigilant run has nothing
-    # for this knob to hand off to and the streak is never even recorded.
-    # Overridable with RALPHD_TASK_ABSORPTION_MAX_ITERATIONS.
+    # Task 011 (v0.19 PRD requirement B.2, #153) added an explicit NUMBER --
+    # how many CONSECUTIVE worker iterations may be spent on the SAME task,
+    # each landing real commits but no completion signal, before the engine
+    # forced `awaiting-validation` and routed to `verify` on the worker's
+    # own behalf (`LoopSupervisor._record_task_absorption_streak`).
+    #
+    # Task 004 (v0.20.1 PRD requirement B.1, gate finding VG-002):
+    # THIS FIELD STOPS HAVING THAT EFFECT rather than going away outright.
+    # `_record_task_absorption_streak` and its call site are deleted --
+    # nothing anywhere reads `task_absorption_max_iterations` any more, so
+    # no consecutive-commit streak can ever force `awaiting-validation` or
+    # dispatch `verify` again; the pre-existing progress-budget/forced-split
+    # path (task 016, `PROGRESS_BUDGET_STATUS_KEY`, `estimatedIterations +
+    # 2`) already governs exhaustion independently and is what B.3/B.4
+    # (tasks 005/006) pin next. The field itself (and its env override) is
+    # kept, inert, purely so two frozen v0.20 tests unrelated to this task
+    # (`tests/test_progress_budget_task013.py`,
+    # `tests/test_progress_pin_task015.py`) that pass
+    # `task_absorption_max_iterations=3` as a `JobConfig` kwarg keep
+    # constructing without a `TypeError` -- deleting the field would widen
+    # this task's blast radius onto tests outside its own scope for no
+    # behavioural gain, since neither test's assertions depend on the
+    # value doing anything. Overridable (inertly) with
+    # RALPHD_TASK_ABSORPTION_MAX_ITERATIONS.
     task_absorption_max_iterations: int = 3
     # Task 018 (requirement E, #60 pillar 2): the router's own model and
     # latency budget. `router_model` is one new key through the EXISTING

@@ -974,6 +974,21 @@ stagnation pause -- still on approach 1 with no `approaches/01` archive.
 Re-measured directly with `.venv/bin/python -m pytest -m <fast|smoke>
 --collect-only -q`.
 
+**5682 (smoke 4081, modules unchanged at 355)** by v0.20.1 task 004
+(requirement B.1/B.2/B.5, gate finding VG-002): net -2 fast / -2 smoke
+nodes in `tests/test_worker_hat.py` -- three legacy nodes pinning the
+retired per-task absorption-streak hand-off
+(`test_three_consecutive_commit_only_iterations_hand_the_task_to_verify`,
+`test_a_lower_configured_threshold_fires_sooner`,
+`test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run`) are
+retired (`docs/test-suite-audit.md` "Subsumed"), replaced by ONE new node,
+`test_three_consecutive_commit_only_iterations_never_force_verify_dispatch`,
+pinning the opposite verdict now that `LoopSupervisor._record_task_
+absorption_streak` and its call site are deleted outright: the same
+three-consecutive-commit-only shape now leaves the task `in-progress`,
+never dispatches `verify`. Re-measured directly with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest

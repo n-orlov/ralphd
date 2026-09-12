@@ -906,9 +906,9 @@ Derivation for task 028 (requirement D.7, the sweep): the per-task pin modules w
 | `test_stagnation_progress_witnesses_task010.py::test_tool_activity_below_the_threshold_still_increments_the_counter` | `tests/test_worker_hat.py::test_tool_activity_below_the_threshold_still_increments_the_counter` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_task_absorption_handoff_task011.py::test_default_config_knob_value_is_three` | `tests/test_worker_hat.py::test_default_config_knob_value_is_three` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_task_absorption_handoff_task011.py::test_env_var_overrides_the_config_knob` | `tests/test_worker_hat.py::test_env_var_overrides_the_config_knob` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_task_absorption_handoff_task011.py::test_three_consecutive_commit_only_iterations_hand_the_task_to_verify` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_hand_the_task_to_verify` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_task_absorption_handoff_task011.py::test_a_lower_configured_threshold_fires_sooner` | `tests/test_worker_hat.py::test_a_lower_configured_threshold_fires_sooner` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_task_absorption_handoff_task011.py::test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run` | `tests/test_worker_hat.py::test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
+| `test_task_absorption_handoff_task011.py::test_three_consecutive_commit_only_iterations_hand_the_task_to_verify` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (folded verbatim into the merged module at task 028; task 004, v0.20.1 PRD requirement B.1/B.2/B.5, then deleted the folded node itself along with the mechanism it pinned -- see that task's own Subsumed derivation further down for the replacement's shape) | task 028, requirement D.7 |
+| `test_task_absorption_handoff_task011.py::test_a_lower_configured_threshold_fires_sooner` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (folded verbatim into the merged module at task 028; task 004, v0.20.1 PRD requirement B.1/B.2/B.5, then deleted the folded node itself along with the mechanism it pinned -- see that task's own Subsumed derivation further down for the replacement's shape) | task 028, requirement D.7 |
+| `test_task_absorption_handoff_task011.py::test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (folded verbatim into the merged module at task 028; task 004, v0.20.1 PRD requirement B.1/B.2/B.5, then deleted the folded node itself along with the mechanism it pinned -- see that task's own Subsumed derivation further down for the replacement's shape) | task 028, requirement D.7 |
 | `test_worker_dispatch_reentry_task008.py::test_generic_schema_site_repair_counts_the_re_entry_once` | `tests/test_worker_hat.py::test_generic_schema_site_repair_counts_the_re_entry_once` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_worker_dispatch_reentry_task008.py::test_three_consecutive_repaired_completes_never_trip_the_3_strike_guard` | `tests/test_worker_hat.py::test_three_consecutive_repaired_completes_never_trip_the_3_strike_guard` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_worker_dispatch_reentry_task008.py::test_schema_site_ladder_exhaustion_still_falls_through_to_stagnation` | `tests/test_worker_hat.py::test_schema_site_ladder_exhaustion_still_falls_through_to_stagnation` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
@@ -1435,3 +1435,30 @@ row below names that replacement.
 | deleted node | surviving cover | landed in |
 |---|---|---|
 | `tests/test_llm_header_visibility.py::test_read_llm_wiring_headers_empty_for_a_pre_047_wiring_file` | `tests/test_llm_header_visibility.py::test_read_llm_wiring_headers_masks_every_value_of_a_pre_047_wiring_file` (same fixture shape -- a `headers` map with no `headerRefNames` key at all -- with the opposite, fail-safe verdict: both values render as `***` and the resolved secret appears nowhere in the returned map, while `tests/test_llm_header_visibility.py::test_read_llm_wiring_headers_keeps_literals_visible_for_an_all_literal_file` keeps the "a literal stays visible" half honest via the empty-list provenance a post-047 write always records) | task 047, requirement J.4 |
+
+Derivation for task 004 (v0.20.1 PRD requirement B.5, gate finding VG-002): the same
+`-def test_` diff, run over this task's own commit, gives exactly three removed names
+that never reappear as an added one, all in `tests/test_worker_hat.py` --
+`test_three_consecutive_commit_only_iterations_hand_the_task_to_verify`,
+`test_a_lower_configured_threshold_fires_sooner` and
+`test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run`. All three pinned
+behaviour of the legacy per-task absorption-streak hand-off
+(`LoopSupervisor._record_task_absorption_streak`, task 011, v0.19 PRD requirement
+B.2, #153) that this task deletes outright: forcing `awaiting-validation` and a
+`verify` dispatch after N consecutive commit-bearing `no_verdict` iterations on one
+task, a lower configured threshold firing sooner, and a broken streak resetting the
+count. None of the three has an independent replacement -- the SAME module's new
+`test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` covers
+the one behaviour that survives the deletion (three such iterations now leave the
+task `in-progress`, with `verify` never dispatched and no legacy `notes` sentence),
+so one row below names it for each of the three deleted nodes; `JobConfig.
+task_absorption_max_iterations`'s own two config-plumbing tests
+(`test_default_config_knob_value_is_three`, `test_env_var_overrides_the_config_knob`)
+are untouched -- the field is retained, inert, so they keep passing on the field's
+mere existence, never on the deleted effect.
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_hand_the_task_to_verify` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (same three-consecutive-commit-only shape, opposite verdict: the task stays `in-progress`, `verify` never runs, and the legacy `notes` sentence never appears -- `LoopSupervisor._record_task_absorption_streak` is deleted, not merely exempted) | task 004, requirement B.1/B.2/B.5 |
+| `tests/test_worker_hat.py::test_a_lower_configured_threshold_fires_sooner` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (the configured threshold this node pinned no longer has any effect to fire sooner or later -- nothing reads `cfg.task_absorption_max_iterations` any more, so the surviving node asserts the ONE behaviour left: the dispatch never fires at all) | task 004, requirement B.1/B.2/B.5 |
+| `tests/test_worker_hat.py::test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (the `taskAbsorptionStreak` bookkeeping this node pinned a partial count of is deleted along with the hand-off it fed -- the surviving node asserts the status key is never written at all, `{}`, a strictly stronger claim than a broken streak resetting to a lower count) | task 004, requirement B.1/B.2/B.5 |

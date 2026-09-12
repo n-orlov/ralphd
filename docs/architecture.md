@@ -715,35 +715,36 @@ only an iteration with NONE of them still increments it:
 the counter" now falls straight out of the OR -- witness (a) alone no
 longer decides anything on its own.
 
-**A task that absorbs iterations is judged, not starved (task 011).** The
-widened stagnation counter above answers the opposite failure -- an
-iteration with no progress at all -- so it never catches the different
-failure requirement B.2 names: one task absorbing pass after pass of real
-commits with no verdict ever settling it, because witness (b) resets
-`stagnant` to `0` every single time. `LoopSupervisor.
-_record_task_absorption_streak`, called every vigilant worker iteration
-immediately before `_relabel_vigilant_claims`, tracks a SEPARATE counter
-keyed to one task id (`status.json`'s `taskAbsorptionStreak`,
-`{taskId, count}`): it increments only while three facts hold at once --
-the SAME task was assigned again this iteration, its status (after every
-other completion/unsatisfiable/petition/task_status channel this pass
-already applied) is still `in-progress`, and this same iteration landed a
-commit (witness (b), computed by the SAME `head_before`/`head_after` pair).
-Any one of the three failing -- a different task assigned, one legitimately
-resolved, or a pass with no commit -- resets the streak to `0`, exactly
-like `stagnant` itself resets on any witness.
+**A task that absorbed iterations used to be judged, not starved (task
+011, retired at task 004, v0.20.1 PRD requirement B.1, gate finding
+VG-002).** The widened stagnation counter above answers the opposite
+failure -- an iteration with no progress at all -- so it never caught the
+different failure v0.19's requirement B.2 named: one task absorbing pass
+after pass of real commits with no verdict ever settling it, because
+witness (b) resets `stagnant` to `0` every single time.
+`LoopSupervisor._record_task_absorption_streak` used to answer that,
+called every vigilant worker iteration immediately before
+`_relabel_vigilant_claims`, tracking a SEPARATE counter keyed to one task
+id (`status.json`'s `taskAbsorptionStreak`, `{taskId, count}`): reaching
+`count == task_absorption_max_iterations` (default 3) forced the task
+straight to `awaiting-validation` and into `verify` on the worker's own
+behalf -- with NO regard for whether any claim on the task was ever
+corroborated, which is exactly what gate finding VG-002 flagged: a task
+under its own progress budget, with real work landing every pass, still
+got yanked into verification on commit count alone.
 
-Reaching `count == task_absorption_max_iterations` (default 3, read from
-config) is a hand-off the harness makes on the worker's own behalf, never a
-contract channel the agent reports through: the task is forced straight to
-`awaiting-validation` -- the one move `TASK_STATUS_VIGILANT_DELTA` already
-declares legal from `in-progress` -- with a plain-language `notes` entry
-appended to the task record naming the hand-off, and it is picked up by
-that SAME pass's `pending_verify` collection and routed to `verify`
-immediately, exactly as an ordinary worker completion already would be.
-The streak resets to `{}` the moment it breaks OR the moment a hand-off
-fires, so a task that clears verify and later gets reassigned starts a
-fresh count rather than resuming a stale one.
+Task 004 deletes `_record_task_absorption_streak` and its call site
+outright rather than widening its exemption further -- nothing anywhere
+reads `cfg.task_absorption_max_iterations` any more (the field itself is
+kept, inert, only so two frozen v0.20 tests that configure it as a
+`JobConfig` kwarg keep constructing). A task that keeps absorbing
+commit-bearing `no_verdict` iterations now simply stays `in-progress`
+through this whole block. What governs exhaustion instead is the
+pre-existing progress-budget/forced-split path (task 016,
+`PROGRESS_BUDGET_STATUS_KEY`, `estimatedIterations + 2`, `forced_split_
+required`, read BEFORE each dispatch) -- see `tests/test_worker_hat.py::
+test_three_consecutive_commit_only_iterations_never_force_verify_dispatch`
+for the replacement pin.
 
 ### No-progress escalation guard vs. instant startup/infra failures (task 059)
 
