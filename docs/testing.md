@@ -989,6 +989,20 @@ three-consecutive-commit-only shape now leaves the task `in-progress`,
 never dispatches `verify`. Re-measured directly with `.venv/bin/python -m
 pytest -m <fast|smoke> --collect-only -q`.
 
+**5683 (smoke 4082, modules 355->356)** by v0.20.1 task 005 (requirement
+B.3): +1 fast / +1 smoke node in one new module,
+`tests/test_progress_budget_governs_exhaustion_task005.py` --
+`test_exhaustion_is_produced_by_the_progress_budget_forced_split_path_not_absorption`,
+in-process (reuses `tests/test_worker_hat.py`'s `_spw010_run`/`_steps`
+scripted-agent shape, no real subprocess engine) -- drives a real
+`_run_job_core()` run through planning and four worker iterations that
+spend a task's own progress budget for real (three corroborated commits,
+a fourth dispatched once `used >= budget`), with `task_absorption_max_
+iterations=1` configured far below that streak, and asserts the
+forced-split path (never the deleted absorption streak) produced the
+exhaustion outcome. Re-measured directly with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest
