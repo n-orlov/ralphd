@@ -230,6 +230,47 @@ def test_validate_findings_rejects_a_non_list_top_level():
     assert errors and "array" in errors[0]
 
 
+def test_a_reduced_v020_shaped_schema_still_reads_a_findings_list_carrying_cured_when_and_invalidates(
+        monkeypatch, tmp_path):
+    """Task 015 (requirement E.4, #167): a v0.20-shaped `FINDING_SCHEMA` --
+    before task 031 added `cured_when`/`invalidates` -- carried only FIVE
+    properties: `severity`, `curable`, `clause`, `evidence`, `author`.
+    `additionalProperties` stayed `True` through that whole history (task
+    014's E.1 fix, #190), so a findings list written by a NEWER engine
+    that already emits `cured_when`/`invalidates` still reads clean
+    against that OLDER, five-property schema -- the two extra keys are
+    ignored with a warning apiece, never rejected. This shrinks
+    `FINDING_SCHEMA['properties']` down to exactly that five-property set
+    (monkeypatched, so no other test in this session sees the change),
+    feeds a findings list carrying both newer-only fields, and checks the
+    outcome through `state.record_approach_verdict` -- the engine's own
+    persisted record of a judge's verdict (task 035) -- because that is
+    where `findingsChannel` and the blocking/residual counts this
+    requirement names actually live."""
+    reduced = {
+        key: value
+        for key, value in findings.FINDING_SCHEMA["properties"].items()
+        if key in {"severity", "curable", "clause", "evidence", "author"}
+    }
+    assert sorted(reduced) == [
+        "author", "clause", "curable", "evidence", "severity"]
+    monkeypatch.setitem(findings.FINDING_SCHEMA, "properties", reduced)
+    richer_findings_list = [
+        _finding(author="verdict_gate", cured_when="rewrap the paragraph",
+                  invalidates=["docs/testing.md"]),
+        _finding(severity="residual", curable=False, author="review"),
+    ]
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter(
+            "ignore", findings.UnrecognisedFindingFieldWarning)
+        assert findings.validate_findings(richer_findings_list) == []
+    entry = state.record_approach_verdict(
+        tmp_path, 1, "review", verdict="rejected",
+        findings=richer_findings_list)
+    assert entry["findingsChannel"] is True
+    assert len(entry["blocking"]) + len(entry["residual"]) > 0
+
+
 # ---------------------------------------------------------------------------
 # Round-trip through the JSON sidecar channel
 # ---------------------------------------------------------------------------
