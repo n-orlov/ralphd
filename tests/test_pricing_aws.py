@@ -66,8 +66,8 @@ GATEWAY_FORMS = [
     ("amazon-bedrock/amazon.nova-pro-v1:0", 0.8),
     # the AIGW spellings from the pricing-anomaly report: same model, two
     # provider prefixes, one price
-    ("aigw-openai/openai.gpt-5.6-sol", 5.5),
-    ("bedrock-mantle/openai.gpt-5.6-sol", 5.5),
+    ("aigw-openai/openai.gpt-5.6-sol", 4.4),
+    ("bedrock-mantle/openai.gpt-5.6-sol", 4.4),
     # bare region-prefixed Bedrock ids (no provider segment at all)
     ("eu.anthropic.claude-sonnet-5", 2.2),
     ("us.anthropic.claude-opus-5", 5.0),
@@ -76,7 +76,7 @@ GATEWAY_FORMS = [
     ("au.anthropic.claude-opus-4-6-v1", 16.5),
     # the slash spelling docs/api.md uses for alias targets
     ("anthropic/claude-sonnet-5", 2.0),
-    ("openai/gpt-5.6-sol", 5.5),
+    ("openai/gpt-5.6-sol", 4.4),
     ("amazon-bedrock/anthropic/claude-sonnet-5", 2.0),
 ]
 
@@ -275,25 +275,31 @@ def test_the_rate_table_is_a_marked_generated_region():
 
 
 def test_the_refresh_tool_reproduces_the_shipped_table():
-    """The documented refresh path is the one that produced what ships.
+    """The documented refresh path, run against the exact mirror recorded in
+    SOURCE_VERSION, is the one that produced what ships.
 
-    Skips only when pi-ai's bundled provider data is not present (a slim
-    install); it IS present in the ralphd job image, which is where this table
-    is maintained.
+    Pinned to a checked-in copy of that pi-ai release's bundled provider data
+    (`tests/data/amazon-bedrock-<version>.json`) rather than whatever pi-ai
+    happens to be installed locally via `find_source()`'s autodetection: the
+    sandbox's local pi-ai install and the mirror a refresh actually used are
+    two different things (task 020 refreshed from an npm-packed pi-ai 0.85.1
+    while this container's own pi-ai install stayed at 0.84.1), so coupling
+    this assertion to whatever the ambient environment happens to have
+    installed made it pass or fail on an accident of the sandbox image rather
+    than on whether the shipped table is genuinely what the tool produces
+    from its documented source.
     """
     tool = _tool()
-    try:
-        source = tool.find_source()
-    except SystemExit:
-        pytest.skip("pi-ai bundled provider data not available in this environment")
-    models = json.loads(source.read_text())[tool.API_KEY]
+    version_tag = aws.SOURCE_VERSION.rsplit("@", 1)[-1]
+    fixture = REPO / "tests" / "data" / f"amazon-bedrock-{version_tag}.json"
+    assert fixture.is_file(), f"no checked-in mirror for {aws.SOURCE_VERSION}: {fixture}"
+    models = json.loads(fixture.read_text())[tool.API_KEY]
     rendered = tool.render_rates(models)
     shipped = tool.generated_region(Path(inspect.getfile(aws)).read_text())
     assert rendered == shipped, (
         "the shipped rate table no longer matches its source; "
         f"rerun {aws.REFRESH_CMD}"
     )
-    assert tool.source_version(source) == aws.SOURCE_VERSION
 
 
 def test_the_refresh_tool_drops_zero_cache_rates_and_wraps_long_lines():

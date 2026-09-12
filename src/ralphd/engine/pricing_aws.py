@@ -78,7 +78,7 @@ TABLE_NAME = "builtin-aws-bedrock"
 
 # Machine-readable, ISO-8601, and parsed by `as_of_date()` -- a missing or
 # malformed value is a hard error, not a shrug (tests/test_pricing_aws.py).
-AS_OF = "2026-08-20"
+AS_OF = "2026-09-12"
 # How long a mirror of somebody else's price list stays credible.
 STALE_AFTER_DAYS = 180
 
@@ -87,7 +87,7 @@ SOURCE = (
     "data/amazon-bedrock.json, bedrock-converse-stream cost blocks), mirroring "
     "AWS Bedrock on-demand list price"
 )
-SOURCE_VERSION = "@earendil-works/pi-ai@0.84.1"
+SOURCE_VERSION = "@earendil-works/pi-ai@0.85.1"
 SOURCE_URL = "https://aws.amazon.com/bedrock/pricing/"
 REFRESH_CMD = "python tools/refresh_bedrock_rates.py"
 
@@ -161,6 +161,8 @@ RATES: dict[str, dict[str, float]] = {
     "amazon.nova-pro-v1:0": {"input": 0.8, "output": 3.2, "cacheRead": 0.2},
     "anthropic.claude-fable-5":
         {"input": 10.0, "output": 50.0, "cacheRead": 1.0, "cacheWrite": 12.5},
+    "anthropic.claude-fable-5-1":
+        {"input": 10.0, "output": 50.0, "cacheRead": 0.25, "cacheWrite": 12.5},
     "anthropic.claude-haiku-4-5-20251001-v1:0":
         {"input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
     "anthropic.claude-opus-4-1-20250805-v1:0":
@@ -218,6 +220,8 @@ RATES: dict[str, dict[str, float]] = {
         {"input": 2.2, "output": 11.0, "cacheRead": 0.22, "cacheWrite": 2.75},
     "global.anthropic.claude-fable-5":
         {"input": 10.0, "output": 50.0, "cacheRead": 1.0, "cacheWrite": 12.5},
+    "global.anthropic.claude-fable-5-1":
+        {"input": 10.0, "output": 50.0, "cacheRead": 0.25, "cacheWrite": 12.5},
     "global.anthropic.claude-haiku-4-5-20251001-v1:0":
         {"input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
     "global.anthropic.claude-opus-4-5-20251101-v1:0":
@@ -236,6 +240,12 @@ RATES: dict[str, dict[str, float]] = {
         {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
     "global.anthropic.claude-sonnet-5":
         {"input": 2.0, "output": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5},
+    "global.openai.gpt-5.6-luna":
+        {"input": 0.2, "output": 1.2, "cacheRead": 0.02, "cacheWrite": 0.25},
+    "global.openai.gpt-5.6-sol":
+        {"input": 4.0, "output": 20.0, "cacheRead": 0.4, "cacheWrite": 5.0},
+    "global.openai.gpt-5.6-terra":
+        {"input": 2.0, "output": 12.0, "cacheRead": 0.2, "cacheWrite": 2.5},
     "google.gemma-3-27b-it": {"input": 0.12, "output": 0.2},
     "google.gemma-3-4b-it": {"input": 0.04, "output": 0.08},
     "jp.anthropic.claude-haiku-4-5-20251001-v1:0":
@@ -279,7 +289,7 @@ RATES: dict[str, dict[str, float]] = {
     "openai.gpt-5.5": {"input": 5.5, "output": 33.0, "cacheRead": 0.55},
     "openai.gpt-5.6-luna":
         {"input": 0.22, "output": 1.32, "cacheRead": 0.022, "cacheWrite": 0.275},
-    "openai.gpt-5.6-sol": {"input": 5.5, "output": 33.0, "cacheRead": 0.55, "cacheWrite": 6.88},
+    "openai.gpt-5.6-sol": {"input": 4.4, "output": 22.0, "cacheRead": 0.44, "cacheWrite": 5.5},
     "openai.gpt-5.6-terra": {"input": 2.2, "output": 13.2, "cacheRead": 0.22, "cacheWrite": 2.75},
     "openai.gpt-oss-120b": {"input": 0.15, "output": 0.6},
     "openai.gpt-oss-120b-1:0": {"input": 0.15, "output": 0.6},
@@ -296,6 +306,8 @@ RATES: dict[str, dict[str, float]] = {
     "qwen.qwen3-vl-235b-a22b": {"input": 0.3, "output": 1.5},
     "us.anthropic.claude-fable-5":
         {"input": 10.0, "output": 50.0, "cacheRead": 1.0, "cacheWrite": 12.5},
+    "us.anthropic.claude-fable-5-1":
+        {"input": 11.0, "output": 55.0, "cacheRead": 0.275, "cacheWrite": 13.75},
     "us.anthropic.claude-haiku-4-5-20251001-v1:0":
         {"input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
     "us.anthropic.claude-opus-4-1-20250805-v1:0":
@@ -322,6 +334,7 @@ RATES: dict[str, dict[str, float]] = {
     "writer.palmyra-x4-v1:0": {"input": 2.5, "output": 10.0},
     "writer.palmyra-x5-v1:0": {"input": 0.6, "output": 6.0},
     "xai.grok-4.3": {"input": 1.25, "output": 2.5, "cacheRead": 0.2},
+    "xai.grok-4.6": {"input": 2.2, "output": 6.6, "cacheRead": 0.55},
     "zai.glm-4.7": {"input": 0.6, "output": 2.2},
     "zai.glm-4.7-flash": {"input": 0.07, "output": 0.4},
     "zai.glm-5": {"input": 1.0, "output": 3.2},
