@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .. import __version__
 from . import contract_enforcement
 from . import contracts
 from . import findings
@@ -192,6 +193,36 @@ CONTRACT_REASK_FINAL_TEXT_MAX_CHARS = 4000
 # available` refuses unconditionally and the run falls through to the
 # ordinary replan/pause edges, exactly as a superset repeat already does.
 CURE_PASS_CEILING = 3
+
+# Task 017 (PRD requirement E.3, #190/#191): the literal `_check_workspace_
+# version_drift` scrapes out of the WORKSPACE's own `src/ralphd/__init__.py`
+# -- deliberately the same regex shape `tests/test_packaging_metadata.py`
+# already pins against the ENGINE's own copy of this same file, never a
+# second format. Matched as plain text, never imported: the workspace is
+# the source tree a self-dev run is actively editing, so it may be broken,
+# mid-edit, or simply on a different version than the engine that is
+# running it -- none of that may ever be allowed to affect whether the
+# engine itself can boot.
+_WORKSPACE_VERSION_RE = re.compile(
+    r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+
+def _read_workspace_version(workspace: Path) -> str | None:
+    """The workspace's own recorded `__version__` (task 017, requirement
+    E.3), read straight off `src/ralphd/__init__.py` as text. `None` --
+    never raised -- when the file is missing or does not match the literal
+    this engine's own copy uses: a pre-this-literal workspace, one mid-edit,
+    or simply not a ralphd checkout at all. `None` is treated as "nothing to
+    compare", not as a mismatch -- there is no workspace version named to
+    alert on.
+    """
+    marker = workspace / "src" / "ralphd" / "__init__.py"
+    try:
+        text = marker.read_text()
+    except OSError:
+        return None
+    match = _WORKSPACE_VERSION_RE.search(text)
+    return match.group(1) if match else None
 
 
 class LoopSupervisor:
@@ -491,6 +522,40 @@ class LoopSupervisor:
         self.notifier: Callable[[str], None] | None = (
             self._notify_via_configured_notifier if cfg.notifier_url
             else None)
+        # Task 017 (PRD requirement E.3, #190/#191): fires once per process
+        # start -- here, not inside `_run_job_core` -- so a resumed episode
+        # never re-emits it every iteration, and so it fires even for a run
+        # that never reaches `_run_job_core` at all (e.g. one already
+        # recorded `finishing`, see `run_job()`). Reads `self.notifier`
+        # (just assigned above), so this must stay the LAST statement in
+        # this constructor.
+        self._check_workspace_version_drift()
+
+    def _check_workspace_version_drift(self) -> None:
+        """PRD requirement E.3 (#190/#191, task 017): a workspace whose own
+        recorded `__version__` differs from the running engine's compiles
+        exactly one startup event (`workspace_version_mismatch`, naming
+        both versions) and alerts through the SAME `self.notifier` path an
+        `operator_escalation` pause already uses (E.5, D.1) -- never a
+        second notification channel, never a second HTTP client.
+
+        A workspace with no readable version literal (`_read_workspace_
+        version` returns `None` -- a pre-this-literal checkout, one
+        mid-edit, or a workspace that predates this feature) is silent:
+        there is nothing named to compare, so nothing is alerted on. An
+        exact version match is silent too -- this is a DRIFT alert, not a
+        version-announcement event.
+        """
+        workspace_version = _read_workspace_version(self.workspace)
+        if workspace_version is None or workspace_version == __version__:
+            return
+        self.run.emit("workspace_version_mismatch",
+                      workspaceVersion=workspace_version,
+                      engineVersion=__version__)
+        if self.notifier is not None:
+            self.notifier(
+                f"workspace version ({workspace_version}) differs from the "
+                f"running engine version ({__version__})")
 
     def _notify_via_configured_notifier(self, text: str) -> None:
         """Task 007 (PRD requirement D.1, finding 5): the production

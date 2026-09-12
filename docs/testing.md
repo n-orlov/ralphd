@@ -1065,6 +1065,14 @@ widened" notes above). This task's own new module,
 engine/`ralphctl` process spawned) and the remaining +1 module, landing
 at 5711/4110/361.
 
+**5718 (smoke 4117, modules 361->362)** by v0.20.1 task 017 (requirement
+E.3, #190/#191). This task's own new module,
+`tests/test_workspace_version_drift.py`, adds +7 fast / +7 smoke nodes
+(in-process, `make_supervisor`-built, no real engine/`ralphctl` process
+spawned) and +1 module -- no pre-existing drift found at task start.
+Re-measured directly with `.venv/bin/python -m pytest -m <fast|smoke>
+--collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest
