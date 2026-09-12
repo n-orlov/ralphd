@@ -10,7 +10,27 @@ trusting nothing the worker wrote about its own work.
 2. Read tasks.json for the claimed state.
 3. For EVERY requirement in the PRD (not every task — requirements may have been
    dropped or misplanned): independently verify it holds. Run the tests. Run the
-   code. Check the files. Reproduce claimed behavior.
+   code. Check the files. Reproduce claimed behavior. For every **behavioural**
+   requirement (one that describes an observable effect — a value, an event, a
+   status change, a file written — rather than a static property of the code),
+   build a traceability table with one row per requirement and, in that row:
+   - state the requirement as an **observable**: the concrete thing you can
+     check (the field, event, exit code or file the requirement predicts),
+     not a paraphrase of the requirement's prose;
+   - write the **smallest test that would fail if the behaviour were absent**
+     — a new node if none already probes it, or, if an existing node already
+     does, name it and show that it actually exercises the observable rather
+     than merely mentioning it;
+   - **run that test** and **record its result** in the row: node id,
+     command, pass/fail, and enough of the output to check the claim.
+   A requirement you discharge by inspection alone — reading code, docs or a
+   report, with no test that would fail if the behaviour were absent — is not
+   exempt from the table: put it in a row anyway and **label that row
+   `inspection-only`**, naming concretely why no probe was written or run (a
+   static property with no runtime observable, a doc-only requirement, etc.).
+   An inspection-only discharge left unlabelled, or labelled for a requirement
+   that is in fact behavioural, is itself a blocking finding, not a residual —
+   inspection is not evidence for anything a probe could have checked instead.
 4. Check the workspace for damage: broken files, leftover debris, secrets in
    committed files.
 5. If this prompt includes a "Criteria edited after a validation failure"
