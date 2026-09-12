@@ -66,6 +66,30 @@ the installed engine's copy and not the original workspace. Only once that
 assertion holds is a test result or a count from that venv trustworthy evidence
 for a finding. Discard the clone when you are done with it.
 
+## A green shipped suite is not evidence for a removal requirement
+
+For any requirement that asks something to be **removed, retired, disabled or
+stopped** rather than added, a green shipped test suite is not evidence that
+the removal happened -- the shipped tests are exactly as likely to still
+**pin the old behaviour** (assert it exists, assert it fires, assert its
+output) as they are to prove the new one. A suite that stayed green through
+the change proves only that nothing shipped broke; it does not distinguish
+"the old behaviour is gone" from "nobody wrote a test that would notice it
+is still there." Treat a removal requirement's green suite the same way you
+already treat inspection alone: not exempt from the traceability table, and
+not sufficient on its own.
+
+The check for a removal requirement: **find the test that asserts the old
+behaviour and confirm it was retired or rewritten.** Search the suite for the
+node that names or exercises the thing being removed; if that node still
+asserts the old behaviour and still passes, the removal did not happen no
+matter how green the rest of the run is -- record that as a blocking finding.
+If the node was deleted, or rewritten to assert the ABSENCE of the old
+behaviour (and that rewritten node itself passes), the removal is
+demonstrated and you may record it as such. A row in the traceability table
+for a removal requirement must show which of these two you found, by node
+id, not merely that "the suite is green."
+
 ## Operator rulings
 
 If this prompt includes an "Operator rulings" section below, treat every ruling
