@@ -183,3 +183,68 @@ def test_plan_review_md_claims_no_amendment_authority():
     `petition_adjudications`/`replacement_criteria` field."""
     assert "replacement_criteria" not in PLAN_REVIEW_MD
     assert "task_id" not in PLAN_REVIEW_MD
+
+
+# ---------------------------------------------------------------------------
+# Task 027 (requirement G.4, #inspection-is-not-evidence): the three rules
+# tasks 024-026 added to review.md/verdict_gate.md -- probe-per-behavioural-
+# requirement, the disposable-clone measurement protocol (both judging
+# prompts), and the removal-requirement check. Each node below names the
+# concrete phrase the underlying commit landed, not a paraphrase, so a
+# future edit that waters down or removes any of the three trips here.
+# ---------------------------------------------------------------------------
+
+def _normalize_ws(text: str) -> str:
+    return " ".join(text.split())
+
+
+REVIEW_MD_NORM = _normalize_ws(REVIEW_MD)
+VERDICT_GATE_MD_NORM = _normalize_ws(VERDICT_GATE_MD)
+
+
+def test_review_md_requires_a_traceability_table_row_per_behavioural_requirement():
+    assert "For every **behavioural**" in REVIEW_MD_NORM
+    assert "build a traceability table with one row per requirement" in REVIEW_MD_NORM
+    assert (
+        "the **smallest test that would fail if the behaviour were absent**"
+        in REVIEW_MD_NORM
+    )
+    assert "**run that test** and **record its result**" in REVIEW_MD_NORM
+
+
+def test_review_md_labels_an_inspection_only_discharge_and_blocks_the_unlabelled_case():
+    assert "label that row `inspection-only`" in REVIEW_MD_NORM
+    assert (
+        "An inspection-only discharge left unlabelled, or labelled for a "
+        "requirement that is in fact behavioural, is itself a blocking "
+        "finding, not a residual" in REVIEW_MD_NORM
+    )
+    assert "inspection is not evidence for anything a probe could have checked instead" in REVIEW_MD_NORM
+
+
+def test_review_md_and_verdict_gate_md_both_describe_the_disposable_clone_protocol():
+    for name, text, norm in (
+        ("review.md", REVIEW_MD, REVIEW_MD_NORM),
+        ("verdict_gate.md", VERDICT_GATE_MD, VERDICT_GATE_MD_NORM),
+    ):
+        assert "## Measuring in a disposable clone" in text, name
+        assert "git clone --no-hardlinks" in norm, name
+        assert "pip install -e .` the clone" in norm, name
+        assert "ralphd.__file__" in norm, name
+        assert (
+            "resolves inside the temp clone's own tree, not the installed "
+            "engine's copy and not the original workspace" in norm
+        ), name
+
+
+def test_review_md_states_a_green_suite_is_not_evidence_for_a_removal_requirement():
+    assert (
+        "## A green shipped suite is not evidence for a removal requirement"
+        in REVIEW_MD
+    )
+    assert "the shipped tests are exactly as likely to still **pin the old behaviour**" in REVIEW_MD_NORM
+    assert (
+        "**find the test that asserts the old behaviour and confirm it was "
+        "retired or rewritten.**" in REVIEW_MD_NORM
+    )
+    assert "A row in the traceability table" in REVIEW_MD
