@@ -195,11 +195,13 @@ def test_resolve_top_level_headers_shorthand_reaches_every_provider(tmp_path):
 
 
 def test_resolve_per_provider_headers_win_over_top_level_shorthand(tmp_path):
-    """Also the requirement D.4 (task 013, v0.20.1) evidence for "per-provider
-    `headers:` still wins over the profile-wide shorthand" -- this test
-    predates that wave (task 046, `1efab8e`) and its behaviour is
-    deliberately UNCHANGED by it; D.4 only asked that the rule still hold,
-    not that it be re-implemented.
+    """The `resolve_profile`-level half of requirement D.4's per-provider
+    override rule (task 013, v0.20.1); this test predates that wave (task
+    046, `1efab8e`) and its behaviour is deliberately UNCHANGED by it. The
+    run-level half -- the same rule in the container's own
+    `pi/models.json` after a real `start` -- is
+    `test_llm_header_visibility.py::
+    test_per_provider_header_beats_profile_wide_shorthand_through_start`.
     """
     reg = tmp_path / "reg"
     (reg / "llm-profiles").mkdir(parents=True)
@@ -448,10 +450,12 @@ def test_llm_header_flag_wins_over_template_wins_over_profile(ctl):
     """Same fixture as above, but with an explicit `--llm-header` flag
     too: flag > template > profile (task 045, #177).
 
-    Also the requirement D.4 (task 013, v0.20.1) evidence for "flag wins
-    over template wins over profile for one header name" -- this test
-    predates that wave (task 045, `01998a3`) and its behaviour is
-    deliberately UNCHANGED by it.
+    Requirement D.4 (task 013, v0.20.1) is pinned layer by layer instead by
+    `test_llm_header_visibility.py::
+    test_header_flag_beats_template_beats_profile_step_by_step`: this node
+    launches with all three layers at once, so it cannot by itself tell a
+    reversed template/profile order apart (the flag masks both). Kept as
+    the flag-wins node it always was; behaviour deliberately UNCHANGED.
     """
     ctl.write_profile("acme", {
         "model": "acme/big", "env": {},

@@ -308,6 +308,96 @@ def test_profile_ref_derived_header_masks_on_status_hub_and_job_yaml_with_no_fla
     assert resolved_secret not in job_yaml_text
 
 
+# --------------------------------------------------------- task 013, D.4
+def test_header_flag_beats_template_beats_profile_step_by_step(ctl):
+    """Task 013 (#14, PRD requirement D.4): the FULL precedence chain for
+    ONE header name (`X-Source`), measured layer by layer so a reversed
+    template/profile order cannot hide behind the flag's own win.
+
+    Three real `start` launches against the same profile:
+
+    1. profile only (no template, no flag)      -> `profile`
+    2. profile + template (still no flag)       -> `template`  (tpl > prof)
+    3. profile + template + `--llm-header`      -> `flag`      (flag > tpl)
+
+    Step 2 is what the previous take was missing INSIDE a single named
+    node: launching once with all three layers present and asserting only
+    the final `flag` value passes just as happily on a tree where the
+    profile beats the template, because the flag masks both. Each step
+    below asserts the container's own `pi/models.json` (what is actually
+    effective) AND the `llm-wiring.json` display/persistence map (task
+    010's addition), so a divergence between the two is caught too.
+    """
+    ctl.write_profile("acme-prec", {
+        "model": "acme/big", "env": {},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com",
+                                      "headers": {"X-Source": "profile"}}}},
+    })
+    tdir = ctl.registry / "templates" / "prectpl"
+    tdir.mkdir(parents=True)
+    (tdir / "job.yaml").write_text('llm_header:\n  - "X-Source: template"\n')
+
+    def launch(run_id: str, *extra: str) -> tuple[str, dict]:
+        res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme-prec",
+                      "--run-id", run_id, *extra)
+        assert res.returncode == 0, res.stderr
+        cdir = ctl.config_dir(run_id)
+        models = json.loads(cdir.joinpath("pi", "models.json").read_text())
+        wiring = json.loads(cdir.joinpath("llm-wiring.json").read_text())
+        return models["providers"]["acme"]["headers"]["X-Source"], wiring
+
+    # 1. the profile's own header is the only layer present
+    effective, wiring = launch("tst-prec-profile")
+    assert effective == "profile"
+    assert wiring["headers"]["X-Source"] == "profile"
+
+    # 2. the template's default header OUTRANKS the profile's own value
+    effective, wiring = launch("tst-prec-template", "--template", "prectpl")
+    assert effective == "template", "a template header must beat the profile's"
+    assert wiring["headers"]["X-Source"] == "template"
+
+    # 3. an explicit flag OUTRANKS the template's default (and the profile)
+    effective, wiring = launch("tst-prec-flag", "--template", "prectpl",
+                               "--llm-header", "X-Source=flag")
+    assert effective == "flag", "an explicit --llm-header must beat the template's"
+    assert wiring["headers"]["X-Source"] == "flag"
+
+
+def test_per_provider_header_beats_profile_wide_shorthand_through_start(ctl):
+    """Task 013 (#14, PRD requirement D.4), second clause: a provider's own
+    `headers:` entry still wins over the profile-wide `headers:` shorthand
+    FOR THAT PROVIDER, while the shorthand still reaches the same provider
+    for names it does not override and reaches a sibling provider intact.
+
+    `test_cli_llm_profiles.py::test_resolve_per_provider_headers_win_over_
+    top_level_shorthand` pins the same rule at the `resolve_profile` unit
+    boundary; this node pins it where it matters to a run -- in the
+    container's own `pi/models.json`, written by a real `start`.
+    """
+    ctl.write_profile("acme-perprov", {
+        "model": "acme/big", "env": {},
+        "headers": {"X-Jira-ID": "PUBLIC-123", "X-Common": "shared"},
+        "pi": {"providers": {
+            "acme-a": {"baseUrl": "https://a.example.com",
+                       "headers": {"X-Jira-ID": "PUBLIC-123-per-provider"}},
+            "acme-b": {"baseUrl": "https://b.example.com"},
+        }},
+    })
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme-perprov",
+                  "--run-id", "tst-perprov-hdr")
+    assert res.returncode == 0, res.stderr
+    models = json.loads(ctl.config_dir("tst-perprov-hdr")
+                        .joinpath("pi", "models.json").read_text())
+    # the overriding provider keeps its OWN value for the shared name...
+    assert models["providers"]["acme-a"]["headers"]["X-Jira-ID"] == \
+        "PUBLIC-123-per-provider"
+    # ...and still receives the shorthand's other header
+    assert models["providers"]["acme-a"]["headers"]["X-Common"] == "shared"
+    # the sibling provider, which overrides nothing, gets the shorthand as is
+    assert models["providers"]["acme-b"]["headers"] == {
+        "X-Jira-ID": "PUBLIC-123", "X-Common": "shared"}
+
+
 # ------------------------------------------------------- surface 1: llm show
 def test_llm_show_profile_prints_header_name_and_masks_ref_derived_value(ctl):
     ctl.write_profile("acme-hdr", {
