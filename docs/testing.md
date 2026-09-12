@@ -962,6 +962,18 @@ commit-then-pause, a genuinely fresh-process `LoopSupervisor` resuming into
 `approaches/01` archive. Re-measured directly with `.venv/bin/python -m
 pytest -m <fast|smoke> --collect-only -q`.
 
+**5684 (smoke 4083, modules unchanged at 355)** by v0.20.1 task 003
+(requirement A.3): +1 fast / +1 smoke node in the same module,
+`tests/test_approach_start_head_persistence.py` --
+`test_worker_reentry_after_an_operator_steer_stays_on_approach_one_and_pauses_again`,
+the literal end-to-end proof of task 001's fix over the OTHER re-entry path:
+a real `_step_worker()` commit-then-pause, an operator steer plus a real
+`resume()`, worker re-entry into `steer` (settled in one `_step_generic_hat`
+pass) and back into `worker` over the same approach, then a renewed
+stagnation pause -- still on approach 1 with no `approaches/01` archive.
+Re-measured directly with `.venv/bin/python -m pytest -m <fast|smoke>
+--collect-only -q`.
+
 ## When a tier goes over budget
 
 The failure names the lane, the measurement and the ceiling. Three honest

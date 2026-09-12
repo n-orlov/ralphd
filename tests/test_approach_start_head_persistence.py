@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from ralphd.engine import loop as loop_mod
+from ralphd.engine import transitions
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
@@ -268,6 +269,146 @@ def test_a_fresh_process_resume_after_a_commit_and_stagnation_pause_stays_on_app
     assert sup2._approach == 1
     assert not (root / "approaches" / "01").exists()
     assert not sup2.run.composite_prd_file.exists()
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 2
+    assert all(e["reason"] == "stagnation" for e in escalations)
+    assert all(e["approach"] == 1 for e in escalations)
+    # both escalations saw the approach as progressed (the commit witness),
+    # never as the genuinely-silent case the A.4 replan node still covers.
+    assert all(e["approachProgressed"] is True for e in escalations)
+
+
+# ===========================================================================
+# Requirement A.3: the same 'Cured when:' shape as A.2 above, but the
+# fresh-process re-entry is replaced by the OTHER re-entry the PRD names --
+# an operator steer landing while the run is paused, then WORKER RE-ENTRY
+# over the very same approach (worker -> steer -> steer_settled -> worker),
+# all inside the SAME `LoopSupervisor`/process. Commit -> stagnation pause
+# -> operator steer -> worker re-entry -> renewed stagnation -- still on
+# approach 1, pause/escalation emitted both times, no `approaches/NN`
+# archive ever created.
+# ===========================================================================
+
+
+class _CommitOnceThenSteerAwareQuietRunner:
+    """Same commit-once-then-quiet shape as `_CommitOnceThenQuietRunner`
+    above, but also answers the STEER hat's own iteration -- dispatched
+    through the one shared `_step_generic_hat` call site, keyed off the
+    phase `status.json` already records before `self.runner.run` is ever
+    invoked (exactly what `tests/conftest.py`'s `ScriptedRunner` reads,
+    reproduced narrowly here rather than imported so this module stays a
+    self-contained probe of the A.1 primitive). Only the WORKER phase's
+    call count drives the one real commit -- a steer pass never counts as
+    a worker iteration and never touches the workspace -- so the SAME
+    instance can carry a supervisor through episode 1 (commit, then
+    quiet), the steer round trip, and episode 2 (genuinely quiet, no
+    further commit) without ever being swapped out.
+    """
+
+    def __init__(self, sup: LoopSupervisor, workspace: Path) -> None:
+        self.sup = sup
+        self.workspace = workspace
+        self.worker_calls = 0
+
+    def interrupt(self) -> bool:
+        return False
+
+    async def run(self, prompt, transcript, **kw) -> IterationResult:
+        phase = self.sup.run.read_status().get("phase")
+        if phase == "steer":
+            return _result(json.dumps({"settled": True}))
+        self.worker_calls += 1
+        if self.worker_calls == 1:
+            (self.workspace / "progress.txt").write_text("real work")
+            _git(self.workspace, "add", "-A")
+            _git(self.workspace, "commit", "-q", "-m", "real progress")
+        return _result(
+            f"iteration {self.worker_calls}: nothing further to report")
+
+
+def test_worker_reentry_after_an_operator_steer_stays_on_approach_one_and_pauses_again(
+        tmp_path):
+    """Requirement A.3, the literal PRD `Cured when:` sequence: commit ->
+    stagnation pause -> operator steer -> worker re-entry -> renewed
+    stagnation, still on approach 1, pause/escalation emitted both times,
+    no `approaches/NN` archive ever created.
+
+    Pre-task-001 (`_step_worker` re-deriving `approach_start_head` fresh
+    from `self._workspace_head_sha()` at its own method entry instead of
+    reading `self._approach_start_head(approach)` back) this fails at the
+    THIRD `_step_worker()` call below -- the worker RE-ENTRY that follows
+    the steer round trip: that call's own fresh local re-derives the
+    baseline from the CURRENT head, which already carries the earlier
+    commit -- so the renewed, genuinely quiet stagnation round's commit
+    witness reads as 'unchanged', a progressing-but-not-last approach is
+    wrongly treated as fully silent:
+    `('advance', 'replan', 'stagnation_exhausted')`, `approaches/01`
+    archived, `sup._approach` advanced past 1.
+    """
+    workspace = tmp_path / "workspace"
+    root = tmp_path / "run"
+    _init_git_workspace(workspace)
+
+    # One `LoopSupervisor` for the whole sequence -- the steer round trip
+    # below is an IN-PROCESS re-entry into `worker`, not a fresh process
+    # (that is task 002's own probe); this task's own subject is the
+    # operator-steer path through the SAME `_step_worker`/`_step_generic_
+    # hat` dispatch a real running process would take.
+    sup = _make_worker_supervisor(root, workspace, None)
+    sup.runner = _CommitOnceThenSteerAwareQuietRunner(sup, workspace)  # type: ignore[assignment]
+
+    # Episode 1: one commit, then three genuinely quiet iterations trip the
+    # three-strike counter -- but the commit witness means this approach
+    # (1 of 3, not the last) pauses instead of replanning.
+    outcome1 = asyncio.run(sup._step_worker())
+
+    assert outcome1 == ("advance", "paused", "stagnation_last_approach")
+    assert sup._approach == 1
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+
+    # The operator steers while the run sits paused, awaiting the
+    # stagnation ruling -- `RunDir.add_steering` is the real primitive
+    # `ralphctl steer` / `POST /interrupt` uses.
+    steer_name = sup.run.add_steering(
+        "investigate the stagnation before continuing", "opSteer")
+    assert sup.run.pending_steering() == [root / "steering" / steer_name]
+    # The operator also resumes (`ralphctl resume`/`POST /resume`) -- the
+    # engine's own `pause()` cleared `self._pause` on the escalation above,
+    # and `_gate()` (the pause/resume seam every iteration boundary passes
+    # through) blocks on that same event; a real steer round trip is
+    # always preceded by a real resume, never a bare `_step_worker()` call
+    # against a still-paused loop.
+    sup.resume()
+
+    # Worker re-entry (still the SAME process/supervisor): unsettled
+    # steering is absolute top priority in `_step_worker`'s own dispatch
+    # loop, above even the stagnation-pause ruling -- it routes straight to
+    # `steer` rather than resuming `worker`'s self-loop.
+    reentry_outcome = asyncio.run(sup._step_worker())
+    assert reentry_outcome == ("advance", "steer", "steering_pending")
+
+    # The steer hat settles the one pending message in a single iteration,
+    # through the real, shared `_step_generic_hat` call site -- landing
+    # back in `worker` over the exact same approach.
+    steer_edges = transitions.successors("steer", vigilant=False)
+    steer_outcome = asyncio.run(sup._step_generic_hat("steer", steer_edges))
+    assert steer_outcome == ("advance", "worker", "steer_settled")
+    assert sup.run.pending_steering() == []
+
+    # Episode 2, the literal A.3 probe: WORKER RE-ENTRY after the steer
+    # round trip -- a fresh call into `_step_worker()`, over the same
+    # approach, with nothing further to commit. Post-fix this reads the
+    # baseline recorded during episode 1 back off disk; pre-fix it
+    # re-derives it from the current head (which already carries episode
+    # 1's commit), collapsing the commit witness.
+    outcome2 = asyncio.run(sup._step_worker())
+
+    assert outcome2 == ("advance", "paused", "stagnation_last_approach")
+    assert sup._approach == 1
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 2
