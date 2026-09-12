@@ -19,6 +19,27 @@ This module drives `insert_cure_tasks` for real (same harness `tests/
 test_cure_freeze_ordering.py` uses) and then feeds the resulting
 `tasks.json` list straight into `scheduler.select_next_task` -- asserting
 on the SCHEDULER's own choice, never on list order.
+
+Red/green provenance of `test_E4_cure_precedes_high_priority_freeze_in_
+schedule`, so the pre-fix result travels with the test and not only with
+a commit message. Measured in a detached `git worktree` at `e1ae9d2`
+(the parent of the fix commit `6cb592d`) with its own venv resolving
+`/tmp/w007/src/ralphd/__init__.py`, THIS version of the file copied in:
+
+  - pre-fix: FAILED at the scheduler assertion (the first assertion
+    after `insert_cure_tasks` returns its inserted id) --
+    `AssertionError: assert '020' == 'cure-01-01'`, i.e.
+    `select_next_task` picked the `priority: 10` pending named freeze
+    `020` over the inserted cure. 1 failed.
+  - post-fix (`insert_cure_tasks` as shipped): PASSED.
+
+The pre-fix failure quoted in `6cb592d`'s own message was measured
+against the file as THAT commit shipped it, whose `dependsOn` mechanism
+assertion ran BEFORE the scheduler assertion; that ordering failed
+earlier, at `assert [] == ['cure-01-01']`, and never reached the
+scheduler at all. `7bc0b6c` reordered the two assertions for exactly
+that reason. Keep the scheduler assertion first: it is the claim the
+gate finding is about.
 """
 
 from __future__ import annotations
