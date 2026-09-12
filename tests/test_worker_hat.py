@@ -85,6 +85,7 @@ from pathlib import Path
 
 import pytest
 
+from ralphd.engine import contracts
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -884,6 +885,56 @@ def _commit_only(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
     return _fv_ok("made a commit but tasks.json is untouched")
 
 
+def _commit_only_no_verdict(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
+    """Witness (b) exactly like `_commit_only` above -- a real commit lands
+    in the workspace, tasks.json is untouched -- but reporting it the way
+    the worker contract actually requires: the final non-blank line is the
+    literal `{"verdict": "no_verdict"}` object ("I did not finish this
+    task this iteration"), the ONE shape `_step_worker` reads as the
+    `no_verdict` contract value.
+
+    Task 004 (v0.20.1), second validation finding: `_commit_only`'s prose
+    final line (`"made a commit but tasks.json is untouched"`) is not JSON
+    at all, so `_step_worker`'s `json.loads` fails, `payload` becomes
+    `None` and `verdict` is `None` -- which never even enters the
+    `if verdict is not None:` verdict-dispatch block, let alone reaches
+    its `# verdict == "no_verdict"` fall-through. A test that means to
+    drive `no_verdict` iterations has to send this payload, and
+    `_worker_payloads_seen` below is how it proves the engine really
+    parsed it rather than the test merely intending it.
+    """
+    n = sup.iterations_used
+    (sup.workspace / f"f{n}.txt").write_text("x")
+    _git(sup.workspace, "add", "-A")
+    _git(sup.workspace, "commit", "-q", "-m", f"progress at iteration {n}")
+    return _fv_ok(json.dumps({"verdict": "no_verdict"}))
+
+
+def _worker_payloads_seen(monkeypatch) -> list[tuple]:
+    """Task 004 (v0.20.1): the engine's OWN view of each worker report,
+    recorded where `_step_worker` itself reads it -- `contracts.validate_
+    payload("worker", payload)`, called inside the `if verdict is not
+    None:` verdict-dispatch block with the payload the engine parsed from
+    the iteration's final non-blank line. Returns the list the spy appends
+    `(payload, schema_errors)` to, so a test can assert what verdict value
+    the ENGINE saw (and that the worker schema accepted it, i.e. no
+    contract re-ask ladder was entered) instead of asserting only what its
+    own fake agent meant to send. A prose reply never reaches this call at
+    all (`verdict is None` skips the whole block), so an empty list is
+    itself the signal that no worker report was read as a verdict."""
+    seen: list[tuple] = []
+    real_validate = contracts.validate_payload
+
+    def spy(hat, payload):
+        errors = real_validate(hat, payload)
+        if hat == "worker":
+            seen.append((payload, errors))
+        return errors
+
+    monkeypatch.setattr(contracts, "validate_payload", spy)
+    return seen
+
+
 def _tool_heavy(count: int):
     """Witness (d): `count` `tool_execution_start` events land in THIS
     iteration's own transcript (the file `_run_iteration_once` already
@@ -1114,7 +1165,7 @@ def test_env_var_overrides_the_config_knob(tmp_path, monkeypatch):
 
 
 def test_three_consecutive_commit_only_iterations_never_force_verify_dispatch(
-        tmp_path):
+        tmp_path, monkeypatch):
     """Task 004 (v0.20.1 PRD requirement B.2, gate finding VG-002): the
     replacement for the three retired v0.19 B.2 hand-off nodes this module
     used to pin --
@@ -1123,8 +1174,10 @@ def test_three_consecutive_commit_only_iterations_never_force_verify_dispatch(
     `test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run` (see
     `docs/test-suite-audit.md` "Subsumed" for the mapping).
     A vigilant task carrying `estimatedIterations: 3` runs exactly three
-    consecutive worker iterations, each landing a real commit and nothing
-    else, never a completion signal -- the exact shape that used to force
+    consecutive worker iterations, each landing a real commit and
+    reporting the worker contract's `{"verdict": "no_verdict"}` ("still
+    working") and nothing else, never a completion signal -- the exact
+    shape that used to force
     `awaiting-validation` and dispatch `verify` on the worker's own behalf
     the instant the third one landed (`LoopSupervisor._record_task_
     absorption_streak`, deleted in this same commit). Now nothing does:
@@ -1142,6 +1195,7 @@ def test_three_consecutive_commit_only_iterations_never_force_verify_dispatch(
     root = tmp_path / "run"
     workspace = tmp_path / "workspace"
     _init_git_workspace(workspace)
+    seen = _worker_payloads_seen(monkeypatch)
 
     def _plan_with_estimate(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
         _write_proposal(sup, [_fv_task(estimatedIterations=3)])
@@ -1149,8 +1203,17 @@ def test_three_consecutive_commit_only_iterations_never_force_verify_dispatch(
 
     sup, outcome = _spw010_run(root, workspace, {
         "planning": _plan_with_estimate,
-        "worker": _steps(_commit_only, _commit_only, _commit_only),
+        "worker": _steps(*([_commit_only_no_verdict] * 3)),
     }, iterations=4)
+    # the three iterations really were `no_verdict` CONTRACT iterations,
+    # read from where the engine itself parses each worker report (not
+    # from what the fake agent meant to send): a prose final line leaves
+    # `payload = None` / `verdict = None` and never enters the verdict-
+    # dispatch block at all, which is v0.20.1 task 004's second
+    # validation finding. Empty `schema_errors` on each one also says no
+    # contract re-ask ladder was entered for any of them.
+    assert [p.get("verdict") for p, _errs in seen] == ["no_verdict"] * 3, seen
+    assert [errs for _p, errs in seen] == [[], [], []], seen
     # the scenario parameter is real, not merely requested: the ingested
     # record on disk carries the estimate this docstring claims (a helper
     # that filtered it out left the default 1 here, silently testing a
