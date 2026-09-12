@@ -113,6 +113,33 @@ def test_the_run_that_motivated_the_issue_now_derives_real_money():
     assert derived == pytest.approx(round(expected, 6))
 
 
+def test_a_hand_computed_bill_matches_the_refreshed_gpt_5_6_sol_rate():
+    """Task 020's pi-ai 0.85.1 refresh moved `openai.gpt-5.6-sol`'s input rate
+    from 5.5 to 4.4 USD/Mtok (output 22.0, cacheRead 0.44, cacheWrite 5.5, all
+    read off the shipped table itself below -- this pins the refreshed number,
+    not the pre-refresh one).
+
+    Hand computation for 1,000,000 input + 500,000 output + 200,000 cacheRead
+    + 100,000 cacheWrite tokens, at $/Mtok input=4.4 output=22.0 cacheRead=0.44
+    cacheWrite=5.5:
+
+        input:      1,000,000 * 4.4  / 1_000_000 = 4.4
+        output:       500,000 * 22.0 / 1_000_000 = 11.0
+        cacheRead:    200,000 * 0.44 / 1_000_000 = 0.088
+        cacheWrite:   100,000 * 5.5  / 1_000_000 = 0.55
+        total = 4.4 + 11.0 + 0.088 + 0.55 = 16.038
+    """
+    rate = aws.rate_for("openai.gpt-5.6-sol")
+    assert rate is not None
+    assert (rate.input, rate.output, rate.cache_read, rate.cache_write) == (
+        4.4, 22.0, 0.44, 5.5,
+    )
+    usage = {"input": 1_000_000, "output": 500_000,
+             "cacheRead": 200_000, "cacheWrite": 100_000}
+    derived = aws.pricing_map().derive(usage, "openai.gpt-5.6-sol")
+    assert derived == pytest.approx(16.038)
+
+
 # --------------------------------------------------------------------------
 # regions are not collapsed, unknown ids are not guessed
 # --------------------------------------------------------------------------
