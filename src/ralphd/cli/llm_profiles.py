@@ -157,7 +157,8 @@ def expand_mount_host_path(spec: str) -> str:
 
 
 def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
-                    redact: bool = False) -> dict:
+                    redact: bool = False,
+                    header_ref_names: set[str] | None = None) -> dict:
     """Load and fully resolve a named profile.
 
     Returns ``{"description", "model", "fast_model", "price_strategy",
@@ -187,6 +188,19 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
     there wins; any other top-level header is still added). Resolves the
     same three reference forms as `env:`, and a header value that came from
     a reference is masked under `redact=True` exactly like a `pi:` field is.
+
+    `header_ref_names`, when given (task 010, requirement D.1), is a set
+    this call ADDS to (never clears) with every header NAME -- top-level
+    `headers:` shorthand or a provider's own `pi.providers.<p>.headers:`
+    entry -- whose CURRENT value came from a `${env:}`/`${file:}`/
+    `${cmd:}` reference rather than a literal in the YAML, over the
+    RESOLVED `pi:` fragment this call returns (so it names exactly the
+    headers `profile_effective_headers` on that same fragment would need
+    masked). The caller (`cli.main.cmd_start`/`cmd_resume`) folds this into
+    the same `--llm-header` ref-name set so a profile-provided header
+    renders `***` on `status`/the hub/`job.yaml` exactly like a
+    reference-derived flag value already does -- never a literal display of
+    a resolved secret.
     """
     doc = load_profile_doc(reg, name)
     price_strategy = doc.get("price_strategy")
@@ -245,6 +259,22 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
                     for hname in top_level_headers:
                         if hname not in existing and f"headers.{hname}" in header_ref_paths:
                             ref_paths.add(f"pi.providers.{pname}.headers.{hname}")
+        # Task 010 (D.1): every header NAME actually landing on a provider
+        # (top-level shorthand merged in above, or the provider's own
+        # `headers:` entry) whose value came from a reference -- named
+        # regardless of `redact`, so a caller building the SEPARATE
+        # wiring-file record (never masked at this layer; `MASK` is only
+        # ever substituted at the display readers) still knows which
+        # names to mark ref-derived there.
+        if header_ref_names is not None:
+            providers = pi_fragment.get("providers")
+            if isinstance(providers, dict):
+                for pname, pcfg in providers.items():
+                    if not isinstance(pcfg, dict):
+                        continue
+                    for hname in (pcfg.get("headers") or {}):
+                        if f"pi.providers.{pname}.headers.{hname}" in ref_paths:
+                            header_ref_names.add(hname)
         if redact:
             pi_fragment = _mask_ref_paths(pi_fragment, ref_paths, "pi")
 
@@ -411,6 +441,39 @@ def read_llm_wiring_headers(cdir: Path) -> dict[str, str]:
     ref_names = set(recorded)
     return {name: (MASK if name in ref_names else value)
             for name, value in headers.items()}
+
+
+def profile_effective_headers(pi_fragment: dict | None) -> dict[str, str]:
+    """The flat `name -> value` header map a resolved profile's `pi:`
+    fragment actually applies to at least one provider (task 010, #14,
+    requirement D.1) -- every provider's `headers:` map (already the
+    top-level `headers:` shorthand merged under the provider's own
+    same-named override, `resolve_profile`'s own job) folded into one
+    dict, a later provider's value for a name winning over an earlier
+    provider's.
+
+    Used with NO `--llm-header` flag at all: the flag/template path
+    already records itself into the wiring map via `resolve_header_specs`;
+    this is the same recording for a profile-only header so it is visible
+    on `status`/the hub/the redacted `job.yaml` too, not only effective in
+    the container's own `pi/models.json`.
+
+    A flat map cannot represent two providers disagreeing on the same
+    header NAME's value -- out of scope here (requirement D.4 is about a
+    provider's own header overriding the top-level shorthand, not one
+    provider's value against another's); this call is only ever fed a
+    single provider's or several *agreeing* providers' resolved fragment.
+    """
+    merged: dict[str, str] = {}
+    if isinstance(pi_fragment, dict):
+        providers = pi_fragment.get("providers")
+        if isinstance(providers, dict):
+            for pcfg in providers.values():
+                if isinstance(pcfg, dict):
+                    hdrs = pcfg.get("headers")
+                    if isinstance(hdrs, dict):
+                        merged.update(hdrs)
+    return merged
 
 
 def merge_headers_into_pi_config(pi_doc: dict | None, headers: dict[str, str]) -> dict | None:

@@ -95,7 +95,13 @@ Resolution rules:
   `<config-dir>/llm-wiring.json`'s `headers` field (task 045) so `resume`
   reproduces them without the flag, or `resume --llm-header` overrides them
   (same override rule, applied to whatever was persisted) -- see
-  `docs/cli.md`'s `ralphctl resume` section. Task 047 (#177) makes every
+  `docs/cli.md`'s `ralphctl resume` section. **Task 010 (#14, requirement
+  D.1)**: the same `headers` field also records a header that came only
+  from THIS profile (the top-level `headers:` shorthand or a provider's own
+  `headers:` map), with no `--llm-header` flag on the command line at all
+  -- `llm_profiles.profile_effective_headers` folds the profile's own
+  resolved `pi:` fragment into the flag's own map before persisting, flag
+  still winning a same name. Task 047 (#177) makes every
   resolved header NAME visible on four surfaces (`ralphctl llm show`,
   `ralphctl status`, `ralphctl docs <run> job.yaml`, and the hub's run
   header, under the model line) -- but a VALUE that came from `${env:}`/

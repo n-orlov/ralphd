@@ -142,6 +142,56 @@ def test_start_records_an_empty_ref_name_list_for_literal_only_headers(ctl):
         ctl.config_dir("tst-lit-hdr")) == {"X-Jira-ID": "EST-7"}
 
 
+# --------------------------------------------------------- task 010, D.1
+def test_read_llm_wiring_headers_returns_a_profile_provided_header_with_no_flag(ctl):
+    """Task 010 (#14, PRD requirement D.1): a profile's own top-level
+    `headers:` shorthand, resolved with NO `--llm-header` flag on the
+    command line at all, is recorded in the same `llm-wiring.json` map
+    `--llm-header` itself populates -- so `llm_profiles.
+    read_llm_wiring_headers`, the ONE reader `status`/the hub/the redacted
+    `job.yaml` all share, returns its name and value rather than `{}`
+    (the pre-fix defect this task's own PRD gate names: the header reached
+    the container's `pi/models.json` but never the wiring/display map)."""
+    ctl.write_profile("acme-noflag", {
+        "model": "acme/big",
+        "headers": {"X-Jira-ID": "PUBLIC-123"},
+        "pi": {"providers": {"acme": {"baseUrl": "https://a.example.com"}}},
+    })
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "acme-noflag",
+                  "--run-id", "tst-profile-hdr-noflag")
+    assert res.returncode == 0, res.stderr
+    cdir = ctl.config_dir("tst-profile-hdr-noflag")
+
+    wiring = json.loads(cdir.joinpath("llm-wiring.json").read_text())
+    assert wiring["headers"] == {"X-Jira-ID": "PUBLIC-123"}
+    assert wiring["headerRefNames"] == []
+
+    headers = llm_profiles.read_llm_wiring_headers(cdir)
+    assert headers == {"X-Jira-ID": "PUBLIC-123"}
+
+    # The container's own `pi/models.json` still carries it too (the
+    # PRD gate's own "proving it is effective" check) -- this task adds
+    # the wiring record beside that, never in place of it.
+    models_doc = json.loads(cdir.joinpath("pi", "models.json").read_text())
+    assert models_doc["providers"]["acme"]["headers"]["X-Jira-ID"] == "PUBLIC-123"
+
+
+def test_read_llm_wiring_headers_still_masks_a_pre_047_file_after_task_010(tmp_path):
+    """The wholesale-masking node for a provenance-unknown wiring file
+    (task 047 re-take) is untouched by this task's profile-header wiring:
+    a file with `headers` and no `headerRefNames` key at all still masks
+    every value, profile-derived recording changes only how `start`
+    populates a FRESH file, never how an old one is read."""
+    cdir = tmp_path / "cdir"
+    cdir.mkdir()
+    (cdir / "llm-wiring.json").write_text(json.dumps({
+        "mode": "acme", "env": {}, "mounts": [],
+        "headers": {"X-Jira-ID": "PUBLIC-123", "X-Token": "resolved-secret-from-env"}}))
+    headers = llm_profiles.read_llm_wiring_headers(cdir)
+    assert headers == {"X-Jira-ID": MASK, "X-Token": MASK}
+    assert "resolved-secret-from-env" not in json.dumps(headers)
+
+
 # ------------------------------------------------------- surface 1: llm show
 def test_llm_show_profile_prints_header_name_and_masks_ref_derived_value(ctl):
     ctl.write_profile("acme-hdr", {

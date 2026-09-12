@@ -1822,9 +1822,19 @@ def cmd_start(args):
     # the later env/mounts/pi wiring both read from this single resolution
     # so a `${cmd:...}` reference is never shelled out twice.
     llm_profile = None
+    # Task 010 (#14, D.1): populated by `resolve_profile` with every header
+    # NAME (top-level `headers:` shorthand or a provider's own `headers:`
+    # entry) whose value came from a `${env:}`/`${file:}`/`${cmd:}`
+    # reference, over the profile's OWN headers -- kept apart from the
+    # flag's own `header_ref_names` below until the wiring-only merge a
+    # little further down, so the functional `merge_headers_into_pi_config`
+    # call keeps using the flag-only map it always has (never fanning a
+    # merged, provider-agnostic header value out across every provider).
+    profile_header_ref_names: set[str] = set()
     if args.llm not in ("host", "none"):
         try:
-            llm_profile = llm_profiles.resolve_profile(args.llm, registry())
+            llm_profile = llm_profiles.resolve_profile(
+                args.llm, registry(), header_ref_names=profile_header_ref_names)
         except llm_profiles.ProfileError as e:
             die(2, str(e))
 
@@ -1841,6 +1851,26 @@ def cmd_start(args):
                 args.llm_header, ref_names=header_ref_names)
         except llm_profiles.HeaderError as e:
             die(2, str(e))
+    # Task 010 (#14, D.1): the WIRING record's own header map -- flag/
+    # template headers (`header_overrides`, unchanged) with any
+    # profile-provided header folded in UNDERNEATH them (the existing
+    # flag-wins-a-same-name precedence, unchanged) so a profile's own
+    # header is visible on `status`/the hub/the redacted `job.yaml` with no
+    # flag supplied at all. Deliberately a SEPARATE map from
+    # `header_overrides` itself: `merge_headers_into_pi_config` below still
+    # merges only the flag's own headers into the container's `pi/
+    # models.json` (each provider's own resolved headers, already correct
+    # per requirement D.4's per-provider override rule, must never be
+    # overwritten by a single flattened cross-provider view) -- this pair
+    # is for DISPLAY/persistence only.
+    wiring_headers = header_overrides
+    wiring_header_ref_names = header_ref_names
+    if llm_profile is not None:
+        profile_headers = llm_profiles.profile_effective_headers(llm_profile["pi"])
+        if profile_headers:
+            wiring_header_ref_names = (
+                (profile_header_ref_names - set(header_overrides)) | header_ref_names)
+            wiring_headers = {**profile_headers, **header_overrides}
     # Task 047 (#177): the DISPLAY copy of the flag's own resolved headers
     # -- every ref-derived value already replaced by `llm_profiles.MASK`,
     # every literal value left visible -- written into job.yaml itself so
@@ -1849,9 +1879,9 @@ def cmd_start(args):
     # ever needing to be read for display. The REAL values (used to build
     # the container's own `pi/models.json`) live only in `<cdir>/
     # llm-wiring.json`, 0600, never here.
-    llm_headers_display = ({name: (llm_profiles.MASK if name in header_ref_names else value)
-                            for name, value in header_overrides.items()}
-                           if header_overrides else None)
+    llm_headers_display = ({name: (llm_profiles.MASK if name in wiring_header_ref_names else value)
+                            for name, value in wiring_headers.items()}
+                           if wiring_headers else None)
 
     job = {
         "run_id": run_id,
@@ -2044,7 +2074,7 @@ def cmd_start(args):
             (dest / "models.json").write_text(json.dumps(pi_doc, indent=1))
             os.chmod(dest / "models.json", 0o600)
         _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"],
-                          header_overrides, header_ref_names)
+                          wiring_headers, wiring_header_ref_names)
     else:
         _write_llm_wiring(cdir, "none", {}, [])
     # Resolved `name=value` pairs from --forward-env/--llm-env/--env, in
