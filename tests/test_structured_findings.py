@@ -72,9 +72,37 @@ def test_a_finding_with_an_out_of_enum_severity_is_rejected():
     assert any("catastrophic" in e for e in errors)
 
 
-def test_an_unexpected_field_on_a_finding_is_reported_not_dropped():
-    errors = findings.validate_finding(_finding(extra_field="oops"))
-    assert any("extra_field" in e for e in errors)
+def test_an_unexpected_field_on_a_finding_is_ignored_with_one_named_warning():
+    """Task 014 (requirement E.1, #190): a key `FINDING_SCHEMA` does not
+    declare no longer fails the finding -- it used to (this test's old
+    name/assertion was exactly the opposite: 'reported not dropped'), and
+    that strictness is what let one workspace-version-ahead field self-lock
+    the whole findings channel. Now the finding still validates clean, and
+    `finding_warnings` names the ignored key by name -- ignored, not
+    silently lost."""
+    payload = _finding(extra_field="oops")
+    assert findings.validate_finding(payload) == []
+    warnings = findings.finding_warnings(payload)
+    assert len(warnings) == 1
+    assert "extra_field" in warnings[0]
+
+
+def test_a_finding_with_no_unexpected_field_has_no_warnings():
+    assert findings.finding_warnings(_finding()) == []
+
+
+def test_a_finding_missing_a_required_field_still_fails_validation():
+    """Task 014 (requirement E.1, #190): the other half of E.1 -- nothing
+    about tolerating an unrecognised EXTRA key changes what happens to a
+    finding missing a field `FINDING_SCHEMA['required']` actually names.
+    `test_a_finding_missing_severity_is_rejected`/`..._curable_...` above
+    already cover this per-field; this is the named end-to-end version E.1
+    asks for, through the same public API a caller actually uses."""
+    payload = _finding()
+    del payload["severity"]
+    errors = findings.validate_finding(payload)
+    assert errors
+    assert any("severity" in e for e in errors)
 
 
 def test_validate_findings_accepts_a_clean_list():

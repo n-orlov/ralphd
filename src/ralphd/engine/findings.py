@@ -100,7 +100,20 @@ FINDING_SCHEMA: dict = {
         # Deliberately optional on every finding, curable or not.
         "invalidates": {"type": "array"},
     },
-    "additionalProperties": False,
+    # Task 014 (requirement E.1, #190): deliberately True, not False.
+    # `additionalProperties: False` used to make an unrecognised extra key
+    # (e.g. a workspace on a newer engine version writing a field this
+    # engine's own schema does not yet know) fail the WHOLE finding, which
+    # in turn failed `validate_findings`/`read_findings_json` for a
+    # findings list that was otherwise perfectly valid -- "the findings
+    # channel self-locking the next wave" the section header names. An
+    # unrecognised key is now tolerated and ignored by the schema itself;
+    # `unexpected_finding_fields`/`finding_warnings` below still name it,
+    # via a WARNING rather than a validation error, so nothing about the
+    # key is silently lost -- it is surfaced, just not treated as fatal.
+    # Every field actually listed in `required` above is still required:
+    # this change adds no newly-required field and removes none.
+    "additionalProperties": True,
 }
 
 
@@ -113,8 +126,42 @@ _MISSING = object()
 def validate_finding(payload: Any) -> list[str]:
     """Validate a single finding against `FINDING_SCHEMA`, through the one
     schema engine (`contracts.validate_against`). Returns a list of human
-    readable error strings; empty means the finding is valid."""
+    readable error strings; empty means the finding is valid.
+
+    Task 014 (requirement E.1, #190): a finding carrying one or more keys
+    `FINDING_SCHEMA` does not declare is VALID (this returns `[]` for it,
+    same as a finding with no extra keys at all) -- `additionalProperties`
+    is `True` on the schema itself now. Every field the schema's `required`
+    list actually names is still required and still fails validation when
+    missing; nothing about that half changed. Use `finding_warnings` below
+    to learn about an unrecognised key that was tolerated rather than
+    rejected."""
     return contracts.validate_against(FINDING_SCHEMA, payload)
+
+
+def unexpected_finding_fields(payload: Any) -> list[str]:
+    """Task 014 (requirement E.1, #190): the sorted list of keys in
+    `payload` that `FINDING_SCHEMA["properties"]` does not declare -- the
+    same set `additionalProperties: False` used to reject outright, now
+    only reported, never itself a validation error. A non-dict payload
+    (already reported as a type error by `validate_finding`) has no keys
+    to report, so this returns `[]` for one rather than raising."""
+    if not isinstance(payload, dict):
+        return []
+    return sorted(set(payload) - set(FINDING_SCHEMA["properties"]))
+
+
+def finding_warnings(payload: Any) -> list[str]:
+    """Task 014 (requirement E.1, #190): one human-readable warning per
+    unrecognised key `unexpected_finding_fields` finds on `payload`, each
+    naming the key by name -- the "ignored, but named" half of E.1. Empty
+    when the finding carries no key outside `FINDING_SCHEMA`'s own
+    properties."""
+    return [
+        f"finding carries unrecognised field {key!r}; ignoring it, not "
+        "rejecting the finding"
+        for key in unexpected_finding_fields(payload)
+    ]
 
 
 def validate_findings(payloads: Any) -> list[str]:

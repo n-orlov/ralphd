@@ -119,12 +119,15 @@ def test_attribute_authorship_never_mutates_its_input():
 
 def test_author_is_a_validating_optional_finding_field():
     """Adding `author` to `FINDING_SCHEMA` must not turn additional-
-    properties enforcement off -- a genuinely unknown field is still
-    refused, and a finding lacking `author` altogether (every fixture in
-    `tests/test_structured_findings.py`) still validates unchanged."""
+    properties enforcement into a hard rejection -- a genuinely unknown
+    field is tolerated (task 014, requirement E.1, #190: named by a
+    warning, never itself a validation error), and a finding lacking
+    `author` altogether (every fixture in `tests/test_structured_
+    findings.py`) still validates unchanged."""
     assert findings.validate_finding(_finding(author="review")) == []
     assert findings.validate_finding(_finding()) == []
-    assert findings.validate_finding(_finding(bogus_field="x")) != []
+    assert findings.validate_finding(_finding(bogus_field="x")) == []
+    assert findings.finding_warnings(_finding(bogus_field="x")) != []
 
 
 # ---------------------------------------------------------------------------
