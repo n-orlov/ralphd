@@ -248,6 +248,22 @@ both kinds are present, or `$0.56 + ~$0.45 derived, partial (rest unavailable)`
 when part of the cost is still unknown). With no map configured nothing
 changes: an unpriced bucket stays `unknown`.
 
+**A `~$… derived` figure is a lower bound whenever any hat's model has no rate
+entry in either table** — the operator map or the built-in AWS one
+(`priceTables` above). `PricingMap.rate_for`/`rate_for` in
+`engine/pricing_aws.py` return `None` for an id neither table prices at all, so
+that hat's tokens contribute nothing to `costDerivedUSD` — not a marked
+`unknown` remainder, just an amount that is quietly absent from the sum. The
+observable a reader uses to tell: look up the hat's resolved model id (from
+its iterations, or `model_for(hat)`) against `GET /config`'s `pricing.models`
+and the built-in table's coverage (`priceTables[*].models`); a model present
+in neither means every `~$… derived` total that includes that hat's traffic
+undercounts it, however clean the reported `costStatus` looks. Real example,
+logged live at `docs/prds/README.md`'s `selfdev-v020-a-commit-is-progress`
+row: `~$648.75 derived` understates the run because `aigw-openai/openai.gpt-
+6-astra`, the model behind the `plan_review`/`verdict_gate` hats, has no rate
+entry in either table.
+
 `deadlineAt` is `startedAt + jobTimeoutS` **plus every second this run has
 spent waiting out an infra outage** (`infraWaitTotalS`, the cumulative infra
 backoff wait — see the infra budgets under `GET /config`). Waiting for a

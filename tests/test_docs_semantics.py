@@ -1348,3 +1348,41 @@ def test_selfdev_and_permissive_checks_would_catch_a_missing_statement():
     assert _states_permissive_then_required(
         "A newly required contract field lands permissive in wave N and "
         "becomes required in wave N+1.")
+
+
+# ---- a derived-cost figure is a lower bound with no rate entry -----------
+# (v0.20.1 requirement F.4)
+
+def _states_derived_figure_is_a_lower_bound(text: str) -> bool:
+    low = " ".join(text.lower().split())
+    return (
+        "lower bound" in low
+        and "derived" in low
+        and "no rate entry" in low
+        and "observable" in low
+    )
+
+
+def test_api_doc_states_a_derived_figure_is_a_lower_bound_with_no_rate_entry():
+    text = API_DOC.read_text()
+    assert _states_derived_figure_is_a_lower_bound(text), (
+        "docs/api.md no longer states that a `~$\u2026 derived` figure is a "
+        "lower bound when a hat's model has no rate entry, and names the "
+        "observable a reader uses to tell (v0.20.1 requirement F.4)")
+
+
+def test_derived_lower_bound_check_would_catch_a_missing_statement():
+    unrelated = (
+        "The hub renders decisions Python made and never applies a "
+        "response it did not ask for."
+    )
+    assert not _states_derived_figure_is_a_lower_bound(unrelated)
+    # missing the "observable" clause alone must still fail -- the criterion
+    # requires naming HOW a reader tells, not just that it can happen.
+    assert not _states_derived_figure_is_a_lower_bound(
+        "A derived figure is a lower bound when a hat's model has no rate "
+        "entry in either pricing table.")
+    assert _states_derived_figure_is_a_lower_bound(
+        "A derived figure is a lower bound when a hat's model has no rate "
+        "entry in either table; the observable a reader uses to tell is "
+        "the model's absence from both tables' coverage.")
