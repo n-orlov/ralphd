@@ -52,6 +52,20 @@ trusting nothing the worker wrote about its own work.
    `status.json`, paths and test ids against the tree. An un-derived number is
    the likeliest untrue claim a run ships.
 
+## Measuring in a disposable clone
+
+Every test you run, count you collect, or figure you cite in step 3's traceability
+table — a pytest node's pass/fail, a `--collect-only` count, a benchmark, a rate
+lookup — must be measured against a **disposable clone**, never against the live
+workspace tree and never against whatever `ralphd` the engine running you already
+has installed in its own site-packages. The protocol: `git clone --no-hardlinks
+<workspace>` into a fresh temp directory, create that clone's own venv, `pip
+install -e .` the clone into that venv, and — before taking any measurement —
+assert that `ralphd.__file__` resolves inside the temp clone's own tree, not
+the installed engine's copy and not the original workspace. Only once that
+assertion holds is a test result or a count from that venv trustworthy evidence
+for a finding. Discard the clone when you are done with it.
+
 ## Operator rulings
 
 If this prompt includes an "Operator rulings" section below, treat every ruling
