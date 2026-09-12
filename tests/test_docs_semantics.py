@@ -1294,3 +1294,57 @@ def test_the_render_rule_prose_check_would_catch_a_missing_statement():
     assert _render_rule_stated(
         "The hub renders decisions Python made and never applies a "
         "response it did not ask for.")
+
+
+# ---- a self-dev wave runs the installed engine, not the workspace's ------
+# (v0.20.1 requirement E.6)
+
+def _states_installed_engine_runs_selfdev(text: str) -> bool:
+    low = " ".join(text.lower().split())
+    return (
+        "self-dev wave" in low
+        and "installed" in low
+        and ("not the workspace" in low or "never the tree" in low
+             or "not about this engine" in low)
+    )
+
+
+def _states_permissive_then_required(text: str) -> bool:
+    low = " ".join(text.lower().split())
+    return (
+        "permissive" in low
+        and "required" in low
+        and "wave n" in low
+        and ("n+1" in low or "n + 1" in low)
+    )
+
+
+def test_architecture_doc_states_selfdev_runs_the_installed_engine():
+    text = ARCH_DOC.read_text()
+    assert _states_installed_engine_runs_selfdev(text), (
+        "docs/architecture.md no longer states that the engine executing a "
+        "self-dev wave is the installed version rather than the "
+        "workspace's (v0.20.1 requirement E.6)")
+
+
+def test_architecture_doc_states_the_permissive_then_required_rule():
+    text = ARCH_DOC.read_text()
+    assert _states_permissive_then_required(text), (
+        "docs/architecture.md no longer states that a newly required "
+        "contract/findings field must land permissive in wave N and only "
+        "become required in wave N+1 (v0.20.1 requirement E.6)")
+
+
+def test_selfdev_and_permissive_checks_would_catch_a_missing_statement():
+    unrelated = (
+        "The hub renders decisions Python made and never applies a "
+        "response it did not ask for."
+    )
+    assert not _states_installed_engine_runs_selfdev(unrelated)
+    assert not _states_permissive_then_required(unrelated)
+    assert _states_installed_engine_runs_selfdev(
+        "A self-dev wave runs the installed engine, never the tree the "
+        "current iteration is editing -- not the workspace's copy.")
+    assert _states_permissive_then_required(
+        "A newly required contract field lands permissive in wave N and "
+        "becomes required in wave N+1.")

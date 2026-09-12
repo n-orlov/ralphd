@@ -1342,6 +1342,38 @@ exists on disk.
 With `reflect` absent/`false` (the default), no extra iteration runs at all —
 `run_job()` is a no-op wrapper around the same core loop as before this feature.
 
+### A self-dev wave runs the *installed* engine, not the workspace's (v0.20.1 requirement E.6)
+
+A **self-dev wave** is a job whose workspace is ralphd's own source checkout —
+the PRD asks an iteration to change the very code that is executing it, exactly
+as this run does. That workspace copy is inert prose and modules until some
+process imports it; the process actually doing the importing, for `ralphd-engine`
+PID 1 in this container, is whatever `ralphd` build was `pip install`ed (or
+baked into the job image) *before the container started* — never the tree
+under `src/ralphd/` that the current iteration is editing on disk. Editing
+`src/ralphd/engine/loop.py` in the workspace does not change which `loop.py`
+is already loaded in this process's memory; the new code only takes effect
+once a *later* wave's image is built from that edited tree and a fresh
+container starts from it. Any report or test claiming a behavior "changed
+this run" because a file changed on disk, without a fresh process import to
+back it, is asserting something about the workspace, not about this engine.
+
+This is why a self-dev wave's own PRD cannot add a newly *required* field to
+a hat contract or a findings schema and have that requirement enforced in the
+same wave that adds it: the engine validating every iteration's payload
+against `transitions.HAT_SCHEMAS`/`contracts.HAT_SCHEMAS` for the rest of
+*this* run is the installed build from before the edit, so it still enforces
+the *old* shape. The rule this forces is **permissive-then-required**: a newly
+added contract or findings field lands **permissive** (optional,
+`additionalProperties` still accepting payloads that omit it) in the wave that
+introduces it — wave N — and only becomes **required** starting in wave
+N+1, once a build carrying the change is what a later wave's container
+actually installs and runs. A schema edit that skips straight to required in
+wave N is not a stricter contract; every iteration of the *current* run still
+executes the pre-edit validator, so the change is invisible until the next
+wave's image, and the workspace edit was validated against nothing this run
+ever exercised.
+
 ## 3. State model
 
 All run state lives in `/run/ralphd` inside the container (the engine's
