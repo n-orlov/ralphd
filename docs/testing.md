@@ -1015,11 +1015,11 @@ behind it, uncorroborated every time, and asserts the ordinary
 three-strike stagnation witness still fires exactly as before task 004
 deleted the legacy absorption-streak dispatch: three `progress_claim`
 events all read `corroborated: False`, the `"3 iterations with no task
-progress"` log line lands, and the run parks at `state: paused`/
-`pauseReason: stagnation` on the (default, `max_approaches=1`) last
-approach, the same outcome `tests/test_worker_hat.py::test_a_plan_with_
-work_left_is_never_routed_to_review` already pins for the pre-existing
-guard. Re-measured directly with `.venv/bin/python -m pytest -m
+progress"` log line lands, and the run parks at `state: paused`/`pauseReason:
+stagnation` on the (default, `max_approaches=1`) last approach, the same
+outcome `tests/test_worker_hat.py::test_a_plan_with_work_left_is_never_
+routed_to_review` already pins for the pre-existing guard. Re-measured
+directly with `.venv/bin/python -m pytest -m
 <fast|smoke> --collect-only -q`.
 
 **5687 (smoke 4086, modules 357->358)** by v0.20.1 task 007 (requirements
