@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from ralphd.engine import loop as loop_mod
@@ -409,6 +410,89 @@ def test_worker_reentry_after_an_operator_steer_stays_on_approach_one_and_pauses
     assert sup._approach == 1
     assert not (root / "approaches" / "01").exists()
     assert not sup.run.composite_prd_file.exists()
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 2
+    assert all(e["reason"] == "stagnation" for e in escalations)
+    assert all(e["approach"] == 1 for e in escalations)
+    # both escalations saw the approach as progressed (the commit witness),
+    # never as the genuinely-silent case the A.4 replan node still covers.
+    assert all(e["approachProgressed"] is True for e in escalations)
+
+
+# ===========================================================================
+# cure-01-01 (PRD A.2 / Definition of done 1, H.3 evidence integrity): the
+# probe above answers requirement A.2's `Cured when:` clause with two
+# `LoopSupervisor` PYTHON OBJECTS in one shared interpreter -- a fresh
+# object, not a fresh process. That is not what "fresh-process resume"
+# means: a real crash/restart or `ralphctl resume` re-enters `worker`
+# inside a BRAND-NEW OS process, with no python state whatsoever surviving
+# from before, only the run-state tree and the workspace's git history on
+# disk. The node below drives the identical commit -> stagnation pause ->
+# fresh-process resume -> renewed stagnation sequence, but each episode
+# runs in its own `python -m tests._fresh_process_stagnation_episode`
+# child process (`sys.executable`, never the same interpreter, never a
+# shared asyncio event loop) over the SAME run root/workspace passed on
+# argv -- see that module's own docstring for exactly what does and does
+# not cross the process boundary.
+# ===========================================================================
+
+
+def test_a_genuinely_fresh_os_process_resume_after_a_commit_and_stagnation_pause_stays_on_approach_one_and_pauses_again(
+        tmp_path):
+    """cure-01-01, requirement A.2's `Cured when:` clause driven across a
+    REAL process boundary: commit -> stagnation pause -> fresh-OS-process
+    resume -> renewed stagnation, still on approach 1, pause/escalation
+    emitted both times, no `approaches/NN` archive ever created.
+
+    Episode 1 (`_fresh_process_stagnation_episode.episode_one`, its own
+    `python -m` child process) creates the run-state tree, commits once,
+    then runs three genuinely quiet iterations -- the three-strike counter
+    trips, but the commit witness means this approach (1 of 3, not the
+    last) pauses instead of replanning.
+
+    Episode 2, a SECOND, independently spawned `python -m` child process --
+    no shared python object, module cache or event loop with episode 1's
+    process, or with this test's own -- resumes into `worker` over the
+    identical run root/workspace and runs a genuinely quiet round.
+    Pre-task-001 (`_step_worker` re-deriving `approach_start_head` fresh
+    from `self._workspace_head_sha()` at its own method entry instead of
+    reading `self._approach_start_head(approach)` back off `status.json`)
+    this fails inside episode 2's OWN process: a brand-new OS process
+    re-entering the same approach re-derives its baseline from the CURRENT
+    head, which already carries episode 1's commit -- so the commit
+    witness reads as "unchanged" for the second, genuinely quiet
+    stagnation round, and a progressing-but-not-last approach is wrongly
+    treated as fully silent: episode 2 raises
+    `AssertionError: ('advance', 'replan', 'stagnation_exhausted') ==
+    ('advance', 'paused', 'stagnation_last_approach')`, its own process
+    exits non-zero, and `approaches/01` is archived on disk where this
+    test (running in a THIRD process, its own) can see it.
+    """
+    workspace = tmp_path / "workspace"
+    root = tmp_path / "run"
+    _init_git_workspace(workspace)
+
+    helper = Path(__file__).parent / "_fresh_process_stagnation_episode.py"
+    assert helper.exists()
+
+    episode1 = subprocess.run(
+        [sys.executable, str(helper), "1", str(root), str(workspace)],
+        capture_output=True, text=True, timeout=60)
+    assert episode1.returncode == 0, (
+        f"episode 1 (its own fresh OS process) failed:\n"
+        f"stdout:\n{episode1.stdout}\nstderr:\n{episode1.stderr}")
+
+    episode2 = subprocess.run(
+        [sys.executable, str(helper), "2", str(root), str(workspace)],
+        capture_output=True, text=True, timeout=60)
+    assert episode2.returncode == 0, (
+        f"episode 2 (a SECOND, independently spawned fresh OS process, no "
+        f"python state shared with episode 1's process or this test's "
+        f"own) failed:\nstdout:\n{episode2.stdout}\nstderr:\n"
+        f"{episode2.stderr}")
+
+    assert not (root / "approaches" / "01").exists()
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 2

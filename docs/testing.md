@@ -1161,3 +1161,17 @@ answers, in order of preference:
    beside it, which is a visible, reviewable act rather than a silent drift.
 
 Deleting or loosening the assertion is not on that list.
+
+**5633 (smoke 4026, modules 360 unchanged)** by v0.20.1 task cure-01-01
+(PRD A.2 / Definition of done 1, H.3 evidence integrity): +1 fast / +1 smoke
+node over the 5632/4025 task 045 last measured, from
+`tests/test_approach_start_head_persistence.py::test_a_genuinely_fresh_os_process_resume_after_a_commit_and_stagnation_pause_stays_on_approach_one_and_pauses_again`,
+which drives requirement A.2's `Cured when:` sequence across a real OS
+process boundary (two independently spawned `python -m` child processes,
+no shared python state, over the same run-state tree/workspace) instead of
+two `LoopSupervisor` objects inside one shared interpreter -- the existing
+probe's own shape, which the fresh-process claim it made did not actually
+exercise. No module was added (the node lands in the same existing test
+module), so the module count is unchanged at 360. Measured directly at
+this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
+--collect-only -q`.
