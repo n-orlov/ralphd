@@ -358,6 +358,34 @@ def test_the_check_guard_fails_against_a_deliberately_stale_table(tmp_path, monk
     assert rc == 1, "the guard must fail (non-zero exit), not pass or skip, on a stale table"
 
 
+def test_the_check_guard_passes_with_no_positional_source_against_the_shipped_table(monkeypatch):
+    """PRD F, Definition of done predicate 6: a source-less `--check` must
+    exit 0 against the table this repo actually ships, in ANY sandbox --
+    including one whose ambient pi-ai install disagrees with the version the
+    shipped table was generated from (this project's own dev image ships
+    pi-ai 0.84.1 while the shipped table is generated from 0.85.1).
+
+    A source-less `--check` must validate against the checked-in fixture for
+    the table's own recorded `SOURCE_VERSION`
+    (`find_check_source()`), never against whatever `find_source()`'s ambient
+    autodetection happens to turn up: `find_source` is monkeypatched here to
+    raise, so a pass proves the fixture path actually ran rather than having
+    gotten lucky because this sandbox's ambient install happened to agree.
+    """
+    tool = _tool()
+
+    def _must_not_run():
+        raise AssertionError(
+            "find_source() (ambient autodetection) must not run for a source-less --check"
+        )
+
+    monkeypatch.setattr(tool, "find_source", _must_not_run)
+
+    rc = tool.main(["--check"])
+
+    assert rc == 0, "the shipped table must validate against its own recorded SOURCE_VERSION fixture"
+
+
 def test_the_refresh_tool_drops_zero_cache_rates_and_wraps_long_lines():
     tool = _tool()
     lines = tool.render_rates({

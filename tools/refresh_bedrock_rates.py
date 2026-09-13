@@ -23,6 +23,18 @@ Usage:
     python tools/refresh_bedrock_rates.py path/to/amazon-bedrock.json
     python tools/refresh_bedrock_rates.py --check            # CI-style diff only
 
+Without `--check`, a source-less run autodetects whatever pi-ai is installed
+ambient (see `find_source()`) because refreshing means "pick up whatever is
+currently available and regenerate from it". `--check` asks a different
+question -- "does the shipped table still match the source it *claims* in its
+own `SOURCE_VERSION`?" -- so a source-less `--check` prefers the checked-in
+fixture for that exact recorded version (`tests/data/amazon-bedrock-<ver>.json`)
+over the ambient install: the ambient pi-ai on a given machine can be older OR
+newer than the version the shipped table was generated from, and neither fact
+by itself means the shipped table has drifted from its own documented source.
+A CI box or sandbox with an out-of-step ambient pi-ai must still be able to
+run the guard and get a truthful answer about the table it actually ships.
+
 It rewrites, in `src/ralphd/engine/pricing_aws.py`, exactly the region between
 the `# BEGIN GENERATED RATES` / `# END GENERATED RATES` markers, plus the
 `AS_OF` and `SOURCE_VERSION` lines. Everything else in that module (the
@@ -75,6 +87,30 @@ def find_source() -> Path:
         "could not find pi-ai's amazon-bedrock.json; pass the path explicitly "
         "(see the module docstring for where it lives)"
     )
+
+
+SOURCE_VERSION_RE = re.compile(r'^SOURCE_VERSION = "(.+)"$', re.MULTILINE)
+
+
+def find_check_source() -> Path:
+    """The source a source-less `--check` validates against.
+
+    Prefers the checked-in mirror for the shipped table's own recorded
+    `SOURCE_VERSION` (`tests/data/amazon-bedrock-<version>.json`) -- the
+    exact source the table claims -- over `find_source()`'s ambient
+    autodetection, which answers a different question ("what pi-ai happens
+    to be installed on this machine right now") that a `--check` run has no
+    reason to depend on. Falls back to `find_source()` only when no such
+    fixture is checked in.
+    """
+    current = TARGET.read_text()
+    match = SOURCE_VERSION_RE.search(current)
+    if match:
+        version_tag = match.group(1).rsplit("@", 1)[-1]
+        fixture = REPO / "tests" / "data" / f"amazon-bedrock-{version_tag}.json"
+        if fixture.is_file():
+            return fixture
+    return find_source()
 
 
 def source_version(path: Path) -> str:
@@ -147,7 +183,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--as-of", default=dt.datetime.now(dt.UTC).date().isoformat())
     args = ap.parse_args(argv)
 
-    source = Path(args.source) if args.source else find_source()
+    if args.source:
+        source = Path(args.source)
+    elif args.check:
+        source = find_check_source()
+    else:
+        source = find_source()
     data = json.loads(source.read_text())
     models = data.get(API_KEY) or {}
     if not isinstance(models, dict) or not models:
