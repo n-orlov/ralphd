@@ -2227,6 +2227,31 @@ The run is `selfdev-v0201-inspection-is-not-evidence`. This paragraph is written
 of the run it describes settling — v0.20's block and row above are unchanged by this commit;
 this wave's own terminal account is a later task's to write once the run actually ends.
 
+## v0.20.2 — a requirement cannot be orphaned
+
+Full PRD: [`docs/prds/v0.20.2-a-requirement-cannot-be-orphaned.md`](prds/v0.20.2-a-requirement-cannot-be-orphaned.md).
+v0.20.1 shipped `665c081`, version `0.20.1`, every CI lane green — but its last approach,
+replanned after four rejections, **undid a retirement its own operator had authorised**: the
+operator's two `ralphctl amend` rulings named task ids that the replan had already discarded,
+and the engine re-rendered both as **"NOT authoritative for this review"**, so review ordered
+the retirement reverted with no visible authority behind the order. That engine defect is
+filed as **#196**, is left open and untouched by this wave, and decides this wave's shape: an
+amendment can be orphaned, a requirement cannot, so everything the operator ruled on is written
+here as a numbered requirement instead. This wave's three subjects are the sweep-sha retirement
+(issue #113 step 4, redone as requirement A), and two smaller published-but-wrong claims this
+same replan left behind — issue #197 (a failed notification reporting itself `sent`) and issue
+#198 (v0.20.1's own E.5 repeat-rejection pause doing nothing when the findings channel itself is
+unreadable) — in requirements A–D and F (E is skipped; F's own section says why): **A** — the
+sweep-sha retirement, done as a requirement this time, so a replan cannot orphan it again
+(#113 step 4); **B** — a failed notification stops reporting itself as sent (#197); **C** — the
+version `0.20.2`, this block, the row; **D** — the lanes, the closures, the summary; **F** —
+v0.20.1's E.5 repeat-rejection pause now covers the wall it could not read (#198).
+
+The run is `selfdev-v0202-a-requirement-cannot-be-orphaned`, launched at `e1d5226`. This
+paragraph is written mid-run, ahead of the run it describes settling — the v0.19, v0.19.1,
+v0.20 and v0.20.1 blocks and rows above are unchanged by this commit; this wave's own terminal
+account is a later task's to write once the run actually ends.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
