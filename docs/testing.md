@@ -1187,3 +1187,22 @@ removed, one added). From the pre-task 5732/4125/362:
 `4116/5828 tests collected (1712 deselected)`). `tests/records/` is
 unaffected (204 unchanged): none of the three deleted paths lived under
 `tests/records/`.
+
+**5629 (smoke 4022, modules 360) by v0.20.2 task 004 (requirement A.2,
+#113 step 4): the conformance ledger frozen as history.**
+`tests/records/test_conformance_ledger.py` (88 fast/88 smoke nodes, one
+module) and `test_ledger_loopsupervisor_modules.py` (6 fast/6 smoke
+nodes, one module) are both deleted outright -- A.2's own text authorises
+retiring "all mechanical checking of `artifacts/reports/conformance-ledger.md`",
+which covers both modules, not only the one A.2 names by path. Neither
+test spawns a real engine or CLI process, so both were `smoke` as well as
+`fast`; net -94 fast, -94 smoke, -2 modules. From the pre-task 5723/4116/362:
+5629/4022/360. Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5629/5734 tests collected (105 deselected)`, smoke:
+`4022/5734 tests collected (1712 deselected)`). `tests/records/` drops from
+204 to **116** (-88, the deleted module's own 88 nodes; the top budget
+table's `records, serial` row and its 300-test ceiling are reconciled by
+requirement A.6's own task, not this one): re-measured directly with
+`.venv/bin/python -m pytest -q tests/records/` (116 passed, 18.25 s, still
+well inside the existing 30 s ceiling).

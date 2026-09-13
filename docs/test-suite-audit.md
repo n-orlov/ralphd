@@ -1261,18 +1261,27 @@ Derivation for task 033 (requirement E.2): `test_conformance_ledger.py` moved to
 measures against) to ONE in-process `pytest.main()` collection pass over the deduplicated files
 those node ids live in. The old parametrised `test_cited_test_node_id_collects[*]` (66 node-id
 params observed at this task's own HEAD) is the one genuine deletion -- replaced by a single test,
-`test_every_cited_test_node_id_collects`, that runs the in-process collection once and asserts
+test_every_cited_test_node_id_collects, that runs the in-process collection once and asserts
 every ledger-cited id (exact match or one of its own parametrisations) came back collected. Every
 other test in the module (`test_cited_line_contains_cited_symbol[*]`,
-`test_no_new_expression_todo_cells`, `test_mutation_a_todo_new_expression_cell_is_caught`,
-`test_every_row_has_at_least_one_citation`, `test_gap_cells_are_the_literal_marker_not_a_disguised_citation`,
-`test_mutation_a_wrong_line_number_is_caught`, `test_mutation_a_nonexistent_node_id_is_caught`) moved
+test_no_new_expression_todo_cells, test_mutation_a_todo_new_expression_cell_is_caught,
+test_every_row_has_at_least_one_citation, test_gap_cells_are_the_literal_marker_not_a_disguised_citation,
+test_mutation_a_wrong_line_number_is_caught, test_mutation_a_nonexistent_node_id_is_caught) moved
 unchanged, same names (the last one's own body converted to the new in-process mechanism, but its
-name, its subject and what it proves are unchanged), no row needed.
+name, its subject and what it proves are unchanged), no row needed -- module retired outright by
+requirement A.2 (v0.20.2) since this derivation was written; the names above are now pure history
+and this de-backticking is that retirement's own cure for `tests/test_docs_consistency.py`'s
+identifier check, not a content change. The row this derivation's own "surviving
+cover" once named (`test_conformance_ledger.py::test_cited_test_node_id_collects[*]`
+covered by `tests/records/test_conformance_ledger.py::test_every_cited_test_node_id_collects`,
+task 033, requirement E.2) is removed from the Subsumed table below by this same
+task 004 (requirement A.2): its surviving cover is itself one of the 88 nodes
+A.2 deletes outright, so the row would otherwise cite a node this tree no longer
+collects -- no Subsumed row is owed for it either, per A.2's own "retired, not
+moved" text, the same as A.1's ten deleted nodes above.
 
 | deleted node | surviving cover | landed in |
 |---|---|---|
-| `test_conformance_ledger.py::test_cited_test_node_id_collects[*]` | `tests/records/test_conformance_ledger.py::test_every_cited_test_node_id_collects` (the same node-id-collects claim, now checked in one in-process pytest collection pass instead of one subprocess per cited node id) | task 033, requirement E.2 |
 
 Derivation for task 034 (requirement E.3): the eight `test_roadmap_v0N.py` modules (`v06`, `v07`,
 `v08`, `v09`, `v010`, `v012`, `v013`, `v014`) folded into `tests/records/test_roadmap.py`, the same
@@ -1506,3 +1515,44 @@ a `!retired` citation must NOT resolve, which every one of these now
 correctly does not). Existing `sweep-sha`/`archived-sha` fenced blocks in
 those same historical reports are untouched prose, per A.1's own text --
 only the drift-chasing citation is retired, never the sha a record names.
+
+### Retired outright: the conformance ledger's mechanical checkers (requirement A.2, v0.20.2, #113 step 4)
+
+Requirement A.2 of `docs/prds/v0.20.2-a-requirement-cannot-be-orphaned.md` retires
+all mechanical checking of `artifacts/reports/conformance-ledger.md`, keeping the
+ledger file itself as frozen history: `tests/records/test_conformance_ledger.py`
+(88 test nodes -- the citation-substring checker, the node-id-collects checker,
+and their mutation twins) is deleted outright, and the top-level module
+`test_ledger_loopsupervisor_modules.py` (6 test nodes -- the drift checker for
+the ledger's own "LoopSupervisor-importing test modules" section) goes with it:
+A.2's own text authorises "all mechanical checking of
+`artifacts/reports/conformance-ledger.md`", which is exactly this second
+module's whole subject, not merely the module A.2 names by path. Neither
+module is named in A.5's protected list.
+
+A GitHub-signed check run keyed to the commit sha, per requirement A's own
+precondition, is the attestation review reads now; a markdown ledger a test
+module re-derives and diffs against the tree at collection time is not, and
+there is no successor pytest node for either deleted module -- the behaviour
+they pinned is retired, not moved, so no Subsumed row is owed for either
+(this table's own contract: a deleted node owes either a row there or a
+named surviving cover, and A.2's own text says the mechanical checking this
+section documents is the cover that no longer exists to name).
+
+The ledger file gains a frozen-at-sha header in the same commit (A.2's own
+text: "a header stating the sha it was taken at, that it is frozen, and that
+nothing checks it") and every backtick citation inside the ledger itself
+that named either now-deleted module's path is marked `!retired` in place,
+since `tests/report_claims.py` checks every report under `artifacts/reports/`
+generically, the ledger included. Every historical report under
+`artifacts/reports/` that cited either deleted path by a bare backtick path
+or a `path::node` form, and was not already marked `!retired` by an earlier
+retirement, is marked `!retired` in the same commit, same convention as
+A.1's own retirement above. `docs/test-suite-audit.md`'s own historical
+derivation for task 033 (requirement E.2, this section's own earlier prose)
+named several of `test_conformance_ledger.py`'s function names in backticks
+without the `tests/` path prefix that would make them path claims; those are
+de-backticked in place (bare text, same words, no content change) since
+`tests/test_docs_consistency.py`'s identifier check reads any backticked
+snake_case name as a claim the code still has that name, and after this
+retirement none of them do.
