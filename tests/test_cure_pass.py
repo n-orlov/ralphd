@@ -546,8 +546,11 @@ def test_resume_mid_cure_also_keeps_the_incurable_precedence(tmp_path):
 # ---------------------------------------------------------------------------
 # task 030 (PRD requirement E.1, #167): "a cure is not a replan" -- past the
 # original one-per-approach bound, a SECOND or later rejection in the same
-# approach takes another cure pass iff (a) `curePasses[approach]` has not
-# yet reached `CURE_PASS_CEILING` (3), and (b) the new rejection's own
+# approach takes another cure pass iff (a) the run's own cure budget is not
+# yet spent (task 002, PRD requirement A.2: `_cure_passes_for_run()` below
+# the configured `JobConfig.cure_pass_ceiling`, default 3 -- a per-approach
+# count against the `CURE_PASS_CEILING` literal before that task), and (b)
+# the new rejection's own
 # blocking clause set is NOT a superset (by `clause`) of the immediately
 # preceding GRANTED pass's own set (`cureBlocking[approach]`).
 # ---------------------------------------------------------------------------
@@ -616,10 +619,11 @@ def test_a_superset_second_rejection_is_refused_and_replans(tmp_path):
 
 
 def test_the_ceiling_refuses_a_fourth_pass_even_when_not_a_superset(tmp_path):
-    """Three non-superset rejections in a row exhaust `CURE_PASS_CEILING`
-    (3); a fourth rejection whose blocking set is disjoint from the third
-    pass's own is STILL refused -- the ceiling, not the superset test,
-    is what stops it."""
+    """Three non-superset rejections in a row exhaust the default ceiling
+    (`JobConfig.cure_pass_ceiling`, 3 -- the whole run's budget since task
+    002, and this run spends all of it in one approach); a fourth rejection
+    whose blocking set is disjoint from the third pass's own is STILL
+    refused -- the ceiling, not the superset test, is what stops it."""
     root = tmp_path / "run"
     sup = _cure_once(root, approach=1, max_approaches=3)  # pass 1: {A}
 
