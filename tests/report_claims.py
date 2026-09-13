@@ -1,32 +1,14 @@
 """Shared re-reading of the evidence reports under `artifacts/reports/`.
 
-Task 041 (#22): the sha/path checks that task 058 wrote for
+Task 041 (#22): the sha/path/test-node checks that task 058 wrote for
 `artifacts/reports/issue-traceability.md` are the ones every report in that
-directory needs -- a report that names a commit that never landed, or a file
-that has been renamed away, is worse than no report. So the extraction and
-the checks live here once and `tests/records/test_report_claims.py` applies
-them to every report the directory holds (discovered by glob, so a new
-report is covered the day it lands); `tests/test_issue_traceability.py`
-keeps only what is specific to its report and re-uses this parser for its
-density assertions.
-
-Task 046 (v0.20.1, T-c, #113 step 4, operator ruling `001-039.md` point 3)
-retired this module's two node-id checks -- `node_problems()` (a live
-`path::node` citation had to still be a collectible test) and the node
-branch of `retired_problems()` (a `!retired`-marked node had to have
-STOPPED collecting) -- along with their shared helper `defines_test()`.
-Their subject was "a test node id cited by a historical report", exactly
-the category the ruling names: "a record written in a past wave is
-history; it is not a test, and the live tree is not obliged to keep its
-citations resolvable." `path::node` / `::node` / `::node!retired` tokens
-still PARSE below (into `NodeClaim`/`RetiredClaim.node`, so a report's
-claim density still counts them and the parser's path-continuation
-tracking is unchanged) -- parsing is not the check; only the resolution
-work that made a renamed or deleted test turn a report red is gone. No
-"pytest result line" check ever lived in this module: that vocabulary
-(`test_a_real_pytest_summary_line_is_a_pytest_result_line` and friends)
-belonged entirely to `tests/sweep_sha_guard.py`, already retired outright
-by task 044.
+directory needs -- a report that names a commit that never landed, a file that
+has been renamed away, or a test that no longer exists is worse than no report.
+So the extraction and the checks live here once and
+`tests/records/test_report_claims.py` applies them to every report the directory
+holds (discovered by glob, so a new report is covered the day it lands);
+`tests/test_issue_traceability.py` keeps only what is specific to its report
+and re-uses this parser for its density assertions.
 
 The claim vocabulary the reports use, and how it is read:
 
@@ -58,22 +40,21 @@ The claim vocabulary the reports use, and how it is read:
   row, continues it too -- prose that moves on to a new test file usually
   names it before the node ids that belong to it -- but a table row's own
   bare mention of an unrelated file never does, since the next row's node
-  still has to continue the table's own test-file column. The node id
-  itself is never resolved against the file any more (task 046) -- only the
-  path half of `path::node` still feeds `path_problems()`.
+  still has to continue the table's own test-file column.
 * A trailing `*` (`::test_retry_proxy_*`, standing for a family of tests) is
-  parsed the same way but, like every other node id, is no longer resolved.
-* A trailing `!retired` on the path form marks a *deliberately retired*
-  path citation -- a report is allowed to keep naming a path that a later
-  task removed, as long as it says so, and the check runs in the STRONG
-  direction: `` `tests/foo.py!retired` `` fails if `tests/foo.py` still
-  exists on disk (it was not actually retired, so the marker is a lie). A
-  `!retired` node (`` `tests/foo.py::test_bar!retired` `` or
-  `` `::test_bar!retired` ``) still parses, still counts toward a report's
-  claim density, and is no longer checked in either direction (task 046).
-  The marker attaches to one citation at a time; a continuation
-  `` `::test_baz!retired` `` needs its own suffix even when the path it
-  continues was itself marked retired.
+  a prefix: at least one test in the file must match it.
+* A trailing `!retired` on any of the three forms above marks a
+  *deliberately retired* citation -- a report is allowed to keep naming a
+  path or test that a later task removed, as long as it says so, and the
+  check runs in the STRONG direction: `` `tests/foo.py!retired` `` fails if
+  `tests/foo.py` still exists on disk (it was not actually retired, so the
+  marker is a lie), and `` `tests/foo.py::test_bar!retired` `` fails if
+  `tests/foo.py` still exists AND still defines `test_bar` (the node was not
+  actually retired). A `!retired` node whose file is gone entirely trivially
+  passes -- it cannot collect, which is exactly the point. The marker
+  attaches to one citation at a time; a continuation `` `::test_baz!retired`
+  `` needs its own suffix even when the path it continues was itself marked
+  retired.
 """
 
 from __future__ import annotations
@@ -466,9 +447,9 @@ def commit_problems(claims: ReportClaims) -> list[str]:
                 problems.append(
                     f"{claims.where(claim.line)}: {claim.value} is not a "
                     f"commit in this repo (missing) -- if this is a "
-                    f"check-run, job or run id, do not backtick it: cite it "
-                    f"as a GitHub run id/URL in prose instead; otherwise it "
-                    f"is an orphaned or never-pushed commit sha"
+                    f"check-run, job or run id, do not backtick it: see "
+                    f"docs/sweep-records.md; otherwise it is an orphaned or "
+                    f"never-pushed commit sha"
                 )
             else:
                 problems.append(
@@ -545,23 +526,68 @@ def path_problems(claims: ReportClaims) -> list[str]:
     return problems
 
 
-def retired_problems(claims: ReportClaims) -> list[str]:
-    """The STRONG direction for `!retired`, path claims only: a path marked
-    retired must NOT still exist on disk. A `!retired` node citation
-    (`path` set together with `node`, or a bare `::node!retired`) is no
-    longer checked in either direction (task 046, ruling `001-039.md` point
-    3) -- its subject is a test node id cited by a historical report, and
-    that report's own citations are not obliged to stay resolvable, so it
-    is simply skipped here.
-    """
+def defines_test(source: str, node: str) -> bool:
+    if node.endswith("*"):
+        pattern = rf"^(async )?def {re.escape(node[:-1])}[\w]*\("
+    else:
+        pattern = rf"^(async )?def {re.escape(node)}\("
+    return bool(re.search(pattern, source, re.MULTILINE))
+
+
+def node_problems(claims: ReportClaims) -> list[str]:
+    """Every listed `::node` must be a test in the file it is attached to."""
     problems = []
-    for claim in claims.retired:
-        if claim.node is not None:
+    sources: dict[str, str] = {}
+    for claim in claims.nodes:
+        if claim.path is None:
+            problems.append(
+                f"{claims.where(claim.line)}: bare node id with no path: ::{claim.node}"
+            )
             continue
         target = REPO_ROOT / claim.path
-        if target.exists():
+        if not target.exists():
+            # path_problems() reports the missing file; nothing to read here.
+            continue
+        source = sources.setdefault(claim.path, target.read_text())
+        if not defines_test(source, claim.node):
             problems.append(
-                f"{claims.where(claim.line)}: path marked !retired but "
-                f"still exists: {claim.path}"
+                f"{claims.where(claim.line)}: {claim.path} has no test named "
+                f"{claim.node}"
+            )
+    return problems
+
+
+def retired_problems(claims: ReportClaims) -> list[str]:
+    """The STRONG direction for `!retired`: a citation marked retired must
+    NOT resolve. A retired path that still exists on disk, or a retired node
+    that still collects (its file exists and still defines it), is wrong --
+    either it was never actually retired, or the marker is stale and should
+    be removed instead of carried forward.
+    """
+    problems = []
+    sources: dict[str, str] = {}
+    for claim in claims.retired:
+        if claim.path is None:
+            problems.append(
+                f"{claims.where(claim.line)}: bare retired node id with no "
+                f"path: ::{claim.node}!retired"
+            )
+            continue
+        target = REPO_ROOT / claim.path
+        if claim.node is None:
+            if target.exists():
+                problems.append(
+                    f"{claims.where(claim.line)}: path marked !retired but "
+                    f"still exists: {claim.path}"
+                )
+            continue
+        if not target.exists():
+            # The whole file is gone -- the node cannot collect either way.
+            continue
+        source = sources.setdefault(claim.path, target.read_text())
+        if defines_test(source, claim.node):
+            problems.append(
+                f"{claims.where(claim.line)}: {claim.path}::{claim.node} is "
+                f"marked !retired but still collects"
             )
     return problems

@@ -147,11 +147,11 @@ jobs:
       # No cell installs a docker client, mounts /var/run/docker.sock, or
       # otherwise gains a reachable daemon -- `-m docker` coverage stays in
       # heavy.yml's docker tier.
-      # The sweep-sha practice this comment used to describe as retired to
-      # one lint is now deleted outright (task 044, #113 step 4, operator
-      # ruling 001-039.md point 3): there is no guard module left to
-      # deselect anything from -- see scripts/host_like_dev_layout.sh's own
-      # header.
+      # The sweep-sha carve-out that used to be deselected here is retired
+      # (task 053, #113 step 4): the guard module now runs exactly one lint
+      # ("every record names some sha"), which holds on any checkout, so
+      # there is nothing left to deselect for that reason -- see
+      # scripts/host_like_dev_layout.sh's own header.
       - name: Dev-layout mode (containerized)
         env:
           CELL_IMAGE: ${{ matrix.image }}

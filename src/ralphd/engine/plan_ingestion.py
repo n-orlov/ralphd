@@ -835,7 +835,7 @@ _UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str], ...] = (
         "which is impossible by construction (the hash is computed from "
         "the tree the commit produces) -- cite the record's own "
         "report-state sha (its commit's parent) instead, the convention "
-        "this repo's own commit history already establishes",
+        "`docs/sweep-records.md` already documents",
     ),
     (
         _EMPTY_GIT_RANGE_RE,

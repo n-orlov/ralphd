@@ -3,16 +3,16 @@ how many tests `tests/records/` collects, how long a real run of it takes,
 and what it actually spawns a subprocess for.
 
 `docs/testing.md`'s budget table carries the measured numbers this module
-pins live: the family collects tests against a **150** budget and runs in
+pins live: the family collects tests against a **300** budget and runs in
 a few seconds against a **15 s** budget -- both well inside target, so
 neither is disclosed as a miss.
 
-That collection budget was **300** until v0.20.1 task 045 retired
-`test_conformance_ledger.py` outright (operator ruling `001-039.md` point
-3), which took the family from 204 collected tests to 116. Ruling point 5
-asks for a count a removal moves to be reconciled DOWNWARD in the same
-commit, so the ceiling is ratcheted to 150: headroom over 116, but no
-longer the headroom a module that no longer exists was carrying.
+v0.20.1 tasks 044/045/046 retired the sweep-sha and conformance-ledger
+guard coverage and lowered this ceiling to 150 (operator ruling
+`001-039.md` point 3); task cure-02-02 restores that coverage (review
+finding: the ruling is not binding for approach 2), so the ceiling is
+restored to its pre-retirement value of 300, matching the family's
+restored collected count.
 
 **The subprocess rule.** A real run of the whole family spawns exactly TWO
 real subprocesses -- one `git ls-files` and one `git rev-list HEAD` -- and
@@ -75,10 +75,11 @@ RECORDS_DIR = REPO_ROOT / "tests" / "records"
 
 # docs/testing.md's own ceiling for this lane (task 032's E.1, restated here
 # so this module's own assertion and the doc's row cite the same number).
-# Ratcheted 300 -> 150 by v0.20.1 task 045, when retiring the conformance-
-# ledger checker took the family from 204 collected tests to 116 (operator
-# ruling 001-039.md point 5: reconcile a moved count downward, same commit).
-COLLECTED_BUDGET = 150
+# Ratcheted 300 -> 150 by v0.20.1 task 045, then restored to 300 by task
+# cure-02-02 when the conformance-ledger checker's guard coverage was
+# restored (review finding: operator ruling 001-039.md is not binding for
+# approach 2), bringing the family back to its 204-collected count.
+COLLECTED_BUDGET = 300
 
 
 class _CollectPlugin:

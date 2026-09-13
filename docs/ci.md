@@ -15,7 +15,7 @@ The tiers themselves — what they cover and what they cost — are
 
 | workflow | lanes | runner | trigger | budget |
 |---|---|---|---|---|
-| `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | GitHub-hosted `ubuntu-latest` | every pull request, every push to `main` | 30 min |
+| `gate.yml` | records lint, sha guards, `-m fast` (which is a superset of `-m smoke`) | GitHub-hosted `ubuntu-latest` | every pull request, every push to `main` | 30 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
 | `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted, two runner slots (below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
 
@@ -81,31 +81,24 @@ secrets, and a compromised job has nothing to steal.
 - `nightly.yml` runs its six matrix cells at `max-parallel: 2` and `fail-fast:
   false` — two runner slots, and one red cell must not cancel another's claim.
 
-## The sweep-sha practice: retired outright (task 044, v0.20.1, #113 step 4, operator ruling 001-039.md point 3)
+## No carve-out any more (task 053, #113 step 4)
 
 Every lane used to deselect one node id,
-test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged,
+`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`,
 because that test asserted every `sweep-sha` declared under
 `artifacts/reports/` was literally `HEAD` or discharged to `HEAD` by a
 hand-maintained chain -- a claim that is HEAD-relative by construction, so it
 could hold on exactly one commit per wave and could never pass on a
-pull-request head at all. Task 053 (v0.20) first deleted that test, the
-currency check it exercised (check_reports), the discharge chain, and the
-self-anchoring acceptance walk that had grown up around the same
-unsatisfiable shape (#174), leaving the guard module down to one lint,
-sha_missing_problems (test_every_sweep_record_declares_a_sha): every
-report that shows a pytest result line declares SOME 40-hex sha, in either
-the `sweep-sha` or `archived-sha` form.
-
-Task 044 (v0.20.1) finishes the job: `tests/sweep_sha_guard.py`, its test
-module (`test_sweep_sha_guard.py`, under `tests/`) and `docs/sweep-records.md`
-are deleted outright. A GitHub-signed check run keyed to the sha is the attestation
-review reads now; no record owes any sha declaration of its own any more.
-Existing `sweep-sha`/`archived-sha` blocks under `artifacts/reports/` are
-untouched, inert history -- no report is to carry a new one, ever again. No
-lane deselects anything from that module any more: a recursive grep of
-`.github/workflows` and this file for the two-dash pytest deselect flag
-followed by that now-deleted node id finds nothing.
+pull-request head at all. Task 053 deleted that test, the currency check it
+exercised (`check_reports`), the discharge chain, and the self-anchoring
+acceptance walk that had grown up around the same unsatisfiable shape (#174)
+-- see `docs/sweep-records.md`. `tests/sweep_sha_guard.py` now runs exactly
+one lint, `sha_missing_problems`
+(`test_every_sweep_record_declares_a_sha`): every report that shows a
+pytest result line declares SOME 40-hex sha, in either the `sweep-sha` or
+`archived-sha` form. No lane deselects anything from that module any more:
+a recursive grep of `.github/workflows` and this file for the two-dash
+pytest deselect flag followed by that now-deleted node id finds nothing.
 
 ## Not done yet
 

@@ -48,7 +48,7 @@ e2e 7/46, per-task pins 65/451, report_claims 1/1095, conformance 1/153, host_li
 
 Result: **981 s (16:21)**, 6,221 passed, 4 failed, 5 skipped. The 4 failures are environmental
 (staged-but-uncommitted `v0.19` PRD/report from the live run trip the "directory is discovered not
-enumerated" guards in `tests/test_docs_prd_index.py`, `test_report_claims.py`, `test_sweep_sha_guard.py`); not a
+enumerated" guards in `tests/test_docs_prd_index.py`, `test_report_claims.py`, `tests/test_sweep_sha_guard.py`); not a
 suite defect, but a reminder that record guards depend on working-tree state.
 
 Where the time goes:
@@ -151,7 +151,7 @@ only asserts the resolved path exists and is executable and spawns nothing). Sav
 ### (b) Records lint: one fast module family, kept
 Move to `tests/records/` (so `final_sha_guards.sh` selects a directory, not a grep) and keep:
 `test_report_claims.py` (collapse to 5 tests that iterate all 217 reports and list every problem),
-`test_sweep_sha_guard.py`, `test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
+`tests/test_sweep_sha_guard.py`, `test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
 `pytest --collect-only` over all node ids: 16 s -> <1 s -- DONE at task 033, `tests/records/test_conformance_ledger.py`), `tests/test_docs_consistency.py`,
 `tests/test_docs_semantics.py`, `tests/test_spec_cli_surface.py`, `tests/test_spec_state_surface.py`, `tests/test_docs_prd_index.py`,
 `tests/test_roadmap_terminal_claims.py`, `tests/test_issue_traceability.py`, `tests/test_commit_closing_keyword_scope.py`,
@@ -1239,8 +1239,7 @@ runs all five checks inside ONE test's own loop over the same glob-discovered re
 node by node; a sixth deleted node pair (the two `!retired`-direction mutation tests) merged into
 one test the same way, since both exercise `retired_problems` in the same direction. The other four
 tests (`test_the_reports_directory_is_discovered_not_enumerated`,
-`test_the_claim_checks_have_exactly_one_implementation`, test_a_node_family_wildcard_needs_a_real_match
-(de-backticked by task 046, which deletes it -- ruling `001-039.md` point 3),
+`test_the_claim_checks_have_exactly_one_implementation`, `test_a_node_family_wildcard_needs_a_real_match`,
 `test_path_problems_takes_at_most_one_git_ls_files_snapshot`,
 `test_untracked_generated_path_fails_with_the_untracked_message`,
 `test_the_same_absolute_run_dir_path_still_passes`, `test_tracked_but_missing_path_fails_with_the_other_message`,
@@ -1260,35 +1259,20 @@ Derivation for task 033 (requirement E.2): `test_conformance_ledger.py` moved to
 `tests/records/test_conformance_ledger.py` and its node-id-collection check converted from 68
 `pytest --collect-only` SUBPROCESSES (one per ledger-cited node id, the 16.4 s baseline this row
 measures against) to ONE in-process `pytest.main()` collection pass over the deduplicated files
-those node ids live in. The old parametrised test_cited_test_node_id_collects[*] (66 node-id
+those node ids live in. The old parametrised `test_cited_test_node_id_collects[*]` (66 node-id
 params observed at this task's own HEAD) is the one genuine deletion -- replaced by a single test,
-test_every_cited_test_node_id_collects, that runs the in-process collection once and asserts
+`test_every_cited_test_node_id_collects`, that runs the in-process collection once and asserts
 every ledger-cited id (exact match or one of its own parametrisations) came back collected. Every
-other test in the module (test_cited_line_contains_cited_symbol[*],
-test_no_new_expression_todo_cells, test_mutation_a_todo_new_expression_cell_is_caught,
-test_every_row_has_at_least_one_citation, test_gap_cells_are_the_literal_marker_not_a_disguised_citation,
-test_mutation_a_wrong_line_number_is_caught, test_mutation_a_nonexistent_node_id_is_caught) moved
+other test in the module (`test_cited_line_contains_cited_symbol[*]`,
+`test_no_new_expression_todo_cells`, `test_mutation_a_todo_new_expression_cell_is_caught`,
+`test_every_row_has_at_least_one_citation`, `test_gap_cells_are_the_literal_marker_not_a_disguised_citation`,
+`test_mutation_a_wrong_line_number_is_caught`, `test_mutation_a_nonexistent_node_id_is_caught`) moved
 unchanged, same names (the last one's own body converted to the new in-process mechanism, but its
-name, its subject and what it proves are unchanged), no row needed. (De-backticked in task 045,
-v0.20.1: the module these identifiers named is deleted outright per operator ruling
-`001-039.md` point 3 -- see "Retired outright" below -- so none of them lives in the code any
-more; this paragraph is now history, not a live citation.)
+name, its subject and what it proves are unchanged), no row needed.
 
 | deleted node | surviving cover | landed in |
 |---|---|---|
-
-Task 045 (v0.20.1, T-b, #113 step 4, operator ruling `001-039.md` point 3)
-deleted `tests/records/test_conformance_ledger.py` itself, the surviving
-cover the row above once named, along with every other node in that module
--- see "Retired outright (not Subsumed) -- the conformance-ledger checker"
-below, which names all eight surviving test functions this table's own row
-above was one of. None of them ever regains a row here: the whole module is
-retired outright, not migrated to a further successor, per this table's own
-contract that a deleted node owes either a row here or a named surviving
-cover, and no pytest node survives this one to cite. The row above is
-removed in the same commit, since a Subsumed row whose surviving cell no
-longer collects is worse than no row: `tests/test_subsumed_table.py`'s
-mechanical check would otherwise fail on exactly this table.
+| `test_conformance_ledger.py::test_cited_test_node_id_collects[*]` | `tests/records/test_conformance_ledger.py::test_every_cited_test_node_id_collects` (the same node-id-collects claim, now checked in one in-process pytest collection pass instead of one subprocess per cited node id) | task 033, requirement E.2 |
 
 Derivation for task 034 (requirement E.3): the eight `test_roadmap_v0N.py` modules (`v06`, `v07`,
 `v08`, `v09`, `v010`, `v012`, `v013`, `v014`) folded into `tests/records/test_roadmap.py`, the same
@@ -1404,19 +1388,19 @@ its own row below, none merged, none dropped.
 
 Task 008 (v0.20, #174): replacing the single-hop `_is_self_anchoring_add_commit` check
 with the self-anchoring acceptance WALK (`_self_anchoring_reaches_head`) had deleted the two
-`test_sweep_sha_guard.py` nodes that pinned the old mechanism's two refusals, with two
-rows here naming test_a_self_anchoring_record_followed_by_a_src_commit_fails and
-test_a_self_anchoring_record_followed_by_a_report_only_commit_passes as the walk tests
+`tests/test_sweep_sha_guard.py` nodes that pinned the old mechanism's two refusals, with two
+rows here naming `test_a_self_anchoring_record_followed_by_a_src_commit_fails` and
+`test_a_self_anchoring_record_followed_by_a_report_only_commit_passes` as the walk tests
 covering the same two git shapes, plus a third row for
-`test_sweep_sha_guard.py::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`,
+`tests/test_sweep_sha_guard.py::test_an_undischarged_sha_still_fails_even_with_a_report_only_tail`,
 subsumed by
-test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring.
+`test_a_bare_undischarged_sha_with_a_fully_report_only_tail_now_passes_via_self_anchoring`.
 
 Task 053 (v0.20, #113 step 4) deleted the self-anchoring acceptance walk itself, and every one
 of those three surviving nodes with it -- the whole mechanism these three rows record is
 retired outright, not migrated to a further successor, so none of the three ever regains a
 row here: their deletion is named in `tests/sweep_sha_guard.py`'s and
-`test_sweep_sha_guard.py`'s own module docstrings and in `docs/sweep-records.md`
+`tests/test_sweep_sha_guard.py`'s own module docstrings and in `docs/sweep-records.md`
 ("What this guard no longer does") instead, per this table's own contract that a deleted node
 owes either a row here or a named surviving cover, and no pytest node survives this one to
 cite. The three rows above are removed in the same commit, since a Subsumed row whose
@@ -1478,143 +1462,3 @@ mere existence, never on the deleted effect.
 | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_hand_the_task_to_verify` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (same three-consecutive-commit-only shape, opposite verdict: the task stays `in-progress`, `verify` never runs, and the legacy `notes` sentence never appears -- `LoopSupervisor._record_task_absorption_streak` is deleted, not merely exempted) | task 004, requirement B.1/B.2/B.5 |
 | `tests/test_worker_hat.py::test_a_lower_configured_threshold_fires_sooner` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (the configured threshold this node pinned no longer has any effect to fire sooner or later -- nothing reads `cfg.task_absorption_max_iterations` any more, so the surviving node asserts the ONE behaviour left: the dispatch never fires at all) | task 004, requirement B.1/B.2/B.5 |
 | `tests/test_worker_hat.py::test_a_broken_streak_resets_the_counter_and_needs_a_fresh_run` | `tests/test_worker_hat.py::test_three_consecutive_commit_only_iterations_never_force_verify_dispatch` (the `taskAbsorptionStreak` bookkeeping this node pinned a partial count of is deleted along with the hand-off it fed -- the surviving node asserts the status key is never written at all, `{}`, a strictly stronger claim than a broken streak resetting to a lower count) | task 004, requirement B.1/B.2/B.5 |
-
-## Retired outright (not Subsumed) -- the sweep-sha practice entire
-
-Task 044 (v0.20.1, #113 step 4) deletes `tests/sweep_sha_guard.py`,
-`test_sweep_sha_guard.py` and `docs/sweep-records.md` outright, on the
-authority of operator ruling `001-039.md` point 3 (`/config/amendments/001-039.md`).
-The behaviour these files pinned -- a self-authored, HEAD-relative currency
-check for a `sweep-sha`/`archived-sha` declaration, and (already down to one
-lint since task 053, v0.20) the bare "every record names some sha" check --
-is retired, not moved: no surviving pytest node covers it, because a
-GitHub-signed check run keyed to the commit sha is the attestation review
-reads now (`docs/ci.md`), not a markdown ledger re-verified by the suite
-itself. Per ruling point 5, this is recorded here as **retired outright** and
-owes no "Subsumed" row -- the ten deleted nodes are:
-`test_the_reports_directory_is_discovered_not_enumerated`,
-test_every_sweep_record_declares_a_sha,
-test_a_sweep_record_with_no_sha_is_caught_by_the_missing_check,
-test_a_pre_launch_filename_no_longer_exempts_a_sweep_record,
-test_an_archived_sha_predating_launch_satisfies_the_missing_check,
-test_an_english_sentence_with_a_count_is_not_a_pytest_result_line,
-test_a_real_pytest_summary_line_is_a_pytest_result_line,
-test_a_real_elapsed_hms_summary_line_is_a_pytest_result_line,
-test_a_report_that_only_quotes_counts_inline_is_not_a_sweep_record,
-test_the_real_notification_log_is_not_misclassified_as_a_sweep_record
-(all `test_sweep_sha_guard.py`, all also `smoke`). Net effect on
-`docs/testing.md`'s tier-wide counts: fast 5730 -> 5720, smoke 4123 -> 4113,
-modules 362 -> 361 (see that file's own dated entry for the re-measurement).
-Existing `sweep-sha`/`archived-sha` fenced blocks under `artifacts/reports/`
-are untouched, inert history -- this retirement does not rewrite or check
-them, and no report is to carry a new one, ever again.
-
-## Retired outright (not Subsumed) -- the conformance-ledger checker
-
-Task 045 (v0.20.1, T-b, #113 step 4) deletes
-`tests/records/test_conformance_ledger.py` outright, on the authority of
-operator ruling `001-039.md` point 3 (`/config/amendments/001-039.md`). That
-module's mechanical re-verification of `artifacts/reports/conformance-ledger.md`'s
-`file:line` citations was the largest single share of the reds the ruling
-measured -- 48 of 103 failing-node occurrences, all one comment that moved by
-30 lines -- and its subject (a pre-cutover guard inventory for the
-`_run_job_core` rewrite, which shipped waves ago) is retired, not moved: no
-surviving pytest node covers it. The ledger itself is kept, not deleted, as
-frozen history with a new header saying so; per ruling point 5, this is
-recorded here as **retired outright** and owes no "Subsumed" row. The eight
-deleted test functions (88 collected nodes, several parametrised over every
-ledger citation) are: test_cited_line_contains_cited_symbol,
-test_no_new_expression_todo_cells,
-test_mutation_a_todo_new_expression_cell_is_caught,
-test_every_row_has_at_least_one_citation,
-test_every_cited_test_node_id_collects,
-test_gap_cells_are_the_literal_marker_not_a_disguised_citation,
-test_mutation_a_wrong_line_number_is_caught,
-test_mutation_a_nonexistent_node_id_is_caught (all also `fast` and `smoke`:
-in-process, no real engine/`ralphctl` spawn). Net effect on
-`docs/testing.md`'s tier-wide counts: fast 5720 -> 5632, smoke 4113 -> 4025,
-modules 361 -> 360; the records-family lane (`tests/records/`, selected by
-directory) drops 204 -> 116 tests, 6 -> 5 modules (see `docs/testing.md`'s own
-dated entry for the re-measurement), and that lane's own ceilings are
-ratcheted downward with it in the same wave, per the same ruling point: its
-collection budget 300 -> 150 (both in `docs/testing.md`'s budget row and in
-`tests/records/test_records_family_budget.py`'s `COLLECTED_BUDGET`, which
-restate one number in two places) and its module budget 15 -> 8. Its 30 s
-wall-clock ceiling is deliberately left where it was -- that ceiling exists
-for hardware slower than this container, and deleting a module is no evidence
-about that -- while the recorded wall clock itself is re-measured (13.93 s,
-the slowest of three repeats, now inside the unchanged 15 s PRD target). The nine self-referencing citations of
-the deleted module inside the ledger's own body are marked `!retired` per the
-reports' own existing convention, so the surviving generic report-claim
-checks (`tests/report_claims.py`) do not read a deleted test file as a live
-citation.
-
-## Retired outright (not Subsumed) -- the report-claims node-id checks
-
-Task 046 (v0.20.1, T-c, #113 step 4) retires, in `tests/report_claims.py`,
-`node_problems()` (the check that a live `path::node` citation is still a
-collectible test), the node branch of `retired_problems()` (the check that a
-`!retired`-marked node has STOPPED collecting), and their shared helper
-`defines_test()`, on the authority of operator ruling `001-039.md` point 3
-(`/config/amendments/001-039.md`): their subject is "a test node id cited by
-a historical report", and "a record written in a past wave is history; it is
-not a test, and the live tree is not obliged to keep its citations
-resolvable." No pytest-result-line check ever lived in `tests/report_claims.py`
-or `tests/records/test_report_claims.py` -- that vocabulary
-(`test_a_real_pytest_summary_line_is_a_pytest_result_line` and its two
-siblings) belonged entirely to `tests/sweep_sha_guard.py`, already retired
-outright by task 044; this task's half of the ruling's "pytest result line"
-clause was therefore already fully discharged and had nothing left to remove
-here.
-
-Parsing is unaffected -- `path::node`, `::node` and `::node!retired` tokens
-still populate `NodeClaim`/`RetiredClaim.node` and still count toward a
-report's claim-density floor (`test_every_report_passes_its_claim_checks`) --
-only the resolution work is gone, per ruling point 6 ("removes obligations,
-not the greenness bar"): the 2,089 live and 346 `!retired` test-node-id
-citations under `artifacts/reports/` this task measured before deleting
-anything (`.venv/bin/python` walking every report through
-`report_claims.parse_claims()`) are no longer individually verified, and
-none of them needed `!retired` marking to stay honest -- the check that
-would have read them as live citations is the thing removed, not the
-citations themselves.
-
-Surviving nodes, narrowed rather than deleted: `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks`
-(drops its `node_problems()` call), `test_the_retired_marker_direction_is_enforced`
-(drops its node-mutation half, path half unchanged),
-`test_the_claim_checks_have_exactly_one_implementation` (drops the
-`(async )?def ` fingerprint -- there is no longer a node-resolution
-implementation for a second copy to duplicate), and
-`tests/test_issue_traceability.py::test_every_path_and_test_node_this_report_names_exists`,
-renamed to `test_every_path_this_report_names_exists` (drops its
-`node_problems()` call; `len(claims.nodes) >= 500` in
-`test_the_report_still_carries_the_evidence_it_promised`, a density
-assertion rather than a resolution one, is untouched).
-
-| deleted node | surviving cover | landed in |
-|---|---|---|
-| `tests/records/test_report_claims.py::test_a_node_family_wildcard_needs_a_real_match` (de-backticked below) | `tests/records/test_report_claims.py::test_a_retired_node_citation_is_no_longer_checked` (opposite verdict, same fixture shape: a node id that plainly still collects, cited with `!retired`, must now NOT be flagged -- defines_test's wildcard-prefix matching this node pinned is deleted along with it, not merely exempted) | task 046, ruling `001-039.md` point 3 |
-
-Note on the row above: `tests/records/test_report_claims.py` and `tests/records/test_report_claims.py::test_a_retired_node_citation_is_no_longer_checked`
-are live, real citations (kept backticked); the deleted node's own name and
-`defines_test` (the helper deleted alongside it) are de-backticked here per
-the same convention task 044 used, since
-`tests/test_docs_consistency.py::test_every_backticked_identifier_in_the_docs_exists_in_the_code`
-reads a backticked bare identifier literally and neither name exists
-anywhere in the tree any more.
-
-Net effect on collected counts: **zero** -- one node deleted, one node
-added, both `fast`+`smoke`+`records`-lane, so `docs/testing.md`'s tier-wide
-counts (fast 5632, smoke 4025, modules 360) and the records-family lane
-(116 tests, 5 modules) are unchanged, re-measured directly at this task's
-own tip with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`
-and `.venv/bin/python -m pytest tests/records --collect-only -q`; neither
-`docs/testing.md` nor `tests/test_tier_budgets.py`'s targets nor
-`tests/records/test_records_family_budget.py`'s `COLLECTED_BUDGET` need any
-edit, and both count nodes
-(`tests/test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`,
-`tests/test_ledger_loopsupervisor_modules.py::test_ledger_list_matches_the_tree_exactly`)
-were already green before this task and stay green. No historical report
-was hand-edited or newly marked `!retired` for this retirement -- the point
-of removing the check is precisely that a report's existing node-id
-citations do not need it.
