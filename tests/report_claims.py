@@ -79,6 +79,26 @@ REPORTS_DIR = REPO_ROOT / "artifacts" / "reports"
 # file, and a live report may never be listed here to dodge a claim problem.
 FROZEN_REPORTS = frozenset({"conformance-ledger.md"})
 
+# A handful of settled reports from an earlier wave cite a path this wave is
+# authorised to remove (requirement A.4, v0.20.2: `artifacts/reports/
+# v0.20.1-lanes.md` is deleted), but the citing report itself may not be
+# edited to add a `!retired` marker in place: A.4 requires
+# `artifacts/reports/v0.20-lanes.md` stay byte-identical to its state at
+# this wave's launch sha, and `artifacts/reports/v0.20.1-closing-report.md`
+# may only be edited by its own later F.5 correction task. Each entry pins
+# the exact report/line/path of one PRE-EXISTING citation, so this cannot
+# silently grow to cover a fresh citation of the same path in a new report,
+# or a citation on a different line even in one of these two reports --
+# either of those still fails `path_problems` the ordinary way. This is
+# narrower than `FROZEN_REPORTS`: it exempts one citation, not a whole
+# report, so every other claim these two reports make is still checked.
+FROZEN_PATH_CITATIONS = frozenset({
+    ("v0.20-lanes.md", 256, "artifacts/reports/v0.20.1-lanes.md"),
+    ("v0.20-lanes.md", 272, "artifacts/reports/v0.20.1-lanes.md"),
+    ("v0.20-lanes.md", 275, "artifacts/reports/v0.20.1-lanes.md"),
+    ("v0.20.1-closing-report.md", 136, "artifacts/reports/v0.20.1-lanes.md"),
+})
+
 # Top-level directories this repo owns. A path claim outside them is prose
 # about somebody else's tree (see the module docstring).
 REPO_DIRS = ("tests", "src", "docs", "examples", "artifacts", "tools", "container")
@@ -525,6 +545,8 @@ def path_problems(claims: ReportClaims) -> list[str]:
     problems = []
     for claim in claims.paths:
         if _is_tracked(claim.value, tracked):
+            continue
+        if (claims.name, claim.line, claim.value) in FROZEN_PATH_CITATIONS:
             continue
         if (REPO_ROOT / claim.value).exists():
             problems.append(
