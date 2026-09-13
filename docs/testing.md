@@ -1175,3 +1175,14 @@ exercise. No module was added (the node lands in the same existing test
 module), so the module count is unchanged at 360. Measured directly at
 this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
 --collect-only -q`.
+
+**5634 (smoke 4027, modules 360 unchanged)** by v0.20.1 task 001, disclosing
+the drift left over the 5633/4026 task cure-01-01 last measured: task
+cure-01-01-3 (requirement F, commit `830acc4`) added +1 fast / +1 smoke node,
+`tests/test_pricing_aws.py::test_the_check_guard_passes_with_no_positional_source_against_the_shipped_table`,
+to the existing `tests/test_pricing_aws.py` module without restating the
+count here, which is what turned
+`tests/test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
+red again. No module was added (360 unchanged). Re-measured directly at
+this task's own iteration, at the workspace tip `830acc4`, with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`.
