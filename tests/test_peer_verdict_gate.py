@@ -954,6 +954,61 @@ def test_gate_rejection_all_curable_takes_a_cure_pass_not_a_replan(tmp_path):
     assert cure_outcome == ("advance", "worker", "cure_pass_appended")
 
 
+def _mixed_gate_findings() -> list[dict]:
+    return [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement A.3 curable clause (#192)",
+         "evidence": "the peer gate found a fixable gap",
+         "cured_when": "a cure task adds the missing behaviour"},
+        {"severity": "blocking", "curable": False,
+         "clause": "requirement A.3 non-curable clause (#192)",
+         "evidence": "an environment fact no cure task or fresh approach "
+                    "can change"},
+    ]
+
+
+def test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run(
+        tmp_path):
+    """Task 003 (PRD requirement A.3): the complement `_gate_cure_pass_
+    available`'s own docstring names -- a rejection carrying even one
+    non-curable blocking finding beside an otherwise-curable one never
+    takes the cure-pass edge (`findings.all_blocking_findings_curable`
+    requires the WHOLE blocking set, review's own mirror is
+    `test_a_mix_of_curable_and_incurable_findings_never_takes_the_cure_
+    pass` in `tests/test_cure_pass.py`), so this falls straight through to
+    the ordinary archive/replan-or-finish edges below, ending the run
+    exactly as it always has -- A.1 is never a claim that the gate can no
+    longer fail a run. Driven end to end through `_run_job_core()` (never
+    `_step_verdict_gate` in isolation) on the `test020-verdict-gate`
+    fixture (`_supervisor` above) with `max_approaches=1` -- the LAST
+    approach -- so a wrongly-taken cure pass would be the only thing
+    standing between this mixed rejection and a terminal `failed` state."""
+    root = tmp_path / "run"
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    findings.write_findings_json(run.verdict_gate_findings_json_file,
+                                 _mixed_gate_findings())
+    sup, final_state = _run_job(
+        root,
+        {"planning": [_plan()], "worker": [_worker_completes(TASK_1)],
+         "review": [_review_verifies()],
+         "verdict_gate": [_verdict_gate_rejects(
+             "one blocking finding is curable, the other is not")]},
+        peer_verdict_gate=True, max_approaches=1)
+
+    agent = sup.runner
+    assert agent.phases_seen == ["planning", "worker", "review", "verdict_gate"]
+    # a mixed rejection never takes the cure-pass edge -- it ends the run
+    # exactly like an all-incurable one does (`test_gate_on_rejection_
+    # with_no_approach_left_fails_open_to_finishing` above).
+    assert final_state == "failed", sup.run.read_status()
+    assert sup.run.read_status().get("verdict") == "unverified"
+    assert sup.run.read_status().get("gateCurePasses") is None
+    tasks = sup.run.read_tasks()["tasks"]
+    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert cure_tasks == []
+
+
 def test_the_gate_cure_pass_edge_is_declared_only_under_the_peer_delta():
     """The new edge exists ONLY when `peer_verdict_gate=True` -- `verdict_
     gate` has no reachable table entry at all when the gate is off, so
