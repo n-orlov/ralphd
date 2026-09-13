@@ -1156,3 +1156,15 @@ no new collected nodes). Net from the pre-restoration 5634/4027/360:
 +98 fast, +98 smoke, +2 modules -> 5732/4125/362. Re-measured directly at
 this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
 --collect-only -q`.
+
+**5732 (smoke 4125, modules 362, unchanged) -- 2026-09-13, re-take of
+v0.20.1 task 001, at `2694209`.** cure-02-01's own push (restoring
+`artifacts/reports/v0.20.1-lanes.md` and dispatching a fresh sweep) added
+no test or module: this entry re-measures the fast/smoke tiers at task
+001's re-take, freezing this commit as the wave's final code sha, rather
+than copying the 5732/4125/362 the previous (cure-02-02) entry already
+states. Measured directly at the workspace tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5732/5837 tests collected (105 deselected)`, smoke:
+`4125/5837 tests collected (1712 deselected)`), with the module count taken
+from the fast tier's distinct collected module paths.
