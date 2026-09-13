@@ -1610,3 +1610,33 @@ still passes. `path::node` claims are still parsed and still count toward the
 "not claimless" density floor in `test_every_report_passes_its_claim_checks` -- they
 remain evidence of what a report is about, they are simply no longer re-verified to
 still resolve.
+
+### Kept, unweakened: A.5's four protected items (requirement A.5, v0.20.2, #113 step 4)
+
+Requirement A.5 of `docs/prds/v0.20.2-a-requirement-cannot-be-orphaned.md` names four
+items as **not authorised for removal**, weakening or deselection during this wave,
+and each is attested here present and passing, unchanged from its pre-wave shape:
+
+- `tests/records/test_ralphctl_process_boundary.py` -- the process-spawn allowlist
+  invariant. Sits under `tests/records/` by directory accident, not by subject; A.5
+  is explicit that the accident is not grounds to fold it into any of A.1-A.4's
+  removals.
+- the dangling-commit-sha reachability check -- `commit_problems()` in
+  `tests/report_claims.py`, covered by
+  `tests/records/test_report_claims.py::test_a_dangling_commit_sha_fails_and_a_reachable_one_passes`.
+  A.3 above retires the result-line and historical-node-id claim checks that lived
+  alongside it in the same module; this one is the anti-fabrication guard A.3 itself
+  names as kept, and A.5 restates it as separately protected.
+- `tests/test_docs_semantics.py` -- shipped documentation is checked against what the
+  code actually does, the same over-claiming class the peer verdict gate rejected
+  v0.20 for.
+- `tests/records/test_roadmap.py` -- PRD/roadmap accounting, out of scope for this
+  wave's test-suite consolidation.
+
+None of the four was touched by tasks 001-006 of this wave. Re-measured at this task's
+own tip: `pytest -q tests/records/test_ralphctl_process_boundary.py
+tests/test_docs_semantics.py tests/records/test_roadmap.py
+tests/records/test_report_claims.py` -- **170 passed** in 5.25s, 0 failed, 0 skipped,
+0 deselected. `git ls-files` still lists all three module paths (the fourth, the
+dangling-sha check, is a function inside `tests/report_claims.py` / covered by a test
+inside `tests/records/test_report_claims.py`, not a module of its own).
