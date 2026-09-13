@@ -8907,8 +8907,15 @@ class LoopSupervisor:
         # approach_left` below already ends the run without any approach
         # left to protect, so there is nothing for this edge to add there).
         if approach < self.cfg.max_approaches:
-            findings_list = self._review_findings()
-            signature = self._review_rejection_signature(findings_list)
+            # Task 015 (PRD requirement F.1, #198): the channel's second
+            # return value -- `_review_findings()` alone collapses "no
+            # channel" and "channel present but unreadable" into the same
+            # `None`, and the signature must not (see `_review_rejection_
+            # signature`'s docstring for why that distinction is the whole
+            # point of this task).
+            findings_list, channel_errors = self._review_findings_channel()
+            signature = self._review_rejection_signature(
+                findings_list, channel_errors)
             if self._repeated_rejection_signature(approach, signature):
                 self._pause_and_escalate_repeated_rejection_signature(
                     approach, signature)
@@ -9201,7 +9208,8 @@ class LoopSupervisor:
             self.notifier(text)
 
     def _review_rejection_signature(
-        self, findings_list: list[dict] | None
+        self, findings_list: list[dict] | None,
+        channel_errors: list[str] | None = None,
     ) -> str | None:
         """Task 016 (PRD requirement E.5, #190): a stable signature for a
         review REJECTION's own blocking-clause set, mirroring `_blocker_
@@ -9211,20 +9219,45 @@ class LoopSupervisor:
         unmoved" this run can hit, this time on review's own findings
         channel rather than a free-text blocker.
 
-        `findings_list` is the caller's own `_review_findings()` result --
-        the SAME post-downgrade list `_review_findings_channel` already
-        produced for this verdict, never re-read from disk here -- so a
-        CONFIRMED petition adjudication that already downgraded a finding
-        out of the blocking set is reflected in this signature exactly as
-        it is everywhere else that list feeds.
+        `findings_list` is the caller's own `_review_findings()`/
+        `_review_findings_channel()` result -- the SAME post-downgrade
+        list `_review_findings_channel` already produced for this verdict,
+        never re-read from disk here -- so a CONFIRMED petition
+        adjudication that already downgraded a finding out of the
+        blocking set is reflected in this signature exactly as it is
+        everywhere else that list feeds.
+
+        Task 015 (PRD requirement F.1, #198): `channel_errors` is that same
+        call's SECOND return value -- `_review_findings_channel`'s third
+        case, a findings channel PRESENT on disk that does not re-validate
+        (truncated, hand-edited, or a finding missing a required field).
+        `findings_list` alone is `None` for that case AND for "no channel
+        at all", collapsing two very different walls into one sentinel --
+        v0.20.1's own peer verdict gate hit exactly this on shipped code:
+        two approaches burned on an identical `missing required field
+        'evidence'` channel error with `notifications: []`, because nothing
+        was ever recorded to match against. When `channel_errors` is
+        non-empty, the signature is derived from THAT rejection error text
+        itself -- there is no findings list to derive a clause-based
+        signature from at all in this case -- so two identical channel
+        failures produce the identical signature and the second one
+        reaches `_repeated_rejection_signature`'s match. Checked FIRST,
+        ahead of the `findings_list is None` branch below, precisely
+        because an unreadable channel also reports `findings_list is None`
+        (`_review_findings_channel`'s third case) and must not fall into
+        that branch's `None` return.
 
         `None` when there is no channel at all (nothing to compare, same
         missing-entry default every sibling signature uses) or the
-        blocking-clause set is empty (a residual-only or contract-error
-        rejection has no blocking WALL to repeat) -- an absent signature
-        never matches another absent one, so a content-free rejection
-        never falsely triggers the repeat guard.
+        blocking-clause set is empty (requirement F.2: a residual-only or
+        contract-error rejection has no blocking WALL to repeat, and that
+        exclusion must survive unchanged) -- an absent signature never
+        matches another absent one, so a content-free rejection never
+        falsely triggers the repeat guard.
         """
+        if channel_errors:
+            text = "; ".join(sorted(channel_errors))
+            return "channel-error: " + self._normalize_blocker_signature_text(text)
         if findings_list is None:
             return None
         clauses = findings.blocking_finding_clauses(findings_list)
@@ -9274,7 +9307,8 @@ class LoopSupervisor:
         return previous is not None and previous == signature
 
     def _repeated_rejection_signature_escalation_text(
-        self, approach: int, blocking: list[dict], signature: str | None
+        self, approach: int, blocking: list[dict], signature: str | None,
+        channel_errors: list[str] | None = None,
     ) -> str:
         """The operator-facing escalation body for a `rejected_repeated_
         signature` pause -- the same shape as `_last_approach_rejection_
@@ -9284,6 +9318,17 @@ class LoopSupervisor:
         blocking-clause signature rejected the immediately preceding
         approach too, so a fresh approach would almost certainly repeat
         the identical wall rather than make progress on it.
+
+        Task 015 (PRD requirement F.1, #198): `channel_errors`, when
+        non-empty, IS the wall this pause is naming -- an unreadable
+        findings channel has no blocking findings to list at all
+        (`blocking` is always empty for that case), so without this the
+        escalation would show a signature and zero findings, telling the
+        operator nothing about what actually repeated. Printed instead of
+        the per-finding loop below, never alongside it -- the two cases
+        (a readable rejection with a repeating blocking-clause set, an
+        unreadable channel with a repeating error) are mutually exclusive
+        by construction (`_review_rejection_signature`).
         """
         lines = [
             f"Run {self.cfg.run_id} approach {approach}: review rejected "
@@ -9298,6 +9343,13 @@ class LoopSupervisor:
             f"signature: {signature}",
             "",
         ]
+        if channel_errors:
+            lines.append(
+                "the findings channel itself is unreadable (PRD requirement "
+                "F.1, #198) -- the same channel error repeated:")
+            for error in channel_errors:
+                lines.append(f"  {error}")
+            lines.append("")
         for index, finding in enumerate(blocking, start=1):
             lines.append(f"Finding {index} (blocking):")
             lines.append(f"  clause: {finding.get('clause', '')}")
@@ -9317,14 +9369,24 @@ class LoopSupervisor:
         whether a notifier is wired in -- requirement E.5's "notify" through
         the engine's own alert path, never only through a notifier that
         might not be configured).
+
+        Task 015 (PRD requirement F.1, #198): re-reads the channel
+        independently (`_review_findings_channel`, not `_review_
+        findings()`) so an UNREADABLE channel's own error text is
+        available to name in the escalation -- `blocking` stays empty for
+        that case (there is no findings list to draw it from), but
+        `channel_errors` fills the gap instead of leaving the operator an
+        escalation naming zero findings for zero visible reason.
         """
-        findings_list = self._review_findings() or []
-        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        findings_list, channel_errors = self._review_findings_channel()
+        blocking = [f for f in (findings_list or [])
+                   if f.get("severity") == "blocking"]
         text = self._repeated_rejection_signature_escalation_text(
-            approach, blocking, signature)
+            approach, blocking, signature, channel_errors)
         self.run.emit("operator_escalation", approach=approach,
                       reason="rejected_repeated_signature", findings=blocking,
-                      signature=signature, escalation=text)
+                      channelErrors=channel_errors, signature=signature,
+                      escalation=text)
         self.pause(reason="rejected_repeated_signature")
         if self.notifier is not None:
             self.notifier(text)

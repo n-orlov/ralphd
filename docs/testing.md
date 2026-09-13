@@ -162,6 +162,23 @@ deselected)`, smoke: `4040/5752 tests collected (1712 deselected)`).
 tests/375 modules fast, 4300/260 smoke) still carry headroom for the
 remaining pre-freeze tasks.
 
+**5650 (smoke 4043, modules unchanged at 363) by v0.20.2 task 015
+(requirement F.1-F.5): the unreadable-findings-channel rejection
+fingerprint.** Three more named tests join the existing
+`tests/test_repeated_rejection_signature.py` (no new module): a second
+identical unreadable-channel rejection pauses through `_pause_and_
+escalate_repeated_rejection_signature`, a differently-worded channel error
+replans normally instead, and the residual-only/no-wall case stays
+distinguishable from the unreadable-channel case. All three are `smoke` as
+well as `fast`, mirroring the module's existing tests; net +3 fast, +3
+smoke, +0 modules. From 5647/4040/363: **5650/4043/363**. Re-measured
+directly at this task's own tip with `.venv/bin/python -m pytest -m
+<fast|smoke> --collect-only -q` (fast: `5650/5755 tests collected (105
+deselected)`, smoke: `4043/5755 tests collected (1712 deselected)`).
+`tests/records/` is unaffected (116 unchanged). Both ceilings (5800
+tests/375 modules fast, 4300/260 smoke) still carry headroom for the
+remaining pre-freeze tasks.
+
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4038 | 248 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |

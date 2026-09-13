@@ -257,3 +257,176 @@ def test_no_findings_channel_never_trips_the_repeat_guard(tmp_path):
 
     assert outcome == ("advance", "replan", "rejected_approach_left")
     assert not _events(root, "operator_escalation")
+
+
+# ===========================================================================
+# 5. Task 015 (PRD requirement F.1/F.3, #198): an UNREADABLE findings
+#    channel -- present on disk, but does not re-validate -- fingerprints
+#    the rejection ERROR itself, so a second identical channel failure
+#    pauses through this exact edge exactly like a readable rejection's own
+#    repeating blocking-clause set already does above. `_review_findings()`
+#    alone (`_review_findings_channel()[0]`) cannot tell "no channel" apart
+#    from "a channel present but unreadable" -- both read `None` -- so
+#    this drives the SAME real `_step_review()` -> `_run_review_iteration`
+#    -> `_review_contract_ladder` -> `_review_verdict` path every other
+#    test in this module does, over a genuinely unreadable sidecar the
+#    real `_review_findings_channel` reads off disk (never faked/mocked).
+# ===========================================================================
+
+
+def _write_unreadable_channel(sup) -> None:
+    """A findings sidecar PRESENT on disk that does not re-validate --
+    `findings.read_findings_json`'s third case -- because the one blocking
+    finding in it is missing its required `evidence` field. Written with a
+    raw `write_text`, never `findings.write_findings_json` (which refuses
+    to write an invalid channel at all) -- this is the on-disk state only
+    a hand-edit/corruption/partially-malformed write produces."""
+    payload = [{"severity": "blocking", "curable": True,
+               "clause": "requirement F.1 (#198): the channel itself"}]
+    sup.run.findings_json_file.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_second_identical_unreadable_channel_rejection_pauses(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=3)
+    sup._approach = 2
+    sup.cfg.contract_retry_max = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    _write_unreadable_channel(sup)
+    # The real channel read (never faked in this test) is what approach 1's
+    # own recorded signature must equal, exactly as `_record_rejection_
+    # signature` would have persisted it live off THIS SAME formula.
+    _, channel_errors = sup._review_findings_channel()
+    assert channel_errors, "fixture channel must actually fail to re-validate"
+    sup.run.update_status(rejectionSignatures={
+        "1": "channel-error: " + sup._normalize_blocker_signature_text(
+            "; ".join(sorted(channel_errors)))})
+
+    async def _review_rejects(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected",
+            "reason": "the findings channel cannot even be read",
+        }))
+
+    async def _stub_contract_fix(hat, errors, **kw):
+        # The hat never repairs the sidecar on re-ask -- exactly what a
+        # genuinely stuck second approach would actually produce, and the
+        # real ladder (`contract_enforcement.enforce_contract`) still
+        # re-reads the channel fresh on this attempt too (`extra_validate`)
+        # before giving up.
+        return json.dumps({"verdict": "rejected",
+                          "reason": "still cannot read the channel"}), {}
+
+    sup.runner.run = _review_rejects  # type: ignore[method-assign]
+    sup._ask_contract_fix = _stub_contract_fix  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_review())
+
+    assert outcome == ("advance", "paused", "rejected_repeated_signature")
+    assert sup._pause.is_set() is False
+    status = sup.run.read_status()
+    assert status.get("pauseReason") == "rejected_repeated_signature"
+    assert status.get("state") not in ("succeeded", "failed")
+
+    # never archived, never a composite PRD -- the approach is left for a
+    # resume to re-review, exactly like the readable-rejection case above.
+    assert not (root / "approaches" / "02").exists()
+    assert not sup.run.composite_prd_file.exists()
+    assert sup._approach == 2
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    assert escalations[0]["reason"] == "rejected_repeated_signature"
+    # no findings LIST at all -- the channel itself, not a blocking
+    # finding, is the wall that repeated.
+    assert escalations[0]["findings"] == []
+    assert escalations[0]["channelErrors"] == channel_errors
+
+    assert len(notifier.messages) == 1
+    text = notifier.messages[0]
+    assert channel_errors[0] in text
+    assert "ralphctl resume task016-repeated-rejection-signature" in text
+
+
+def test_a_different_channel_error_never_matches_and_replans_normally(tmp_path):
+    """A different unreadable-channel error text (a different malformed
+    payload, so a different message) is not a repeat -- the ordinary
+    archive/replan edge still fires, mirroring section 3's readable-
+    rejection case above."""
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=3)
+    sup._approach = 2
+    sup.run.update_status(rejectionSignatures={
+        "1": "channel-error: some entirely different error text"})
+
+    _write_unreadable_channel(sup)
+
+    async def _review_rejects(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected",
+            "reason": "the findings channel cannot even be read",
+        }))
+
+    async def _stub_contract_fix(hat, errors, **kw):
+        return json.dumps({"verdict": "rejected",
+                          "reason": "still cannot read the channel"}), {}
+
+    sup.runner.run = _review_rejects  # type: ignore[method-assign]
+    sup.cfg.contract_retry_max = 1
+    sup._ask_contract_fix = _stub_contract_fix  # type: ignore[method-assign]
+
+    outcome = asyncio.run(sup._step_review())
+
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert not _events(root, "operator_escalation")
+    status = sup.run.read_status()
+    signatures = status.get("rejectionSignatures") or {}
+    assert signatures.get("2", "").startswith("channel-error: ")
+
+
+# ===========================================================================
+# 6. Task 015 (PRD requirement F.2, #198): the residual-only / empty-
+#    blocking case MUST keep returning no signature, and must stay
+#    distinguishable from the unreadable-channel case above -- both
+#    ultimately read `findings_list is None` through `_review_findings()`
+#    alone, but only one of them is a wall to repeat.
+# ===========================================================================
+
+
+def test_a_residual_only_rejection_still_yields_no_signature_unlike_an_unreadable_channel(
+        tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=3)
+
+    # A VALID channel with nothing blocking in it -- no wall at all, per
+    # requirement F.2, and this exclusion must survive unchanged.
+    residual_only = [_finding("residual", False,
+                              "requirement Q: cosmetic only",
+                              "nothing here ever blocked anything")]
+    findings.write_findings_json(sup.run.findings_json_file, residual_only)
+    findings_list, channel_errors = sup._review_findings_channel()
+    assert channel_errors == []
+    assert findings_list == residual_only
+    assert sup._review_rejection_signature(findings_list, channel_errors) is None
+
+    # The SAME run dir, now with an UNREADABLE channel (F.1) -- missing the
+    # required `evidence` field. `_review_findings()` alone reads BOTH of
+    # these as the bare fact "findings_list is None" would too if it were
+    # asked about this second state instead -- but this one IS a wall to
+    # repeat, unlike the residual-only case just proven above.
+    _write_unreadable_channel(sup)
+    findings_list, channel_errors = sup._review_findings_channel()
+    assert findings_list is None
+    assert channel_errors
+    signature = sup._review_rejection_signature(findings_list, channel_errors)
+    assert signature is not None
+    assert signature.startswith("channel-error: ")
+
+    # And "no channel at all" -- the THIRD shape `findings_list is None`
+    # covers -- stays `None` too, never confused with the unreadable case.
+    sup.run.findings_json_file.unlink()
+    findings_list, channel_errors = sup._review_findings_channel()
+    assert (findings_list, channel_errors) == (None, [])
+    assert sup._review_rejection_signature(findings_list, channel_errors) is None
