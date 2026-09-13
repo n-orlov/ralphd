@@ -76,8 +76,16 @@ def test_every_report_passes_its_claim_checks() -> None:
         problems.extend(retired_problems(claims))
         # "not all claimless": a report is evidence, it must point at
         # something checkable, and this also stops a report from passing
-        # the four checks above by naming nothing at all.
-        total = len(claims.shas) + len(claims.paths) + len(claims.nodes)
+        # the four checks above by naming nothing at all. A `!retired`
+        # citation counts too (requirement A.1, v0.20.2): it is still
+        # checked, just in the strong direction (retired_problems requires
+        # it NOT resolve) -- a report that names several now-retired sweep-
+        # sha citations, after A.1 deleted the files they pointed at, is not
+        # thereby claimless.
+        total = (
+            len(claims.shas) + len(claims.paths) + len(claims.nodes)
+            + len(claims.retired)
+        )
         if total < 5:
             problems.append(
                 f"{report.name}: makes almost no checkable claim ({total})"

@@ -5,14 +5,15 @@
 # It runs on GitHub's own runners deliberately: it is the most frequently
 # executed lane, it needs no docker socket and no browser, and a check run
 # signed by GitHub's app is the attestation the review contract is meant to
-# read (docs/sweep-records.md's self-authored ledger is what this replaces).
+# read -- the self-authored sweep-sha ledger this replaces is retired
+# entire (requirement A.1, v0.20.2).
 #
 # `-m fast` is a superset of `-m smoke` and of `tests/records/` (5329 of 5409
-# collected at 3bd7199; records is 199 of them, the sweep-sha guard 26), so
-# this one selection covers the records lint and both per-task tiers. The
-# records step runs first anyway -- it is ~10 s and a docs- or report-only
-# commit that breaks a claim checker should say so in seconds rather than
-# after the whole tier.
+# collected at 3bd7199; records is 199 of them), so this one selection
+# covers the records lint and both per-task tiers. The records step runs
+# first anyway -- it is ~10 s and a docs- or report-only commit that breaks
+# a claim checker should say so in seconds rather than after the whole
+# tier.
 #
 # What this lane deliberately does NOT cover: the docker tier, the browser
 # tier and the dev-layout matrix. Those are heavy.yml and nightly.yml, on the
@@ -48,9 +49,9 @@ jobs:
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The records lint and the sweep-sha guard read real git history
-          # (tests/report_claims.py resolves declared shas against the object
-          # store), so a depth-1 checkout would fail them for the wrong reason.
+          # The records lint reads real git history (tests/report_claims.py
+          # resolves declared shas against the object store), so a depth-1
+          # checkout would fail it for the wrong reason.
           fetch-depth: 0
 
       - name: Set up Python
@@ -68,22 +69,18 @@ jobs:
           echo "cores: $(nproc)"
           python -m pytest --version
 
-      # THE FORMER ONE CARVE-OUT IS GONE (task 053, #113 step 4).
+      # THE SWEEP-SHA PRACTICE IS RETIRED ENTIRE (requirement A.1, v0.20.2).
       #
-      # `test_every_declared_sweep_sha_is_current_or_discharged` used to
-      # assert that every `sweep-sha` declared in artifacts/reports/ was
-      # either literally HEAD or discharged to HEAD by a hand-maintained
-      # chain -- a claim that is HEAD-relative by construction, so it could
-      # only ever hold on the one commit a wave ends at, and could never
-      # hold on a pull request head at all. That test, the currency check it
-      # exercised, the discharge chain and the self-anchoring acceptance walk
-      # (#174) are all deleted outright: a GitHub-signed check run keyed to
-      # the sha is the attestation review reads now, and `sha_missing_problems`
-      # (`test_every_sweep_record_declares_a_sha`) is the one lint that
-      # remains -- every record names *some* sha, full stop.
-      - name: Records lint and sha guards
+      # `tests/sweep_sha_guard.py`, `tests/test_sweep_sha_guard.py` and
+      # `docs/sweep-records.md` are deleted outright -- not just the
+      # HEAD-relative currency check and discharge chain a previous wave
+      # already trimmed this down to (task 053, #113 step 4), but the last
+      # surviving lint too ("every record names some sha"). A GitHub-signed
+      # check run keyed to the sha is the attestation review reads now; a
+      # markdown file declaring a sha inside a fenced block is not.
+      - name: Records lint
         run: |
-          python -m pytest -q tests/records/ tests/test_sweep_sha_guard.py
+          python -m pytest -q tests/records/
 
       # `-n 2 --dist loadfile`: loadfile keeps a module's tests on one
       # worker, which is what this suite's module-scoped fixtures assume

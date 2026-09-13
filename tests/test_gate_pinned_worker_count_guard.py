@@ -13,9 +13,11 @@ discipline `tests/test_ci_dev_layout_matrix_guard.py` uses for
 non-vacuous by mutating a deep copy back to `-n auto` in a scratch fixture
 under `tmp_path` (never under `.github/`) and confirming it fires there.
 
-The records-lint step (`Records lint and sha guards`) is a separate `steps`
-entry with its own `name` and is asserted unchanged -- this guard only
-inspects the step whose `run` invokes `-m fast`.
+The records-lint step (`Records lint`) is a separate `steps` entry with its
+own `name` and is asserted unchanged -- this guard only inspects the step
+whose `run` invokes `-m fast`. The step's name and run line were updated by
+requirement A.1 (v0.20.2, the sweep-sha retirement): `tests/test_sweep_sha_
+guard.py` no longer exists, so the records-lint step no longer invokes it.
 """
 
 from __future__ import annotations
@@ -29,8 +31,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GATE_PATH = REPO_ROOT / ".github" / "workflows" / "gate.yml"
 
-RECORDS_STEP_NAME = "Records lint and sha guards"
-RECORDS_STEP_RUN = "python -m pytest -q tests/records/ tests/test_sweep_sha_guard.py"
+RECORDS_STEP_NAME = "Records lint"
+RECORDS_STEP_RUN = "python -m pytest -q tests/records/"
 
 # A numeric `-n` value: `-n 2`, `-n2`, `-n 12` all count; `-n auto` does not.
 NUMERIC_N_RE = re.compile(r"-n\s*\d+\b")

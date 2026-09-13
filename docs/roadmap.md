@@ -1227,7 +1227,7 @@ record. Requirement letters below are the PRD's own, `A`-`S`.
   because a `discharge-sha` line can only name a sha that already exists, so the commit that
   adds it always moves `HEAD` one past the chain it discharges — fixed by accepting a
   report-only tail past the chain's end (task 003, `d46199c`). Both fixes are pinned by tests
-  that fail against the pre-change code (`tests/test_sweep_sha_guard.py`,
+  that fail against the pre-change code (test_sweep_sha_guard.py (retired, task 003, v0.20.2),
   `tests/test_final_sha_guards_discovery.py`). A third defect surfaced only once approach 3
   reviewed the mechanism's own reach: the mandatory `sweep-sha` declaration applied only to
   filenames beginning `v0.14-`, so dozens of real sweep records outside that prefix carried a

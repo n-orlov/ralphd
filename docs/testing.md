@@ -146,8 +146,8 @@ on: `3 failed, 5405 passed, 1 skipped, 9 warnings in 2047.32s (0:34:07)`, exit
 status **1** (captured by the wrapper's own `$?`, not inferred). The three
 failing node ids are pre-existing at this sha, unrelated to this mode or this
 row (confirmed against a plain in-container run at the same sha):
-`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`,
-`tests/test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`, and
+`test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`,
+`test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`, and
 `tests/test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`
 (the live fast-tier drift disclosed further below, in the "What moved the
 numbers" section). The placed skill
@@ -221,8 +221,8 @@ that row's third failure,
 `test_tier_budgets.py::test_the_tier_wide_count_targets_are_met_or_disclosed`,
 is gone here because task 006's own commit already added the fast-tier drift
 disclosure that test checks for):
-`tests/test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`
-and `tests/test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`.
+`test_sweep_sha_guard.py::test_every_declared_sweep_sha_is_current_or_discharged`
+and `test_sweep_sha_guard.py::test_every_sweep_record_declares_a_sha`.
 The placed skill (`host-layout-smoke-skill`) SURVIVED the run. Collected
 counts (5409 tests / 334 modules) come from a plain `--collect-only` pass
 over the same tree in this container's own `.venv` -- identical to the unset
@@ -670,7 +670,7 @@ from a deep copy of the real workflow. None spawns a real engine or
 unchanged.
 
 **5659 (smoke 4062, modules unchanged at 351)** by task 053 (v0.20, #113
-step 4): net -17 nodes in `tests/test_sweep_sha_guard.py` (27 -> 10) --
+step 4): net -17 nodes in `test_sweep_sha_guard.py` (27 -> 10) --
 the entire currency/discharge-chain/self-anchoring machinery and every test
 node that existed only to exercise it, deleted with no in-process
 replacement, since the retirement has no successor test to fold into --
@@ -1146,7 +1146,7 @@ this task's own iteration, at the workspace tip `830acc4`, with
 the sweep-sha and conformance-ledger guard coverage that v0.20.1 tasks
 044/045/046 had removed under operator ruling `001-039.md` -- a
 review finding for approach 2 held that ruling not binding for that
-review, so its removals are reverted (`tests/test_sweep_sha_guard.py`,
+review, so its removals are reverted (`test_sweep_sha_guard.py`,
 `tests/sweep_sha_guard.py`, `docs/sweep-records.md` restored: +10 fast /
 +10 smoke nodes, +1 module; `tests/records/test_conformance_ledger.py`
 restored: +88 fast / +88 smoke nodes, +1 module; the historical
@@ -1168,3 +1168,22 @@ states. Measured directly at the workspace tip with
 `5732/5837 tests collected (105 deselected)`, smoke:
 `4125/5837 tests collected (1712 deselected)`), with the module count taken
 from the fast tier's distinct collected module paths.
+
+**5723 (smoke 4116, modules 362, unchanged) by v0.20.2 task 003
+(requirement A.1, #113 step 4): the sweep-sha practice retired entire.**
+`test_sweep_sha_guard.py` (10 fast/10 smoke nodes) and
+`tests/sweep_sha_guard.py` (its implementation, no test nodes of its own)
+are deleted outright, along with `docs/sweep-records.md`; the sweep
+enforcement is removed from `.github/workflows/gate.yml`'s "Records lint"
+step and there was never an invocation in `.github/workflows/nightly.yml`
+to remove. A new `tests/test_sweep_guard_retired.py` (1 fast/1 smoke node)
+is the named test the requirement itself asks for, parsing both workflow
+files and asserting neither one's `run:` step invokes the retired guard.
+Net: -10 +1 = -9 fast, -9 smoke, module count unchanged at 362 (one module
+removed, one added). From the pre-task 5732/4125/362:
+5723/4116/362. Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5723/5828 tests collected (105 deselected)`, smoke:
+`4116/5828 tests collected (1712 deselected)`). `tests/records/` is
+unaffected (204 unchanged): none of the three deleted paths lived under
+`tests/records/`.
