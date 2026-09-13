@@ -102,12 +102,32 @@ unchanged): neither touched module lives under `tests/records/`. Both
 ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
 headroom for the remaining pre-freeze tasks.
 
+**5638 (smoke 4031, modules 360->361) by v0.20.2 task 010 (requirement
+B.2, #197): `ralphctl start --notifier-url`.** Seven named tests land in
+the new `tests/test_notifier_url_flag.py` module: the shipped default is
+unconfigured, a `job.yaml` `notifier_url` key alone reaches `JobConfig`,
+`RALPHD_NOTIFIER_URL` reaches it with no `job.yaml` at all, the env var
+beats an explicit `job.yaml` key in both directions, and `ralphctl start
+--notifier-url` both persists the value into the run's own `job.yaml`
+and leaves the key out entirely when the flag is absent -- the last two
+driven through `tests/test_cli_docker.py`'s in-process `ctl` fixture
+(stub docker, no real container). None of the seven spawns a real engine
+or CLI process, so all seven are `smoke` as well as `fast`; net +7 fast,
++7 smoke, +1 module in each (the new module). From the pre-task
+5631/4024/360: **5638/4031/361**. Re-measured directly at this task's own
+tip with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`
+(fast: `5638/5743 tests collected (105 deselected)`, smoke: `4031/5743
+tests collected (1712 deselected)`). `tests/records/` is unaffected (116
+unchanged): the new module lives directly under `tests/`. Both ceilings
+(5800 tests/375 modules fast, 4300/260 smoke) still carry headroom for
+the remaining pre-freeze tasks.
+
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4022 | 245 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
-| smoke, serial | `smoke` | `-m smoke` | 4022 | 245 | 147.68 s | 4300 | 260 | 200 s | < 120 s | MISSED -- 147.68 s measured against the 120 s target |
-| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5629 | 360 | 80.12 s | 5800 | 375 | 150 s | < 120 s | met -- 80.12 s inside the 120 s target |
-| fast, serial | `fast` | `-m fast` | 5629 | 360 | 540.44 s (stale wall clock, not retaken this task -- see note below) | 5800 | 375 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
+| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4031 | 246 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
+| smoke, serial | `smoke` | `-m smoke` | 4031 | 246 | 147.68 s | 4300 | 260 | 200 s | < 120 s | MISSED -- 147.68 s measured against the 120 s target |
+| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5638 | 361 | 80.12 s | 5800 | 375 | 150 s | < 120 s | met -- 80.12 s inside the 120 s target |
+| fast, serial | `fast` | `-m fast` | 5638 | 361 | 540.44 s (stale wall clock, not retaken this task -- see note below) | 5800 | 375 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
 | records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 116 | 5 | 11.35 s | 150 | 10 | 30 s | < 15 s | met -- 11.35 s inside the 15 s target |
 | dev-layout, `PYTHONUSERBASE` unset (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |

@@ -3849,6 +3849,7 @@ returns immediately.
 | `--model-strategy` (retired) | n/a | same shape as `--fast-model` above -- accepted-but-hidden, refused with exit `2` naming the replacement |
 | `--thinking LEVEL` | unset | `pi` thinking level |
 | `--price-strategy S` | `none` | derive a cost for routes the provider does not price (or prices with an implausible zero): `aws` uses the built-in Bedrock rate table (§8.6) |
+| `--notifier-url URL` | unset | endpoint the notify hat tool POSTs operator updates to (PRD requirement B.2, #197); written to `job.yaml` as `notifier_url` (§10.2 precedence: `RALPHD_NOTIFIER_URL` beats it, a hand/template-set `job.yaml` key without the flag still reaches it, unset means unconfigured) |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |
 | `--llm-env KEY=VAL` | none | extra env for the LLM wiring; repeatable |
 | `--llm-header 'Name: value'` | none | set this HTTP header on every provider of the resolved pi config (`Name=value` also accepted; repeatable; a same-named header the profile already carries is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host, task 044, #177) |

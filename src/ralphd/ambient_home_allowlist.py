@@ -139,7 +139,15 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # net +30 lines above every entry in this file, shifting each of
         # them by +30: 2006->2036, 2026->2056, 4519->4549, 4721->4751,
         # 4725->4755, 6547->6577, 6551->6581. Same reads, same reasons.
-        "line": "2036",
+        #
+        # v0.20.2 task 010 (requirement B.2, #197) added the `notifier_url`
+        # job-dict entry (+8) inside `cmd_start`, above every entry in this
+        # file (the `--notifier-url` argparse addition itself sits well
+        # below the last of these, so it shifts nothing here), shifting
+        # each of them by +8: 2036->2044, 2056->2064, 4549->4557,
+        # 4751->4759, 4755->4763, 6577->6585, 6581->6589. Same reads, same
+        # reasons.
+        "line": "2044",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -147,7 +155,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "2056",
+        "line": "2064",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
@@ -173,7 +181,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # the first of these), a net +9 for every entry from this one on:
         # 4510->4519, 4712->4721, 4716->4725, 6538->6547, 6542->6551. Same
         # reads, same reasons.
-        "line": "4549",
+        "line": "4557",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -183,7 +191,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4751",
+        "line": "4759",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -192,13 +200,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "4755",
+        "line": "4763",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
     {
         "path": "cli/main.py",
-        "line": "6577",
+        "line": "6585",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -206,7 +214,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6581",
+        "line": "6589",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
