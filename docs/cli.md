@@ -2916,8 +2916,14 @@ recorded non-terminal**, exactly like `runImageStaleness` above it:
 ```
 
 `--json`'s `unconfiguredNotifierRuns` is the plain list of those run ids.
-Never affects `ok`: an operator who never wanted notifications configured is
-not broken.
+Each run is judged on **its own persisted start-time state**, never on the
+shell `doctor` runs in: the run's `job.yaml` `notifier_url:` key, or a
+`RALPHD_NOTIFIER_URL=<value>` pair in the `--env`/`--forward-env` wiring
+`start` recorded for that run (which is what actually reaches its engine
+process as an environment variable). So exporting `RALPHD_NOTIFIER_URL` in
+your own shell before typing `ralphctl doctor` changes nothing about what is
+reported — it configured your shell, not any run. Never affects `ok`: an
+operator who never wanted notifications configured is not broken.
 
 #### `ralphctl doctor --fix` (self-recovery sweep)
 

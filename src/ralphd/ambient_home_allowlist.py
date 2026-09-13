@@ -217,9 +217,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `_run_notifier_configuration()` and its `NOTIFIER_UNCONFIGURED_
         # RUNS_HEADING` constant, and wired its result into `cmd_doctor`,
         # all above every entry from this one on -- a net +40, shifting
-        # each of them by +40: 6598->6638, 6602->6642. Same reads, same
-        # reasons.
-        "line": "6638",
+        # each of them by +40: 6598->6638, 6602->6642. That task's cure
+        # (per-run notifier state, `_run_notifier_url_configured()`) added
+        # 33 more lines in the same region: 6638->6671, 6642->6675. Same
+        # reads, same reasons.
+        "line": "6671",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -227,7 +229,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6642",
+        "line": "6675",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

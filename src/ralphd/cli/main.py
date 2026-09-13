@@ -6576,18 +6576,53 @@ def _run_image_staleness(source_hash: str | None) -> list[dict]:
     return entries
 
 
+NOTIFIER_URL_ENV_NAME = "RALPHD_NOTIFIER_URL"
+
+
+def _run_notifier_url_configured(run_id: str) -> bool:
+    """Whether ONE run's own engine process has a notifier URL to send to
+    (task 011, PRD requirement B.3).
+
+    Read from that run's own persisted start-time state, never from the
+    shell `doctor` happens to run in. The engine resolves its URL from
+    `RALPHD_NOTIFIER_URL` in ITS OWN process -- which, for a job
+    container, comes only from the `name=value` pairs `start` resolved and
+    recorded in `env-wiring.json` (`_read_extra_env_wiring`, replayed
+    verbatim as `-e` args on `resume`) -- else from its `job.yaml`'s own
+    `notifier_url:` key (`--notifier-url`, or a `--template`'s key; task
+    010). So `JobConfig.load()` is exactly the wrong reader here: it
+    layers the CALLING process's ambient `RALPHD_NOTIFIER_URL` over the
+    file, which would call a bare run configured merely because the
+    operator's own shell exports the variable, and would call a run whose
+    recorded wiring carries the variable unconfigured. Hence the raw read
+    of the `job.yaml` key, and the explicit read of the run's own wiring.
+    """
+    cdir = config_root(run_id)
+    for entry in _read_extra_env_wiring(cdir):
+        name, sep, value = str(entry).partition("=")
+        if sep and name.strip() == NOTIFIER_URL_ENV_NAME and value.strip():
+            return True
+    cfg_path = cdir / "job.yaml"
+    if not cfg_path.is_file():
+        return False
+    try:
+        raw = yaml.safe_load(cfg_path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    val = raw.get("notifier_url") if isinstance(raw, dict) else None
+    return isinstance(val, str) and bool(val.strip())
+
+
 def _run_notifier_configuration() -> list[str]:
     """Which runs recorded non-terminal have no `notifier_url` configured
-    (task 011, PRD requirement B.3): every one whose `job.yaml` carries no
-    `notifier_url` key and whose process never saw `RALPHD_NOTIFIER_URL`
-    (`JobConfig.load`, the same resolution `status`'s provisioning read
-    above uses) is a run whose `notify` hat tool calls are guaranteed
-    no-ops -- the same condition `LoopSupervisor` warns about once, at
-    startup, into that run's own `events.jsonl`
-    (`NOTIFIER_UNCONFIGURED_EVENT`); this mirrors it here so an operator
-    sees it without opening any one run's own log. Report-only, like
-    `runImageStaleness` beside it: an operator who never wanted
-    notifications is not broken.
+    (task 011, PRD requirement B.3): every one whose own persisted state
+    leaves its engine with no URL (`_run_notifier_url_configured` above)
+    is a run whose `notify` hat tool calls are guaranteed no-ops -- the
+    same condition `LoopSupervisor` warns about once, at startup, into
+    that run's own `events.jsonl` (`NOTIFIER_UNCONFIGURED_EVENT`); this
+    mirrors it here so an operator sees it without opening any one run's
+    own log. Report-only, like `runImageStaleness` beside it: an operator
+    who never wanted notifications is not broken.
     """
     runs_dir = registry() / "runs"
     if not runs_dir.is_dir():
@@ -6597,9 +6632,7 @@ def _run_notifier_configuration() -> list[str]:
         status = _read_json(d / "status.json", {})
         if not isinstance(status, dict) or status.get("state") not in NONTERMINAL_STATES:
             continue
-        cfg_path = config_root(d.name) / "job.yaml"
-        configured = cfg_path.is_file() and JobConfig.load(cfg_path).notifier_url is not None
-        if not configured:
+        if not _run_notifier_url_configured(d.name):
             unconfigured.append(d.name)
     return unconfigured
 

@@ -145,6 +145,23 @@ new module lives under `tests/records/`. Both ceilings (5800 tests/375
 modules fast, 4300/260 smoke) still carry headroom for the remaining
 pre-freeze tasks.
 
+**5647 (smoke 4040, modules unchanged at 363) by v0.20.2 task 011's cure
+pass (same requirement B.3): the `doctor` mirror reads each RUN's own
+persisted notifier state.** Two more named tests join the existing
+`tests/test_cli_doctor_notifier_config.py` (no new module): the shell
+`doctor` itself runs in cannot configure a bare run merely by exporting
+`RALPHD_NOTIFIER_URL`, and a run whose own recorded `--env`/`--forward-env`
+wiring carries that variable is quiet (with an empty value still counting
+as unconfigured). Both drive `ralphctl doctor` in-process against the same
+stub-docker registry, so both are `smoke` as well as `fast`; net +2 fast,
++2 smoke, +0 modules. From 5645/4038/363: **5647/4040/363**. Re-measured
+directly at the cure's own tip with `.venv/bin/python -m pytest -m
+<fast|smoke> --collect-only -q` (fast: `5647/5752 tests collected (105
+deselected)`, smoke: `4040/5752 tests collected (1712 deselected)`).
+`tests/records/` is unaffected (116 unchanged). Both ceilings (5800
+tests/375 modules fast, 4300/260 smoke) still carry headroom for the
+remaining pre-freeze tasks.
+
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4038 | 248 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |

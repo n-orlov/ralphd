@@ -53,11 +53,16 @@ class Ctl:
         return json.loads(res.stdout)
 
     def seed_run(self, run_id: str, state: str = "running",
-                notifier_url: str | None = None) -> None:
+                notifier_url: str | None = None,
+                extra_env: list[str] | None = None) -> None:
         """A run dir as `start` leaves it (`status.json`), plus, when
         `notifier_url` is given, the same `job.yaml` key `--notifier-url`
         writes under the run's own CONFIG dir (task 010) -- never the run
-        dir, mirroring `config_root()`."""
+        dir, mirroring `config_root()`. `extra_env` seeds the OTHER
+        supported path: the resolved `name=value` pairs `start` persists in
+        that same config dir's `env-wiring.json` for `--env`/`--forward-env`
+        (`_write_extra_env_wiring`), which are what actually reach a job
+        container's engine process as its own environment."""
         d = self.registry / "runs" / run_id
         d.mkdir(parents=True, exist_ok=True)
         (d / "status.json").write_text(json.dumps({"state": state,
@@ -69,6 +74,8 @@ class Ctl:
             job_yaml["notifier_url"] = notifier_url
         (cfg_dir / "job.yaml").write_text(
             "\n".join(f"{k}: {v}" for k, v in job_yaml.items()) + "\n")
+        if extra_env is not None:
+            cli._write_extra_env_wiring(cfg_dir, list(extra_env))
 
 
 @pytest.fixture
@@ -93,6 +100,36 @@ def test_a_configured_non_terminal_run_is_quiet(ctl):
     assert doc["unconfiguredNotifierRuns"] == []
     res = ctl.run("doctor")
     assert cli.NOTIFIER_UNCONFIGURED_RUNS_HEADING not in res.stdout
+
+
+def test_the_doctor_shells_own_notifier_url_does_not_configure_a_run(ctl):
+    """The state reported is each RUN's, not this process's (task 011).
+
+    A job container's engine only ever sees `RALPHD_NOTIFIER_URL` if
+    `start` recorded it in that run's own wiring, so an operator whose
+    shell exports the variable while typing `ralphctl doctor` has
+    configured nothing for the bare run in front of them -- reporting it
+    as configured would hide exactly the no-op `notify` calls B.3 exists
+    to surface.
+    """
+    ctl.seed_run("bare-run")
+    doc = ctl.doctor(env={"RALPHD_NOTIFIER_URL": "http://ambient.example/notify"})
+    assert doc["unconfiguredNotifierRuns"] == ["bare-run"]
+
+
+def test_a_run_whose_persisted_env_wiring_carries_the_url_is_quiet(ctl):
+    """The env-variable configuration path, read per run: `--env
+    RALPHD_NOTIFIER_URL=...` (or `--forward-env`) lands in that run's own
+    `env-wiring.json`, and that IS the engine's environment -- with or
+    without the variable in the shell running `doctor`."""
+    ctl.seed_run("env-wired",
+                 extra_env=["RALPHD_NOTIFIER_URL=http://wired.example/notify"])
+    assert ctl.doctor()["unconfiguredNotifierRuns"] == []
+    assert ctl.doctor(env={"RALPHD_NOTIFIER_URL": "http://ambient.example/notify"}
+                      )["unconfiguredNotifierRuns"] == []
+    # an empty value configures nothing (`JobConfig.load`'s own truthiness)
+    ctl.seed_run("env-blank", extra_env=["RALPHD_NOTIFIER_URL="])
+    assert ctl.doctor()["unconfiguredNotifierRuns"] == ["env-blank"]
 
 
 def test_terminal_runs_are_left_out_of_the_report_either_way(ctl):
