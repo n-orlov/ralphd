@@ -24,9 +24,15 @@ deleting a test later does not make that report's citation a lie, so the
 loop below runs the remaining three (commit/path/retired resolution) plus
 the density floor -- `path::node` claims are still parsed and still count
 toward that density floor, they are simply no longer required to resolve.
-The anti-fabrication check this module keeps untouched is the sha
-reachability one (`commit_problems()`), covered by its own two named tests
-below.
+A cure of the same requirement (cure-01-01) retires the NODE half of the
+`!retired` STRONG direction too -- `retired_problems()` no longer checks a
+`path::node!retired` citation against live test source either, because the
+live tree reusing an old name for an unrelated test made a historical
+report's untouched citation fail the very recheck A.3 already rejects for
+the un-retired form; only the PATH form of `!retired` (a whole file must
+not still be tracked) stays checked. The anti-fabrication check this module
+keeps untouched is the sha reachability one (`commit_problems()`), covered
+by its own two named tests below.
 """
 
 from __future__ import annotations
@@ -99,15 +105,17 @@ def test_every_report_passes_its_claim_checks() -> None:
         problems.extend(retired_problems(claims))
         # "not all claimless": a report is evidence, it must point at
         # something checkable, and this also stops a report from passing
-        # the checks above by naming nothing at all. A `!retired`
+        # the checks above by naming nothing at all. A `!retired` path
         # citation counts too (requirement A.1, v0.20.2): it is still
-        # checked, just in the strong direction (retired_problems requires
-        # it NOT resolve) -- a report that names several now-retired sweep-
-        # sha citations, after A.1 deleted the files they pointed at, is not
-        # thereby claimless. A `path::node` claim also still counts toward
-        # this floor even though nothing checks it resolves any more
-        # (requirement A.3, v0.20.2) -- it is still evidence of what the
-        # report is about, just not evidence this module re-verifies.
+        # checked, in the strong direction (retired_problems requires the
+        # PATH form NOT resolve) -- a report that names several now-retired
+        # sweep-sha citations, after A.1 deleted the files they pointed at,
+        # is not thereby claimless. A `path::node` claim, retired or not,
+        # also still counts toward this floor even though nothing checks it
+        # resolves any more (requirement A.3, v0.20.2, and its cure
+        # cure-01-01 for the `!retired` node form specifically) -- it is
+        # still evidence of what the report is about, just not evidence
+        # this module re-verifies.
         total = (
             len(claims.shas) + len(claims.paths) + len(claims.nodes)
             + len(claims.retired)
@@ -120,11 +128,16 @@ def test_every_report_passes_its_claim_checks() -> None:
 
 
 def test_the_retired_marker_direction_is_enforced() -> None:
-    """The STRONG direction, both forms: a `!retired` path/node must not
-    resolve. Merges the two mutation cases the old module ran as separate
-    tests -- a still-existing path marked retired, and a still-collecting
-    node marked retired -- since both exercise the same function
-    (`retired_problems`) in the same direction."""
+    """The STRONG direction, PATH form only: a `!retired` path must not
+    resolve -- it must not still be tracked. This used to also cover the
+    NODE form (a still-collecting node marked `!retired`), merging the two
+    mutation cases the old module ran as separate tests; a cure of
+    requirement A.3 (cure-01-01) retires that node form entire, because the
+    live tree reusing an old test's name for something unrelated tripped
+    this same recheck against an untouched historical report -- exactly the
+    live-source recheck A.3 already rejects for the un-retired node check.
+    `test_a_retired_node_citation_is_never_rechecked_against_live_source`
+    below now covers that retirement directly."""
     live_path = "tests/report_claims.py"
     assert (REPO_ROOT / live_path).exists()
     path_claims = ReportClaims(
@@ -138,6 +151,16 @@ def test_the_retired_marker_direction_is_enforced() -> None:
     assert path_problems_found, "a still-existing path marked !retired must be flagged"
     assert live_path in path_problems_found[0]
 
+
+def test_a_retired_node_citation_is_never_rechecked_against_live_source() -> None:
+    """Requirement A.3's cure (cure-01-01): a `path::node!retired` citation
+    is no longer checked against live test source at all -- neither the
+    ordinary node-resolution question A.3 itself already retired, nor the
+    STRONG `!retired` direction `test_the_retired_marker_direction_is_enforced`
+    above still enforces for the path form. A node the live tree happens to
+    define, under a name an old, unrelated historical report once retired,
+    is not thereby a lie that report tells -- so this must NOT be flagged,
+    unlike the still-existing-path case above."""
     live_node_path = "tests/records/test_report_claims.py"
     live_node = "test_a_node_family_wildcard_needs_a_real_match"
     assert defines_test((REPO_ROOT / live_node_path).read_text(), live_node)
@@ -148,9 +171,10 @@ def test_the_retired_marker_direction_is_enforced() -> None:
         nodes=[],
         retired=[RetiredClaim(live_node_path, live_node, line=1)],
     )
-    node_problems_found = retired_problems(node_claims)
-    assert node_problems_found, "a still-collecting node marked !retired must be flagged"
-    assert live_node in node_problems_found[0]
+    assert retired_problems(node_claims) == [], (
+        "a still-collecting node marked !retired must no longer be flagged "
+        "(requirement A.3, v0.20.2, cure-01-01)"
+    )
 
 
 def test_a_dangling_commit_sha_fails_and_a_reachable_one_passes(monkeypatch) -> None:

@@ -1598,10 +1598,11 @@ retirement changes no count).
 
 Kept, unweakened, exactly as A.3 requires: `commit_problems()` (the sha-reachability
 anti-fabrication guard, `test_a_dangling_commit_sha_fails_and_a_reachable_one_passes`),
-`path_problems()` (a cited repo path must be tracked), and `retired_problems()` (the
-STRONG `!retired` direction, in both its path and node forms -- a citation marked
+`path_problems()` (a cited repo path must be tracked), and the PATH form of
+`retired_problems()`'s STRONG `!retired` direction -- a citation marking a whole path
 retired must NOT resolve, which is the opposite obligation from the one A.3 retires
-and is not itself a "must stay resolvable" claim on a historical report). The
+and is not itself a "must stay resolvable" claim on a historical report. (The NODE
+form of that same STRONG direction is retired too, by a cure below.) The
 `missing`-kind failure text `commit_problems()` emits for a decimal check-run/job/run
 id keeps A.3's required guidance ("do not backtick it") but drops the now-dangling
 `see docs/sweep-records.md` pointer, since A.1 deleted that file in this same wave;
@@ -1610,6 +1611,40 @@ still passes. `path::node` claims are still parsed and still count toward the
 "not claimless" density floor in `test_every_report_passes_its_claim_checks` -- they
 remain evidence of what a report is about, they are simply no longer re-verified to
 still resolve.
+
+### Cure of requirement A.3 (v0.20.2, cure-01-01): the `!retired` node form retired too
+
+A later review at final code sha `6aca3e0` found that A.3's own retirement did not go
+far enough: `retired_problems()`'s STRONG `!retired` direction still read live test
+source for the NODE form -- `path::node!retired` -- flagging a citation whenever the
+named node still collected. That check trips against an unchanged historical report
+the moment the LIVE tree reuses an old, unrelated test's name for something new: a
+name from `artifacts/reports/v0.10-closing-report.md` (a wave closed out long before
+this one) getting reused now does not make that old report's citation a lie, any more
+than A.3's own un-retired node-resolution question did -- it is exactly the same
+live-source recheck A.3 already rejected, just still applied to the `!retired`
+variant of the same citation shape. `retired_problems()` in `tests/report_claims.py`
+now returns early for any citation with a node id (`claim.node is not None`), leaving
+only the PATH form (a whole file marked `!retired` must not still be tracked)
+checked; `defines_test()` stays, unused by this function now, because
+`tests/records/test_report_claims.py::test_a_node_family_wildcard_needs_a_real_match`
+still needs it for the unrelated wildcard-prefix question. The shipped retired-marker
+test (`test_the_retired_marker_direction_is_enforced`) narrows to the path form only;
+a new `test_a_retired_node_citation_is_never_rechecked_against_live_source` asserts
+the node form is no longer flagged even when the node still collects. The dangling-
+commit reachability check, the decimal-id guidance and the path-only checks (both
+`path_problems()` and `retired_problems()`'s path form) are unaffected and still pass;
+no pytest node is deleted (the merged mutation test splits into two, net +1 node, not
+a removal), so the fast/smoke/records counts A.6 settled are unaffected by this cure.
+
+This cure also corrects `artifacts/reports/v0.20.2-closing-report.md`'s A.3 line, which
+had misattributed the pytest-result-line removal to `db7af48` (task 005, in
+`tests/report_claims.py`) -- that check never lived in `tests/report_claims.py` at all;
+it lived in `tests/sweep_sha_guard.py` (`_is_result_line()` and its family) and was
+deleted whole by A.1's own `eeaa3cd` (task 003), as this document's own A.3 section
+already stated correctly before this cure. The closing report now cites `eeaa3cd` for
+that half and `db7af48` only for the node-resolution half A.3's own task actually
+changed in `tests/report_claims.py`.
 
 ### Retired outright: the v0.20.1 lane-results record (requirement A.4, v0.20.2, #113 step 4)
 

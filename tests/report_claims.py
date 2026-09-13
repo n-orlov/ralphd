@@ -575,22 +575,38 @@ def defines_test(source: str, node: str) -> bool:
 # check entire: a report is written once, about the tree as it stood at the
 # time, and a test the live tree later renames or deletes does not make that
 # report's citation of it a lie -- the report is history, and history is not
-# obliged to keep citing something the live tree still carries. `defines_test`
-# above stays, because `retired_problems()` below still needs it for the
-# opposite direction: a citation marked `!retired` that still collects IS a
-# live problem (a false retirement claim), which is a different question from
-# "does this old citation still resolve" and is not what A.3 retires.
+# obliged to keep citing something the live tree still carries.
+#
+# A cure of the same requirement (cure-01-01) goes one step further and
+# retires the NODE half of `retired_problems()`'s STRONG direction too: a
+# `path::node!retired` citation used to be flagged if the node still
+# collected, on the theory that this was "a false retirement claim" -- but a
+# much later, wholly unrelated change reusing an old test's NAME (the live
+# tree has no memory of what a name meant three waves ago) tripped that same
+# check against a historical report nobody touched, which is exactly the
+# kind of live-source recheck A.3 already rejects for the un-retired node
+# form. A node id, retired or not, is therefore never checked against live
+# test source by this module again -- only the PATH form of `!retired`
+# stays checked (a whole file citation must not still be tracked), since a
+# path's existence is not a claim about what any test currently does.
+# `defines_test` above stays only for the family-wildcard prefix check
+# (`tests/records/test_report_claims.py::test_a_node_family_wildcard_needs_a_real_match`),
+# which is unrelated to any report's own claims.
 
 
 def retired_problems(claims: ReportClaims) -> list[str]:
-    """The STRONG direction for `!retired`: a citation marked retired must
-    NOT resolve. A retired path that still exists on disk, or a retired node
-    that still collects (its file exists and still defines it), is wrong --
+    """The STRONG direction for `!retired`, PATH form only: a citation
+    marking a whole path retired must NOT resolve -- the path must not
+    still be tracked. A retired path that still exists on disk is wrong --
     either it was never actually retired, or the marker is stale and should
-    be removed instead of carried forward.
+    be removed instead of carried forward. The NODE form of this same
+    direction is retired by A.3's cure (cure-01-01): a `path::node!retired`
+    citation is no longer checked against live test source at all, for the
+    same reason A.3 already gives for the un-retired node check -- a report
+    is history, and a name the live tree later reuses (for a wholly
+    different test) does not make the old report's citation a lie.
     """
     problems = []
-    sources: dict[str, str] = {}
     for claim in claims.retired:
         if claim.path is None:
             problems.append(
@@ -598,21 +614,14 @@ def retired_problems(claims: ReportClaims) -> list[str]:
                 f"path: ::{claim.node}!retired"
             )
             continue
+        if claim.node is not None:
+            # Node-id citations, retired or not, are never checked against
+            # live test source (requirement A.3, v0.20.2, cured by cure-01-01).
+            continue
         target = REPO_ROOT / claim.path
-        if claim.node is None:
-            if target.exists():
-                problems.append(
-                    f"{claims.where(claim.line)}: path marked !retired but "
-                    f"still exists: {claim.path}"
-                )
-            continue
-        if not target.exists():
-            # The whole file is gone -- the node cannot collect either way.
-            continue
-        source = sources.setdefault(claim.path, target.read_text())
-        if defines_test(source, claim.node):
+        if target.exists():
             problems.append(
-                f"{claims.where(claim.line)}: {claim.path}::{claim.node} is "
-                f"marked !retired but still collects"
+                f"{claims.where(claim.line)}: path marked !retired but "
+                f"still exists: {claim.path}"
             )
     return problems
