@@ -323,9 +323,12 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # before taking this edge; task 010 bounds a SECOND rejection in
         # the same approach back onto the ordinary `rejected_approach_
         # left` edge below UNLESS task 030 (PRD requirement E.1, #167)
-        # grants another pass -- up to a configured ceiling
+        # grants another pass -- up to a configured ceiling on the RUN's
+        # own total cure passes over both cure channels
         # (`JobConfig.cure_pass_ceiling`, default 3, task 002 PRD
-        # requirement A.2) per approach, and only when the new rejection's
+        # requirement A.2: `LoopSupervisor._cure_passes_for_run`, so a
+        # replanned approach does not reset the budget), and only when the
+        # new rejection's
         # own blocking clause set is not a SUPERSET of the immediately
         # preceding granted pass's own set (`LoopSupervisor._review_cure_pass_
         # available`).

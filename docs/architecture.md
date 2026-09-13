@@ -1970,8 +1970,13 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   one-per-approach cap (v0.20 requirement E.1, #167, task 030).** The
   one-per-approach bound task 010 pinned above is no longer absolute:
   `_review_cure_pass_available` grants a SECOND (or third) cure pass in the
-  same approach when `curePasses[approach]` has not yet reached
-  `CURE_PASS_CEILING` (3) AND this rejection's own blocking clause set
+  same approach when the run's own cure-pass budget is not yet spent (v0.21
+  requirement A.2, #192, task 002: `_cure_passes_for_run()`, the total over
+  `curePasses` and `gateCurePasses` for every approach, below the configured
+  `JobConfig.cure_pass_ceiling`, job.yaml key `cure_pass_ceiling`, default
+  3 — a per-approach comparison against the module-level
+  `CURE_PASS_CEILING` literal before that task) AND this rejection's own
+  blocking clause set
   (`findings.blocking_finding_clauses` -- the `clause` values of its
   blocking findings, residuals excluded) is NOT a superset of the clause
   set the immediately preceding GRANTED pass recorded. Every granted pass

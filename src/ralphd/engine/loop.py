@@ -6295,6 +6295,40 @@ class LoopSupervisor:
         except (TypeError, ValueError):
             return 0
 
+    def _cure_passes_for_run(self) -> int:
+        """Task 002 (PRD requirement A.2, #192): how many cure passes THIS
+        RUN has already taken -- the sum of every per-approach entry of
+        BOTH cure counters on status.json, review's own `curePasses` and
+        the peer verdict gate's `gateCurePasses` (task 001, requirement
+        A.1). Disk, not memory, exactly like the two per-approach readers
+        beside it; absence of either key (a run that never cured, or a run
+        from before those keys existed) contributes `0`, and a non-numeric
+        entry is skipped rather than crashing the rejection site that
+        consults this.
+
+        This is the quantity `self.cfg.cure_pass_ceiling` bounds. A
+        per-approach comparison could not make A.2's claim true: a run
+        that replans keeps starting approaches whose own counter reads
+        `0`, so cure -> reject -> replan -> cure could run for as many
+        approaches as the run had budget for. Bounding the RUN-WIDE total
+        means the cure channel stops granting passes once the ceiling is
+        spent, whichever approach and whichever channel the next
+        rejection arrives on, and the run then takes the ordinary
+        replan/finish edges to a terminal state.
+        """
+        status = self.run.read_status()
+        total = 0
+        for key in ("curePasses", "gateCurePasses"):
+            counter = status.get(key) or {}
+            if not isinstance(counter, dict):
+                continue
+            for value in counter.values():
+                try:
+                    total += int(value)
+                except (TypeError, ValueError):
+                    continue
+        return total
+
     def _gate_cure_pass_available(self, approach: int) -> bool:
         """Task 001 (PRD requirement A.1, #192): does this peer verdict
         gate rejection deserve the cure-pass edge
@@ -6310,12 +6344,15 @@ class LoopSupervisor:
         available`'s own docstring gives: curing hands THIS approach
         another worker pass over the very tasks whose criteria are in
         dispute), EVERY blocking finding is curable (`findings.all_
-        blocking_findings_curable`), and this approach's own cure-pass
-        ceiling for the GATE'S channel (`self.cfg.cure_pass_ceiling`, the
-        same configured ceiling review's own counter is bounded by --
-        task 002, PRD requirement A.2, replaced the module-level
-        `CURE_PASS_CEILING` literal both channels used to read directly)
-        has not already been reached.
+        blocking_findings_curable`), and the RUN's own cure-pass ceiling
+        (`self.cfg.cure_pass_ceiling`, the same configured ceiling
+        review's own channel is bounded by -- task 002, PRD requirement
+        A.2, replaced the module-level `CURE_PASS_CEILING` literal both
+        channels used to read directly) is not already spent. The ceiling
+        is compared against `_cure_passes_for_run()`, the run-wide total
+        over both channels and every approach, not against this
+        approach's own `gateCurePasses` entry -- a fresh approach does not
+        buy a fresh cure budget.
 
         Task 003 (PRD requirement A.3) covers the complement this method
         keeps open: a rejection carrying any non-curable blocking finding
@@ -6333,7 +6370,7 @@ class LoopSupervisor:
             return False
         if not findings.all_blocking_findings_curable(findings_list):
             return False
-        return self._gate_cure_passes_for_approach(approach) < self.cfg.cure_pass_ceiling
+        return self._cure_passes_for_run() < self.cfg.cure_pass_ceiling
 
     def _take_gate_cure_pass(self, approach: int) -> None:
         """Task 001 (PRD requirement A.1, #192): the consequence of taking
@@ -9201,13 +9238,11 @@ class LoopSupervisor:
         clauses the first cure pass had already targeted (a stale sweep,
         never re-taken), and no ordering rule in the plan could reach that
         because the budget was already gone. This bounded relaxation: a
-        FIRST rejection (`curePasses[approach] == 0`) is always granted, as
-        before. A SECOND or later rejection is granted iff (a) the ceiling
-        of `self.cfg.cure_pass_ceiling` passes for this approach has not
-        already been reached (task 002, PRD requirement A.2 -- a
-        configured per-run number, read here rather than from the
-        module-level `CURE_PASS_CEILING` literal this call used before),
-        AND (b) this rejection's own blocking clause set
+        FIRST rejection over this approach (`curePasses[approach] == 0`) is
+        granted as long as the RUN's own ceiling is not spent. A SECOND or
+        later rejection over the same approach is granted iff (a) the run
+        still has ceiling left, AND (b) this rejection's own blocking
+        clause set
         (`findings.blocking_finding_clauses`) is NOT a superset of the
         clause set the immediately preceding granted cure pass recorded
         (`_cure_pass_blocking_clauses`) -- i.e. review is pointing at
@@ -9215,6 +9250,16 @@ class LoopSupervisor:
         restated. An unchanged or GROWN blocking set is a superset of
         itself and is refused, falling through to the ordinary replan/
         pause edges exactly as the one-pass bound did before this task.
+
+        Task 002 (PRD requirement A.2, #192): the ceiling in clause (a) is
+        `self.cfg.cure_pass_ceiling` -- configuration, not the module-level
+        `CURE_PASS_CEILING` literal this call read before -- and it bounds
+        `_cure_passes_for_run()`, the run-wide total across both cure
+        channels and every approach, rather than this approach's own
+        counter. That is what forbids an indefinite cure -> reject -> cure
+        cycle: once the run's ceiling is spent, neither a narrower
+        rejection over this approach nor a first rejection over a freshly
+        replanned one earns another pass.
         """
         findings_list = self._review_findings()
         if findings_list is None:
@@ -9226,7 +9271,7 @@ class LoopSupervisor:
         if not findings.all_blocking_findings_curable(findings_list):
             return False
         passes_taken = self._cure_passes_for_approach(approach)
-        if passes_taken >= self.cfg.cure_pass_ceiling:
+        if self._cure_passes_for_run() >= self.cfg.cure_pass_ceiling:
             return False
         if passes_taken == 0:
             return True

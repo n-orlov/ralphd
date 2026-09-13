@@ -400,20 +400,24 @@ class JobConfig:
     # exactly once, as before this task.
     steer_redelivery_max: int = 3
     # Task 002 (PRD requirement A.2, #192): an explicit NUMBER -- the
-    # ceiling on how many cure passes ONE approach may take across BOTH
-    # cure channels this engine has (review's own `curePasses[approach]`
-    # and the peer verdict gate's `gateCurePasses[approach]`, task 001) --
-    # each channel's own per-approach counter is compared against this
-    # SAME field, exactly the way both channels already shared the
-    # module-level `CURE_PASS_CEILING` literal in `engine/loop.py` before
-    # this task. Read from configuration at the rejection site
+    # ceiling on how many cure passes ONE RUN may take in total, summed
+    # across every approach the run schedules AND across both cure
+    # channels this engine has (review's own `curePasses` and the peer
+    # verdict gate's `gateCurePasses`, task 001). The two counters stay
+    # per-approach on status.json for the record, but the ceiling is
+    # compared against their RUN-WIDE total (`LoopSupervisor._cure_
+    # passes_for_run`), which is what makes A.2's claim true: a run
+    # cannot loop cure -> reject -> cure indefinitely by starting a fresh
+    # approach, because a fresh approach no longer resets the budget.
+    # Read from configuration at the rejection site
     # (`LoopSupervisor._review_cure_pass_available`/`_gate_cure_pass_
     # available`, both now `self.cfg.cure_pass_ceiling`) rather than from
-    # that literal, so a job.yaml (or a future `start`/`resume` flag) can
-    # widen or narrow it per run without an engine change. Default `3`,
-    # unchanged from the literal it replaces -- see `docs/api.md`'s
-    # `curePasses`/`gateCurePasses` rows for the default stated where an
-    # operator surface reads it.
+    # the module-level `CURE_PASS_CEILING` literal in `engine/loop.py`
+    # both channels read directly before this task, so a job.yaml (or a
+    # future `start`/`resume` flag) can widen or narrow it per run
+    # without an engine change. Default `3`, unchanged from the literal
+    # it replaces -- see `docs/api.md`'s `curePasses`/`gateCurePasses`
+    # rows for the default stated where an operator surface reads it.
     cure_pass_ceiling: int = 3
     # Task 022 (PRD requirement B.3, #140): the endpoint the engine-owned
     # `notify` hat tool (`engine/hat_tools.py`) POSTs to, from the engine
