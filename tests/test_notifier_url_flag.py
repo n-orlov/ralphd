@@ -14,8 +14,9 @@ Precedence (also stated in the task 010 commit message):
    at engine start -- wins unconditionally, over both of the below. It is
    a single-run override that never touches job.yaml.
 2. `job.yaml`'s own `notifier_url` key -- written by `--notifier-url` at
-   `start` time (the common path), or by hand/a `--template` -- applies
-   when no env override is present.
+   `start` time (the common path), by a `--template`'s own `notifier_url:`
+   key when the flag is absent, or by hand -- applies when no env override
+   is present.
 3. Unset: `JobConfig.notifier_url` stays `None` (unconfigured); the notify
    hat tool answers "no notifier URL configured" rather than raising
    (tests/test_notify_hat_tool.py).
@@ -107,3 +108,35 @@ def test_start_without_the_flag_writes_no_notifier_url_key(ctl: Ctl):
     assert "notifier_url" not in job
     cfg = JobConfig.load(ctl.registry / "configs" / "tst-nu-absent" / "job.yaml")
     assert cfg.notifier_url is None
+
+
+def _template(ctl: Ctl, name: str, **job_keys) -> None:
+    tdir = ctl.registry / "templates" / name
+    tdir.mkdir(parents=True)
+    (tdir / "job.yaml").write_text(yaml.safe_dump(job_keys))
+    (tdir / "prd.md").write_text("# T\n\nDo it.\n")
+
+
+def test_a_templates_notifier_url_reaches_the_config(ctl: Ctl):
+    """The claim `docs/cli.md` makes about the template level, checked:
+    `notifier_url` is one of `_TEMPLATE_SCALAR_FIELDS`, so a template's own
+    key lands in the started run's `job.yaml` and reaches `JobConfig` when
+    no `--notifier-url` flag is given (v0.20.2 task 010 cure -- before it,
+    the key was in no template field set and a template's value was read by
+    nothing)."""
+    _template(ctl, "notified", notifier_url=URL)
+    res = ctl.run("start", "--template", "notified", "--llm", "none",
+                  "--run-id", "tst-nu-template")
+    assert res.returncode == 0, res.stderr
+    assert _job_yaml(ctl, "tst-nu-template")["notifier_url"] == URL
+    cfg = JobConfig.load(ctl.registry / "configs" / "tst-nu-template" / "job.yaml")
+    assert cfg.notifier_url == URL
+
+
+def test_the_flag_beats_a_templates_notifier_url(ctl: Ctl):
+    other = "http://template.example/notify"
+    _template(ctl, "notified2", notifier_url=other)
+    res = ctl.run("start", "--template", "notified2", "--llm", "none",
+                  "--notifier-url", URL, "--run-id", "tst-nu-tmpl-flag")
+    assert res.returncode == 0, res.stderr
+    assert _job_yaml(ctl, "tst-nu-tmpl-flag")["notifier_url"] == URL

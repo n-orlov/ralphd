@@ -1454,6 +1454,17 @@ _TEMPLATE_SCALAR_FIELDS = {
     # from job.yaml so the engine's own default (`none`) applies. The default
     # lives in engine/config.DEFAULT_PRICE_STRATEGY alone.
     "price_strategy": None,
+    # v0.20.2 task 010 (requirement B.2, #197): the notify hat tool's
+    # endpoint. None here means "nobody on the host decided", and the key is
+    # then omitted from job.yaml entirely, so the engine's own default
+    # (`JobConfig.notifier_url is None`, unconfigured) applies. Being in this
+    # dict is what makes a `--template`'s own `notifier_url:` key reach the
+    # run's job.yaml when the flag is absent -- without an entry here a
+    # template's key is read by nothing. There is deliberately no
+    # `_REGISTRY_CONFIG_FIELD_KEYS` entry (no `ralphctl config set
+    # notifier_url`): an endpoint is one operator's channel for one job,
+    # not a fleet-wide default.
+    "notifier_url": None,
     "network": None,
     # default lives in AUTO_RESUME_DEFAULT alone (task 026) -- never a
     # second literal here
@@ -1950,13 +1961,15 @@ def cmd_start(args):
         # strategy the run started with.
         "price_strategy": args.price_strategy or (
             llm_profile.get("price_strategy") if llm_profile else None),
-        # Task 010 (requirement B.2, #197): omitted entirely when the flag
-        # is absent, exactly like `model`/`thinking` above -- a job.yaml
-        # that already carries `notifier_url` (hand-edited, or from a
-        # `--template`) keeps that key untouched by an omitted flag; the
-        # flag, when given, replaces it, same as every other scalar in
-        # this dict. See the `--notifier-url` argparse entry above for the
-        # full precedence statement (flag/job.yaml key < RALPHD_NOTIFIER_URL).
+        # Task 010 (requirement B.2, #197): by the time cmd_start reads it,
+        # `args.notifier_url` is already the layered answer (explicit flag >
+        # `--template`'s own `notifier_url:` key > None) -- see
+        # `_TEMPLATE_SCALAR_FIELDS` above, which is the ONLY thing that makes
+        # a template's key reach this dict. None omits the key from job.yaml
+        # entirely, exactly like `model`/`thinking` above, so an unset run
+        # stays unconfigured. See the `--notifier-url` argparse entry below
+        # for the full precedence statement (flag/template/job.yaml key <
+        # RALPHD_NOTIFIER_URL).
         "notifier_url": args.notifier_url,
         # Task 035 (#20 H3): the *recipe* this run's image was derived from,
         # persisted so `ralphctl resume` replays it instead of falling back to
@@ -7051,21 +7064,25 @@ def build_parser() -> argparse.ArgumentParser:
     # Task 010 (requirement B.2, #197): configuring the notify hat tool's
     # endpoint no longer requires start -> docker stop -> edit job.yaml ->
     # resume. Written into job.yaml's own `notifier_url` key (see the
-    # `job` dict below), so `--notifier-url` and hand-editing job.yaml
-    # reach the exact same field -- the only two ways to set it that are
-    # not `RALPHD_NOTIFIER_URL`. Precedence (stated once, here, and in the
+    # `job` dict below), so `--notifier-url`, a `--template`'s own
+    # `notifier_url:` key and hand-editing the started run's job.yaml all
+    # reach the exact same field -- the only ways to set it that are not
+    # `RALPHD_NOTIFIER_URL`. Precedence (stated once, here, and in the
     # commit message): `RALPHD_NOTIFIER_URL` (read by `JobConfig.load` at
     # engine start, inside the container) beats everything, since it is
     # meant as a single-run override with no job.yaml edit; below that,
     # job.yaml's `notifier_url` key wins, whether that key got there via
-    # this flag (the common path) or a hand/template edit; unset means
-    # unconfigured (`JobConfig.notifier_url is None`).
+    # this flag (the common path), a `--template`'s own `notifier_url:` key
+    # (`_TEMPLATE_SCALAR_FIELDS`, flag wins), or a hand edit of the started
+    # run's job.yaml; unset means unconfigured (`JobConfig.notifier_url is
+    # None`).
     s.add_argument("--notifier-url", default=None, metavar="URL",
                    help="endpoint the engine's notify hat tool POSTs "
                         "operator updates to. Written to the run's "
                         "job.yaml as `notifier_url` (so `resume` replays "
                         "it); RALPHD_NOTIFIER_URL overrides it at engine "
-                        "start regardless of source [default: unset, i.e. "
+                        "start regardless of source [default: the "
+                        "--template's own notifier_url, else unset, i.e. "
                         "unconfigured]")
     s.add_argument("--llm", default=None,
                    help="LLM profile: host|none, or a name from "
