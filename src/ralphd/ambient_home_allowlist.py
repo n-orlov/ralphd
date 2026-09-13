@@ -368,7 +368,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # widened `_check_notifier_configured()`'s own docstring (a net
         # +12) above `_creds_note` in this same module, shifting this read
         # once more -- now at 1299, same method, same read, same reason.
-        "line": "1299",
+        # Task 002 (v0.21, PRD requirement A.2, #192) widened the
+        # `CURE_PASS_CEILING` module-level comment above `_creds_note` in
+        # this same module (a net +10, documenting `JobConfig.cure_pass_
+        # ceiling` replacing the literal at both rejection sites), shifting
+        # this read once more -- now at 1309, same method, same read,
+        # same reason.
+        "line": "1309",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

@@ -399,6 +399,22 @@ class JobConfig:
     # `settled: true` never touches this counter at all -- it consumes
     # exactly once, as before this task.
     steer_redelivery_max: int = 3
+    # Task 002 (PRD requirement A.2, #192): an explicit NUMBER -- the
+    # ceiling on how many cure passes ONE approach may take across BOTH
+    # cure channels this engine has (review's own `curePasses[approach]`
+    # and the peer verdict gate's `gateCurePasses[approach]`, task 001) --
+    # each channel's own per-approach counter is compared against this
+    # SAME field, exactly the way both channels already shared the
+    # module-level `CURE_PASS_CEILING` literal in `engine/loop.py` before
+    # this task. Read from configuration at the rejection site
+    # (`LoopSupervisor._review_cure_pass_available`/`_gate_cure_pass_
+    # available`, both now `self.cfg.cure_pass_ceiling`) rather than from
+    # that literal, so a job.yaml (or a future `start`/`resume` flag) can
+    # widen or narrow it per run without an engine change. Default `3`,
+    # unchanged from the literal it replaces -- see `docs/api.md`'s
+    # `curePasses`/`gateCurePasses` rows for the default stated where an
+    # operator surface reads it.
+    cure_pass_ceiling: int = 3
     # Task 022 (PRD requirement B.3, #140): the endpoint the engine-owned
     # `notify` hat tool (`engine/hat_tools.py`) POSTs to, from the engine
     # process itself -- available to the worker and steer hats through the

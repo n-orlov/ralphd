@@ -192,6 +192,16 @@ CONTRACT_REASK_FINAL_TEXT_MAX_CHARS = 4000
 # number. Once `curePasses[approach]` reaches this, `_review_cure_pass_
 # available` refuses unconditionally and the run falls through to the
 # ordinary replan/pause edges, exactly as a superset repeat already does.
+#
+# Task 002 (PRD requirement A.2, #192): both rejection sites that used to
+# compare a counter against this literal directly (`_review_cure_pass_
+# available` below and the peer verdict gate's own `_gate_cure_pass_
+# available`, task 001) now read `self.cfg.cure_pass_ceiling`
+# (`JobConfig.cure_pass_ceiling`, `engine/config.py`) instead -- a
+# per-run configured ceiling, not a hardcoded one. This module-level name
+# survives only as `JobConfig.cure_pass_ceiling`'s own default value and
+# as a name older comments/tests/docs still cite; it is never read at
+# either rejection site itself any more.
 CURE_PASS_CEILING = 3
 
 # Task 017 (PRD requirement E.3, #190/#191): the literal `_check_workspace_
@@ -6301,9 +6311,11 @@ class LoopSupervisor:
         another worker pass over the very tasks whose criteria are in
         dispute), EVERY blocking finding is curable (`findings.all_
         blocking_findings_curable`), and this approach's own cure-pass
-        ceiling for the GATE'S channel (`CURE_PASS_CEILING`, the same
-        module-level ceiling review's own counter is bounded by; task 002
-        makes this configurable) has not already been reached.
+        ceiling for the GATE'S channel (`self.cfg.cure_pass_ceiling`, the
+        same configured ceiling review's own counter is bounded by --
+        task 002, PRD requirement A.2, replaced the module-level
+        `CURE_PASS_CEILING` literal both channels used to read directly)
+        has not already been reached.
 
         Task 003 (PRD requirement A.3) covers the complement this method
         keeps open: a rejection carrying any non-curable blocking finding
@@ -6321,7 +6333,7 @@ class LoopSupervisor:
             return False
         if not findings.all_blocking_findings_curable(findings_list):
             return False
-        return self._gate_cure_passes_for_approach(approach) < CURE_PASS_CEILING
+        return self._gate_cure_passes_for_approach(approach) < self.cfg.cure_pass_ceiling
 
     def _take_gate_cure_pass(self, approach: int) -> None:
         """Task 001 (PRD requirement A.1, #192): the consequence of taking
@@ -9191,8 +9203,11 @@ class LoopSupervisor:
         because the budget was already gone. This bounded relaxation: a
         FIRST rejection (`curePasses[approach] == 0`) is always granted, as
         before. A SECOND or later rejection is granted iff (a) the ceiling
-        of `CURE_PASS_CEILING` passes for this approach has not already
-        been reached, AND (b) this rejection's own blocking clause set
+        of `self.cfg.cure_pass_ceiling` passes for this approach has not
+        already been reached (task 002, PRD requirement A.2 -- a
+        configured per-run number, read here rather than from the
+        module-level `CURE_PASS_CEILING` literal this call used before),
+        AND (b) this rejection's own blocking clause set
         (`findings.blocking_finding_clauses`) is NOT a superset of the
         clause set the immediately preceding granted cure pass recorded
         (`_cure_pass_blocking_clauses`) -- i.e. review is pointing at
@@ -9211,7 +9226,7 @@ class LoopSupervisor:
         if not findings.all_blocking_findings_curable(findings_list):
             return False
         passes_taken = self._cure_passes_for_approach(approach)
-        if passes_taken >= CURE_PASS_CEILING:
+        if passes_taken >= self.cfg.cure_pass_ceiling:
             return False
         if passes_taken == 0:
             return True

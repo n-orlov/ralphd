@@ -653,6 +653,98 @@ def test_the_ceiling_refuses_a_fourth_pass_even_when_not_a_superset(tmp_path):
     assert len(_events(root, "approach.cure_pass")) == 3
 
 
+def test_a_configured_ceiling_below_the_default_bounds_two_approaches_worth_of_cure_then_the_run_reaches_a_terminal_state(
+        tmp_path):
+    """Task 002 (PRD requirement A.2, #192): `JobConfig.cure_pass_ceiling`
+    (job.yaml key `cure_pass_ceiling`, default 3 -- `docs/api.md`'s
+    `curePasses`/`gateCurePasses` rows) is read from CONFIGURATION at the
+    rejection site (`_review_cure_pass_available`), not from the module-
+    level `CURE_PASS_CEILING` literal it used to read directly. Configured
+    here to **1** -- well below that module default of 3 -- so a SECOND,
+    genuinely narrower (non-superset) rejection on the SAME approach is
+    refused by the ceiling alone, not by the superset test
+    (`test_the_ceiling_refuses_a_fourth_pass_even_when_not_a_superset`
+    above proves the analogous thing for the hardcoded default; this test
+    proves the number itself now comes from `cfg`).
+
+    Two approaches, each granted exactly its own one cure pass and then
+    refused a second, prove the ceiling is per-approach and genuinely
+    configured rather than a run-wide total. The run then runs out of
+    approaches on a third, all-incurable rejection, reaching `_finish_
+    tail_unverified`'s real terminal write (`state.TERMINAL_STATES`
+    membership: `failed`) instead of an unbounded cure -> reject -> cure
+    cycle -- the concrete claim `successCriteria` asks this test to prove:
+    the run reaches a terminal state rather than looping.
+    """
+    from ralphd.engine.config import JobConfig
+
+    assert JobConfig().cure_pass_ceiling == 3  # the module default, unchanged
+
+    root = tmp_path / "run"
+    sup = _supervisor_bounded(root, max_approaches=3, cure_pass_ceiling=1)
+    sup._approach = 1
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": []})
+    assert sup.cfg.cure_pass_ceiling == 1  # configured, not the hardcoded 3
+
+    def _reject_and_step(findings_list: list[dict]) -> tuple:
+        reviewer = _rejects_with(findings_list)
+        reviewer.sup = sup  # type: ignore[attr-defined]
+        sup.runner.run = reviewer  # type: ignore[method-assign]
+        return asyncio.run(sup._step_review())
+
+    # Approach 1, rejection 1: a FIRST pass is always granted, exactly as
+    # it was before this task -- the ceiling only bites on a repeat.
+    outcome = _reject_and_step(
+        [_finding("blocking", True, "requirement A (#192)", "first defect")])
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+    assert sup.run.read_status().get("curePasses") == {"1": 1}
+
+    # Approach 1, rejection 2: a DIFFERENT, narrower clause -- not a
+    # superset of the first -- would earn a second pass under the module's
+    # own default ceiling of 3, but THIS run's configured ceiling is
+    # already spent at 1. Falls through to the ordinary replan edge, never
+    # a second cure task, proving the configured number (not the literal)
+    # governs the refusal.
+    outcome = _reject_and_step(
+        [_finding("blocking", True, "requirement B (#192)",
+                  "second, narrower defect")])
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert sup.run.read_status().get("curePasses") == {"1": 1}  # unchanged
+    assert len(_cure_tasks(sup.run)) == 1  # no second cure batch
+
+    # A fresh approach starts with a clean per-approach counter -- the
+    # ceiling bounds EACH approach, not a run-wide total -- so the SAME
+    # configured ceiling of 1 stops a second cure attempt here too.
+    sup._approach = 2
+    outcome = _reject_and_step(
+        [_finding("blocking", True, "requirement C (#192)",
+                  "third defect, approach 2")])
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+    assert sup.run.read_status().get("curePasses") == {"1": 1, "2": 1}
+
+    outcome = _reject_and_step(
+        [_finding("blocking", True, "requirement D (#192)",
+                  "fourth, narrower defect, approach 2")])
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert sup.run.read_status().get("curePasses") == {"1": 1, "2": 1}  # unchanged
+
+    # Approach 3 is the LAST approach and never took a cure pass of its
+    # own; an all-incurable rejection here has nothing left to grant or
+    # replan into -- the run runs out of budget for real.
+    sup._approach = 3
+    outcome = _reject_and_step(
+        [_finding("blocking", False, "requirement E (#192)",
+                  "an environment fact no cure or approach can change")])
+    assert outcome == ("tail",)
+    assert sup.run.read_status().get("curePasses") == {"1": 1, "2": 1}  # still unchanged
+
+    final_state = sup._finish_tail_unverified()
+    assert final_state == "failed"
+    from ralphd.engine.state import TERMINAL_STATES
+    assert final_state in TERMINAL_STATES
+    assert sup.run.read_status().get("state") == "failed"
+
+
 # ---------------------------------------------------------------------------
 # task 006 (PRD requirement C.1, finding 4): `state.insert_cure_tasks` must
 # append exactly one cure task per entry of `blocking`, even when the

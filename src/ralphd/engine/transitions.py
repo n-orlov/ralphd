@@ -323,10 +323,11 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # before taking this edge; task 010 bounds a SECOND rejection in
         # the same approach back onto the ordinary `rejected_approach_
         # left` edge below UNLESS task 030 (PRD requirement E.1, #167)
-        # grants another pass -- up to a ceiling of `CURE_PASS_CEILING`
-        # (3) per approach, and only when the new rejection's own blocking
-        # clause set is not a SUPERSET of the immediately preceding
-        # granted pass's own set (`LoopSupervisor._review_cure_pass_
+        # grants another pass -- up to a configured ceiling
+        # (`JobConfig.cure_pass_ceiling`, default 3, task 002 PRD
+        # requirement A.2) per approach, and only when the new rejection's
+        # own blocking clause set is not a SUPERSET of the immediately
+        # preceding granted pass's own set (`LoopSupervisor._review_cure_pass_
         # available`).
         #
         # Task 004 (PRD requirement C.1, finding 4): the target is now the
