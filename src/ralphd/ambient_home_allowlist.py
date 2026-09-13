@@ -244,8 +244,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # preference injection) factored the read out into a private
         # `_home()` helper that `ambient_home()` now calls -- same read,
         # same reason, new line; line numbers drift with unrelated edits,
-        # exactly as this module's own docstring warns.
-        "line": "128",
+        # exactly as this module's own docstring warns. Task 009 (v0.20.2,
+        # PRD requirement B.1, #197) added two lines to
+        # `NOTIFY_PREFERENCE_INSTRUCTION` above this read (naming the new
+        # `notification.failed` event), shifting it once more -- now at
+        # 130, same helper, same read, same reason.
+        "line": "130",
         "reason": ("backs `ambient_home()` (task 002) via its `_home()` "
                    "helper (task 003 refactor): the ONE designated "
                    "entry point every real caller (engine/api.py, engine/"
@@ -329,8 +333,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `_creds_note` in this same module, shifting this read once more --
         # now at 1255, same method, same read, same reason (re-derived from
         # `git show <sha>:src/ralphd/engine/loop.py`: 1190 at `ee8d6f7`, 1255
-        # from `d432dec` on).
-        "line": "1255",
+        # from `d432dec` on). Task 009 (v0.20.2, PRD requirement B.1, #197)
+        # added lines to the notifier docstrings/comments above `_creds_note`
+        # in this same module (the `notification.sent`/`notification.failed`
+        # event split), shifting this read once more -- now at 1260, same
+        # method, same read, same reason.
+        "line": "1260",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

@@ -1520,7 +1520,10 @@ def test_a_non_2xx_status_still_leaves_the_pause_outcome_unchanged(
 
     # the failed send is still recorded, distinguishably, on
     # events.jsonl -- a non-2xx is a recorded outcome, never a reason to
-    # silently lose the escalation.
-    events = _events(root, hat_tools.NOTIFICATION_SENT_EVENT)
+    # silently lose the escalation. Task 009 (requirement B.1) means this
+    # is the distinct `notification.failed` event, never `notification.
+    # sent` -- the send never actually succeeded.
+    events = _events(root, run_record.NOTIFICATION_FAILED_EVENT)
     assert len(events) == 1
     assert events[0]["httpStatus"] == 500
+    assert _events(root, hat_tools.NOTIFICATION_SENT_EVENT) == []

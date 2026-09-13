@@ -405,8 +405,9 @@ class JobConfig:
     # same request/response spool the steer hat's task-table tools already
     # use. `None` (the default: no `notifier_url:` in job.yaml and no
     # `RALPHD_NOTIFIER_URL`) means unconfigured -- the tool still answers
-    # (and still records a `notification.sent` event) rather than raising,
-    # it just reports "no notifier URL configured" and never sends. Kept
+    # (and still records a `notification.failed` event -- task 009, PRD
+    # requirement B.1) rather than raising, it just reports "no notifier
+    # URL configured" and never sends. Kept
     # OUT of `effective()`/`GET /config`, the same way `api_token` is: an
     # operator-supplied endpoint, not a secret exactly, but not part of
     # this task's scope to also surface on the control-plane API.

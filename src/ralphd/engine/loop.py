@@ -500,14 +500,17 @@ class LoopSupervisor:
         # notifier_url` is actually set -- it reaches that URL through
         # B.3's OWN helper (`hat_tools.send_notification`), never a second
         # HTTP client, so the escalation lands as a `notification.sent`
-        # event on `events.jsonl` and in the run record's notifications
-        # section, exactly like a hat's own `notify` tool call.
+        # event (or the distinct `notification.failed` event on a failed
+        # send -- task 009, requirement B.1) on `events.jsonl` and in the
+        # run record's notifications section, exactly like a hat's own
+        # `notify` tool call.
         #
         # `notifier_url` UNSET leaves this `None`, same as before this
         # task -- `send_notification` itself would write a `notification.
-        # sent` event even for a missing URL (its own "no notifier URL
-        # configured" branch), and requirement D.1's escalation must write
-        # NO such event when nothing is configured, so the no-URL case is
+        # failed` event even for a missing URL (its own "no notifier URL
+        # configured" branch, task 009/requirement B.1), and requirement
+        # D.1's escalation must write NO such event when nothing is
+        # configured, so the no-URL case is
         # never dispatched through `send_notification` at all: the
         # `if self.notifier is not None` guard at each call site simply
         # finds nothing to call. The escalation itself
@@ -562,6 +565,8 @@ class LoopSupervisor:
         `self.notifier` callable, wired only when `self.cfg.notifier_url`
         is set. Reaches it through `hat_tools.send_notification`, B.3's own
         helper -- the escalation text becomes a `notification.sent` event
+        on success, or the distinct `notification.failed` event on
+        failure (task 009, requirement B.1) -- either way carrying
         (`textSha256`, `endpoint`, `httpStatus`) on `events.jsonl` and in
         the run record's notifications section, the same as any hat's
         `notify` tool call.

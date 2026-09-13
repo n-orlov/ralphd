@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import state as state_module
-from .run_record import NOTIFICATION_SENT_EVENT
+from .run_record import NOTIFICATION_FAILED_EVENT, NOTIFICATION_SENT_EVENT
 from .state import RunDir, atomic_write
 
 # -- the spool -------------------------------------------------------------
@@ -176,10 +176,10 @@ _TOOL_DOCS: dict[str, dict[str, str]] = {
             "side. Prefer this over the telegram-notify skill's own direct "
             "HTTP push when this tool is present -- it records a "
             "`notification.sent` event (ts, endpoint, textSha256, "
-            "httpStatus) and the same entry in the run record's "
-            "notifications section either way, succeed or fail. A failed "
-            "send is answered with an error and never fails the calling "
-            "task."
+            "httpStatus) on success, or the distinct `notification.failed` "
+            "event (same fields) on failure, and the same entry in the "
+            "run record's notifications section. A failed send is "
+            "answered with an error and never fails the calling task."
         ),
         "usage": '{"text": "..."}',
     },
@@ -521,8 +521,9 @@ class SteerToolBroker:
     def _notify(self, args: dict) -> dict:
         """Task 022 (PRD requirement B.3, #140): the `notify` tool's own
         execution -- `send_notification` does the actual work (and the
-        actual `notification.sent` event), this just validates the shape
-        the hat sent."""
+        actual `notification.sent`/`notification.failed` event, split by
+        outcome per task 009/requirement B.1), this just validates the
+        shape the hat sent."""
         text = args.get("text")
         if not isinstance(text, str) or not text.strip():
             return {"ok": False, "detail": None,
@@ -596,17 +597,27 @@ def _http_post_text(url: str, text: str,
 def send_notification(run: RunDir, text: str, url: str | None, *,
                       poster=None, timeout_s: float = 15.0) -> dict:
     """POST `text` to `url` (the engine's own configured notifier -- PRD
-    requirement B.3) and record a `notification.sent` event carrying
-    EXACTLY the field set the requirement names: `ts` (the event's own,
-    from `RunDir.emit`), `endpoint`, `textSha256`, `httpStatus` -- never an
-    `ok`/`error` field on the persisted event itself, so a reader of the
-    run record sees the same four fields whether the send succeeded or not.
+    requirement B.3) and record an event carrying EXACTLY the field set
+    the requirement names: `ts` (the event's own, from `RunDir.emit`),
+    `endpoint`, `textSha256`, `httpStatus` -- never an `ok`/`error` field
+    on the persisted event itself.
 
-    Never raises: an unconfigured URL, a connection error, and a non-2xx
-    status are all answered the same way -- the event is written either
-    way, and `{"ok": False, ...}` carries an `error` string back to
-    whatever called this (the `notify` tool's response, read by the hat;
-    never a reason to fail the calling task/iteration).
+    Task 009 (PRD requirement B.1, #197) splits the event NAME on outcome:
+    a successful send (a poster status in [200, 300)) emits
+    `NOTIFICATION_SENT_EVENT` (`notification.sent`); an unconfigured URL,
+    a connection error (`status is None`), and a non-2xx status are all a
+    FAILURE and instead emit the distinct `NOTIFICATION_FAILED_EVENT`
+    (`notification.failed`) -- never both, and never `notification.sent`
+    gaining an `ok` field, because the point of the split is that a reader
+    grepping the `sent` name for "was the operator told" gets a true
+    answer. The field SET is identical either way; only the event's own
+    `type` differs.
+
+    Never raises: every one of the above outcomes is answered the same
+    way -- exactly one event is written, and `{"ok": False, ...}` carries
+    an `error` string back to whatever called this (the `notify` tool's
+    response, read by the hat; never a reason to fail the calling
+    task/iteration).
 
     `poster` is `(url, text, timeout_s) -> (status, error)`, defaulting to
     the real `_http_post_text` -- the one seam a test stubs to cover a
@@ -617,14 +628,15 @@ def send_notification(run: RunDir, text: str, url: str | None, *,
     if not url:
         record = {"endpoint": None, "textSha256": text_sha256,
                   "httpStatus": None}
-        run.emit(NOTIFICATION_SENT_EVENT, **record)
+        run.emit(NOTIFICATION_FAILED_EVENT, **record)
         return {"ok": False, "detail": record,
                 "error": "no notifier URL configured"}
     status, error = poster(url, text, timeout_s)
     record = {"endpoint": url, "textSha256": text_sha256,
               "httpStatus": status}
-    run.emit(NOTIFICATION_SENT_EVENT, **record)
     ok = status is not None and 200 <= status < 300
+    run.emit(NOTIFICATION_SENT_EVENT if ok else NOTIFICATION_FAILED_EVENT,
+            **record)
     if ok:
         return {"ok": True, "detail": record, "error": None}
     return {"ok": False, "detail": record,

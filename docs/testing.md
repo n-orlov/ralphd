@@ -85,6 +85,23 @@ requirement A.6's own "downward only" rule -- they are a ratchet, not a target,
 and not a licence to leave stale headroom in place once a removal has made it
 larger than the tree it is meant to bound.
 
+**5631 (smoke 4024, modules 360 unchanged) by v0.20.2 task 009 (requirement
+B.1, #197): the notification success/failure event split.** Two named tests
+land in the EXISTING `tests/test_notify_hat_tool.py` module --
+`test_a_failed_send_emits_the_distinct_failure_event_and_never_sent` and
+`test_a_successful_send_still_emits_notification_sent` -- covering the split
+over the fixture run directory `_run(tmp_path)` builds (`tmp_path / "run"`),
+never this run's own events (requirement B.5). Neither spawns a real engine
+or CLI process, so both are `smoke` as well as `fast`; net +2 fast, +2
+smoke, module count unchanged (no new module). From the pre-task
+5629/4022/360: **5631/4024/360**. Re-measured directly at this task's own
+tip with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q`
+(fast: `5631/5736 tests collected (105 deselected)`, smoke: `4024/5736
+tests collected (1712 deselected)`). `tests/records/` is unaffected (116
+unchanged): neither touched module lives under `tests/records/`. Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
+headroom for the remaining pre-freeze tasks.
+
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4022 | 245 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |

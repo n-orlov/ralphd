@@ -256,10 +256,15 @@ def build_operator_rulings_section(config_root: Path) -> list[dict]:
 # Notifications (PRD requirement B.3): every `notification.sent` event this
 # run ever emitted, oldest first -- possibly empty (the `notify` hat tool
 # is B.3's own, separately-tasked, cuttable deliverable; this section is
-# correct and empty until it lands).
+# correct and empty until it lands). A FAILED send (task 009, PRD
+# requirement B.1, #197) never emits `notification.sent` -- it emits the
+# distinct `notification.failed` event below instead, so a reader grepping
+# the `sent` name for "was the operator told" gets a true answer -- and
+# this section stays exactly the sends that actually happened.
 # ---------------------------------------------------------------------------
 
 NOTIFICATION_SENT_EVENT = "notification.sent"
+NOTIFICATION_FAILED_EVENT = "notification.failed"
 
 
 def build_notifications_section(run: "state.RunDir") -> list[dict]:
