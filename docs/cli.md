@@ -2897,6 +2897,28 @@ Staleness never affects `ok`: running an old engine on purpose is supported
 with `--fix` it also pins the image auto-resumed runs restart on (by default
 each run restarts on the image it recorded at start time, see `resume`).
 
+#### Notifier-URL configuration (task 011, PRD requirement B.3, #197)
+
+The `notify` hat tool is wired for every run — both hats carry it
+unconditionally — so a run with no `notifier_url` configured (no
+`--notifier-url` at `start`, no `job.yaml` `notifier_url:` key, no
+`RALPHD_NOTIFIER_URL`) is one whose prompts can still reach the tool while
+every call it makes is a guaranteed no-op (`hat_tools.send_notification`'s
+own "no notifier URL configured" branch, which answers `ok=False` and emits
+`notification.failed` rather than raising). The engine itself warns about
+this exactly once, at startup, into that run's own `events.jsonl`; `doctor`
+mirrors the same fact registry-wide, report-only, one entry per **run
+recorded non-terminal**, exactly like `runImageStaleness` above it:
+
+```
+! runs recorded non-terminal with no notifier URL configured (`notify` calls are no-ops -- `ralphctl start --notifier-url`, the job.yaml `notifier_url` key, or RALPHD_NOTIFIER_URL):
+    myrun
+```
+
+`--json`'s `unconfiguredNotifierRuns` is the plain list of those run ids.
+Never affects `ok`: an operator who never wanted notifications configured is
+not broken.
+
 #### `ralphctl doctor --fix` (self-recovery sweep)
 
 `--fix` turns the `danglingRegistryEntries` report into an action: every run

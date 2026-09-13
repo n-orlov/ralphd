@@ -84,7 +84,13 @@ _supervisor = supervisor_with_runner(
     lambda sup, handlers=None: _ScriptedAgent(handlers or {}),
     run_id="task005-load-time", iterations=4, max_approaches=2, vigilant=False,
     on_complete="exit", infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
-    infra_outage_budget_s=1000.0)
+    infra_outage_budget_s=1000.0,
+    # Task 011 (v0.20.2, PRD requirement B.3, #197): configured so
+    # `LoopSupervisor.__init__` itself emits no `notifier.unconfigured`
+    # startup event -- this module's events assertions are about
+    # `_apply_operator_status_rulings()`, not construction, and this
+    # fixture never drives a real send (no test here calls `self.notifier`).
+    notifier_url="http://notifier.example/notify")
 
 
 def _events(root: Path) -> list[dict]:

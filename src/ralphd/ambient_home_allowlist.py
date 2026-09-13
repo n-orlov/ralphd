@@ -213,7 +213,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6598",
+        # v0.20.2 task 011 (requirement B.3, #197) added
+        # `_run_notifier_configuration()` and its `NOTIFIER_UNCONFIGURED_
+        # RUNS_HEADING` constant, and wired its result into `cmd_doctor`,
+        # all above every entry from this one on -- a net +40, shifting
+        # each of them by +40: 6598->6638, 6602->6642. Same reads, same
+        # reasons.
+        "line": "6638",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -221,7 +227,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "6602",
+        "line": "6642",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
@@ -352,8 +358,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # added lines to the notifier docstrings/comments above `_creds_note`
         # in this same module (the `notification.sent`/`notification.failed`
         # event split), shifting this read once more -- now at 1260, same
-        # method, same read, same reason.
-        "line": "1260",
+        # method, same read, same reason. Task 011 (v0.20.2, PRD requirement
+        # B.3, #197) added `_check_notifier_configured()` and its call site
+        # above `_creds_note` in this same module, a net +27, shifting this
+        # read once more -- now at 1287, same method, same read, same
+        # reason.
+        "line": "1287",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

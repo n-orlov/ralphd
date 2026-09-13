@@ -530,9 +530,36 @@ class LoopSupervisor:
         # never re-emits it every iteration, and so it fires even for a run
         # that never reaches `_run_job_core` at all (e.g. one already
         # recorded `finishing`, see `run_job()`). Reads `self.notifier`
-        # (just assigned above), so this must stay the LAST statement in
-        # this constructor.
+        # (just assigned above), so both this and the notifier-configured
+        # check right after it must stay the LAST statements in this
+        # constructor.
         self._check_workspace_version_drift()
+        # Task 011 (PRD requirement B.3, #197): same "once per process
+        # start" placement as the drift check just above -- reads
+        # `self.cfg.notifier_url`, which is already resolved (env var >
+        # `--notifier-url` > template > job.yaml key, `JobConfig.load`)
+        # by the time this constructor runs.
+        self._check_notifier_configured()
+
+    def _check_notifier_configured(self) -> None:
+        """PRD requirement B.3 (task 011, #197): the `notify` hat tool is
+        wired for every run -- `WORKER_WIRED_TOOLS` and `STEER_WIRED_TOOLS`
+        both carry it unconditionally (`hat_tools.py`) -- so a run started
+        with no `notifier_url` configured (no `--notifier-url`, no
+        `job.yaml` key, no `RALPHD_NOTIFIER_URL`) is one whose prompts can
+        reach the tool while every call it makes is a guaranteed no-op
+        (`hat_tools.send_notification`'s own "no notifier URL configured"
+        branch, which answers `ok=False` and emits `notification.failed`
+        rather than raising).
+
+        This says so exactly once, here, rather than leaving an operator to
+        infer it from a string of `notification.failed` events after the
+        fact: one `NOTIFIER_UNCONFIGURED_EVENT` on `events.jsonl` when
+        `cfg.notifier_url` is `None`, and nothing at all -- no event -- for
+        a configured run.
+        """
+        if self.cfg.notifier_url is None:
+            self.run.emit(run_record.NOTIFIER_UNCONFIGURED_EVENT)
 
     def _check_workspace_version_drift(self) -> None:
         """PRD requirement E.3 (#190/#191, task 017): a workspace whose own

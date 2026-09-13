@@ -266,6 +266,18 @@ def build_operator_rulings_section(config_root: Path) -> list[dict]:
 NOTIFICATION_SENT_EVENT = "notification.sent"
 NOTIFICATION_FAILED_EVENT = "notification.failed"
 
+# Task 011 (PRD requirement B.3, #197): emitted at most once, at engine
+# startup (`LoopSupervisor.__init__`, never inside `_run_job_core`, same
+# "once per process start" placement E.3's `workspace_version_mismatch`
+# already uses), when the `notify` hat tool is wired for this run -- it
+# always is, both hats carry it unconditionally -- but no `notifier_url`
+# was configured. A distinct event name from `notification.*`: this is
+# never itself a send attempt (no `endpoint`/`textSha256`/`httpStatus`),
+# it is the engine saying, once, that every `notify` call this run makes
+# is a guaranteed no-op until one of `--notifier-url`/the `job.yaml` key/
+# `RALPHD_NOTIFIER_URL` supplies a URL.
+NOTIFIER_UNCONFIGURED_EVENT = "notifier.unconfigured"
+
 
 def build_notifications_section(run: "state.RunDir") -> list[dict]:
     return state.read_events(run.root, types=[NOTIFICATION_SENT_EVENT])

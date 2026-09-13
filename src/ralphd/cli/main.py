@@ -6477,6 +6477,14 @@ IMAGE_DERIVED_SUPPLY_NOTE = (
 IMAGE_STALE_RUNS_HEADING = (
     "runs recorded non-terminal whose own job image is not this source tree's:")
 
+# Task 011 (PRD requirement B.3, #197): the doctor-report heading for
+# `_run_notifier_configuration`'s list, mirroring `IMAGE_STALE_RUNS_HEADING`
+# right above.
+NOTIFIER_UNCONFIGURED_RUNS_HEADING = (
+    "runs recorded non-terminal with no notifier URL configured (`notify` "
+    "calls are no-ops -- `ralphctl start --notifier-url`, the job.yaml "
+    "`notifier_url` key, or RALPHD_NOTIFIER_URL):")
+
 
 def _doctor_image_reference(args, reg_cfg: dict) -> tuple[str | None, str, str | None]:
     """`(reference, where it came from, base it is derived from)` for `doctor`.
@@ -6568,6 +6576,34 @@ def _run_image_staleness(source_hash: str | None) -> list[dict]:
     return entries
 
 
+def _run_notifier_configuration() -> list[str]:
+    """Which runs recorded non-terminal have no `notifier_url` configured
+    (task 011, PRD requirement B.3): every one whose `job.yaml` carries no
+    `notifier_url` key and whose process never saw `RALPHD_NOTIFIER_URL`
+    (`JobConfig.load`, the same resolution `status`'s provisioning read
+    above uses) is a run whose `notify` hat tool calls are guaranteed
+    no-ops -- the same condition `LoopSupervisor` warns about once, at
+    startup, into that run's own `events.jsonl`
+    (`NOTIFIER_UNCONFIGURED_EVENT`); this mirrors it here so an operator
+    sees it without opening any one run's own log. Report-only, like
+    `runImageStaleness` beside it: an operator who never wanted
+    notifications is not broken.
+    """
+    runs_dir = registry() / "runs"
+    if not runs_dir.is_dir():
+        return []
+    unconfigured = []
+    for d in sorted(runs_dir.iterdir()):
+        status = _read_json(d / "status.json", {})
+        if not isinstance(status, dict) or status.get("state") not in NONTERMINAL_STATES:
+            continue
+        cfg_path = config_root(d.name) / "job.yaml"
+        configured = cfg_path.is_file() and JobConfig.load(cfg_path).notifier_url is not None
+        if not configured:
+            unconfigured.append(d.name)
+    return unconfigured
+
+
 def cmd_doctor(args):
     checks = {}
     # Task 005 (A.3): report-only, before the ordinary checks -- absent
@@ -6594,6 +6630,10 @@ def cmd_doctor(args):
     run_images = _run_image_staleness(source_hash)
     stale_runs = [e for e in run_images
                   if e["staleness"] == IMAGE_STALENESS_STALE]
+    # Task 011 (PRD requirement B.3, #197): report-only, same rule as
+    # stale_runs just above -- an operator who never wanted notifications
+    # configured is not broken.
+    unconfigured_notifier_runs = _run_notifier_configuration()
     checks["registry"] = os.access(reg, os.W_OK)
     checks["pi_host_config"] = (Path.home() / ".pi" / "agent" / "settings.json").exists()
     # Task 023, requirement R: report-only, like image staleness -- an
@@ -6665,6 +6705,10 @@ def cmd_doctor(args):
         report += f"\n! {IMAGE_STALE_RUNS_HEADING}"
         for e in stale_runs:
             report += f"\n    {e['runId']}  {e['note']}"
+    if unconfigured_notifier_runs:
+        report += f"\n! {NOTIFIER_UNCONFIGURED_RUNS_HEADING}"
+        for run_id in unconfigured_notifier_runs:
+            report += f"\n    {run_id}"
     if default_llm_profile_error:
         report += f"\n    default LLM profile ({default_profile_name!r}): {default_llm_profile_error}"
     if host_network_note:
@@ -6757,6 +6801,7 @@ def cmd_doctor(args):
                "hostNetworkApiBindNote": host_network_note,
                "operatorSkill": operator_skill,
                "runSecretsMountTarget": str(petitions.DEFAULT_RUN_SECRETS_DIR),
+               "unconfiguredNotifierRuns": unconfigured_notifier_runs,
                "autoResume": auto_resume}, report)
     sys.exit(0 if ok else 1)
 

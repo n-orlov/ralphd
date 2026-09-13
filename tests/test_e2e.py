@@ -174,7 +174,13 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
     # `maxApproaches`/budget-carrying initial status write in
     # engine/main.py's `amain`) or split "seeded" from "logged" across two
     # places -- both worse than a startup event ordering that never
-    # changes. The replay still ends on a *terminal* state event, not any.
+    # changes. Task 011 (v0.20.2, PRD requirement B.3, #197) inserted one
+    # more startup-only event between the two: `LoopSupervisor.__init__`
+    # (constructed after `budget_seeded`, before `run_job()`'s own
+    # `running` transition) now warns once, here, that this engine_factory
+    # run's `notifier_url` is unconfigured (its default) -- so `types[1]`
+    # is that warning, not the `running` transition, for THIS run. The
+    # replay still ends on a *terminal* state event, not any.
     req = urllib.request.Request(
         f"http://127.0.0.1:{e.port}/events?since=0")
     types = []
@@ -188,7 +194,8 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
                         "succeeded", "failed", "aborted"):
                     break
     assert types[0] == "budget_seeded"  # task 010 (#51): seeded before the loop starts
-    assert types[1] == "state"  # the startup `running` transition, right after
+    assert types[1] == "notifier.unconfigured"  # task 011 (B.3): this run has no notifier_url
+    assert types[2] == "state"  # the startup `running` transition, right after
     assert "iteration.start" in types and "signal" in types
     assert types.count("phase") >= 2  # planning + review
 
