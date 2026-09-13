@@ -22,9 +22,9 @@ The v0.8 wave (#24, #26, #27, #50, #51, #54, #56, #57, #58; task 033 of
 also start out `pending`, written before task 035 closes anything, and its
 requirement letters run A-H (the PRD does not use I-L).
 
-A report that names a commit that never landed, or a test that no longer
-exists, is worse than no report, so its claims are re-read too. That
-extraction and those three checks live in `tests/report_claims.py` (task 041)
+A report that names a commit that never landed, or a path that has been
+deleted or renamed, is worse than no report, so its claims are re-read too.
+That extraction and those checks live in `tests/report_claims.py` (task 041)
 and `tests/records/test_report_claims.py` applies them to *every* report in the
 directory; they are re-applied here to this file specifically, because this is
 the report the issue closures are argued from. What is otherwise only ours:
@@ -39,7 +39,6 @@ import re
 from report_claims import (
     REPORTS_DIR,
     commit_problems,
-    node_problems,
     parse_claims,
     path_problems,
     retired_problems,
@@ -205,11 +204,15 @@ def test_every_commit_this_report_names_is_a_real_commit() -> None:
     assert not problems, "\n".join(problems)
 
 
-def test_every_path_and_test_node_this_report_names_exists() -> None:
+def test_every_path_this_report_names_exists() -> None:
+    """Requirement A.3 (v0.20.2) retired the test-node-resolution check
+    (`node_problems()`) entire: this report spans three closed-out waves
+    (v0.5-v0.8), and the live tree renaming or deleting one of the tests it
+    cites since then does not make the citation a lie, so nothing here
+    requires a `path::node` claim to resolve any more. Path and sha
+    resolution, and the `!retired` strong direction, are unaffected."""
     claims = parse_claims(REPORT)
-    problems = (
-        path_problems(claims) + node_problems(claims) + retired_problems(claims)
-    )
+    problems = path_problems(claims) + retired_problems(claims)
     assert not problems, "\n".join(problems)
 
 

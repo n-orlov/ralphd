@@ -16,6 +16,17 @@ collecting every problem across every report before a single `assert`. The
 two `!retired`-direction mutation cases are merged into one test the same
 way. Nothing else about `tests/report_claims.py` (the shared parser and
 checks) changes -- only how many pytest nodes apply it.
+
+Requirement A.3 (v0.20.2) later retires the node-resolution check entire
+(`node_problems()` in `tests/report_claims.py` is gone): a report is written
+about the tree as it stood at the time, and the live tree renaming or
+deleting a test later does not make that report's citation a lie, so the
+loop below runs the remaining three (commit/path/retired resolution) plus
+the density floor -- `path::node` claims are still parsed and still count
+toward that density floor, they are simply no longer required to resolve.
+The anti-fabrication check this module keeps untouched is the sha
+reachability one (`commit_problems()`), covered by its own two named tests
+below.
 """
 
 from __future__ import annotations
@@ -36,7 +47,6 @@ from report_claims import (
     RetiredClaim,
     commit_problems,
     defines_test,
-    node_problems,
     parse_claims,
     path_problems,
     report_files,
@@ -67,12 +77,18 @@ def test_the_reports_directory_is_discovered_not_enumerated() -> None:
 
 
 def test_every_report_passes_its_claim_checks() -> None:
-    """The five checks the old module ran once per report, per family, now
-    run once per report inside this loop -- still every live report
-    (discovered fresh by `report_files()`, imported at module scope above),
-    never a filtered subset beyond `FROZEN_REPORTS` (requirement A.2,
-    v0.20.2), and a fixed number of pytest nodes regardless of how many
-    reports the directory holds."""
+    """The remaining three checks run once per report inside this loop --
+    still every live report (discovered fresh by `report_files()`, imported
+    at module scope above), never a filtered subset beyond `FROZEN_REPORTS`
+    (requirement A.2, v0.20.2), and a fixed number of pytest nodes regardless
+    of how many reports the directory holds. A fourth check
+    (`node_problems()`, requiring a `path::node` citation to still resolve
+    to a real test) used to run here too; requirement A.3 (v0.20.2) retires
+    it entire -- a historical report's citation of a test the live tree has
+    since renamed or deleted is not thereby a lie, so nothing here requires
+    a `path::node` claim to resolve any more. The sha reachability check
+    (`commit_problems()`, the anti-fabrication guard A.3 explicitly keeps) is
+    unaffected."""
     reports = report_files()
     assert reports, "no reports discovered under artifacts/reports/"
     problems: list[str] = []
@@ -80,16 +96,18 @@ def test_every_report_passes_its_claim_checks() -> None:
         claims = parse_claims(report)
         problems.extend(commit_problems(claims))
         problems.extend(path_problems(claims))
-        problems.extend(node_problems(claims))
         problems.extend(retired_problems(claims))
         # "not all claimless": a report is evidence, it must point at
         # something checkable, and this also stops a report from passing
-        # the four checks above by naming nothing at all. A `!retired`
+        # the checks above by naming nothing at all. A `!retired`
         # citation counts too (requirement A.1, v0.20.2): it is still
         # checked, just in the strong direction (retired_problems requires
         # it NOT resolve) -- a report that names several now-retired sweep-
         # sha citations, after A.1 deleted the files they pointed at, is not
-        # thereby claimless.
+        # thereby claimless. A `path::node` claim also still counts toward
+        # this floor even though nothing checks it resolves any more
+        # (requirement A.3, v0.20.2) -- it is still evidence of what the
+        # report is about, just not evidence this module re-verifies.
         total = (
             len(claims.shas) + len(claims.paths) + len(claims.nodes)
             + len(claims.retired)
@@ -198,7 +216,6 @@ def test_a_missing_decimal_id_names_the_check_run_convention(monkeypatch) -> Non
     assert "is not a commit in this repo" in problems[0]
     assert "check-run, job or run id" in problems[0]
     assert "do not backtick it" in problems[0]
-    assert "docs/sweep-records.md" in problems[0]
 
 
 def test_the_claim_checks_have_exactly_one_implementation() -> None:

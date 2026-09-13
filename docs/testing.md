@@ -1218,3 +1218,30 @@ by re-measuring at that commit's own tip rather than assuming: fast
 `4022/5734 tests collected (1712 deselected)`, 360 fast-tier modules (unique
 module paths in the same fast `--collect-only` output), `tests/records/`
 still 116.
+
+**Still 5629/4022/360, `tests/records/` still 116, by v0.20.2 task 005
+(requirement A.3, #113 step 4): the historical-node-id claim check retired,
+the anti-fabrication check kept.** `node_problems()` in `tests/report_claims.py`
+-- the check that a `path::node` claim in any report under
+`artifacts/reports/` must still resolve to a real test -- is deleted
+outright, along with its two call sites (inside
+`tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks`
+and `tests/test_issue_traceability.py`, the latter renamed
+`test_every_path_this_report_names_exists` since it no longer checks a node).
+Both call sites were plain function calls inside an existing test's own
+body, never a parametrized node of their own, so this retirement deletes no
+pytest node: re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5629/5734 tests collected (105 deselected)`, smoke:
+`4022/5734 tests collected (1712 deselected)`) and
+`.venv/bin/python -m pytest -q tests/records/` (116 passed), all identical
+to task 004's own count. The result-line half of A.3 is a no-op here: that
+check lived in `tests/sweep_sha_guard.py`, already deleted whole by A.1;
+`tests/report_claims.py` never had one of its own. Kept, unweakened:
+`commit_problems()` (the sha-reachability anti-fabrication guard A.3 names
+by its own test, `test_a_dangling_commit_sha_fails_and_a_reachable_one_passes`),
+`path_problems()`, and `retired_problems()` (both its path and node forms --
+the opposite, "must NOT resolve", obligation, which A.3 does not touch). The
+`missing`-kind failure text drops its now-dangling `docs/sweep-records.md`
+pointer (deleted by A.1) while keeping the required "do not backtick it"
+guidance.

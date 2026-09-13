@@ -1573,3 +1573,40 @@ de-backticked in place (bare text, same words, no content change) since
 `tests/test_docs_consistency.py`'s identifier check reads any backticked
 snake_case name as a claim the code still has that name, and after this
 retirement none of them do.
+
+### Retired outright: the historical-node-id claim check (requirement A.3, v0.20.2, #113 step 4)
+
+Requirement A.3 of `docs/prds/v0.20.2-a-requirement-cannot-be-orphaned.md` retires
+"the result-line and historical-node-id claim checks", keeping "the anti-fabrication
+check". The result-line half is a no-op here: that check (`_is_result_line()` and
+its family) lived in `tests/sweep_sha_guard.py`, already deleted whole by requirement
+A.1 above -- `tests/report_claims.py` never had one of its own. The historical-node-id
+half is `node_problems()` in `tests/report_claims.py`: the function that required a
+`path::node` claim in **any** report under `artifacts/reports/` -- every report there
+is a record of a wave already closed out, i.e. history the moment it is written -- to
+still resolve to a real test in the file it named. It is deleted outright, along with
+its one call site inside `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks`
+(the collapsed, fixed-node-count loop task 032/E.1 built) and its second call site
+inside `tests/test_issue_traceability.py::test_every_path_and_test_node_this_report_names_exists`
+(renamed `test_every_path_this_report_names_exists`, since it no longer checks a node
+at all). No pytest node is deleted by this step: both call sites were function calls
+inside an existing test's own body, not a parametrized node of their own, so the fast
+and smoke tier counts, and `tests/records/`'s own collected count, are unchanged
+(re-measured directly at this task's own tip: fast 5629, smoke 4022, 360 fast-tier
+modules, `tests/records/` 116 -- identical to task 004's own count, confirming this
+retirement changes no count).
+
+Kept, unweakened, exactly as A.3 requires: `commit_problems()` (the sha-reachability
+anti-fabrication guard, `test_a_dangling_commit_sha_fails_and_a_reachable_one_passes`),
+`path_problems()` (a cited repo path must be tracked), and `retired_problems()` (the
+STRONG `!retired` direction, in both its path and node forms -- a citation marked
+retired must NOT resolve, which is the opposite obligation from the one A.3 retires
+and is not itself a "must stay resolvable" claim on a historical report). The
+`missing`-kind failure text `commit_problems()` emits for a decimal check-run/job/run
+id keeps A.3's required guidance ("do not backtick it") but drops the now-dangling
+`see docs/sweep-records.md` pointer, since A.1 deleted that file in this same wave;
+`test_a_missing_decimal_id_names_the_check_run_convention` is updated to match and
+still passes. `path::node` claims are still parsed and still count toward the
+"not claimless" density floor in `test_every_report_passes_its_claim_checks` -- they
+remain evidence of what a report is about, they are simply no longer re-verified to
+still resolve.

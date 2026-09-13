@@ -462,9 +462,8 @@ def commit_problems(claims: ReportClaims) -> list[str]:
                 problems.append(
                     f"{claims.where(claim.line)}: {claim.value} is not a "
                     f"commit in this repo (missing) -- if this is a "
-                    f"check-run, job or run id, do not backtick it: see "
-                    f"docs/sweep-records.md; otherwise it is an orphaned or "
-                    f"never-pushed commit sha"
+                    f"check-run, job or run id, do not backtick it; "
+                    f"otherwise it is an orphaned or never-pushed commit sha"
                 )
             else:
                 problems.append(
@@ -549,27 +548,16 @@ def defines_test(source: str, node: str) -> bool:
     return bool(re.search(pattern, source, re.MULTILINE))
 
 
-def node_problems(claims: ReportClaims) -> list[str]:
-    """Every listed `::node` must be a test in the file it is attached to."""
-    problems = []
-    sources: dict[str, str] = {}
-    for claim in claims.nodes:
-        if claim.path is None:
-            problems.append(
-                f"{claims.where(claim.line)}: bare node id with no path: ::{claim.node}"
-            )
-            continue
-        target = REPO_ROOT / claim.path
-        if not target.exists():
-            # path_problems() reports the missing file; nothing to read here.
-            continue
-        source = sources.setdefault(claim.path, target.read_text())
-        if not defines_test(source, claim.node):
-            problems.append(
-                f"{claims.where(claim.line)}: {claim.path} has no test named "
-                f"{claim.node}"
-            )
-    return problems
+# There used to be a `node_problems()` here requiring every `path::node`
+# claim to resolve to a real test. Requirement A.3 (v0.20.2) retires that
+# check entire: a report is written once, about the tree as it stood at the
+# time, and a test the live tree later renames or deletes does not make that
+# report's citation of it a lie -- the report is history, and history is not
+# obliged to keep citing something the live tree still carries. `defines_test`
+# above stays, because `retired_problems()` below still needs it for the
+# opposite direction: a citation marked `!retired` that still collects IS a
+# live problem (a false retirement claim), which is a different question from
+# "does this old citation still resolve" and is not what A.3 retires.
 
 
 def retired_problems(claims: ReportClaims) -> list[str]:
