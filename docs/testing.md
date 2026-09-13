@@ -1206,3 +1206,15 @@ table's `records, serial` row and its 300-test ceiling are reconciled by
 requirement A.6's own task, not this one): re-measured directly with
 `.venv/bin/python -m pytest -q tests/records/` (116 passed, 18.25 s, still
 well inside the existing 30 s ceiling).
+
+A.2's second stage, in the same task's follow-up commit, moves no count at
+all and is recorded here so the reader does not go looking for one: the
+generic claim checker stopped reading the ledger too (`report_files()` skips
+`FROZEN_REPORTS` in `tests/report_claims.py`), which deletes no test node --
+the claim families are a fixed number of nodes iterating a discovered list,
+so dropping one report from that list changes nothing they collect. Verified
+by re-measuring at that commit's own tip rather than assuming: fast
+`5629/5734 tests collected (105 deselected)`, smoke
+`4022/5734 tests collected (1712 deselected)`, 360 fast-tier modules (unique
+module paths in the same fast `--collect-only` output), `tests/records/`
+still 116.

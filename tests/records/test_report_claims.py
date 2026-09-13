@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 import report_claims as report_claims_module
 from report_claims import (
+    FROZEN_REPORTS,
     REPO_ROOT,
     REPORTS_DIR,
     Claim,
@@ -55,16 +56,23 @@ def test_the_reports_directory_is_discovered_not_enumerated() -> None:
         "traceability.md",
         "v0.5-definition-of-done.md",
     } <= names, names
-    # Every report in the directory is covered -- no filter, no allowlist.
-    assert names == {p.name for p in REPORTS_DIR.glob("*.md")}
+    # Every LIVE report in the directory is covered -- no filter, no
+    # allowlist. The only names subtracted are the ones frozen as history
+    # (requirement A.2, v0.20.2), which the checker skips entirely: nothing
+    # here reads a frozen report's presence, its lines or its claims.
+    on_disk = {p.name for p in REPORTS_DIR.glob("*.md")}
+    assert names == on_disk - set(FROZEN_REPORTS)
+    assert FROZEN_REPORTS, "the frozen-report list is the only subtraction"
+    assert not (set(FROZEN_REPORTS) & names), FROZEN_REPORTS
 
 
 def test_every_report_passes_its_claim_checks() -> None:
     """The five checks the old module ran once per report, per family, now
-    run once per report inside this loop -- still every report (discovered
-    fresh by `report_files()`, imported at module scope above), never a
-    filtered subset, but a fixed number of pytest nodes regardless of how
-    many reports the directory holds."""
+    run once per report inside this loop -- still every live report
+    (discovered fresh by `report_files()`, imported at module scope above),
+    never a filtered subset beyond `FROZEN_REPORTS` (requirement A.2,
+    v0.20.2), and a fixed number of pytest nodes regardless of how many
+    reports the directory holds."""
     reports = report_files()
     assert reports, "no reports discovered under artifacts/reports/"
     problems: list[str] = []
@@ -102,7 +110,7 @@ def test_the_retired_marker_direction_is_enforced() -> None:
     live_path = "tests/report_claims.py"
     assert (REPO_ROOT / live_path).exists()
     path_claims = ReportClaims(
-        report=REPORTS_DIR / "conformance-ledger.md",
+        report=REPORTS_DIR / "synthetic-fixture.md",
         shas=[],
         paths=[],
         nodes=[],
@@ -116,7 +124,7 @@ def test_the_retired_marker_direction_is_enforced() -> None:
     live_node = "test_a_node_family_wildcard_needs_a_real_match"
     assert defines_test((REPO_ROOT / live_node_path).read_text(), live_node)
     node_claims = ReportClaims(
-        report=REPORTS_DIR / "conformance-ledger.md",
+        report=REPORTS_DIR / "synthetic-fixture.md",
         shas=[],
         paths=[],
         nodes=[],
@@ -148,7 +156,7 @@ def test_a_dangling_commit_sha_fails_and_a_reachable_one_passes(monkeypatch) -> 
     )
     monkeypatch.setattr(report_claims_module, "_REACHABLE_COMMITS", {reachable})
     claims = ReportClaims(
-        report=REPORTS_DIR / "conformance-ledger.md",
+        report=REPORTS_DIR / "synthetic-fixture.md",
         shas=[Claim(dangling, line=1), Claim(reachable, line=2)],
         paths=[],
         nodes=[],
@@ -178,7 +186,7 @@ def test_a_missing_decimal_id_names_the_check_run_convention(monkeypatch) -> Non
     )
     monkeypatch.setattr(report_claims_module, "_REACHABLE_COMMITS", set())
     claims = ReportClaims(
-        report=REPORTS_DIR / "conformance-ledger.md",
+        report=REPORTS_DIR / "synthetic-fixture.md",
         shas=[Claim(decimal_id, line=1)],
         paths=[],
         nodes=[],
@@ -244,7 +252,7 @@ def test_path_problems_takes_at_most_one_git_ls_files_snapshot(monkeypatch) -> N
 
     monkeypatch.setattr(report_claims_module.subprocess, "run", fake_run)
     many_claims = ReportClaims(
-        report=REPORTS_DIR / "conformance-ledger.md",
+        report=REPORTS_DIR / "synthetic-fixture.md",
         shas=[],
         paths=[Claim("tests/report_claims.py", line=i) for i in range(1, 21)],
         nodes=[],
@@ -255,7 +263,7 @@ def test_path_problems_takes_at_most_one_git_ls_files_snapshot(monkeypatch) -> N
     assert len(calls) == 1, f"expected exactly one git ls-files call, got {len(calls)}"
     # A second, independent call must reuse the snapshot -- still one total.
     more_claims = ReportClaims(
-        report=REPORTS_DIR / "conformance-ledger.md",
+        report=REPORTS_DIR / "synthetic-fixture.md",
         shas=[],
         paths=[Claim("tests/records/test_report_claims.py", line=1)],
         nodes=[],
@@ -275,7 +283,7 @@ def test_untracked_generated_path_fails_with_the_untracked_message() -> None:
     generated.mkdir(parents=True, exist_ok=True)
     try:
         claims = ReportClaims(
-            report=REPORTS_DIR / "conformance-ledger.md",
+            report=REPORTS_DIR / "synthetic-fixture.md",
             shas=[],
             paths=[Claim("artifacts/screenshots/hub/", line=1)],
             nodes=[],
@@ -307,7 +315,7 @@ def test_tracked_but_missing_path_fails_with_the_other_message() -> None:
     written -- gets the other message, distinguishable from the untracked
     one above."""
     claims = ReportClaims(
-        report=REPORTS_DIR / "conformance-ledger.md",
+        report=REPORTS_DIR / "synthetic-fixture.md",
         shas=[],
         paths=[
             Claim(

@@ -69,6 +69,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = REPO_ROOT / "artifacts" / "reports"
 
+# Reports frozen as history: discovered, then skipped, so no check in this
+# module's family reads them at all. Requirement A.2 (v0.20.2) retires
+# `artifacts/reports/conformance-ledger.md`'s dedicated checker "along with
+# all mechanical checking of" that file, and has its header say nothing
+# checks it -- which is only true if the glob-discovered claim checks below
+# stop seeing it too. This is an authorised removal, not a filter of
+# convenience: a report added tomorrow is still covered without editing this
+# file, and a live report may never be listed here to dodge a claim problem.
+FROZEN_REPORTS = frozenset({"conformance-ledger.md"})
+
 # Top-level directories this repo owns. A path claim outside them is prose
 # about somebody else's tree (see the module docstring).
 REPO_DIRS = ("tests", "src", "docs", "examples", "artifacts", "tools", "container")
@@ -125,8 +135,13 @@ class ReportClaims:
 
 
 def report_files() -> list[Path]:
-    """Every evidence report, discovered -- never enumerated by hand."""
-    return sorted(REPORTS_DIR.glob("*.md"))
+    """Every LIVE evidence report, discovered -- never enumerated by hand.
+    A report named in `FROZEN_REPORTS` is frozen as history and carries no
+    checkable claim any more (requirement A.2, v0.20.2)."""
+    return sorted(
+        path for path in REPORTS_DIR.glob("*.md")
+        if path.name not in FROZEN_REPORTS
+    )
 
 
 def parse_claims(report: Path) -> ReportClaims:

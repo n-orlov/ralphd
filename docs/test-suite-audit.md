@@ -1541,10 +1541,27 @@ section documents is the cover that no longer exists to name).
 
 The ledger file gains a frozen-at-sha header in the same commit (A.2's own
 text: "a header stating the sha it was taken at, that it is frozen, and that
-nothing checks it") and every backtick citation inside the ledger itself
-that named either now-deleted module's path is marked `!retired` in place,
-since `tests/report_claims.py` checks every report under `artifacts/reports/`
-generically, the ledger included. Every historical report under
+nothing checks it"), and the generic claim checker is taught to skip it so
+that header is true rather than aspirational: `tests/report_claims.py`'s
+`report_files()` -- the glob discovery every claim family in
+`tests/records/test_report_claims.py` and `tests/test_report_claims_git_objects.py`
+iterates -- now subtracts the names in `FROZEN_REPORTS`, which holds exactly
+the frozen ledger. That is the last mechanical reader of the file: no
+commit-sha, path, node-id, `!retired`-direction or claim-density check is
+applied to any of its lines any more. No pytest node is deleted for this
+step (the checks are a fixed number of nodes over a discovered list, so the
+ledger's removal from that list changes no count) and none is weakened for
+any live report: a report added tomorrow is still discovered and checked
+without editing either file, and the discovery guard
+(`test_the_reports_directory_is_discovered_not_enumerated`) pins the
+subtraction from the live side only -- every name on disk except the frozen
+ones is covered, and no frozen name is -- so no test asserts anything about
+the ledger's presence, its lines or its claims. Every backtick citation
+inside the
+ledger that named either now-deleted module's path was marked `!retired` in
+place by the first stage of this same task, while the generic checks still
+read the ledger; those markers stay as history and are simply inert now.
+Every historical report under
 `artifacts/reports/` that cited either deleted path by a bare backtick path
 or a `path::node` form, and was not already marked `!retired` by an earlier
 retirement, is marked `!retired` in the same commit, same convention as
