@@ -1403,3 +1403,30 @@ headroom for tasks 009-016, still ahead of the F.5/A.7 freeze line, to add a
 modest number of new nodes without this task's own reconciliation forcing an
 immediate second pass -- but every one of them is strictly lower than the
 value it replaces, never raised.
+
+**5655 (smoke 4048, modules unchanged at 363) by v0.20.2 review-cure pass 1
+(cure-01-01, requirement A.3, and cure-01-02, requirement B.3 DoD 9).**
+cure-01-01 (`22fc372`) narrowed
+`test_the_retired_marker_direction_is_enforced` to the path form of
+`!retired` and added
+`test_a_retired_node_citation_is_never_rechecked_against_live_source`, a wash of
+-1/+1 net +1 fast/smoke node, taking the tier from the 5650/4043/363 task
+015 last measured to 5651/4044/363 -- left undisclosed here at the time
+(the guard's own substring check happened to still pass, since "5651"
+already occurs elsewhere in this doc for an unrelated v0.19 count, at a
+different task). cure-01-02 (this cure) then joins four more named tests
+to `tests/test_notifier_startup_warning.py` (three: a `notifier_url: ""`
+job.yaml fixture warns unconfigured, an omitted key warns the same way, a
+configured nonempty URL warns nothing -- no new module) and
+`tests/test_cli_doctor_notifier_config.py` (one: the same empty-string
+fixture is reported unconfigured by `doctor` too -- no new module); all
+four are `smoke` as well as `fast`, mirroring their modules' existing
+tests. Net across both cures from 5650/4043/363: **5655/4048/363**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q` (fast: `5655/5760 tests
+collected (105 deselected)`, smoke: `4048/5760 tests collected (1712
+deselected)`), and fast-tier module count via the same recipe used
+throughout this section (unique module paths in the fast `--collect-only`
+output): still 363. `tests/records/` is unaffected (116 unchanged). Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
+headroom.

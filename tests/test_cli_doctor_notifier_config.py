@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ralphd.cli import main as cli
 from tests.conftest import call_ralphctl_in_process
@@ -72,8 +73,12 @@ class Ctl:
         job_yaml = {"run_id": run_id}
         if notifier_url is not None:
             job_yaml["notifier_url"] = notifier_url
-        (cfg_dir / "job.yaml").write_text(
-            "\n".join(f"{k}: {v}" for k, v in job_yaml.items()) + "\n")
+        # `yaml.safe_dump`, not a hand-joined `f"{k}: {v}"` string: the
+        # latter renders an empty string the same as an absent value
+        # (`notifier_url: ` parses back as `None`, not `""`) which would
+        # silently collapse the cure-01-02 `notifier_url: ""` fixture case
+        # into the already-covered omitted/None one.
+        (cfg_dir / "job.yaml").write_text(yaml.safe_dump(job_yaml))
         if extra_env is not None:
             cli._write_extra_env_wiring(cfg_dir, list(extra_env))
 
@@ -100,6 +105,20 @@ def test_a_configured_non_terminal_run_is_quiet(ctl):
     assert doc["unconfiguredNotifierRuns"] == []
     res = ctl.run("doctor")
     assert cli.NOTIFIER_UNCONFIGURED_RUNS_HEADING not in res.stdout
+
+
+def test_a_job_yaml_empty_string_notifier_url_is_reported_unconfigured(ctl):
+    """Cure of B.3 DoD 9: `notifier_url: ""` (a real, supported YAML
+    representation of "no endpoint", distinct from the key being absent)
+    must be just as visibly unconfigured in `doctor` as an omitted or
+    `None` value -- never silently read as a configured, non-empty URL.
+    """
+    ctl.seed_run("blank-url-run", notifier_url="")
+    doc = ctl.doctor()
+    assert doc["unconfiguredNotifierRuns"] == ["blank-url-run"]
+    res = ctl.run("doctor")
+    assert cli.NOTIFIER_UNCONFIGURED_RUNS_HEADING in res.stdout
+    assert "blank-url-run" in res.stdout
 
 
 def test_the_doctor_shells_own_notifier_url_does_not_configure_a_run(ctl):

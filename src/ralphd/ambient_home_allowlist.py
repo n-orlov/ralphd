@@ -364,8 +364,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # B.3, #197) added `_check_notifier_configured()` and its call site
         # above `_creds_note` in this same module, a net +27, shifting this
         # read once more -- now at 1287, same method, same read, same
-        # reason.
-        "line": "1287",
+        # reason. Cure-01-02 (v0.20.2 review-cure, requirement B.3 DoD 9)
+        # widened `_check_notifier_configured()`'s own docstring (a net
+        # +12) above `_creds_note` in this same module, shifting this read
+        # once more -- now at 1299, same method, same read, same reason.
+        "line": "1299",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

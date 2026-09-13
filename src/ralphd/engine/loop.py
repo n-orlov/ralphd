@@ -557,8 +557,20 @@ class LoopSupervisor:
         fact: one `NOTIFIER_UNCONFIGURED_EVENT` on `events.jsonl` when
         `cfg.notifier_url` is `None`, and nothing at all -- no event -- for
         a configured run.
+
+        Cure of requirement B.3 (DoD 9): a `notifier_url: ""` key in
+        `job.yaml` is a SUPPORTED YAML representation of "no endpoint"
+        (`JobConfig.load()` puts it into `cfg.notifier_url` verbatim, same
+        as any other known key) -- yet this check tested `is None` only,
+        so an empty string reached here as "configured" while `self.
+        notifier`'s own truthy check just above (and `hat_tools.
+        send_notification`'s "no notifier URL configured" branch) already
+        treats it as unconfigured. The mismatch left `send_notification`
+        answering `ok=False` while zero `notifier.unconfigured` events
+        ever explained why. Testing falsiness -- `None` and `""` alike --
+        aligns this with both of those.
         """
-        if self.cfg.notifier_url is None:
+        if not self.cfg.notifier_url:
             self.run.emit(run_record.NOTIFIER_UNCONFIGURED_EVENT)
 
     def _check_workspace_version_drift(self) -> None:
