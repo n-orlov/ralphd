@@ -8913,27 +8913,39 @@ class LoopSupervisor:
         # approach on the identical wall. Checked AFTER every other
         # rejection edge above (an incurable, curable-with-a-cure-pass, or
         # last-approach-curable rejection keeps its own precedence exactly
-        # as it already does over the ordinary archive/replan below) and
-        # only while an approach is actually available to skip spending
-        # (`approach < max_approaches`; at the budget ceiling `rejected_no_
-        # approach_left` below already ends the run without any approach
-        # left to protect, so there is nothing for this edge to add there).
-        if approach < self.cfg.max_approaches:
-            # Task 015 (PRD requirement F.1, #198): the channel's second
-            # return value -- `_review_findings()` alone collapses "no
-            # channel" and "channel present but unreadable" into the same
-            # `None`, and the signature must not (see `_review_rejection_
-            # signature`'s docstring for why that distinction is the whole
-            # point of this task).
-            findings_list, channel_errors = self._review_findings_channel()
-            signature = self._review_rejection_signature(
-                findings_list, channel_errors)
-            if self._repeated_rejection_signature(approach, signature):
-                self._pause_and_escalate_repeated_rejection_signature(
-                    approach, signature)
-                self._advance("review", "paused", "rejected_repeated_signature")
-                return ("advance", "paused", "rejected_repeated_signature")
-            self._record_rejection_signature(approach, signature)
+        # as it already does over the ordinary archive/replan below).
+        #
+        # Cure task cure-01-03 (PRD requirement F.1, definition of done 12,
+        # #198): this used to be guarded by `approach < self.cfg.max_
+        # approaches`, on the theory that the budget ceiling's own
+        # `rejected_no_approach_left` tail below already ends the run
+        # without an approach left to protect. That reasoning does not
+        # hold: the guard did not merely skip the ADDED protection, it
+        # skipped the check (and the signature *record*) entirely on the
+        # run's own LAST approach, so the second of two identical
+        # findings-channel rejections at `max_approaches=2` fell straight
+        # through to `_archive_approach`/`rejected_no_approach_left`
+        # (`("tail",)`, approach 02 archived, no pause, no notification)
+        # instead of pausing on the repeated signature the way every
+        # earlier approach already does. Requirement F.1's own text names
+        # no last-approach exemption for the second-rejection pause, so the
+        # check (and the record it depends on for the NEXT rejection) now
+        # runs unconditionally, before the archive/replan-or-fail tail.
+        # Task 015 (PRD requirement F.1, #198): the channel's second
+        # return value -- `_review_findings()` alone collapses "no
+        # channel" and "channel present but unreadable" into the same
+        # `None`, and the signature must not (see `_review_rejection_
+        # signature`'s docstring for why that distinction is the whole
+        # point of this task).
+        findings_list, channel_errors = self._review_findings_channel()
+        signature = self._review_rejection_signature(
+            findings_list, channel_errors)
+        if self._repeated_rejection_signature(approach, signature):
+            self._pause_and_escalate_repeated_rejection_signature(
+                approach, signature)
+            self._advance("review", "paused", "rejected_repeated_signature")
+            return ("advance", "paused", "rejected_repeated_signature")
+        self._record_rejection_signature(approach, signature)
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:

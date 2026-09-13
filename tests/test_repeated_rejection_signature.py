@@ -18,9 +18,11 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from ralphd.engine import findings, transitions
 from ralphd.engine.runner import IterationResult
-from tests.conftest import supervisor_factory
+from tests.conftest import make_supervisor, supervisor_factory
 
 
 def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
@@ -430,3 +432,92 @@ def test_a_residual_only_rejection_still_yields_no_signature_unlike_an_unreadabl
     findings_list, channel_errors = sup._review_findings_channel()
     assert (findings_list, channel_errors) == (None, [])
     assert sup._review_rejection_signature(findings_list, channel_errors) is None
+
+
+# ===========================================================================
+# 7. Cure task cure-01-03 (PRD requirement F.1, definition of done 12,
+#    #198): the second-rejection pause must ALSO fire on the run's own LAST
+#    approach -- `_step_review` used to guard the whole repeat-signature
+#    check (and the record it depends on) with `approach < max_approaches`,
+#    so `max_approaches=2`'s second (and final) identical rejection fell
+#    through to the ordinary archive/`rejected_no_approach_left` tail
+#    instead of pausing, leaving approach 02 archived and nothing to
+#    resume. Requirement F.1's own text names no last-approach exemption.
+#
+#    An independent two-cycle regression: no `rejectionSignatures` seeded
+#    on `status.json` -- both cycles run the REAL `_step_review()` ->
+#    `_run_review_iteration` -> `_review_contract_ladder` ->
+#    `_ask_contract_fix` ladder over a genuinely unreadable findings
+#    sidecar on disk, and the supervisor is torn down and rebuilt against
+#    the SAME run directory between cycles (the shape a real `resume`
+#    takes), so the first cycle's signature can only reach the second
+#    cycle through `status.json` itself, never through in-process state.
+# ===========================================================================
+
+
+def _second_cycle_supervisor(root: Path, max_approaches: int):
+    return make_supervisor(
+        root, run_id="cure0103-two-real-cycles", cfg_defaults=False,
+        max_approaches=max_approaches, contract_retry_max=2, approach=2)
+
+
+@pytest.mark.parametrize("max_approaches", [2, 3])
+@pytest.mark.parametrize(
+    "payload",
+    ['[{"severity":"blocking","curable":true,"clause":"F.1"}]',
+     '{truncated'])
+def test_two_real_review_cycles_persist_error_pause_and_keep_second_unarchived_without_seeding(
+        tmp_path, payload, max_approaches):
+    root = tmp_path / "run"
+    repairs: list[list[str]] = []
+    messages: list[str] = []
+
+    def wire(sup):
+        sup.notifier = messages.append
+        sup.cfg.contract_retry_max = 2
+
+        async def run(prompt, transcript, **kw):
+            return _result(json.dumps({
+                "verdict": "rejected", "reason": "channel broken"}))
+
+        async def repair(hat, errors, final_text=None):
+            repairs.append(errors)
+            return json.dumps({
+                "verdict": "rejected",
+                "reason": "channel still broken"}), {}
+
+        sup.runner.run = run  # type: ignore[method-assign]
+        sup._ask_contract_fix = repair  # type: ignore[method-assign]
+
+    sup = make_supervisor(
+        root, run_id="cure0103-two-real-cycles", cfg_defaults=False,
+        max_approaches=max_approaches, contract_retry_max=2, prd="# fixture",
+        status={"state": "running"}, approach=1)
+    wire(sup)
+    sup.run.findings_json_file.write_text(payload, encoding="utf-8")
+
+    outcome = asyncio.run(sup._step_review())
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert (root / "approaches" / "01").is_dir()
+    assert messages == []
+    first_signature = sup.run.read_status()["rejectionSignatures"]["1"]
+    assert first_signature.startswith("channel-error: ")
+    assert sup._step_replan() == ("advance", "planning", "budget_and_approach_left")
+
+    # A fresh supervisor over the SAME run directory -- the resume shape --
+    # never inheriting anything the first supervisor still held in memory.
+    sup = _second_cycle_supervisor(root, max_approaches)
+    wire(sup)
+    sup.run.findings_json_file.write_text(payload, encoding="utf-8")
+
+    outcome = asyncio.run(sup._step_review())
+    assert outcome == ("advance", "paused", "rejected_repeated_signature")
+    assert not (root / "approaches" / "02").exists()
+    status = sup.run.read_status()
+    assert status["pauseReason"] == "rejected_repeated_signature"
+    assert status["rejectionSignatures"]["1"] == first_signature
+    assert sup._approach == 2 and not sup._pause.is_set()
+    assert len(messages) == 1
+    assert len(repairs) == 4 and all(repairs)
+    findings_list, channel_errors = sup._review_findings_channel()
+    assert findings_list is None and channel_errors
