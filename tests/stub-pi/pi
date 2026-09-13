@@ -1847,9 +1847,18 @@ elif "Role: Peer verdict gate (BLIND)" in prompt:
                 # No `author` field -- proves the ENGINE's own attribution
                 # (`findings.attribute_authorship`), not the hat's say-so, is
                 # what puts `author: "verdict_gate"` on the archived copy.
+                # Task 001 (PRD requirement A.1, #192): `curable: False` --
+                # this plain knob is the ORDINARY (non-curable) rejection
+                # `tests/flows/test_flow_peer_gates.py`'s existing scenarios
+                # drive (archive/replan or fail-open, never a cure pass);
+                # a curable-throughout rejection is a SEPARATE new engine
+                # edge (`verdict_gate -> cure`) this stub does not yet
+                # script, mirroring how `STUB_REVIEW_FAILS` (review's own
+                # plain-rejection knob) writes no findings channel at all,
+                # so it never takes review's OWN cure-pass edge either.
                 json.dump([{
                     "severity": "blocking",
-                    "curable": True,
+                    "curable": False,
                     "clause": "stub verdict gate clause",
                     "evidence": "stub: verdict gate rejection",
                 }], f)

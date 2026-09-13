@@ -196,6 +196,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_bound_reached` |
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_refused_work_recorded` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_approved` |
+| `verdict_gate` | verdict_gate | peer verdict gate only | `cure` | `verdict_gate_rejected_curable_pass_available` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `replan` | `verdict_gate_rejected_approach_left` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_rejected_no_approach_left` |
 | `cure` | — | both | `worker` | `cure_pass_appended` |

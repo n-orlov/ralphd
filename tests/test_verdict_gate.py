@@ -148,9 +148,18 @@ def _review_verifies_with_a_residual_finding(sup, prompt=""):
 
 def _verdict_gate_rejects_with_a_blocking_finding(reason: str):
     def handler(sup, prompt=""):
+        # Task 001 (PRD requirement A.1, #192): `curable=False` here, not
+        # this module's own `_finding` default (`True`) -- since that task
+        # a curable-throughout rejection takes the cure-pass edge
+        # (`verdict_gate` -> `cure`) instead of ending the run, and this
+        # test's own point is the archived-artifact distinguishability a
+        # terminal (`replan`/`finishing`) rejection produces, not the cure
+        # pass -- `tests/test_peer_verdict_gate.py`'s own new node covers
+        # the curable case end to end.
         findings.write_findings_json(sup.run.verdict_gate_findings_json_file, [
             _finding(clause="requirement Q (blocking)",
-                    evidence="the peer's own independent observation")])
+                    evidence="the peer's own independent observation",
+                    curable=False)])
         sup.run.verdict_gate_findings_file.write_text(
             "### Blocking\nrequirement Q is unmet, independently re-checked.\n")
         return _ok(json.dumps({"verdict": "rejected", "reason": reason}))

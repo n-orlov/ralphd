@@ -659,6 +659,16 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
     ),
     "verdict_gate": (
         T("finishing", "verdict_gate_approved"),
+        # Task 001 (PRD requirement A.1, #192): the peer gate's own
+        # cure-pass edge -- a rejection whose blocking findings are ALL
+        # curable takes this edge, straight to the same `cure` state
+        # `review`'s own `rejected_curable_pass_available` edge already
+        # targets, rather than spending this approach's replan (or ending
+        # the run once the budget is spent). Declared BEFORE the ordinary
+        # replan/no-approach-left edges below, mirroring `TABLE["review"]`'s
+        # own ordering, because `LoopSupervisor._step_verdict_gate` checks
+        # `_gate_cure_pass_available` before falling through to either.
+        T("cure", "verdict_gate_rejected_curable_pass_available"),
         T("replan", "verdict_gate_rejected_approach_left"),
         T("finishing", "verdict_gate_rejected_no_approach_left"),
     ),

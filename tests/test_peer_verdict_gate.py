@@ -48,7 +48,7 @@ from pathlib import Path
 
 import pytest
 
-from ralphd.engine import contracts
+from ralphd.engine import contracts, findings
 from ralphd.engine import tiers as T
 from ralphd.engine import transitions as tr
 from ralphd.engine.config import (DEFAULT_HAT_MODEL_REF, MODEL_HATS,
@@ -188,9 +188,15 @@ def test_review_s_other_edges_are_unchanged_by_the_gate(vigilant):
 
 @pytest.mark.parametrize("vigilant", [True, False])
 def test_verdict_gate_has_exactly_the_three_declared_edges(vigilant):
+    """Task 001 (PRD requirement A.1, #192) adds a FOURTH declared edge
+    (`verdict_gate_rejected_curable_pass_available` -> `cure`) beside the
+    three this test originally pinned -- kept under its original name
+    (this module's own node-id-in-commit-message discipline) with its
+    assertion widened to match."""
     edges = tr.successors("verdict_gate", vigilant, peer_verdict_gate=True)
     assert edges == (
         tr.T("finishing", "verdict_gate_approved"),
+        tr.T("cure", "verdict_gate_rejected_curable_pass_available"),
         tr.T("replan", "verdict_gate_rejected_approach_left"),
         tr.T("finishing", "verdict_gate_rejected_no_approach_left"),
     )
@@ -852,3 +858,114 @@ def test_only_one_off_budget_peer_gate_per_approach(tmp_path):
     assert asyncio.run(sup._maybe_grace_review(1)) is False
     assert asyncio.run(sup._maybe_grace_review(1)) is False
     assert sup.runner.calls == {"review": 1, "verdict_gate": 1}
+
+
+# ---------------------------------------------------------------------------
+# 9. Task 001 (PRD requirement A.1, #192): a rejection whose blocking
+#    findings are ALL curable schedules a cure pass instead of ending the
+#    run -- driven against the SAME `_progressing_approach_supervisor`-style
+#    fixture the rest of this file already uses (a real `LoopSupervisor`
+#    over a fresh `RunDir`), never against this run's own engine (0.20.2,
+#    which has no such edge at all).
+# ---------------------------------------------------------------------------
+
+
+def _all_curable_gate_findings() -> list[dict]:
+    return [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement A.1 (#192)",
+         "evidence": "the peer gate found an unmet requirement review missed",
+         "cured_when": "a cure task adds the missing behaviour"},
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement A.1 second clause (#192)",
+         "evidence": "the peer gate found a second, independent gap",
+         "cured_when": "a cure task adds that behaviour too"},
+    ]
+
+
+def test_gate_rejection_all_curable_takes_a_cure_pass_not_a_replan(tmp_path):
+    """The exact gap #192 names: review returned `verified`, the peer gate
+    returned blocking findings it had already marked curable, and v0.20.2's
+    engine had no cure path -- only the ordinary `replan`/`finishing` edges,
+    which either spends a fresh approach's replan or ends the run holding
+    cures it never spent. This drives `_step_verdict_gate` directly on a
+    fresh `LoopSupervisor`/`RunDir` fixture (never this run's own engine)
+    with `max_approaches=1` -- the LAST approach, so a wrongly-taken
+    `verdict_gate_rejected_no_approach_left` edge would end the run right
+    here, and a wrongly-taken `verdict_gate_rejected_approach_left` edge
+    would be illegal outright (there is no approach left to spend).
+    """
+    root = tmp_path / "run"
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    run.update_status(state="running")
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": []})
+    cfg = JobConfig(run_id="task001-gate-cure-pass", iterations=5,
+                    max_approaches=1, vigilant=False, peer_verdict_gate=True,
+                    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0)
+    sup = LoopSupervisor(cfg, run, root)
+    sup._approach = 1
+
+    curable = _all_curable_gate_findings()
+    findings.write_findings_json(run.verdict_gate_findings_json_file, curable)
+
+    async def _gate_rejects(self, phase, extra="", *a, **kw):
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({
+            "verdict": "rejected",
+            "reason": "both blocking findings are curable defects",
+        })
+        return r
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects
+    try:
+        outcome = asyncio.run(sup._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+
+    # the cure-pass edge, not a replan and not a terminal finish -- even
+    # though this IS the last approach.
+    assert outcome == ("advance", "cure",
+                       "verdict_gate_rejected_curable_pass_available")
+
+    # the approach number is unchanged, and it was never archived.
+    assert sup._approach == 1
+    assert not (root / "approaches" / "01").exists()
+    assert not (root / "composite-prd.md").exists()
+
+    # the gate's own cure-pass counter, persisted on status.json.
+    status = run.read_status()
+    assert status.get("gateCurePasses") == {"1": 1}
+
+    # one cure task per blocking finding, appended to THIS approach's
+    # tasks.json, in finding order.
+    tasks = run.read_tasks()["tasks"]
+    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert len(cure_tasks) == 2
+    for task, finding_ in zip(cure_tasks, curable):
+        assert task["title"] == finding_["clause"]
+        assert task["status"] == "pending"
+        assert task["successCriteria"] == finding_["cured_when"]
+
+    # the `cure` state's own successor takes the run straight back to
+    # `worker` in the same dispatch pass, over the SAME appended tasks.
+    cure_outcome = asyncio.run(sup._step_cure())
+    assert cure_outcome == ("advance", "worker", "cure_pass_appended")
+
+
+def test_the_gate_cure_pass_edge_is_declared_only_under_the_peer_delta():
+    """The new edge exists ONLY when `peer_verdict_gate=True` -- `verdict_
+    gate` has no reachable table entry at all when the gate is off, so
+    there is nothing to compare a byte-identical snapshot against, but the
+    edge itself must never leak into `TABLE`/`VIGILANT_DELTA` (a `verdict_
+    gate` guard that fires even though the state is unreachable)."""
+    for vigilant in (True, False):
+        assert "verdict_gate" not in tr.table_for(vigilant, peer_verdict_gate=False)
+        edges = tr.successors("verdict_gate", vigilant, peer_verdict_gate=True)
+        by_guard = {e.guard: e.target for e in edges}
+        assert by_guard["verdict_gate_rejected_curable_pass_available"] == "cure"
+        assert by_guard["verdict_gate_approved"] == "finishing"
+        assert by_guard["verdict_gate_rejected_approach_left"] == "replan"
+        assert by_guard["verdict_gate_rejected_no_approach_left"] == "finishing"
+        assert len(edges) == 4

@@ -6214,6 +6214,27 @@ class LoopSupervisor:
             message=(f"peer verdict gate rejected approach {approach}"
                      + (f": {reason}" if reason else
                         " (no usable verdict_gate payload)")))
+        # Task 001 (PRD requirement A.1, #192): a rejection whose blocking
+        # findings are ALL curable is a cure pass, not a replan -- checked
+        # BEFORE the ordinary archive/replan-or-finish below, exactly the
+        # precedence `_step_review`'s own `_review_cure_pass_available`
+        # check already has over ITS archive/replan branch. This is the
+        # gap v0.20's approach 8 fell into (#192): review returned
+        # `verified`, the peer gate returned 4 curable blocking findings,
+        # each with its own `Cured when:` clause, and there was no cure
+        # path for the peer gate to take -- only the ordinary `replan`/
+        # `finishing` edges below, which either burns a fresh approach's
+        # replan on findings a fresh approach cannot even fix faster than
+        # a cure task can, or ends the run holding cures it never spent.
+        # Extends `state.insert_cure_tasks`, the SAME append-cure-tasks
+        # path `_take_cure_pass` already uses for review's own cure pass
+        # (`_take_gate_cure_pass` below) -- no second cure mechanism.
+        if self._gate_cure_pass_available(approach):
+            self._take_gate_cure_pass(approach)
+            self._advance("verdict_gate", "cure",
+                         "verdict_gate_rejected_curable_pass_available")
+            return ("advance", "cure",
+                    "verdict_gate_rejected_curable_pass_available")
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:
@@ -6223,6 +6244,115 @@ class LoopSupervisor:
         self._advance("verdict_gate", "finishing",
                      "verdict_gate_rejected_no_approach_left")
         return ("tail",)
+
+    def _gate_findings(self) -> list[dict] | None:
+        """Task 001 (PRD requirement A.1, #192): the valid findings list
+        for the peer verdict gate's own structured sidecar
+        (`RunDir.verdict_gate_findings_json_file`), or `None` when there is
+        none -- the gate's mirror of `_review_findings`/`_review_findings_
+        channel` above, deliberately narrower: the gate's own channel
+        carries no petition-downgrade or criteria-tamper-append machinery
+        of its own (those are review-specific engine-appended findings,
+        `_review_findings_channel`'s own docstring), so this reads the
+        sidecar as written, no channel absent still reading as `None`
+        exactly like review's `path.exists()` guard, and a present-but-
+        unreadable sidecar (a hand-edited or truncated file) also reading
+        as `None` -- the caller (`_gate_cure_pass_available`) then falls
+        through to the ordinary archive/replan-or-finish edges below,
+        never a cure pass over findings the engine cannot itself parse.
+        """
+        path = self.run.verdict_gate_findings_json_file
+        if not path.exists():
+            return None
+        try:
+            return findings.read_findings_json(path)
+        except ValueError:
+            return None
+
+    def _gate_cure_passes_for_approach(self, approach: int) -> int:
+        """Task 001 (PRD requirement A.1, #192): `gateCurePasses[approach]`
+        as recorded on status.json right now -- disk, not memory, the same
+        shape `_cure_passes_for_approach` already uses for review's own
+        counter, kept under a SEPARATE key (`gateCurePasses`, not
+        `curePasses`) so a cure pass this approach's peer gate takes is
+        never conflated with a cure pass this approach's review already
+        took before the gate was ever consulted. Absence (never gate-
+        cured, or a run from before this task) reads as `0`.
+        """
+        cure_passes = self.run.read_status().get("gateCurePasses") or {}
+        try:
+            return int(cure_passes.get(str(approach), 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _gate_cure_pass_available(self, approach: int) -> bool:
+        """Task 001 (PRD requirement A.1, #192): does this peer verdict
+        gate rejection deserve the cure-pass edge
+        (`verdict_gate_rejected_curable_pass_available`) rather than the
+        ordinary archive/replan-or-finish below? True only when a
+        structured findings channel exists for the gate
+        (`_gate_findings`, `None` falls back to the ordinary path exactly
+        like `_review_cure_pass_available` does for an absent review
+        channel), the findings actually compute to `"rejected"`
+        (`findings.compute_verdict`), no finding in the set is the
+        engine's own criteria-tamper finding (`findings.any_criteria_
+        tamper_finding` -- the same reasoning `_review_cure_pass_
+        available`'s own docstring gives: curing hands THIS approach
+        another worker pass over the very tasks whose criteria are in
+        dispute), EVERY blocking finding is curable (`findings.all_
+        blocking_findings_curable`), and this approach's own cure-pass
+        ceiling for the GATE'S channel (`CURE_PASS_CEILING`, the same
+        module-level ceiling review's own counter is bounded by; task 002
+        makes this configurable) has not already been reached.
+
+        Task 003 (PRD requirement A.3) covers the complement this method
+        keeps open: a rejection carrying any non-curable blocking finding
+        returns `False` here and falls straight through to the ordinary
+        archive/replan-or-finish edges below, ending the run exactly as
+        it always has -- A.1 is never a claim that the gate can no longer
+        fail a run.
+        """
+        findings_list = self._gate_findings()
+        if findings_list is None:
+            return False
+        if findings.compute_verdict(findings_list) != "rejected":
+            return False
+        if findings.any_criteria_tamper_finding(findings_list):
+            return False
+        if not findings.all_blocking_findings_curable(findings_list):
+            return False
+        return self._gate_cure_passes_for_approach(approach) < CURE_PASS_CEILING
+
+    def _take_gate_cure_pass(self, approach: int) -> None:
+        """Task 001 (PRD requirement A.1, #192): the consequence of taking
+        the peer verdict gate's cure-pass edge -- append one cure task per
+        blocking finding to THIS approach's `tasks.json`
+        (`state.insert_cure_tasks`, the SAME call `_take_cure_pass` already
+        makes for review's own cure pass; a collision between a review-
+        cure and a gate-cure task id for the same approach is resolved by
+        that call's own `_unique_task_id` fallback, never silently
+        dropped), increment and persist `gateCurePasses[approach]` on
+        status.json, and emit `approach.gate_cure_pass` naming the
+        approach, the new count and the inserted task ids -- the gate's
+        own mirror of `approach.cure_pass`, under its own event name so the
+        two channels stay distinguishable on `events.jsonl`.
+
+        Never archives the approach and never writes a composite PRD --
+        the caller (`_step_verdict_gate`) returns straight to the `cure`
+        state on this branch, which `_step_cure` takes unconditionally to
+        `worker` over the SAME, unarchived approach.
+        """
+        findings_list = self._gate_findings() or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        inserted = state.insert_cure_tasks(self.run, approach, blocking)
+        status = self.run.read_status()
+        cure_passes = dict(status.get("gateCurePasses") or {})
+        new_count = self._gate_cure_passes_for_approach(approach) + 1
+        cure_passes[str(approach)] = new_count
+        self.run.update_status(gateCurePasses=cure_passes)
+        self.run.emit("approach.gate_cure_pass", approach=approach,
+                      curePasses=new_count, taskIds=inserted,
+                      findings=blocking)
 
     async def _verdict_gate_verdict(self, result) -> tuple[bool, dict | None]:
         """Task 020 (requirement L, #101): the ONE parser of a

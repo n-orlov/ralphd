@@ -179,6 +179,19 @@ deselected)`, smoke: `4043/5755 tests collected (1712 deselected)`).
 tests/375 modules fast, 4300/260 smoke) still carry headroom for the
 remaining pre-freeze tasks.
 
+**5662 (modules unchanged at 363) by v0.21 task 001 (requirement A.1,
+#192): the peer verdict gate's own cure pass.** Two new nodes join
+`tests/test_peer_verdict_gate.py` (no new module) --
+`test_gate_rejection_all_curable_takes_a_cure_pass_not_a_replan` and
+`test_the_gate_cure_pass_edge_is_declared_only_under_the_peer_delta` --
+plus `test_verdict_gate_has_exactly_the_three_declared_edges` widened in
+place (no net node change from that one). Net +2 fast, +0 modules. From
+5660 (the v0.20.2 baseline this task's launch measured): **5662/363**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m fast --collect-only -q` (`5662 tests collected`). `tests/
+records/` is unaffected. The fast ceiling (5800 tests/375 modules) still
+carries headroom.
+
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4038 | 248 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
