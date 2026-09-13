@@ -1611,6 +1611,38 @@ still passes. `path::node` claims are still parsed and still count toward the
 remain evidence of what a report is about, they are simply no longer re-verified to
 still resolve.
 
+### Retired outright: the v0.20.1 lane-results record (requirement A.4, v0.20.2, #113 step 4)
+
+Requirement A.4 of `docs/prds/v0.20.2-a-requirement-cannot-be-orphaned.md` retires the
+practice of committing a lane result as a markdown record of its own:
+`artifacts/reports/v0.20.1-lanes.md` (92 lines, no test node -- a report, not a pytest
+module) is deleted outright. From now on a lane result is cited as a GitHub run
+id/URL wherever one is needed (this wave's own D.1/D.2 do exactly that), never a
+committed record whose subject is that result -- the same "a signed check run is the
+attestation, a self-declared markdown file is not" reasoning A.1 and A.2 above both
+give, applied here to lane conclusions instead of sweep-shas or ledger entries.
+`artifacts/reports/v0.20-lanes.md` is untouched (its diff against the launch sha
+`e1d5226` is empty) -- A.4 names only the v0.20.1 record, not the v0.20 one it
+succeeded.
+
+There is no pytest node to delete and therefore no Subsumed row is owed: the file
+never had a test node of its own, and the nine lane-result facts it carried (one
+fast-tier gate run, one docker-tier heavy run, one browser-tier heavy run, and six
+dev-layout nightly cells) are carried forward as GitHub run-id URLs in task 006's own
+commit message and in the run-dir artifact `v0.20.1-lane-run-ids.md`, for the v0.20.2
+closing report (D.4) to cite -- not re-committed as a markdown record, which is the
+very practice this clause retires.
+
+Deleting the file broke `tests/report_claims.py`'s generic path check for four
+pre-existing backtick citations of it, in two reports this wave's own rules forbid
+editing (`v0.20-lanes.md`, frozen byte-identical by A.4's own text, and
+`v0.20.1-closing-report.md`, reserved for F.5's own future correction). Task 006's
+cure added `FROZEN_PATH_CITATIONS`, a narrow `(report, line, path)` allowlist
+exempting exactly those four citations from `path_problems()` -- not the
+`FROZEN_REPORTS` whole-report freeze A.2 used, since both reports carry hundreds of
+other live claims that stay checked; a fresh citation of the same path anywhere else,
+or on any other line of either report, still fails the check normally.
+
 ### Kept, unweakened: A.5's four protected items (requirement A.5, v0.20.2, #113 step 4)
 
 Requirement A.5 of `docs/prds/v0.20.2-a-requirement-cannot-be-orphaned.md` names four

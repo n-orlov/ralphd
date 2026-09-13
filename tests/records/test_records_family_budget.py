@@ -3,16 +3,20 @@ how many tests `tests/records/` collects, how long a real run of it takes,
 and what it actually spawns a subprocess for.
 
 `docs/testing.md`'s budget table carries the measured numbers this module
-pins live: the family collects tests against a **300** budget and runs in
+pins live: the family collects tests against a **150** budget and runs in
 a few seconds against a **15 s** budget -- both well inside target, so
 neither is disclosed as a miss.
 
 v0.20.1 tasks 044/045/046 retired the sweep-sha and conformance-ledger
 guard coverage and lowered this ceiling to 150 (operator ruling
-`001-039.md` point 3); task cure-02-02 restores that coverage (review
-finding: the ruling is not binding for approach 2), so the ceiling is
-restored to its pre-retirement value of 300, matching the family's
-restored collected count.
+`001-039.md` point 3); task cure-02-02 restored that coverage (review
+finding: the ruling is not binding for approach 2), raising the ceiling
+back to 300 to match the family's then-restored 204-node count. v0.20.2's
+requirement A retires that same coverage again, this time with the PRD
+itself as authority (A.2, A.3 -- no operator ruling cited or needed), and
+task 008 (requirement A.6) reconciles this ceiling downward once more, to
+**150**, matching the family's current 116-node count with the same
+modest headroom the pre-restoration value already used.
 
 **The subprocess rule.** A real run of the whole family spawns exactly TWO
 real subprocesses -- one `git ls-files` and one `git rev-list HEAD` -- and
@@ -79,7 +83,11 @@ RECORDS_DIR = REPO_ROOT / "tests" / "records"
 # cure-02-02 when the conformance-ledger checker's guard coverage was
 # restored (review finding: operator ruling 001-039.md is not binding for
 # approach 2), bringing the family back to its 204-collected count.
-COLLECTED_BUDGET = 300
+# v0.20.2 requirement A.2/A.3 retires that same coverage again (PRD itself
+# is the authority this time, no operator ruling), dropping the family to
+# 116 nodes; task 008 (requirement A.6) reconciles this ceiling downward
+# once more, to 150, matching the 116-node count with modest headroom.
+COLLECTED_BUDGET = 150
 
 
 class _CollectPlugin:

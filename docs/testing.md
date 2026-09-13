@@ -64,25 +64,34 @@ records lint is built that way and the tier table puts records lint in smoke.
 
 ## Budgets
 
-Measured in this container (28 cores) with the recipes above: the smoke, fast
-and records rows re-measured at sha `9b1a0e2` (task 008, requirement G.2 --
-task 050's two fix commits `778738b` and `3e65963` are still what the code
-underneath these numbers is, and `9b1a0e2` is the sha this task's own runs
-were taken at, five commits later than `3e65963` with no intervening code
-change to either tier). The "budget" columns are the
+Measured in this container (28 cores) with the recipes above: an earlier wave's
+task 008 (requirement G.2) re-measured the smoke, fast and records rows at sha
+`9b1a0e2` (task 050's two fix commits `778738b` and `3e65963` are still what
+the code underneath those numbers was). This wave's own task 008 (v0.20.2,
+requirement A.6) re-measures the same three rows again, at this task's own
+tip, to fold in the counts that requirements A.1-A.4 removed since `9b1a0e2` --
+the fast tier's live collected count had drifted from 5732 at this wave's own
+launch baseline (task 001, sha `e1d5226`) down to **5629** by task 004
+(A.2)'s own tip, and stayed there through task 005 (A.3), task 006 (A.4) and
+task 007 (A.5), none of which changed a collected count -- while the table
+above still carried the pre-launch 5329 figure. The "budget" columns are the
 declared ceilings this suite is held to; `tests/test_tier_budgets.py` fails when a recorded measurement
 exceeds one, and independently asks pytest what each tier collects right now and
-fails when *that* is over the ceiling. The ceilings carry deliberate headroom
-over today's measurements so the wave's remaining flow modules can land, and are
-tightened as the counts come down -- they are a ratchet, not a target.
+fails when *that* is over the ceiling. The ceilings still carry headroom over
+today's measurements so the wave's remaining tasks (009-016, still ahead of the
+F.5/A.7 freeze line) can land a modest number of new nodes, but every ceiling in
+the table below moved down from its own prior value in this same commit,
+requirement A.6's own "downward only" rule -- they are a ratchet, not a target,
+and not a licence to leave stale headroom in place once a removal has made it
+larger than the tree it is meant to bound.
 
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 3768 | 208 | 26.85 s | 5100 | 300 | 60 s | n/a | met -- 26.85 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
-| smoke, serial | `smoke` | `-m smoke` | 3768 | 208 | 137.18 s | 5100 | 300 | 200 s | < 120 s | MISSED -- 137.18 s measured against the 120 s target |
-| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5329 | 322 | 81.04 s | 7000 | 430 | 150 s | < 120 s | met -- 81.04 s inside the 120 s target |
-| fast, serial | `fast` | `-m fast` | 5329 | 322 | 540.44 s | 7000 | 430 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
-| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 204 | 6 | 20.60 s | 300 | 15 | 30 s | < 15 s | MISSED -- 20.60 s measured against the 15 s target (still inside the 30 s ceiling's own headroom); 204 tests inside the restored 300-test budget, re-measured at v0.20.1 task cure-02-02's own tip after restoring the conformance-ledger and sweep-sha guard coverage that tasks 044/045 had retired |
+| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4022 | 245 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
+| smoke, serial | `smoke` | `-m smoke` | 4022 | 245 | 147.68 s | 4300 | 260 | 200 s | < 120 s | MISSED -- 147.68 s measured against the 120 s target |
+| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5629 | 360 | 80.12 s | 5800 | 375 | 150 s | < 120 s | met -- 80.12 s inside the 120 s target |
+| fast, serial | `fast` | `-m fast` | 5629 | 360 | 540.44 s (stale wall clock, not retaken this task -- see note below) | 5800 | 375 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
+| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 116 | 5 | 11.35 s | 150 | 10 | 30 s | < 15 s | met -- 11.35 s inside the 15 s target |
 | dev-layout, `PYTHONUSERBASE` unset (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
 
@@ -119,15 +128,31 @@ python3 python3-pip` step -- not to the
 3600 s ceiling the two retired rows above were measured against, which was
 sized to the unfiltered whole suite this lane no longer runs.
 
-Every number in the first five rows above is a fresh run at `9b1a0e2`, taken
-sequentially and never two at once, with the wall clock read off each run's own
-summary line (the collected counts come from a `--collect-only` pass at the
-same sha). The serial fast lane is measured directly (`.venv/bin/python -m
-pytest -q -m fast`, 540.44 s) rather than carried forward from the audit's
-older 981 s figure at sha 836adc1; the parallel lane is still the one the loop
-uses day to day. The serial fast run surfaced one extra failing node beyond
-the two pre-existing `test_sweep_sha_guard.py` reds this table already
-discloses elsewhere:
+**Task 008 (v0.20.2, requirement A.6) re-measurement.** The smoke-parallel,
+smoke-serial, fast-parallel and records-serial cells above are fresh runs at
+this task's own tip, taken sequentially and never two at once, with the wall
+clock read off each run's own summary line: smoke parallel `4021 passed, 1
+skipped ... in 24.41s`, smoke serial `4021 passed, 1 skipped ... in 147.68s`,
+fast parallel `5628 passed, 1 skipped ... in 80.12s (0:01:20)`, records
+`116 passed ... in 11.35s`. The fast-parallel run is this task's one full
+fast-tier run (standing rule: at most one per iteration); its own
+`--collect-only` output agrees exactly with a separate collect-only pass
+(`5629/5734 tests collected (105 deselected)`), and the same collect-only
+mechanism gives the module counts (360 fast, 245 smoke -- unique module paths
+in each tier's own `--collect-only` output) and, by directory, `tests/records/`
+(5 modules). The fast-serial cell's wall clock is **not** retaken this task:
+the standing-rule cap of one full fast-tier run per iteration already spent
+itself on the parallel recipe above, so that cell keeps the last real
+measurement of the serial recipe (540.44 s at sha `9b1a0e2`, itself run at a
+higher fast-tier count than today's) rather than fabricate a number; its own
+`tests`/`modules` cells still carry today's real collected count, since a
+count is recipe-independent (the same `-m fast` selection collects the same
+nodes whether `-n 8` is passed or not) and needs only a `--collect-only`
+pass, not a second full run, to state truthfully. The pre-existing serial-fast
+finding this paragraph used to carry forward, about an order-dependent extra
+failure in `tests/test_reflection.py`, is not re-confirmed by this task (the
+serial recipe was not re-run) and is left below as prior-measurement history
+rather than restated as current:
 `tests/test_reflection.py::test_reflect_runs_after_terminal_state_leaves_run_state_untouched`,
 which passes solo (`.venv/bin/python -m pytest -q
 tests/test_reflection.py::test_reflect_runs_after_terminal_state_leaves_run_state_untouched`
@@ -1245,3 +1270,42 @@ the opposite, "must NOT resolve", obligation, which A.3 does not touch). The
 `missing`-kind failure text drops its now-dangling `docs/sweep-records.md`
 pointer (deleted by A.1) while keeping the required "do not backtick it"
 guidance.
+
+**Still 5629/4022/360, `tests/records/` still 116, by v0.20.2 task 006
+(requirement A.4) and task 007 (requirement A.5).** Task 006 deletes
+`artifacts/reports/v0.20.1-lanes.md`, a report with no pytest node of its own,
+and touches `tests/report_claims.py` only to add the narrow
+`FROZEN_PATH_CITATIONS` allowlist (a data tuple, not a test); task 007 adds
+prose to `docs/test-suite-audit.md`, no test code. Neither moves a collected
+count in any tier or in `tests/records/`; re-measured directly at each task's
+own tip with the same `--collect-only` recipe, confirming no drift.
+
+**Table synced to 5629/4022/360 (fast/smoke/modules), `tests/records/` to
+116, by v0.20.2 task 008 (requirement A.6): the counts A.1-A.4 removed since
+the table's last full measurement, and the ceilings that bounded the old
+count, both reconciled.** The live counts above had already drifted to
+5629/4022/360 by task 004 and stayed there through tasks 005-007 (this
+section's own preceding entries), while the top budget table still carried
+sha `9b1a0e2`'s pre-launch 5329/3768/322 and the `tests/records/` row still
+carried its own pre-`A.2` 204. This task re-measures the smoke, fast and
+records rows fresh (see the "Task 008 (v0.20.2, requirement A.6)
+re-measurement" paragraph above the table for the exact recipe and summary
+lines) and writes the live counts into the table itself, closing the gap
+between what the disclosure paragraphs above already said and what the
+table's own cells claimed. The fast tier's own count is stated beside the
+wave's launch baseline once more here, for a reader who lands on this
+paragraph without the commit message: **5629** measured at this task's own
+tip against **5732** at launch (task 001, sha `e1d5226`), a drop of 103
+nodes -- 10 from A.1's sweep-sha retirement, 94 from A.2's conformance-ledger
+retirement (both already accounted for above), -1 net from a module rename
+wash within A.1's own removal; A.3, A.4 and A.5 changed no count. The
+ceilings move down with them, in the same commit, per A.6's own "downward
+only" rule: smoke 5100->4300 tests, 300->260 modules; fast 7000->5800 tests,
+430->375 modules; records 300->150 tests, 15->10 modules (the matching
+`COLLECTED_BUDGET` constant in
+`tests/records/test_records_family_budget.py` moves from 300 to 150 in the
+same commit). Every new ceiling still sits above today's own measurement --
+headroom for tasks 009-016, still ahead of the F.5/A.7 freeze line, to add a
+modest number of new nodes without this task's own reconciliation forcing an
+immediate second pass -- but every one of them is strictly lower than the
+value it replaces, never raised.
