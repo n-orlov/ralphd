@@ -685,10 +685,26 @@ def _without_notifier_env(env: dict) -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _scrub_notifier_env_in_process(request, monkeypatch):
+def _scrub_notifier_env_in_process(request, monkeypatch, tmp_path_factory):
     if request.node.get_closest_marker("NOTIFIER_ENV"):
         return
     monkeypatch.delenv(NOTIFIER_ENV_VAR, raising=False)
+    # Task 002 (v0.20.2 requirement B.4): the env var is not the whole leak.
+    # `JobConfig.load()` (engine/config.py) falls back to reading
+    # `CONFIG_DIR / "job.yaml"` straight off disk whenever it is called
+    # with no explicit path -- and THIS container's own ambient
+    # `/config/job.yaml` (the job.yaml the engine running this very suite
+    # was started with) genuinely carries the operator's real notifier
+    # URL. Scrubbing the env var alone still left that ambient job-config
+    # FILE read as a second leak path for any in-process, no-argument
+    # `JobConfig.load()` call. Pointing `config.CONFIG_DIR` at a fresh,
+    # empty scratch directory for the same tests this fixture already
+    # scrubs the env var for closes it: no `job.yaml` exists there, so
+    # `JobConfig.load()` falls through to `raw = {}` and `notifier_url`
+    # stays `None` unless a test's own env/stub_env sets it explicitly.
+    from ralphd.engine import config as config_mod
+    isolated_config_dir = tmp_path_factory.mktemp("notifier-scrub-config-dir")
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", isolated_config_dir)
 
 
 # `_STRIPPED_CHILD_ENV_VARS`: variables a spawned engine must never inherit
