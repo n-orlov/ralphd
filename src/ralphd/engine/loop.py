@@ -6239,7 +6239,21 @@ class LoopSupervisor:
         # Extends `state.insert_cure_tasks`, the SAME append-cure-tasks
         # path `_take_cure_pass` already uses for review's own cure pass
         # (`_take_gate_cure_pass` below) -- no second cure mechanism.
-        if self._gate_cure_pass_available(approach):
+        # Task 004 (PRD requirement A.4, #192): classify and persist this
+        # rejection's own ending BEFORE deciding which of the three edges
+        # below it takes -- `_gate_rejection_ending` needs to know whether
+        # the cure-pass edge is actually taken (computed once, here, and
+        # reused for both the classification and the branch itself so the
+        # two can never disagree about which happened), and the write must
+        # land on status.json before any of the three edges (cure/replan/
+        # tail) so it survives into whichever terminal record eventually
+        # results -- `gateRejectionEnding` is overwritten by each later
+        # gate rejection, and read back by `ralphctl status`'s own
+        # `_format_gate_rejection_ending_lines`.
+        cured = self._gate_cure_pass_available(approach)
+        self.run.update_status(
+            gateRejectionEnding=self._gate_rejection_ending(approach, cured))
+        if cured:
             self._take_gate_cure_pass(approach)
             self._advance("verdict_gate", "cure",
                          "verdict_gate_rejected_curable_pass_available")
@@ -6329,22 +6343,45 @@ class LoopSupervisor:
                     continue
         return total
 
-    def _gate_cure_pass_available(self, approach: int) -> bool:
-        """Task 001 (PRD requirement A.1, #192): does this peer verdict
-        gate rejection deserve the cure-pass edge
-        (`verdict_gate_rejected_curable_pass_available`) rather than the
-        ordinary archive/replan-or-finish below? True only when a
-        structured findings channel exists for the gate
+    def _gate_rejection_curable_ignoring_ceiling(self, approach: int) -> bool:
+        """Task 004 (PRD requirement A.4): every check
+        `_gate_cure_pass_available` makes EXCEPT the run-wide ceiling
+        comparison -- shared by that method (which adds the ceiling check)
+        and `_gate_rejection_ending` below, which needs to tell a
+        rejection that was never curable at all (A.3's mixed/incurable
+        case: `_gate_rejection_ending` reports `GATE_REJECTION_ENDING_
+        MERITS`) apart from one that WAS curable in principle but found
+        the run's cure-pass budget already spent (`GATE_REJECTION_ENDING_
+        CURE_UNAVAILABLE`) -- a distinction the boolean
+        `_gate_cure_pass_available` alone collapses to the same `False`.
+
+        True only when a structured findings channel exists for the gate
         (`_gate_findings`, `None` falls back to the ordinary path exactly
         like `_review_cure_pass_available` does for an absent review
         channel), the findings actually compute to `"rejected"`
         (`findings.compute_verdict`), no finding in the set is the
         engine's own criteria-tamper finding (`findings.any_criteria_
-        tamper_finding` -- the same reasoning `_review_cure_pass_
-        available`'s own docstring gives: curing hands THIS approach
-        another worker pass over the very tasks whose criteria are in
-        dispute), EVERY blocking finding is curable (`findings.all_
-        blocking_findings_curable`), and the RUN's own cure-pass ceiling
+        tamper_finding`), and EVERY blocking finding is curable
+        (`findings.all_blocking_findings_curable`).
+        """
+        findings_list = self._gate_findings()
+        if findings_list is None:
+            return False
+        if findings.compute_verdict(findings_list) != "rejected":
+            return False
+        if findings.any_criteria_tamper_finding(findings_list):
+            return False
+        return findings.all_blocking_findings_curable(findings_list)
+
+    def _gate_cure_pass_available(self, approach: int) -> bool:
+        """Task 001 (PRD requirement A.1, #192): does this peer verdict
+        gate rejection deserve the cure-pass edge
+        (`verdict_gate_rejected_curable_pass_available`) rather than the
+        ordinary archive/replan-or-finish below? True only when this
+        rejection is curable at all (`_gate_rejection_curable_ignoring_
+        ceiling` above, task 004's own extraction of everything this
+        method used to compute inline -- same checks, same order, no
+        behaviour change) AND the RUN's own cure-pass ceiling
         (`self.cfg.cure_pass_ceiling`, the same configured ceiling
         review's own channel is bounded by -- task 002, PRD requirement
         A.2, replaced the module-level `CURE_PASS_CEILING` literal both
@@ -6361,16 +6398,43 @@ class LoopSupervisor:
         it always has -- A.1 is never a claim that the gate can no longer
         fail a run.
         """
-        findings_list = self._gate_findings()
-        if findings_list is None:
-            return False
-        if findings.compute_verdict(findings_list) != "rejected":
-            return False
-        if findings.any_criteria_tamper_finding(findings_list):
-            return False
-        if not findings.all_blocking_findings_curable(findings_list):
+        if not self._gate_rejection_curable_ignoring_ceiling(approach):
             return False
         return self._cure_passes_for_run() < self.cfg.cure_pass_ceiling
+
+    def _gate_rejection_ending(self, approach: int, cured: bool) -> str:
+        """Task 004 (PRD requirement A.4, #192): which of the three
+        endings THIS gate rejection is, for the terminal record an
+        operator surface reads (`ralphctl status`, `_format_gate_
+        rejection_ending_lines`) -- `state.GATE_REJECTION_ENDING_*`:
+
+        * `CURE_TAKEN` -- the caller already took the cure-pass edge
+          (`cured=True`, i.e. `_gate_cure_pass_available` returned `True`
+          for this same rejection).
+        * `CURE_UNAVAILABLE` -- not cured, but this rejection WOULD have
+          earned the cure-pass edge if the run's cure-pass ceiling were
+          unlimited (`_gate_rejection_curable_ignoring_ceiling` is `True`)
+          -- the budget-exhausted case A.2 bounds and A.4 must now name
+          distinctly from an ordinary merits rejection.
+        * `MERITS` -- neither of the above: no structured findings
+          channel, an unparseable/non-`rejected`-computing channel, a
+          criteria-tamper finding, or a non-curable blocking finding
+          (A.3's own mixed case) -- rejected on the merits, exactly the
+          v0.20 #192 shape an operator could not previously tell apart
+          from either of the other two.
+
+        Persisted to status.json (`gateRejectionEnding`) by the caller so
+        it survives into the terminal record whichever edge this
+        rejection actually takes next (cure, replan, or the tail exit
+        that writes the run's own terminal state) -- disk-backed,
+        overwritten by each subsequent gate rejection, and absent for a
+        run that has never had one.
+        """
+        if cured:
+            return state.GATE_REJECTION_ENDING_CURE_TAKEN
+        if self._gate_rejection_curable_ignoring_ceiling(approach):
+            return state.GATE_REJECTION_ENDING_CURE_UNAVAILABLE
+        return state.GATE_REJECTION_ENDING_MERITS
 
     def _take_gate_cure_pass(self, approach: int) -> None:
         """Task 001 (PRD requirement A.1, #192): the consequence of taking

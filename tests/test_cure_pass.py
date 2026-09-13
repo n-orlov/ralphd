@@ -757,6 +757,11 @@ def test_a_configured_run_wide_ceiling_stops_a_repeated_reject_then_cure_cycle_a
     assert outcome == ("advance", "replan", "verdict_gate_rejected_approach_left")
     assert sup.run.read_status().get("gateCurePasses") == {"1": 1}  # unchanged
     assert sup.run.read_status().get("curePasses") == {"1": 1}      # unchanged
+    # Task 004 (PRD requirement A.4): curable, but the run-wide ceiling was
+    # already spent -- the terminal-record ending names the budget, not
+    # the merits, and never a cure actually taken on this rejection.
+    assert (sup.run.read_status().get("gateRejectionEnding")
+            == "rejected_cure_unavailable")
     assert len(_cure_tasks(sup.run)) == 2  # passes 1-2's tasks, no third batch
 
     # Rejection 4, over the freshly replanned approach 2 -- its own two

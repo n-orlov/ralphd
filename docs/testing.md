@@ -1443,3 +1443,42 @@ throughout this section (unique module paths in the fast `--collect-only`
 output): still 363. `tests/records/` is unaffected (116 unchanged). Both
 ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
 headroom.
+
+**5664 (smoke 4057, modules unchanged at 363) by v0.21 tasks 001-003
+(requirements A.1-A.3), left undisclosed here at the time.** Task 001
+(`a74db530`) widens `tests/test_peer_verdict_gate.py` (a new gate-cure-pass
+test plus supporting scripted-fixture helpers) and `tests/test_verdict_gate.py`;
+task 002 (`2ae026e`, `79a36d7`) adds `tests/test_cure_pass.py` as a new module
+first, then folds its cases into the existing cure-pass coverage once the
+run-wide ceiling landed (`0607a37` is docs-only, no test change); task 003
+(`aa4f50b`) adds one more named test,
+`test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run`, to
+`tests/test_peer_verdict_gate.py`. Net across all three from the
+5655/4048/363 this section last measured: **5664/4057/363** (+9 fast, +9
+smoke, +0 modules -- no task added a new module, so the guard's own
+substring check on the raw number happened to keep passing until the count
+it measures moved to a value this doc had never stated, exactly the gap
+this paragraph now closes). Re-measured directly at task 004's own tip
+(next paragraph) rather than re-checked out at each of these three shas in
+turn, since none of the three touched `tests/records/` or moved the module
+count, and the fast/smoke totals compose additively across them.
+
+**5668 (smoke 4061, modules 363->364) by v0.21 task 004 (requirement
+A.4).** Adds one new module, `tests/test_cli_status_gate_rejection_
+ending.py`, with four named tests (one per `gateRejectionEnding` value
+`ralphctl status` renders distinct wording for, plus the fourth proving a
+terminal run dir with no such field still renders) -- all four are
+`smoke` as well as `fast` (no live engine/container, a seeded status.json
+read back through the CLI's on-disk fallback path, the same harness
+`tests/test_cli_status_finishing.py`'s own `deadlineBeatVerdict` tests
+use). From the 5664/4057/363 the paragraph above reconciles: **5668/4061/
+364**. Re-measured directly at this task's own tip with `.venv/bin/python
+-m pytest -m <fast|smoke> --collect-only -q` (fast: `5668/5773 tests
+collected (105 deselected)`, smoke: `4061/5773 tests collected (1712
+deselected)`), and the module count via the same unique-module-path recipe
+used throughout this section: `364`. `tests/records/` is unaffected (117
+measured at this task's own tip -- a further +1 drift from the 116 this
+section's own last `tests/records/` mention states, already present before
+this task and untouched by it; left for a task that actually touches that
+directory to reconcile). Both ceilings (5800 tests/375 modules fast,
+4300/260 smoke) still carry headroom.

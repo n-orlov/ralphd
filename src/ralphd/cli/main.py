@@ -49,6 +49,9 @@ from ..engine.tiers import TIERS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
     CURRENT_SCHEMA_VERSION,
+    GATE_REJECTION_ENDING_CURE_TAKEN,
+    GATE_REJECTION_ENDING_CURE_UNAVAILABLE,
+    GATE_REJECTION_ENDING_MERITS,
     IMAGE_RECORD_KEYS,
     NO_ARTIFACTS,
     NO_ROUTER_CALLS,
@@ -3023,6 +3026,45 @@ def _format_deadline_beat_verdict_lines(deadline_beat_verdict) -> list[str]:
     return lines
 
 
+_GATE_REJECTION_ENDING_WORDING = {
+    GATE_REJECTION_ENDING_MERITS:
+        "rejected on the merits (no curable path)",
+    GATE_REJECTION_ENDING_CURE_TAKEN:
+        "rejected, cure path taken",
+    GATE_REJECTION_ENDING_CURE_UNAVAILABLE:
+        "rejected, cure path unavailable (cure-pass budget exhausted)",
+}
+
+
+def _format_gate_rejection_ending_lines(ending) -> list[str]:
+    """Task 004 (PRD requirement A.4, #192): the `gate:` line naming which
+    of the three endings the peer verdict gate's most recent rejection was
+    -- `state.GATE_REJECTION_ENDING_*`, written to status.json's
+    `gateRejectionEnding` by `LoopSupervisor._step_verdict_gate`
+    (`_gate_rejection_ending`). A.1-A.3 gave the engine a cure path for a
+    curable gate rejection and a bounded budget for it; without this line
+    an operator staring at `ralphctl status` still could not tell 'rejected
+    on the merits' (no curable path existed), 'rejected, cure path taken'
+    (the run is mid-cure, or was cured before ending some other way) and
+    'rejected, cure path unavailable (budget exhausted)' (curable, but the
+    run's own cure-pass ceiling was already spent) apart -- the exact
+    ambiguity v0.20's #192 left unresolved.
+
+    Nothing at all for a run whose status.json carries no
+    `gateRejectionEnding` at all (every run before this task, any run that
+    never took the peer gate to a rejection, and any run with the gate
+    disabled) -- their rendered output is byte-identical to before this
+    task, the same discipline `_format_deadline_beat_verdict_lines` and
+    `_format_termination_lines` already keep for their own markers. An
+    unrecognised value (a hand-edited or future-schema status.json) also
+    renders nothing, rather than a line that might mislabel it.
+    """
+    wording = _GATE_REJECTION_ENDING_WORDING.get(ending)
+    if not wording:
+        return []
+    return [f"gate:      {wording}"]
+
+
 def _format_termination_lines(termination) -> list[str]:
     """Task 015 (#46): the `termination:` line(s) for a run a signal ended with
     no operator behind it -- the class, and the last tool call before the
@@ -3558,6 +3600,13 @@ def cmd_status(args):
     # class and the evidence, because `reason: signal 15` on its own told an
     # operator nothing they could act on.
     lines.extend(_format_termination_lines(status.get("termination")))
+    # Task 004 (PRD requirement A.4, #192): ... and when the peer verdict
+    # gate has rejected at least once, which of the three endings that
+    # rejection was -- rejected on the merits, cured, or curable-but-
+    # budget-exhausted -- otherwise indistinguishable on screen from an
+    # ordinary rejection.
+    lines.extend(_format_gate_rejection_ending_lines(
+        status.get("gateRejectionEnding")))
     lines.append(f"tasks:     {_summarize_tasks(status.get('tasks') or {})}")
     # Task 014 (#156, requirement A.4): the per-task progress budget task
     # 013 persists on status.json -- named here so a corroborated

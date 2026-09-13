@@ -937,6 +937,9 @@ def test_gate_rejection_all_curable_takes_a_cure_pass_not_a_replan(tmp_path):
     # the gate's own cure-pass counter, persisted on status.json.
     status = run.read_status()
     assert status.get("gateCurePasses") == {"1": 1}
+    # Task 004 (PRD requirement A.4): the terminal-record ending field
+    # names the cure path as taken, not merits or budget-exhausted.
+    assert status.get("gateRejectionEnding") == "rejected_cure_taken"
 
     # one cure task per blocking finding, appended to THIS approach's
     # tasks.json, in finding order.
@@ -1004,6 +1007,10 @@ def test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run(
     assert final_state == "failed", sup.run.read_status()
     assert sup.run.read_status().get("verdict") == "unverified"
     assert sup.run.read_status().get("gateCurePasses") is None
+    # Task 004 (PRD requirement A.4): a mixed rejection is "on the merits",
+    # never mistaken for a cure taken or a budget-exhausted cure.
+    assert (sup.run.read_status().get("gateRejectionEnding")
+            == "rejected_on_the_merits")
     tasks = sup.run.read_tasks()["tasks"]
     cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
     assert cure_tasks == []

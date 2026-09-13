@@ -529,6 +529,28 @@ TERMINATION_CLASS_OPERATOR = "operator"
 TERMINATION_CLASS_SELF = "self-inflicted"
 TERMINATION_CLASSES: tuple[str, ...] = (TERMINATION_CLASS_OPERATOR,
                                         TERMINATION_CLASS_SELF)
+
+# v0.21 requirement A.4 (#192, task 004): status.json's `gateRejectionEnding`
+# -- which of the three endings the peer verdict gate's MOST RECENT rejection
+# was, so an operator reading `ralphctl status` (`cli.main._format_gate_
+# rejection_ending_lines`) can tell a rejection that was never curable
+# (`MERITS`) apart from one where a cure pass was actually taken
+# (`CURE_TAKEN`, `LoopSupervisor._take_gate_cure_pass`) apart from one that
+# WOULD have been cured but found the run's own cure-pass ceiling
+# (`JobConfig.cure_pass_ceiling`, `curePasses`/`gateCurePasses` above) already
+# spent (`CURE_UNAVAILABLE`) -- the exact ambiguity v0.20's #192 left an
+# operator with no way to resolve. Written by `LoopSupervisor.
+# _step_verdict_gate` on every gate rejection (`_gate_rejection_ending`),
+# before the cure/replan/tail edge that rejection takes; overwritten by each
+# later gate rejection; absent for a run that has never had one.
+GATE_REJECTION_ENDING_MERITS = "rejected_on_the_merits"
+GATE_REJECTION_ENDING_CURE_TAKEN = "rejected_cure_taken"
+GATE_REJECTION_ENDING_CURE_UNAVAILABLE = "rejected_cure_unavailable"
+GATE_REJECTION_ENDINGS: tuple[str, ...] = (
+    GATE_REJECTION_ENDING_MERITS,
+    GATE_REJECTION_ENDING_CURE_TAKEN,
+    GATE_REJECTION_ENDING_CURE_UNAVAILABLE,
+)
 # How much of a tool call's arguments the evidence keeps, and how much of a
 # transcript's tail is scanned for it: a transcript can be tens of MB, and
 # the last tool call is by construction at its end.
