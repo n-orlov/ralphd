@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -521,3 +522,110 @@ def test_two_real_review_cycles_persist_error_pause_and_keep_second_unarchived_w
     assert len(repairs) == 4 and all(repairs)
     findings_list, channel_errors = sup._review_findings_channel()
     assert findings_list is None and channel_errors
+
+
+# ===========================================================================
+# 8. Cure cure-01-01-3 (PRD requirement F.1, definition of done 12): the
+#    SAME two-real-cycle shape as case 7 above, but the filesystem read
+#    failure is a genuinely unreadable file (`chmod 000`) rather than a
+#    malformed payload -- a present sidecar `findings.read_findings_json`
+#    cannot even `read_text()`, not merely one that fails to parse/
+#    validate. Before this cure, `state.read_json` let the bare
+#    `PermissionError` escape `read_findings_json` -> `_review_findings_
+#    channel` -> `_review_contract_ladder` -> `_step_review` uncaught,
+#    crashing the real review/contract-repair path instead of being
+#    treated as one more invalid-findings-channel case. Explicit
+#    `max_approaches=2` per the cure's own definition of done -- the
+#    second (and LAST) identical failure must still pause, never fall
+#    through to the ordinary archive/`rejected_no_approach_left` tail.
+# ===========================================================================
+
+
+def test_two_real_review_cycles_persist_permission_denied_error_pause_and_keep_second_unarchived(
+        tmp_path):
+    max_approaches = 2
+    root = tmp_path / "run"
+    repairs: list[list[str]] = []
+    messages: list[str] = []
+
+    def wire(sup):
+        sup.notifier = messages.append
+        sup.cfg.contract_retry_max = 2
+
+        async def run(prompt, transcript, **kw):
+            return _result(json.dumps({
+                "verdict": "rejected", "reason": "channel unreadable"}))
+
+        async def repair(hat, errors, final_text=None):
+            repairs.append(errors)
+            return json.dumps({
+                "verdict": "rejected",
+                "reason": "channel still unreadable"}), {}
+
+        sup.runner.run = run  # type: ignore[method-assign]
+        sup._ask_contract_fix = repair  # type: ignore[method-assign]
+
+    def _write_permission_denied_channel(sup) -> None:
+        path = sup.run.findings_json_file
+        if path.exists():
+            # cycle 1 left this file behind at mode 000 (the fallback
+            # archive copy is skipped for a genuinely unreadable sidecar,
+            # per `_archive_findings_json` above) -- restore write access
+            # before rewriting it for the second cycle.
+            os.chmod(path, 0o644)
+        path.write_text(
+            '[{"severity":"blocking","curable":true,"clause":"F.1"}]',
+            encoding="utf-8")
+        os.chmod(path, 0o000)
+
+    sup = make_supervisor(
+        root, run_id="cure010103-permission-denied", cfg_defaults=False,
+        max_approaches=max_approaches, contract_retry_max=2, prd="# fixture",
+        status={"state": "running"}, approach=1)
+    wire(sup)
+    _write_permission_denied_channel(sup)
+    try:
+        # Confirm the fixture itself really is unreadable (a real
+        # `PermissionError` on read), and that the real channel reader
+        # converts it to a channel error rather than letting it escape --
+        # never faked/mocked for the rest of this test.
+        with pytest.raises(PermissionError):
+            sup.run.findings_json_file.read_text()
+        findings_list, channel_errors = sup._review_findings_channel()
+        assert findings_list is None and channel_errors
+
+        outcome = asyncio.run(sup._step_review())
+        assert outcome == ("advance", "replan", "rejected_approach_left")
+        assert (root / "approaches" / "01").is_dir()
+        assert messages == []
+        first_signature = sup.run.read_status()["rejectionSignatures"]["1"]
+        assert first_signature.startswith("channel-error: ")
+        assert sup._step_replan() == (
+            "advance", "planning", "budget_and_approach_left")
+
+        # A fresh supervisor over the SAME run directory -- the resume
+        # shape -- never inheriting anything the first supervisor still
+        # held in memory.
+        sup = _second_cycle_supervisor(root, max_approaches)
+        wire(sup)
+        _write_permission_denied_channel(sup)
+
+        outcome = asyncio.run(sup._step_review())
+        assert outcome == ("advance", "paused", "rejected_repeated_signature")
+        assert not (root / "approaches" / "02").exists()
+        status = sup.run.read_status()
+        assert status["pauseReason"] == "rejected_repeated_signature"
+        assert status["rejectionSignatures"]["1"] == first_signature
+        assert sup._approach == 2 and not sup._pause.is_set()
+        assert len(messages) == 1
+        assert len(repairs) == 4 and all(repairs)
+        findings_list, channel_errors = sup._review_findings_channel()
+        assert findings_list is None and channel_errors
+    finally:
+        # Restore permissions before `tmp_path`'s own teardown -- deleting
+        # the entry itself only needs the containing directory's write
+        # permission, but leaving a mode-000 file behind is needless
+        # sandbox residue.
+        target = root / "review-findings.json"
+        if target.exists():
+            os.chmod(target, 0o644)

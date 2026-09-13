@@ -561,8 +561,27 @@ def read_findings_json(path: Path) -> list[dict]:
     every finding through the same schema engine on the way out — a file
     that was valid when written but corrupted or hand-edited since is
     caught here rather than trusted silently. Raises `ValueError` on a
-    missing/malformed file or an invalid finding."""
-    parsed = read_json(path, default=_MISSING)
+    missing/malformed file, an invalid finding, OR a file present on disk
+    that the engine's own process cannot read (a permission-denied sidecar,
+    or any other `OSError` `Path.read_text()`/`state.read_json` can raise
+    besides the `FileNotFoundError` it already treats as "missing").
+
+    `state.read_json` only ever swallows `FileNotFoundError` and
+    `json.JSONDecodeError` -- deliberately, since it backs dozens of
+    unrelated state reads for which a real filesystem error (permission,
+    I/O, a directory where a file was expected) is a bug worth surfacing,
+    not a value worth defaulting away. The findings channel is different:
+    task F.1's own contract is that ANY present-but-unreadable channel --
+    unreadable for whatever reason -- is an invalid findings channel, not
+    a crash that escapes the real review/contract-repair path. So the
+    conversion happens HERE, narrowly, on this one caller, rather than by
+    broadening `read_json`'s own swallow set for every other state file
+    that calls through it."""
+    try:
+        parsed = read_json(path, default=_MISSING)
+    except OSError as exc:
+        raise ValueError(
+            f"findings channel at {path} could not be read: {exc}") from exc
     if parsed is _MISSING:
         raise ValueError(f"no findings channel at {path}")
     errors = validate_findings(parsed)

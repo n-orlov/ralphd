@@ -11845,14 +11845,24 @@ class LoopSupervisor:
         for-byte instead of silently dropped -- the same "never invisible"
         posture `_review_findings_channel` documents for a present-but-
         invalid channel -- there is simply nothing to attribute
-        authorship to in that case.
+        authorship to in that case. Byte-for-byte copy is itself only
+        possible when the bytes are actually reachable (a malformed-
+        JSON/truncated sidecar is readable, just invalid); a permission-
+        denied sidecar is unreadable in the exact same way to `shutil.
+        copy2` as it is to `read_findings_json` (task cure-01-01-3, PRD
+        requirement F.1) -- the fallback copy is skipped rather than
+        letting that second `OSError` escape the archive/replan path the
+        same way the read itself must not.
         """
         if not src.exists():
             return
         try:
             items = findings.read_findings_json(src)
         except ValueError:
-            shutil.copy2(src, dest_dir / src.name)
+            try:
+                shutil.copy2(src, dest_dir / src.name)
+            except OSError:
+                pass
             return
         attributed = findings.attribute_authorship(items, author)
         findings.write_findings_json(dest_dir / src.name, attributed)
