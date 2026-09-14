@@ -227,21 +227,29 @@ A lexical lint over-refuses at the margins on purpose — v0.20's real
 casualties (`docs/prds/v0.21-the-budget-belongs-to-the-work.md` requirement
 B.2, #135) are proof it does — and the fix for that is a **named escape
 with a stated limit**, never a semantic read. Task 006 (requirement B.2)
-adds exactly one such escape to the quantifier lint: a clause whose
-universal quantifier points BACKWARD with an explicit anaphor ("each of
+adds exactly one such escape to the quantifier lint, the
+**elsewhere-bounded-quantifier** rule: a clause whose universal quantifier
+points BACKWARD with an explicit anaphor ("each of
 THEM", "all of THOSE", "every one of THESE", "the above", "the
 aforementioned", "such") is accepted when some OTHER clause of the SAME
 task's criteria is itself bounded on its own merits (a named defining
-command/file, or an explicit enumeration) — `_is_anaphorically_bound_
-elsewhere` in `plan_ingestion.py`. The limit is narrow and stays lexical: a
+command/file, or an explicit enumeration) —
+`_is_anaphorically_bound_elsewhere` in `plan_ingestion.py`. The limit is
+narrow and stays lexical: a
 bare unenumerated noun phrase with no anaphor ("each shipped piece") is
 unaffected by this escape and stays refused even when some unrelated
 clause elsewhere in the same criteria happens to be bounded — the anaphor,
 matched the same way every other cue in this module is matched, is what
 proves the referent is the SAME already-bounded set rather than a
-coincidental match somewhere else in the string. `tests/test_criteria_
-bound_lint.py` covers one clause the escape now accepts beside one clause
-in the same criteria that is still refused.
+coincidental match somewhere else in the string. The second half of the
+limit is the lookup's reach: it never leaves the one task's own criteria
+string — the quantifier lint runs per task, so a bound sitting in some
+OTHER task's criteria rescues nothing.
+
+`tests/test_criteria_bound_lint.py` covers one clause the rule now accepts
+beside one clause in the same criteria that is still refused:
+`test_an_anaphoric_quantifier_bound_by_an_earlier_clause_is_accepted` and
+`test_an_anaphoric_bound_elsewhere_does_not_rescue_an_unrelated_bare_quantifier`.
 
 ## Why inspection is not evidence
 
