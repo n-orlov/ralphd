@@ -1903,3 +1903,20 @@ this section: `372` (fast), `257` (smoke). `tests/records/` is unaffected
 fast, 4300/260 smoke) still carry headroom -- fast is now within 70 of its
 stated ceiling.
 
+**5733 (smoke 4113, modules 373 (fast), 258 (smoke)) by v0.21 task 026
+(requirement E.4/E.5).** One new module,
+`tests/test_status_docker_removed_from_path_task026.py`, with three new
+nodes, all driven through `call_ralphctl_in_process` (no
+`RALPHCTL`/`RALPHD_ENGINE`/`LiveRun`/`live(` in its source), so it is
+`smoke` as well as `fast`; net +3 fast, +3 smoke, +1 module in both tiers.
+From the 5730/4110/372 (fast)/257 (smoke) the paragraph above measures:
+**5733/4113/373 (fast)/258 (smoke)**. Re-measured directly at this task's
+own tip with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only
+-q` (fast: `5733/5842 tests collected (109 deselected)`, smoke:
+`4113/5842 tests collected (1729 deselected)`), and the module count via
+the same unique-module-path recipe used throughout this section: `373`
+(fast), `258` (smoke). `tests/records/` is unaffected (still 117,
+untouched by this task). Both ceilings (5800 tests/375 modules fast,
+4300/260 smoke) still carry headroom -- fast is now within 67 of its
+stated ceiling.
+
