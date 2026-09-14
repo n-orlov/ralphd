@@ -49,6 +49,13 @@ just enough behavior for ralphctl to proceed. Knobs:
                               `sha256:` + sha256(ref) -- so a test can predict
                               it, and can stage a MOVED tag by listing a
                               different id for it.
+  STUB_DOCKER_EXIT_CODE       value answered by `docker inspect --format
+                              {{.State.ExitCode}} <cid>` for any id listed in
+                              STUB_DOCKER_CONTAINERS (default "0"); exits 1
+                              for an id not in that set, same as
+                              {{.State.Running}} above.
+  STUB_DOCKER_LOGS            raw text answered verbatim by `docker logs
+                              [--tail N] <cid>` (default empty).
 """
 import hashlib
 import json
@@ -166,6 +173,11 @@ elif cmd == "inspect":
             if cid not in containers:
                 sys.exit(1)
             print("true" if cid in running else "false")
+        elif fmt == "{{.State.ExitCode}}":
+            containers = set(os.environ.get("STUB_DOCKER_CONTAINERS", "").split(",")) - {""}
+            if cid not in containers:
+                sys.exit(1)
+            print(os.environ.get("STUB_DOCKER_EXIT_CODE", "0"))
         elif fmt == "{{.Image}}":
             ref = _last_run_image()
             if ref is None:
@@ -178,6 +190,8 @@ elif cmd == "inspect":
             print(labels[cid])
     elif not os.environ.get("STUB_DOCKER_INSPECT_OK"):
         sys.exit(1)
+elif cmd == "logs":
+    sys.stdout.write(os.environ.get("STUB_DOCKER_LOGS", ""))
 elif cmd == "version":
     print("29.5.3")
 elif cmd == "build":

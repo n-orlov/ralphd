@@ -2178,8 +2178,10 @@ def cmd_start(args):
             status = api(run_id, "GET", "/status")
         except SystemExit:
             status = _read_json(rdir / "status.json", {})
+            _report_dead_container_before_bind(container, rdir)
         except (ConnectionError, OSError, TimeoutError):
             status = _read_json(rdir / "status.json", {})
+            _report_dead_container_before_bind(container, rdir)
         sys.exit(0 if status.get("verdict") == "verified" else 1)
 
 
@@ -2540,6 +2542,39 @@ def _container_liveness(name: str) -> str:
         return CONTAINER_ABSENT
     return (CONTAINER_RUNNING if res.stdout.strip() == "true"
             else CONTAINER_EXITED)
+
+
+def _report_dead_container_before_bind(container: str, rdir: Path) -> None:
+    """E.3 (#183): the unreachable-API line above (`die(4, "API unreachable:
+    ...")`, inside `api()`, caught by `cmd_start`'s own try/except right
+    before this is called) tells the operator the API never answered but
+    not why. When the run's own `status.json` was never written at all --
+    the shape an engine that dies before it ever binds the control API
+    leaves behind, as opposed to a run that bound, ran a while, and tore
+    its own container down normally on completion -- report the
+    container's exit code and a tail of its logs right alongside that
+    line, so "the image is broken" is distinguishable from "still starting
+    up" without a separate `docker inspect`/`docker logs` by hand.
+
+    A run that DID bind and later completed has a status.json full of a
+    real verdict by the time this would run, so the `.exists()` check
+    alone keeps this silent for the ordinary case -- no new liveness
+    lookup is needed to distinguish the two.
+    """
+    if (rdir / "status.json").exists():
+        return
+    if _container_liveness(container) != CONTAINER_EXITED:
+        return
+    res = sh([DOCKER, "inspect", "--format", "{{.State.ExitCode}}", container])
+    exit_code = res.stdout.strip() if res.returncode == 0 else "unknown"
+    logs = sh([DOCKER, "logs", "--tail", "20", container])
+    tail = (logs.stdout or "").strip()
+    print(f"ralphctl: container exited with code {exit_code} before "
+          "binding the control API", file=sys.stderr)
+    if tail:
+        print("ralphctl: container log tail:", file=sys.stderr)
+        for line in tail.splitlines():
+            print(f"  {line}", file=sys.stderr)
 
 
 def _container_running(name: str) -> bool | None:
