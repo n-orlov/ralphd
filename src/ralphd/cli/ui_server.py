@@ -102,6 +102,7 @@ from ..engine.state import (
     task_blocked_by,
     task_failure_kinds,
     task_totals,
+    task_transition_history,
     tasks_read_notice,
 )
 from ..log_merge import (
@@ -1183,6 +1184,33 @@ def _with_task_totals(tasks: dict, iterations: list) -> dict:
     return out
 
 
+def _with_task_transitions(tasks: dict, run_dir: Path) -> dict:
+    """Task 039 (PRD I.1): attach each task's own `transitionHistory` --
+    `engine.state.task_transition_history`'s list of `{ts, tsLocal,
+    oldStatus, newStatus, cause?}` entries, read straight off this run's own
+    `events.jsonl` -- so a task detail dialog can show every state the task
+    passed through, not only the single current status `tasks.json` itself
+    carries. A task with no recorded transition (never seen by an
+    `_emit_task_changes()` diff -- pre-v0.9 run dir, or a plan rewritten
+    since the last poll) gets no key at all, the same absent-key discipline
+    `_with_task_totals` just above already uses for `timeDisplay`/
+    `costDisplay`.
+
+    Purely on-disk, like `task_transition_history` itself, so this runs the
+    same for a live run and a dead one with no container.
+    """
+    out = dict(tasks)
+    new_list = []
+    for t in tasks.get("tasks") or []:
+        tid = t.get("id")
+        history = task_transition_history(run_dir, str(tid)) if tid is not None else []
+        if history:
+            t = {**t, "transitionHistory": history}
+        new_list.append(t)
+    out["tasks"] = new_list
+    return out
+
+
 # Task 004 (A.2): the hub's derivation caches, so a poller that re-fetches
 # `GET /api/runs/<id>` on a fixed interval does not pay to re-derive iteration
 # rows or re-shape the tasks/status blocks when nothing that feeds them has
@@ -1417,6 +1445,11 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     # sums over exactly the iterations just built above, so a task's total
     # can never disagree with what its own timeline rows already show.
     tasks = _with_task_totals(tasks, iterations)
+    # Task 039 (PRD I.1): each task's own transition history, read straight
+    # off this run's own events.jsonl -- never derived from the iterations
+    # list just built above, so a transition recorded before this run's
+    # iteration history begins (or with none at all) still shows.
+    tasks = _with_task_transitions(tasks, run_dir)
 
     return {
         "runId": run_id,

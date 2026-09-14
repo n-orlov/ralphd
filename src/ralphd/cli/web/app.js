@@ -700,6 +700,25 @@ function taskDialogText(t, doc) {
       lines.push("  #" + num + " -- tier: " + tier + ", cost: " + cost);
     }
   }
+  // Task 039 (PRD I.1): the states this task passed through, oldest first
+  // -- `t.transitionHistory`, one entry per "task" event on this run's own
+  // events.jsonl (`engine.state.task_transition_history`), server-shaped
+  // and rendered verbatim, exactly the `iterationsBreakdown` discipline
+  // just above. `cause` is present only when the event itself recorded
+  // one (a worker's deferred/unsatisfiable report, or a forced split) --
+  // absent for an ordinary dispatch, never invented here.
+  if (Array.isArray(t.transitionHistory) && t.transitionHistory.length > 0) {
+    lines.push("");
+    lines.push("state history:");
+    for (const tr of t.transitionHistory) {
+      const when = tr && tr.tsLocal ? String(tr.tsLocal) : "\u2014";
+      const from = tr && tr.oldStatus != null ? String(tr.oldStatus) : "(none)";
+      const to = tr && tr.newStatus != null ? String(tr.newStatus) : "?";
+      let line = "  " + when + ": " + from + " -> " + to;
+      if (tr && tr.cause) line += " (" + String(tr.cause) + ")";
+      lines.push(line);
+    }
+  }
   return lines.join("\n");
 }
 

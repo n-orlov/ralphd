@@ -3625,3 +3625,77 @@ def test_run_list_and_detail_delete_a_run_behind_a_confirm_dialog(tmp_path, pw):
     finally:
         server.stop()
         engine.close()
+
+
+def test_task_dialog_shows_more_than_the_current_status_task039(tmp_path, pw):
+    """Task 039 (PRD I.1): a task detail dialog shows the STATES a task
+    passed through, with timestamps and (where recorded) a cause -- not
+    only its current status.
+
+    `engine.state.task_transition_history` reads this fact straight off
+    the run's own `events.jsonl` "task" events (`LoopSupervisor.
+    _emit_task_status`/`_emit_task_changes`, the only writers of that
+    event type) -- named here and in the commit message, per this task's
+    own success criteria.
+
+    Task `030` bounces pending -> in-progress -> pending (a worker
+    deferral, carrying `deferredReason`) -> in-progress -> completed, four
+    transitions recorded on `events.jsonl`, while `tasks.json` itself only
+    ever shows the LAST of those (`completed`) -- so the dialog listing
+    more than one state proves it is reading the transition log, not
+    re-deriving anything from the task's current status alone.
+    """
+    from ralphd.cli.ui_server import run_detail
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-task-transitions",
+                              state="succeeded", verdict="verified")
+    (run_dir / "tasks.json").write_text(json.dumps({
+        "version": 1, "goal": "ship it",
+        "tasks": [{"id": "030", "title": "a task that bounced states",
+                   "status": "completed", "validationAttempts": 1}],
+    }))
+    events = [
+        {"id": 1, "ts": "2026-09-05T09:00:00Z", "type": "task",
+         "taskId": "030", "oldStatus": None, "newStatus": "pending"},
+        {"id": 2, "ts": "2026-09-05T09:05:00Z", "type": "task",
+         "taskId": "030", "oldStatus": "pending", "newStatus": "in-progress"},
+        {"id": 3, "ts": "2026-09-05T09:10:00Z", "type": "task",
+         "taskId": "030", "oldStatus": "in-progress", "newStatus": "pending",
+         "deferredUntil": "2026-09-06T00:00:00Z",
+         "deferredReason": "waiting on an upstream migration"},
+        {"id": 4, "ts": "2026-09-06T01:00:00Z", "type": "task",
+         "taskId": "030", "oldStatus": "pending", "newStatus": "in-progress"},
+        {"id": 5, "ts": "2026-09-06T01:20:00Z", "type": "task",
+         "taskId": "030", "oldStatus": "in-progress", "newStatus": "completed"},
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "".join(json.dumps(ev) + "\n" for ev in events))
+
+    # -- the server's own payload: more than the current status -------------
+    detail = run_detail(registry, "run-task-transitions")
+    task_row = next(t for t in detail["tasks"]["tasks"] if t["id"] == "030")
+    history = task_row["transitionHistory"]
+    assert [h["newStatus"] for h in history] == [
+        "pending", "in-progress", "pending", "in-progress", "completed"]
+    assert history[2]["cause"] and "deferred" in history[2]["cause"], history
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-task-transitions")
+        _wait_for_count_ge(pw, "document.querySelectorAll('#task-box tbody tr').length", 1)
+
+        pw.click('tr.task-row[data-task-id="030"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "state history")
+        # -- more than just "status: completed": every intermediate state
+        # the task actually passed through is visible, with the recorded
+        # deferral cause ------------------------------------------------
+        assert "status: completed" in body, body
+        assert body.count("in-progress") >= 2, body
+        assert "waiting on an upstream migration" in body, body
+        assert "2026-09-05" in body or "09/05" in body or "2026" in body, body
+        pw.screenshot(SCREENSHOTS_DIR / "29-task-dialog-state-history.png")
+    finally:
+        server.stop()

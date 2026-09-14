@@ -6446,6 +6446,63 @@ def task_totals(iterations: list) -> dict:
     return out
 
 
+# Task 039 (PRD I.1): cause/actor labels for exactly the extra fields a
+# "task" event is KNOWN to carry today (`LoopSupervisor._emit_task_status`'s
+# own call sites, `engine/loop.py`) -- spelled once here so a task detail
+# view's label can never disagree with which field on events.jsonl it read.
+# Not exhaustive of every future extra a "task" event might carry: a
+# transition whose event has none of these three keys gets no cause at all,
+# which is exactly what I.1 means by "where recorded" -- never an invented
+# label for a transition nothing on disk explains.
+def _task_transition_cause(event: dict) -> str | None:
+    reason = event.get("unsatisfiableReason")
+    if isinstance(reason, str) and reason:
+        return f"worker: unsatisfiable ({reason})"
+    deferred_reason = event.get("deferredReason")
+    if isinstance(deferred_reason, str) and deferred_reason:
+        until = event.get("deferredUntil")
+        return f"worker: deferred until {until} ({deferred_reason})"
+    children = event.get("splitChildren")
+    if isinstance(children, list) and children:
+        return "harness: forced split into " + ", ".join(str(c) for c in children)
+    return None
+
+
+def task_transition_history(run_root: Path, task_id: str) -> list[dict]:
+    """Task 039 (PRD I.1): one entry per `"task"` event on `events.jsonl`
+    (`LoopSupervisor._emit_task_status`/`_emit_task_changes`, the ONLY
+    writers of that event type) whose own `taskId` names `task_id`, oldest
+    first -- `{"ts", "tsLocal", "oldStatus", "newStatus"}` plus an optional
+    `cause` (`_task_transition_cause` above), so a task detail view can show
+    every state the task passed through, not only the single current status
+    `tasks.json` itself records.
+
+    `oldStatus` is `None` for a task's very first recorded transition (the
+    run's first `_emit_task_changes()` diff, compared against an empty
+    in-memory snapshot) -- the caller renders that, this function does not
+    paper over it with an invented starting label.
+
+    Purely on-disk, like `read_events` itself (which this is a thin filter
+    over): a dead run with no container still answers from its own
+    `events.jsonl`.
+    """
+    out: list[dict] = []
+    for ev in read_events(run_root, types=("task",)):
+        if str(ev.get("taskId")) != str(task_id):
+            continue
+        entry = {
+            "ts": ev.get("ts"),
+            "tsLocal": format_local_time(ev.get("ts")),
+            "oldStatus": ev.get("oldStatus"),
+            "newStatus": ev.get("newStatus"),
+        }
+        cause = _task_transition_cause(ev)
+        if cause:
+            entry["cause"] = cause
+        out.append(entry)
+    return out
+
+
 def cost_breakdown(run_root: Path) -> dict:
     """Everything status.json knows about what this run spent, per phase and
     per approach (task 027, #18.5).
