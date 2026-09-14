@@ -1791,9 +1791,10 @@ derivation):
 `test_superseded_disposition_keeps_todays_historical_heading_and_wording`
 and
 `test_orphaned_disposition_renders_binding_with_a_caveat_naming_the_task`.
-A fourth node in the same module was renamed, not added --
-`test_entry_naming_an_id_absent_from_the_plan_never_binds_and_emits_once`
-became
+A fourth node in the same module was renamed, not added -- task 037's
+absent-id node (old name, deliberately unbackticked here because it no
+longer exists in the code: test_entry_naming_an_id_absent_from_the_plan_
+never_binds_and_emits_once) is now
 `test_entry_naming_an_id_absent_from_the_plan_is_orphaned_not_historical`,
 same node count. From the 5718/4106/371 the paragraph above measures:
 **5721/4106/371** (smoke unchanged -- none of the three new nodes is

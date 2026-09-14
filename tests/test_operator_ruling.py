@@ -205,6 +205,11 @@ def test_earlier_approach_ruling_is_historical_not_binding_in_a_later_one(tmp_pa
     hist_idx = ctx.index("Historical rulings")
     assert ctx.index("task 010") > hist_idx
     assert ctx.index("task 011") < hist_idx
+    # Task 019 (D.10, #196): this demotion is an approach mismatch, NOT an
+    # operator withdrawal -- the approach-1 ruling stops binding, but no
+    # path may call it non-authoritative.
+    assert "not authoritative" not in ctx.lower()
+    assert "approach 1" in ctx.lower()
 
 
 def test_no_approach_header_entry_is_current_iff_its_id_is_in_the_plan(tmp_path, monkeypatch):
@@ -275,14 +280,18 @@ def test_binding_disposition_carries_no_historical_or_orphaned_heading(tmp_path,
 
 
 def test_superseded_disposition_keeps_todays_historical_heading_and_wording(tmp_path, monkeypatch):
-    """The superseded case (D.9, D.13): an earlier-approach ruling whose
-    taskId is STILL in the current plan is genuinely historical -- it
-    keeps today's 'Historical rulings' heading and its 'not authoritative'
-    wording unchanged, and is never treated as orphaned (its target did
-    not vanish, a later approach's replan just moved past it)."""
+    """The superseded case (D.9): the operator recorded a LATER ruling on
+    the SAME target, so the earlier text is withdrawn BY that later one --
+    it keeps today's 'Historical rulings' heading and today's 'NOT
+    authoritative' wording, while the later, unwithdrawn ruling on that
+    same target renders binding ABOVE the heading with no non-authoritative
+    wording anywhere near it (D.10). Neither entry is treated as orphaned:
+    their target is still in the current plan."""
     cdir = tmp_path / "config"
-    write_amendment(cdir, "010", "Approach 1 said skip requirement F.",
-                    approach=1)
+    write_amendment(cdir, "010", "Earlier ruling: skip requirement F.",
+                    approach=2)
+    write_amendment(cdir, "010", "Later ruling: requirement F is waived.",
+                    waive=True, approach=2)
     sup = _supervisor(tmp_path, approach=2, tasks=[
         {"id": "010", "title": "t", "status": "pending", "successCriteria": "x"},
     ])
@@ -290,10 +299,20 @@ def test_superseded_disposition_keeps_todays_historical_heading_and_wording(tmp_
     ctx = sup._operator_amendment_review_context()
     assert "Historical rulings" in ctx
     assert "Orphaned rulings" not in ctx
-    assert "NOT authoritative" in ctx
     hist_idx = ctx.index("Historical rulings")
-    assert ctx.index("task 010") > hist_idx
-    assert "Approach 1 said skip requirement F." in ctx
+    # the superseded (withdrawn) text sits under the historical heading,
+    # with today's unchanged wording naming it non-authoritative.
+    assert ctx.index("Earlier ruling: skip requirement F.") > hist_idx
+    assert "NOT authoritative" in ctx[hist_idx:]
+    # ... and the ruling the operator has NOT withdrawn -- the later one on
+    # the same target -- is rendered binding, above the heading, with no
+    # non-authoritative wording in that whole region (D.10).
+    binding_region = ctx[:hist_idx]
+    assert "Later ruling: requirement F is waived." in binding_region
+    assert "not authoritative" not in binding_region.lower()
+    events = _events(sup.run.root)
+    assert not [e for e in events
+                if e["type"] == "amendment_target_not_in_plan"]
 
 
 def test_orphaned_disposition_renders_binding_with_a_caveat_naming_the_task(tmp_path, monkeypatch):

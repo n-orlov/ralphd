@@ -11491,12 +11491,27 @@ class LoopSupervisor:
 
           * `approach:` set and equal to the current approach, AND its
             `taskId` is in the CURRENT plan (`tasks.json`) -> BINDING.
+          * the operator recorded a LATER ruling on the SAME target (the
+            same `taskId`, or a second wave-scoped ruling) -> SUPERSEDED
+            (task 019, D.9, #196). This -- and only this -- is D.9's
+            superseded case: the operator himself replaced the earlier
+            text, so the earlier entry is withdrawn BY the later one and
+            keeps today's "Historical rulings" heading AND today's "NOT
+            authoritative" wording, now carried per entry. The later
+            ruling on that same target is the unwithdrawn one and renders
+            binding, never with that wording (D.10). Checked BEFORE plan
+            membership: an operator's own replacement outranks an
+            orphaning, so an earlier entry naming a vanished task reads as
+            superseded, not as still-binding-but-orphaned.
           * `approach:` set to an earlier value, AND its `taskId` is still
-            in the CURRENT plan -> SUPERSEDED (task 019, D.9/D.13, #196):
-            rendered under the "Historical rulings" heading below, with
-            today's unchanged "not authoritative" wording -- this really is
-            a later approach's plan superseding an earlier approach's
-            ruling, and D.13 keeps that behaviour.
+            in the CURRENT plan -> demoted out of the binding block and
+            rendered under the same "Historical rulings" heading (task 037,
+            #168; D.13 keeps exactly that demotion) -- but with a caveat
+            saying it does not bind THIS decision because a later
+            approach's replan moved past it, and deliberately WITHOUT any
+            "not authoritative" wording: the operator withdrew nothing
+            here, and D.10 forbids that string for a ruling the operator
+            has not withdrawn.
           * no `approach:` header at all (every ruling written before task
             036, or one written with no resolvable approach) -> treated as
             current IFF its `taskId` is in the current plan (backward
@@ -11521,9 +11536,10 @@ class LoopSupervisor:
 
         Task 018 (D.8, #196): an entry whose `taskId` is the reserved
         `state.AMENDMENT_WAVE_TARGET` sentinel (`scope == "wave"` in
-        `amendment_entries`'s own terms) is UNCONDITIONALLY binding --
-        none of the approach/plan-membership machinery above applies to it
-        at all, because it was never scoped to a task id a replan could
+        `amendment_entries`'s own terms) is binding whatever the approach
+        and the plan say -- none of the approach/plan-membership machinery
+        above applies to it at all (only the operator's own later
+        wave-scoped ruling can supersede one, per D.9's superseded case), because it was never scoped to a task id a replan could
         make disappear (D.7's whole point). It is never added to
         `orphan_ids` (there is no task for it to be orphaned FROM) and
         never demoted to the historical bucket by an approach mismatch,
@@ -11561,13 +11577,38 @@ class LoopSupervisor:
         current_approach = self._approach
         orphan_ids: list[str] = []
         binding: list[dict] = []
-        superseded: list[dict] = []
+        # `superseded` holds the whole not-binding-here bucket rendered
+        # under today's "Historical rulings" heading; each element pairs
+        # the entry with WHY it is there, because the two reasons get
+        # different per-entry wording (D.9/D.10, see the docstring):
+        # "replaced" -> the operator recorded a later ruling on the same
+        # target (withdrawn by that later ruling, keeps today's "NOT
+        # authoritative" wording); "replanned" -> an approach mismatch
+        # only (D.13's demotion, never called non-authoritative).
+        superseded: list[tuple[dict, str]] = []
         orphaned: list[dict] = []
-        for e in entries:
+        # Task 019 (D.9, #196): the LAST entry recorded against a target is
+        # the operator's current word on it; every earlier entry on that
+        # same target was superseded by it. `amendment_entries` returns
+        # oldest first (its own contract), so the last index wins.
+        def target_key(e: dict) -> tuple[str, str]:
+            if e.get("scope") == "wave":
+                return ("wave", "")
+            return ("task", str(e.get("taskId")))
+
+        latest_on_target: dict[tuple[str, str], int] = {}
+        for i, e in enumerate(entries):
+            latest_on_target[target_key(e)] = i
+        for i, e in enumerate(entries):
+            if latest_on_target[target_key(e)] != i:
+                superseded.append((e, "replaced"))
+                continue
             # Task 018 (D.8, #196): a wave-scoped entry has no task id a
             # replan could orphan and no approach it was ever pinned to --
-            # it binds unconditionally, skipping the plan-membership and
-            # approach checks below entirely.
+            # it binds whatever the approach and plan say, skipping the
+            # plan-membership and approach checks below entirely (only the
+            # supersession check above, an operator's own later wave-scoped
+            # ruling, can move one out of the binding block -- D.9).
             if e.get("scope") == "wave":
                 binding.append(e)
                 continue
@@ -11586,7 +11627,10 @@ class LoopSupervisor:
                 is_binding = True
             else:
                 is_binding = approach == current_approach
-            (binding if is_binding else superseded).append(e)
+            if is_binding:
+                binding.append(e)
+            else:
+                superseded.append((e, "replanned"))
         if orphan_ids:
             self.run.emit("amendment_target_not_in_plan", taskIds=orphan_ids)
 
@@ -11609,6 +11653,31 @@ class LoopSupervisor:
                     "in this run's current plan -- a replan orphaned it, "
                     "the operator did not withdraw it, so it remains "
                     "BINDING exactly as the rulings above.)\n")
+
+        def render_superseded_caveat(e: dict, reason: str) -> str:
+            # Task 019 (D.9/D.10, #196): the historical bucket holds two
+            # unlike things, so the reason -- and the authority language --
+            # is per entry, not in the heading.
+            if reason == "replaced":
+                # The operator's own later ruling on this same target
+                # withdrew this text: today's unchanged wording, which
+                # D.10 permits precisely because this one IS withdrawn.
+                target = ("the wave" if e.get("scope") == "wave"
+                          else f"task {e.get('taskId')}")
+                return (f"  (The operator later recorded another ruling on "
+                        f"{target}, superseding this one: this earlier text "
+                        f"is NOT authoritative for this {decision} -- apply "
+                        "the later ruling above instead.)\n")
+            # An approach mismatch only (D.13's demotion). The operator
+            # withdrew nothing here, so the caveat must never call it
+            # non-authoritative -- exactly the string D.10 forbids for an
+            # unwithdrawn ruling.
+            return (f"  (Recorded against approach {e.get('approach')}; "
+                    f"this run is now on approach {current_approach}, "
+                    "whose replan moved past the plan this ruling was "
+                    f"written for, so it does not bind this {decision}. "
+                    "The operator has not withdrawn it -- it simply does "
+                    "not address the plan being judged here.)\n")
 
         lines = [
             "\n## Operator rulings (task 028, #26)\n",
@@ -11646,12 +11715,15 @@ class LoopSupervisor:
             lines.append(
                 f"\n### Historical rulings (not binding this {decision}, "
                 "task 037, #168)\n"
-                "Recorded against an earlier approach whose task id is "
-                "still in this run's current plan, superseded by a later "
-                "approach's replan -- NOT authoritative for this "
-                f"{decision}; shown for context only.\n")
-            for e in superseded:
-                lines.append(render(e))
+                "Each ruling below has stopped binding this "
+                f"{decision}, for the reason its own line states: either "
+                "the operator recorded a LATER ruling on the same target "
+                "(task 019, D.9, #196), or it was recorded against an "
+                "earlier approach whose replan the run has since moved "
+                "past. Shown for context only; the rulings above the "
+                "headings are the ones to apply.\n")
+            for e, reason in superseded:
+                lines.append(render(e) + render_superseded_caveat(e, reason))
         return "".join(lines)
 
     async def _maybe_run_midrun_adjudication_episode(self) -> None:
