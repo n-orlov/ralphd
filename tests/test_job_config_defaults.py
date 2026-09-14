@@ -11,12 +11,25 @@ attempt cap (`None` = honoured only when set explicitly).
 
 from __future__ import annotations
 
+import contextlib
+import os
+
+import pytest
+
+from ralphd.engine import privsep
 from ralphd.engine.config import (
     DEFAULT_INFRA_OUTAGE_BUDGET_S,
     DEFAULT_INFRA_RETRY_BACKOFF_MAX_S,
     DEFAULT_INFRA_RETRY_BACKOFF_S,
     JobConfig,
 )
+
+# A root-only file cannot be modelled at all when the tests themselves run
+# as root: mode 0o000 would still be readable and the "unreadable at my own
+# uid" premise the boundary test below rests on would be vacuous -- the same
+# guard `tests/test_run_secrets.py` uses for the same reason.
+_privsep_root_skip = pytest.mark.skipif(
+    os.geteuid() == 0, reason="models a file root can read and this uid cannot")
 
 
 def test_job_config_default_on_complete_is_exit():
@@ -92,3 +105,62 @@ def test_infra_knobs_in_effective_budgets():
     assert budgets["infraOutageBudgetS"] == DEFAULT_INFRA_OUTAGE_BUDGET_S
     assert budgets["infraRetryMax"] is None
     assert JobConfig(infra_retry_max=2).effective()["budgets"]["infraRetryMax"] == 2
+
+
+@_privsep_root_skip
+def test_job_config_load_reads_job_yaml_the_agent_uid_cannot_open(
+        tmp_path, monkeypatch):
+    """Task 023 (#180, requirement E.1): `/config` is a host directory
+    `ralphctl start` chmod's 0700 and leaves owned by whichever host uid ran
+    it -- under the uid boundary (`privsep.separate_engine_identity()`) the
+    engine's *effective* uid is the agent's, so a host uid other than the
+    agent's leaves the mount unreadable at that effective uid alone.
+    Modelled the same way `test_run_secrets.py` models a root-only MAC-key
+    file: `job.yaml` is chmod 0o000 (genuinely unreadable at this uid,
+    skipped when the suite itself runs as root), and the boundary is put in
+    force with the same stand-in for `privsep.root_for_write()` -- it
+    records that the elevation window was entered and, for its duration,
+    makes the file readable again, modelling root's exemption from the mode
+    check rather than reimplementing anything the production path does.
+    `JobConfig.load()` must still return the file's contents, and the file
+    must be exactly as unreadable again once the read returns.
+    """
+    job_yaml = tmp_path / "job.yaml"
+    job_yaml.write_text("iterations: 7\n")
+    os.chmod(job_yaml, 0o000)
+    with pytest.raises(OSError):
+        job_yaml.read_text()
+
+    entered: list[str] = []
+
+    @contextlib.contextmanager
+    def _stand_in_root_window():
+        entered.append("raised")
+        os.chmod(job_yaml, 0o600)
+        try:
+            yield True
+        finally:
+            os.chmod(job_yaml, 0o000)
+
+    monkeypatch.setattr(privsep, "separated", lambda: True)
+    monkeypatch.setattr(privsep, "root_for_write", _stand_in_root_window)
+
+    cfg = JobConfig.load(job_yaml)
+
+    assert cfg.iterations == 7
+    assert entered, "the config read never entered the elevation window"
+    assert job_yaml.stat().st_mode & 0o777 == 0o000, (
+        "the elevation window must close again -- job.yaml is left exactly "
+        "as unreadable at the agent uid as it was before the read")
+
+
+def test_job_config_load_with_no_boundary_reads_normally(tmp_path, monkeypatch):
+    """No boundary to raise into (the test suite's own unprivileged engine,
+    or `docker run --user 1000`) -- `root_for_write()` is a documented no-op
+    there, so an agent-readable `job.yaml` is read exactly as before, with no
+    elevation attempted at all."""
+    monkeypatch.setattr(privsep, "separated", lambda: False)
+    job_yaml = tmp_path / "job.yaml"
+    job_yaml.write_text("iterations: 9\n")
+    cfg = JobConfig.load(job_yaml)
+    assert cfg.iterations == 9

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from . import privsep
 from .pricing import PricingMap, price_tables
 
 log = logging.getLogger("ralphd.config")
@@ -617,8 +618,26 @@ class JobConfig:
     def load(cls, path: Path | None = None) -> JobConfig:
         path = path or CONFIG_DIR / "job.yaml"
         raw = {}
-        if path.exists():
-            raw = yaml.safe_load(path.read_text()) or {}
+        # Task 023 (#180, requirement E.1): `/config` is a host directory
+        # `ralphctl start` chmod's 0700 and leaves owned by whichever host
+        # uid ran it -- only ever 1000 by accident, on a single-user desktop
+        # where that happens to be the first account. Under the uid boundary
+        # (`main()` -> `privsep.separate_engine_identity()`), the engine's
+        # *effective* uid is the agent's (1000) while its real/saved uid stays
+        # root, so a host uid other than 1000 leaves the effective-uid check
+        # on the 0700 mount an EACCES and the run could never start at all.
+        # Borrowing `privsep.root_for_write()` -- the same momentary
+        # effective-uid-to-root raise `write_root_owned_json` uses for a
+        # write, and `petitions._read_stored_key` already reuses for a read
+        # -- makes the read succeed without widening `/config` itself: no
+        # mode or ownership bit on the mount changes, and the agent's own
+        # effective uid is back in force before this method returns. A
+        # no-op (this whole block behaves exactly as before) when there is
+        # no boundary to raise into -- the test suite's unprivileged engine,
+        # or `docker run --user 1000` with no root start.
+        with privsep.root_for_write():
+            if path.exists():
+                raw = yaml.safe_load(path.read_text()) or {}
         # Task 006: translate any legacy `model_strategy`/`fast_model` keys
         # into `models` BEFORE the known/extra split below, so they land as
         # a real per-hat override rather than silently in `extra`.

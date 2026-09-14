@@ -404,7 +404,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "engine/config.py",
-        "line": "33",
+        # Was line 33; task 023 (#180, requirement E.1) added a
+        # `from . import privsep` import line above OVERLAY_DIR, shifting
+        # this read down by one -- same read, same reason.
+        "line": "34",
         "reason": ("OVERLAY_DIR's default, a module-level constant computed "
                    "once at import time exactly like this file's own "
                    "CONFIG_DIR/RUN_DIR/WORKSPACE_DIR (all read straight from "
