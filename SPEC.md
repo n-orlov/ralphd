@@ -3392,7 +3392,10 @@ name and surfaces it explicitly:
   machine-readable and not only a rendering flourish. The older
   `containerGone` field keeps its narrower pre-#31 meaning — `true` only for
   the vanished case — rather than widening under a name that would then be
-  wrong for half the runs it covers;
+  wrong for half the runs it covers. A host with **no `docker` client at all**
+  adds a fourth *reading* (not a fourth docker state): `containerLiveness`
+  is `"unknown"`, `containerGone` is `false`, the warning says the liveness
+  could not be checked here, and `status` still exits 0 off the run dir;
 - task counts read from the run dir rather than from the engine, since there
   is no engine left to ask;
 - **staleness instead of a growing live elapsed time.** A dangling run's

@@ -35,6 +35,9 @@ from test_cli_features import _recovered_run
 from test_tier_cost_breakdown import _two_tier_run
 from tests.conftest import call_ralphctl_in_process
 
+from ralphd.cli.main import (CONTAINER_LIVENESS_UNKNOWN, _container_liveness,
+                             _container_running)
+
 
 def _path_with_docker_removed() -> str:
     """The current process's own `PATH`, minus every directory that
@@ -64,16 +67,29 @@ def _env_without_docker(base_env: dict) -> dict:
     return env
 
 
-def test_docker_binary_is_genuinely_absent_from_the_constructed_path():
+def test_docker_binary_is_genuinely_absent_from_the_constructed_path(
+        monkeypatch):
     """Precondition proof, isolated from the CLI: the helper this module
     relies on for every other test here really does remove docker, using
     this host's own ambient PATH (which does carry a real docker client --
-    that is exactly why this must be proven by construction, not assumed)."""
+    that is exactly why this must be proven by construction, not assumed).
+
+    Task 026 (E.4), at the unit level the CLI reads through: with that
+    constructed PATH in force and `DOCKER` left at the CLI's own bare
+    default, the liveness probe answers `unknown` -- it could not decide --
+    rather than `absent`, which is docker's own answer about a container it
+    looked for and did not find."""
     assert shutil.which("docker") is not None, (
         "this dev container is expected to carry a real docker client -- "
         "if it does not, the removal below is not exercising anything"
     )
-    assert shutil.which("docker", path=_path_with_docker_removed()) is None
+    stripped = _path_with_docker_removed()
+    assert shutil.which("docker", path=stripped) is None
+    monkeypatch.setattr("ralphd.cli.main.DOCKER", "docker")
+    monkeypatch.setenv("PATH", stripped)
+    assert _container_liveness("ralphd-whatever") == CONTAINER_LIVENESS_UNKNOWN
+    # the boolean view says "nothing confirmed", never "exists, stopped"
+    assert _container_running("ralphd-whatever") is None
 
 
 def test_status_exits_0_on_a_recovered_run_with_docker_removed_from_path(
@@ -82,8 +98,10 @@ def test_status_exits_0_on_a_recovered_run_with_docker_removed_from_path(
     (`test_status_prints_no_reason_line_for_a_run_that_is_still_going`'s own
     fixture), re-driven with `docker` removed from `PATH` itself rather than
     `RALPHD_DOCKER` pointed at a bogus name. `ralphctl status` must still
-    exit 0, render the on-disk fallback, and show container liveness as
-    unknown/absent rather than raising."""
+    exit 0, render the on-disk fallback, and word the container's liveness
+    as undecided (task 026, E.4) rather than raising -- and specifically
+    must not tell the operator the container is gone, since with no docker
+    client here nothing was ever looked at."""
     registry, _ = _recovered_run(tmp_path)
     env = _env_without_docker({**os.environ, "RALPHD_REGISTRY": str(registry)})
     res = call_ralphctl_in_process(["status", "recovered"], env=env,
@@ -92,6 +110,9 @@ def test_status_exits_0_on_a_recovered_run_with_docker_removed_from_path(
     assert "reason:" not in res.stdout
     assert "Traceback" not in res.stderr
     assert "FileNotFoundError" not in res.stderr
+    assert "has unknown liveness (no docker client here to ask)" in res.stdout
+    assert "install a docker client to tell which" in res.stdout
+    assert "appears gone" not in res.stdout
 
 
 def test_status_json_exits_0_on_the_tier_breakdown_run_with_docker_removed(
@@ -100,11 +121,14 @@ def test_status_json_exits_0_on_the_tier_breakdown_run_with_docker_removed(
     (`test_ralphctl_status_json_exposes_the_tier_bucket`'s own fixture),
     re-driven the same way. The tier breakdown itself has nothing to do
     with container liveness, so it must be unaffected; `containerLiveness`
-    is asserted to be the CLI's documented "no container found" reading
-    (`CONTAINER_ABSENT`, i.e. `"absent"`) -- the shape a missing docker
-    binary degrades to, same as a present-but-non-matching docker answers,
-    since the two are indistinguishable from the caller's own liveness
-    question."""
+    is asserted to be the undecided reading (`CONTAINER_LIVENESS_UNKNOWN`,
+    i.e. `"unknown"`) that task 026 (E.4) requires of a liveness probe with
+    no docker client to ask -- distinct from `"absent"`, which is docker's
+    own answer about a container it looked for and did not find. The
+    narrower `containerGone` field stays False for it (nothing established
+    that anything vanished), while the condition itself is still reported
+    (`dangling` true: a non-terminal run whose API is unreachable and whose
+    engine could not be confirmed alive)."""
     registry = tmp_path / "registry"
     _two_tier_run(registry, run_id="tier-cost")
     env = _env_without_docker({**os.environ, "RALPHD_REGISTRY": str(registry)})
@@ -116,4 +140,7 @@ def test_status_json_exits_0_on_the_tier_breakdown_run_with_docker_removed(
     assert set(by_tier) == {"trivial", "hard"}
     assert by_tier["trivial"]["totalTokens"] == 15
     assert by_tier["hard"]["totalTokens"] == 600
-    assert doc["containerLiveness"] == "absent"
+    assert doc["containerLiveness"] == CONTAINER_LIVENESS_UNKNOWN
+    assert doc["containerLiveness"] == "unknown"
+    assert doc["containerGone"] is False
+    assert doc["dangling"] is True

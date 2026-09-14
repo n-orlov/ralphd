@@ -2511,6 +2511,19 @@ CONTAINER_EXITED = "exited"    # exists, but nothing is running in it
 CONTAINER_LIVENESS_STATES = (CONTAINER_ABSENT, CONTAINER_RUNNING,
                              CONTAINER_EXITED)
 
+# Task 026 (E.4): a fourth READING -- deliberately not a fourth member of the
+# tuple above, which is docker's own three answers -- for the case where
+# docker was never asked at all because no `docker` client resolves for
+# `DOCKER` (the plain-upstream nightly dev-layout image installs none). Tasks
+# 080/085 degraded that case to `CONTAINER_ABSENT` on the argument that a
+# failed docker call is undecidable in the same way; E.4 rejects exactly that
+# reading, because "no such container" is an ANSWER from docker while "no
+# docker client here" is the absence of one, and reporting the second as the
+# first tells the operator their container vanished when nothing was ever
+# looked at. `unknown` says the probe could not decide, and every surface that
+# renders liveness words it that way (`_DANGLING_PHRASE` below).
+CONTAINER_LIVENESS_UNKNOWN = "unknown"
+
 
 def _container_liveness(name: str) -> str:
     """THE liveness question, in its three-valued form (task 021, #31): one
@@ -2536,10 +2549,21 @@ def _container_liveness(name: str) -> str:
     `CONTAINER_ABSENT` a failed invocation already produces, never a new
     state -- `sh()` returning `returncode == 127` for a missing binary makes
     that fall out of the ordinary `returncode != 0` check below with no
-    separate catch needed here any more."""
+    separate catch needed here any more.
+
+    Task 026 (E.4) overturns that last paragraph's conclusion, not its
+    mechanism: degrading is still the behaviour (nothing raises), but the
+    two failures are no longer reported as the same thing. A non-zero
+    `docker inspect` from a docker client that DID run means docker looked
+    and found no such container (`CONTAINER_ABSENT`); no resolvable client
+    at all means nobody looked, which is `CONTAINER_LIVENESS_UNKNOWN`. The
+    two are distinguished by asking `shutil.which(DOCKER)` -- only on the
+    failure path, so the ordinary docker-present reading still costs exactly
+    one docker call and no `PATH` walk."""
     res = sh([DOCKER, "inspect", "--format", "{{.State.Running}}", name])
     if res.returncode != 0:
-        return CONTAINER_ABSENT
+        return (CONTAINER_ABSENT if shutil.which(DOCKER)
+                else CONTAINER_LIVENESS_UNKNOWN)
     return (CONTAINER_RUNNING if res.stdout.strip() == "true"
             else CONTAINER_EXITED)
 
@@ -2608,9 +2632,14 @@ def _container_running(name: str) -> bool | None:
     Kept as the boolean *view* of `_container_liveness` for the callers that
     only ever ask "is a live engine holding this run dir?" (`resume`,
     `repair`) -- and because the docker-tier tests import it. Derived, never
-    a second docker call or a second reading of the format string."""
+    a second docker call or a second reading of the format string.
+
+    Task 026 (E.4): an undecidable probe (`CONTAINER_LIVENESS_UNKNOWN`, no
+    docker client to ask) reads as `None` here, alongside "no such
+    container" -- this boolean view's `False` means "a container exists and
+    is stopped", which is a positive claim nobody made in that case."""
     live = _container_liveness(name)
-    if live == CONTAINER_ABSENT:
+    if live in (CONTAINER_ABSENT, CONTAINER_LIVENESS_UNKNOWN):
         return None
     return live == CONTAINER_RUNNING
 
@@ -2632,6 +2661,14 @@ _DANGLING_PHRASE = {
         "state": "exists but has exited",
         "why": "the container exited without the engine recording a "
                "terminal state",
+    },
+    # Task 026 (E.4): the undecidable shape says so, and says why, instead
+    # of borrowing the vanished-container story it used to be folded into.
+    CONTAINER_LIVENESS_UNKNOWN: {
+        "status": "has unknown liveness (no docker client here to ask)",
+        "state": "could not be checked (no docker client here)",
+        "why": "no docker client is available here, so whether the "
+               "container is still running was never determined",
     },
 }
 
@@ -3290,8 +3327,25 @@ def _format_container_gone_lines(run_id: str, status: dict, entry: dict,
     vs exited-but-present, via `_dangling_phrase`) -- an exited container is
     one `docker logs` away from the reason it died, so calling it "gone" would
     send the operator looking for something that is still right there.
+
+    Task 026 (E.4): a third shape reaches here now -- liveness the probe
+    could not decide at all, because no docker client is installed. The
+    "so this run stopped without recording a terminal state" conclusion
+    below is not available for it (nothing was learned about the
+    container), so that shape gets its own three lines, in warning yellow
+    rather than the alarm red of a diagnosed zombie.
     """
     state = status.get("state")
+    if entry.get("liveness") == CONTAINER_LIVENESS_UNKNOWN:
+        return [_ansi(tty, "1;33",
+                      f"container: {entry['container']} "
+                      f"{_dangling_phrase(entry, 'status')}, and"),
+                _ansi(tty, "1;33",
+                      f"           status.json records state {state!r}: this "
+                      f"run may still be going"),
+                _ansi(tty, "1;33",
+                      f"           or may have died -- install a docker "
+                      f"client to tell which")]
     return [_ansi(tty, "1;31",
                   f"container: {entry['container']} "
                   f"{_dangling_phrase(entry, 'status')} -- status.json still"),
@@ -3499,6 +3553,14 @@ def cmd_status(args):
     # `containerLiveness` says which shape it is, and `containerGone` keeps
     # its exact pre-v0.7 meaning rather than quietly widening under a name
     # that would then be a lie for half the runs it covers.
+    #
+    # Task 026 (E.4): with no docker client installed the liveness probe
+    # answers `CONTAINER_LIVENESS_UNKNOWN`, so `containerLiveness` reads
+    # `"unknown"` here and `containerGone` -- the vanished-container field --
+    # stays False, because nothing established that anything vanished. The
+    # condition itself is still reported (`dangling` true, the run's API is
+    # unreachable and no live engine could be confirmed); the decision stays
+    # in `_dangling_run_entry`, this line only renders what it returned.
     container_gone = None if live else _dangling_run_entry(args.run_id)
     status["dangling"] = container_gone is not None
     status["containerLiveness"] = (container_gone or {}).get("liveness")
@@ -7192,7 +7254,16 @@ def _dangling_run_entry(run_id: str) -> dict | None:
     Returns `{runId, container, liveness}` -- `liveness` is
     `CONTAINER_ABSENT` or `CONTAINER_EXITED`, which is what lets each surface
     word the two shapes differently without re-asking docker -- or None (not
-    dangling: the recorded state is terminal, or a container is running)."""
+    dangling: the recorded state is terminal, or a container is running).
+
+    Task 026 (E.4): `liveness` can also be `CONTAINER_LIVENESS_UNKNOWN`
+    (no docker client here to ask). That shape still MATCHES this condition
+    -- as it did before E.4, when it was spelled `CONTAINER_ABSENT` -- so a
+    non-terminal run with an unreachable API and no way to confirm a live
+    engine keeps drawing the operator's attention on every surface instead
+    of silently reading as healthy; what changed is only that each surface
+    now words it as undecided rather than as a vanished container, and
+    status's `containerGone` (the narrower field) stays False for it."""
     status = _read_json(run_root(run_id) / "status.json", {})
     if status.get("state") not in _NONTERMINAL_STATUS_STATES:
         return None

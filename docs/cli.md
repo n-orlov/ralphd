@@ -562,8 +562,13 @@ the last `status.json` write instead of to *now*, so they stop growing for a
 run that stopped. Task 021 (issue #31) adds the two fields the widened
 dangling condition needs: `dangling` (always present — `true` for **either**
 dangling shape: no container at all, or one that exists and has exited) and
-`containerLiveness` (`"absent"`, `"exited"`, or `null` when the run is live or
-not dangling). `containerGone` keeps its original narrower meaning — `true`
+`containerLiveness` (`"absent"`, `"exited"`, `"unknown"`, or `null` when the
+run is live or not dangling). Task 026 added the `"unknown"` reading: with no
+`docker` client on `PATH` at all the liveness probe cannot decide anything, so
+it says so instead of reporting docker's own `"absent"` answer ("looked, found
+no such container") for a container nothing ever looked at — `status` still
+exits 0 and renders the run from disk, `containerGone` stays `false`, and the
+human warning reads "has unknown liveness (no docker client here to ask)". `containerGone` keeps its original narrower meaning — `true`
 only for the vanished-container case — so a machine consumer written against
 v0.6 reads the same value it always did; `dangling` is the field to ask about
 the condition `doctor`/`repair`/auto-resume act on.

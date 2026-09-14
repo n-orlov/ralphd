@@ -48,7 +48,7 @@ from test_cli_features import _recovered_run
 from test_tier_cost_breakdown import _two_tier_run
 from tests.conftest import call_ralphctl_in_process
 
-from ralphd.cli.main import (CONTAINER_ABSENT, _container_liveness,
+from ralphd.cli.main import (CONTAINER_LIVENESS_UNKNOWN, _container_liveness,
                              container_record_exists, sh)
 
 # A name guaranteed absent from every PATH entry -- never a real binary.
@@ -58,11 +58,15 @@ NO_SUCH_DOCKER = "ralphd-task080-no-such-docker-binary-anywhere-on-path"
 def test_container_liveness_degrades_instead_of_raising_when_docker_is_absent(
         monkeypatch):
     """The unit-level reading: `_container_liveness` used to let
-    `FileNotFoundError` out unchanged; it now reports the same
-    `CONTAINER_ABSENT` a failed (but present) docker binary already
-    produces -- no new liveness state, no raise."""
+    `FileNotFoundError` out unchanged; it degrades instead -- no raise.
+
+    Task 026 (E.4) changed WHAT it degrades to, not whether it degrades:
+    this used to read `CONTAINER_ABSENT`, the same value a present-but-
+    failing docker binary produces, and E.4 requires the two apart --
+    "docker looked and found no such container" versus "there is no docker
+    client here to look", which is `CONTAINER_LIVENESS_UNKNOWN`."""
     monkeypatch.setattr("ralphd.cli.main.DOCKER", NO_SUCH_DOCKER)
-    assert _container_liveness("ralphd-whatever") == CONTAINER_ABSENT
+    assert _container_liveness("ralphd-whatever") == CONTAINER_LIVENESS_UNKNOWN
 
 
 def test_status_survives_a_recovered_run_with_no_docker_binary_reachable(
