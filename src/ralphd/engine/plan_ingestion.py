@@ -815,12 +815,25 @@ _NOTIFICATION_OR_HTTP_STATUS_RE = re.compile(
     re.IGNORECASE,
 )
 
-_UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str], ...] = (
+# Task 005 (PRD requirement B.1, #162): each shape above also carries a
+# REPLACEMENT fragment -- legal text substituted for the exact matched
+# span (never the whole clause) via `_legal_rewrite` below, so the
+# resulting rewrite is a CONCRETE, clause-specific suggestion (the rest of
+# the offending clause survives untouched around the substitution) rather
+# than the generic per-shape advice `alternative` already carries. Two
+# offending clauses that hit the same shape but differ in their
+# surrounding words -- e.g. "The report must contain the final sha." vs.
+# "This is the final commit of the wave." -- yield two different rewrite
+# strings for exactly that reason: the substitution is textual, scoped to
+# the matched span, and everything the clause said around it survives
+# into the suggestion.
+_UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str, str], ...] = (
     (
         _LATER_FINAL_LAST_COMMIT_RE,
         "names a later/final/last commit or its sha, which cannot be "
         'known until that commit lands -- name "the code sha this task '
         'lands" once it exists, or a past sha this task can already read',
+        "commit at `<sha>` this task lands",
     ),
     (
         _PREDECLARED_EVENT_STATE_RE,
@@ -828,6 +841,7 @@ _UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str], ...] = (
         "later event in this same run can falsify -- require the record "
         "to state whatever the TRUE outcome turns out to be, not a "
         "specific outcome named in advance",
+        "whatever the true outcome turns out to be when it is checked",
     ),
     (
         _RECORD_CITES_OWN_WRITING_COMMIT_RE,
@@ -836,41 +850,58 @@ _UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str], ...] = (
         "the tree the commit produces) -- cite the record's own "
         "report-state sha (its commit's parent) instead, the convention "
         "`docs/sweep-records.md` already documents",
+        "the record's own report-state sha (its commit's parent)",
     ),
     (
         _EMPTY_GIT_RANGE_RE,
         "requires a git log/diff range to be empty -- name the specific "
         "paths and the sha the range is measured from instead of "
         "demanding an empty range as a standing invariant",
+        "the specific paths and the sha the range is measured from",
     ),
     (
         _EXACTLY_ONCE_COMMIT_COUNT_RE,
         'demands an "exactly once" commit count -- require the '
         "deliverable to land, verified by its own evidence, not a count "
         "of how many commits it took",
+        "committed and verified by its own evidence",
     ),
     (
         _NOTIFICATION_OR_HTTP_STATUS_RE,
         "requires a per-task notification ledger entry or HTTP-status "
         "record -- sends are engine-recorded and best-effort; no "
         "criterion may mention a send, a ledger entry or an HTTP status",
+        "logged as best-effort, never required by name",
     ),
 )
 
 
-def _unsatisfiable_shape_clause(criteria: str) -> tuple[str, str] | None:
+def _legal_rewrite(clause: str, pattern: re.Pattern, replacement: str) -> str:
+    """The concrete legal rewrite for one offending `clause`: `replacement`
+    spliced in place of the exact span `pattern` matched, everything else
+    in `clause` left untouched. Task 005 (PRD requirement B.1): this is
+    what makes the suggestion clause-specific rather than a fixed template
+    -- two clauses that differ only in the words around the matched span
+    still rewrite to two different strings."""
+    return pattern.sub(replacement, clause, count=1)
+
+
+def _unsatisfiable_shape_clause(criteria: str) -> tuple[str, str, str] | None:
     """None unless some clause of `criteria` matches one of the six banned
-    shapes above; otherwise `(clause, satisfiable_alternative_text)` for the
-    FIRST shape (in the order above) that matches the FIRST clause it
-    matches -- the offending clause is quoted and a satisfiable alternative
+    shapes above; otherwise `(clause, satisfiable_alternative_text,
+    legal_rewrite_text)` for the FIRST shape (in the order above) that
+    matches the FIRST clause it matches -- the offending clause is quoted,
+    a satisfiable alternative is described, and a concrete rewrite of that
     is named, exactly like every other lint in this module."""
     for clause in _CLAUSE_SPLIT_RE.split(criteria):
         stripped = clause.strip()
         if not stripped:
             continue
-        for pattern, alternative in _UNSATISFIABLE_SHAPE_CHECKS:
-            if pattern.search(stripped):
-                return stripped, alternative
+        for pattern, alternative, replacement in _UNSATISFIABLE_SHAPE_CHECKS:
+            match = pattern.search(stripped)
+            if match:
+                return (stripped, alternative,
+                        _legal_rewrite(stripped, pattern, replacement))
     return None
 
 
@@ -1869,11 +1900,11 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
 
         shape_match = _unsatisfiable_shape_clause(criteria)
         if shape_match is not None:
-            offending_clause, alternative = shape_match
+            offending_clause, alternative, rewrite = shape_match
             errors.append(
                 f"task {tid!r}: successCriteria is structurally "
                 f"unsatisfiable ({offending_clause!r}) -- this clause "
-                f"{alternative}"
+                f"{alternative} -- suggested rewrite: {rewrite!r}"
             )
 
         command_form_match = _command_form_shape_clause(criteria)

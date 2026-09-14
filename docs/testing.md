@@ -1482,3 +1482,18 @@ section's own last `tests/records/` mention states, already present before
 this task and untouched by it; left for a task that actually touches that
 directory to reconcile). Both ceilings (5800 tests/375 modules fast,
 4300/260 smoke) still carry headroom.
+
+**5671 (smoke 4064, modules 364->365) by v0.21 task 005 (requirement B.1).**
+Adds one new module, `tests/test_legal_rewrite_reprompt.py`, with three named
+tests (both fast and smoke -- no live engine/container: two drive
+`plan_ingestion.lint_proposal` directly, the third drives `LoopSupervisor`
+through a scripted `_ScriptedRunner`, the same shape
+`tests/test_plan_ingestion_rejection.py` already uses). From the
+5668/4061/364 the paragraph above measures: **5671/4064/365**. Re-measured
+directly at this task's own tip with `.venv/bin/python -m pytest -m
+<fast|smoke> --collect-only -q` (fast: `5671/5776 tests collected (105
+deselected)`, smoke: `4064/5776 tests collected (1712 deselected)`), and the
+module count via the same unique-module-path recipe used throughout this
+section: `365`. `tests/records/` is unaffected (still 117, untouched by this
+task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke) still
+carry headroom.
