@@ -23,6 +23,8 @@ import signal
 import subprocess
 import time
 
+import pytest
+
 from tests.conftest import RALPHCTL
 
 _SIGINT_EXIT_CODE = 130
@@ -45,6 +47,32 @@ def _read_first_nonblank_line(proc: subprocess.Popen, timeout: float) -> str:
     raise TimeoutError("ralphctl logs --follow produced no output in time")
 
 
+def _stacks_of(proc: subprocess.Popen) -> str:
+    """Ask a hung `ralphctl` where it is, instead of leaving it to inference.
+
+    The child runs with `PYTHONFAULTHANDLER=1`, so SIGABRT makes CPython dump
+    every thread's C and Python stack to stderr before dying. Used only on the
+    failure path below, where the alternative is a bare `TimeoutExpired` that
+    says the process did not exit but not what it was doing -- which is exactly
+    the gap that left this node's intermittent failure undiagnosed for a day.
+    """
+    proc.send_signal(signal.SIGABRT)
+    try:
+        out, err = proc.communicate(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate(timeout=20)
+    return (f"--- child stdout ({len(out)} chars, undrained): {out[:500]!r}\n"
+            f"--- child stderr / faulthandler stacks:\n{err[-4000:]}")
+
+
+# The two waits below sum to 120s, which is exactly the global `timeout` in
+# `pyproject.toml` -- so on the failure path pytest-timeout would kill this
+# node before it could report WHY, losing the dump `_stacks_of` exists to
+# collect. A per-node bound above that sum keeps the diagnosis (operator steer
+# 004 §2: raise a single node with `@pytest.mark.timeout(N)` and say why,
+# never the global floor).
+@pytest.mark.timeout(240)
 def test_sigint_during_follow_exits_clean_no_traceback(live, tmp_path):
     # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" keeps the job
     # genuinely non-terminal for as long as this test needs (bounded, never
@@ -52,14 +80,22 @@ def test_sigint_during_follow_exits_clean_no_traceback(live, tmp_path):
     # regardless) instead of racing a fixed STUB_SLEEP window against how
     # fast three tasks with no padding would finish before the signal below
     # could land.
+    #
+    # STUB_HOLD_TIMEOUT_S must outlive this test's OWN worst case (60s to the
+    # first line + 60s for the post-SIGINT exit). It was 30s, i.e. shorter than
+    # the window the test allows itself, so on a slow host the hold could
+    # expire mid-test, the job would run to completion and the engine would
+    # begin shutting down underneath the follow -- making the state under test
+    # ("interrupt a follow of a LIVE run") no longer the state being tested.
     hold_file = tmp_path / "hold-sigint-follow"
     run = live(run_id="sigint-follow", job={"iterations": 20},
                stub_env={"STUB_RICH_EVENTS": "1", "STUB_HOLD_FILE": str(hold_file),
-                         "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
+                         "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "240",
                          "STUB_TASKS": "3"})
     run.wait_api()
 
-    env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
+    env = {**os.environ, "RALPHD_REGISTRY": str(run.registry),
+           "PYTHONFAULTHANDLER": "1"}
     proc = subprocess.Popen(
         [str(RALPHCTL), "logs", run.run_id, "--follow"],
         env=env, stdin=subprocess.DEVNULL,
@@ -67,7 +103,14 @@ def test_sigint_during_follow_exits_clean_no_traceback(live, tmp_path):
     try:
         _read_first_nonblank_line(proc, timeout=60)
         proc.send_signal(signal.SIGINT)
-        rc = proc.wait(timeout=60)
+        try:
+            rc = proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            raise AssertionError(
+                "ralphctl logs --follow did not exit within 60s of SIGINT "
+                "(intermittent, ~1 gate run in 8; host load, a full stdout "
+                "pipe and getaddrinfo are all ruled out by measurement):\n"
+                + _stacks_of(proc)) from None
         stderr = proc.stderr.read()
         assert rc == _SIGINT_EXIT_CODE, (rc, stderr)
         assert "Traceback" not in stderr, stderr
