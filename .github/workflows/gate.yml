@@ -228,6 +228,14 @@ jobs:
       # delay, or the contention removed, measured rather than assumed (#205,
       # #179). Raising this again without that is re-running an experiment whose
       # answer is recorded here.
+      # Wrapped in scripts/run_bounded.sh (task 054, K.3): 2100s (35 min)
+      # leaves ~10 of this job's 45 `timeout-minutes` for checkout, venv
+      # build and the records-lint step ahead of it. An overrun this catches
+      # reports as a step `failure` carrying the RALPHD_TIMEOUT_KILL marker
+      # (log text + $GITHUB_STEP_SUMMARY) instead of the job-level bound's
+      # ambiguous `cancelled` -- see that script's own header for why a
+      # genuine cancel or cancel-in-progress supersession still leaves no
+      # marker and still reports `cancelled` as before.
       - name: Fast tier
         run: |
-          python -m pytest -q -m fast -n 2 --dist loadfile --durations=15
+          scripts/run_bounded.sh 2100 "fast tier" -- python -m pytest -q -m fast -n 2 --dist loadfile --durations=15

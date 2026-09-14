@@ -823,8 +823,8 @@ def detect_verdict_gate_peek(
     word, so `anchor not in rendered` short-circuits it before `patterns`
     is even consulted. A call that actually reaches into `run_root` --
     `cat <run_root>/events.jsonl`, a `read` of
-    `<run_root>/iterations/000N/output.jsonl` -- mentions the anchor and is
-    still flagged exactly as before.
+    `<run_root>/iterations/000N/` joined with `..log_merge.OUTPUT_FILENAME`
+    -- mentions the anchor and is still flagged exactly as before.
     """
     path = iteration_output_path(run_root, number)
     if not path.is_file():
