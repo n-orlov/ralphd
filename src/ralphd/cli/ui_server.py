@@ -1285,6 +1285,39 @@ _STATUS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
 # `{run_id: (key, (live, lines))}` -- see `_cached_rendered_log_lines` below.
 _LOG_TAIL_CACHE: dict[str, tuple[tuple, tuple[bool, list[str]]]] = {}
 
+# Task 047 (H.5): the cap each of the three module-scope derivation caches
+# above (`_ITERATION_ROW_CACHE`, `_TASKS_BLOCK_CACHE`, `_STATUS_BLOCK_CACHE`)
+# is held to -- a long-lived `ralphctl ui` polling a great many distinct run
+# ids over its life must not grow an entry per run id forever. 200 is well
+# above any one operator's realistic number of concurrently-interesting runs
+# while still bounding worst-case memory to a small, fixed multiple of a
+# single run's own cache footprint.
+_RUN_CACHE_CAP = 200
+
+
+def _bound_run_cache(cache: dict, run_id: str) -> None:
+    """Task 047 (H.5): enforce `_RUN_CACHE_CAP` as an LRU policy over one of
+    the three per-run-id caches above, keyed by `run_id` at the cache's own
+    top level (this also covers `_ITERATION_ROW_CACHE`, whose values are
+    themselves per-iteration dicts -- the cap bounds the number of RUNS
+    resident, not rows within a run).
+
+    Call this after every access to the cache for `run_id` -- hit or miss,
+    read or write -- so the run just touched is moved to the end (most
+    -recently-used) and is never the entry evicted; plain `dict`s preserve
+    insertion order (Python 3.7+), so `pop` + reinsert is enough to track
+    recency without a separate `OrderedDict`. Once the cache holds more than
+    `_RUN_CACHE_CAP` distinct run ids, the least-recently-used ones are
+    popped until it fits again -- ordinarily just one, since this runs after
+    every single insertion, but the `while` tolerates a cache pre-loaded
+    past the cap by a test.
+    """
+    if run_id in cache:
+        cache[run_id] = cache.pop(run_id)
+    while len(cache) > _RUN_CACHE_CAP:
+        oldest = next(iter(cache))
+        cache.pop(oldest)
+
 
 def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | None:
     """Task 004 (A.2): the iteration-row cache, keyed per run by (iteration
@@ -1314,6 +1347,7 @@ def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | Non
         transcript_size = 0
     key = (meta_mtime, transcript_size)
     per_run = _ITERATION_ROW_CACHE.setdefault(run_id, {})
+    _bound_run_cache(_ITERATION_ROW_CACHE, run_id)
     cached = per_run.get(number)
     if cached is not None and cached[0] == key:
         return cached[1]
@@ -1341,11 +1375,13 @@ def _cached_disk_tasks_block(run_dir: Path, run_id: str) -> dict:
         mtime = 0.0
     cached = _TASKS_BLOCK_CACHE.get(run_id)
     if cached is not None and cached[0] == mtime:
+        _bound_run_cache(_TASKS_BLOCK_CACHE, run_id)
         return cached[1]
     tasks_read = read_tasks_doc(run_dir, persist=False)
     tasks = tasks_read.payload
     tasks.setdefault("tasks", [])
     _TASKS_BLOCK_CACHE[run_id] = (mtime, tasks)
+    _bound_run_cache(_TASKS_BLOCK_CACHE, run_id)
     return tasks
 
 
@@ -1416,12 +1452,14 @@ def _cached_disk_status_block(reg: Path, run_dir: Path, run_id: str,
         mtime = 0.0
     cached = _STATUS_BLOCK_CACHE.get(run_id)
     if cached is not None and cached[0] == mtime:
+        _bound_run_cache(_STATUS_BLOCK_CACHE, run_id)
         return cached[1]
     _cfg_path = _config_dir(reg, run_id) / "job.yaml"
     shaped = _with_llm_headers(_with_provisioning(
         _with_approach_display(_with_cost_display(_with_local_times(recorded_status))),
         _cfg_path), _cfg_path)
     _STATUS_BLOCK_CACHE[run_id] = (mtime, shaped)
+    _bound_run_cache(_STATUS_BLOCK_CACHE, run_id)
     return shaped
 
 
