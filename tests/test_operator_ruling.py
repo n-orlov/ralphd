@@ -548,3 +548,65 @@ def test_amend_never_calls_docker_or_the_http_api(monkeypatch):
     src = inspect.getsource(main_mod.cmd_amend)
     for forbidden in ("docker", "DOCKER", "sh(", "api("):
         assert forbidden not in src, f"cmd_amend references {forbidden!r}"
+
+
+# -- Task 017 (D.7, #196): the wave-scoped ruling target ---------------------
+
+def test_amend_wave_records_a_wave_scoped_ruling_with_no_task_id(tmp_path):
+    """`ralphctl amend --wave` writes the reserved `AMENDMENT_WAVE_TARGET`
+    (`"WAVE"`) in place of a task id -- no replan can orphan this ruling
+    because there is no task id for a replan to make disappear (D.7,
+    #196's own incident). Combining `--wave` with a task id, `--force` or
+    `--status` is a usage error, since none of those have any meaning
+    without one."""
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "w1")
+    res = ralphctl(registry, "amend", "w1", "--wave",
+                  "Retire the guard removals wave-wide.")
+    assert res.returncode == 0, res.stderr
+    assert (cdir / "amendments" / "001-WAVE.md").exists()
+    raw = (cdir / "amendments" / "001-WAVE.md").read_text()
+    assert "task: WAVE" in raw
+    entries = amendment_entries(cdir)
+    assert len(entries) == 1
+    assert entries[0]["taskId"] == "WAVE"
+    assert entries[0]["scope"] == "wave"
+    assert entries[0]["text"] == "Retire the guard removals wave-wide."
+
+    # a task id alongside --wave is refused, before any file is written
+    res2 = ralphctl(registry, "amend", "w1", "--wave", "007", "text")
+    assert res2.returncode == 2
+    assert "--wave" in res2.stderr
+    # --force and --status are equally meaningless without a task id
+    res3 = ralphctl(registry, "amend", "w1", "--wave", "--force", "text")
+    assert res3.returncode == 2
+    res4 = ralphctl(registry, "amend", "w1", "--wave", "--status", "skipped")
+    assert res4.returncode == 2
+    assert len(amendment_entries(cdir)) == 1  # none of the refusals wrote a file
+
+
+def test_amend_list_shows_the_scope_column_for_a_wave_scoped_ruling(tmp_path):
+    """`ralphctl amend --list` renders a SCOPE column -- `wave` for the
+    reserved wave-scoped target, `task` for an ordinary task-scoped ruling
+    -- reading the exact `scope` field `amendment_entries` computes, in
+    both the text table and `--json`."""
+    registry = tmp_path / "registry"
+    _seed(registry, "w2")
+    ralphctl(registry, "amend", "w2", "--wave", "Wave-wide ruling text.")
+    ralphctl(registry, "amend", "w2", "007", "An ordinary task ruling.")
+
+    res_json = ralphctl(registry, "--json", "amend", "w2", "--list")
+    assert res_json.returncode == 0, res_json.stderr
+    payload = json.loads(res_json.stdout)
+    by_task = {e["taskId"]: e for e in payload["entries"]}
+    assert by_task["WAVE"]["scope"] == "wave"
+    assert by_task["007"]["scope"] == "task"
+
+    res_text = ralphctl(registry, "amend", "w2", "--list")
+    assert res_text.returncode == 0, res_text.stderr
+    assert "SCOPE" in res_text.stdout
+    lines = [l for l in res_text.stdout.splitlines() if l.strip()]
+    wave_line = next(l for l in lines if "wave" in l and "WAVE" not in l)
+    assert "wave" in wave_line
+    task_line = next(l for l in lines if "007" in l)
+    assert "task" in task_line

@@ -1564,6 +1564,22 @@ AMENDMENT_MODE_REPLACE = "replace"
 # never from which tool wrote it.
 AMENDMENT_MODE_STATUS = "status"
 
+# Task 017 (D.7, #196): the reserved `taskId` spelling a WAVE-SCOPED ruling
+# is written under -- `ralphctl amend --wave` (never a bare positional, so a
+# typo can never collide with it) writes this exact string in place of a
+# real task id. It can never collide with a genuine task id (those are
+# always the zero-padded digit strings `plan_ingestion` assigns, `"001"`,
+# `"002"`, ...), so a wave-scoped entry is NEVER subject to the
+# plan-membership check `_amend_echo_target_or_die`/`_operator_amendment_
+# review_context` run for a task-scoped one -- there is no task id for a
+# replan to make disappear, which is the whole point (D.7: "recorded so
+# that no replan can orphan it"). D.8 (task 018) is what actually teaches
+# `_operator_amendment_review_context` to render this scope as
+# unconditionally binding regardless of the current approach; this task
+# only introduces the reserved spelling, the CLI target, and the
+# `--list`-visible scope column.
+AMENDMENT_WAVE_TARGET = "WAVE"
+
 
 def amendments_dir(config_root: Path) -> Path:
     return Path(config_root) / AMENDMENT_DIRNAME
@@ -1597,6 +1613,14 @@ def write_amendment(config_root: Path, task_id: str, text: str, *,
     'header-only, backward compatible' per #168's proposed fix item 5: an
     entry with no `approach:` line reads as "the approach it was recorded
     in is unknown", never as approach 0 or any other invented value.
+
+    Task 017 (D.7, #196): `task_id` may be the reserved sentinel
+    `AMENDMENT_WAVE_TARGET` (`"WAVE"`) instead of a real task id --
+    `ralphctl amend --wave` is the intended caller. This function does not
+    special-case it in any way (it is just a string that happens never to
+    collide with a real, zero-padded task id); the special handling lives
+    entirely in `amendment_entries`'s `scope` field and in the CLI's own
+    argument validation.
     """
     adir = amendments_dir(config_root)
     adir.mkdir(parents=True, exist_ok=True)
@@ -1667,6 +1691,12 @@ def amendment_entries(config_root: Path) -> list[dict]:
             "taskId": task_id,
             "waive": mode == AMENDMENT_MODE_WAIVE,
             "mode": mode,
+            # Task 017 (D.7, #196): "wave" for the reserved
+            # `AMENDMENT_WAVE_TARGET` spelling, "task" for every ordinary
+            # task-scoped ruling (every entry ever written before this task
+            # falls in the latter bucket) -- the one field `ralphctl amend
+            # --list` reads to render the SCOPE column (`cmd_amend_list`).
+            "scope": "wave" if task_id == AMENDMENT_WAVE_TARGET else "task",
             # Task 029: the ruled target status, only meaningful (and only
             # ever non-None) for a `mode: status` entry -- a waive/replace
             # entry never carries a `status:` header line at all.

@@ -58,6 +58,7 @@ from ..engine.state import (
     NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
     AMENDMENT_MODE_STATUS,
+    AMENDMENT_WAVE_TARGET,
     TASK_BLOCKED_FIELD,
     TASK_FAILURE_KINDS,
     TASK_STATUS_LABELS,
@@ -5080,7 +5081,14 @@ def cmd_amend_list(args) -> None:
     if not entries:
         print("(no operator rulings recorded)")
         return
-    print(f"{'SEQ':>3}  {'MODE':<7}  {'RECORDED':<25}  {'TASK':<8}  RULING")
+    # Task 017 (D.7, #196): a SCOPE column -- "wave" for a wave-scoped
+    # ruling (`AMENDMENT_WAVE_TARGET`, `--wave`), "task" for every ordinary
+    # task-scoped one -- reads straight off `amendment_entries`'s own
+    # `scope` field, so `--list` and the review-time reader
+    # (`_operator_amendment_review_context`) can never disagree about which
+    # rulings are wave-scoped.
+    print(f"{'SEQ':>3}  {'MODE':<7}  {'SCOPE':<5}  {'RECORDED':<25}  "
+          f"{'TASK':<8}  RULING")
     for e in entries:
         if e.get("mode") == AMENDMENT_MODE_STATUS:
             mode = "status"
@@ -5094,8 +5102,11 @@ def cmd_amend_list(args) -> None:
         if len(preview) > 60:
             preview = preview[:59] + "\u2026"
         seq = e.get("seq")
+        scope = e.get("scope") or "task"
+        task_col = "-" if e.get("taskId") == AMENDMENT_WAVE_TARGET \
+            else str(e.get("taskId") or "-")
         print(f"{(str(seq) if isinstance(seq, int) else '-'):>3}  {mode:<7}  "
-              f"{str(e.get('ts') or '-'):<25}  {str(e.get('taskId') or '-'):<8}  "
+              f"{scope:<5}  {str(e.get('ts') or '-'):<25}  {task_col:<8}  "
               f"{preview}")
 
 
@@ -5129,8 +5140,8 @@ def cmd_amend(args):
 
     `--list` shows what has been recorded instead of writing a new one (see
     `cmd_amend_list`); combining it with a task id / text / `--file` /
-    `--waive` / `--status` / `--approach` / `--force` is a usage error,
-    mirroring `steer --list`.
+    `--waive` / `--status` / `--approach` / `--force` / `--wave` is a usage
+    error, mirroring `steer --list`.
 
     `--status <status>` (task 006/029, #26 requirement E) records a THIRD
     ruling kind instead of a criteria waiver/replacement: a typed status
@@ -5149,21 +5160,69 @@ def cmd_amend(args):
     argument becomes the operator's OPTIONAL reason (never required, never
     read from stdin when omitted) -- combining `--status` with `--waive`
     is a usage error.
+
+    `--wave` (task 017, D.7, #196) records a **wave-scoped** ruling instead
+    of a task-scoped one -- the reserved target `state.AMENDMENT_WAVE_
+    TARGET` (`"WAVE"`) is written as the ruling's `task:` header in place
+    of a real task id, so it can never be orphaned by a replan (a replan
+    restarts task ids at `001`; there is no task id here for one to make
+    disappear -- the #196 incident this exists to close). It is a
+    criteria-ruling target only: combining it with a task id, `--force`
+    (there is no plan-membership check to override) or `--status` (a
+    status ruling names one task's `status` field, which a wave has none
+    of) is a usage error. `_amend_echo_target_or_die`'s plan-membership
+    echo/refusal is skipped entirely for a wave-scoped ruling, replaced
+    with a one-line notice on stderr, since there is no task id to look up
+    or refuse. `--approach` still resolves and stamps exactly as it does
+    for a task-scoped ruling (D.8, task 018, is what teaches the
+    ruling-context builder to bind this scope unconditionally regardless of
+    the stamped approach; recording the approach here is unaffected by
+    that).
     """
     if args.list:
         if (args.task_id or args.text or args.file or args.waive
-                or args.status or args.approach is not None or args.force):
+                or args.status or args.approach is not None or args.force
+                or args.wave):
             die(2, "--list only shows this run's recorded operator rulings; "
                    "drop the task id/text/--file/--waive/--status/"
-                   "--approach/--force")
+                   "--approach/--force/--wave")
         cmd_amend_list(args)
         return
     _require_run(args.run_id)
-    if not args.task_id:
-        die(2, "a task id is required (or --list to show recorded rulings)")
+    # Task 017 (D.7, #196): argparse fills `task_id`/`text`'s two `nargs=
+    # "?"` positional SLOTS in written order, oblivious to `--wave` -- a
+    # wave-scoped call gives no task id at all, so whatever landed in the
+    # `task_id` slot is actually the ruling text (or nothing, if the
+    # operator means to use --file/stdin instead), and the `text` slot
+    # must be empty (a second positional there means the caller wrote TWO
+    # trailing arguments, which is only legal for a task-scoped ruling).
+    if args.wave:
+        if args.text is not None:
+            die(2, "--wave carries no task id, so at most one trailing "
+                   "positional argument (the ruling text) is legal; found "
+                   "a second one -- drop whichever was meant as a task id")
+        if args.force:
+            die(2, "--wave already has no task id for a plan-membership "
+                   "check to override; drop --force")
+        if args.status:
+            die(2, "--wave is a criteria-ruling target; --status names "
+                   "one task's status field and needs a task id, drop one")
+        target = AMENDMENT_WAVE_TARGET
+        wave_text = args.task_id
+    else:
+        if not args.task_id:
+            die(2, "a task id is required (or --list to show recorded "
+                   "rulings, or --wave for a wave-scoped ruling)")
+        target = args.task_id
+        wave_text = None
     cdir = config_root(args.run_id)
     cdir.mkdir(parents=True, exist_ok=True)
-    _amend_echo_target_or_die(args)
+    if args.wave:
+        print("ralphctl: recording a WAVE-SCOPED ruling (target "
+              f"{AMENDMENT_WAVE_TARGET!r}, no task id) -- no replan can "
+              "orphan it", file=sys.stderr)
+    else:
+        _amend_echo_target_or_die(args)
     approach = _amend_resolve_approach(args)
     if args.status:
         if args.waive:
@@ -5180,23 +5239,26 @@ def cmd_amend(args):
             die(2, f"unknown status {args.status!r}; must be one of "
                    f"{', '.join(OPERATOR_RULEABLE_TASK_STATUSES)}{extra}")
         reason = args.text or (Path(args.file).read_text() if args.file else "")
-        fname = write_amendment(cdir, args.task_id, reason,
+        fname = write_amendment(cdir, target, reason,
                                 status=args.status, approach=approach)
-        out(args, {"file": fname, "taskId": args.task_id,
+        out(args, {"file": fname, "taskId": target,
                    "status": args.status},
-            f"operator status ruling recorded: {fname} (task {args.task_id} "
+            f"operator status ruling recorded: {fname} (task {target} "
             f"-> {args.status}, applied by the engine at load time)")
         return
-    text = args.text or (Path(args.file).read_text() if args.file
-                         else sys.stdin.read())
+    text = wave_text if args.wave else args.text
+    text = text or (Path(args.file).read_text() if args.file
+                    else sys.stdin.read())
     if not text.strip():
         die(2, "empty ruling text")
-    fname = write_amendment(cdir, args.task_id, text, waive=args.waive,
+    fname = write_amendment(cdir, target, text, waive=args.waive,
                             approach=approach)
     kind = "waiver" if args.waive else "replacement"
-    out(args, {"file": fname, "taskId": args.task_id, "waive": args.waive},
+    scope_desc = "the wave" if args.wave else f"task {target}"
+    out(args, {"file": fname, "taskId": target, "waive": args.waive,
+              "scope": "wave" if args.wave else "task"},
         f"operator ruling recorded ({kind}): {fname} "
-        f"(applies to task {args.task_id} at review time)")
+        f"(applies to {scope_desc} at review time)")
 
 
 def cmd_interrupt(args):
@@ -7525,6 +7587,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "in this run's current plan (task 036, #168); "
                         "without it, an id absent from tasks.json refuses "
                         "before any file is written")
+    s.add_argument("--wave", action="store_true",
+                   help="record a WAVE-SCOPED ruling instead -- the "
+                        "reserved target `AMENDMENT_WAVE_TARGET` (\"WAVE\"), "
+                        "carrying no task id at all, so a replan can never "
+                        "orphan it (task 017, D.7, #196); combining it with "
+                        "a task id, --force or --status is a usage error")
     s.set_defaults(func=cmd_amend)
 
     s = sub.add_parser("retry", help="wake a degraded run's infra backoff "

@@ -53,7 +53,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `GATE_REJECTION_ENDING_*` names to the `from ..engine.state import`
         # block above this read, shifting it by +3: 162->165. Same read,
         # same reason.
-        "line": "165",
+        #
+        # Task 017 (v0.21, PRD requirement D.7, #196) added
+        # `AMENDMENT_WAVE_TARGET` to the same import block above this read,
+        # shifting it by +1: 165->166. Same read, same reason.
+        "line": "166",
         "reason": ("registry()'s ralphctl-managed-state root: overridable via "
                    "RALPHD_REGISTRY; the ambient fallback is the operator's own "
                    "machine home, which is exactly right for a bare `ralphctl` "
@@ -168,9 +172,17 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # render-wiring call site (+7, likewise above every entry from
         # `4570` on): 2057->2060, 2077->2080 (+3 only -- both sit above the
         # other two insertions), 4570->4619, 4772->4821, 4776->4825,
-        # 6671->6720, 6675->6724 (+49 each -- all five sit below all three
+        # `6671->6720, 6675->6724 (+49 each -- all five sit below all three
         # insertions). Same reads, same reasons.
-        "line": "2060",
+        #
+        # Task 017 (v0.21, PRD requirement D.7, #196) added
+        # `AMENDMENT_WAVE_TARGET` to the same import block, +1 above every
+        # entry in this file: 2060->2061, 2080->2081, 4619->4620,
+        # 4821->4822, 4825->4826, 6729->6791, 6733->6795 (the last two also
+        # carry the +61 from this task's own `cmd_amend`/`cmd_amend_list`
+        # edits, both of which sit above them -- see that entry's own
+        # comment). Same reads, same reasons.
+        "line": "2061",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -178,7 +190,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "2080",
+        "line": "2081",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
@@ -209,7 +221,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # (+39, inserted just above `_format_termination_lines`) plus the
         # `cmd_status` render-wiring call site (+7, also above this entry):
         # net +49: 4570->4619.
-        "line": "4619",
+        # Task 017 (v0.21, PRD requirement D.7, #196): +1, same import-block
+        # shift: 4619->4620.
+        "line": "4620",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -223,7 +237,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `_format_gate_rejection_ending_lines` helper and import-block
         # shift as the entry above, plus +7 from the status-render wiring
         # in `cmd_status` (also above this entry): 4772->4821.
-        "line": "4821",
+        # Task 017 (v0.21, PRD requirement D.7, #196): +1, same import-block
+        # shift: 4821->4822.
+        "line": "4822",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -234,7 +250,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         "path": "cli/main.py",
         # Task 004 (v0.21, PRD requirement A.4, #192): same +49 as the
         # entry just above it: 4776->4825.
-        "line": "4825",
+        # Task 017 (v0.21, PRD requirement D.7, #196): +1, same import-block
+        # shift: 4825->4826.
+        "line": "4826",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
@@ -255,7 +273,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # print block to `cmd_steer_list` above every entry from this one
         # on -- a net +9, shifting each of them by +9: 6720->6729,
         # 6724->6733.
-        "line": "6729",
+        # Task 017 (v0.21, PRD requirement D.7, #196) added `--wave`'s
+        # argparse option, its `cmd_amend`/`cmd_amend_list` docstring and
+        # body changes and the `AMENDMENT_WAVE_TARGET` import, all above
+        # every entry from this one on -- a net +62, shifting each of them
+        # by +62: 6729->6791, 6733->6795.
+        "line": "6791",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -267,7 +290,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # entry just above it: 6675->6724.
         # Task 012 (v0.21, PRD requirement D.2, #184): same +9 as the entry
         # just above it: 6724->6733.
-        "line": "6733",
+        # Task 017 (v0.21, PRD requirement D.7, #196): same +62 as the entry
+        # just above it: 6733->6795.
+        "line": "6795",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

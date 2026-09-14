@@ -1741,3 +1741,22 @@ unique-module-path recipe used throughout this section: `371` (fast),
 `256` (smoke). `tests/records/` is unaffected (still 117, untouched by
 this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
 still carry headroom -- fast is now within 86 of its stated ceiling.
+
+**5716 (smoke 4106, modules 371 (fast), 256 (smoke)) by v0.21 task 017
+(requirement D.7, #196).** No new module -- two new nodes in an existing
+one, `fast` only (`tests/test_operator_ruling.py` spawns a real
+`ralphctl` subprocess, so the whole module is process-boundary, not
+in-process, per `tests/conftest.py`'s own derivation):
+`test_amend_wave_records_a_wave_scoped_ruling_with_no_task_id` and
+`test_amend_list_shows_the_scope_column_for_a_wave_scoped_ruling`. From
+the 5714/4106/371 the paragraph above measures: **5716/4106/371** (smoke
+unchanged -- neither new node is in-process). Re-measured directly at
+this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
+--collect-only -q` (fast: `5716/5821 tests collected (105 deselected)`,
+smoke: `4106/5821 tests collected (1715 deselected)`), and the module
+count via the same unique-module-path recipe used throughout this
+section: `371` (fast), `256` (smoke). `tests/records/` is unaffected
+(still 117, untouched by this task). Both ceilings (5800 tests/375
+modules fast, 4300/260 smoke) still carry headroom -- fast is now within
+84 of its stated ceiling.
+

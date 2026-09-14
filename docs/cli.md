@@ -1586,6 +1586,7 @@ re-failing the same finding.
 | `--status <status>` | record a status ruling instead (task 006/029, #26 requirement E; every declared status except the engine-forced `superseded`) — see below |
 | `--approach N` | stamp this ruling as recorded against approach N (task 036, #168) instead of the run's own current approach — see below |
 | `--force` | write even though `task-id` is not in this run's current plan (task 036, #168) — see below |
+| `--wave` | record a **wave-scoped** ruling instead of a task-scoped one — carries no task id at all; see below (task 017, D.7, #196) |
 | `--file <f>` | read the ruling text from a file instead of the trailing argument |
 | `--list` | **show** this run's recorded rulings instead of recording one |
 
@@ -1613,6 +1614,34 @@ approach is unknown" rather than as approach 0. This is the raw materials a
 later review pass uses to scope a ruling to the approach it was actually
 recorded in, rather than reapplying it verbatim to a same-numbered task in a
 fresh replan (#168's incident).
+
+#### `ralphctl amend <run-id> --wave [text]`
+
+A **wave-scoped** ruling (task 017, D.7, #196): the reserved target
+`engine.state.AMENDMENT_WAVE_TARGET` (`"WAVE"`) is written as the ruling's
+`task:` header in place of a real task id, through the exact same
+`write_amendment` writer as every other ruling kind — there is no second
+on-disk shape, just a task id that is never a real one. #196 is the incident
+this closes: a replan restarts task ids at `001`, so a ruling written against
+a task id can be orphaned the moment the id it named stops existing; a
+wave-scoped ruling has no task id for a replan to make disappear in the first
+place. `ralphctl amend <run-id> --list` renders a `SCOPE` column reading
+`wave` for this kind and `task` for every ordinary task-scoped ruling (and
+`"scope": "wave"`/`"scope": "task"` in `--json`), the same `amendment_entries`
+reader every other listing column comes from.
+
+`--wave` is a criteria-ruling target only — it carries the ruling text (or
+`--file`/stdin) exactly like the default form above, `--waive` still means a
+full waiver rather than a text replacement, and `--approach` still stamps or
+defaults exactly as described above. Combining `--wave` with a task id,
+`--force` (there is no plan-membership check to override, since there is no
+task id) or `--status` (a status ruling names one task's `status` field,
+which a wave has none of) is a usage error, exit `2`, before any file is
+written. Binding this scope to review and the peer verdict gate
+unconditionally, whatever the current approach, is D.8 (task 018) — this
+command only records the ruling and shows its scope; see
+`LoopSupervisor._operator_amendment_review_context` for the binding logic
+itself once that task lands.
 
 #### `ralphctl amend <run-id> <task-id> --status <status> [reason]`
 
