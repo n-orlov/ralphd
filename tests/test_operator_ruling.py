@@ -470,6 +470,64 @@ def test_wave_scoped_ruling_reaches_the_peer_verdict_gate_after_a_replan(tmp_pat
     assert "Wave ruling: the docker tier is waived wave-wide." in prompt
 
 
+def test_task_scoped_approach_mismatch_stays_historical_for_the_peer_verdict_gate_too(tmp_path, monkeypatch):
+    """Task 022 (D.13, #196): regression proof that the ordinary,
+    task-scoped case -- an approach-1 ruling that stops binding once
+    approach 2 has replanned around it -- still demotes to 'Historical
+    rulings' for BOTH judging hats, not only for review.
+
+    `test_earlier_approach_ruling_is_historical_not_binding_in_a_later_one`
+    (task 038, #172/#168) already pins this for review, driven through
+    `_review_extra_context()`. D.8 (task 018) later handed the SAME
+    builder to the peer verdict gate, and D.9-D.12 (tasks 019-021) then
+    reshaped the historical bucket underneath both call sites -- so D.13's
+    own 'did not regress' claim is unproven for the verdict-gate audience
+    until something drives it there too. This test does exactly that,
+    through the real `LoopSupervisor._step_verdict_gate()` (never a direct
+    call to `_operator_amendment_review_context()` alone), on a plain
+    task-scoped ruling (no wave scope, unlike
+    `test_wave_scoped_ruling_reaches_the_peer_verdict_gate_after_a_replan`
+    just below, which pins the OPPOSITE disposition -- still binding).
+    """
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "010", "Approach 1 said skip requirement F.",
+                    approach=1)
+    sup = _supervisor(tmp_path, approach=2, iterations=5,
+                      peer_verdict_gate=True, tasks=[
+        {"id": "010", "title": "t", "status": "completed",
+         "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+
+    calls: list[tuple[str, str]] = []
+
+    async def spying_run_iteration(self, phase, extra="", *a, **kw):
+        calls.append((phase, extra))
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "verified"})
+        return r
+
+    monkeypatch.setattr(LoopSupervisor, "run_iteration", spying_run_iteration)
+    outcome = asyncio.run(asyncio.wait_for(sup._step_verdict_gate(), 10))
+
+    assert outcome == ("done", "succeeded")
+    assert [phase for phase, _ in calls] == ["verdict_gate"]
+    extra = calls[0][1]
+    assert "Historical rulings" in extra
+    hist_idx = extra.index("Historical rulings")
+    assert extra.index("task 010") > hist_idx
+    # D.13's own point: an approach mismatch is a replan moving past the
+    # ruling, never the operator withdrawing it -- D.10 forbids the 'not
+    # authoritative' wording for that case, whichever hat is asking.
+    assert "not authoritative" not in extra.lower()
+    assert "approach 1" in extra.lower()
+    assert "this verdict-gate decision" in extra
+    # ... and it survives the render the hat actually receives.
+    prompt = sup.build_prompt("verdict_gate", extra=extra)
+    assert "Historical rulings" in prompt
+    assert "Approach 1 said skip requirement F." in prompt
+
+
 def test_real_ruling_under_config_dir_is_the_only_thing_that_counts(tmp_path, monkeypatch):
     """Positive control for the two negative tests above: the SAME shaped
     content, written to the real location, IS picked up -- proving the
