@@ -277,7 +277,7 @@ def test_a_clean_transcript_produces_no_flag(tmp_path):
 
 def test_a_bash_read_of_events_jsonl_is_flagged(tmp_path):
     root = tmp_path / "run"
-    _write_transcript(root, 1, _tool_event("cat run/events.jsonl"))
+    _write_transcript(root, 1, _tool_event(f"cat {root}/events.jsonl"))
     flagged = state.detect_verdict_gate_peek(root, 1)
     assert len(flagged) == 1
     assert flagged[0]["tool"] == "bash"
@@ -290,7 +290,7 @@ def test_a_read_tool_path_into_iterations_is_flagged(tmp_path):
     _write_transcript(root, 1, {
         "type": "tool_execution_start", "toolCallId": "call_1",
         "toolName": "read",
-        "args": {"path": "/run/ralphd/iterations/0003/output.jsonl"}})
+        "args": {"path": f"{root}/iterations/0003/output.jsonl"}})
     flagged = state.detect_verdict_gate_peek(root, 1)
     assert len(flagged) == 1
     assert flagged[0]["tool"] == "read"
@@ -302,11 +302,36 @@ def test_a_clean_call_amid_flagged_ones_is_not_itself_flagged(tmp_path):
     _write_transcript(
         root, 1,
         _tool_event("ls -la"),
-        _tool_event("cat iterations/0001/output.jsonl"),
+        _tool_event(f"cat {root}/iterations/0001/output.jsonl"),
         _tool_event("git status"))
     flagged = state.detect_verdict_gate_peek(root, 1)
     assert len(flagged) == 1
     assert set(flagged[0]["matched"]) == {"iterations/", "output.jsonl"}
+
+
+def test_a_workspace_targeted_read_of_events_jsonl_produces_no_peek_record(
+        tmp_path):
+    """Task 051 (J.2, J.3): a `verdict_gate` iteration legitimately
+    grepping `src/` for the literal `events.jsonl` -- which this repository
+    spells throughout, including in this very module's own docstrings --
+    never mentions the run-state directory's own path, so it must not be
+    flagged just because the bare word appears."""
+    root = tmp_path / "run"
+    _write_transcript(
+        root, 1,
+        _tool_event("grep -rn events.jsonl src/ralphd/engine/state.py"))
+    assert state.detect_verdict_gate_peek(root, 1) == []
+
+
+def test_a_read_of_the_run_dirs_own_events_jsonl_is_still_flagged(tmp_path):
+    """The other half of J.3: a call that actually reaches into the run
+    dir's own `events.jsonl` -- not merely a workspace path containing the
+    same literal -- is still flagged."""
+    root = tmp_path / "run"
+    _write_transcript(root, 1, _tool_event(f"cat {root}/events.jsonl"))
+    flagged = state.detect_verdict_gate_peek(root, 1)
+    assert len(flagged) == 1
+    assert flagged[0]["matched"] == ["events.jsonl"]
 
 
 def test_a_missing_transcript_produces_no_flag(tmp_path):
@@ -331,7 +356,7 @@ def test_only_the_named_iteration_number_is_scanned(tmp_path):
     legitimately reads its own prior output) is never mistaken for this
     gate call's own."""
     root = tmp_path / "run"
-    _write_transcript(root, 1, _tool_event("cat run/events.jsonl"))
+    _write_transcript(root, 1, _tool_event(f"cat {root}/events.jsonl"))
     _write_transcript(root, 2, _tool_event("ls -la"))
     assert state.detect_verdict_gate_peek(root, 1) != []
     assert state.detect_verdict_gate_peek(root, 2) == []
@@ -375,7 +400,7 @@ def test_a_flagged_peek_on_the_ordinary_gate_never_flips_an_approval(tmp_path):
          "verdict_gate": [_verdict_gate_approves]},
         peer_verdict_gate=True)
     _inject_after_phase(sup.runner, "verdict_gate",
-                        _tool_event("cat run/events.jsonl"))
+                        _tool_event(f"cat {root}/events.jsonl"))
 
     final_state = _bounded(sup._run_job_core())
 
@@ -432,7 +457,7 @@ def test_a_flagged_peek_on_a_rejection_is_still_just_recorded(tmp_path):
          "verdict_gate": [_verdict_gate_rejects("no thanks")]},
         peer_verdict_gate=True, max_approaches=1)
     _inject_after_phase(sup.runner, "verdict_gate",
-                        _tool_event("cat iterations/0003/output.jsonl"))
+                        _tool_event(f"cat {root}/iterations/0003/output.jsonl"))
 
     final_state = _bounded(sup._run_job_core())
 
@@ -456,7 +481,7 @@ def test_the_off_budget_grace_gate_is_checked_too(tmp_path):
         peer_verdict_gate=True)
     sup._approach = 1
     _inject_after_phase(sup.runner, "verdict_gate",
-                        _tool_event("cat run/events.jsonl"))
+                        _tool_event(f"cat {root}/events.jsonl"))
 
     assert _bounded(sup._maybe_grace_review(1)) is True
     status = sup.run.read_status()

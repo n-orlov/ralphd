@@ -765,6 +765,17 @@ def format_last_tool_call(evidence: dict | None) -> str:
 # `test_no_duplicate_merge_implementation` grep-guards it) is used here
 # instead of the literal string, so this pattern list names the file
 # without becoming a second place the literal is spelled.
+#
+# Task 051 (J.2, J.3, #136/#134): these three are common English/code words
+# too -- `events.jsonl` is spelled throughout this very module's own
+# docstrings, and a `verdict_gate` iteration legitimately greps `src/` for
+# it while reviewing the workspace. A bare substring match over the WHOLE
+# rendered call therefore flags that legitimate grep exactly as it flags a
+# real peek at the run dir. `detect_verdict_gate_peek` below anchors every
+# match to `run_root` itself -- the call's rendered arguments must mention
+# the run-state directory's own path for a pattern hit to count at all -- so
+# a workspace-only occurrence of one of these words no longer flags, while a
+# call that actually reaches into `run_root` still does.
 VERDICT_GATE_PEEK_PATTERNS: tuple[str, ...] = (
     "iterations/", "events.jsonl", OUTPUT_FILENAME)
 
@@ -802,6 +813,18 @@ def detect_verdict_gate_peek(
     `matched` (which of `patterns` fired) -- `[]` for a clean iteration.
     Absent/unreadable transcript -> `[]`: like `last_tool_call`, this is
     diagnostic, never a reason to raise.
+
+    Task 051 (J.2, J.3): a `patterns` hit ALONE is never enough -- the
+    call's rendered arguments must also mention `run_root`'s own path
+    (`anchor` below) before any pattern counts. This is what keeps a gate
+    iteration legitimately grepping `src/` for the word `events.jsonl`
+    (which this repository spells throughout) from being flagged: that
+    call never mentions the run-state directory at all, only the bare
+    word, so `anchor not in rendered` short-circuits it before `patterns`
+    is even consulted. A call that actually reaches into `run_root` --
+    `cat <run_root>/events.jsonl`, a `read` of
+    `<run_root>/iterations/000N/output.jsonl` -- mentions the anchor and is
+    still flagged exactly as before.
     """
     path = iteration_output_path(run_root, number)
     if not path.is_file():
@@ -810,6 +833,7 @@ def detect_verdict_gate_peek(
         lines = path.read_text(errors="replace").splitlines()
     except OSError:
         return []
+    anchor = str(Path(run_root))
     flagged: list[dict] = []
     for line in lines:
         line = line.strip()
@@ -827,6 +851,8 @@ def detect_verdict_gate_peek(
             rendered = json.dumps(args, sort_keys=True)
         except (TypeError, ValueError):
             rendered = str(args)
+        if anchor not in rendered:
+            continue
         matched = [p for p in patterns if p in rendered]
         if not matched:
             continue
