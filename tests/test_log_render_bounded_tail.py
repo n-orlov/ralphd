@@ -184,3 +184,118 @@ def test_bounded_tail_empty_or_non_positive_n_returns_no_lines():
     raw_text = _fixture_blob(2)
     assert render_tail_lines(raw_text, tty=False, n=0) == []
     assert render_tail_lines("", tty=False, n=5) == []
+
+
+def _thinking_flood_lines(deltas: int) -> list[str]:
+    """A `thinking_start` plus `deltas` `thinking_delta` events, wrapped in
+    the `message_update`/`assistantMessageEvent` shape `log_render`'s
+    `_render_message_update` reads -- the exact flood task 014's docstring
+    names (many deltas, ONE `[thinking\u2026]` line, guarded by
+    `state['thinking_seen']`). Used to stress that guard's reset at a
+    chunk's chosen restart boundary, not just its steady-state behaviour."""
+    lines = [json.dumps({"type": "message_update",
+                          "assistantMessageEvent": {"type": "thinking_start"}})]
+    lines += [json.dumps({"type": "message_update",
+                          "assistantMessageEvent": {"type": "thinking_delta",
+                                                     "delta": f"step {i}"}})
+              for i in range(deltas)]
+    return lines
+
+
+def _fixture_blob_with_thinking_flood(num_iterations: int, flood_iteration: int,
+                                      deltas: int) -> str:
+    """Same per-iteration shape as `_fixture_blob`, except `flood_iteration`
+    also carries a `deltas`-long thinking flood right after its start
+    boundary -- collapsing to exactly one extra `[thinking\u2026]` line in
+    the rendered output, however many raw delta events it took to get
+    there."""
+    parts = []
+    for n in range(1, num_iterations + 1):
+        meta = _iteration_meta(n)
+        parts.append(boundary_line(meta, "start"))
+        if n == flood_iteration:
+            for line in _thinking_flood_lines(deltas):
+                parts.append(line + "\n")
+        parts.append(_message_end_line(f"iteration {n} did some work"))
+        parts.append(boundary_line(meta, "end"))
+    return "".join(parts)
+
+
+def test_bounded_tail_is_byte_identical_to_full_render_across_a_many_delta_thinking_block():
+    """Task 044 (PRD H.2): the bounded-tail path (`render_tail_lines`) and
+    the previous full-render path (`render_to_lines`, unchanged by task
+    043) must render the SAME bytes for the same tail -- not merely the
+    same line count -- once a many-delta thinking block sits inside the
+    requested window. The flood lands in the NEWEST iteration so a
+    10-line tail (iterations 6-8) spans it, forcing the bounded path's
+    chunk-grown window to restart at the boundary immediately before the
+    flood and re-render it from a fresh `new_render_state()`, exactly as
+    the full render's single pass would have."""
+    raw_text = _fixture_blob_with_thinking_flood(8, flood_iteration=8, deltas=500)
+
+    full = render_to_lines(raw_text, tty=False, state=new_render_state())
+    tail = render_tail_lines(raw_text, tty=False, n=10)
+
+    assert len(tail) == 10
+    # The tail includes the flood's one collapsed `[thinking...]` line, not
+    # 500 of them -- confirms the fixture actually exercises the guard.
+    assert any("thinking" in line for line in tail)
+    assert tail == full[-10:]
+    # Byte-for-byte, not just element-wise string equality: the two render
+    # paths must produce the identical newline-joined bytes an operator
+    # would actually see, trailing newline included.
+    tail_bytes = ("\n".join(tail) + "\n").encode()
+    full_tail_bytes = ("\n".join(full[-10:]) + "\n").encode()
+    assert tail_bytes == full_tail_bytes
+
+
+def _write_dead_run_iteration(run_root, n: int, lines: list[str]) -> None:
+    """Write one finished iteration's `meta.json` + `output.jsonl` directly
+    to disk -- the shape `log_merge.merge_entries` reads and the same shape
+    `tests/test_log_merge.py::_iteration` builds -- so `merged_lines` (and,
+    through it, `ui_server.rendered_log_lines`'s on-disk fallback) has a
+    real, finished-run transcript to serve with no live container behind
+    it."""
+    d = run_root / "iterations" / f"{n:04d}"
+    d.mkdir(parents=True)
+    meta = {"number": n, "phase": "worker", "model": "stub-model", "approach": 1,
+            "startedAt": f"2025-01-01T00:{n:02d}:00Z",
+            "endedAt": f"2025-01-01T00:{n:02d}:30Z",
+            "exitCode": 0, "error": None, "usage": {"totalTokens": 10 * n}}
+    (d / "meta.json").write_text(json.dumps(meta))
+    (d / "output.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_bounded_tail_is_byte_identical_to_full_render_for_a_dead_run_on_disk_merge(
+        monkeypatch, tmp_path):
+    """Task 044 (PRD H.2), the on-disk-merge half: a dead run (no live
+    container, so `ui_server._proxy_text` fails and `rendered_log_lines`
+    falls back to `log_merge.merged_lines`) must serve the same bytes for
+    its bounded tail as for its full render, across the same many-delta
+    thinking block -- proving the byte-identity holds for the ACTUAL
+    dead-run serving path, not only for an in-memory NDJSON blob."""
+    from ralphd.cli import ui_server
+
+    run_dir = tmp_path / "runs" / "dead-run"
+    run_dir.mkdir(parents=True)
+    for n in range(1, 8):
+        _write_dead_run_iteration(run_dir, n, [
+            json.dumps({"type": "message_end", "message": {"content": [
+                {"type": "text", "text": f"iteration {n} did some work"}]}})])
+    flood_lines = _thinking_flood_lines(500) + [
+        json.dumps({"type": "message_end", "message": {"content": [
+            {"type": "text", "text": "iteration 8 did some work"}]}})]
+    _write_dead_run_iteration(run_dir, 8, flood_lines)
+
+    monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
+
+    live_full, full_lines = ui_server.rendered_log_lines(tmp_path, "dead-run", None)
+    live_tail, tail_lines = ui_server.rendered_log_lines(tmp_path, "dead-run", 10)
+
+    assert live_full is False and live_tail is False
+    assert len(tail_lines) == 10
+    assert any("thinking" in line for line in tail_lines)
+    assert tail_lines == full_lines[-10:]
+    tail_bytes = ("\n".join(tail_lines) + "\n").encode()
+    full_tail_bytes = ("\n".join(full_lines[-10:]) + "\n").encode()
+    assert tail_bytes == full_tail_bytes
