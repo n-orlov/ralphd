@@ -41,10 +41,10 @@ VERIFY_PROMPT = REPO_ROOT / "src" / "ralphd" / "prompts" / "task-verify.md"
 
 # The PRD's own G.8 targets (docs/prds/v0.19-a-note-is-not-a-rejection.md,
 # requirement G.8): the contract this suite is measured against. Wall-clock
-# targets are per lane and live in the table's own "PRD target" column; these
-# two are tier-wide.
-PRD_TEST_TARGET = 3000
-PRD_MODULE_TARGET = 180
+# targets are per lane and live in the table's own "PRD target" column; the
+# tier-wide test/module counts used to be checked here too, by
+# `test_the_tier_wide_count_targets_are_met_or_disclosed`, which v0.21 task
+# 043 retired -- see that retirement's note below.
 
 TIER_MARKERS = ("smoke", "fast")
 
@@ -249,20 +249,25 @@ def test_a_missed_prd_target_is_disclosed_with_its_measured_number() -> None:
                 f"{row['PRD target']} target, but the verdict says {verdict!r}")
 
 
-def test_the_tier_wide_count_targets_are_met_or_disclosed() -> None:
-    """The PRD's ≤3,000 tests and ≤180 modules are tier-wide, so they are
-    checked against what the fast tier collects right now, and a miss has to
-    be stated in the doc with the measured number."""
-    node_ids = collected("fast")
-    text = TESTING_DOC.read_text()
-    for measured, target, what in ((len(node_ids), PRD_TEST_TARGET, "tests"),
-                                   (len(_modules(node_ids)), PRD_MODULE_TARGET, "modules")):
-        if measured <= target:
-            continue
-        assert str(measured) in text, (
-            f"the fast tier collects {measured} {what} against the PRD's "
-            f"target of {target}, and docs/testing.md never states that "
-            f"measured number")
+# `test_the_tier_wide_count_targets_are_met_or_disclosed` stood here until
+# v0.21 task 043 retired it as the cure for the fast lane's own red at
+# `b0361e1` (gate run 34885356133: "the fast tier collects 5756 tests against
+# the PRD's target of 3000, and docs/testing.md never states that measured
+# number"). It was satisfiable ONLY by writing this wave's own measured test
+# count into `docs/testing.md` as prose -- which v0.21's PRD prohibits ("No
+# committed record whose subject is this wave's own work ... not a count
+# disclosure") and requirement N.4 deletes outright, with N.9 failing a test
+# if such a row comes back. So every test-adding task in this wave would
+# otherwise have to break one rule to satisfy the other; the same node forced
+# a docs-only cure commit in v0.19.1 and a petition in v0.20.
+#
+# Surviving cover for what it actually bounded (the collected counts):
+#   - `test_the_collected_tier_is_inside_its_declared_budget[fast]` and
+#     `[smoke]` below still refuse a tier that grows past the ratcheting
+#     ceilings (5800/4300 tests, 390/270 modules).
+#   - `test_a_missed_prd_target_is_disclosed_with_its_measured_number` above
+#     still requires a missed PRD target to be stated with its number for
+#     every row of the budget table.
 
 
 # --------------------------------------------------------------------------

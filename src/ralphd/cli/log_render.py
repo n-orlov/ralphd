@@ -481,41 +481,67 @@ def render_to_lines(raw_text: str, tty: bool, state: dict) -> list[str]:
     return text.removesuffix("\n").split("\n")
 
 
-def _iteration_boundary_indices(lines: list[str]) -> list[int]:
-    """Line indices in `lines` that are safe RESTART points for a partial
-    (backwards, chunked) render -- every `ralphd.iteration` boundary line
-    (`log_merge.boundary_line`, both `event: "start"` and `event: "end"`),
-    plus `0` unconditionally as the outermost fallback.
+# Cheap textual pre-filter for a boundary line (`log_merge.boundary_line`
+# always serializes `"type": "ralphd.iteration"` through `json.dumps`, so
+# the type value appears verbatim as this quoted token). Used only to
+# LOCATE candidate lines while scanning backwards -- every hit is then
+# confirmed by actually parsing that one line (`_is_boundary_line`), so a
+# transcript that merely mentions the token inside some other event's text
+# is rejected rather than treated as a restart point. Pre-filtering with
+# `str.rfind` is what keeps the backwards scan proportional to the tail:
+# it never parses, or even splits, the history in front of the window.
+_BOUNDARY_TOKEN = '"ralphd.iteration"'
 
-    Why a boundary line, and ONLY a boundary line, is safe: `log_render`'s
-    per-iteration guard state (`text_open`/`text_seen`/`thinking_seen`/
-    `toolcall_seen`/`tool_args`/`tool_pending`) is ORDER-DEPENDENT --
-    `_render_message_end`'s `if not state["text_seen"]` and the matching
-    thinking/toolcall guards only print the right thing because they know
-    everything since the last reset. `render_log_line`'s `ralphd.iteration`
-    branch resets ALL of that state UNCONDITIONALLY the moment it sees
-    either boundary event, regardless of what the state held walking in.
-    That means a `new_render_state()` started fresh at a boundary line's
-    index renders that boundary line and everything after it identically
-    to a full render from line 0 -- nothing before the boundary can leak
-    forward. Any OTHER line is unsafe: starting mid-iteration risks e.g.
-    re-printing a `[thinking\u2026]` line the real state had already seen,
-    or missing a `text_seen`-gated line it hadn't. Index 0 is always
-    included too, both because it is trivially safe (there is nothing
-    before it to leak) and as the guaranteed largest window when a blob
-    has no boundary line at all, or fewer than the requested tail even
-    once every boundary is included."""
-    idxs = [0]
-    for i, raw in enumerate(lines):
-        if not raw.strip():
-            continue
-        try:
-            ev = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(ev, dict) and ev.get("type") == "ralphd.iteration":
-            idxs.append(i)
-    return idxs
+
+def _is_boundary_line(raw_line: str) -> bool:
+    """True when this ONE raw line really is a `ralphd.iteration` boundary
+    event -- i.e. a safe restart point (see `_previous_boundary_offset`)."""
+    if not raw_line.strip():
+        return False
+    try:
+        ev = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(ev, dict) and ev.get("type") == "ralphd.iteration"
+
+
+def _previous_boundary_offset(raw_text: str, before: int) -> int | None:
+    """Character offset of the START of the newest `ralphd.iteration`
+    boundary line that begins strictly before offset `before`, or None when
+    there is none -- found by scanning BACKWARDS from `before` with
+    `str.rfind`, never by walking the blob forwards.
+
+    Why a boundary line, and ONLY a boundary line, is a safe restart point:
+    `log_render`'s per-iteration guard state (`text_open`/`text_seen`/
+    `thinking_seen`/`toolcall_seen`/`tool_args`/`tool_pending`) is
+    ORDER-DEPENDENT -- `_render_message_end`'s `if not state["text_seen"]`
+    and the matching thinking/toolcall guards only print the right thing
+    because they know everything since the last reset.
+    `render_log_line`'s `ralphd.iteration` branch resets ALL of that state
+    UNCONDITIONALLY the moment it sees either boundary event (`event:
+    "start"` or `event: "end"`), regardless of what the state held walking
+    in. So a `new_render_state()` started fresh at a boundary line renders
+    that line and everything after it identically to a full render from
+    offset 0 -- nothing before the boundary can leak forward. Any OTHER
+    line is unsafe: starting mid-iteration risks e.g. re-printing a
+    `[thinking\u2026]` line the real state had already seen, or missing a
+    `text_seen`-gated line it hadn't. Offset 0 is the outermost fallback,
+    trivially safe because nothing precedes it, and is what a blob with no
+    boundary line at all falls back to."""
+    end = before
+    while end > 0:
+        hit = raw_text.rfind(_BOUNDARY_TOKEN, 0, end)
+        if hit < 0:
+            return None
+        start = raw_text.rfind("\n", 0, hit) + 1
+        stop = raw_text.find("\n", hit)
+        line = raw_text[start:] if stop < 0 else raw_text[start:stop]
+        if start < before and _is_boundary_line(line):
+            return start
+        # A false positive (the token inside some other event) or a hit on
+        # the line we already started at: keep walking backwards.
+        end = hit
+    return None
 
 
 def render_tail_lines(raw_text: str, tty: bool, n: int) -> list[str]:
@@ -526,7 +552,7 @@ def render_tail_lines(raw_text: str, tty: bool, n: int) -> list[str]:
     trimming (what `rendered_log_lines` in `ui_server.py` does today).
 
     RESTART POINT chosen: every `ralphd.iteration` boundary line -- see
-    `_iteration_boundary_indices`'s docstring for exactly why that, and
+    `_previous_boundary_offset`'s docstring for exactly why that, and
     only that, is a safe place to start a fresh `new_render_state()` and
     still get output byte-identical to a full render from line 0 (pinned
     by task 044/H.2's byte-identical test). A naive fixed-line or
@@ -538,21 +564,42 @@ def render_tail_lines(raw_text: str, tty: bool, n: int) -> list[str]:
     retry that still renders fewer than `n` lines DOUBLES how many
     boundaries back the window restarts from (1, 2, 4, 8, ...) and
     re-renders from there, until either the render yields at least `n`
-    lines or the window has grown all the way back to line 0 (nothing
+    lines or the window has grown all the way back to offset 0 (nothing
     further back to include). Growing by boundary COUNT rather than a
     fixed byte/line size means a run with a few huge iterations doesn't
     thrash on an undersized window, and a small tail on a run with many
     small iterations stops after a couple of small chunks rather than
-    always falling back to line 0.
+    always falling back to offset 0.
+
+    BOUNDED IN THE HISTORY, not just in the output: the window's start is
+    located by scanning BACKWARDS from the end of `raw_text`
+    (`_previous_boundary_offset`, `str.rfind`), and only the window itself
+    is ever split into lines or JSON-parsed. Prepending an arbitrary amount
+    of older history in front of the same tail therefore does not add
+    `json.loads` calls or rendered lines -- pinned by
+    `tests/test_log_render_bounded_tail.py`'s parse-count test. The
+    earlier shape of this function walked the whole blob forwards to index
+    every boundary first, which made its cost proportional to the history
+    after all; that is the defect this docstring's promise now holds it to.
     """
-    lines = raw_text.splitlines()
-    if n <= 0 or not lines:
+    if n <= 0 or not raw_text:
         return []
-    boundaries = _iteration_boundary_indices(lines)
+    # Boundary offsets already located, newest-first; grown lazily so a
+    # tail satisfied by the first chunk never looks further back.
+    found: list[int] = []
+    oldest_searched = len(raw_text)
+    exhausted = False
     chunk = 1
     while True:
-        start = boundaries[max(0, len(boundaries) - chunk)]
-        rendered = render_to_lines("\n".join(lines[start:]), tty, new_render_state())
+        while not exhausted and len(found) < chunk:
+            offset = _previous_boundary_offset(raw_text, oldest_searched)
+            if offset is None:
+                exhausted = True
+                break
+            found.append(offset)
+            oldest_searched = offset
+        start = found[chunk - 1] if len(found) >= chunk else 0
+        rendered = render_to_lines(raw_text[start:], tty, new_render_state())
         if len(rendered) >= n or start == 0:
             return rendered[-n:] if rendered else []
         chunk *= 2

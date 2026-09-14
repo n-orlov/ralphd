@@ -113,7 +113,7 @@ from ..log_merge import (
     iteration_output_path,
     merged_lines,
 )
-from .log_render import new_render_state, render_to_lines
+from .log_render import new_render_state, render_tail_lines, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
 
@@ -441,10 +441,18 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     means N RENDERED lines, not N raw NDJSON events -- trimming raw events
     before rendering (as the engine's own `GET /logs?tail=` does) would
     yield a much-smaller, wildly variable visible line count once the
-    renderer collapses/skips event types. So this always fetches the FULL
-    raw backlog from the run's live API (no `tail` query param -- the
-    engine's own default, `tail=0`, means unlimited), renders every line,
-    THEN trims to the last `tail` rendered lines.
+    renderer collapses/skips event types.
+
+    Task 043 (PRD H.1): a request that names a tail is served by
+    `log_render.render_tail_lines`, which renders BACKWARDS from the newest
+    events in growing chunks until `N` rendered lines exist, so the work is
+    proportional to the tail instead of to the run's whole history (the old
+    shape -- render every line, then trim -- is what made a repeated
+    `GET /logs` on a long run cost more each time, PRD H's own
+    measurement). `tail=0`/`None` still means "the whole transcript" and
+    still goes through `render_to_lines`, since there is no tail to bound
+    it by. Both paths render through the same `render_log_line`, so the
+    lines are the same lines (pinned byte-for-byte by task 044/H.2).
 
     `tty=False` is passed to `render_to_lines` unconditionally: the hub
     displays plain text via the DOM (each line becomes its own text node,
@@ -477,9 +485,10 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     ok, raw_text = _proxy_text(reg, run_id, "/logs")
     if not ok:
         raw_text = "".join(merged_lines(reg / "runs" / run_id))
-    lines = render_to_lines(raw_text, tty=False, state=new_render_state())
     if tail:
-        lines = lines[-tail:]
+        lines = render_tail_lines(raw_text, tty=False, n=tail)
+    else:
+        lines = render_to_lines(raw_text, tty=False, state=new_render_state())
     return ok, lines or [NO_TRANSCRIPT]
 
 
