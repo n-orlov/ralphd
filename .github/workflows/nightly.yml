@@ -111,6 +111,15 @@ jobs:
           - image: python:3.14-slim
             mode: unset
     steps:
+      # Task 054 (K.3): stamp this cell's start so the classifier step at the
+      # end can tell a `timeout-minutes` kill from a human cancel. This
+      # lane's own bound was raised once already because a cell came close
+      # to it (see the header comment on `timeout-minutes` above), so it is
+      # precisely where a `cancelled` conclusion most needed disambiguating.
+      # See scripts/job_timeout_marker.sh's header.
+      - name: Record the job start time
+        run: echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -152,12 +161,21 @@ jobs:
       # trim, #113 step 4): there is no guard module left, and nothing to
       # deselect for that reason -- see scripts/host_like_dev_layout.sh's
       # own header.
+      # Bounded at 6600s in scripts/run_bounded.sh (task 054, K.3): 110 of
+      # this job's 120 `timeout-minutes`, leaving the 10-minute reserve
+      # tests/test_run_bounded_timeout_marker.py requires for the steps no
+      # wrapper owns (checkout and the host-environment report). A cell that
+      # wedges inside the container -- an apt mirror that never answers, a
+      # startup watchdog re-arming forever -- now reports a step `failure`
+      # naming this cell instead of the job-level bound's `cancelled`, which
+      # is not a verdict. The bound wraps `docker run` itself, so the TERM it
+      # sends is forwarded to the container by docker as usual.
       - name: Dev-layout mode (containerized)
         env:
           CELL_IMAGE: ${{ matrix.image }}
           CELL_MODE: ${{ matrix.mode }}
         run: |
-          docker run --rm \
+          scripts/run_bounded.sh 6600 "dev-layout cell" -- docker run --rm \
             -e HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE="$CELL_MODE" \
             -e CELL_IMAGE="$CELL_IMAGE" \
             -v "$GITHUB_WORKSPACE:/src-ro:ro" \
@@ -182,3 +200,11 @@ jobs:
               setpriv --reuid=1000 --regid="$CELL_GID" --init-groups \
                 env HOME="$CELL_HOME" scripts/host_like_dev_layout.sh
             '
+
+      # Task 054 (K.3), the classifier half: runs even when this cell is
+      # cancelled, and prints the RALPHD_TIMEOUT_KILL marker only when the
+      # cell was still alive as its declared 120-minute bound came due.
+      # Always exits 0, so it can never change a cell's outcome.
+      - name: Classify a job-level timeout kill
+        if: always()
+        run: scripts/job_timeout_marker.sh 120 "nightly dev-layout cell"

@@ -59,18 +59,33 @@ jobs:
       # container.
       RALPHD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      # Task 054 (K.3): stamp this job's start so the classifier step at the
+      # end can tell a `timeout-minutes` kill from a human cancel and from
+      # this job's own `cancel-in-progress` supersession -- which, on this
+      # workflow, is a routine event (pushes collapse onto one group), so
+      # `cancelled` here is even more overloaded than on gate. See
+      # scripts/job_timeout_marker.sh's header.
+      - name: Record the job start time
+        run: echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      # Wrapped in scripts/run_bounded.sh (task 054, K.3) like the tier step
+      # below: an inner bound makes an overrun an ordinary step `failure`
+      # carrying the RALPHD_TIMEOUT_KILL marker instead of the job-level
+      # bound's ambiguous `cancelled`.
       - name: Build a clean venv
         run: |
-          rm -rf .venv
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --quiet --upgrade pip
-          .venv/bin/python -m pip install --quiet -e '.[dev]'
-          .venv/bin/python -V
+          scripts/run_bounded.sh 600 "venv build" -- bash -euo pipefail -c '
+            rm -rf .venv
+            python3 -m venv .venv
+            .venv/bin/python -m pip install --quiet --upgrade pip
+            .venv/bin/python -m pip install --quiet -e ".[dev]"
+            .venv/bin/python -V
+          '
 
       - name: Report the environment
         run: |
@@ -81,8 +96,17 @@ jobs:
       # Serial on purpose for the first measured run: these 24 tests build real
       # images and run real containers on a 4-core / 7 GB box. Once we have a
       # number, `-n 2 --dist loadfile` is the next thing to try.
+      #
+      # Bounded at 6000s (task 054, K.3): with the venv build's 600 that is
+      # 110 of this job's 120 `timeout-minutes`, leaving the 10-minute
+      # reserve tests/test_run_bounded_timeout_marker.py requires for the
+      # steps no wrapper owns (checkout, the environment report, the image
+      # cleanup). A docker-tier hang -- an image build stalled on a registry,
+      # a container that never exits -- now ends as a step `failure` naming
+      # itself, not as a `cancelled` indistinguishable from the push
+      # collapse this workflow does on purpose.
       - name: Docker tier
-        run: .venv/bin/python -m pytest -q -m docker --durations=15
+        run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
 
       # Exact tags only -- never a wildcard or label filter (see the repo's
       # cleanup discipline: a ralphd host runs other people's containers).
@@ -94,6 +118,14 @@ jobs:
           docker image rm -f "ralphd:test-${RALPHD_RUN_ID}" || true
           docker image rm -f "ralphd:test-${RALPHD_RUN_ID}-base" || true
           df -h / | tail -1
+
+      # Task 054 (K.3), the classifier half: runs even on a cancelled job and
+      # prints the RALPHD_TIMEOUT_KILL marker only when this job was still
+      # alive as its declared 120-minute bound came due. Always exits 0, so
+      # it can never change this tier's outcome.
+      - name: Classify a job-level timeout kill
+        if: always()
+        run: scripts/job_timeout_marker.sh 120 "heavy docker tier"
 
   browser-tier:
     name: browser tier
@@ -113,17 +145,25 @@ jobs:
       group: heavy-browser-${{ github.event_name == 'push' && 'main' || github.ref }}
       cancel-in-progress: true
     steps:
+      # Task 054 (K.3): see the docker tier's copy of this step above.
+      - name: Record the job start time
+        run: echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      # Bounded like every other wall-clock-consuming step here (task 054,
+      # K.3).
       - name: Build a clean venv
         run: |
-          rm -rf .venv
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --quiet --upgrade pip
-          .venv/bin/python -m pip install --quiet -e '.[dev]'
+          scripts/run_bounded.sh 600 "venv build" -- bash -euo pipefail -c '
+            rm -rf .venv
+            python3 -m venv .venv
+            .venv/bin/python -m pip install --quiet --upgrade pip
+            .venv/bin/python -m pip install --quiet -e ".[dev]"
+          '
 
       # The module skips itself when `playwright-cli` is absent
       # (tests/test_browser_hub.py: `shutil.which("playwright-cli")`), so a
@@ -136,8 +176,15 @@ jobs:
           google-chrome --version
           echo "PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-<unset>}"
 
+      # Bounded at 2400s (task 054, K.3): with the venv build's 600 that is
+      # 50 of this job's 60 `timeout-minutes`, leaving a 10-minute reserve
+      # for checkout, the toolchain assertion and the session cleanup. #193's
+      # Chrome session drop is exactly the failure mode that can leave a
+      # playwright-cli call waiting on a dead session, and a job that dies
+      # that way used to be indistinguishable from this workflow's own push
+      # collapse.
       - name: Browser tier
-        run: .venv/bin/python -m pytest -q -m browser --durations=15
+        run: scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15
 
       # A playwright-cli session is a daemon that outlives a killed pytest.
       # The suite force-closes its own sessions; this catches a cancelled job.
@@ -160,3 +207,8 @@ jobs:
                 ;;
             esac
           done
+
+      # Task 054 (K.3), the classifier half -- see the docker tier's copy.
+      - name: Classify a job-level timeout kill
+        if: always()
+        run: scripts/job_timeout_marker.sh 60 "heavy browser tier"

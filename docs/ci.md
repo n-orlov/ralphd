@@ -159,6 +159,41 @@ secrets, and a compromised job has nothing to steal.
 - `nightly.yml` runs its six matrix cells at `max-parallel: 2` and `fail-fast:
   false` — two runner slots, and one red cell must not cancel another's claim.
 
+## Reading a `cancelled` conclusion: which of the three causes it was
+
+A job's `conclusion` is `cancelled` for three unrelated causes, and the
+Checks/Actions API exposes no field that separates them: a human pressed
+Cancel, a `cancel-in-progress` group superseded this run, or the job hit its
+own `timeout-minutes`. Only the third is a statement about the commit, and it
+is the one a judging hat most needs to not mistake for a verdict. Two
+mechanisms make it legible, both keyed on one fixed, greppable prefix —
+`RALPHD_TIMEOUT_KILL:` — printed to the step log **and** appended to
+`$GITHUB_STEP_SUMMARY`, which are surfaces a fresh `GET` already returns:
+
+- **`scripts/run_bounded.sh <seconds> <label> -- <command...>`** wraps every
+  step that can consume real wall clock (each tier invocation, each venv
+  build, the records lint, each dev-layout cell) in an inner `timeout(1)`
+  bound set below the job's own. An overrun is then killed from inside the
+  step, which prints the marker and exits 1 — an ordinary `failure`, with the
+  reason in the log, instead of a bare `cancelled`. A cancel arriving from
+  outside signals `timeout(1)` itself first, so it reports an
+  external-signal status rather than its own self-timeout status and prints
+  nothing.
+- **`scripts/job_timeout_marker.sh <minutes> <label>`** is each job's last
+  step, under `if: always()` so it also runs on a cancelled job. It compares
+  elapsed wall time against the `timeout-minutes` that job declares — the
+  first step stamps `RALPHD_JOB_STARTED_AT` — and prints the marker only when
+  the job was still alive as its bound came due, which no human cancel or
+  supersession can be. It always exits 0 and never changes an outcome.
+
+So: **a `cancelled` conclusion carrying the marker is a timeout, and one
+without it is a cancel.** `tests/test_run_bounded_timeout_marker.py` holds
+both scripts to that behaviour and holds every job in all three workflows to
+using them — the stamp step first, the classifier last, every long step
+bounded, and the inner bounds summing under `timeout-minutes` less a reserve
+for the steps no wrapper owns (`actions/checkout` and the environment
+reports).
+
 ## The sweep-sha practice: retired outright (task 003, v0.20.2, requirement A.1, #113 step 4)
 
 Every lane used to deselect one node id,

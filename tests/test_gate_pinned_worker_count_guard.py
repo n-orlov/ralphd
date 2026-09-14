@@ -17,7 +17,13 @@ The records-lint step (`Records lint`) is a separate `steps` entry with its
 own `name` and is asserted unchanged -- this guard only inspects the step
 whose `run` invokes `-m fast`. The step's name and run line were updated by
 requirement A.1 (v0.20.2, the sweep-sha retirement): `tests/test_sweep_sha_
-guard.py` no longer exists, so the records-lint step no longer invokes it.
+guard.py` no longer exists, so the records-lint step no longer invokes that
+guard. Task 054 (K.3) then wrapped that same run line in
+`scripts/run_bounded.sh` so an overrunning records lint reports a step
+`failure` carrying the RALPHD_TIMEOUT_KILL marker instead of the job-level
+bound's ambiguous `cancelled`; the pin below is still an exact-equality pin,
+now on the wrapped text, and `tests/test_run_bounded_timeout_marker.py`
+owns the bound's own coverage.
 """
 
 from __future__ import annotations
@@ -32,7 +38,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GATE_PATH = REPO_ROOT / ".github" / "workflows" / "gate.yml"
 
 RECORDS_STEP_NAME = "Records lint"
-RECORDS_STEP_RUN = "python -m pytest -q tests/records/"
+RECORDS_STEP_RUN = (
+    'scripts/run_bounded.sh 300 "records lint" -- python -m pytest -q tests/records/'
+)
 
 # A numeric `-n` value: `-n 2`, `-n2`, `-n 12` all count; `-n auto` does not.
 NUMERIC_N_RE = re.compile(r"-n\s*\d+\b")
