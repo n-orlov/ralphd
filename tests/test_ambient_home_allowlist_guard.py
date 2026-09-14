@@ -119,10 +119,23 @@ def allowlist_violations(
     current as documentation, but it is no longer load-bearing: a drifted
     line number cannot fail this test.
     """
-    found = Counter((p, _norm(text)) for p, _, text in readings)
-    listed = Counter((e["path"], _norm(e["code"])) for e in allowlist)
-
     violations: list[str] = []
+
+    # A new entry added without a `code` field has to say so plainly. Adding an
+    # ambient read means adding an entry, and an entry that carries only the
+    # old `path`/`line`/`reason` keys would otherwise raise KeyError from inside
+    # a Counter comprehension -- a confusing red for a simple omission.
+    undescribed = [e for e in allowlist if not e.get("code")]
+    for e in undescribed:
+        violations.append(
+            f"allowlist entry for {e['path']}:{e.get('line', '?')} has no "
+            f"`code` field: quote the source line the entry describes, since "
+            f"this guard matches on the code and not on the line number."
+        )
+
+    found = Counter((p, _norm(text)) for p, _, text in readings)
+    listed = Counter((e["path"], _norm(e["code"]))
+                     for e in allowlist if e.get("code"))
     for key in sorted(found - listed):
         path, code = key
         n = (found - listed)[key]
@@ -235,6 +248,20 @@ def test_mutation_c_a_read_that_only_moved_line_is_not_a_violation(tmp_path):
     after = find_ambient_home_reads(tmp_path)
     assert [(p, ln) for p, ln, _ in after] == [("engine/shifting_module.py", 4)]
     assert allowlist_violations(after, [entry]) == []
+
+
+def test_an_entry_with_no_code_field_is_reported_not_a_keyerror(tmp_path):
+    """The omission a future entry is most likely to make. Adding an ambient
+    read means adding an entry, and an entry written with only the pre-`code`
+    keys must produce a readable violation rather than a KeyError."""
+    module = tmp_path / "engine" / "m.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("def f():\n    return Path.home()\n")
+
+    legacy = [{"path": "engine/m.py", "line": "2", "reason": "no code field"}]
+    violations = allowlist_violations(find_ambient_home_reads(tmp_path), legacy)
+    assert any("has no `code` field" in v for v in violations), violations
+    assert any("NEW unlisted" in v for v in violations), violations
 
 
 def test_a_third_copy_of_a_twice_listed_read_is_still_caught(tmp_path):

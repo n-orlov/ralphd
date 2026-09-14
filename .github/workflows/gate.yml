@@ -1,4 +1,5 @@
-# The blocking gate (#113 step 1): the fast tier, on the VPS, exclusively.
+# The blocking gate (#113 step 1): the fast tier, on two dedicated workstation
+# slots.
 #
 # This is the only lane a merge waits on for correctness of the pure-Python
 # surface, and the only lane that runs on every push and every pull request.
@@ -14,31 +15,45 @@
 # ledger (requirement A.1, v0.20.2); and this lane still needs no docker socket
 # and no browser, which is why the label set below asks for neither.
 #
-# THE FLEET IS PARTITIONED, NOT SHARED (operator decision, 14 Sep 2026): this
-# lane runs on the VPS's two runner slots and nowhere else, and heavy.yml and
-# nightly.yml run on the workstation's four slots and nowhere else. The
-# mechanism is the `fast-lane` label and it only works as a pair of
-# exclusions, so neither half is safe to "tidy up" on its own:
+# THE VPS IS RETIRED (operator decision, later on 14 Sep 2026, superseding the
+# VPS partition this comment described earlier the same day). It was a 4-core /
+# 7 GB box, and that was the whole reason this lane took ~12 minutes rather than
+# anything about the workflow. The fleet is now, in full:
 #
-#   - `fast-lane` is carried by vmi3245594 and vmi3245594-2 and by nothing
-#     else, so this job cannot be picked up by a workstation slot;
-#   - the two VPS slots deliberately do NOT carry `ralphd-vps` or
-#     `docker-host`, which every job in heavy.yml and nightly.yml demands, so
-#     those lanes cannot be picked up by a VPS slot.
+#   - int21h-ws-5 and int21h-ws-6 carry `fast-lane` and NOTHING else. This lane
+#     runs there and nowhere else.
+#   - int21h-ws-1 .. int21h-ws-4 carry `ralphd-vps`, `docker-host` and
+#     `browser-runner` and NOT `fast-lane`. heavy.yml and nightly.yml run there
+#     and nowhere else.
+#   - no VPS slot exists any more.
 #
-# Note for anyone reading the labels rather than this comment: `ralphd-vps` is
-# now a misnomer -- it names the workstation slots, not the VPS. It is left
-# alone here on purpose, because renaming it means editing heavy.yml,
-# nightly.yml and tests/test_ci_dev_layout_matrix_guard.py in one go, and the
-# runner-slot topology is #189's subject rather than this commit's.
+# So the partition survives the move; only its two halves changed machines. It
+# is still a pair of exclusions and still unsafe to "tidy up" one half of:
+# adding `docker-host` to this job's `runs-on`, or adding any other label to
+# slots 5 and 6, makes the long lanes able to occupy the slots this one depends
+# on. That reservation is the point of slots 5-6 existing rather than simply
+# labelling the four that were already there -- nightly.yml's six-cell matrix
+# runs `fail-fast: false` for 67-89 minutes and heavy.yml holds two slots for
+# 14-21 minutes at a time, and a push's gate run must never queue behind that.
+#
+# All six slots are on ONE 12-core host, so this lane and the long lanes still
+# contend for CPU even though they never contend for a slot. That is priced into
+# the worker count below and into `timeout-minutes`.
+#
+# `ralphd-vps` is now doubly a misnomer -- it names workstation slots and no VPS
+# remains in the fleet at all. Renaming it means editing heavy.yml, nightly.yml
+# and tests/test_ci_dev_layout_matrix_guard.py in one go; still #189's subject.
 #
 # The interpreter is pinned to `python3.12` explicitly rather than following
-# heavy.yml's `python3 -m venv` idiom. That idiom resolves to whatever the
-# runner host's default is, and the two hosts disagree -- 3.12.3 on the VPS,
-# 3.14.5 on the workstation -- so following it would have made this tier's
-# interpreter a property of which machine picked the job up. Pinning keeps it
-# on the same 3.12 series the hosted lane used, so the only variable this
-# commit changes is the machine. The venv goes on `$GITHUB_PATH` so that both
+# heavy.yml's `python3 -m venv` idiom, which resolves to the host default --
+# 3.14.5 here. What the pin does NOT do is fix the patch level, and the move
+# changed it: the VPS was Ubuntu 24.04 (`python3.12` = 3.12.3) and this host is
+# Fedora 44 (`python3.12` = 3.12.14). 3.12.3 is exactly the interpreter whose
+# argparse leftover-positional behaviour exposed #182 and kept this lane red for
+# 14 commits on 14 Sep, so the fleet has lost that coverage. Accepted knowingly,
+# and the reason #205 is filed: a lane's interpreter should be a property of an
+# image named in this file, not of whichever host answered the dispatch.
+# The venv goes on `$GITHUB_PATH` so that both
 # pytest steps below stay literally unchanged:
 # `tests/test_gate_pinned_worker_count_guard.py` pins the records-lint step's
 # `run` string exactly, and a `.venv/bin/python` prefix would break it.
@@ -114,17 +129,26 @@ permissions:
 jobs:
   fast:
     name: fast tier (records + smoke + fast)
-    # `fast-lane` and NOT `docker-host`/`browser-runner`: see the partition
-    # note at the top of this file. Both halves of the exclusion matter.
+    # `fast-lane` and NOTHING else -- see the partition note at the top of this
+    # file. Asking for only this label is what confines the job to slots 5 and 6
+    # and keeps it out of the long lanes' way; adding `docker-host` or
+    # `browser-runner` here would make it eligible for slots 1-4 and re-create
+    # the starvation those two slots exist to prevent.
     runs-on: [self-hosted, linux, x64, fast-lane]
-    # 45, up from the hosted lane's 30. Measured on this host at d37733c in a
-    # throwaway full-history clone: 67 s records lint + 710 s (11:50) fast tier,
-    # plus the venv build, so ~16 min for the job against ~6.7 min average on
-    # `ubuntu-latest`. The headroom is not for that 16 minutes, it is for two of
-    # these jobs landing on the two slots of a 4-core box at once (a push and a
-    # PR), which is the case that would otherwise run out of clock. And a
-    # `timeout-minutes` kill surfaces as `cancelled`, which is not a verdict --
-    # it would cost a re-dispatch rather than telling anyone anything.
+    # 45, unchanged, and now carrying far more headroom than when it was set.
+    # It was sized for the VPS: 67 s records lint + 710 s (11:50) `-n 2` fast
+    # tier + venv build, ~16 min, at d37733c. On this host the same `-n 2`
+    # recipe is 592 s and `-n 4` is 378 s, so the expected job is ~7 min.
+    #
+    # The headroom is deliberately NOT trimmed to match, and the reasons got
+    # stronger rather than weaker with this move. All six slots share 12 cores,
+    # so a job here can run beside heavy.yml's docker and browser tiers or
+    # nightly.yml's matrix and its wall clock is contended in a way it never
+    # was on a box of its own. And the per-sha concurrency group above means
+    # several of these are in flight at once by design. A `timeout-minutes`
+    # kill reports as `cancelled`, which is not a verdict -- having removed the
+    # other source of spurious `cancelled` runs, spending headroom to shave
+    # minutes off a green lane would trade away the thing that bought.
     timeout-minutes: 45
     steps:
       - name: Check out the commit under test
@@ -136,8 +160,9 @@ jobs:
           fetch-depth: 0
 
       # Replaces `actions/setup-python` + `cache: pip`, neither of which this
-      # runner needs: Ubuntu 24.04 carries python3.12 as its own default, so
-      # there is no per-run interpreter download, and `~/.cache/pip` persists
+      # runner needs: Fedora 44 carries python3.12 as a packaged interpreter
+      # (3.12.14) alongside its own 3.14 default, so there is no per-run
+      # interpreter download, and `~/.cache/pip` persists
       # between jobs because every job runs as the same user on the same disk.
       # `rm -rf .venv` is not optional -- a self-hosted workspace is reused
       # across runs, so a venv left by an earlier commit would otherwise be
@@ -169,18 +194,29 @@ jobs:
         run: |
           python -m pytest -q tests/records/
 
-      # `-n 2 --dist loadfile`: loadfile keeps a module's tests on one
-      # worker, which is what this suite's module-scoped fixtures assume
-      # (docs/testing.md, "Recipes"). The worker count stays the fixed `2` it
-      # was on the hosted fleet, and is still not `-n auto`. The reason it is
-      # still `2` and not larger: the VPS is a 4-core box running TWO runner
-      # slots, so a push and a PR can put two of these jobs on it at once, and
-      # `-n 2` each is the count that fills the box exactly rather than
-      # oversubscribing it. `-n auto` would read 4 in each job and ask for 8.
-      # Raising the count is a real speed-up otherwise available -- the tier
-      # has been measured at ~120 s under `-n 8` versus ~981 s serial -- but on
-      # this host that needs a slot count decided with it, not a side effect of
-      # moving runner.
+      # `-n 4 --dist loadfile`: loadfile keeps a module's tests on one worker,
+      # which is what this suite's module-scoped fixtures assume
+      # (docs/testing.md, "Recipes"). The count is a fixed integer and
+      # deliberately not `-n auto`, which re-derives it from `nproc` at
+      # collection time and so makes the worker count -- and with it the
+      # suite's own oversubscription-sensitive flake rate -- a property of
+      # whatever else the host is doing (`tests/test_gate_pinned_worker_count_
+      # guard.py` fails the suite if this becomes `auto`).
+      #
+      # 4, raised from the 2 that was sized to fill a 4-core VPS. Measured on
+      # this host, same tier, same recipe: `-n 2` = 592 s, `-n 4` = 378 s.
+      # 4 rather than 8 because the arithmetic that matters is the whole host,
+      # not this job: two of these can be in flight at once under the per-sha
+      # concurrency group, which is 8 workers, and the other four slots can be
+      # running heavy.yml's docker and browser tiers or nightly.yml's matrix on
+      # the same 12 cores at the same time. `-n 8` per job would ask for 16
+      # workers from 12 cores before the long lanes are counted at all, and
+      # oversubscription here does not merely slow the tier: it turns
+      # timing-sensitive nodes red. Four distinct such failures were observed
+      # in ten runs on 14 Sep (test_cli_logs_signal, test_hub_delete,
+      # test_stub_pi_harness, test_config_effective), each appearing exactly
+      # once and none reproducing, while two gate jobs shared a 4-core box.
+      # Raising this further needs the contention measured, not assumed.
       - name: Fast tier
         run: |
-          python -m pytest -q -m fast -n 2 --dist loadfile --durations=15
+          python -m pytest -q -m fast -n 4 --dist loadfile --durations=15

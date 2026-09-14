@@ -2065,3 +2065,22 @@ unique-module-path recipe used throughout this section: `379` (fast),
 this task). Both tier ceilings (390 fast/270 smoke modules, 5800/4300
 tests) still carry headroom -- no ceiling raise needed this task.
 
+**5753 (smoke 4129, modules 379 (fast), 264 (smoke)) after the two operator
+commits of 14 Sep 2026** — `4a1e59b` (the ambient-home allowlist guard
+re-anchored on the code text rather than the line number) and its follow-up,
+which between them add **three** nodes to
+`tests/test_ambient_home_allowlist_guard.py` and no new module:
+`test_mutation_c_a_read_that_only_moved_line_is_not_a_violation`,
+`test_a_third_copy_of_a_twice_listed_read_is_still_caught` and
+`test_an_entry_with_no_code_field_is_reported_not_a_keyerror`. The module was
+already counted in both tiers, so this is +3 fast and +3 smoke with the module
+totals unmoved: from the **5750/4129/379 (fast)/264 (smoke)** the paragraph
+above measures, to **5753/4129/379 (fast)/264 (smoke)**. Re-measured directly
+with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5753/5862 tests collected`), and the module count via the same unique-module-
+path recipe used throughout this section. `tests/records/` is unaffected (still
+117). `pytest-timeout`'s new 120 s default (`e3e5723`, #203) changes no count:
+it adds a plugin and a setting, not a node, and the slowest test measured at
+that sha is 11.19 s. Both tier ceilings (390 fast/270 smoke modules, 5800/4300
+tests) still carry headroom — no ceiling raise needed.
+

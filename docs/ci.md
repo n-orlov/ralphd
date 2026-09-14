@@ -15,7 +15,7 @@ The tiers themselves — what they cover and what they cost — are
 
 | workflow | lanes | runner | trigger | budget |
 |---|---|---|---|---|
-| `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (the VPS's two slots, exclusively) | every pull request, every push to `main` | 45 min |
+| `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
 | `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted, two runner slots (below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
 
@@ -33,24 +33,57 @@ so it is still an attestation this repository cannot fabricate — the property
 #113 is buying — and the lane still needs neither a docker socket nor a browser,
 which is why it asks for neither label.
 
-**The fleet is partitioned, not shared** (operator decision, same date):
-`gate.yml` runs on the VPS's two slots and nowhere else, via the `fast-lane`
-label; `heavy.yml` and `nightly.yml` run on the workstation's four slots and
-nowhere else. It works as a pair of exclusions, and neither half is safe to
-change alone: nothing but the VPS carries `fast-lane`, and the VPS deliberately
-no longer carries `ralphd-vps` or `docker-host`, which every job in the other
-two workflows demands. One consequence to know before reading further:
-**`ralphd-vps` is now a misnomer** and names the workstation slots. Renaming it
-means editing `heavy.yml`, `nightly.yml` and
-`tests/test_ci_dev_layout_matrix_guard.py` together, which is #189's subject.
+**The fleet is partitioned, and the VPS is gone** (operator decision, later on
+14 September 2026, superseding the VPS partition described earlier that day).
+The VPS was a 4-core / 7 GB box and that, not the workflow, was why this lane
+took ~12 minutes: the identical `-n 2` recipe is 592 s on the workstation. Both
+VPS slots were deregistered and their packages removed. The partition survived
+the move; only its halves changed machines:
+
+| slots | labels | takes |
+|---|---|---|
+| `int21h-ws-5`, `int21h-ws-6` | `fast-lane` only | `gate.yml` only |
+| `int21h-ws-1` .. `int21h-ws-4` | `ralphd-vps`, `docker-host`, `browser-runner` | `heavy.yml`, `nightly.yml` only |
+
+Slots 5 and 6 are a **reservation, not spare capacity**, and that is why they
+were registered instead of simply adding `fast-lane` to the four that already
+existed. `nightly.yml`'s six-cell matrix runs `fail-fast: false` for 67-89
+minutes and `heavy.yml` holds two slots for 14-21 minutes at a time; sharing
+would let a push's `gate` run queue behind all of it. It remains a pair of
+exclusions and neither half is safe to change alone.
+
+**All six slots are on one 12-core host.** They never contend for a slot but
+they do contend for CPU, which is priced into `gate.yml`'s worker count (`-n 4`,
+not `-n 8`) and into leaving its `timeout-minutes: 45` untrimmed. Contention is
+now the main remaining source of a red `gate`: on 14 September, four distinct
+timing-sensitive nodes failed once each across ten runs and none reproduced.
+
+Two naming consequences. **`ralphd-vps` is now doubly a misnomer** — it names
+workstation slots and there is no VPS in the fleet at all; renaming it means
+editing `heavy.yml`, `nightly.yml` and
+`tests/test_ci_dev_layout_matrix_guard.py` together, still #189's subject. And
+**this table is a snapshot, not the source of truth** — it has been overtaken
+within a day of being written twice now. Read the live shape from
+`GET /repos/n-orlov/ralphd/actions/runners`.
 
 The interpreter is pinned: `python3.12` explicitly, not `heavy.yml`'s
-`python3 -m venv` idiom, because that idiom follows the host default and the two
-hosts disagree (3.12.3 on the VPS, 3.14.5 on the workstation). Pinning keeps the
-tier on the 3.12 series the hosted lane used, so moving the lane changed the
-machine and nothing else. Measured at `d37733c` on the VPS, throwaway
-full-history clone: records lint 117 passed in 67 s, `-m fast -n 2` 5681 passed
-/ 4 skipped in 710 s — the same counts the workstation produces in 377 s.
+`python3 -m venv` idiom, because that idiom follows the host default (3.14.5 on
+this host). Measured at `d37733c` on the VPS, throwaway full-history clone:
+records lint 117 passed in 67 s, `-m fast -n 2` 5681 passed / 4 skipped in
+710 s. On the workstation the same recipe is **592 s at `-n 2` and 378 s at
+`-n 4`**, which is why the worker count was raised with the move.
+
+**What the pin does not do is fix the patch level, and the move cost the fleet
+real coverage.** The VPS ran Ubuntu 24.04, whose `python3.12` is **3.12.3**;
+the workstation runs Fedora 44, whose `python3.12` is **3.12.14**. Those two
+disagree about `argparse` leftover-positional handling — the fix landed in a
+3.12 patch after 3.12.3 — and that disagreement is what exposed #182 and kept
+this lane red for 14 commits and 3 h 15 m on 14 September 2026, on a host no
+container and no developer machine in this project could reproduce. With the
+VPS gone, no lane runs 3.12.3. That loss is accepted deliberately and is the
+direct motivation for #205: a lane's interpreter should be a property of an
+image named in the workflow file, not of whichever host answered the
+dispatch.
 
 ## The self-hosted runner
 
