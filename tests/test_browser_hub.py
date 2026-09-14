@@ -2317,6 +2317,60 @@ def test_timeline_row_and_dialog_show_the_same_cause_for_a_faulted_iteration(tmp
         server.stop()
 
 
+def test_timeline_row_shows_task_id_tier_and_cost(tmp_path, pw):
+    """Task 034 (G.2): a hub iteration row names the task it was dispatched
+    against, the effective tier it ran at, and its own cost -- beside what
+    the row already showed (phase/model/duration/etc).
+
+    `assignedTaskId`/`effectiveTier` are task 027 (F.1)'s dispatch-write
+    fields, passed through `engine.state.iteration_detail` verbatim (never
+    re-derived -- neither name is in `ITERATION_DERIVED_KEYS`); the cost is
+    that SAME iteration's own `costDisplay` (`format_cost(usage,
+    decimals=4)`), never recomputed here. Built off the same `_base_meta`
+    fixture helper the cause-parity test above uses, so the usage dict this
+    asserts against is the one `format_cost` already has coverage for.
+    """
+    from ralphd.cli.ui_server import run_detail
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_cli_iteration_detail import _base_meta
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-task-tier-cost", state="failed",
+                              verdict="unverified")
+    meta = _base_meta(1, assignedTaskId="041", effectiveTier="hard",
+                      usage={"input": 10, "output": 20, "totalTokens": 30,
+                             "costUSD": 0.0125, "costPriced": True})
+    d = run_dir / "iterations" / "0001"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(meta))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-task-tier-cost")
+        _wait_for_count_ge(pw, _TIMELINE_ITEMS, 1)
+
+        # -- the server's own payload, the same one the row is built from --
+        detail = run_detail(registry, "run-task-tier-cost")
+        row_data = detail["iterations"][0]
+        assert row_data["assignedTaskId"] == "041"
+        assert row_data["effectiveTier"] == "hard"
+        cost_display = row_data["costDisplay"]
+        assert cost_display and cost_display != "unavailable"
+
+        # -- the TIMELINE ROW itself names all three, unopened -------------
+        row_text = pw.eval_js(
+            "document.querySelector('.timeline-item[data-iteration=\"1\"]')"
+            ".textContent")
+        assert "task: 041" in row_text, row_text
+        assert "tier: hard" in row_text, row_text
+        assert cost_display in row_text, row_text
+        pw.screenshot(SCREENSHOTS_DIR / "25-timeline-task-tier-cost.png")
+    finally:
+        server.stop()
+
+
 _DOCUMENT_ITEMS = "document.querySelectorAll('.document-item').length"
 _DOCUMENT_BUTTONS = "document.querySelectorAll('button.document-item').length"
 _DOCUMENT_ROW_TEXT = (

@@ -2274,6 +2274,16 @@ function renderTimeline(el, iterations, runId) {
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
       };
     }
+    // Task 034 (G.2): the task this iteration was dispatched against and
+    // the effective tier it ran at -- `assignedTaskId`/`effectiveTier`,
+    // `loop.py`'s dispatch write (task 027, F.1), passed through verbatim
+    // by `iteration_detail` (never in `ITERATION_DERIVED_KEYS`, so nothing
+    // here re-derives them) -- plus the cost, read from THIS iteration's
+    // own `costDisplay` (`format_cost(usage, decimals=4)`, task 015/019),
+    // never recomputed client-side. A non-task-scoped call (planning,
+    // reflect, run-level review) carries `assignedTaskId: null`, rendered
+    // as the em dash the task table already uses for "nothing assigned".
+    const taskCell = it.assignedTaskId == null ? "\u2014" : String(it.assignedTaskId);
     const row = h("div", attrs, [
       h("span", { class: "num" }, ["#" + (it.number ?? "?")]),
       // Task 048 (#4): when the iteration ran, not just how long it took --
@@ -2282,6 +2292,9 @@ function renderTimeline(el, iterations, runId) {
       h("span", { class: "at" }, [String(it.startedAtLocal || "")]),
       h("span", { class: "phase" }, [String(it.phase || "")]),
       h("span", {}, [String(it.model || "")]),
+      h("span", { class: "task-id" }, ["task: " + taskCell]),
+      h("span", { class: "tier" }, ["tier: " + String(it.effectiveTier || "\u2014")]),
+      h("span", { class: "cost" }, [String(it.costDisplay || "")]),
       it.error ? h("span", { class: "pill pill-failed" }, ["error"]) : null,
       h("span", { class: "dur" }, [dur]),
       // Task 015 (#89, requirement I, hub half): the SAME cause sentence the

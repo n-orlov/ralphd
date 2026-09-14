@@ -172,6 +172,12 @@ tr.row-warning td { background: #fffaf0; }
 .timeline-item .at { color: var(--muted); width: 13rem; flex: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .timeline-item .phase { font-weight: 600; width: 6rem; flex: none; }
+/* task 034 (G.2): the assigned task id, the effective tier it ran at, and
+   this iteration's own recorded cost -- read straight off `costDisplay`,
+   never recomputed here. */
+.timeline-item .task-id { color: var(--muted); width: 6rem; flex: none; }
+.timeline-item .tier { color: var(--muted); width: 5rem; flex: none; }
+.timeline-item .cost { color: var(--muted); width: 5.5rem; flex: none; text-align: right; }
 .timeline-item .dur { color: var(--muted); width: 4.5rem; flex: none; text-align: right; }
 /* task 015 (#89, requirement I, hub half): this iteration's own fault cause
    -- the SAME sentence the iteration dialog's `cause:` line shows -- wraps
