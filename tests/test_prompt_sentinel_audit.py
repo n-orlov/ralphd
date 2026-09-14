@@ -252,6 +252,11 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         ("smallest atomic first piece",
          "describe the remainder precisely in the notes file"),
         "`WORKER_MD` (worker.md read raw)", ALL),
+    AbsenceAssertion(
+        "test_worker_split_refusal_reprompt.py", (83, 192),
+        ("## Your last proposed task split was refused",),
+        "the worker prompt's injected extra block (task 008, requirement "
+        "B.4: loop.py:5052)", ALL),
 )
 
 

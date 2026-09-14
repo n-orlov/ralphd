@@ -11998,6 +11998,30 @@ class LoopSupervisor:
         # no valid contract payload at all (`contract_errors`, set above).
         # Ensure status is validation-failed and increment the counter.
         tasks_data = self.run.read_tasks()
+        # Task 009 (PRD requirement C.1, #187): whether THIS call is the one
+        # that moves `t` into `petitioned` -- set below, inside the
+        # `attempts >= VALIDATION_ATTEMPT_LIMIT` branch, the ONLY place in
+        # the engine that ever writes that status. Read again right after
+        # `self.run.write_tasks(tasks_data)` a few lines down, so the
+        # bounded, off-budget mid-run adjudication episode
+        # (`_maybe_run_midrun_adjudication_episode`) is triggered from the
+        # TRANSITION ITSELF -- synchronously, before this method ever
+        # returns to its caller -- rather than only from the two pre-
+        # existing call sites (`_step_worker`'s `pending_verify` gate and
+        # its `selected is None` "held" branch), both of which need a
+        # LATER pass through `_step_worker`'s own `while` loop to ever run.
+        # A pass that exhausts its iteration/deadline budget on the exact
+        # iteration that files the petition never reaches either of those
+        # -- the loop's `while self.budget_left():` guard simply exits --
+        # so the #187 deadlock shape (every other open task blocked on this
+        # one, directly or transitively) could sit un-adjudicated for the
+        # whole rest of the approach. Calling it here closes that gap: the
+        # episode is off-budget (`_refund_iteration("grace")`) and already
+        # deduped per obligation (`self._petition_adjudication_seen`), so
+        # firing it unconditionally the moment the status write lands costs
+        # nothing extra on every other pass that reaches it a second time
+        # through one of the two pre-existing sites.
+        became_petitioned = False
         for t in tasks_data.get("tasks", []):
             if t["id"] == tid:
                 attempts = t.get("validationAttempts", 0) + 1
@@ -12075,6 +12099,7 @@ class LoopSupervisor:
                             petitions.NO_PETITION_PROTOCOL_NOTICE]
                     if not petition_errors:
                         t["status"] = "petitioned"
+                        became_petitioned = True
                         log.warning(
                             "task %s consumed all %d validation attempts; "
                             "contract carries a petition protocol, so the "
@@ -12101,6 +12126,13 @@ class LoopSupervisor:
                 break
         self.run.write_tasks(tasks_data)
         self._emit_task_changes()
+        if became_petitioned:
+            # Task 009 (PRD requirement C.1, #187): the transition into
+            # `petitioned` THIS call just wrote, above, is the trigger
+            # point -- fire the bounded, off-budget adjudication episode
+            # right here, before returning, rather than leaving it to the
+            # next pass through `_step_worker`'s own `while` loop.
+            await self._maybe_run_midrun_adjudication_episode()
         return False
 
     def _warn_if_batched(self, before: dict, after: dict) -> None:

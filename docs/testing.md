@@ -1566,3 +1566,19 @@ unique-module-path recipe used throughout this section: `367` (fast),
 `252` (smoke). `tests/records/` is unaffected (still 117, untouched by
 this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
 still carry headroom.
+
+**5694 (smoke 4087, modules 368 (fast), 253 (smoke)) by v0.21 task 009
+(requirement C.1/C.2, #187).** One new module,
+`tests/test_petition_deadlock_adjudication.py`, two new nodes (also
+`smoke` -- no live engine/container: one drives `LoopSupervisor._verify_task`
+directly to exhaustion, one drives a real `_step_worker()` pass over a
+scripted `ScriptedRunner`, both against a real `RunDir`, no live
+engine/container involved). From the 5692/4085/367 the paragraph above
+measures: **5694/4087/368**. Re-measured directly at this task's own tip
+with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5694/5799 tests collected (105 deselected)`, smoke: `4087/5799 tests
+collected (1712 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `368` (fast),
+`253` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
+still carry headroom.
