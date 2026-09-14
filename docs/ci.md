@@ -15,16 +15,56 @@ The tiers themselves — what they cover and what they cost — are
 
 | workflow | lanes | runner | trigger | budget |
 |---|---|---|---|---|
-| `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | GitHub-hosted `ubuntu-latest` | every pull request, every push to `main` | 30 min |
+| `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (the VPS's two slots, exclusively) | every pull request, every push to `main` | 45 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
 | `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted, two runner slots (below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
 
-`gate.yml` is on GitHub's own runners deliberately: it is the lane that runs
-most often, it needs neither a docker socket nor a browser, and a check run
-signed by GitHub's app is an attestation this repository cannot fabricate —
-which is the property #113 is buying.
+`gate.yml` was on GitHub's own runners until 14 September 2026, when being the
+lane that runs most often stopped being an argument for hosted runners and
+became the argument against them: it was the only hosted lane left, and 258 runs
+/ 1718 minutes of wall clock in the first two weeks of September put the account
+at 90 % of its 2000 included Actions minutes on its own. `heavy.yml` and
+`nightly.yml` are self-hosted and cost nothing. So the fast tier moved to the
+VPS and the account's hosted-minute bill went to zero.
+
+The two properties that made hosted runners attractive are unaffected. A check
+run is created and signed by GitHub's Actions app wherever the runner executes,
+so it is still an attestation this repository cannot fabricate — the property
+#113 is buying — and the lane still needs neither a docker socket nor a browser,
+which is why it asks for neither label.
+
+**The fleet is partitioned, not shared** (operator decision, same date):
+`gate.yml` runs on the VPS's two slots and nowhere else, via the `fast-lane`
+label; `heavy.yml` and `nightly.yml` run on the workstation's four slots and
+nowhere else. It works as a pair of exclusions, and neither half is safe to
+change alone: nothing but the VPS carries `fast-lane`, and the VPS deliberately
+no longer carries `ralphd-vps` or `docker-host`, which every job in the other
+two workflows demands. One consequence to know before reading further:
+**`ralphd-vps` is now a misnomer** and names the workstation slots. Renaming it
+means editing `heavy.yml`, `nightly.yml` and
+`tests/test_ci_dev_layout_matrix_guard.py` together, which is #189's subject.
+
+The interpreter is pinned: `python3.12` explicitly, not `heavy.yml`'s
+`python3 -m venv` idiom, because that idiom follows the host default and the two
+hosts disagree (3.12.3 on the VPS, 3.14.5 on the workstation). Pinning keeps the
+tier on the 3.12 series the hosted lane used, so moving the lane changed the
+machine and nothing else. Measured at `d37733c` on the VPS, throwaway
+full-history clone: records lint 117 passed in 67 s, `-m fast -n 2` 5681 passed
+/ 4 skipped in 710 s — the same counts the workstation produces in 377 s.
 
 ## The self-hosted runner
+
+> **This section describes the VPS, and it is out of date about the fleet as a
+> whole.** Two things have changed under it and only the first is this document's
+> current subject. (1) As of 14 September 2026 the VPS's two slots carry
+> `fast-lane` and *only* `fast-lane`: `ralphd-vps` and `docker-host` were removed
+> from them, so they run `gate.yml` and nothing else — everything below about
+> which lanes land here is superseded by the partition described above. (2) Four
+> further slots, `int21h-ws-1` to `int21h-ws-4`, were registered on the
+> workstation on 11 September 2026 and are where `heavy.yml` and `nightly.yml`
+> actually run; they are undocumented here. Reconciling this section with the
+> real fleet is #189's subject. Everything below about the VPS *host* — its
+> cores, its docker group, #180 — is still accurate about that host.
 
 TWO runner slots registered against this repository (not an org), both
 labelled `ralphd-vps` and `docker-host`: `vmi3245594` and `vmi3245594-2`
