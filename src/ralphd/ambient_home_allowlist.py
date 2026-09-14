@@ -374,8 +374,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # PRD requirement B.1, #197) added two lines to
         # `NOTIFY_PREFERENCE_INSTRUCTION` above this read (naming the new
         # `notification.failed` event), shifting it once more -- now at
-        # 130, same helper, same read, same reason.
-        "line": "130",
+        # 130, same helper, same read, same reason. Task 024 (v0.21, PRD
+        # requirement E.2, #180) added a `from . import privsep` import
+        # line above this read, shifting it once more -- now at 131, same
+        # helper, same read, same reason.
+        "line": "131",
         "reason": ("backs `ambient_home()` (task 002) via its `_home()` "
                    "helper (task 003 refactor): the ONE designated "
                    "entry point every real caller (engine/api.py, engine/"
@@ -484,7 +487,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # broker` attribute (5 new lines, comment + assignment) above
         # `_creds_note` in this same module, shifting this read once more
         # -- now at 1314, same method, same read, same reason.
-        "line": "1314",
+        # Task 024 (v0.21, PRD requirement E.2, #180) added a `from . import
+        # privsep` import line above `_creds_note` in this same module,
+        # shifting this read once more -- now at 1323, same method, same
+        # read, same reason.
+        "line": "1323",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

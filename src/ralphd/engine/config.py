@@ -154,11 +154,19 @@ PROMPT_NAMES = ("planning", "worker", "review", "task-verify")
 
 def prompt_source(name: str) -> str:
     """Effective origin for a phase prompt: 'api' (runtime overlay PUT) >
-    'mounted' (/config/prompts/{name}.md, operator-provided) > 'builtin'."""
+    'mounted' (/config/prompts/{name}.md, operator-provided) > 'builtin'.
+
+    Task 024 (#180 class): the mounted-path check below reads under
+    `CONFIG_DIR`, exactly like `JobConfig.load()` (task 023, E.1) -- same
+    borrow, same reason (a uid mismatch between the invoking host user and
+    the engine's own effective uid otherwise makes this raise EACCES
+    instead of returning a plain False).
+    """
     if (OVERLAY_DIR / f"prompts/{name}.md").exists():
         return "api"
-    if (CONFIG_DIR / f"prompts/{name}.md").exists():
-        return "mounted"
+    with privsep.root_for_write():
+        if (CONFIG_DIR / f"prompts/{name}.md").exists():
+            return "mounted"
     return "builtin"
 
 

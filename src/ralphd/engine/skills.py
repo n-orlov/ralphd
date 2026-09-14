@@ -25,6 +25,7 @@ import shutil
 import tarfile
 from pathlib import Path
 
+from . import privsep
 from .config import CONFIG_DIR, OVERLAY_DIR
 
 log = logging.getLogger("ralphd.skills")
@@ -186,13 +187,20 @@ def clear_tombstone(name: str) -> None:
 
 
 def _sources(config_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
-    """Return (mounted, api) name -> skill-dir maps."""
+    """Return (mounted, api) name -> skill-dir maps.
+
+    Task 024 (#180 class, requirement E.2's own docker test surfaced this):
+    listing `<config_dir>/skills` is blocked by the same uid mismatch
+    `JobConfig.load()` (task 023, E.1) had to borrow
+    `privsep.root_for_write()` for -- same borrow, same reason.
+    """
     mounted: dict[str, Path] = {}
     mdir = config_dir / "skills"
-    if mdir.is_dir():
-        for p in sorted(mdir.iterdir()):
-            if p.is_dir():
-                mounted[p.name] = p
+    with privsep.root_for_write():
+        if mdir.is_dir():
+            for p in sorted(mdir.iterdir()):
+                if p.is_dir():
+                    mounted[p.name] = p
     api: dict[str, Path] = {}
     adir = api_skills_dir()
     if adir.is_dir():

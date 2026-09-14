@@ -13,6 +13,7 @@ from pathlib import Path
 import uvicorn
 
 from .. import __version__
+from . import privsep
 from .api import create_app
 from .config import CONFIG_DIR, RUN_DIR, WORKSPACE_DIR, JobConfig
 from .creds import place_creds
@@ -203,8 +204,17 @@ async def amain() -> int:
 
     if not run.prd_file.exists():
         prd_src = CONFIG_DIR / "prd.md"
-        if prd_src.exists():
-            run.prd_file.write_text(prd_src.read_text())
+        # Task 024 (#180 class, requirement E.2's own docker test surfaced
+        # this): reading `prd.md` out of `CONFIG_DIR` is blocked by the same
+        # uid mismatch `JobConfig.load()` (task 023, E.1) already borrows
+        # `privsep.root_for_write()` for -- same borrow, same reason. Only
+        # the *read* is elevated; `run.prd_file.write_text()` below stays
+        # outside the borrow so the copy in the run dir is agent-owned, not
+        # root-owned.
+        with privsep.root_for_write():
+            prd_text = prd_src.read_text() if prd_src.exists() else None
+        if prd_text is not None:
+            run.prd_file.write_text(prd_text)
         else:
             log.error("no PRD at %s or %s", run.prd_file, prd_src)
             return 2

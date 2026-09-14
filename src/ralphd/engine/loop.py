@@ -37,6 +37,7 @@ from . import findings
 from . import hat_tools
 from . import petitions
 from . import plan_ingestion
+from . import privsep
 from . import router
 from . import run_record
 from . import scheduler
@@ -985,10 +986,18 @@ class LoopSupervisor:
     def prompt_text(self, name: str) -> str:
         # Preference order: runtime overlay (API PUT, writable) > mounted
         # /config (operator-provided, read-only in real containers) > builtin.
+        # Task 024 (#180 class, requirement E.2's own docker test surfaced
+        # this): the mounted branch's `.exists()`/`.read_text()` reads under
+        # `CONFIG_DIR`, exactly like `JobConfig.load()` (task 023, E.1) --
+        # same borrow, same reason. The overlay/builtin branches never touch
+        # `CONFIG_DIR`, so they stay outside the borrow.
         path = overlay_or_config(f"prompts/{name}.md")
-        if not path.exists():
-            path = PROMPTS_BUILTIN / f"{name}.md"
-        return path.read_text()
+        with privsep.root_for_write():
+            mounted_exists = path.exists()
+            mounted_text = path.read_text() if mounted_exists else None
+        if mounted_text is not None:
+            return mounted_text
+        return (PROMPTS_BUILTIN / f"{name}.md").read_text()
 
     def build_prompt(self, phase: str, extra: str = "",
                       prompt_name: str | None = None) -> str:
