@@ -13,7 +13,8 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from .. import API_VERSION, __version__
-from ..log_merge import apply_tail, boundary_line, iteration_dirs, merge_entries
+from ..log_merge import (apply_tail, boundary_line, iteration_dirs, merge_entries,
+                         merge_entries_tail)
 from .config import (CONFIG_DIR, PROMPT_NAMES, JobConfig, classify_method,
                      list_prompts, overlay_write_path)
 from .creds import (
@@ -282,19 +283,27 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
     def _iteration_dirs():
         return iteration_dirs(run.root)
 
-    def _merge_logs():
+    def _merge_logs(tail: int = 0):
         """The on-disk merge (shared module `ralphd.log_merge`, task 038) with
         serving-time scrubbing: lines are scrubbed again here
         (defense-in-depth, task 060) on top of the write-time scrub in
         runner.py/state.py -- catches a value that is only *recognized* as a
         secret after the transcript line was originally written (e.g. a cred
         added mid-run, using the same literal value an earlier iteration
-        happened to echo)."""
-        return merge_entries(run.root, scrub=scrub_text)
+        happened to echo).
+
+        Task 048 (PRD H.6): a request naming a `tail` reads only the newest
+        iterations needed to satisfy it (`merge_entries_tail`), instead of
+        every iteration the run has ever recorded (`merge_entries`) -- the
+        work `GET /logs?tail=N` costs is bounded by the tail, not by how
+        long the run has been going."""
+        if tail:
+            return merge_entries_tail(run.root, tail, scrub=scrub_text)
+        return list(merge_entries(run.root, scrub=scrub_text))
 
     @app.get("/logs")
     async def logs(tail: int = 0, follow: bool = False):
-        entries = apply_tail(list(_merge_logs()), tail)
+        entries = apply_tail(_merge_logs(tail), tail)
 
         if not follow:
             text = "".join(line for _, line in entries)

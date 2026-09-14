@@ -168,6 +168,60 @@ def merge_entries(run_root: Path,
             yield True, scrub(boundary_line(meta, "end"))
 
 
+def merge_entries_tail(run_root: Path, tail: int,
+                       scrub: Callable[[str], str] | None = None) -> list[Entry]:
+    """Like `merge_entries`, but reads only as many of the NEWEST iteration
+    directories as are needed to reach `tail` content (non-boundary) lines,
+    instead of every iteration the run has ever recorded (task 048, PRD
+    H.6).
+
+    `merge_entries` is a plain generator over `iteration_dirs` in execution
+    order, oldest first -- every caller that wants a tail (`merged_lines`,
+    `engine.api`'s `GET /logs?tail=N`) had to force it to a full list
+    (`list(merge_entries(...))`) before `apply_tail` could trim from the
+    END, so a tiny tail on a run with thousands of iterations still opened
+    and read every `output.jsonl` on disk. This function walks the SAME
+    `iteration_dirs` list in REVERSE (newest first) instead, reading one
+    iteration's `meta.json` + `output.jsonl` per step -- one "iteration
+    transcript read" in H.6's own words -- and stops the moment it has
+    collected at least `tail` content lines (or runs out of iterations).
+    `apply_tail` still does the exact trim afterwards, so a step that
+    overshoots (one iteration alone can hold more than `tail` lines) still
+    yields exactly the same lines full `merge_entries` + `apply_tail` would
+    have, because only STRICTLY OLDER iterations are ever left unread.
+    """
+    scrub = scrub or (lambda text: text)
+    newest_first_chunks: list[list[Entry]] = []
+    content_count = 0
+    for d in reversed(iteration_dirs(run_root)):
+        meta_path = d / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        chunk: list[Entry] = []
+        if meta.get("endedAt"):
+            chunk.append((True, scrub(boundary_line(meta, "end"))))
+        out = d / OUTPUT_FILENAME
+        if out.exists():
+            raw_lines = out.read_text().splitlines(keepends=True)
+            for line in reversed(raw_lines):
+                line = line if line.endswith("\n") else line + "\n"
+                chunk.append((False, scrub(line)))
+            content_count += len(raw_lines)
+        chunk.append((True, scrub(boundary_line(meta, "start"))))
+        chunk.reverse()
+        newest_first_chunks.append(chunk)
+        if content_count >= tail:
+            break
+    out_entries: list[Entry] = []
+    for chunk in reversed(newest_first_chunks):
+        out_entries.extend(chunk)
+    return out_entries
+
+
 def apply_tail(entries: list[Entry], tail: int) -> list[Entry]:
     """Keep only the last `tail` non-boundary (transcript) lines, plus any
     boundary lines that fall within that window."""
@@ -187,9 +241,19 @@ def apply_tail(entries: list[Entry], tail: int) -> list[Entry]:
 def merged_lines(run_root: Path, tail: int = 0,
                  scrub: Callable[[str], str] | None = None) -> list[str]:
     """The rendered transcript of `run_root` as newline-terminated lines --
-    exactly what `GET /logs?tail=N` serves for the same run dir."""
-    return [line for _, line in
-            apply_tail(list(merge_entries(run_root, scrub=scrub)), tail)]
+    exactly what `GET /logs?tail=N` serves for the same run dir.
+
+    Task 048 (PRD H.6): a nonzero `tail` goes through `merge_entries_tail`,
+    which reads only the iterations needed to satisfy it, instead of
+    `merge_entries`'s every-iteration generator -- forcing the LATTER to a
+    list (the shape `apply_tail` needs to trim from the end) is exactly
+    what used to make this function's own `tail` a no-op on the READ cost,
+    however small the request. `tail=0` (the whole transcript) still goes
+    through the unbounded `merge_entries`, since there is no tail to bound
+    the read by."""
+    entries = merge_entries_tail(run_root, tail, scrub=scrub) if tail \
+        else list(merge_entries(run_root, scrub=scrub))
+    return [line for _, line in apply_tail(entries, tail)]
 
 
 def iteration_lines(run_root: Path, number: int, tail: int = 0,

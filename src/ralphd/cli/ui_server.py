@@ -507,6 +507,16 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     many content lines as were asked for). `tail=0`/`None` still means
     the whole transcript, with no tail to bound the fetch by, so that
     branch is unchanged.
+
+    Task 048 (PRD H.6): the DEAD-run fallback used to call `merged_lines`
+    with no tail at all -- reading every iteration transcript the run ever
+    recorded, however small the request -- so H.4's live-side bound had a
+    still-unbounded twin sitting right next to it. `_fetch_dead_tail` is the
+    on-disk mirror of `_fetch_live_tail`: `merged_lines(..., tail=bound)` now
+    reads only the newest iterations needed for `bound` raw content lines
+    (`log_merge.merge_entries_tail`), and the same growing-bound re-ask loop
+    keeps it correct across a many-delta thinking block that collapses raw
+    lines into far fewer rendered ones.
     """
     def _fetch_live_tail(bound_tail: int) -> tuple[bool, str]:
         bound = bound_tail
@@ -522,10 +532,34 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
             ok, raw_text = _proxy_text(reg, run_id, f"/logs?tail={bound}")
         return ok, raw_text
 
+    def _fetch_dead_tail(bound_tail: int) -> str:
+        """The on-disk-merge twin of `_fetch_live_tail` (task 048, PRD H.6):
+        a dead run's fallback used to call `merged_lines` with NO tail at
+        all, reading every iteration transcript the run ever recorded to
+        serve even a 10-line request. `merged_lines(..., tail=bound)` now
+        reads only the newest iterations needed for `bound` raw content
+        lines (`log_merge.merge_entries_tail`), so this grows `bound` the
+        exact same way `_fetch_live_tail` grows its live fetch -- doubling
+        whenever the render of what came back still falls short of
+        `bound_tail` RENDERED lines and there is more history behind it."""
+        run_root = reg / "runs" / run_id
+        bound = bound_tail
+        raw_text = "".join(merged_lines(run_root, tail=bound))
+        while True:
+            content_lines = sum(1 for ln in raw_text.splitlines()
+                                 if _ITERATION_BOUNDARY_TOKEN not in ln)
+            if len(render_tail_lines(raw_text, tty=False, n=bound_tail)) >= bound_tail:
+                break
+            if content_lines < bound:
+                break
+            bound *= 2
+            raw_text = "".join(merged_lines(run_root, tail=bound))
+        return raw_text
+
     if tail:
         ok, raw_text = _fetch_live_tail(tail)
         if not ok:
-            raw_text = "".join(merged_lines(reg / "runs" / run_id))
+            raw_text = _fetch_dead_tail(tail)
         lines = render_tail_lines(raw_text, tty=False, n=tail)
     else:
         ok, raw_text = _proxy_text(reg, run_id, "/logs")

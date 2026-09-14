@@ -2615,6 +2615,57 @@ flooded the tail with one element per delta; the shared renderer's
 guard (already exercised by the CLI) collapses each thinking block to
 exactly one `[thinking…]` line.
 
+**The log tail's work is bounded by the tail, not by the run's history
+(tasks 043-048, PRD H).** The paragraph above describes this route's
+ORIGINAL shape (v0.3-era, task 014): fetch everything, render everything,
+trim afterwards. PRD H's own measurement (2026-09-12, a 176 MB run) found
+that a repeated identical request to this route cost MORE the second time
+(2.259 s then 4.506 s, 1.72 s and 2.49 s of CPU, RSS ranging 352 868 kB to
+1 153 316 kB over one minute) -- proportional to the run's whole history,
+not to the 200-line tail an operator actually sees. Three layers were each
+bounded in turn: `log_render.render_tail_lines` (task 043/H.1) renders
+backwards from the newest `ralphd.iteration` boundary in growing chunks
+(1, 2, 4, 8... boundaries back) instead of rendering the full blob and
+slicing, byte-identical to the old output across a many-delta thinking
+flood (task 044/H.2, `tests/test_log_render_bounded_tail.py`); the route
+itself is `ETag`-conditional and cache-keyed on the newest iteration's
+number and transcript size (task 045/H.3); a LIVE run's fetch from the
+container asks `GET /logs?tail=N` for a bound derived from the requested
+rendered-line count and re-asks with a doubled bound when the render comes
+up short (task 046/H.4, `ui_server.rendered_log_lines`'s nested
+`_fetch_live_tail`); and `_ITERATION_ROW_CACHE`/`_TASKS_BLOCK_CACHE`/
+`_STATUS_BLOCK_CACHE` are capped at 200 distinct run ids with LRU eviction
+(task 047/H.5). The one layer those four left unbounded was the DISK READ
+itself: `log_merge.merge_entries` is a generator over every iteration dir
+the run has ever recorded, oldest first, and every caller wanting a tail
+had to force it to a full list (`list(merge_entries(...))`) before
+`apply_tail` could trim from the end -- so a 200-line tail on a run with
+thousands of iterations still opened and read every `output.jsonl` on
+disk, live or dead. Task 048 (H.6) closes that: `log_merge.merge_entries_
+tail` walks the SAME iteration dirs in REVERSE (newest first) and stops
+the moment it has collected enough content lines, so `merged_lines(...,
+tail=N)` -- and, through it, `engine.api`'s `GET /logs?tail=N` and the
+hub's dead-run fallback, `ui_server`'s new nested `_fetch_dead_tail` -- read
+only the iterations a tail actually needs.
+`tests/test_log_merge_bounded_reads.py::
+test_merged_lines_reads_a_bounded_number_of_iteration_transcripts_regardless_of_run_length`
+pins this as work, not just output: a run of 300 iterations and a run of
+3000, one content line each, both cost exactly 200 `output.jsonl` reads to
+serve a 200-line tail -- the SAME number either way, never 300 or 3000 of
+them.
+
+**Measured budget (task 048, PRD H.6), one hub tab open on a run holding
+150 iterations, polling `GET /api/runs/<id>` and `GET
+/api/runs/<id>/logs?tail=200` every 4 s (`REFRESH_MS`) for 60 s (15 polls
+of each): the hub process used 0.090 s of CPU across that 60 s sample
+(about 0.15% of one core) and its peak resident set size (`/proc/<pid>/
+status`'s `VmHWM`) was 32 608 kB.** Measured against a real `ralphctl ui`
+subprocess (`RALPHD_REGISTRY` pointed at a fixture registry, no live
+container behind the run -- the dead-run on-disk fallback this task
+bounded) rather than against a wall clock, per this PRD's own ban on
+wall-clock assertions as a test's *pass condition* -- the number itself is
+a disclosed measurement, not a test.
+
 **The hub's render rule (task 018, #27).** The hub renders decisions Python
 made and never applies a response it did not ask for. `cli/web/app.js` is a
 client in the strict sense: every screen it shows is data `ui_server.py`
