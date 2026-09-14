@@ -341,6 +341,12 @@ DEPENDENCY_EVIDENCE = {
     "pytest": _Import("pytest", ("tests",)),
     "pytest-asyncio": _Literal("pyproject.toml", "asyncio_mode"),
     "pytest-xdist": _Literal("scripts/host_like_pytest.sh", "-n 8 --dist loadfile"),
+    # #203: the per-test bound. `timeout_method` rather than `timeout` is the
+    # literal checked for, because it is the half that is easy to lose in a
+    # merge and useless to lose -- a `signal`-method timeout never fires while
+    # the main thread is blocked in `ep_poll`, which is the exact signature of
+    # every hang measured on 14 Sep 2026.
+    "pytest-timeout": _Literal("pyproject.toml", "timeout_method"),
     "httpx": _Import("httpx", ("tests",)),
     "ruff": _Literal("pyproject.toml", "[tool.ruff]"),
     "build": _Literal("tests/test_image_packaged_inputs.py", '"-m", "build"'),

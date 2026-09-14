@@ -21,7 +21,7 @@ dependencies = [
 # used (as `httpx`/`rich` never were in the dropped `cli` extra) fails the suite
 # instead of shipping forever in the metadata.
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-xdist>=3.8", "httpx>=0.27", "ruff>=0.4", "build>=1.0", "hatchling>=1.20"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-xdist>=3.8", "pytest-timeout>=2.3", "httpx>=0.27", "ruff>=0.4", "build>=1.0", "hatchling>=1.20"]
 
 [project.scripts]
 ralphctl = "ralphd.cli.main:main"
@@ -69,6 +69,33 @@ ignore = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# NOTHING ELSE BOUNDS A HUNG TEST (#203). This engine legitimately awaits
+# forever in places an operator releases -- `_park_until_resumed` waits on an
+# `asyncio.Event` that only `resume()`/`POST /resume` clears -- and a test that
+# reaches such a state inside a bare `asyncio.run(...)` never wakes: an event
+# loop whose selector holds nothing but its own self-pipe is not slow, it is
+# parked. Measured 14 Sep 2026: four simultaneous live pytest processes with
+# `00:00:00` of accumulated CPU time, and separately one iteration that spent
+# 42 of its 45 minutes inside a single invocation. There are 414 unbounded
+# `asyncio.run(` call sites under tests/ and one of them bounds itself.
+#
+# Without this setting the only backstops are sized for whole phases: the
+# worker's bash tool abandons the command WITHOUT killing it, the engine's
+# `iteration_timeout_s` costs a whole iteration with no task completed, and
+# `gate.yml`'s `timeout-minutes: 45` concludes as `cancelled`, which is not a
+# verdict (#189). Each turns a ten-second authoring mistake into a ten- to
+# forty-five-minute loss carrying no diagnosis.
+#
+# 120 s is ~5x headroom over the slowest real test measured
+# (`test_host_like_pytest_script.py`, 24.6 s); a genuinely slower test should
+# carry its own `@pytest.mark.timeout(N)` rather than raise this floor.
+#
+# `thread` is load-bearing and not the default: a `signal`-method timeout
+# never fires while the main thread is blocked in `ep_poll`, which is exactly
+# the signature above. The thread method dumps every thread's stack before it
+# goes, so the failure names the await instead of leaving dots.
+timeout = 120
+timeout_method = "thread"
 markers = [
     "browser: playwright-cli browser e2e tests for the hub (skip cleanly if playwright-cli is absent)",
     "docker: docker-sibling container-level e2e tests (skip cleanly if the docker socket is absent)",
