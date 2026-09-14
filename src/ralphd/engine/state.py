@@ -1641,6 +1641,54 @@ def write_amendment(config_root: Path, task_id: str, text: str, *,
     return fname
 
 
+def repoint_amendment(config_root: Path, seq: int, new_target: str) -> str:
+    """Task 021 (D.12, #196): re-address an ALREADY-RECORDED ruling (found
+    by its `seq` -- the same number `amend --list`'s `SEQ` column and
+    `amendment_entries()['seq']` show) to `new_target`, a live task id or
+    `AMENDMENT_WAVE_TARGET` -- the amendment-analogue of `steer
+    task-update`'s `dependsOn` rewrite, so an orphaning (D.11's escalation)
+    is a one-command fix rather than a hand-edit of the file under
+    `config_root/amendments/`.
+
+    Rewrites the fixed header's `task:` line in place (mode/status/
+    approach/ts and the body text are untouched) and renames the file so
+    its own name (`NNN-<task-id>.md`) stays truthful about what
+    `amendment_entries()['taskId']` will report for it -- the SEQ number
+    never changes, only the target. Raises `FileNotFoundError` naming
+    `seq` when no amendment file with that sequence number exists (the
+    CLI turns that into a `die()` before writing anything); this function
+    does not itself check `new_target` against any plan -- that
+    plan-membership refusal is the CLI's job (`_amend_echo_target_or_die`
+    reads `run_root`, this function only ever touches `config_root`, the
+    same host/container boundary every other writer here keeps).
+    """
+    adir = amendments_dir(config_root)
+    matches = sorted(adir.glob(f"{seq:03d}-*.md"))
+    if not matches:
+        raise FileNotFoundError(
+            f"no recorded ruling with seq {seq} under {adir}")
+    old_path = matches[0]
+    raw = old_path.read_text(errors="replace")
+    header, sep, body = raw.partition("\n\n")
+    new_lines = []
+    replaced = False
+    for line in header.splitlines():
+        key, _, val = line.partition(":")
+        if key.strip() == "task":
+            new_lines.append(f"task: {new_target}")
+            replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        new_lines.append(f"task: {new_target}")
+    new_header = "\n".join(new_lines)
+    new_fname = f"{seq:03d}-{new_target}.md"
+    atomic_write(adir / new_fname, new_header + sep + body)
+    if old_path.name != new_fname:
+        old_path.unlink()
+    return new_fname
+
+
 def amendment_entries(config_root: Path) -> list[dict]:
     """Every operator ruling recorded for a run, oldest first. Reads
     `<config_root>/amendments/` directly -- `config_root` is EITHER the host

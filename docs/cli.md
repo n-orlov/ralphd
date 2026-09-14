@@ -1587,6 +1587,8 @@ re-failing the same finding.
 | `--approach N` | stamp this ruling as recorded against approach N (task 036, #168) instead of the run's own current approach — see below |
 | `--force` | write even though `task-id` is not in this run's current plan (task 036, #168) — see below |
 | `--wave` | record a **wave-scoped** ruling instead of a task-scoped one — carries no task id at all; see below (task 017, D.7, #196) |
+| `--repoint SEQ` | re-point an already-recorded ruling (its `SEQ`, as shown by `--list`) to a new target instead of recording a new one — see below (task 021, D.12, #196) |
+| `--to TASK_ID` | the new task-id target for `--repoint`; combine with `--wave` instead to re-point onto the wave scope |
 | `--file <f>` | read the ruling text from a file instead of the trailing argument |
 | `--list` | **show** this run's recorded rulings instead of recording one |
 
@@ -1659,6 +1661,30 @@ uses) and `-` otherwise — a wave-scoped ruling is never orphaned (D.7/D.8),
 and a run with no `tasks.json` at all yet shows `-` for everything, exactly
 the review-time carve-out. `--json` carries the same fact as a boolean
 `"orphaned"` key on each entry.
+
+#### `ralphctl amend <run-id> --repoint <seq> (--to <task-id> | --wave)`
+
+Re-address an ALREADY-RECORDED ruling — found by the `SEQ` number `--list`
+already shows — to a live task id or to the wave scope, with **no hand-edit**
+of the file under `config_root(run_id)/amendments/` (task 021, D.12, #196):
+the amendment-analogue of `steer task-update`'s `dependsOn` rewrite, so an
+orphaning D.11 escalates to the operator has a one-command fix rather than a
+text editor. Goes through `engine.state.repoint_amendment` — the same file's
+`task:` header line is rewritten in place and the file itself is renamed
+(`NNN-<old-target>.md` → `NNN-<new-target>.md`, same `NNN`) — never a second
+writer alongside `write_amendment`; `mode:`/`status:`/`approach:`/`ts:` and
+the ruling text are all untouched.
+
+`--repoint` is a distinct mode of its own, like `--list`: combining it with a
+task id, text, `--file`, `--waive`, `--status`, `--force` or `--list` is a
+usage error, exit `2`, before any file is touched. It needs EXACTLY one of
+`--to <task-id>`/`--wave` as the new target — neither, or both, is a usage
+error. `--to <task-id>` is refused, exit `2`, naming the id, when that id is
+not in this run's CURRENT plan (`tasks.json`, read the same read-only,
+host-side way `_amend_echo_target_or_die` does) — a re-point must not itself
+manufacture a second orphaning; `--wave` carries no such check, mirroring the
+ordinary wave-scoped write path. A `SEQ` with no recorded ruling at all is
+refused, exit `2`, naming the missing sequence number.
 
 #### `ralphctl amend <run-id> <task-id> --status <status> [reason]`
 

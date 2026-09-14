@@ -102,6 +102,7 @@ from ..engine.state import (
     read_operator_termination,
     read_tasks_doc,
     record_operator_termination,
+    repoint_amendment,
     router_call_entries,
     router_call_summary_lines,
     run_document,
@@ -5222,7 +5223,55 @@ def cmd_amend(args):
     ruling-context builder to bind this scope unconditionally regardless of
     the stamped approach; recording the approach here is unaffected by
     that).
+
+    `--repoint SEQ --to <task-id>` / `--repoint SEQ --wave` (task 021, D.12,
+    #196): re-address an ALREADY-RECORDED ruling -- found by the `SEQ`
+    number `--list` already shows -- to a live task id or to the wave
+    scope, with no hand-edit of any file under `config_root/amendments/`.
+    The amendment-analogue of `steer task-update`'s `dependsOn` rewrite, so
+    D.11's escalation (an orphaning notified to the operator) has a
+    one-command fix rather than a hand-edit of the ruling file. Goes
+    through `engine.state.repoint_amendment`, the one function that
+    rewrites the header's `task:` line and renames the file in place --
+    never a second writer alongside `write_amendment`. A distinct mode
+    from writing a new ruling: combining `--repoint` with a task id/text/
+    `--file`/`--waive`/`--status`/`--force`/`--list` is a usage error, and
+    it needs EXACTLY one of `--to`/`--wave` as its new target. `--to
+    <task-id>` is refused, before any file is touched, when that id is not
+    in this run's CURRENT plan (`tasks.json`, read the same way
+    `_amend_echo_target_or_die` reads it) -- the whole point being that a
+    re-point cannot itself create a second orphaning; `--wave` carries no
+    such check, mirroring the ordinary write path.
     """
+    if args.repoint is not None:
+        if (args.task_id or args.text or args.file or args.waive
+                or args.status or args.force or args.list):
+            die(2, "--repoint only re-points an already-recorded ruling; "
+                   "drop the task id/text/--file/--waive/--status/--force/"
+                   "--list")
+        if args.to and args.wave:
+            die(2, "--repoint takes exactly one new target: --to <task-id> "
+                   "or --wave, not both")
+        if not args.to and not args.wave:
+            die(2, "--repoint needs a new target: --to <task-id> or --wave")
+        _require_run(args.run_id)
+        new_target = AMENDMENT_WAVE_TARGET if args.wave else args.to
+        if not args.wave:
+            res = read_tasks_doc(run_root(args.run_id), persist=False)
+            if res.present and not any(str(t.get("id")) == str(new_target)
+                                        for t in res.tasks):
+                die(2, f"task {new_target!r} is not in this run's current "
+                       f"plan (tasks.json); cannot re-point onto it")
+        cdir = config_root(args.run_id)
+        try:
+            fname = repoint_amendment(cdir, args.repoint, new_target)
+        except FileNotFoundError as e:
+            die(2, str(e))
+        target_desc = "the wave" if args.wave else f"task {new_target}"
+        out(args, {"file": fname, "taskId": new_target, "seq": args.repoint},
+            f"operator ruling seq {args.repoint} re-pointed to "
+            f"{target_desc}: {fname}")
+        return
     if args.list:
         if (args.task_id or args.text or args.file or args.waive
                 or args.status or args.approach is not None or args.force
@@ -7637,6 +7686,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "carrying no task id at all, so a replan can never "
                         "orphan it (task 017, D.7, #196); combining it with "
                         "a task id, --force or --status is a usage error")
+    s.add_argument("--repoint", type=int, metavar="SEQ",
+                   help="re-point an already-recorded ruling (its SEQ "
+                        "number, as shown by --list) to a new target "
+                        "instead of recording a new ruling (task 021, "
+                        "D.12, #196); needs exactly one of --to/--wave, "
+                        "and no task id/text/--file/--waive/--status/"
+                        "--force/--list")
+    s.add_argument("--to", metavar="TASK_ID",
+                   help="the new task id target for --repoint; refused "
+                        "when the id is not in this run's current plan")
     s.set_defaults(func=cmd_amend)
 
     s = sub.add_parser("retry", help="wake a degraded run's infra backoff "

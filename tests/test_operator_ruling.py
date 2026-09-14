@@ -873,3 +873,64 @@ def test_amend_list_shows_the_orphaned_state_column_without_events_jsonl(tmp_pat
     by_task = {e["taskId"]: e for e in payload["entries"]}
     assert by_task["998"]["orphaned"] is True
     assert by_task["001"]["orphaned"] is False
+
+
+# -- Task 021 (D.12, #196): re-pointing an already-recorded ruling ----------
+
+def test_amend_repoint_moves_an_orphaned_ruling_onto_a_live_task_with_no_hand_edit(tmp_path):
+    """`ralphctl amend --repoint SEQ --to <task-id>` is the D.11-escalated
+    orphaning's one-command fix: no hand-edit of the amendment file under
+    `config_root/amendments/` -- the CLI rewrites the header's `task:`
+    line and renames the file in place (`engine.state.repoint_amendment`),
+    so the same SEQ number now round-trips as bound to the new, live
+    task id, both in the file on disk and through `amend --list`."""
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "rp1")
+    _write_tasks_json(rdir, [
+        {"id": "001", "title": "Still here", "status": "pending"},
+    ])
+    res = ralphctl(registry, "amend", "rp1", "998",
+                  "Ruling for a retired task.", "--force")
+    assert res.returncode == 0, res.stderr
+    assert (cdir / "amendments" / "001-998.md").exists()
+
+    res2 = ralphctl(registry, "amend", "rp1", "--repoint", "1", "--to", "001")
+    assert res2.returncode == 0, res2.stderr
+    assert not (cdir / "amendments" / "001-998.md").exists()
+    assert (cdir / "amendments" / "001-001.md").exists()
+    raw = (cdir / "amendments" / "001-001.md").read_text()
+    assert "task: 001" in raw
+    assert "Ruling for a retired task." in raw
+
+    entries = amendment_entries(cdir)
+    assert len(entries) == 1
+    assert entries[0]["seq"] == 1
+    assert entries[0]["taskId"] == "001"
+    assert entries[0]["text"] == "Ruling for a retired task."
+
+    res_json = ralphctl(registry, "--json", "amend", "rp1", "--list")
+    payload = json.loads(res_json.stdout)
+    assert payload["entries"][0]["taskId"] == "001"
+    assert payload["entries"][0]["orphaned"] is False
+
+
+def test_amend_repoint_onto_a_task_id_absent_from_the_plan_is_refused(tmp_path):
+    """A re-point is refused, before the file is touched, when its `--to`
+    target is not in this run's CURRENT plan -- a re-point cannot itself
+    manufacture a second orphaning. The error names the offending id, and
+    the original ruling file is left exactly as it was."""
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "rp2")
+    _write_tasks_json(rdir, [
+        {"id": "001", "title": "Still here", "status": "pending"},
+    ])
+    res = ralphctl(registry, "amend", "rp2", "001", "A live ruling.")
+    assert res.returncode == 0, res.stderr
+    before = (cdir / "amendments" / "001-001.md").read_text()
+
+    res2 = ralphctl(registry, "amend", "rp2", "--repoint", "1", "--to", "999")
+    assert res2.returncode == 2
+    assert "999" in res2.stderr
+    assert (cdir / "amendments" / "001-001.md").exists()
+    assert not (cdir / "amendments" / "001-999.md").exists()
+    assert (cdir / "amendments" / "001-001.md").read_text() == before

@@ -57,7 +57,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 017 (v0.21, PRD requirement D.7, #196) added
         # `AMENDMENT_WAVE_TARGET` to the same import block above this read,
         # shifting it by +1: 165->166. Same read, same reason.
-        "line": "166",
+        #
+        # Task 021 (v0.21, PRD requirement D.12, #196) added `repoint_
+        # amendment` to the same import block above this read, shifting it
+        # by +1: 166->167. Same read, same reason.
+        "line": "167",
         "reason": ("registry()'s ralphctl-managed-state root: overridable via "
                    "RALPHD_REGISTRY; the ambient fallback is the operator's own "
                    "machine home, which is exactly right for a bare `ralphctl` "
@@ -182,7 +186,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # carry the +61 from this task's own `cmd_amend`/`cmd_amend_list`
         # edits, both of which sit above them -- see that entry's own
         # comment). Same reads, same reasons.
-        "line": "2061",
+        #
+        # Task 021 (v0.21, PRD requirement D.12, #196) added `repoint_
+        # amendment` to the top import block above this read, shifting it
+        # by +1: 2061->2062. Same read, same reason.
+        "line": "2062",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -190,7 +198,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     },
     {
         "path": "cli/main.py",
-        "line": "2081",
+        # Task 021 (v0.21, PRD requirement D.12, #196): same +1 import-block
+        # shift as the entry above it: 2081->2082.
+        "line": "2082",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
@@ -223,7 +233,13 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # net +49: 4570->4619.
         # Task 017 (v0.21, PRD requirement D.7, #196): +1, same import-block
         # shift: 4619->4620.
-        "line": "4620",
+        #
+        # Task 021 (v0.21, PRD requirement D.12, #196): `repoint_amendment`
+        # added to the same import block above this read, +1 more:
+        # 4620->4621. Same read, same reason (`cmd_amend`'s own new
+        # `--repoint`/`--to` docstring+logic sits well below this read, in
+        # `cmd_amend` itself, so it does not shift this entry).
+        "line": "4621",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -239,7 +255,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # in `cmd_status` (also above this entry): 4772->4821.
         # Task 017 (v0.21, PRD requirement D.7, #196): +1, same import-block
         # shift: 4821->4822.
-        "line": "4822",
+        #
+        # Task 021 (v0.21, PRD requirement D.12, #196): same +1 import-block
+        # shift as the entry above it: 4822->4823.
+        "line": "4823",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -252,7 +271,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # entry just above it: 4776->4825.
         # Task 017 (v0.21, PRD requirement D.7, #196): +1, same import-block
         # shift: 4825->4826.
-        "line": "4826",
+        #
+        # Task 021 (v0.21, PRD requirement D.12, #196): same +1 import-block
+        # shift as the entry above it: 4826->4827.
+        "line": "4827",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
@@ -283,7 +305,15 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # helpers and `cmd_amend_list`'s own body changes, all above every
         # entry from this one on -- a net +44, shifting each of them by
         # +44: 6791->6835, 6795->6839.
-        "line": "6835",
+        #
+        # Task 021 (v0.21, PRD requirement D.12, #196) added the
+        # `repoint_amendment` import (+1, same as every entry above) and
+        # `cmd_amend`'s new `--repoint`/`--to` docstring+logic (+48), both
+        # above every entry from this one on -- net +49: 6835->6884,
+        # 6839->6888. The new argparse flags themselves sit further down,
+        # near the end of `build_parser()`, well below every entry here, so
+        # they add no further shift.
+        "line": "6884",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -299,7 +329,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # just above it: 6733->6795.
         # Task 020 (v0.21, PRD requirement D.11, #196): same +44 as the
         # entry just above it: 6795->6839.
-        "line": "6839",
+        #
+        # Task 021 (v0.21, PRD requirement D.12, #196): same +49 as the
+        # entry just above it: 6839->6888.
+        "line": "6888",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
