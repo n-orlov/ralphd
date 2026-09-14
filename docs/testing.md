@@ -1625,3 +1625,19 @@ recipe used throughout this section: `369` (fast), `254` (smoke).
 `tests/records/` is unaffected (still 117, untouched by this task). Both
 ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
 headroom.
+
+**5702 (smoke 4095, modules 370 (fast), 255 (smoke)) by v0.21 task 010
+(requirement C.3, #149).** One new module,
+`tests/test_petition_hold_report.py`, two new nodes (also `smoke` -- no
+live engine/container: both drive `LoopSupervisor._step_worker()` over a
+scripted `ScriptedRunner` against a real `RunDir`, one across two held
+passes of the same call, one across two separate `LoopSupervisor`
+instances built over the same run dir). From the 5700/4093/369 the
+paragraph above measures: **5702/4095/370**. Re-measured directly at
+this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
+--collect-only -q` (fast: `5702/5807 tests collected (105 deselected)`,
+smoke: `4095/5807 tests collected (1712 deselected)`), and the module
+count via the same unique-module-path recipe used throughout this
+section: `370` (fast), `255` (smoke). `tests/records/` is unaffected
+(still 117, untouched by this task). Both ceilings (5800 tests/375
+modules fast, 4300/260 smoke) still carry headroom.

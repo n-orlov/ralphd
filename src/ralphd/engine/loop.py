@@ -7031,6 +7031,32 @@ class LoopSupervisor:
                             "adjudication episode immediately (task 014, "
                             "requirement C.2, #149)"),
                         blockedTaskIds=sorted(actionable_ids))
+                    # Task 010 (PRD requirement C.3, #149): say so on an
+                    # operator-facing surface too -- the SAME `operator_
+                    # escalation` event + `self.notifier` seam every other
+                    # escalation in this module already uses -- naming the
+                    # held (petitioned) task(s) and the dependents the
+                    # hold reaches, but only the FIRST time this exact
+                    # held set is seen (`_petition_hold_already_reported`,
+                    # read back from `events.jsonl` itself so a repeat
+                    # pass -- inside this same `while` loop or a later
+                    # process -- never re-sends it). Not a pause: a held
+                    # plan still gets its ordinary worker dispatch a few
+                    # lines below.
+                    held_task_ids = sorted({
+                        tid for ids in blocked_incl_petitioned.values()
+                        for tid in ids})
+                    dependent_ids = sorted(actionable_ids)
+                    if not self._petition_hold_already_reported(held_task_ids):
+                        hold_text = self._petition_held_escalation_text(
+                            held_task_ids, dependent_ids)
+                        self.run.emit(
+                            "operator_escalation", reason="petition_held",
+                            heldTaskIds=held_task_ids,
+                            dependentTaskIds=dependent_ids,
+                            escalation=hold_text)
+                        if self.notifier is not None:
+                            self.notifier(hold_text)
                     await self._maybe_run_midrun_adjudication_episode()
                 # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
                 # and-wake mechanism task 021's own scheduler docstring
@@ -9896,6 +9922,54 @@ class LoopSupervisor:
         budget = budget if isinstance(budget, dict) else {}
         return {"id": task.get("id"), "splitFrom": parent_id,
                 "used": budget.get("used"), "budget": budget.get("budget")}
+
+    def _petition_hold_already_reported(self, held_task_ids: list[str]) -> bool:
+        """Task 010 (PRD requirement C.3, #149): has this run ALREADY reported
+        this exact petitioned-hold set on the operator escalation surface?
+        Read back from the `operator_escalation` events themselves (`state.
+        read_events`), the SAME seam `_second_exhaustion_already_escalated`
+        just below already reads for its own dedupe -- never an in-memory
+        flag, so a fresh process resuming mid-run (or a second `_step_
+        worker` call in the same process) reaches the same answer as
+        whichever earlier pass reported it, and the report never repeats
+        merely because the hold persists across iterations (the PRD's own
+        "once ... not once per iteration"). Keyed on the SET of held
+        (petitioned) task ids rather than a bare boolean -- exactly like
+        `_blocked_notes_written`'s per-id dedupe for the dead-dependency
+        note -- so a plan that starts held on a DIFFERENT petitioned task
+        later still gets its own fresh report instead of being silenced by
+        an unrelated earlier one.
+        """
+        signature = sorted(str(t) for t in held_task_ids)
+        for ev in state.read_events(self.run.root, types={"operator_escalation"}):
+            if ev.get("reason") != "petition_held":
+                continue
+            if sorted(str(t) for t in ev.get("heldTaskIds") or []) == signature:
+                return True
+        return False
+
+    def _petition_held_escalation_text(
+        self, held_task_ids: list[str], dependent_ids: list[str],
+    ) -> str:
+        """Task 010 (PRD requirement C.3, #149): the operator-facing text
+        for a petitioned-hold report -- naming the held (petitioned) task
+        and the dependents its hold reaches, the two facts C.3 itself asks
+        for. `held_task_ids` is `state.task_blocked_by(..., include_
+        petitioned=True)`'s own causes (the petitioned task(s) blocking
+        the plan); `dependent_ids` is the actionable remainder those
+        causes cover.
+        """
+        held = ", ".join(held_task_ids) or "(none)"
+        deps = ", ".join(dependent_ids) or "(none)"
+        return (
+            "The entire actionable remainder of this plan is blocked on an "
+            "open, unconfirmed petition -- no worker iteration can move it "
+            "until an adjudication resolves it.\n\n"
+            f"Held (petitioned) task(s): {held}\n"
+            f"Dependent task(s) reaching the hold through dependsOn: {deps}\n\n"
+            "This is reported once; the hold persisting across further "
+            "iterations does not repeat this notice.\n"
+        )
 
     def _second_exhaustion_already_escalated(self, task_id) -> bool:
         """Task 018 (PRD requirement B.3, #156): has this run ALREADY paused
