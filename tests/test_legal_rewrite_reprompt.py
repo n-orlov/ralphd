@@ -240,13 +240,30 @@ _supervisor = supervisor_with_runner(
     contract_retry_max=1)
 
 
+# Task 072 (steer 001 §2): bound the loop-driving await below instead of
+# a bare `asyncio.run`. The two known forever-awaits are `_step_paused`'s
+# `await self._gate()` (parked on the `asyncio.Event` only `POST /pause`'s
+# `loop.pause()` clears) and a `_ScriptedRunner` script whose repeating
+# last step never reaches a terminal phase -- but THIS module's own
+# script is deliberately built to avoid the second shape already (see
+# `_finish_task`'s own comment above: it exists precisely so the script
+# reaches a terminal `complete` verdict before `_review_ok`'s repeat could
+# ever run again), and the plan-ingestion rejection this module drives
+# through never routes through `review`/`worker` stagnation's `paused`
+# edge either, so this module does not reproduce either historical
+# deadlock shape. Bounding the await anyway is defense against a FUTURE
+# regression, not evidence one is live here today.
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def test_the_suggested_rewrite_reaches_the_planners_next_prompt(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(
         root,
         [_bad_final_commit_plan, _good_plan, _finish_task, _review_ok])
 
-    asyncio.run(sup.run_job())
+    _bounded(sup.run_job())
 
     # The second planning attempt is iteration 0002 (iteration 0001 was the
     # rejected first attempt) -- `_run_iteration_once` writes this run's

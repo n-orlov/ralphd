@@ -68,6 +68,22 @@ from test_peer_verdict_gate import (  # noqa: F401 (re-exported fixtures)
 )
 
 
+# Task 072 (steer 001 §2): every bare `asyncio.run(sup.<loop-driving call>)`
+# in this module is wrapped through here instead. The two known forever-
+# awaits are `_step_paused`'s `await self._gate()` (parked on the
+# `asyncio.Event` only `POST /pause`'s `loop.pause()` clears -- this
+# module's `verdict_gate` edges (`transitions.py`: `finishing`/`cure`/
+# `replan`/`finishing`) never target `paused` at all, so none of the
+# `_run_job_core`/`_maybe_grace_review` calls below can reach that Event)
+# and a `_ScriptedRunner` script whose repeating last step never reaches a
+# terminal phase (this module's own scripted handlers all reach a
+# deterministic terminal verdict, so that shape does not reproduce here
+# either) -- bounding anyway is defense against a FUTURE change re-
+# introducing either shape, not evidence one is live today.
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 # ===========================================================================
 # Section 1 (task 019, D.4, #125): the gate's own findings path + authorship
 # ===========================================================================
@@ -352,7 +368,7 @@ def test_a_flagged_peek_on_the_ordinary_gate_never_flips_an_approval(tmp_path):
     _inject_after_phase(sup.runner, "verdict_gate",
                         _tool_event("cat run/events.jsonl"))
 
-    final_state = asyncio.run(sup._run_job_core())
+    final_state = _bounded(sup._run_job_core())
 
     assert sup.runner.phases_seen == ["planning", "worker", "review",
                                       "verdict_gate"]
@@ -409,7 +425,7 @@ def test_a_flagged_peek_on_a_rejection_is_still_just_recorded(tmp_path):
     _inject_after_phase(sup.runner, "verdict_gate",
                         _tool_event("cat iterations/0003/output.jsonl"))
 
-    final_state = asyncio.run(sup._run_job_core())
+    final_state = _bounded(sup._run_job_core())
 
     assert final_state == "failed", sup.run.read_status()
     status = sup.run.read_status()
@@ -433,7 +449,7 @@ def test_the_off_budget_grace_gate_is_checked_too(tmp_path):
     _inject_after_phase(sup.runner, "verdict_gate",
                         _tool_event("cat run/events.jsonl"))
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is True
+    assert _bounded(sup._maybe_grace_review(1)) is True
     status = sup.run.read_status()
     assert status.get("state") == "succeeded"
     peeks = status.get("verdictGatePeeks")
@@ -617,7 +633,7 @@ def test_the_revision_bound_reached_fallback_still_bounds_the_loop(tmp_path):
         {"planning": [_pr_plan()], "plan_review": [_garbage],
          "worker": [_pr_worker_completes(TASK_1)], "review": [_pr_review_verifies]},
         peer_plan_review=True, peer_plan_review_max_revisions=1)
-    final_state = asyncio.run(sup._run_job_core())
+    final_state = _bounded(sup._run_job_core())
 
     assert sup.runner.phases_seen == ["planning", "plan_review", "worker",
                                       "review"]
@@ -704,7 +720,7 @@ def test_a_clean_findings_channel_still_verifies_plainly(tmp_path):
 
     sup.runner.run = _review_verifies  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review(), timeout=10.0)
 
     assert outcome == ("done", "succeeded")
     status = sup.run.read_status()
@@ -735,7 +751,7 @@ def test_a_residual_carrying_verified_review_records_verified_with_residuals(
 
     sup.runner.run = _review_verifies  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review(), timeout=10.0)
 
     assert outcome == ("done", "succeeded")
     status = sup.run.read_status()
@@ -762,7 +778,7 @@ def test_a_mixed_blocking_and_residual_rejection_never_reaches_this_label(
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review(), timeout=10.0)
 
     assert outcome != ("done", "succeeded")
     status = sup.run.read_status()

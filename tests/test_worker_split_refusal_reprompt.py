@@ -170,6 +170,23 @@ def _review_verified(sup, prompt=""):
     return _ok("verified\n" + json.dumps({"verdict": "verified"}))
 
 
+# Task 072 (steer 001 §2): bound the loop-driving await below instead of
+# a bare `asyncio.run`. The two known forever-awaits are `_step_paused`'s
+# `await self._gate()` (parked on the `asyncio.Event` only `POST /pause`'s
+# `loop.pause()` clears) and a `_ScriptedRunner`/scripted-hat script whose
+# repeating last step never reaches a terminal phase -- but THIS module's
+# own `review` script (`_review_verified`) always returns a plain
+# `verified` verdict, so the one worker task (`_task()`/`TASK_1`) reaches
+# terminal `succeeded` the very first time review runs, well before the
+# script's last entry could ever repeat, and this module's `worker`
+# script never proposes a split that routes through review's
+# `rejected_last_approach` `paused` edge either -- neither historical
+# deadlock shape reproduces here. Bounding the await anyway is defense
+# against a FUTURE regression, not evidence one is live here today.
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def test_a_refused_split_reaches_the_next_worker_prompt_not_only_the_log(
         tmp_path):
     root = tmp_path / "run"
@@ -184,7 +201,7 @@ def test_a_refused_split_reaches_the_next_worker_prompt_not_only_the_log(
     })
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": [_task()]})
     sup.iterations_used = 1
-    asyncio.run(sup._run_job_core())
+    _bounded(sup._run_job_core())
 
     prompts = sup.runner.prompts  # type: ignore[attr-defined]
     assert len(prompts) >= 2
