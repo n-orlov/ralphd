@@ -583,6 +583,76 @@ def test_an_unsettled_message_is_withheld_until_a_non_steer_iteration_completes(
     assert sup.run.pending_steering() == []
 
 
+def test_a_crash_between_the_counter_persist_and_the_unconsume_never_exceeds_the_cap(
+        tmp_path):
+    """PRD requirement D.5 (#184): `_handle_unsettled_steering` writes
+    `steerRedeliveries` and `STEER_DEFERRED_REDELIVERY_STATUS_KEY` in the
+    ONE atomic `update_status` call at the tail of that method -- strictly
+    BEFORE `_flush_deferred_steering_redelivery` (called from a later,
+    separate, non-steer iteration) ever performs the actual
+    `unconsume_steering` write. Before task 014 (whose restructuring this
+    test pins), `_handle_unsettled_steering` called `unconsume_steering`
+    immediately, per name, INSIDE its own loop, and only persisted the
+    counter in a single `update_status` call AFTER that whole loop had
+    finished -- so a crash landing between those two writes left the
+    message visibly redelivered (pending again) while the counter on disk
+    still read the OLD value, letting the message exceed its cap across
+    enough crash/resume cycles.
+
+    This test kills the engine -- a brand-new `LoopSupervisor` over the
+    same run root, carrying no in-memory state, the same resume double
+    every other test in this module already uses -- exactly inside that
+    window: right after `_handle_unsettled_steering`'s counter/deferred
+    write has landed on disk, but before `_flush_deferred_steering_
+    redelivery` has ever run for this message. The cap must still hold
+    once the resumed process keeps going.
+    """
+    root = tmp_path / "run"
+    sup1 = _supervisor(root, {"steer": [_steer_unsettled("still not there")]},
+                       steer_redelivery_max=1)
+    name = sup1.run.add_steering("a message that never settles", "op-crash")
+
+    # Pass 1: counted (used=0 < cap=1) and persisted; the actual unconsume
+    # is deferred, never applied yet.
+    asyncio.run(sup1._step_generic_hat("steer", STEER_EDGES))
+    assert _redeliveries(sup1) == {name: 1}
+    assert sup1.run.pending_steering() == []
+    status_before_crash = sup1.run.read_status()
+    assert status_before_crash[
+        LoopSupervisor.STEER_DEFERRED_REDELIVERY_STATUS_KEY] == [name], (
+        "the message is queued for redelivery but not yet unconsumed -- "
+        "this IS the crash window D.5 closes")
+
+    # "Kill the engine" exactly inside that window: nothing sup1 holds in
+    # process memory survives -- only what `update_status` already wrote
+    # to status.json. A fresh supervisor over the same root is the resume.
+    sup2 = _supervisor(root, {"steer": [_steer_unsettled("still not there")]},
+                       steer_redelivery_max=1)
+    assert _redeliveries(sup2) == {name: 1}, (
+        "the counter increment from pass 1 was already durable BEFORE the "
+        "crash -- the resumed process must read it back exactly as sup1 "
+        "left it, never reset to 0")
+    assert sup2.run.pending_steering() == [], (
+        "the actual unconsume never happened before the crash, so the "
+        "resumed process must not see the message pending either")
+
+    # Resume normally: one non-steer iteration flushes the deferral...
+    sup2._flush_deferred_steering_redelivery()
+    assert [p.name for p in sup2.run.pending_steering()] == [name]
+
+    # ...and the message reaches `steer` again -- but `used` is already at
+    # the cap (1), so this pass must land on exhaustion, never a second
+    # redelivery that would push the counter to 2 and exceed the declared
+    # cap because of the earlier crash.
+    asyncio.run(sup2._step_generic_hat("steer", STEER_EDGES))
+    assert _redeliveries(sup2) == {name: 1}, (
+        "the cap (steer_redelivery_max=1) still holds after the resume -- "
+        "the crash inside the window must never let this exceed 1")
+    entry = _entry(sup2, name)
+    assert entry["settledByExhaustion"] is True
+    assert sup2.run.pending_steering() == []
+
+
 # ===========================================================================
 # 3. `tests/test_steer_uncharged_task014.py` -- the steer hat's own
 #    iteration is refunded, rides the one existing contract ladder, leaves

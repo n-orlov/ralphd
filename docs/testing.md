@@ -1709,3 +1709,19 @@ unique-module-path recipe used throughout this section: `371` (fast),
 `256` (smoke). `tests/records/` is unaffected (still 117, untouched by
 this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
 still carry headroom -- fast is now within 88 of its stated ceiling.
+
+**5713 (smoke 4105, modules 371 (fast), 256 (smoke)) by v0.21 task 015
+(requirement D.5, #184).** No new module -- one new node in an existing
+one, also `smoke` (no live engine/container: drives
+`LoopSupervisor._step_generic_hat`/`_flush_deferred_steering_redelivery`
+against a real `RunDir`, in-process):
+`tests/test_steer.py::test_a_crash_between_the_counter_persist_and_the_unconsume_never_exceeds_the_cap`.
+From the 5712/4104/371 the paragraph above measures: **5713/4105/371**.
+Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5713/5818 tests collected (105 deselected)`, smoke: `4105/5818 tests
+collected (1713 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `371` (fast),
+`256` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
+still carry headroom -- fast is now within 87 of its stated ceiling.
