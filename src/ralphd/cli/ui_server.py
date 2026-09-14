@@ -1238,6 +1238,9 @@ def _with_task_transitions(tasks: dict, run_dir: Path) -> dict:
 _ITERATION_ROW_CACHE: dict[str, dict[int, tuple[tuple, dict | None]]] = {}
 _TASKS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
 _STATUS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
+# Task 045 (H.3): the rendered-tail cache for `GET /api/runs/<id>/logs`.
+# `{run_id: (key, (live, lines))}` -- see `_cached_rendered_log_lines` below.
+_LOG_TAIL_CACHE: dict[str, tuple[tuple, tuple[bool, list[str]]]] = {}
 
 
 def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | None:
@@ -1303,6 +1306,50 @@ def _cached_disk_tasks_block(run_dir: Path, run_id: str) -> dict:
     return tasks
 
 
+def _log_tail_cache_key(run_dir: Path, tail: int | None) -> tuple:
+    """Task 045 (H.3): the key `_cached_rendered_log_lines` stores its result
+    under -- the newest iteration's own number and its own on-disk transcript
+    size, plus the `tail` this particular request asked for (a `tail=200`
+    request and a `tail=0` full-render request over the identical transcript
+    render different output and must never collide in the same slot).
+    `(None, 0, tail)` for a run with no iterations yet, rather than raising."""
+    numbers = iteration_numbers(run_dir)
+    newest = max(numbers) if numbers else None
+    try:
+        size = (iteration_output_path(run_dir, newest).stat().st_size
+                if newest is not None else 0)
+    except OSError:
+        size = 0
+    return (newest, size, tail)
+
+
+def _cached_rendered_log_lines(reg: Path, run_dir: Path, run_id: str,
+                               tail: int | None) -> tuple[bool, list[str]]:
+    """Task 045 (H.3): the route-level cache in front of `rendered_log_lines`
+    -- a repeated `GET /api/runs/<id>/logs` for the SAME tail, while the
+    newest iteration's number and transcript size have not moved, is
+    answered from this cache instead of paying for another live-container
+    fetch (or on-disk merge) and another render pass.
+
+    Deliberately a wrapper around `rendered_log_lines`, not a change to it:
+    task 043/044's parse-work probes call `rendered_log_lines` directly
+    against a run dir that holds no on-disk iterations at all (the render
+    input comes entirely from a monkeypatched `_proxy_text`), so caching
+    inside that function would key every call to the same `(None, 0, tail)`
+    slot and serve the FIRST blob's render back for every later, differently
+    -- shaped blob those tests feed it. Calling `rendered_log_lines` by its
+    bound module-level name (never a private alias) keeps it monkeypatchable
+    by those same tests and by a caller that wants to count real renders.
+    """
+    key = _log_tail_cache_key(run_dir, tail)
+    cached = _LOG_TAIL_CACHE.get(run_id)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    result = rendered_log_lines(reg, run_id, tail)
+    _LOG_TAIL_CACHE[run_id] = (key, result)
+    return result
+
+
 def _cached_disk_status_block(reg: Path, run_dir: Path, run_id: str,
                               recorded_status: dict) -> dict:
     """Task 004 (A.2): the on-disk `status.json` shaping cache.
@@ -1342,6 +1389,7 @@ def _drop_run_detail_caches(run_id: str) -> None:
     _ITERATION_ROW_CACHE.pop(run_id, None)
     _TASKS_BLOCK_CACHE.pop(run_id, None)
     _STATUS_BLOCK_CACHE.pop(run_id, None)
+    _LOG_TAIL_CACHE.pop(run_id, None)
 
 
 def run_detail_etag(reg: Path, run_id: str) -> str:
@@ -1669,13 +1717,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not (reg / "runs" / run_id).is_dir():
                     self._send_json({"error": f"run {run_id} not found"}, 404)
                     return
+                # Task 045 (H.3): the same on-disk-mtime `ETag` the run-detail
+                # route already derives (`run_detail_etag`) -- computed
+                # BEFORE the cache lookup/render below, so a hit never pays
+                # for either.
+                etag = run_detail_etag(reg, run_id)
+                if self.headers.get("If-None-Match") == etag:
+                    self._send_not_modified(etag)
+                    return
                 tail = qs.get("tail", [str(DEFAULT_LOG_TAIL)])[0]
                 try:
                     tail_n = int(tail)
                 except ValueError:
                     tail_n = DEFAULT_LOG_TAIL
-                live, lines = rendered_log_lines(reg, run_id, tail_n)
-                self._send_json({"live": live, "lines": lines})
+                run_dir = reg / "runs" / run_id
+                live, lines = _cached_rendered_log_lines(reg, run_dir, run_id, tail_n)
+                self._send_json({"live": live, "lines": lines}, etag=etag)
                 return
             if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "prd":
                 # Task 056 (#1): the hub's PRD dialog. Live-first with an
