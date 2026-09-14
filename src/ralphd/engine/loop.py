@@ -5895,7 +5895,8 @@ class LoopSupervisor:
                 # second lint-specific mechanism.
                 self._record_stagnation_signature(
                     approach, self._ingestion_blocker_signature(ingestion.errors),
-                    origin="ingestion")
+                    origin="ingestion",
+                    detail="; ".join(ingestion.errors))
                 return ("advance", "replan", "empty_plan")
             self.run.write_tasks(ingestion.tasks_doc)
             # Task 107 (#60 pillar 3): pin the planner's `standing_rules`
@@ -6648,10 +6649,6 @@ class LoopSupervisor:
         this_sig = signatures.get(str(self._approach))
         prev_sig = signatures.get(str(self._approach - 1))
         if this_sig is not None and this_sig == prev_sig:
-            self._terminal_reason_note = (
-                f"approach {self._approach} stagnated on the same "
-                f"structural blocker as approach {self._approach - 1} "
-                f"(#61): {this_sig}")
             # Task 012 (requirement C.2, #124): only an ingestion-origin
             # repeat -- BOTH approaches' signatures written by the
             # `empty_plan` boundary, never an ordinary worker-stagnation
@@ -6661,9 +6658,42 @@ class LoopSupervisor:
             # itself, so a mixed pair (one ingestion, one stagnation) is
             # never mistaken for either kind of pure repeat.
             origins = status.get("blockerSignatureOrigins") or {}
-            if (origins.get(str(self._approach)) == "ingestion"
-                    and origins.get(str(self._approach - 1)) == "ingestion"):
+            is_ingestion_repeat = (
+                origins.get(str(self._approach)) == "ingestion"
+                and origins.get(str(self._approach - 1)) == "ingestion")
+            if is_ingestion_repeat:
+                # Task 007 (requirement B.3, #135): the two-strike
+                # ingestion-termination mechanism (#61's guard above, reused
+                # verbatim -- see the module's Standing Rules on why a
+                # planning death costs an approach the same way ordinary
+                # worker stagnation does) is KEPT AS-IS; this branch only
+                # makes its terminal reason legible. `this_sig`/`prev_sig`
+                # are the NORMALISED comparison keys (case-folded, digits
+                # stripped -- `_normalize_blocker_signature_text`), unfit to
+                # quote back at an operator; `blockerDetails` carries the
+                # RAW `ingestion.errors` text `_record_stagnation_signature`
+                # persisted alongside the signature, which already names the
+                # specific lexical lint that fired (`plan_ingestion.py`'s
+                # checks are lexical by design, per docs/review-economics.md)
+                # and quotes the offending clause verbatim (every
+                # `lint_proposal` error embeds the clause via `!r`).
+                details = status.get("blockerDetails") or {}
+                detail = (details.get(str(self._approach))
+                          or details.get(str(self._approach - 1))
+                          or this_sig)
+                self._terminal_reason_note = (
+                    f"approach {self._approach} failed the SAME "
+                    f"plan-ingestion lexical lint as approach "
+                    f"{self._approach - 1} on two consecutive approaches "
+                    f"(#61, #135) -- the two-strike ingestion termination is "
+                    f"kept as-is, and both approaches count normally "
+                    f"against max_approaches: {detail}")
                 self.run.update_status(health="degraded")
+            else:
+                self._terminal_reason_note = (
+                    f"approach {self._approach} stagnated on the same "
+                    f"structural blocker as approach {self._approach - 1} "
+                    f"(#61): {this_sig}")
             self._advance("replan", "finishing", "repeated_blocker_signature")
             return ("tail",)
         if self._approach < self.cfg.max_approaches:
@@ -8266,7 +8296,8 @@ class LoopSupervisor:
 
     def _record_stagnation_signature(self, approach: int,
                                      signature: str | None,
-                                     origin: str = "stagnation") -> None:
+                                     origin: str = "stagnation",
+                                     detail: str | None = None) -> None:
         """Persist `signature` for `approach` on status.json's
         `blockerSignatures` map -- disk, not memory, so the signature
         survives both the approach boundary and a process restart (#61:
@@ -8286,6 +8317,18 @@ class LoopSupervisor:
         approaches' signatures originated from ingestion failure should
         ever mark the run `health="degraded"`; an ordinary stagnation
         repeat keeps `health="ok"` exactly as it did before this task.
+
+        `detail` (task 007, requirement B.3, #135) is the RAW (un-normalised)
+        text behind `signature` -- `_ingestion_blocker_signature` folds case
+        and strips digits so two approaches that hit the SAME lexical lint
+        compare equal, which is exactly what makes it unfit to quote back at
+        an operator: the offending clause's own casing and digits are gone.
+        `detail` is stored verbatim on the parallel `blockerDetails` map so
+        `_step_replan` can name the lexical lint and quote the offending
+        clause in the terminal reason using the ORIGINAL text, not the
+        folded comparison key. Only the ingestion call site passes it today;
+        ordinary worker-stagnation signatures leave it absent, and an absent
+        entry is simply not recorded, same as an absent `signature`.
         """
         if signature is None:
             return
@@ -8294,8 +8337,13 @@ class LoopSupervisor:
         signatures[str(approach)] = signature
         origins = dict(status.get("blockerSignatureOrigins") or {})
         origins[str(approach)] = origin
-        self.run.update_status(blockerSignatures=signatures,
-                               blockerSignatureOrigins=origins)
+        update = dict(blockerSignatures=signatures,
+                      blockerSignatureOrigins=origins)
+        if detail:
+            details = dict(status.get("blockerDetails") or {})
+            details[str(approach)] = detail
+            update["blockerDetails"] = details
+        self.run.update_status(**update)
 
     def _review_findings_channel(self) -> tuple[list[dict] | None, list[str]]:
         """Task 002 (requirement A.2, #110): read the structured findings

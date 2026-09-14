@@ -1531,3 +1531,20 @@ collected (1712 deselected)`), and the module count via the same
 unique-module-path recipe used throughout this section: `365`.
 `tests/records/` is unaffected (still 117, untouched by this task). Both
 ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry headroom.
+
+**5685 (smoke 4078, modules 365->366) by v0.21 task 007 (requirement B.3).**
+One new module, `tests/test_planning_death_terminal_reason.py`, one new
+node: `test_a_repeated_planning_death_names_the_lexical_lint_and_quotes_the_
+clause` (also `smoke` -- an in-process `LoopSupervisor`/`_ScriptedRunner`
+flow, no live engine/container, the same shape
+`tests/test_plan_ingestion_rejection.py` already uses). No existing node's
+count changed (`tests/test_contract_events.py`'s repeated-ingestion-
+signature test only had one assertion string updated, not a new node).
+From the 5684/4077/365 the paragraph above measures: **5685/4078/366**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q` (fast: `5685/5790 tests collected
+(105 deselected)`, smoke: `4078/5790 tests collected (1712 deselected)`),
+and the module count via the same unique-module-path recipe used
+throughout this section: `366` (fast), `251` (smoke). `tests/records/` is
+unaffected (still 117, untouched by this task). Both ceilings (5800
+tests/375 modules fast, 4300/260 smoke) still carry headroom.

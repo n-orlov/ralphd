@@ -644,9 +644,12 @@ def test_two_approaches_with_the_same_ingestion_errors_end_on_repeated_blocker_s
     signatures = status.get("blockerSignatures") or {}
     assert signatures.get("1") == signatures.get("2")
     assert signatures["1"] is not None
-    # The reason names the lint (the ingestion error text itself), not a
-    # boilerplate placeholder.
-    assert "dependson references unknown task" in (status.get("reason") or "")
+    # The reason names the lint (the ingestion error text itself, RAW --
+    # task 007, requirement B.3, #135 -- not the folded/lowercased
+    # comparison signature), not a boilerplate placeholder.
+    reason = status.get("reason") or ""
+    assert "dependsOn references unknown task" in reason
+    assert "lexical lint" in reason
     assert ("replan", "finishing", "repeated_blocker_signature") in seen_edges
     # Only two planning iterations ever ran.
     iters = sorted((root / "iterations").iterdir())
