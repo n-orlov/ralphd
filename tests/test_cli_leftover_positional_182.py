@@ -152,6 +152,24 @@ def test_more_than_one_leftover_is_refused_by_name(capsys):
     assert "'a'" in err and "'b'" in err
 
 
+def test_two_leftovers_bind_to_two_unfilled_fields_by_position():
+    """`amend s1 --wave 007 text` on some argparse patch levels (the fast
+    lane's Python 3.12.3, per steer 002's operator diagnosis) leaves BOTH
+    `nargs="?"` positionals of `amend` unconsumed instead of binding
+    `task_id` and dropping only `text`. When the leftover count (2)
+    exactly matches the count of still-unfilled fields (`task_id` and
+    `text`, both `None` on a fresh namespace), they fold in by written
+    order rather than refusing under the single-leftover rule -- unlike
+    `test_more_than_one_leftover_is_refused_by_name` below, which offers
+    two leftovers against only ONE unfilled field (`task_id` is already
+    set there), so the counts do not match and that case still refuses."""
+    ns = _amend_ns()
+    _place_leftover_positional("amend", ["007", "text"], ns,
+                                _LEFTOVER_POSITIONAL_FIELDS["amend"])
+    assert ns.task_id == "007"
+    assert ns.text == "text"
+
+
 def test_no_unfilled_positional_is_refused_by_name(capsys):
     ns = _amend_ns(task_id="007", text="already here")
     with pytest.raises(SystemExit) as exc:

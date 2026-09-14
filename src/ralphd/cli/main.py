@@ -7326,12 +7326,22 @@ _LEFTOVER_POSITIONAL_FIELDS: dict[str, tuple[tuple[str, object, tuple[str, ...] 
 def _place_leftover_positional(command: str, leftovers: list[str],
                                namespace: argparse.Namespace,
                                positional_fields: tuple[tuple[str, object, tuple[str, ...] | None], ...]) -> None:
-    """Fold ONE leftover token `main()`'s `parser.parse_known_args()` did
-    not consume into the first still-empty `nargs="?"` positional of
-    `command`, independent of whatever argparse version produced that
-    leftover (#182).
+    """Fold the leftover tokens `main()`'s `parser.parse_known_args()` did
+    not consume back into the still-empty `nargs="?"` positionals of
+    `command`, independent of whatever argparse version produced them
+    (#182).
 
-    This is the one place that decides where such a token goes -- called
+    The ordinary case is exactly one leftover token, folded into the
+    first still-unfilled positional field of `command`. When there is
+    MORE than one leftover AND the leftover count exactly matches the
+    count of still-unfilled fields (task 074: some argparse patch levels
+    drop more than one `nargs="?"` positional at once, e.g.
+    `amend s1 --wave 007 text` leaves both `task_id` and `text`
+    unconsumed), each leftover is folded into its corresponding
+    still-unfilled field in `positional_fields`' own written order
+    instead.
+
+    This is the one place that decides where such tokens go -- called
     from `main()` with whatever `parse_known_args()` left over, and called
     directly by tests with a hand-built `namespace`/`leftovers` pair so the
     placement logic is exercised without depending on any particular
@@ -7340,19 +7350,38 @@ def _place_leftover_positional(command: str, leftovers: list[str],
 
     Raises the CLI's own clear error (via `die`, exit 2) -- naming the
     subcommand and the leftover tokens -- when there is more than one
-    leftover, when every named positional field is already filled (holds
+    leftover and the count does not match the count of still-unfilled
+    fields, when every named positional field is already filled (holds
     something other than its own recorded `default`) and there is nowhere
-    left to put the one leftover token, or when the field a token would
-    fill declares `choices` and the leftover token is not one of them.
+    left to put a leftover token, or when the field a token would fill
+    declares `choices` and the leftover token is not one of them.
     """
     if not leftovers:
+        return
+    unfilled = [(field, choices) for field, default, choices in positional_fields
+                if getattr(namespace, field, None) == default]
+    if len(leftovers) > 1 and len(leftovers) == len(unfilled):
+        # #182 item 3 (task 074): argparse can drop MORE than one
+        # `nargs="?"` positional at once (`amend s1 --wave 007 text` on
+        # the fast lane's 3.12.3 leaves both `task_id` and `text` as
+        # leftovers, instead of binding `task_id` and only dropping
+        # `text`). When the leftover count exactly matches the count of
+        # still-unfilled fields, fold them in in the fields' own written
+        # order rather than refusing under the single-leftover rule below
+        # -- every leftover validates against its own field's `choices`
+        # before any assignment happens, so a bad token refuses cleanly
+        # with nothing partially applied.
+        for token, (field, choices) in zip(leftovers, unfilled):
+            if choices is not None and token not in choices:
+                die(2, f"{command}: extra argument {token!r} is not one of "
+                       f"{', '.join(choices)} for positional {field!r}")
+        for token, (field, choices) in zip(leftovers, unfilled):
+            setattr(namespace, field, token)
         return
     if len(leftovers) > 1:
         die(2, f"{command}: too many extra arguments "
                f"({', '.join(repr(t) for t in leftovers)}); only one "
                "positional slot is still open")
-    unfilled = [(field, choices) for field, default, choices in positional_fields
-                if getattr(namespace, field, None) == default]
     if not unfilled:
         die(2, f"{command}: extra argument {leftovers[0]!r} does not fit "
                "any positional slot (all are already filled)")

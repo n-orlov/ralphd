@@ -1920,3 +1920,26 @@ untouched by this task). Both ceilings (5800 tests/375 modules fast,
 4300/260 smoke) still carry headroom -- fast is now within 67 of its
 stated ceiling.
 
+**5735 (smoke 4114, modules 373 (fast), 258 (smoke)) by v0.21 tasks 027
+(requirement F.1) and 074 (gate cure, requirement M.3).** Task 027 added
+one new node,
+`test_worker_dispatch_write_records_assigned_task_and_tier` in
+`tests/test_e2e.py`, driven through `engine_factory` (a process boundary),
+so it is `fast`-only, no new module; net +1 fast, +0 smoke. Task 074's
+cure to `_place_leftover_positional` (#182 item 3, the leftover-count-
+matches-unfilled-fields fold) added one new node,
+`test_two_leftovers_bind_to_two_unfilled_fields_by_position`, to the
+existing `tests/test_cli_leftover_positional_182.py` (no `LiveRun`/
+`RALPHCTL`/`live(` in its own body, so it is `smoke` as well as `fast`,
+like every other node in that module); net +1 fast, +1 smoke, +0 modules
+in either tier. From the 5733/4113/373 (fast)/258 (smoke) the paragraph
+above measures: **5735/4114/373 (fast)/258 (smoke)**. Re-measured
+directly at this task's own tip with `.venv/bin/python -m pytest -m
+<fast|smoke> --collect-only -q` (fast: `5735/5844 tests collected (109
+deselected)`, smoke: `4114/5844 tests collected (1730 deselected)`), and
+the module count via the same unique-module-path recipe used throughout
+this section: `373` (fast), `258` (smoke). `tests/records/` is unaffected
+(still 117, untouched by this task). Both ceilings (5800 tests/375 modules
+fast, 4300/260 smoke) still carry headroom -- fast is now within 65 of its
+stated ceiling.
+
