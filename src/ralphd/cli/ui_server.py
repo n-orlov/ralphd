@@ -429,6 +429,19 @@ def _proxy_text(reg: Path, run_id: str, path: str, timeout: float = 5.0):
         return False, ""
 
 
+# Task 046 (PRD H.4): the same textual pre-filter `log_render._BOUNDARY_TOKEN`
+# uses to LOCATE a `ralphd.iteration` boundary line without fully parsing it
+# -- used here only to estimate how many CONTENT (non-boundary) lines a
+# live fetch came back with, which is `log_merge.apply_tail`'s own unit for
+# "how much backlog was asked for" (its `tail` keeps the last `tail`
+# non-boundary lines, plus whatever boundary lines fall inside that
+# window). A false match inside some event's own text would only make the
+# loop below re-ask once when it did not strictly need to -- harmless,
+# since the container answers a saturated request with everything it has
+# either way.
+_ITERATION_BOUNDARY_TOKEN = '"ralphd.iteration"'
+
+
 def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, list[str]]:
     """Server-side pretty-render of a run's log tail (task 014), through
     the EXACT SAME `log_render.render_to_lines` function `ralphctl logs`
@@ -481,13 +494,43 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     yet) instead of just looking broken -- and says it in the same words
     `ralphctl logs` uses, because the wording lives in `log_merge`, not
     here and not in app.js.
+
+    Task 046 (PRD H.4): when `tail` is given, the container is no longer
+    asked for its ENTIRE backlog -- `_fetch_live_tail` (nested here, not a
+    top-level function, so `_proxy_text` is still only called from this
+    one live-answer view, for `test_docs_semantics.py`'s
+    `_proxying_hub_views` count) asks `GET /logs?tail=N` for a bound
+    derived from the requested rendered-line count, and RE-ASKS with a
+    doubled bound whenever the render of what came back still falls short
+    of that count and the container's answer suggests there is more
+    history behind it (`log_merge.apply_tail`'s own signal: it returned as
+    many content lines as were asked for). `tail=0`/`None` still means
+    the whole transcript, with no tail to bound the fetch by, so that
+    branch is unchanged.
     """
-    ok, raw_text = _proxy_text(reg, run_id, "/logs")
-    if not ok:
-        raw_text = "".join(merged_lines(reg / "runs" / run_id))
+    def _fetch_live_tail(bound_tail: int) -> tuple[bool, str]:
+        bound = bound_tail
+        ok, raw_text = _proxy_text(reg, run_id, f"/logs?tail={bound}")
+        while ok:
+            content_lines = sum(1 for ln in raw_text.splitlines()
+                                 if _ITERATION_BOUNDARY_TOKEN not in ln)
+            if len(render_tail_lines(raw_text, tty=False, n=bound_tail)) >= bound_tail:
+                break
+            if content_lines < bound:
+                break
+            bound *= 2
+            ok, raw_text = _proxy_text(reg, run_id, f"/logs?tail={bound}")
+        return ok, raw_text
+
     if tail:
+        ok, raw_text = _fetch_live_tail(tail)
+        if not ok:
+            raw_text = "".join(merged_lines(reg / "runs" / run_id))
         lines = render_tail_lines(raw_text, tty=False, n=tail)
     else:
+        ok, raw_text = _proxy_text(reg, run_id, "/logs")
+        if not ok:
+            raw_text = "".join(merged_lines(reg / "runs" / run_id))
         lines = render_to_lines(raw_text, tty=False, state=new_render_state())
     return ok, lines or [NO_TRANSCRIPT]
 
